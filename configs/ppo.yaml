@@ -1,0 +1,13 @@
+# skrl PPO baseline defaults — mirrors src/mfpo/config.py:PPOConfig (frozen, skrl 2.1.0).
+# CPU-first (device hardcoded cpu in baselines.py). Frame-stack context_len=16 passthrough.
+rollouts: 2048
+learning_epochs: 10
+mini_batches: 8
+lr: 0.0003
+kl_threshold: 0.01
+grad_norm_clip: 1.0
+discount: 0.99
+gae_lambda: 0.95
+ratio_clip: 0.2
+value_loss_scale: 1.0
+hidden: [256, 256, 256]

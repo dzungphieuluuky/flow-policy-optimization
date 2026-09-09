@@ -1,0 +1,10 @@
+# skrl SAC baseline defaults — mirrors src/mfpo/config.py:SACConfig (frozen, skrl 2.1.0).
+# CPU-first (device hardcoded cpu in baselines.py). Frame-stack context_len=16 passthrough.
+lr: 0.0003
+batch_size: 256
+memory_size: 300000
+gradient_steps: 1
+polyak: 0.005
+discount: 0.99
+initial_random_steps: 5000
+hidden: [256, 256, 256]
