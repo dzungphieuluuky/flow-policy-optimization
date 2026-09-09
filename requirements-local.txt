@@ -1,0 +1,24 @@
+# Local dev environment pins — CPU-first for APU gfx1103 (780M, 16GB shared RAM).
+# Intent: --extra-index-url https://download.pytorch.org/whl/cpu pins a CPU torch (no ROCm device wheels needed).
+# When ROCm 7.14 GPU torch hangs or gfx1103 wheel missing (only gfx1101/gfx11 published as stubs),
+# use CPU fallback (verified 2026-09-02, .omo/evidence/t1-arch-fix.log):
+#   .venv/bin/python -m pip install --index-url https://download.pytorch.org/whl/cpu --force-reinstall "torch==2.12.0" "torchvision==0.27.0" "torchaudio==2.11.0"
+#   .venv/bin/python -m pip uninstall -y amd-torch-device-gfx11  # remove stale ROCm device shim
+# Optional CPU-forcing env (no HIP init, instant torch.cuda.is_available()==False, no hang):
+#   export CUDA_VISIBLE_DEVICES="" HIP_VISIBLE_DEVICES=""
+# GPU path (only if real gfx1103 wheel published): unset HSA_OVERRIDE_GFX_VERSION; export PYTORCH_ROCM_ARCH=gfx1103
+# then --extra-index-url https://repo.radeon.com/rocm/manylinux/ rocm-sdk-device-gfx1103 (verify timeout 30 torch.cuda + jax.devices).
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch>=2.2,<2.6
+gymnasium[mujoco]>=1.0,<1.3
+mujoco>=3.1,<3.4
+scikit-learn>=1.4
+skrl==2.1.0
+pytest>=8
+jupytext>=1.16
+nbformat>=5.10
+matplotlib>=3.8
+numpy>=1.26,<2.1
+pyyaml>=6  # minimal dep for scripts/train.py --config (yaml.safe_load only)
+einx>=0.4,<1.0  # Fervers et al. ICLR 2026 Oral arXiv:2607.27987 — universal tensor notation; exception to AGENTS.md pinned-deps anti-pattern (plan: einx-migration)
+wandb>=0.17,<0.20  # REQUIRED — default-on logging (project = algo name); MFPO_DISABLE_WANDB=1 is the only off switch

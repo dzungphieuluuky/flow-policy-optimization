@@ -1,0 +1,17 @@
+[project]
+name = "fourier-transform-research"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "dzungpham", email = "23127003@student.hcmus.edu.vn" }
+]
+requires-python = ">=3.12"
+dependencies = []
+
+[project.scripts]
+fourier-transform-research = "fourier_transform_research:main"
+
+[build-system]
+requires = ["uv_build>=0.12.10,<0.13.0"]
+build-backend = "uv_build"
