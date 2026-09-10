@@ -87,7 +87,7 @@ class MFPOConfig:
         log_ratio_cap: STE cap on log-ratio magnitude. Default 10.0.
         tau_range: Flow time range (t_min, t_max). Default (0.005, 0.995).
         lambda_aux: Aux future-state CFM weight. Default 0.5.
-        lambda_sigreg: SigReg (L_var + L_cov) weight. Default 0.1.
+        lambda_sigreg: SIGReg (Epps-Pulley CF normality) weight. Default 0.1.
         c_value: Value-loss coefficient. Default 1.0.
         ema_decay: EMA target-projection decay. Default 0.99.
         grad_clip: Grad-norm clip. Default 1.0.
@@ -112,7 +112,7 @@ class MFPOConfig:
     log_ratio_cap: float = 10.0  # STE cap on log-ratio magnitude
     tau_range: tuple[float, float] = (0.005, 0.995)
     lambda_aux: float = 0.5  # aux future-state CFM weight
-    lambda_sigreg: float = 0.1  # SigReg (L_var + L_cov) weight
+    lambda_sigreg: float = 0.1  # SIGReg (Epps-Pulley CF normality) weight
     c_value: float = 1.0  # value-loss coefficient
     ema_decay: float = 0.99  # EMA target-projection decay
     grad_clip: float = 1.0  # grad-norm clip

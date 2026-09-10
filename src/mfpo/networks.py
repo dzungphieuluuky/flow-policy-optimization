@@ -128,39 +128,94 @@ class ContextTrunk(nn.Module):
 
 
 # %% [markdown]
-# ## SigReg — VICReg-style variance/covariance regularization on flattened Z
+# ## SIGReg — Sketched Isotropic Gaussian Regularizer (Epps-Pulley, LeWorldModel)
 #
-# L_var = mean(relu(1 - std_over_batch)) with unbiased std (+1e-4 inside the
-# sqrt, per original design); L_cov = mean of squared
-# off-diagonal entries of the covariance of batch-flattened Z.
+# Penalizes the empirical characteristic function (CF) of resampled random 1-D
+# projections of Z toward the N(0,1) target CF phi(t)=exp(-t^2/2), via
+# trapezoidal quadrature on [0,3].  Replicates the official implementation from
+# lucas-maes/le-wm (arXiv 2603.19312, Algorithm 1).
+
+# Module-level quadrature nodes / weights for the default knots=17 (cached once).
+_DEFAULT_KNOTS = 17
+_t_cache: dict[int, tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = {}
+
+
+def _get_quadrature(knots: int, device: torch.device):
+    """Return cached (t, weights_scaled, phi) for trapezoid on [0, 3].
+
+    t:       [K]            quadrature nodes
+    w_phi:   [K]            weights * phi (pre-multiplied, same dtype/device as inputs)
+    phi:     [K]            N(0,1) CF target exp(-t^2/2)
+    """
+    if knots not in _t_cache:
+        t = torch.linspace(0, 3, knots, dtype=torch.float32)
+        dt = 3.0 / (knots - 1)
+        w = torch.full((knots,), 2 * dt, dtype=torch.float32)
+        w[0] = dt
+        w[-1] = dt
+        phi = torch.exp(-t.square() / 2.0)
+        _t_cache[knots] = (t, w * phi, phi)
+    t, w_phi, phi = _t_cache[knots]
+    # Move to requested device; cached tensors are CPU; re-cache if new device.
+    if t.device != device:
+        t = t.to(device)
+        w_phi = w_phi.to(device)
+        phi = phi.to(device)
+    return t, w_phi, phi
 
 
 # %%
-def sigreg_losses(z: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    """VICReg-style variance/covariance regularization on flattened Z.
+def sigreg_losses(
+    z: torch.Tensor,
+    *,
+    knots: int = 17,
+    num_proj: int = 1024,
+    projection: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """Sketched Isotropic Gaussian Regularizer (Epps-Pulley CF test).
 
-    L_var = mean(relu(1 - std_over_batch)) with unbiased std (+1e-4 inside the
-    sqrt, per original design); L_cov = mean of squared
-    off-diagonal entries of the covariance of batch-flattened Z.
+    Penalizes the empirical CF of random 1-D projections of *z* toward the
+    standard-normal CF phi(t) = exp(-t^2/2).  Returns a single 0-dim scalar
+    loss (differentiable; gradients flow through the cosine/sine activations).
+
+    Replicates the official LeWorldModel SIGReg.forward() (lucas-maes/le-wm,
+    arXiv 2603.19312).
 
     Args:
-        z: Tensor of shape [B, ...] with any trailing dimensions. Requires B >= 2.
+        z: Tensor of shape [N, T, D] (project layout; internally permuted to
+            the official (T, B=N, D) convention).
+        knots: Number of quadrature nodes in the trapezoidal rule on [0, 3].
+        num_proj: Number of random projections (columns of the sketch matrix).
+        projection: Optional pre-computed projection matrix [D, num_proj] with
+            unit-norm columns.  When None (default), a fresh matrix is sampled
+            from N(0,1) and normalized each call (stochastic estimator).
 
     Returns:
-        Tuple (L_var, L_cov), both scalar tensors.
-
-    Raises:
-        RuntimeError: If batch size B < 2 (unbiased variance undefined).
+        Single 0-dim scalar loss (differentiable).
     """
-    b = z.shape[0]
-    flat = z.reshape(b, -1)  # [B, D_flat]
-    std = torch.sqrt(flat.var(dim=0, unbiased=True) + 1e-4)  # [D_flat]
-    l_var = torch.relu(1.0 - std).mean()  # scalar
-    centered = flat - flat.mean(dim=0)  # [B, D_flat]
-    cov = centered.T @ centered / (b - 1)  # [D_flat, D_flat]
-    cov = cov.fill_diagonal_(0.0)  # zero diagonal
-    l_cov = (cov**2).mean()  # scalar
-    return l_var, l_cov
+    zp = z.permute(1, 0, 2)  # (T, B=N, D) — official le-wm input layout
+    T_count, B, D = zp.shape
+
+    t, w_phi, phi = _get_quadrature(knots, zp.device)
+
+    # Projection matrix: unit-norm columns
+    if projection is None:
+        A = torch.randn(D, num_proj, device=zp.device, dtype=zp.dtype)
+        A = A / A.norm(dim=0, keepdim=True)
+    else:
+        A = projection
+
+    # x_t = (zp @ A).unsqueeze(-1) * t  →  (T, B, M, K)
+    x_t = (zp @ A).unsqueeze(-1) * t
+
+    # Empirical CF error vs N(0,1): mean over B (dim 1)
+    cos_mean = x_t.cos().mean(1)  # (T, M, K)
+    sin_mean = x_t.sin().mean(1)
+    err = (cos_mean - phi).square() + sin_mean.square()  # (T, M, K)
+
+    # Trapezoidal integral + N scaling (B), then average over (T, M)
+    statistic = (err @ w_phi) * B  # (T, M)
+    return statistic.mean()
 
 
 # %% [markdown]

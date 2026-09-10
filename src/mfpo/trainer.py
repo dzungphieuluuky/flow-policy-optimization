@@ -6,7 +6,7 @@ the MFPO agent, combining four loss terms:
     total = ASPO_surrogate_mean
           + c_value · MSE(value_pred, scaled_targets)
           + lambda_aux · aux_CFM_loss
-          + lambda_sigreg · (L_var + L_cov)
+          + lambda_sigreg · sigreg_loss (Epps-Pulley CF normality test)
 
 AdamW(lr, wd); grad-norm clip; fp32 only.
 
@@ -266,8 +266,7 @@ class MFPOTrainer:
         v_pred = self.critic(z)  # [N]
         value_loss = nn.functional.mse_loss(v_pred, returns)
         aux_loss = self.compute_aux_loss(z, cond, tau, chunk_len, cfg)
-        l_var, l_cov = sigreg_losses(z)
-        sigreg_loss = l_var + l_cov
+        sigreg_loss = sigreg_losses(z)
         total_loss = self.combine_and_guard_losses(policy_loss, value_loss, aux_loss, sigreg_loss, cfg, diagnostics_sink)
         self.apply_optimizer_step(total_loss)
         return self.build_update_diagnostics(l_old, l_new, policy_loss, value_loss, aux_loss, sigreg_loss, cfg)
