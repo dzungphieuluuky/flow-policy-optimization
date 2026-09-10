@@ -12,7 +12,7 @@ modules.md           jump table per src/mfpo file
 getting-started.md   smoke commands (tiny matrix, train.py single-run, notebook)
 config-flags.md      env flags / TINY / LEGACY_MUJOCO / matrix filters
 notebooks.md         build/execute/self-containment (61/47 cells)
-testing.md           263 gates + wallclock placeholder note
+testing.md           263 test functions + wallclock placeholder note
 troubleshooting.md   sys.path, train.py exit codes, AnalysisError fallback
 wandb.md             default-on gate (MFPO_DISABLE_WANDB=1) + metric namespaces
 kaggle-offline-blackwell.md Blackwell offline runbook (MEASURED GPU content — surgical edits only)
