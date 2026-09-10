@@ -18,8 +18,8 @@ single-home migration; see debt ledger).
   `atol 1e-6`, per-branch `std≈1` tol 0.15.
 - Spectral: Hann→rFFT→cat→frozen→Linear order tol `2e-3`, invariance `B=1` vs
   `B=32` `atol 1e-6`.
-- VICReg SIGReg: Gaussian batch total <0.15, degenerate batch >0.5,
-  separation >0.3 (empirical, seeded).
+- SIGReg (Epps-Pulley): Gaussian batch total <2.2, degenerate batch >95.0,
+  separation >95.0 (empirical, seeded).
 - Flow: `JointFlowTransformer` 20-step fixture → loss drops; trainer 20-step
   `>1%` (anti-`stays finite` guard).
 - Inference: identity `v=X*-z0` with 16 steps recovers `X*` within `1e-4`;

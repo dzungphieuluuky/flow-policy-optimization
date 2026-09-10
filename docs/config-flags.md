@@ -11,7 +11,6 @@ Source of truth: `src/mfpo/config.py`. YAML mirrors in `configs/`
 | `MFPO_TINY_MATRIX` | env str | `0` | When `1`: tiny preset (Hopper-v5 × seed 0, short budgets) for smokes. |
 | `MFPO_RESUME_ONLY` | env str | `0` | Sweep skips `MISSING`, only resumes `PARTIAL`. |
 | `MFPO_DISABLE_WANDB` | env str | unset (enabled) | `1` disables wandb via `wandb_logging`; wandb is REQUIRED, init failure is fatal. |
-| `MFPO_USE_MJX` | env str | unset (stub) | `1` only: gated MJX path (`mjx_adapter.is_stub=True` otherwise). |
 | `IS_KAGGLE` | autodetect | `KAGGLE_KERNEL_RUN_TYPE` set → True | Kaggle run-output dirs. |
 
 ## Run Matrices

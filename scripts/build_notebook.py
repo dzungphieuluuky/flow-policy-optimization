@@ -80,7 +80,7 @@ MODULE_ORDER_SPECTRAL = [
 MODULE_TITLES_SPECTRAL = {
     "config.py": "Configuration & LEGACY_MUJOCO Flag",
     "dct_utils.py": "DCT Joint Target Normalization (Per-Branch Frozen Stats)",
-    "networks.py": "SpectralTokens + JointFlowTransformer + SIGReg (VICReg var/cov)",
+    "networks.py": "SpectralTokens + JointFlowTransformer + SIGReg (Epps-Pulley CF normality)",
     "inference.py": "Joint Euler ODE 0→1 + IDCT Decode",
     "fpo_core.py": "FPO++ Core",
     "collector.py": "Chunked Rollout Collector",
@@ -184,7 +184,7 @@ ARCHITECTURE_MD = """\
 ```
 obs [B, T=16, obs_dim]
   → ContextTrunk: Linear(obs_dim→128) → ELU → MultiheadAttention(128, 4) → Z [B, 16, 128]
-  → SigReg: VICReg-style L_var + L_cov on Z (λ=0.1)
+  → SigReg: Epps-Pulley CF normality test on Z (λ=0.1)
   → SpectralTokens: Hann-window rFFT → low-K=5 tokens [B, 5, 256] (frozen stats)
   → PolicyFlowHead: MultiheadAttention(128, 4) conditioned on [Z; fft_tokens] → velocity [B, 8, A]
   → AuxStateFlowHead: Same arch → velocity [B, 8, 128] for future-state prediction
@@ -213,7 +213,7 @@ TITLE_SPECTRAL_MD = """\
 
 | Component | Description |
 |-----------|-------------|
-| **MFPO (proposed)** | Joint DCT [A*,S*] flow + Hann-rFFT K=5 spectral tokens + VICReg SIGReg |
+| **MFPO (proposed)** | Joint DCT [A*,S*] flow + Hann-rFFT K=5 spectral tokens + SIGReg (Epps-Pulley) |
 | **PPO** | skrl PPO baseline (Gaussian MLP[256,256,256]) |
 | **SAC** | skrl SAC baseline (actor + twin critics) |
 | **Envs** | HalfCheetah-v5, Walker2d-v5, Hopper-v5 (flat Box) |
@@ -235,7 +235,7 @@ BINDING_SPECTRAL_MD = """\
 | Spectral | `Z_w = Z*hann(16)` → rFFT(dim=1) → cat(real,imag)→ K=5 → frozen norm → Linear(2D→64) | Spec §4, Tasks 4 |
 | K | 5 bins (N/2+1=9 → 0..4) | Spec §4 |
 | Per-branch norm | `X*=[A*_norm,S*_norm]` std(A*)≈1 std(S*)≈1 frozen | Spec §5 Task 5 |
-| SIGReg | VICReg var+cov on Z, single scalar, λ=0.1 | networks.sigreg_losses |
+| SIGReg | Epps-Pulley CF normality on Z, single scalar, λ=0.1 | networks.sigreg_losses |
 | λ_A / λ_S / λ_SIGReg | 1.0 / 0.5 / 0.1 | Spec §7 |
 | N / H / D / Dk | 16 / 8 / 128 / 64 | Spec §3 |
 | Inference steps | 16 train / 8 eval | Spec Table 3 |
@@ -264,7 +264,7 @@ ARCHITECTURE_SPECTRAL_MD = """\
 ```
 MuJoCo flat Box obs [B,16,obs_dim]
   → ContextTrunk: Linear(obs_dim→128) → ELU → MultiheadAttention(128,4) → Z [B,16,128]
-  → SigReg: VICReg-style L_var + L_cov on Z (λ=0.1)
+  → SigReg: Epps-Pulley CF normality test on Z (λ=0.1)
   → SpectralTokens: Z*hann(16) → rFFT → cat(real,imag) → K=5 → frozen norm → Linear(2D→64) → T_FFT [B,5,64]
   → Joint target: A*=DCT(A_gt[B,8,Da]), S*=DCT(Z_future[B,8,128]) → per-branch norm → X* [B,8,135]
   → JointFlowTransformer: z_t=(1-t)z0+tX*, u*=X*-z0, vθ(z_t,t,Z,T_FFT) → [v_A,v_S], loss 1.0*MSE_A+0.5*MSE_S
@@ -281,7 +281,7 @@ DEVIATION_NOTES_SPECTRAL_MD = """\
 | D Flag | MuJoCo-only; LIBERO twins pruned | Single-mode codebase, no dead branches |
 | D Per-branch | A* and S* normalized with separate frozen stds | Prevents scale dominance of λ weights |
 | D Hann | Window applied BEFORE rFFT, norm AFTER rFFT | Critical order for spectral leakage |
-| D SIGReg | VICReg var+cov single scalar, no Barlow/EMA | SIGReg-only gate |
+| D SIGReg | Epps-Pulley CF normality single scalar, no Barlow/EMA | SIGReg-only gate |
 """
 
 LIMITATIONS_SPECTRAL_MD = """\
@@ -533,8 +533,8 @@ if LEGACY_MUJOCO:
 
 from mfpo.networks import sigreg_losses
 z = torch.randn(32, 16, 128)
-lv, lc = sigreg_losses(z)
-assert torch.isfinite(lv) and torch.isfinite(lc), "SigReg losses not finite"
+sl = sigreg_losses(z)
+assert sl.ndim == 0 and torch.isfinite(sl), "SIGReg loss not finite scalar"
 
 from mfpo.fpo_core import aspo_surrogate
 rho = torch.tensor([[1.04]])
@@ -593,19 +593,18 @@ if (A_rec - A_dct).abs().max().item() > 1e-5:
 if (S_rec - S_dct).abs().max().item() > 1e-5:
     errors.append("per-branch denorm invert S")
 
-# 3. SIGReg VICReg var/cov: gaussian low, degenerate high
+# 3. SIGReg Epps-Pulley CF normality: gaussian low, degenerate high
 from mfpo.networks import sigreg_losses
 z_gauss = torch.randn(64,16,128)
 z_deg = torch.ones(64,16,128)*5
-lvg, lcg = sigreg_losses(z_gauss)
-lvd, lcd = sigreg_losses(z_deg)
-lg, ld = (lvg + lcg).item(), (lvd + lcd).item()
-if not (lg < 0.15):
-    errors.append(f"SIGReg Gaussian {lg} >=0.15")
-if not (ld > 0.5):
-    errors.append(f"SIGReg degenerate {ld} <=0.5")
-if not (ld - lg > 0.3):
-    errors.append("SIGReg separation <=0.3")
+lg = sigreg_losses(z_gauss).item()
+ld = sigreg_losses(z_deg).item()
+if not (lg < 2.2):
+    errors.append(f"SIGReg Gaussian {lg} >=2.2")
+if not (ld > 95.0):
+    errors.append(f"SIGReg degenerate {ld} <=95.0")
+if not (ld - lg > 95.0):
+    errors.append("SIGReg separation <=95.0")
 
 # 4. Joint flow identity recovery ascending 0→1
 from mfpo.inference import euler_integrate_joint

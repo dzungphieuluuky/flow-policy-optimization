@@ -21,8 +21,8 @@ flowchart LR
   DCTA --> PN["per-branch frozen norm\nstd(A*)≈1 std(S*)≈1"] --> Xstar["X*=[A*_norm,S*_norm] [B,H,135]"]
   DCTS --> PN
   Xstar --> Flow["z_t=(1-t)z0+tX*  t∈[0.005,0.995]\nu*=X*-z0\nJointFlowTransformer\ncross-attn over [Z;T_FFT]\nt-embed 8-d sinusoidal"] --> V["v=[v_A,v_S]"]
-  V --> Loss["L_flow=1.0·MSE(v_A,u*_A)+0.5·MSE(v_S,u*_S)\n+0.1·VICReg(Z)"]
-  Z --> SIG["VICReg sigreg_losses\nP=32, λ=0.1"]
+  V --> Loss["L_flow=1.0·MSE(v_A,u*_A)+0.5·MSE(v_S,u*_S)\n+0.1·SIGReg(Z)"]
+  Z --> SIG["Epps-Pulley SIGReg\nP=1024, λ=0.1"]
   SIG --> Loss
 ```
 
@@ -53,4 +53,4 @@ frame-stacked env through the shared `baseline_train_loop`
 - Per-branch frozen norms prevent `λ_A/λ_S` being dominated by raw DCT scales.
 - `K=5` low-frequency spectral tokens + Hann window condition the flow on
   temporal structure of `Z`, not its DC offset.
-- VICReg single-home (`sigreg_losses`, P=32, λ=0.1) — no Barlow/VICReg twins.
+- Epps-Pulley SIGReg single-home (`sigreg_losses`, P=1024, λ=0.1) — no Barlow/VICReg twins.

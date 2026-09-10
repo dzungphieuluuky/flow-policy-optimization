@@ -23,7 +23,7 @@
 stacked obs [N=16,obs_dim] ──► ContextTrunk ──► Z [16,128]
 Z ──► Hann(16) ──► rFFT ──► cat(real,imag) ──► K=5 frozen norm ──► Linear(2D→64) → T_FFT [5,64]
 chunk actions [H=8,Da] ──► DCT ──► per-branch norm ──┐
-chunk states [H,Ds] ──► DCT ──► per-branch norm ─────┤→ X*=[A*,S*] [H,135] ──► JointFlowTransformer(Z,T_FFT) ──► L_flow + VICReg SIGReg
+chunk states [H,Ds] ──► DCT ──► per-branch norm ─────┤→ X*=[A*,S*] [H,135] ──► JointFlowTransformer(Z,T_FFT) ──► L_flow + Epps-Pulley SIGReg
 ```
 
 **Binding contracts you cannot flip silently:** `z_t=(1-t)z0+tX*` with `t∈[0,1]`
@@ -35,7 +35,7 @@ chunk states [H,Ds] ──► DCT ──► per-branch norm ─────┤�
 `scripts/train.py --method {mfpo,ppo,sac}` on MuJoCo locomotion
 (HalfCheetah/Walker2d/Hopper), 45-run matrix (`test_config.py` locks it).
 
-- `mfpo`: spectral joint flow path above (trainer ASPO + value + VICReg).
+- `mfpo`: spectral joint flow path above (trainer ASPO + value + Epps-Pulley SIGReg).
 - `ppo` / `sac`: skrl 2.1.0 baselines via shared `baseline_train_loop`;
   eval is always 3-col CSV `[episode,return,length]`.
 

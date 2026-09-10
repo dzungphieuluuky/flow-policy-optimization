@@ -1,0 +1,240 @@
+"""Unit tests for src/mfpo/config.py (plan task 2).
+
+Written BEFORE the assert_runtime()/validate_run_matrix() implementation
+(TDD): the first pytest run must fail RED on the missing attributes, then go
+GREEN once config.py is extended.
+
+Module-level mode switches are read from environment variables ONCE at import
+time by design, so env-var semantics are tested via importlib.reload under
+monkeypatch. An autouse fixture restores a clean-env reload after every test
+so mutated module state never leaks between tests.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+import importlib
+import importlib.metadata
+import os
+import sys
+from pathlib import Path
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from mfpo import config  # noqa: E402
+
+_ENV_VARS = (
+    "KAGGLE_KERNEL_RUN_TYPE",
+    "MFPO_TINY_MATRIX",
+    "MFPO_RESUME_ONLY",
+    "MFPO_APPROVE_OVERRUN",
+)
+
+
+@pytest.fixture(autouse=True)
+def _clean_module_state():
+    """Every test starts from (and leaves behind) a clean-env reloaded module."""
+    for var in _ENV_VARS:
+        os.environ.pop(var, None)
+    importlib.reload(config)
+    yield
+    for var in _ENV_VARS:
+        os.environ.pop(var, None)
+    importlib.reload(config)
+
+
+def _reload_with_env(monkeypatch: pytest.MonkeyPatch, **env: str):
+    for var in _ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+    for var, value in env.items():
+        monkeypatch.setenv(var, value)
+    return importlib.reload(config)
+
+
+def _fake_version(monkeypatch: pytest.MonkeyPatch, overrides: dict[str, str]) -> None:
+    real = importlib.metadata.version
+
+    def fake(dist: str, *args, **kwargs):
+        if dist in overrides:
+            return overrides[dist]
+        return real(dist, *args, **kwargs)
+
+    monkeypatch.setattr(importlib.metadata, "version", fake)
+
+
+# ---------------------------------------------------------------------------
+# 1. Run matrix shape / uniqueness / seeds
+# ---------------------------------------------------------------------------
+
+
+def test_run_matrix_45_unique_tuples_and_seeds():
+    assert len(config.RUN_MATRIX) == 45
+    keys = [(s.method, s.env, s.seed) for s in config.RUN_MATRIX]
+    assert len(keys) == len(set(keys)), "collision in (method, env, seed)"
+    assert {s.seed for s in config.RUN_MATRIX} == {0, 1, 2, 3, 4}
+    assert {s.method for s in config.RUN_MATRIX} == {"mfpo", "ppo", "sac"}
+    assert {s.env for s in config.RUN_MATRIX} == {
+        "HalfCheetah-v5",
+        "Walker2d-v5",
+        "Hopper-v5",
+    }
+
+
+# ---------------------------------------------------------------------------
+# 2. Config dataclass fields: non-null + documented ranges
+# ---------------------------------------------------------------------------
+
+
+def test_every_config_field_non_null():
+    for instance in (config.MFPO_CFG, config.PPO_CFG, config.SAC_CFG):
+        for field in dataclasses.fields(instance):
+            value = getattr(instance, field.name)
+            assert value is not None, (
+                f"{type(instance).__name__}.{field.name} must not be None"
+            )
+
+
+def test_mfpo_config_documented_ranges():
+    c = config.MFPO_CFG
+    assert c.N_mc >= 2
+    assert c.euler_train >= 1
+    assert c.euler_eval >= 1
+    assert c.chunks_per_update >= 1
+    assert c.epochs >= 1
+    assert 0 < c.minibatch <= c.chunks_per_update
+    assert c.lr > 0
+    assert c.wd >= 0
+    assert 0 < c.gamma < 1
+    assert 0 < c.gae_lambda < 1
+    assert 0 < c.epsilon_clip < 1
+    assert c.cfm_clamp > 0
+    assert c.log_ratio_cap > 0
+    lo, hi = c.tau_range
+    assert 0 < lo < hi < 1
+    assert c.lambda_aux >= 0
+    assert c.lambda_sigreg >= 0
+    assert c.c_value >= 0
+    assert 0 < c.ema_decay < 1
+    assert c.grad_clip > 0
+    assert c.context_len == 16
+    assert c.chunk_len == 8
+    assert c.K_spectral > 0
+    assert c.Z_dim > 0
+
+
+def test_ppo_config_documented_ranges():
+    c = config.PPO_CFG
+    assert c.rollouts > 0
+    assert c.learning_epochs >= 1
+    assert c.mini_batches >= 1
+    assert c.lr > 0
+    assert c.kl_threshold > 0
+    assert c.grad_norm_clip > 0
+    assert 0 < c.discount < 1
+    assert 0 < c.gae_lambda < 1
+    assert 0 < c.ratio_clip < 1
+    assert c.value_loss_scale > 0
+    assert len(c.hidden) > 0 and all(h > 0 for h in c.hidden)
+
+
+def test_sac_config_documented_ranges():
+    c = config.SAC_CFG
+    assert c.lr > 0
+    assert c.batch_size >= 1
+    assert c.memory_size > 0
+    assert c.gradient_steps >= 1
+    assert 0 < c.polyak < 1
+    assert 0 < c.discount < 1
+    assert c.initial_random_steps >= 0
+    assert len(c.hidden) > 0 and all(h > 0 for h in c.hidden)
+
+
+# ---------------------------------------------------------------------------
+# 3. assert_runtime(): dependency pins + precision flag
+# ---------------------------------------------------------------------------
+
+
+def test_assert_runtime_passes_on_pinned_env():
+    config.assert_runtime()
+    config.assert_runtime(allow_fp16=False)
+
+
+def test_assert_runtime_gymnasium_below_1_0(monkeypatch):
+    _fake_version(monkeypatch, {"gymnasium": "0.29.1"})
+    with pytest.raises(RuntimeError, match="gymnasium"):
+        config.assert_runtime()
+
+
+def test_assert_runtime_skrl_not_2_1_0(monkeypatch):
+    _fake_version(monkeypatch, {"skrl": "2.0.9"})
+    with pytest.raises(RuntimeError, match="skrl"):
+        config.assert_runtime()
+
+
+def test_assert_runtime_rejects_fp16_request():
+    with pytest.raises(RuntimeError, match="fp16|bf16"):
+        config.assert_runtime(allow_fp16=True)
+
+
+# ---------------------------------------------------------------------------
+# 4. Env-var semantics via importlib.reload under monkeypatch
+# ---------------------------------------------------------------------------
+
+
+def test_tiny_matrix_env_var_swaps_run_matrix(monkeypatch):
+    m = _reload_with_env(monkeypatch, MFPO_TINY_MATRIX="1")
+    assert m.TINY_MATRIX is True
+    assert len(m.RUN_MATRIX) == 3
+    for spec in m.RUN_MATRIX:
+        assert spec.env == "Hopper-v5"
+        assert spec.seed == 0
+        assert spec.total_steps == 20_000
+        assert spec.eval_interval == 10_000
+        assert spec.ckpt_interval == 10_000
+    m_default = _reload_with_env(monkeypatch)
+    assert m_default.TINY_MATRIX is False
+    assert len(m_default.RUN_MATRIX) == 45
+
+
+def test_resume_only_true_iff_env_var_present(monkeypatch):
+    for value in ("1", "0", "yes", ""):
+        m = _reload_with_env(monkeypatch, MFPO_RESUME_ONLY=value)
+        assert m.RESUME_ONLY is True, f"MFPO_RESUME_ONLY={value!r} must parse True"
+    m = _reload_with_env(monkeypatch)
+    assert m.RESUME_ONLY is False
+
+
+def test_approve_overrun_true_only_for_exact_1(monkeypatch):
+    m = _reload_with_env(monkeypatch, MFPO_APPROVE_OVERRUN="1")
+    assert m.APPROVE_OVERRUN is True
+    m = _reload_with_env(monkeypatch, MFPO_APPROVE_OVERRUN="yes")
+    assert m.APPROVE_OVERRUN is False
+    m = _reload_with_env(monkeypatch)
+    assert m.APPROVE_OVERRUN is False
+
+
+def test_is_kaggle_true_for_any_value(monkeypatch):
+    for value in ("notebook", "0"):
+        m = _reload_with_env(monkeypatch, KAGGLE_KERNEL_RUN_TYPE=value)
+        assert m.IS_KAGGLE is True
+    m = _reload_with_env(monkeypatch)
+    assert m.IS_KAGGLE is False
+
+
+# ---------------------------------------------------------------------------
+# 5. validate_run_matrix(): duplicate-seed injection raises AssertionError
+# ---------------------------------------------------------------------------
+
+
+def test_validate_run_matrix_accepts_current_matrix():
+    config.validate_run_matrix(config.RUN_MATRIX)
+
+
+def test_duplicate_seed_injection_raises_assertion_error():
+    duplicated = list(config.RUN_MATRIX) + [dataclasses.replace(config.RUN_MATRIX[0])]
+    keys = [(s.method, s.env, s.seed) for s in duplicated]
+    assert len(keys) != len(set(keys)), "fixture itself must contain a duplicate"
+    with pytest.raises(AssertionError):
+        config.validate_run_matrix(duplicated)

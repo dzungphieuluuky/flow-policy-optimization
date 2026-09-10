@@ -42,8 +42,7 @@ Setup cell asserts: `torch>=2.2`, `gymnasium>=1.0`, `skrl==2.1.0`, fp32 default 
 the **first failure point** offline; if it fails, your wheel install didn't take.
 
 **Do NOT bundle**: `timm` (guarded `try/except` → scratch ViT fallback; absent in the
-verified env), `jax`/`mujoco.mjx` (function-local, gated, module excluded from notebook),
-`wandb` (REQUIRED import — set `MFPO_DISABLE_WANDB=1` offline unless you want logging),
+verified env), `wandb` (REQUIRED import — set `MFPO_DISABLE_WANDB=1` offline unless you want logging),
 `scipy` (banned at runtime by design), extra datasets (absent by design),
 `scikit-learn`/`pandas`/`torchvision`-beyond-pin (zero src imports). All **MEASURED**
 by import scan + guard analysis.
@@ -149,7 +148,7 @@ flag self-test. `IS_KAGGLE` (= `KAGGLE_KERNEL_RUN_TYPE` set) only changes run-ou
 **Skip / do-not-touch offline**: any `pip install datasets`, `push_checkpoints_to_dataset()`
 (docs-only helper, no code — leave disabled; fetch checkpoints from `/kaggle/working`),
 full 45×1M sweep (exceeds kernel time — use `MFPO_TINY_MATRIX=1` or single-seed edits),
-online wandb (set `MFPO_DISABLE_WANDB=1` offline — a failed init is fatal, never downgraded silently), `MFPO_USE_MJX=1` (leave unset).
+online wandb (set `MFPO_DISABLE_WANDB=1` offline — a failed init is fatal, never downgraded silently).
 Old doc names (synthetic-env adapter, `calibrate_and_gate_*` variants, 7-col writer,
 `SampleEfficiencyBudget`, `per_suite_efficiency`) are stale — all removed in the MuJoCo-only prune and the LIBERO purge (src has `calibrate_and_gate`; runner is MuJoCo-only flat Box).
 Eval CSV = 3-col `[episode,return,length]`; the evaluator companions were removed in the prune — only the MuJoCo `Evaluator` path is wired to the runner.

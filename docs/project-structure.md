@@ -14,7 +14,7 @@
 ├── src/mfpo/                     # production code (MuJoCo-only, flat Box, fp32, no autocast)
 │   ├── config.py                 # flags, RUN_MATRIX (45), MFPO/PPO/SAC configs, build_filtered_matrix
 │   ├── runner.py                 # train_run (MFPO entry)
-│   ├── trainer.py                # assemble_update (ASPO + value + VICReg SIGReg)
+│   ├── trainer.py                # assemble_update (ASPO + value + Epps-Pulley SIGReg)
 │   ├── networks.py               # ContextTrunk, SpectralTokens, flow heads, ValueCritic,
 │   │                             #   EMAProjection, JointFlowTransformer, PerBranchFlowLoss, sigreg_losses
 │   ├── dct_utils.py              # orthonormal DCT-II + per-branch frozen-norm helpers
@@ -27,7 +27,6 @@
 │   ├── analysis.py               # analyze_results (bootstrap 2000, IQM — stats locked)
 │   ├── calibration.py            # calibrate_and_gate + build_fallback_ladder
 │   ├── wandb_logging.py          # hard REQUIRED wandb gate (only file importing wandb)
-│   ├── mjx_adapter.py            # gated MJX stub (is_stub=True unless MFPO_USE_MJX=1)
 │   ├── utils.py                  # safe_float_value
 │   └── __init__.py
 ├── tests/                        # 263 green; test_pipeline_cpu.py (9 invariants) never touched

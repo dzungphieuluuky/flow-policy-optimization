@@ -39,7 +39,6 @@ ls -lh spectral_joint_flow.ipynb flow_matching_vs_ppo_sac.ipynb
 |---|---|---|
 | `MFPO_TINY_MATRIX` | `0` | `1` → tiny preset (Hopper-v5 × seed 0, short budgets) |
 | `MFPO_DISABLE_WANDB` | unset (enabled) | `1` → disable wandb logging (only off switch; wandb is required) |
-| `MFPO_USE_MJX` | unset (stub) | `1` only: gated MJX path |
 | `IS_KAGGLE` | autodetect | Kaggle run-output dirs; local stays synthetic — no download |
 | `MFPO_RESUME_ONLY` | `0` | Sweep cells skip `MISSING` runs when set |
 
