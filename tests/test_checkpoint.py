@@ -1,9 +1,9 @@
-"""Tests for src/mfpo/checkpointing.py (plan task 9).
+"""Tests for src/sjfpo/checkpointing.py (plan task 9).
 
 TDD: written BEFORE the implementation exists — the first pytest run must
 fail RED on the missing module, then go GREEN once checkpointing.py lands.
 
-Contract under test (generic; mfpo.trainer does not exist yet and task 8
+Contract under test (generic; sjfpo.trainer does not exist yet and task 8
 will consume this exact API):
 
 * ``save_checkpoint(dir_path, state)`` serializes a nested ``state`` mapping
@@ -38,7 +38,7 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from mfpo.checkpointing import (  # noqa: E402
+from sjfpo.checkpointing import (  # noqa: E402
     ResumeError,
     capture_env_fingerprint,
     load_checkpoint,
@@ -80,13 +80,13 @@ EXPECTED_KEYS = [
 
 
 @pytest.fixture(autouse=True)
-def _deterministic_cpu():
+def deterministic_cpu():
     configure_determinism()
     yield
     torch.use_deterministic_algorithms(False)
 
 
-def _assert_optimizer_state_equal(a: dict, b: dict, ctx: str) -> None:
+def assert_optimizer_state_equal(a: dict, b: dict, ctx: str) -> None:
     assert set(a["state"]) == set(b["state"]), ctx
     for pid in a["state"]:
         sa, sb = a["state"][pid], b["state"][pid]
@@ -100,7 +100,7 @@ def _assert_optimizer_state_equal(a: dict, b: dict, ctx: str) -> None:
     assert a["param_groups"] == b["param_groups"], f"{ctx}.param_groups"
 
 
-def _assert_numpy_rng_state_equal(a: tuple, b: tuple) -> None:
+def assert_numpy_rng_state_equal(a: tuple, b: tuple) -> None:
     assert a[0] == b[0]
     assert np.array_equal(a[1], b[1])
     assert a[2:] == b[2:]
@@ -143,7 +143,7 @@ def test_roundtrip_restores_every_manifest_field(tmp_path):
     for dotted in EXPECTED_KEYS:
         assert dotted in saved_keys, dotted
 
-    # Fresh bundle with DIFFERENT init + empty containers as restore targets.
+        # Fresh bundle with DIFFERENT init + empty containers as restore targets.
     models2, optimizers2 = build_bundle(seed=999)
     frame_buffer2 = deque(maxlen=10)
     template = {
@@ -170,7 +170,7 @@ def test_roundtrip_restores_every_manifest_field(tmp_path):
             assert torch.equal(ref[k], payload[k]), f"payload restore {name}.{k}"
 
     for name in ("policy_opt", "critic_opt"):
-        _assert_optimizer_state_equal(
+        assert_optimizer_state_equal(
             state["optimizers"][name].state_dict(),
             optimizers2[name].state_dict(),
             name,
@@ -181,7 +181,7 @@ def test_roundtrip_restores_every_manifest_field(tmp_path):
     assert isinstance(restored["frame_buffer"], deque)
     assert list(restored["frame_buffer"]) == list(frame_buffer)
     assert restored["rng_python"] == state["rng_python"]
-    _assert_numpy_rng_state_equal(restored["rng_numpy"], state["rng_numpy"])
+    assert_numpy_rng_state_equal(restored["rng_numpy"], state["rng_numpy"])
     assert torch.equal(restored["rng_torch"], state["rng_torch"])
     assert restored["counters"] == counters
     assert restored["eval_history_ptr"] == eval_history_ptr
@@ -260,12 +260,12 @@ def test_atomicity_killed_mid_write_leaves_previous_checkpoint_loadable(
     assert restored["counters"] == v1_counters
 
     # Phase 2: crash mid-save (os.replace interrupted) -> v1 still intact.
-    import mfpo.checkpointing as ckpt_mod
+    import sjfpo.checkpointing as ckpt_mod
 
-    def _die(*_a, **_k):
+    def die(*a, **k):
         raise KeyboardInterrupt
 
-    monkeypatch.setattr(ckpt_mod.os, "replace", _die)
+    monkeypatch.setattr(ckpt_mod.os, "replace", die)
     v2_counters = {"global_step": 200, "chunks": 24}
     with pytest.raises(KeyboardInterrupt):
         save_checkpoint(ckpt, build_state(models, optimizers, counters=v2_counters))
