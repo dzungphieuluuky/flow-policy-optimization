@@ -17,7 +17,6 @@ Tensor dimension conventions (used throughout this module):
     H: predicted action-chunk length (config.chunk_size)
     K: spectral tokens (default 5)
     D: latent dimension hidden_size (default 128)
-    spectral_dim: spectral projector output dim (default 64)
     Da: action dimension
     Ds: state dimension
     num_mc_samples: Monte Carlo samples for flow likelihood (config.num_mc_samples)
@@ -46,6 +45,7 @@ from sjfpo.networks import (
     Critic,
     sigreg_loss,
 )
+from sjfpo.dct_utils import idct
 from sjfpo.utils import resolve_device, safe_float_value
 
 
@@ -65,20 +65,18 @@ class SJFPOTrainer:
     """FPO++ trainer assembling all loss terms and managing gradient routing.
 
     Attributes:
-        policy_state_encoder: Policy frame encoder (StateEncoder), trainable.
         policy_head: DiT policy velocity network (SJFOPolicyModel, actions only).
         critic: State-action value function (Critic, cross-attention fusion).
-        spectral: Frozen-stat spectral feature extractor (SpectralEncoder).
+        spectral: Parameter-free spectral encoder over raw obs (SpectralEncoder).
         critic_state_encoder: Critic frame encoder (StateEncoder), trainable.
         cfg: Hyperparameters (SJFPOConfig).
         optimizer: AdamW optimizer over trainable parameters.
         step_count: Internal update counter (checkpoint compat).
 
     Args:
-        policy_state_encoder: Policy frame encoder.
         policy_head: DiT policy velocity network.
         critic: State-action value function.
-        spectral: Frozen-stat spectral feature extractor.
+        spectral: Parameter-free spectral encoder over the raw obs window.
         critic_state_encoder: Critic frame encoder.
         cfg: Hyperparameters (optional, defaults to config.SJFPO_CFG).
         device: Compute device (default: CUDA if available, else CPU).
@@ -86,7 +84,6 @@ class SJFPOTrainer:
 
     def __init__(
         self,
-        policy_state_encoder: StateEncoder,
         policy_head: SJFOPolicyModel,
         critic: Critic,
         spectral: SpectralEncoder,
@@ -95,24 +92,19 @@ class SJFPOTrainer:
         device: torch.device | str | None = None,
     ):
         self.device = torch.device(device) if device is not None else resolve_device()
-        self.policy_state_encoder = policy_state_encoder.to(self.device)
         self.policy_head = policy_head.to(self.device)
         self.critic = critic.to(self.device)
         self.spectral = spectral.to(self.device)
         self.critic_state_encoder = critic_state_encoder.to(self.device)
         self.cfg = cfg or config.SJFPO_CFG
 
-        # Collect all trainable parameters (policy trunk + policy model +
-        # critic + spectral projector + critic trunk). The critic MUST be
-        # optimized against its TD bootstrap target; the spectral projector
-        # MUST be optimized: it is the only conditioning path into the
-        # policy (networks.py documents it as learnable), so excluding it
-        # leaves the policy conditioned on a random projection.
+        # Collect all trainable parameters (policy model + critic + critic
+        # trunk). The spectral encoder is parameter-free (raw DCT bins), so
+        # the policy head's cond_proj is the only learnable conditioning path.
+        # The critic MUST be optimized against its TD bootstrap target.
         params = (
-            list(policy_state_encoder.parameters())
-            + list(policy_head.parameters())
+            list(policy_head.parameters())
             + list(critic.parameters())
-            + list(spectral.parameters())
             + list(critic_state_encoder.parameters())
         )
         self.optimizer = torch.optim.AdamW(
@@ -145,20 +137,21 @@ class SJFPOTrainer:
             chunk_size,
         )
 
-    def compute_policy_terms(self, actions, z, cond, advantages, N, cfg):
+    def compute_policy_terms(self, actions, cond, states, advantages, N, cfg):
         """Old/new MC log-likelihoods plus ASPO surrogate policy loss."""
+        n_coeffs = int(actions.shape[-2])  # truncated Ka rows, not full H
         with torch.no_grad():
             l_old = self.compute_log_likelihood(
                 actions,
-                z,
                 cond,
+                states,
                 act_dim=int(actions.shape[-1]),
-                chunk_size=int(actions.shape[-2]),
+                n_coeffs=n_coeffs,
             )  # [N, num_mc_samples]
         eps = torch.randn(
             N,
             cfg.num_mc_samples,
-            int(actions.shape[-2]),
+            n_coeffs,
             int(actions.shape[-1]),
             device=self.device,
         )
@@ -170,12 +163,12 @@ class SJFPOTrainer:
         )
         l_new = self.compute_log_likelihood(
             actions,
-            z,
             cond,
+            states,
             eps=eps,
             tau=tau,
             act_dim=int(actions.shape[-1]),
-            chunk_size=int(actions.shape[-2]),
+            n_coeffs=n_coeffs,
         )
         rho = policy_ratio(l_old, l_new, adv=advantages.unsqueeze(1))
         psi = aspo_surrogate(rho, advantages.unsqueeze(1), cfg.clip_range)
@@ -242,18 +235,11 @@ class SJFPOTrainer:
         self.optimizer.zero_grad()
         total_loss.backward()
         torch.nn.utils.clip_grad_norm_(
-            self.policy_state_encoder.parameters(), self.cfg.grad_clip
-        )
-        torch.nn.utils.clip_grad_norm_(
             self.policy_head.parameters(),
             self.cfg.grad_clip,
         )
         torch.nn.utils.clip_grad_norm_(
             self.critic.parameters(),
-            self.cfg.grad_clip,
-        )
-        torch.nn.utils.clip_grad_norm_(
-            self.spectral.parameters(),
             self.cfg.grad_clip,
         )
         torch.nn.utils.clip_grad_norm_(
@@ -326,11 +312,15 @@ class SJFPOTrainer:
                 f"stacked state length {states.shape[-2]} != "
                 f"config.n_obs_steps {cfg.n_obs_steps}"
             )
-            # Policy path: policy trunk encodes states for spectral conditioning.
-        z_policy = self.policy_state_encoder(states)  # [N, T, Z]
-        cond = self.spectral(z_policy)  # [N, K, spectral_dim]
+            # Policy path: spectral tokens straight from the raw obs window.
+        cond = self.spectral(states)  # [N, K, obs] raw DCT bins
+        # Denoise in truncated coefficient space: keep the top-p low-frequency
+        # action bins (same top_p as the spectral tokens); the critic keeps
+        # the full-H chunk.
+        n_coeffs = max(1, round(cfg.top_p_spectral_tokens * cfg.chunk_size))
+        action_coeffs = actions[:, :n_coeffs, :]  # [N, Ka, act]
         policy_loss, l_old, l_new, tau = self.compute_policy_terms(
-            actions, z_policy, cond, advantages, N, cfg
+            action_coeffs, cond, states, advantages, N, cfg
         )
         # Critic path: critic trunk encodes states for V(s,a) (decoupled).
         z_critic = self.critic_state_encoder(states)  # [N, T, Z]
@@ -338,9 +328,13 @@ class SJFPOTrainer:
             next_states
         )  # [N, T, Z] for TD bootstrap
         # Standard critic recursion: V(s,a) bootstraps V(s',a') under no_grad.
-        v_pred = self.critic(z_critic, actions)  # [N]
+        # The critic judges clean real-space actions: IDCT the stored DCT
+        # coefficients (same pad+IDCT the rollout path applies to model output).
+        v_pred = self.critic(z_critic, idct(actions, dim=1))  # [N]
         with torch.no_grad():
-            v_next = self.critic(z_critic_next, next_actions)  # [N] fixed bootstrap
+            v_next = self.critic(
+                z_critic_next, idct(next_actions, dim=1)
+            )  # [N] fixed bootstrap
         td_targets = self.compute_critic_targets(chunks, v_next, cfg.gamma)
         value_loss = nn.functional.mse_loss(v_pred, td_targets)
         # SigReg on the critic latent only.
@@ -369,11 +363,11 @@ class SJFPOTrainer:
     def compute_log_likelihood(
         self,
         actions: torch.Tensor,
-        z: torch.Tensor,
         cond: torch.Tensor,
+        states: torch.Tensor,
         *,
         act_dim: int,
-        chunk_size: int,
+        n_coeffs: int,
         eps: torch.Tensor | None = None,
         tau: torch.Tensor | None = None,
     ) -> torch.Tensor:
@@ -386,7 +380,7 @@ class SJFPOTrainer:
 
         if eps is None:
             eps = torch.randn(
-                N, cfg.num_mc_samples, chunk_size, act_dim, device=self.device
+                N, cfg.num_mc_samples, n_coeffs, act_dim, device=self.device
             )
         if tau is None:
             tau_range = cfg.tau_range
@@ -399,16 +393,22 @@ class SJFPOTrainer:
             # Expand conditioning for MC samples
         cond_mc = einx.id(
             "n k d -> n m k d", cond, m=cfg.num_mc_samples
-        )  # [N, num_mc_samples, K, spectral_dim]
+        )  # [N, num_mc_samples, K, obs]
         cond_flat = einx.id(
             "n m k d -> (n m) k d", cond_mc
-        )  # [N*num_mc_samples, K, spectral_dim]
+        )  # [N*num_mc_samples, K, obs]
+        state_mc = einx.id(
+            "n t d -> n m t d", states, m=cfg.num_mc_samples
+        )  # [N, num_mc_samples, T, obs]
+        state_flat = einx.id(
+            "n m t d -> (n m) t d", state_mc
+        )  # [N*num_mc_samples, T, obs]
         x_t_flat, v_star_flat = self.interpolate_mc_batch(actions, eps, tau, N, cfg)
         # Forward through policy model
         tau_flat = einx.id("m -> n m", tau, n=N).reshape(
             N * cfg.num_mc_samples
         )  # [N*num_mc_samples] via einx broadcast
-        v_hat = self.policy_head(x_t_flat, tau_flat, cond_flat)
+        v_hat = self.policy_head(x_t_flat, tau_flat, cond_flat, state_flat)
 
         # Squared error, mean over flow dims, per sample
         se = (v_hat - v_star_flat).pow(2).mean(dim=(-2, -1))  # [N*num_mc_samples]
