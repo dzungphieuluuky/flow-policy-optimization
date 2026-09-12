@@ -1,7 +1,7 @@
 """YAML<->dataclass parity: every method YAML key must be a real config field.
 
 Locks the deslop Wave 3 single-truth gate: silently-dropped keys (e.g. the
-removed ``context_len`` in ppo/sac.yaml) fail here instead of drifting.
+removed ``n_obs_steps`` in ppo/sac.yaml) fail here instead of drifting.
 """
 
 import dataclasses
@@ -9,16 +9,16 @@ from pathlib import Path
 
 import yaml
 
-from mfpo.config import MFPOConfig, PPOConfig, SACConfig
+from sjfpo.config import SJFPOConfig, PPOConfig, SACConfig
 
 CASES = [
-    ("configs/mfpo.yaml", MFPOConfig),
+    ("configs/sjfpo.yaml", SJFPOConfig),
     ("configs/ppo.yaml", PPOConfig),
     ("configs/sac.yaml", SACConfig),
 ]
 
 
-def _load(name: str) -> dict:
+def load(name: str) -> dict:
     path = Path(__file__).resolve().parents[1] / name
     with open(path, encoding="utf-8") as fh:
         return yaml.safe_load(fh) or {}
@@ -27,5 +27,5 @@ def _load(name: str) -> dict:
 def test_yaml_keys_are_dataclass_fields():
     for name, cls in CASES:
         fields = {f.name for f in dataclasses.fields(cls)}
-        unknown = [k for k in _load(name) if k not in fields]
+        unknown = [k for k in load(name) if k not in fields]
         assert not unknown, f"{name} has keys no dataclass accepts: {unknown}"
