@@ -153,10 +153,10 @@ class TestTrainerGolden:
                     "action": torch.randn(cfg.chunk_size, act_dim) * 0.5,
                     "next.action": torch.randn(cfg.chunk_size, act_dim) * 0.5,
                     "next.observation.state": torch.randn(cfg.n_obs_steps, obs_dim),
-                    "next.reward": torch.rand(cfg.n_action_steps),
+                    "next.reward": torch.rand(8),
                     "next.done": torch.tensor(False),
                     "next.truncated": torch.tensor(False),
-                    "n_action_steps": torch.tensor(cfg.n_action_steps),
+                    "n_action_steps": torch.tensor(8),
                     "clip_count": torch.tensor(0),
                 }
             )
