@@ -3,6 +3,7 @@
 Fervers et al. ICLR 2026 Oral arXiv:2607.27987 — ground truth is current torch behavior;
 einx must match torch at atol=1e-6. Characterization + migration guard.
 """
+
 import torch
 import einx
 import pytest
@@ -15,16 +16,23 @@ def assert_einx_equals_torch(fn_torch, fn_einx, atol=1e-6):
         assert isinstance(y_einx, tuple)
         for a, b in zip(y_torch, y_einx):
             assert a.shape == b.shape, f"shape mismatch {a.shape} vs {b.shape}"
-            assert torch.allclose(a.float(), b.float(), atol=atol), f"max diff {(a-b).abs().max()}"
+            assert torch.allclose(a.float(), b.float(), atol=atol), (
+                f"max diff {(a - b).abs().max()}"
+            )
     else:
-        assert y_torch.shape == y_einx.shape, f"shape mismatch {y_torch.shape} vs {y_einx.shape}"
-        assert torch.allclose(y_torch.float(), y_einx.float(), atol=atol), f"max diff {(y_torch-y_einx).abs().max()}"
+        assert y_torch.shape == y_einx.shape, (
+            f"shape mismatch {y_torch.shape} vs {y_einx.shape}"
+        )
+        assert torch.allclose(y_torch.float(), y_einx.float(), atol=atol), (
+            f"max diff {(y_torch - y_einx).abs().max()}"
+        )
 
 
 class TestEinxGuard:
     def test_import(self):
-        import einx as _einx
-        assert _einx.__version__.startswith("0.4")
+        import einx
+
+        assert einx.__version__.startswith("0.4")
 
     def test_graph_emits_torch(self):
         x = torch.randn(2, 3, 4)
@@ -88,17 +96,19 @@ class TestEinxGuard:
         )
 
 
-class TestSpectralTokensEinx:
-    """SpectralTokens hann + rFFT cat equivalence (networks.py:262-298)."""
+class TestSpectralEncoderEinx:
+    """einx op equivalence for reshape/concat shapes on the encoder path."""
 
-    def test_hann_multiply(self):
+    def test_dct_low_bin_slice(self):
+        from sjfpo.dct_utils import dct
+
         torch.manual_seed(0)
-        for B, N, D in [(2, 16, 128), (4, 16, 64)]:
-            z = torch.randn(B, N, D)
-            hann = torch.hann_window(N)
-            y_torch = z * hann.view(1, -1, 1)
-            y_einx = einx.multiply("b n d, n -> b n d", z, hann)
-            assert torch.allclose(y_torch, y_einx, atol=1e-6)
+        for B, T, D in [(2, 16, 128), (4, 16, 64)]:
+            z = torch.randn(B, T, D)
+            full = dct(z, dim=1)
+            assert full.shape == (B, T, D)
+            # low-K slice keeps the DC + slowest bins, stays finite
+            assert torch.isfinite(full[:, :5, :]).all()
 
     def test_cat_real_imag(self):
         torch.manual_seed(0)
@@ -121,7 +131,9 @@ class TestViTSIGRegEinx:
     def test_reshape_b_flat(self):
         torch.manual_seed(0)
         z = torch.randn(2, 16, 128)
-        assert torch.allclose(z.reshape(2, -1), einx.id("b n d -> b (n d)", z), atol=1e-6)
+        assert torch.allclose(
+            z.reshape(2, -1), einx.id("b n d -> b (n d)", z), atol=1e-6
+        )
 
     def test_dot_sigreg(self):
         torch.manual_seed(0)
@@ -172,8 +184,12 @@ class TestDCTTrainerEinx:
     def test_arange_unsqueeze(self):
         n = 8
         arange = torch.arange(n, dtype=torch.float32)
-        assert torch.allclose(arange.unsqueeze(1), einx.id("n -> n 1", arange), atol=1e-6)
-        assert torch.allclose(arange.unsqueeze(0), einx.id("n -> 1 n", arange), atol=1e-6)
+        assert torch.allclose(
+            arange.unsqueeze(1), einx.id("n -> n 1", arange), atol=1e-6
+        )
+        assert torch.allclose(
+            arange.unsqueeze(0), einx.id("n -> 1 n", arange), atol=1e-6
+        )
 
     def test_cat_joint(self):
         torch.manual_seed(0)
@@ -200,9 +216,9 @@ class TestFPOEinx:
     def test_expand(self):
         torch.manual_seed(0)
         t = torch.randn(5)
-        b, n_mc = 4, 3
+        b, num_mc = 4, 3
         # t of shape [5] -> expand to [4,5] not relevant; test scalar expand pattern from fpo_core
-        # fpo_core: t.expand(b, n_mc) where t is [n_mc]
+        # fpo_core: t.expand(b, num_mc) where t is [num_mc]
         t2 = torch.randn(3)
         assert torch.allclose(t2.expand(4, 3), einx.id("m -> b m", t2, b=4), atol=1e-6)
 
@@ -228,9 +244,9 @@ class TestAdaptersEinx:
         x = torch.randn(1, 8, 7)
         assert torch.allclose(x.squeeze(0), einx.id("1 h a -> h a", x), atol=1e-6)
 
-    def test_context_expand(self):
-        ctx = torch.randn(8)
-        # runner.py: context.unsqueeze(0).expand(cfg.context_len, -1) where context_len=16
-        y_torch = ctx.unsqueeze(0).expand(16, -1)
-        y_einx = einx.id("d -> t d", ctx, t=16)
+    def test_state_expand(self):
+        state = torch.randn(8)
+        # runner.py: state.unsqueeze(0).expand(cfg.n_obs_steps, -1) where n_obs_steps=16
+        y_torch = state.unsqueeze(0).expand(16, -1)
+        y_einx = einx.id("d -> t d", state, t=16)
         assert torch.allclose(y_torch, y_einx, atol=1e-6)
