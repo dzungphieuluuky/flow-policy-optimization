@@ -118,20 +118,14 @@ class TestTrainerGolden:
 
         obs_dim, act_dim = 17, 4
         cfg = SJFPOConfig(num_mc_samples=2)
-        policy_state_encoder = StateEncoder(
-            obs_dim, n_obs_steps=cfg.n_obs_steps, hidden_size=cfg.hidden_size
-        )
-        policy_head = SJFOPolicyModel(act_dim, hidden_size=cfg.hidden_size)
+        policy_head = SJFOPolicyModel(act_dim, obs_dim, hidden_size=cfg.hidden_size)
         critic = Critic(hidden_size=cfg.hidden_size, act_dim=act_dim)
-        spectral = SpectralEncoder(
-            hidden_size=cfg.hidden_size, n_obs_steps=cfg.n_obs_steps
-        )
+        spectral = SpectralEncoder(obs_dim, n_obs_steps=cfg.n_obs_steps)
         critic_state_encoder = StateEncoder(
             obs_dim, n_obs_steps=cfg.n_obs_steps, hidden_size=cfg.hidden_size
         )
         return (
             SJFPOTrainer(
-                policy_state_encoder=policy_state_encoder,
                 policy_head=policy_head,
                 critic=critic,
                 spectral=spectral,
@@ -187,10 +181,11 @@ class TestTrainerGolden:
         torch.manual_seed(1)
         actions = (torch.randn(4, cfg.chunk_size, act_dim) * 0.5).to(dev)
         states = torch.randn(4, cfg.n_obs_steps, obs_dim).to(dev)
-        z = trainer.policy_state_encoder(states)
-        cond = trainer.spectral(z)
+        cond = trainer.spectral(states)
+        n_coeffs = max(1, round(cfg.top_p_spectral_tokens * cfg.chunk_size))
         ll = trainer.compute_log_likelihood(
-            actions, z, cond, act_dim=act_dim, chunk_size=cfg.chunk_size
+            actions[:, :n_coeffs, :], cond, states, act_dim=act_dim,
+            n_coeffs=n_coeffs,
         )
         assert ll.shape == (4, cfg.num_mc_samples)
         assert torch.isfinite(ll).all()
