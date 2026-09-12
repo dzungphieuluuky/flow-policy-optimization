@@ -27,6 +27,7 @@ from sjfpo import config  # noqa: E402
 
 STATE_T = config.SJFPO_CFG.n_obs_steps  # 16
 ZD = config.SJFPO_CFG.hidden_size  # 128
+OBS = 11  # raw obs dim feeding SpectralEncoder (env-like)
 KS = max(1, round(config.SJFPO_CFG.top_p_spectral_tokens * STATE_T))  # 5
 CHUNK = config.SJFPO_CFG.chunk_size  # 16
 
@@ -163,9 +164,9 @@ def test_sigreg_gradients_flow():
 def make_pinned_spectral(nets):
     """Two fresh constructions under manual_seed(0); bitwise-equal weights."""
     torch.manual_seed(0)
-    st_a = nets.SpectralEncoder()
+    st_a = nets.SpectralEncoder(OBS)
     torch.manual_seed(0)
-    st_b = nets.SpectralEncoder()
+    st_b = nets.SpectralEncoder(OBS)
     # determinism precondition: bitwise-equal state between constructions
     for (ka, va), (kb, vb) in zip(st_a.state_dict().items(), st_b.state_dict().items()):
         assert ka == kb
@@ -175,7 +176,8 @@ def make_pinned_spectral(nets):
 
 def pinned_input():
     return (
-        torch.arange(STATE_T * ZD, dtype=torch.float32).reshape(1, STATE_T, ZD) / 2048.0
+        torch.arange(STATE_T * OBS, dtype=torch.float32).reshape(1, STATE_T, OBS)
+        / 2048.0
     )
 
 
@@ -185,21 +187,21 @@ def test_spectral_encoder_batch_invariance():
     inp = pinned_input()
 
     tokens_b1 = st_a(inp)
-    assert tokens_b1.shape == (1, KS, 64)  # spectral_dim=64 after projector
+    assert tokens_b1.shape == (1, KS, OBS)  # raw bins, last dim == obs
     assert tokens_b1.dtype == torch.float32
 
     # identical input, repeated call -> bitwise identical output
     assert torch.equal(st_a(inp), tokens_b1)
 
     tokens_b32 = st_a(inp.repeat(32, 1, 1))
-    assert tokens_b32.shape == (32, KS, 64)  # spectral_dim=64 after projector
+    assert tokens_b32.shape == (32, KS, OBS)  # raw bins, last dim == obs
     # cross-batch equality is allclose@1e-6, not bitwise (matmul kernels
     # may vary by batch size)
     assert torch.allclose(tokens_b1, tokens_b32[0], atol=1e-6) is True
 
     # huge outlier row prepended: rows are independent (no batch statistics),
     # so unchanged rows are unchanged within 1e-6
-    outlier_batch = torch.cat([torch.full((1, STATE_T, ZD), 1.0e4), inp], dim=0)
+    outlier_batch = torch.cat([torch.full((1, STATE_T, OBS), 1.0e4), inp], dim=0)
     tokens_out = st_a(outlier_batch)
     assert torch.allclose(tokens_out[1], tokens_b1[0], atol=1e-6)
 
@@ -212,17 +214,18 @@ def test_spectral_encoder_deterministic_across_instances():
 
 
 def test_spectral_encoder_raw_dct_path():
-    """Forward equals manual DCT-II → low-K slice → projector (order lock)."""
+    """Forward equals manual DCT-II → low-K slice, no projector (order lock)."""
     from sjfpo.dct_utils import dct
 
     nets = make_nets()
     torch.manual_seed(3)
-    st = nets.SpectralEncoder()
-    sample = torch.randn(4, STATE_T, ZD)
+    st = nets.SpectralEncoder(OBS)
+    assert list(st.parameters()) == []  # parameter-free
+    sample = torch.randn(4, STATE_T, OBS)
     out = st(sample)
-    assert out.shape == (4, KS, 64)  # spectral_dim=64 after projector
+    assert out.shape == (4, KS, OBS)  # raw bins, last dim == obs
     assert torch.isfinite(out).all()
-    ref = st.projector(dct(sample, dim=1)[:, :KS, :])
+    ref = dct(sample, dim=1)[:, :KS, :]
     assert torch.allclose(out, ref, atol=1e-6)
 
 
@@ -255,11 +258,11 @@ def test_get_timestep_embedding_sin_cos_values():
 def test_policy_flow_head_shape_scalar_t():
     nets = make_nets()
     torch.manual_seed(11)
-    policy = nets.SJFOPolicyModel(action_dim=7)
+    policy = nets.SJFOPolicyModel(action_dim=7, obs_dim=OBS)
     assert next(policy.parameters()).dtype == torch.float32
     x_t = torch.randn(32, CHUNK, 7)  # DCT-coefficient space per Scope
-    cond = torch.randn(32, KS, 64)  # live spectral tokens [B, K, spectral_dim]
-    v = policy(x_t, 0.37, cond)
+    cond = torch.randn(32, KS, OBS)  # raw spectral tokens [B, K, obs]
+    v = policy(x_t, 0.37, cond, torch.randn(32, STATE_T, OBS))
     assert v.shape == (32, CHUNK, 7)
     assert torch.isfinite(v).all()
 
@@ -267,11 +270,11 @@ def test_policy_flow_head_shape_scalar_t():
 def test_policy_flow_head_tensor_t_and_grad():
     nets = make_nets()
     torch.manual_seed(12)
-    policy = nets.SJFOPolicyModel(action_dim=3)
+    policy = nets.SJFOPolicyModel(action_dim=3, obs_dim=OBS)
     x_t = torch.randn(8, CHUNK, 3)
     t = torch.rand(8)
-    cond = torch.randn(8, KS, 64)  # live spectral tokens [B, K, spectral_dim]
-    v = policy(x_t, t, cond)
+    cond = torch.randn(8, KS, OBS)  # raw spectral tokens [B, K, obs]
+    v = policy(x_t, t, cond, torch.randn(8, STATE_T, OBS))
     assert v.shape == (8, CHUNK, 3)
     v.sum().backward()
     assert all(
@@ -280,13 +283,12 @@ def test_policy_flow_head_tensor_t_and_grad():
 
 
 def test_policy_flow_head_cond_from_spectral():
-    """Plan: cond from SpectralEncoder outputs [B, K, spectral_dim=64]."""
+    """Plan: cond from SpectralEncoder outputs [B, K, obs] raw bins."""
     nets = make_nets()
     torch.manual_seed(18)
-    spectral_dim = 64
-    policy = nets.SJFOPolicyModel(action_dim=7)
-    fft = torch.randn(8, KS, spectral_dim)
-    v = policy(torch.randn(8, CHUNK, 7), 0.5, fft)
+    policy = nets.SJFOPolicyModel(action_dim=7, obs_dim=OBS)
+    fft = torch.randn(8, KS, OBS)
+    v = policy(torch.randn(8, CHUNK, 7), 0.5, fft, torch.randn(8, STATE_T, OBS))
     assert v.shape == (8, CHUNK, 7)
     v.sum().backward()
     assert all(
@@ -317,8 +319,11 @@ def test_dit_timestep_embedding_finite_256():
 def test_policy_dit_zero_velocity_at_init():
     nets = make_nets()
     torch.manual_seed(20)
-    policy = nets.SJFOPolicyModel(action_dim=3)
-    v = policy(torch.randn(4, CHUNK, 3), 0.5, torch.randn(4, KS, 64))
+    policy = nets.SJFOPolicyModel(action_dim=3, obs_dim=OBS)
+    v = policy(
+        torch.randn(4, CHUNK, 3), 0.5, torch.randn(4, KS, OBS),
+        torch.randn(4, STATE_T, OBS),
+    )
     assert v.shape == (4, CHUNK, 3)
     assert torch.isfinite(v).all()
     assert float(v.abs().mean()) == pytest.approx(0.0, abs=1e-5)
@@ -366,6 +371,18 @@ def test_value_critic_follows_next_action():
     v2 = vc(z, torch.ones(8, CHUNK, 3))
     assert not torch.equal(v1, v2)
 
+
+def test_value_critic_action_order_sensitive():
+    """Flipped action order changes V (action PE lock: mean would hide it)."""
+    nets = make_nets()
+    torch.manual_seed(15)
+    vc = nets.Critic(act_dim=3)
+    z = torch.randn(4, STATE_T, ZD)
+    a = torch.randn(4, CHUNK, 3)
+    v1 = vc(z, a)
+    v2 = vc(z, a.flip(dims=(1,)))
+    assert not torch.allclose(v1, v2, atol=1e-6)
+
     # ---------------------------------------------------------------------------
     # global hygiene: fp32-only, no BatchNorm / Dropout
     # ---------------------------------------------------------------------------
@@ -376,8 +393,8 @@ def test_no_batchnorm_no_dropout_fp32_everywhere():
     torch.manual_seed(17)
     modules = [
         nets.StateEncoder(obs_dim=9),
-        nets.SpectralEncoder(),
-        nets.SJFOPolicyModel(action_dim=7),
+        nets.SpectralEncoder(obs_dim=9),
+        nets.SJFOPolicyModel(action_dim=7, obs_dim=9),
         nets.Critic(act_dim=7),
     ]
     for mod in modules:
@@ -393,8 +410,63 @@ def test_no_batchnorm_no_dropout_fp32_everywhere():
 
 def test_spectral_encoder_top_p_token_count():
     nets = make_nets()
-    assert nets.SpectralEncoder().k == 5  # round(0.3 * 16)
-    assert nets.SpectralEncoder(top_p_spectral_tokens=1.0).k == 16
-    assert nets.SpectralEncoder(top_p_spectral_tokens=0.01).k == 1
-    out = nets.SpectralEncoder(top_p_spectral_tokens=0.5)(torch.randn(2, STATE_T, ZD))
-    assert out.shape == (2, 8, 64)  # round(0.5 * 16)
+    assert nets.SpectralEncoder(OBS).k == 5  # round(0.3 * 16)
+    assert nets.SpectralEncoder(OBS, top_p_spectral_tokens=1.0).k == 16
+    assert nets.SpectralEncoder(OBS, top_p_spectral_tokens=0.01).k == 1
+    out = nets.SpectralEncoder(OBS, top_p_spectral_tokens=0.5)(
+        torch.randn(2, STATE_T, OBS)
+    )
+    assert out.shape == (2, 8, OBS)  # round(0.5 * 16)
+
+
+def test_state_encoder_position_sensitive():
+    """Identical frames still map to distinct latents per position (PE lock)."""
+    nets = make_nets()
+    torch.manual_seed(2)
+    trunk = nets.StateEncoder(obs_dim=6)
+    x = torch.ones(2, STATE_T, 6)  # no order info in the input itself
+    z = trunk(x)
+    assert not torch.allclose(z[:, 0, :], z[:, 1, :], atol=1e-6)
+
+
+def test_sinusoidal_positional_encoding_shape():
+    nets = make_nets()
+    pe = nets.sinusoidal_positional_encoding(STATE_T, ZD, torch.device("cpu"))
+    assert pe.shape == (STATE_T, ZD)
+    assert torch.isfinite(pe).all()
+    assert not torch.allclose(pe[0], pe[1])  # positions differ
+
+
+def test_policy_reads_raw_state_prefix():
+    """DiT output changes with the raw state window (prefix-token lock)."""
+    nets = make_nets()
+    torch.manual_seed(30)
+    policy = nets.SJFOPolicyModel(action_dim=3, obs_dim=OBS)
+    # Wake the zero-init (adaLN gates + final out) so inputs matter.
+    with torch.no_grad():
+        for blk in policy.blocks:
+            blk.adaLN.down.weight.normal_(std=0.1)
+        policy.out.weight.normal_(std=0.1)
+    x_t = torch.randn(4, CHUNK, 3)
+    cond = torch.randn(4, KS, OBS)
+    s1 = torch.randn(4, STATE_T, OBS)
+    v1 = policy(x_t, 0.5, cond, s1)
+    assert v1.shape == (4, CHUNK, 3)  # only action positions read out
+    v2 = policy(x_t, 0.5, cond, torch.randn(4, STATE_T, OBS))
+    assert not torch.allclose(v1, v2, atol=1e-6)
+
+
+def test_policy_forward_truncated_coeff_space():
+    """DiT denoises Ka=top-p rows; zero-pad restores full H (shape lock)."""
+    nets = make_nets()
+    torch.manual_seed(31)
+    policy = nets.SJFOPolicyModel(action_dim=3, obs_dim=OBS)
+    ka = max(1, round(0.3 * CHUNK))  # 5
+    v = policy(
+        torch.randn(4, ka, 3), 0.5, torch.randn(4, ka, OBS),
+        torch.randn(4, STATE_T, OBS),
+    )
+    assert v.shape == (4, ka, 3)
+    padded = torch.nn.functional.pad(v, (0, 0, 0, CHUNK - ka))
+    assert padded.shape == (4, CHUNK, 3)
+    assert (padded[:, ka:, :] == 0).all()  # missing bins are exactly zero
