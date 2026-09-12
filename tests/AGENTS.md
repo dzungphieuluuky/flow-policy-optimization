@@ -33,7 +33,7 @@ resume_worker.py           subprocess worker for checkpoint resume determinism
 - Pipeline lock: `test_pipeline_cpu.py` (CSV schema, 45/TINY cardinality, wandb default-on/disabled)
 - Parity locks: `test_einx_migration.py`, `test_config_yaml_parity.py`, `test_dct.py` (denormalize atol 1e-6)
 - Transition lock: `test_transition_v4.py` (exact 9-key set incl. next.action, `n_action_steps == len(next.reward)`, bool dtypes, chunk continuity, next.action chaining)
-- Horizon guards: `test_collector.py` NEVER-hardcodes n_obs_steps/chunk_size/n_action_steps (uses `SJFPO_CFG`)
+- Horizon guards: `test_collector.py` NEVER-hardcodes n_obs_steps/chunk_size (uses `SJFPO_CFG`); executed steps are caller-passed (`N_STEPS = 8` local)
 - Reload-pattern tests: `test_config.py` (SJFPO_TINY_MATRIX swap), `test_pipeline_cpu.py` (tiny reload)
 - Characterization guards: `test_todo3_characterization.py`, `test_todo4_characterization.py` (pre-refactor pins)
 
