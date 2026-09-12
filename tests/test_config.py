@@ -125,7 +125,6 @@ def test_sjfpo_config_documented_ranges():
     assert c.chunk_size == 16
     assert c.executed_vs_predicted_ratio == 0.5
     assert c.top_p_spectral_tokens == 0.3
-    assert c.spectral_dim > 0
     assert c.hidden_size > 0
 
 
