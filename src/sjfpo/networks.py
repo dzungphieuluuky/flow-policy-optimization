@@ -1,6 +1,6 @@
 """Networks: state trunk, SigReg, spectral tokens, flow heads, critic.
 
-Plan tasks 3-7. All modules are fp32-only, use SiLU activations, and contain no
+Plan tasks 3-7. All modules are fp32-only, use SwiGLU activations, and contain no
 BatchNorm / Dropout(p>0) / batch-statistics normalization in inference paths.
 CELLORDER: 5
 
@@ -24,13 +24,42 @@ it does not affect forward-pass logic in this module.
 from __future__ import annotations
 
 import math
-import warnings
 
 import torch
 from torch import nn
 
 from sjfpo import config
 from sjfpo.dct_utils import dct
+
+
+class SwiGLU(nn.Module):
+    """Gated SiLU feedforward: down(silu(gate(x)) * up(x)).
+
+    Drop-in for ``Sequential(Linear(in_dim, hidden_dim), SiLU,
+    Linear(hidden_dim, out_dim))`` with the same (in, hidden, out) widths.
+
+    Args:
+        in_dim: Input dimension.
+        hidden_dim: Gated intermediate dimension.
+        out_dim: Output dimension.
+    """
+
+    def __init__(self, in_dim: int, hidden_dim: int, out_dim: int):
+        super().__init__()
+        self.gate = nn.Linear(in_dim, hidden_dim)
+        self.up = nn.Linear(in_dim, hidden_dim)
+        self.down = nn.Linear(hidden_dim, out_dim)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward pass.
+
+        Args:
+            x: Input tensor of shape [..., in_dim].
+
+        Returns:
+            Tensor of shape [..., out_dim].
+        """
+        return self.down(nn.functional.silu(self.gate(x)) * self.up(x))
 
 
 def resolve_config_value(name: str, override):
@@ -76,19 +105,18 @@ def get_timestep_embedding(t, dim: int = 8) -> torch.Tensor:
     return torch.cat([ang.sin(), ang.cos()], dim=-1)  # [..., dim]
 
     # %% [markdown]
-    # ## StateEncoder — 16 stacked obs frames -> per-frame encoder -> attention
-    # fusion -> latent sequence Z[B, T, hidden_size]. Vision DiT dropped per user
-    # decision D2: single proprio-style modality, so "cross-attn fusion" is a
-    # residual self-attention block over the frame-token sequence.
+    # ## StateEncoder — frame projection -> two pre-norm residual blocks
+    # (attention + SwiGLU, norm before every sublayer) -> Z[B, T, hidden_size].
 
     # %%
 
 
 class StateEncoder(nn.Module):
-    """State trunk: stacked observation frames -> per-frame encoder -> attention fusion.
+    """State encoder: frame projection + two pre-norm residual blocks.
 
-    Maps a sequence of stacked frames to a latent sequence via a frame-wise encoder
-    followed by a residual self-attention block.
+    Maps stacked frames to a latent sequence: a linear per-frame projection,
+    then two blocks of split residuals (attention and SwiGLU each under
+    their own residual, RMSNorm before every sublayer).
 
     Args:
         obs_dim: Input observation dimension per frame.
@@ -97,8 +125,11 @@ class StateEncoder(nn.Module):
         n_heads: Number of attention heads. Default 4.
 
     Attributes:
-        frame_enc: Sequential(Linear(obs_dim -> hidden_size), SiLU()).
-        fusion: MultiheadAttention(hidden_size, n_heads, batch_first=True).
+        frame_proj: Linear(obs_dim -> hidden_size).
+        norm1/norm3: RMSNorm before each attention block.
+        attn1/attn2: MultiheadAttention(hidden_size, n_heads, batch_first=True).
+        norm2/norm4: RMSNorm before each SwiGLU block.
+        swiglu1/swiglu2: SwiGLU(hidden_size -> hidden_size -> hidden_size).
     """
 
     def __init__(
@@ -111,8 +142,15 @@ class StateEncoder(nn.Module):
         super().__init__()
         n_obs_steps = resolve_config_value("n_obs_steps", n_obs_steps)
         hidden_size = resolve_config_value("hidden_size", hidden_size)
-        self.frame_enc = nn.Sequential(nn.Linear(obs_dim, hidden_size), nn.SiLU())
-        self.fusion = nn.MultiheadAttention(hidden_size, n_heads, batch_first=True)
+        self.frame_proj = nn.Linear(obs_dim, hidden_size)
+        self.norm1 = nn.RMSNorm(hidden_size, eps=1e-6)
+        self.attn1 = nn.MultiheadAttention(hidden_size, n_heads, batch_first=True)
+        self.norm2 = nn.RMSNorm(hidden_size, eps=1e-6)
+        self.swiglu1 = SwiGLU(hidden_size, hidden_size, hidden_size)
+        self.norm3 = nn.RMSNorm(hidden_size, eps=1e-6)
+        self.attn2 = nn.MultiheadAttention(hidden_size, n_heads, batch_first=True)
+        self.norm4 = nn.RMSNorm(hidden_size, eps=1e-6)
+        self.swiglu2 = SwiGLU(hidden_size, hidden_size, hidden_size)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass.
@@ -123,9 +161,16 @@ class StateEncoder(nn.Module):
         Returns:
             Z: Latent sequence of shape [B, T, hidden_size].
         """
-        h = self.frame_enc(x)  # [B, T, hidden_size]
-        attn, _ = self.fusion(h, h, h)  # [B, T, hidden_size]
-        return nn.functional.silu(h + attn)  # [B, T, hidden_size]
+        h = self.frame_proj(x)  # [B, T, hidden_size]
+        n = self.norm1(h)  # [B, T, hidden_size]
+        attn, _ = self.attn1(n, n, n)  # [B, T, hidden_size]
+        h = h + attn  # [B, T, hidden_size]
+        h = h + self.swiglu1(self.norm2(h))  # [B, T, hidden_size]
+        n = self.norm3(h)  # [B, T, hidden_size]
+        attn, _ = self.attn2(n, n, n)  # [B, T, hidden_size]
+        h = h + attn  # [B, T, hidden_size]
+        h = h + self.swiglu2(self.norm4(h))  # [B, T, hidden_size]
+        return h
 
         # %% [markdown]
         # ## SIGReg — Sketched Isotropic Gaussian Regularizer (Epps-Pulley, LeWorldModel)
@@ -134,8 +179,10 @@ class StateEncoder(nn.Module):
         # projections of Z toward the N(0,1) target CF phi(t)=exp(-t^2/2), via
         # trapezoidal quadrature on [0,3].  Replicates the official implementation from
         # lucas-maes/le-wm (arXiv 2603.19312, Algorithm 1).
-
+        #
         # Module-level quadrature nodes / weights for the default knots=17 (cached once).
+        #
+        #
 
 
 DEFAULT_KNOTS = 17
@@ -222,30 +269,25 @@ def sigreg_loss(
     return statistic.mean()
 
     # %% [markdown]
-    # ## SpectralEncoder — DCT-II low-K tokens with FROZEN stats
+    # ## SpectralEncoder — raw DCT-II low-K tokens, no normalization
     #
-    # Early design computed per-batch z-scored FFT tokens; frozen statistics
-    # replaced the batch statistics. Frozen mu/std live in
-    # Z-space ([hidden_size], matching the plan's `set_frozen_stats(zeros(128),
-    # ones(128))`): inputs are z-scored with the frozen stats BEFORE windowing,
-    # and the drift guard compares the raw batch-mean against them under no_grad.
-    # forward raises RuntimeError('frozen stats not initialized') until stats are
-    # set via set_frozen_stats(mu, std) or captured once via capture_stats(sample).
+    # Orthonormal DCT preserves energy (Parseval), so raw coefficients go
+    # straight to the projector; the encoder co-adapts end-to-end. No frozen
+    # stats, no calibration, no drift guard.
 
     # %%
 
 
 class SpectralEncoder(nn.Module):
-    """DCT-II spectral encoder with FROZEN norm + learnable projector.
+    """DCT-II spectral encoder: raw low-K bins + learnable projector.
 
     Transform convention (repo-wide): observation.state and action use the
     orthonormal DCT-II (dct_utils.dct); the real FFT (torch.fft.rfft) is
     reserved for observation.image (vision path, absent in this MuJoCo-only
-    build). DCT needs no window: its even extension handles boundaries, so
-    unlike the old Hann+rFFT path there is no taper buffer here.
+    build).
 
     Order of operations:
-        Z → DCT-II(dim=1) → keep K low bins → frozen norm → Linear(D→spectral_dim)
+        Z → DCT-II(dim=1) → keep K low bins → Linear(D→spectral_dim)
 
     Args:
         hidden_size: Latent dimension hidden_size (default from config.SJFPO_CFG.hidden_size).
@@ -255,14 +297,7 @@ class SpectralEncoder(nn.Module):
     Attributes:
         hidden_size: Latent dimension D.
         k: Effective K = min(num_spectral_tokens, n_obs_steps).
-        frozen_mu: Frozen mean buffer of shape [hidden_size].
-        frozen_std: Frozen std buffer of shape [hidden_size].
-        has_stats: Boolean flag indicating if frozen stats are initialized.
         projector: Linear(hidden_size -> spectral_dim).
-
-    Raises:
-        RuntimeError: If forward() called before frozen stats are initialized via
-            set_frozen_stats() or capture_stats().
     """
 
     def __init__(
@@ -272,54 +307,15 @@ class SpectralEncoder(nn.Module):
         n_obs_steps: int | None = None,
     ):
         super().__init__()
-        hidden_size = int(resolve_config_value("hidden_size", hidden_size))
-        num_spectral_tokens = int(
-            resolve_config_value("num_spectral_tokens", num_spectral_tokens)
-        )
-        n_obs_steps = int(resolve_config_value("n_obs_steps", n_obs_steps))
-        self.hidden_size = hidden_size
-        self.k = min(num_spectral_tokens, n_obs_steps)  # DCT-II yields T bins
-        self.register_buffer("frozen_mu", torch.zeros(hidden_size))  # [D]
-        self.register_buffer("frozen_std", torch.ones(hidden_size))  # [D]
-        self.has_stats = False
+        self.hidden_size = int(resolve_config_value("hidden_size", hidden_size))
+        self.k = min(
+            int(resolve_config_value("num_spectral_tokens", num_spectral_tokens)),
+            int(resolve_config_value("n_obs_steps", n_obs_steps)),
+        )  # DCT-II yields T bins
         spectral_dim = int(config.SJFPO_CFG.spectral_dim)
-        self.projector = nn.Linear(hidden_size, spectral_dim)  # [D -> spectral_dim]
-
-    def set_frozen_stats(self, mu: torch.Tensor, std: torch.Tensor) -> None:
-        """Set frozen normalization statistics.
-
-        Args:
-            mu: Mean tensor of shape [hidden_size].
-            std: Std tensor of shape [hidden_size], clamped to min 1e-4.
-
-        Raises:
-            ValueError: If mu or std have incorrect shape.
-        """
-        if mu.shape != (self.hidden_size,) or std.shape != (self.hidden_size,):
-            raise ValueError(
-                f"frozen stats must have shape ({self.hidden_size},), "
-                f"got {tuple(mu.shape)} / {tuple(std.shape)}"
-            )
-        with torch.no_grad():
-            self.frozen_mu.copy_(mu.detach().to(torch.float32))  # [D]
-            self.frozen_std.copy_(std.detach().to(torch.float32).clamp_min(1e-4))  # [D]
-        self.has_stats = True
-
-    def capture_stats(self, z_sample: torch.Tensor) -> None:
-        """Capture frozen stats ONCE from a representative Z sample.
-
-        Stats are computed in DCT space so they reflect the actual encoder
-        feature distribution, not the raw Z-space distribution.
-
-        Args:
-            z_sample: Sample tensor of shape [B, T, hidden_size].
-        """
-        with torch.no_grad():
-            feat = dct(z_sample.detach(), dim=1)  # [B, T, D] DCT-II over time
-            flat = feat.reshape(-1, self.hidden_size)  # [B*T, D]
-            mu = flat.mean(dim=0)  # [D]
-            std = flat.std(dim=0).clamp_min(1e-4)  # [D]
-        self.set_frozen_stats(mu, std)
+        self.projector = nn.Linear(
+            self.hidden_size, spectral_dim
+        )  # [D -> spectral_dim]
 
     def forward(self, z: torch.Tensor) -> torch.Tensor:
         """Forward pass: Z -> spectral tokens.
@@ -329,21 +325,8 @@ class SpectralEncoder(nn.Module):
 
         Returns:
             tokens: Spectral tokens of shape [B, K, spectral_dim].
-
-        Raises:
-            RuntimeError: If frozen stats not initialized.
         """
-        if not self.has_stats:
-            raise RuntimeError("frozen stats not initialized")
-        with torch.no_grad():
-            feat_raw = dct(z, dim=1)  # [B, T, D] DCT-II over time
-            drift = (
-                feat_raw.reshape(-1, self.hidden_size).mean(dim=0) - self.frozen_mu
-            )  # [D]
-            if bool((drift.abs() > 3 * self.frozen_std).any()):
-                warnings.warn("spectral stats drift", UserWarning, stacklevel=2)
         feat = dct(z, dim=1)  # [B, T, D] DCT-II over time
-        feat = (feat - self.frozen_mu) / self.frozen_std  # [B, T, D]
         return self.projector(feat[:, : self.k, :])  # [B, K, spectral_dim]
 
         # %% [markdown]
@@ -402,14 +385,10 @@ class DiTBlock(nn.Module):
         self.attn = nn.MultiheadAttention(hidden_size, n_heads, batch_first=True)
         self.norm2 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
         mlp_hidden = int(hidden_size * mlp_ratio)
-        self.mlp = nn.Sequential(
-            nn.Linear(hidden_size, mlp_hidden),
-            nn.SiLU(),
-            nn.Linear(mlp_hidden, hidden_size),
-        )
-        self.adaLN = nn.Sequential(nn.SiLU(), nn.Linear(hidden_size, 6 * hidden_size))
-        nn.init.constant_(self.adaLN[-1].weight, 0.0)
-        nn.init.constant_(self.adaLN[-1].bias, 0.0)
+        self.mlp = SwiGLU(hidden_size, mlp_hidden, hidden_size)
+        self.adaLN = SwiGLU(hidden_size, hidden_size, 6 * hidden_size)
+        nn.init.constant_(self.adaLN.down.weight, 0.0)
+        nn.init.constant_(self.adaLN.down.bias, 0.0)
 
     def forward(self, x: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
         """Forward pass.
@@ -446,11 +425,7 @@ class CrossAttentionBlock(nn.Module):
         self.attn = nn.MultiheadAttention(hidden_size, n_heads, batch_first=True)
         self.norm_mlp = nn.RMSNorm(hidden_size)
         mlp_hidden = int(hidden_size * mlp_ratio)
-        self.mlp = nn.Sequential(
-            nn.Linear(hidden_size, mlp_hidden),
-            nn.SiLU(),
-            nn.Linear(mlp_hidden, hidden_size),
-        )
+        self.mlp = SwiGLU(hidden_size, mlp_hidden, hidden_size)
 
     def forward(self, x: torch.Tensor, kv: torch.Tensor) -> torch.Tensor:
         """Forward pass.
@@ -502,11 +477,7 @@ class SJFOPolicyModel(nn.Module):
         dit_time_dim = int(resolve_config_value("dit_time_dim", dit_time_dim))
         self.time_dim = dit_time_dim
         self.in_proj = nn.Linear(action_dim, hidden_size)
-        self.time_mlp = nn.Sequential(
-            nn.Linear(dit_time_dim, 4 * hidden_size),
-            nn.SiLU(),
-            nn.Linear(4 * hidden_size, hidden_size),
-        )
+        self.time_mlp = SwiGLU(dit_time_dim, 4 * hidden_size, hidden_size)
         self.cond_proj = nn.Linear(cond_dim, hidden_size)
         self.blocks = nn.ModuleList(
             DiTBlock(hidden_size, dit_heads, dit_mlp_ratio) for _ in range(dit_depth)
