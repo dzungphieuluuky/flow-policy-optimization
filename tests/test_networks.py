@@ -4,9 +4,9 @@ TDD: written BEFORE the implementation exists — the first pytest run must
 fail RED on the missing module, then go GREEN once networks.py lands.
 
 Conventions under test (binding, from the plan):
-- fp32 everywhere; SiLU activations; no BatchNorm / Dropout(p>0) anywhere.
-- SpectralEncoder uses FROZEN normalization stats (set_frozen_stats /
-  capture_stats), never batch statistics (Metis #7).
+- fp32 everywhere; SwiGLU activations; no BatchNorm / Dropout(p>0) anywhere.
+- SpectralEncoder needs no calibration: raw DCT low-K bins go straight to
+  the projector, never batch statistics (Metis #7).
 - sigreg_loss implements Epps-Pulley CF normality test on Z (single scalar).
 - Flow heads predict velocity in orthonormal-DCT coefficient space with
   8-dim sinusoidal time embedding cos/sin(t*2^k).
@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import math
 import sys
-import warnings
 from pathlib import Path
 
 import pytest
@@ -157,12 +156,12 @@ def test_sigreg_gradients_flow():
     assert z.grad is not None and torch.isfinite(z.grad).all()
 
     # ---------------------------------------------------------------------------
-    # SpectralEncoder — frozen stats, batch invariance, drift guard
+    # SpectralEncoder — raw DCT low-K bins, batch invariance, determinism
     # ---------------------------------------------------------------------------
 
 
 def make_pinned_spectral(nets):
-    """Two fresh constructions under manual_seed(0); bitwise-equal buffers."""
+    """Two fresh constructions under manual_seed(0); bitwise-equal weights."""
     torch.manual_seed(0)
     st_a = nets.SpectralEncoder()
     torch.manual_seed(0)
@@ -171,10 +170,6 @@ def make_pinned_spectral(nets):
     for (ka, va), (kb, vb) in zip(st_a.state_dict().items(), st_b.state_dict().items()):
         assert ka == kb
         assert torch.equal(va, vb)
-    mu = torch.zeros(ZD)
-    std = torch.ones(ZD)
-    st_a.set_frozen_stats(mu, std)
-    st_b.set_frozen_stats(mu, std)
     return st_a, st_b
 
 
@@ -184,7 +179,7 @@ def pinned_input():
     )
 
 
-def test_spectral_encoder_frozen_stats_batch_invariance():
+def test_spectral_encoder_batch_invariance():
     nets = make_nets()
     st_a, st_b = make_pinned_spectral(nets)
     inp = pinned_input()
@@ -202,10 +197,10 @@ def test_spectral_encoder_frozen_stats_batch_invariance():
     # may vary by batch size)
     assert torch.allclose(tokens_b1, tokens_b32[0], atol=1e-6) is True
 
-    # huge outlier row prepended: unchanged rows unchanged within 1e-6
+    # huge outlier row prepended: rows are independent (no batch statistics),
+    # so unchanged rows are unchanged within 1e-6
     outlier_batch = torch.cat([torch.full((1, STATE_T, ZD), 1.0e4), inp], dim=0)
-    with pytest.warns(UserWarning, match="spectral stats drift"):
-        tokens_out = st_a(outlier_batch)
+    tokens_out = st_a(outlier_batch)
     assert torch.allclose(tokens_out[1], tokens_b1[0], atol=1e-6)
 
 
@@ -216,54 +211,19 @@ def test_spectral_encoder_deterministic_across_instances():
     assert torch.equal(st_a(inp), st_b(inp))
 
 
-def test_spectral_encoder_drift_warning_and_clean_pass():
-    nets = make_nets()
-    st, _ = make_pinned_spectral(nets)
-    # small random base: DCT bins stay well within 3 frozen stds (the shared
-    # arange fixture is a ramp whose low DCT bins exceed the guard)
-    torch.manual_seed(0)
-    base = torch.randn(1, STATE_T, ZD) * 0.1
-
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        st(base)
-    drift_msgs = [w for w in caught if "spectral stats drift" in str(w.message)]
-    assert drift_msgs == []
-
-    # +20 shifts the DCT DC bin by ~80, i.e. ~5 per bin after the guard's
-    # batch×bin averaging — well above the 3-std drift threshold
-    shifted = base + 20.0
-    with pytest.warns(UserWarning, match="spectral stats drift"):
-        out = st(shifted)
-    assert out.shape == (1, KS, 64)  # spectral_dim=64 after projector
-
-
-def test_spectral_encoder_missing_stats_raises():
-    nets = make_nets()
-    st = nets.SpectralEncoder()
-    x = torch.randn(1, STATE_T, ZD) * 0.1
-    with pytest.raises(RuntimeError, match="frozen stats not initialized"):
-        st(x)
-
-
-def test_spectral_encoder_capture_stats_matches_set():
-    """capture_stats computes frozen stats from DCT-domain features (D wide)."""
+def test_spectral_encoder_raw_dct_path():
+    """Forward equals manual DCT-II → low-K slice → projector (order lock)."""
     from sjfpo.dct_utils import dct
 
     nets = make_nets()
     torch.manual_seed(3)
-    sample = torch.randn(64, STATE_T, ZD) * 0.1
-    st_cap = nets.SpectralEncoder()
-    st_cap.capture_stats(sample)
-    # Stats are captured from DCT-II features, not raw Z-space
-    feat = dct(sample, dim=1)  # [64, T, ZD]
-    ref_mu = feat.reshape(-1, ZD).mean(dim=0)
-    ref_std = feat.reshape(-1, ZD).std(dim=0).clamp_min(1e-4)
-    assert torch.allclose(st_cap.frozen_mu, ref_mu, atol=1e-5)
-    assert torch.allclose(st_cap.frozen_std, ref_std, atol=1e-5)
-    out = st_cap(sample[:4] * 0.1)
+    st = nets.SpectralEncoder()
+    sample = torch.randn(4, STATE_T, ZD)
+    out = st(sample)
     assert out.shape == (4, KS, 64)  # spectral_dim=64 after projector
     assert torch.isfinite(out).all()
+    ref = st.projector(dct(sample, dim=1)[:, :KS, :])
+    assert torch.allclose(out, ref, atol=1e-6)
 
 
 def test_spectral_encoder_nan_propagates_detectably():
