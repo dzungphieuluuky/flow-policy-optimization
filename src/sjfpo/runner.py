@@ -250,22 +250,6 @@ def create_run_policies(policy_state_encoder, policy_head, spectral, cfg):
     return train_policy, eval_wrapper  # evaluator calls eval_wrapper(obs)
 
 
-def capture_spectral_stats(env, policy_state_encoder, spectral, cfg, seed) -> None:
-    """Capture frozen spectral stats from a short rollout."""
-    dev = next(policy_state_encoder.parameters()).device
-    policy_state_encoder.eval()
-    with torch.no_grad():
-        obs, _ = env.reset(seed=seed)
-        frames = deque(maxlen=cfg.n_obs_steps)
-        first = torch.as_tensor(obs, dtype=torch.float32)
-        for _ in range(cfg.n_obs_steps):
-            frames.append(first.clone())
-        ctx = torch.stack(list(frames), dim=0).unsqueeze(0).to(dev)  # [1, T, obs]
-        z_sample = policy_state_encoder(ctx)  # [1, T, Z]
-    spectral.capture_stats(z_sample.squeeze(0))  # [T, Z]: 3D->2D squeeze
-    policy_state_encoder.train()
-
-
 def compute_divergence_baseline(evaluator, env, seed) -> float:
     """Run random-policy episodes to get R_rand for divergence gating."""
     rng_baseline = np.random.default_rng(seed)
@@ -529,9 +513,6 @@ def assemble_run_state(
     device = resolve_device()  # CUDA if available, else CPU (SJFPO_DEVICE overrides)
     parts = build_training_components(obs_dim, act_dim, cfg, device=device)
     print_training_modules(parts)
-    capture_spectral_stats(
-        env, parts["policy_state_encoder"], parts["spectral"], cfg, seed
-    )
     trainer = SJFPOTrainer(
         parts["policy_state_encoder"],
         parts["policy_head"],
