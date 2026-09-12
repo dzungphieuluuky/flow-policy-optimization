@@ -86,10 +86,12 @@ PROVENANCE_TABLE: list[tuple[str, str, str, str]] = [
 def build_mlp_layer(
     in_dim: int, hidden: tuple[int, ...], out_dim: int
 ) -> nn.Sequential:
+    from sjfpo.networks import SwiGLU
+
     layers: list[nn.Module] = []
     prev = in_dim
     for h in hidden:
-        layers.extend([nn.Linear(prev, h), nn.SiLU()])
+        layers.append(SwiGLU(prev, h, h))
         prev = h
     layers.append(nn.Linear(prev, out_dim))
     return nn.Sequential(*layers)
