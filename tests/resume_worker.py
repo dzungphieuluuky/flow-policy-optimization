@@ -5,7 +5,7 @@ Exact harness (plan todo 9b):
     python tests/resume_worker.py <snapshot_path> <out_json>
 
 Builds a fresh trainer-like bundle, loads the checkpoint produced by
-``mfpo.checkpointing.save_checkpoint`` into it (restoring module weights,
+``sjfpo.checkpointing.save_checkpoint`` into it (restoring module weights,
 optimizer states and every other manifest field), re-seeds the
 python/numpy/torch RNGs from the RESTORED bit-states recorded in the
 snapshot, replays env steps 50..69 of the shared scripted environment, and
@@ -30,7 +30,7 @@ import torch
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
-from mfpo.checkpointing import capture_env_fingerprint, load_checkpoint  # noqa: E402
+from sjfpo.checkpointing import capture_env_fingerprint, load_checkpoint  # noqa: E402
 
 
 def configure_determinism() -> None:
