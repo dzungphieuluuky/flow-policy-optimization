@@ -159,8 +159,12 @@ class SjfpoEvalWrapper:
                 self.policy_head,
                 self.cfg,
             )
-            # Push actions into buffer (reversed so popleft gives first action)
-            for i in range(actions.shape[0] - 1, -1, -1):
+            # Buffer only the executed prefix (reversed so popleft gives the
+            # first action); the predicted tail is discarded, replan next.
+            n_execute = max(
+                1, round(self.cfg.executed_vs_predicted_ratio * actions.shape[0])
+            )
+            for i in range(n_execute - 1, -1, -1):
                 self.action_buffer.append(actions[i])
 
         return self.action_buffer.popleft().numpy()
@@ -226,7 +230,7 @@ def build_training_components(
     critic = Critic(hidden_size=hidden_dim, act_dim=act_dim).to(dev)
     spectral = SpectralEncoder(
         hidden_size=hidden_dim,
-        num_spectral_tokens=cfg.num_spectral_tokens,
+        top_p_spectral_tokens=cfg.top_p_spectral_tokens,
         n_obs_steps=cfg.n_obs_steps,
     ).to(dev)
     critic_state_encoder = StateEncoder(
@@ -426,6 +430,9 @@ def drive_training_loop(state) -> None:
             state.action_low,
             state.action_high,
             n_obs_steps=cfg.n_obs_steps,
+            # Training executes the full predicted chunk (H); partial execution
+            # (receding horizon) applies at inference/eval only.
+            n_action_steps=cfg.chunk_size,
         )
         if not chunks:
             break
