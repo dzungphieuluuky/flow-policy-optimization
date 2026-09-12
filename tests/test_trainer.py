@@ -30,6 +30,7 @@ from sjfpo.networks import (
     Critic,
 )
 from sjfpo.collector import Transition
+from sjfpo.dct_utils import idct
 from sjfpo.trainer import SJFPOTrainer, SJFPOAborted
 
 # ---------------------------------------------------------------------------
@@ -43,18 +44,14 @@ ACT_DIM = 4
 def make_trainer(**overrides) -> SJFPOTrainer:
     """Construct a trainer with small dims for fast tests."""
     cfg = SJFPOConfig(**overrides) if overrides else SJFPOConfig()
-    policy_state_encoder = StateEncoder(
-        OBS_DIM, n_obs_steps=cfg.n_obs_steps, hidden_size=cfg.hidden_size
-    )
-    # SpectralEncoder outputs [B, K, spectral_dim=64] conditioning tokens.
-    policy_head = SJFOPolicyModel(ACT_DIM, hidden_size=cfg.hidden_size)
+    # SpectralEncoder outputs [B, K, obs] raw DCT bins straight from the obs window.
+    policy_head = SJFOPolicyModel(ACT_DIM, OBS_DIM, hidden_size=cfg.hidden_size)
     critic = Critic(hidden_size=cfg.hidden_size, act_dim=ACT_DIM)
-    spectral = SpectralEncoder(hidden_size=cfg.hidden_size, n_obs_steps=cfg.n_obs_steps)
+    spectral = SpectralEncoder(OBS_DIM, n_obs_steps=cfg.n_obs_steps)
     critic_state_encoder = StateEncoder(
         OBS_DIM, n_obs_steps=cfg.n_obs_steps, hidden_size=cfg.hidden_size
     )
     return SJFPOTrainer(
-        policy_state_encoder=policy_state_encoder,
         policy_head=policy_head,
         critic=critic,
         spectral=spectral,
@@ -137,8 +134,8 @@ class TestAssembleUpdate:
 
 
 class TestGradientRouting:
-    def test_aspo_only_reaches_policy_head_and_trunk(self):
-        """Policy + trunk receive grads through the surrogate path."""
+    def test_aspo_only_reaches_policy_head_and_spectral(self):
+        """Policy head + spectral projector receive grads through the surrogate path."""
         trainer = make_trainer()
         chunks, meta = make_chunks(32)
 
@@ -158,9 +155,8 @@ class TestGradientRouting:
             assert p.grad is not None, f"policy_head.{name} has no grad"
             assert p.grad.abs().sum() > 0, f"policy_head.{name} grad is zero"
 
-            # Policy trunk must have gradients (through policy path)
-        for name, p in trainer.policy_state_encoder.named_parameters():
-            assert p.grad is not None, f"policy_state_encoder.{name} has no grad"
+            # Spectral encoder is parameter-free (raw DCT bins): nothing to check.
+        assert list(trainer.spectral.parameters()) == []
 
             # Critic also receives grads through total_loss.
         for name, p in trainer.critic.named_parameters():
@@ -261,35 +257,31 @@ class TestCriticOptimized:
         # ---------------------------------------------------------------------------
 
 
-class TestSpectralProjectorOptimized:
-    def test_spectral_params_in_optimizer(self):
-        """Every spectral parameter (projector) must be stepped by optimizer."""
+class TestSpectralParameterFree:
+    def test_spectral_has_no_params(self):
+        """Raw-DCT encoder carries no parameters and needs no optimizer slot."""
         trainer = make_trainer()
+        assert list(trainer.spectral.parameters()) == []
         opt_ids = {
             id(p) for group in trainer.optimizer.param_groups for p in group["params"]
         }
-        params = list(trainer.spectral.parameters())
-        assert params, "spectral module has no parameters to optimize"
-        for name, p in trainer.spectral.named_parameters():
-            assert id(p) in opt_ids, f"spectral.{name} not in optimizer"
+        head_ids = {id(p) for p in trainer.policy_head.parameters()}
+        assert head_ids <= opt_ids, "policy head (incl. cond_proj) not optimized"
 
-    def test_spectral_projector_moves_after_update(self):
-        """Cond-path loss must move the spectral projector after updates."""
+    def test_cond_proj_moves_after_update(self):
+        """Cond-path loss must move the policy head's cond_proj after updates."""
         trainer = make_trainer()
-        before = {n: p.clone() for n, p in trainer.spectral.named_parameters()}
+        before = trainer.policy_head.cond_proj.weight.clone()
         chunks, meta = make_chunks(32)
-        # Same adaLN-Zero cold start as above: the projector only moves
+        # Same adaLN-Zero cold start as above: cond_proj only moves
         # once conditioning grads reach it (cap 10 updates, else real bug).
         moved = False
         for _ in range(10):
             trainer.assemble_update(chunks, meta)
-            moved = any(
-                not torch.equal(p, before[n])
-                for n, p in trainer.spectral.named_parameters()
-            )
+            moved = not torch.equal(trainer.policy_head.cond_proj.weight, before)
             if moved:
                 break
-        assert moved, "spectral projector did not move after update"
+        assert moved, "cond_proj did not move after update"
 
         # ---------------------------------------------------------------------------
         # (h) SigReg on the critic latent only (no next-state terms)
@@ -324,15 +316,12 @@ class TestCriticLatentSigReg:
         assert sigreg(next2) == base, "sigreg must NOT see next-states anymore"
 
     def test_trunk_receives_grads(self):
-        """Each trunk must get grads through its own path (policy/critic)."""
+        """Policy head (incl. cond_proj) and critic trunk must get grads."""
         trainer = make_trainer()
         chunks, meta = make_chunks(16)
         trainer.assemble_update(chunks, meta)
-        policy_grads = [
-            p.grad for _, p in trainer.policy_state_encoder.named_parameters()
-        ]
-        assert all(g is not None for g in policy_grads), (
-            "policy trunk params missing grads"
+        assert trainer.policy_head.cond_proj.weight.grad is not None, (
+            "cond_proj missing grads"
         )
         critic_grads = [
             p.grad for _, p in trainer.critic_state_encoder.named_parameters()
@@ -396,9 +385,11 @@ class TestCriticBootstrap:
         )
         with torch.no_grad():
             z = trainer.critic_state_encoder(states)
-            v_pred = trainer.critic(z, actions)
+            # Mirror the trainer: the critic judges IDCT real-space actions.
+            v_pred = trainer.critic(z, idct(actions, dim=1))
             v_next = trainer.critic(
-                trainer.critic_state_encoder(next_states), next_actions
+                trainer.critic_state_encoder(next_states),
+                idct(next_actions, dim=1),
             )
         expected = trainer.compute_critic_targets(chunks, v_next, trainer.cfg.gamma)
         manual = torch.nn.functional.mse_loss(v_pred, expected)
