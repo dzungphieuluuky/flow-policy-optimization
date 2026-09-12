@@ -2,7 +2,7 @@
 
 ## Tests
 
-**`ModuleNotFoundError: No module named 'mfpo'`**
+**`ModuleNotFoundError: No module named 'sjfpo'`**
 
 Run with `PYTHONPATH=src`:
 
@@ -13,8 +13,8 @@ PYTHONPATH=src .venv/bin/python -m pytest -q
 **Spectral test flake**
 
 Keep fp32, no `autocast`/`half`/`bfloat16` — the fp32-only gate scans for
-these. Check the Hann→rFFT→cat→frozen→Linear order in
-`networks.py::SpectralTokens` first.
+these. Check the DCT→low-K→frozen→Linear order in
+`networks.py::SpectralEncoder` first.
 
 ## Smoke / Runner
 
@@ -50,7 +50,7 @@ Rebuild after editing `src/` — never hand-edit ipynbs. Verify:
 
 **`jupyter nbconvert --execute` hangs**
 
-Tiny preset is required locally: `MFPO_TINY_MATRIX=1 … --ExecutePreprocessor.timeout=1800`.
+Tiny preset is required locally: `SJFPO_TINY_MATRIX=1 … --ExecutePreprocessor.timeout=1800`.
 Full matrix (45×1M) will time out on a laptop.
 
 **Duplicate class / global collision in concatenated ipynb**
