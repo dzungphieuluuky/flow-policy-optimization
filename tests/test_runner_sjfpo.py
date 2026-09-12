@@ -87,10 +87,6 @@ def build_sjfpo(obs_dim: int = 4, act_dim: int = 2, cfg=None):
         num_spectral_tokens=cfg.num_spectral_tokens,
         n_obs_steps=cfg.n_obs_steps,
     )
-    # Set frozen stats
-    with torch.no_grad():
-        z_sample = torch.randn(4, cfg.n_obs_steps, cfg.hidden_size)
-    spectral.capture_stats(z_sample)
     return trunk, policy_head, critic, spectral
 
 
