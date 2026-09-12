@@ -22,11 +22,11 @@ cd /run/media/dung-pham/DATA/Personal/fourier-transform-research
 PYTHONPATH=src .venv/bin/python -m pytest -q
 
 # 2. MuJoCo single-run smoke (200 steps)
-PYTHONPATH=src .venv/bin/python scripts/train.py --method mfpo --env Hopper-v5 --total-steps 200 --out-dir .omo/evidence/smoke
-# Artifacts: .omo/evidence/smoke/mfpo/checkpoint_*/checkpoint.pt + eval_history.csv
+PYTHONPATH=src .venv/bin/python scripts/train.py --method sjfpo --env Hopper-v5 --total-steps 200 --out-dir .omo/evidence/smoke
+# Artifacts: .omo/evidence/smoke/sjfpo/checkpoint_*/checkpoint.pt + eval_history.csv
 
 # 3. Matrix smoke (explicit filters)
-PYTHONPATH=src .venv/bin/python scripts/train.py --matrix --methods mfpo ppo sac --envs Hopper-v5 --seeds 0 --total-steps 200 --out-dir .omo/evidence/smoke
+PYTHONPATH=src .venv/bin/python scripts/train.py --matrix --methods sjfpo ppo sac --envs Hopper-v5 --seeds 0 --total-steps 200 --out-dir .omo/evidence/smoke
 
 # 4. Notebooks (both, validated)
 python scripts/build_notebook.py
@@ -37,10 +37,10 @@ ls -lh spectral_joint_flow.ipynb flow_matching_vs_ppo_sac.ipynb
 
 | Env var | Default | Effect |
 |---|---|---|
-| `MFPO_TINY_MATRIX` | `0` | `1` → tiny preset (Hopper-v5 × seed 0, short budgets) |
-| `MFPO_DISABLE_WANDB` | unset (enabled) | `1` → disable wandb logging (only off switch; wandb is required) |
+| `SJFPO_TINY_MATRIX` | `0` | `1` → tiny preset (Hopper-v5 × seed 0, short budgets) |
+| `SJFPO_DISABLE_WANDB` | unset (enabled) | `1` → disable wandb logging (only off switch; wandb is required) |
 | `IS_KAGGLE` | autodetect | Kaggle run-output dirs; local stays synthetic — no download |
-| `MFPO_RESUME_ONLY` | `0` | Sweep cells skip `MISSING` runs when set |
+| `SJFPO_RESUME_ONLY` | `0` | Sweep cells skip `MISSING` runs when set |
 
 These mirror the axes `RUN_MATRIX` enumerates — see [Config & Flags](config-flags.md).
 
