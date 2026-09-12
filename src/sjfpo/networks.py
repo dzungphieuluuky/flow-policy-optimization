@@ -287,31 +287,33 @@ class SpectralEncoder(nn.Module):
     build).
 
     Order of operations:
-        Z → DCT-II(dim=1) → keep K low bins → Linear(D→spectral_dim)
+        Z → DCT-II(dim=1) → keep K lowest low-frequency bins → Linear(D→spectral_dim)
+    where K = max(1, min(T, round(top_p * T))).
 
     Args:
         hidden_size: Latent dimension hidden_size (default from config.SJFPO_CFG.hidden_size).
-        num_spectral_tokens: Number of low-frequency tokens K (default from config.SJFPO_CFG.num_spectral_tokens).
+        top_p_spectral_tokens: Kept low-frequency fraction (default from config.SJFPO_CFG.top_p_spectral_tokens).
         n_obs_steps: State window length T (default from config.SJFPO_CFG.n_obs_steps).
 
     Attributes:
         hidden_size: Latent dimension D.
-        k: Effective K = min(num_spectral_tokens, n_obs_steps).
+        k: Effective token count K.
         projector: Linear(hidden_size -> spectral_dim).
     """
 
     def __init__(
         self,
         hidden_size: int | None = None,
-        num_spectral_tokens: int | None = None,
+        top_p_spectral_tokens: float | None = None,
         n_obs_steps: int | None = None,
     ):
         super().__init__()
         self.hidden_size = int(resolve_config_value("hidden_size", hidden_size))
-        self.k = min(
-            int(resolve_config_value("num_spectral_tokens", num_spectral_tokens)),
-            int(resolve_config_value("n_obs_steps", n_obs_steps)),
-        )  # DCT-II yields T bins
+        t = int(resolve_config_value("n_obs_steps", n_obs_steps))  # DCT-II yields T bins
+        p = float(
+            resolve_config_value("top_p_spectral_tokens", top_p_spectral_tokens)
+        )
+        self.k = max(1, min(t, round(p * t)))
         spectral_dim = int(config.SJFPO_CFG.spectral_dim)
         self.projector = nn.Linear(
             self.hidden_size, spectral_dim
