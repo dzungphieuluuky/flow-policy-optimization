@@ -4,7 +4,7 @@ Covers:
   (a) drives fake policies of all three kinds (callable, zero-noise SJFPO,
       mean-action PPO, deterministic SAC) producing CSV rows
   (b) determinism: same weights+eval_seed twice → identical episode returns
-  (c) acting batch B=1 works WITH frozen stats
+  (c) acting batch B=1 works out of the box (no calibration)
   (d) 12-episode default + max-steps cap respected
 """
 
@@ -178,9 +178,6 @@ class TestPolicyKinds:
         spectral = SpectralEncoder(
             hidden_size=cfg.hidden_size, n_obs_steps=cfg.n_obs_steps
         )
-        spectral.set_frozen_stats(
-            torch.zeros(cfg.hidden_size), torch.ones(cfg.hidden_size)
-        )
 
         env = FakeEnv(obs_dim=17, action_dim=4)
         adapter = SJFPOPolicyAdapter(trunk, policy_head, spectral, cfg)
@@ -242,12 +239,12 @@ class TestDeterminism:
         assert returns1 != returns2, "different seeds produced identical returns"
 
         # ---------------------------------------------------------------------------
-        # (c) acting batch B=1 works WITH frozen stats
+        # (c) acting batch B=1 works out of the box (no calibration)
         # ---------------------------------------------------------------------------
 
 
 class TestBatchSizeOne:
-    def test_b1_with_frozen_stats(self):
+    def test_b1_no_calibration_needed(self):
         cfg = SJFPOConfig()
         trunk = StateEncoder(
             17, n_obs_steps=cfg.n_obs_steps, hidden_size=cfg.hidden_size
@@ -255,9 +252,6 @@ class TestBatchSizeOne:
         policy_head = SJFOPolicyModel(4, hidden_size=cfg.hidden_size)
         spectral = SpectralEncoder(
             hidden_size=cfg.hidden_size, n_obs_steps=cfg.n_obs_steps
-        )
-        spectral.set_frozen_stats(
-            torch.zeros(cfg.hidden_size), torch.ones(cfg.hidden_size)
         )
 
         env = FakeEnv(obs_dim=17, action_dim=4)
@@ -269,25 +263,6 @@ class TestBatchSizeOne:
         assert len(results) == 2
         for r in results:
             assert math.isfinite(r["return"])
-
-    def test_unset_frozen_stats_raises(self):
-        cfg = SJFPOConfig()
-        trunk = StateEncoder(
-            17, n_obs_steps=cfg.n_obs_steps, hidden_size=cfg.hidden_size
-        )
-        policy_head = SJFOPolicyModel(4, hidden_size=cfg.hidden_size)
-        spectral = SpectralEncoder(
-            hidden_size=cfg.hidden_size, n_obs_steps=cfg.n_obs_steps
-        )
-        # Do NOT set frozen stats
-
-        env = FakeEnv(obs_dim=17, action_dim=4)
-        adapter = SJFPOPolicyAdapter(trunk, policy_head, spectral, cfg)
-        adapter.action_dim = 4
-
-        evaluator = Evaluator(env, eval_seed=0, max_episodes=1)
-        with pytest.raises(RuntimeError, match="frozen stats"):
-            evaluator.evaluate(adapter)
 
             # ---------------------------------------------------------------------------
             # (d) 12-episode default + max-steps cap respected
