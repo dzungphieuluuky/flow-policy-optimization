@@ -192,9 +192,6 @@ def make_trainer_v4(**overrides) -> SJFPOTrainer:
     policy_head = SJFOPolicyModel(ACT_DIM, hidden_size=cfg.hidden_size)
     critic = Critic(hidden_size=cfg.hidden_size, act_dim=ACT_DIM)
     spectral = SpectralEncoder(hidden_size=cfg.hidden_size, n_obs_steps=16)
-    spectral.set_frozen_stats(
-        torch.zeros(cfg.hidden_size), torch.ones(cfg.hidden_size)
-    )
     critic_state_encoder = StateEncoder(
         OBS_DIM, n_obs_steps=16, hidden_size=cfg.hidden_size
     )
