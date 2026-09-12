@@ -50,9 +50,6 @@ def make_trainer(**overrides) -> SJFPOTrainer:
     policy_head = SJFOPolicyModel(ACT_DIM, hidden_size=cfg.hidden_size)
     critic = Critic(hidden_size=cfg.hidden_size, act_dim=ACT_DIM)
     spectral = SpectralEncoder(hidden_size=cfg.hidden_size, n_obs_steps=cfg.n_obs_steps)
-    spectral.set_frozen_stats(
-        torch.zeros(cfg.hidden_size), torch.ones(cfg.hidden_size)
-    )
     critic_state_encoder = StateEncoder(
         OBS_DIM, n_obs_steps=cfg.n_obs_steps, hidden_size=cfg.hidden_size
     )
@@ -150,7 +147,7 @@ class TestGradientRouting:
         # awakens. Warm up (cap 10) until time_mlp sees grads, then probe.
         for _ in range(10):
             trainer.assemble_update(chunks, meta)
-            if trainer.policy_head.time_mlp[0].weight.grad.abs().sum() > 0:
+            if trainer.policy_head.time_mlp.gate.weight.grad.abs().sum() > 0:
                 break
         trainer.optimizer.zero_grad()
         diag = trainer.assemble_update(chunks, meta)
