@@ -37,7 +37,7 @@
 
 | Path | What it does | When you touch it |
 |---|---|---|
-| `src/sjfpo/config.py` | Single source of truth for flags, matrices, budgets, algorithm configs | Changing sweep size, budgets, `D/spectral_dim/K/H/N` |
+| `src/sjfpo/config.py` | Single source of truth for flags, matrices, budgets, algorithm configs | Changing sweep size, budgets, `D/K/H/N` |
 | `src/sjfpo/networks.py` | Encoders + spectral + flow + SIGReg | Any shape/dtype or conditioning change |
 | `src/sjfpo/runner.py` | `train_run` entry point | Adding an env |
 | `scripts/build_notebook.py` | Minimal Colab notebooks (clone/install/train cells) | Cell contents, repo slug |
