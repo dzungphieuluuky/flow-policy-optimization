@@ -21,14 +21,14 @@
 
 ```
 stacked obs [T=16,obs_dim] ──► policy_state_encoder ──► Z [16,128]
-Z ──► DCT-II(time) ──► K=5 low bins ──► Linear(D→64) → tokens [5,64]
+Z ──► DCT-II(time) ──► K lowest bins (top_p=0.3 → 5) ──► Linear(D→64) → tokens [5,64]
 chunk actions [H=16,Da] ──► DCT ──► DiT-8 velocity (cond = time + pooled tokens) ──► euler_sample t:1→0 ──► IDCT
 stacked obs ──► critic_state_encoder (decoupled) ──► Critic V(s,a) ──► TD + Epps-Pulley SIGReg
 ```
 
 **Binding contracts you cannot flip silently:** `x_t=t·ε+(1−t)·a` with
 `t=1` noise → `t=0` data, Euler integrates **descending 1→0**, single
-`clamp(-1,1)` after IDCT, `T=16 H=16 n=8 K=5 D=128 spectral_dim=64`.
+`clamp(-1,1)` after IDCT, `T=16 H=16 K=5 D=128 spectral_dim=64` (`K=round(0.3*16)`; training executes full `H`; eval executes `ratio*H`, default 8).
 
 ## One Mode, Three Methods
 
