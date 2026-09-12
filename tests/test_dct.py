@@ -1,4 +1,4 @@
-"""Unit tests for src/mfpo/dct_utils.py (plan task 3).
+"""Unit tests for src/sjfpo/dct_utils.py (plan task 3).
 
 TDD: written BEFORE the implementation exists — the first pytest run must
 fail RED on the missing module, then go GREEN once dct_utils.py lands.
@@ -25,24 +25,25 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from mfpo.dct_utils import dct, discounted_chunk_reward, idct  # noqa: E402
+from sjfpo.dct_utils import dct, discounted_chunk_reward, idct  # noqa: E402
 
 # Chunk length H=8 per plan; A_dim varies. Both plan-mandated shapes.
 SHAPES = [(4, 8, 3), (7, 8, 11)]
 CHUNK_DIM = 1
 
 
-def _rand(shape: tuple[int, ...], seed: int = 0) -> torch.Tensor:
+def rand(shape: tuple[int, ...], seed: int = 0) -> torch.Tensor:
     """Seeded fp32 random tensor (deterministic across runs)."""
     g = torch.Generator().manual_seed(seed)
     return torch.randn(*shape, generator=g, dtype=torch.float32)
 
+    # ---------------------------------------------------------------- (a) roundtrip
 
-# ---------------------------------------------------------------- (a) roundtrip
+
 @pytest.mark.parametrize("shape", SHAPES)
 def test_roundtrip_random_middle_chunk_axis(shape):
     """idct(dct(x)) reconstructs x along the middle (chunk) axis, ‖·‖∞<1e-5."""
-    x = _rand(shape)
+    x = rand(shape)
     recon = idct(dct(x, dim=CHUNK_DIM), dim=CHUNK_DIM)
     err = (recon - x).abs().max().item()
     assert err < 1e-5, f"roundtrip max-abs err {err:.3e} for shape {shape}"
@@ -50,7 +51,7 @@ def test_roundtrip_random_middle_chunk_axis(shape):
 
 def test_roundtrip_random_last_axis():
     """Same guarantee with the default (last) axis on shape [7,8,11]."""
-    x = _rand((7, 8, 11))
+    x = rand((7, 8, 11))
     recon = idct(dct(x))
     err = (recon - x).abs().max().item()
     assert err < 1e-5, f"roundtrip max-abs err {err:.3e}"
@@ -69,20 +70,22 @@ def test_roundtrip_adversarial_constant_and_alternating():
     err = (recon - x).abs().max().item()
     assert err < 1e-5, f"adversarial roundtrip max-abs err {err:.3e}"
 
+    # ------------------------------------------------------- (b) Parseval / energy
 
-# ------------------------------------------------------- (b) Parseval / energy
+
 @pytest.mark.parametrize("shape", SHAPES)
 def test_parseval_energy_preserved(shape):
     """Orthonormal scaling ⇒ sum(coeffs²) == sum(x²), relative error <1e-5."""
-    x = _rand(shape)
+    x = rand(shape)
     c = dct(x, dim=CHUNK_DIM)
     e_time = (x**2).sum().item()
     e_freq = (c**2).sum().item()
     rel_err = abs(e_freq - e_time) / e_time
     assert rel_err < 1e-5, f"Parseval relative energy error {rel_err:.3e}"
 
+    # ------------------------------------------------------------ (c) DC identity
 
-# ------------------------------------------------------------ (c) DC identity
+
 def test_dc_coefficient_is_mean_times_sqrt_n():
     """Orthonormal DCT-II: coeff[...,0,:] == mean(chunk axis) * sqrt(H).
 
@@ -90,7 +93,7 @@ def test_dc_coefficient_is_mean_times_sqrt_n():
     coefficient equals sum(x)/sqrt(N) = mean(x)*sqrt(N). Verified against
     direct computation (<1e-6) — no scipy dependency.
     """
-    x = _rand((5, 8, 4), seed=7)
+    x = rand((5, 8, 4), seed=7)
     c = dct(x, dim=CHUNK_DIM)
     expected = x.mean(dim=CHUNK_DIM) * math.sqrt(x.shape[CHUNK_DIM])
     err = (c.select(CHUNK_DIM, 0) - expected).abs().max().item()
@@ -107,13 +110,14 @@ def test_dc_coefficient_hand_computed_1d():
     expected = 4.5 * math.sqrt(8.0)
     assert abs(dc - expected) < 1e-6, f"DC {dc!r} vs hand-computed {expected!r}"
 
+    # --------------------------------------------------------- (d) axis generality
 
-# --------------------------------------------------------- (d) axis generality
+
 def test_transform_works_on_last_and_middle_axes():
     """Axis argument generality: roundtrip holds for BOTH last and middle dims
     on the same tensor, and results differ from each other (real transforms,
     not accidental identity)."""
-    x = _rand((3, 8, 6), seed=3)
+    x = rand((3, 8, 6), seed=3)
 
     last = idct(dct(x, dim=-1), dim=-1)
     mid = idct(dct(x, dim=1), dim=1)
@@ -122,15 +126,16 @@ def test_transform_works_on_last_and_middle_axes():
     # Sanity: transforming different axes gives genuinely different spectra.
     assert not torch.allclose(dct(x, dim=-1), dct(x, dim=1))
 
+    # ------------------------------------------------------------- (e) gradients
 
-# ------------------------------------------------------------- (e) gradients
+
 def test_gradients_flow_through_dct():
     """x.requires_grad → y=dct(x); y.sum().backward() ⇒ finite non-zero x.grad.
 
     Sum over ALL coefficients: every input element contributes to many
     coefficients, so the full gradient should be strictly non-zero.
     """
-    x = _rand((4, 8, 3)).requires_grad_(True)
+    x = rand((4, 8, 3)).requires_grad_(True)
     y = dct(x, dim=CHUNK_DIM)
     y.sum().backward()
     assert x.grad is not None
@@ -140,27 +145,29 @@ def test_gradients_flow_through_dct():
 
 def test_gradients_flow_through_idct():
     """Mirror check for the inverse transform."""
-    c = _rand((4, 8, 3)).requires_grad_(True)
+    c = rand((4, 8, 3)).requires_grad_(True)
     out = idct(c, dim=CHUNK_DIM)
     out.sum().backward()
     assert c.grad is not None
     assert torch.isfinite(c.grad).all()
     assert c.grad.abs().sum().item() > 0.0
 
+    # ---------------------------------------------------------------- (f) linearity
 
-# ---------------------------------------------------------------- (f) linearity
+
 def test_linearity():
     """dct(a·x + b·y) == a·dct(x) + b·dct(y) within 1e-5 (matmul is linear)."""
-    x = _rand((4, 8, 3), seed=11)
-    y = _rand((4, 8, 3), seed=12)
+    x = rand((4, 8, 3), seed=11)
+    y = rand((4, 8, 3), seed=12)
     a, b = 2.5, -0.75
     lhs = dct(a * x + b * y, dim=CHUNK_DIM)
     rhs = a * dct(x, dim=CHUNK_DIM) + b * dct(y, dim=CHUNK_DIM)
     err = (lhs - rhs).abs().max().item()
     assert err < 1e-5, f"linearity max-abs err {err:.3e}"
 
+    # ------------------------------------------- helper: discounted_chunk_reward
 
-# ------------------------------------------- helper: discounted_chunk_reward
+
 def test_discounted_chunk_reward_hand_computed():
     """Σ γ^t·r_t over an 8-step chunk, hand-checked for r≡1, γ=0.9:
     (1 − 0.9⁸)/0.1 ≈ 5.695312..."""
