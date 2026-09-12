@@ -52,30 +52,34 @@ def decode_chunk_actions(x0: torch.Tensor) -> torch.Tensor:
 
 def infer_chunk_actions(
     state: torch.Tensor,
-    policy_state_encoder,
     spectral,
     policy_head,
     cfg,
     noise: bool = False,
 ) -> torch.Tensor:
-    """Shared forward path: [T, obs] state → policy trunk → spectral → Euler → [H, A].
+    """Shared forward path: [T, obs] state → spectral → Euler → [H, A].
 
     Single home for the ChunkPolicy and SjfpoEvalWrapper forward passes;
     wrappers own buffer/state plumbing, this owns only the forward math.
-    Compute runs on the policy trunk's device; the returned chunk is always CPU
-    (env stepping and transition storage stay on CPU).
+    Compute runs on the policy head's device; the returned chunk is
+    always CPU (env stepping and transition storage stay on CPU).
     """
-    dev = next(policy_state_encoder.parameters()).device
+    dev = next(policy_head.parameters()).device
     with torch.no_grad():
-        z = policy_state_encoder(einx.id("t d -> 1 t d", state).to(dev))
-        cond = spectral(z)
+        state_b = einx.id("t d -> 1 t d", state).to(dev)  # [1, T, obs]
+        cond = spectral(state_b)
         act_dim = policy_head.out.out_features
-        shape = (1, cfg.chunk_size, act_dim)
+        # Denoise in truncated coefficient space (top-p rows), then zero-pad
+        # the time dim back to H: missing high-frequency bins are exactly 0.
+        n_coeffs = max(1, round(cfg.top_p_spectral_tokens * cfg.chunk_size))
+        shape = (1, n_coeffs, act_dim)
         eps = None if noise else torch.zeros(*shape, device=dev)
         x0 = euler_sample(
-            policy_head, shape, cond, steps=cfg.euler_eval, eps=eps, device=dev
-        )
-        return decode_chunk_actions(x0).cpu()
+            policy_head, shape, cond, steps=cfg.euler_eval, eps=eps, device=dev,
+            state=state_b,
+        )  # [1, Ka, Da]
+        x0 = torch.nn.functional.pad(x0, (0, 0, 0, cfg.chunk_size - n_coeffs))
+        return decode_chunk_actions(x0).cpu()  # [H, Da]
 
 
 class ChunkPolicy:
@@ -83,13 +87,11 @@ class ChunkPolicy:
 
     def __init__(
         self,
-        policy_state_encoder: StateEncoder,
         policy_head: SJFOPolicyModel,
         spectral: SpectralEncoder,
         cfg: SJFPOConfig,
         noise: bool = False,
     ) -> None:
-        self.policy_state_encoder = policy_state_encoder
         self.policy_head = policy_head
         self.spectral = spectral
         self.cfg = cfg
@@ -102,7 +104,6 @@ class ChunkPolicy:
             state = einx.id("d -> t d", state, t=self.cfg.n_obs_steps)
         return infer_chunk_actions(
             state,
-            self.policy_state_encoder,
             self.spectral,
             self.policy_head,
             self.cfg,
@@ -122,12 +123,10 @@ class SjfpoEvalWrapper:
 
     def __init__(
         self,
-        policy_state_encoder: StateEncoder,
         policy_head: SJFOPolicyModel,
         spectral: SpectralEncoder,
         cfg: SJFPOConfig,
     ):
-        self.policy_state_encoder = policy_state_encoder
         self.policy_head = policy_head
         self.spectral = spectral
         self.cfg = cfg
@@ -154,7 +153,6 @@ class SjfpoEvalWrapper:
             state = torch.stack(tuple(self.frame_buffer), dim=0)  # [T, obs]
             actions = infer_chunk_actions(
                 state,
-                self.policy_state_encoder,
                 self.spectral,
                 self.policy_head,
                 self.cfg,
@@ -219,17 +217,13 @@ def resolve_training_dims(env, obs_dim, act_dim):
 def build_training_components(
     obs_dim: int, act_dim: int, cfg: SJFPOConfig, device=None
 ) -> dict:
-    """Build policy/critic trunks, flow policy, action-critic, spectral tokens (all on device)."""
+    """Build flow policy, action-critic, raw-obs spectral tokens, critic trunk (all on device)."""
     dev = torch.device(device) if device is not None else resolve_device()
-    spectral_dim = 64  # SpectralEncoder projector output dim
     hidden_dim = cfg.hidden_size
-    policy_state_encoder = StateEncoder(
-        obs_dim, n_obs_steps=cfg.n_obs_steps, hidden_size=hidden_dim
-    ).to(dev)
-    policy_head = SJFOPolicyModel(act_dim, hidden_size=hidden_dim).to(dev)
+    policy_head = SJFOPolicyModel(act_dim, obs_dim, hidden_size=hidden_dim).to(dev)
     critic = Critic(hidden_size=hidden_dim, act_dim=act_dim).to(dev)
     spectral = SpectralEncoder(
-        hidden_size=hidden_dim,
+        obs_dim,
         top_p_spectral_tokens=cfg.top_p_spectral_tokens,
         n_obs_steps=cfg.n_obs_steps,
     ).to(dev)
@@ -237,7 +231,6 @@ def build_training_components(
         obs_dim, n_obs_steps=cfg.n_obs_steps, hidden_size=hidden_dim
     ).to(dev)
     return {
-        "policy_state_encoder": policy_state_encoder,
         "policy_head": policy_head,
         "critic": critic,
         "spectral": spectral,
@@ -245,12 +238,10 @@ def build_training_components(
     }
 
 
-def create_run_policies(policy_state_encoder, policy_head, spectral, cfg):
+def create_run_policies(policy_head, spectral, cfg):
     """Create noisy train policy and chunk-aware eval wrapper."""
-    train_policy = ChunkPolicy(
-        policy_state_encoder, policy_head, spectral, cfg, noise=True
-    )
-    eval_wrapper = SjfpoEvalWrapper(policy_state_encoder, policy_head, spectral, cfg)
+    train_policy = ChunkPolicy(policy_head, spectral, cfg, noise=True)
+    eval_wrapper = SjfpoEvalWrapper(policy_head, spectral, cfg)
     return train_policy, eval_wrapper  # evaluator calls eval_wrapper(obs)
 
 
@@ -272,7 +263,10 @@ def compute_chunk_values(critic_state_encoder, critic, chunks):
     with torch.no_grad():
         states = torch.stack([c["observation.state"] for c in chunks]).to(dev)
         actions = torch.stack([c["action"] for c in chunks]).to(dev)
-        values = critic(critic_state_encoder(states), actions).cpu().numpy()
+        # Real-space actions for the critic: IDCT the stored DCT coefficients.
+        values = critic(
+            critic_state_encoder(states), idct(actions, dim=1)
+        ).cpu().numpy()
         next_values = np.zeros(len(chunks))  # terminated/continue chunks keep 0
         for i, c in enumerate(chunks):
             if bool(c["next.truncated"]):  # truncated: bootstrap V(s',a')
@@ -280,7 +274,7 @@ def compute_chunk_values(critic_state_encoder, critic, chunks):
                     c["next.observation.state"].unsqueeze(0).to(dev)
                 )
                 next_values[i] = critic(
-                    z_next, c["next.action"].unsqueeze(0).to(dev)
+                    z_next, idct(c["next.action"].unsqueeze(0).to(dev), dim=1)
                 ).item()
     return values, next_values
 
@@ -401,7 +395,6 @@ def save_run_checkpoint(state, label) -> str:
     models = state.models
     checkpoint_state = {
         "models": {
-            "policy_state_encoder": models["policy_state_encoder"],
             "policy_head": models["policy_head"],
             "critic": models["critic"],
             "spectral": models["spectral"],
@@ -521,7 +514,6 @@ def assemble_run_state(
     parts = build_training_components(obs_dim, act_dim, cfg, device=device)
     print_training_modules(parts)
     trainer = SJFPOTrainer(
-        parts["policy_state_encoder"],
         parts["policy_head"],
         parts["critic"],
         parts["spectral"],
@@ -531,7 +523,7 @@ def assemble_run_state(
     )
     evaluator = Evaluator(env, eval_seed=10000 + seed, max_episodes=12)
     train_policy, eval_policy = create_run_policies(
-        parts["policy_state_encoder"], parts["policy_head"], parts["spectral"], cfg
+        parts["policy_head"], parts["spectral"], cfg
     )
     r_rand = compute_divergence_baseline(evaluator, env, seed)
     cfg_dict = dataclasses.asdict(cfg)
