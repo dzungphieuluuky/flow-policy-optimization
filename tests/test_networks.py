@@ -27,7 +27,7 @@ from sjfpo import config  # noqa: E402
 
 STATE_T = config.SJFPO_CFG.n_obs_steps  # 16
 ZD = config.SJFPO_CFG.hidden_size  # 128
-KS = config.SJFPO_CFG.num_spectral_tokens  # 5
+KS = max(1, round(config.SJFPO_CFG.top_p_spectral_tokens * STATE_T))  # 5
 CHUNK = config.SJFPO_CFG.chunk_size  # 16
 
 # All network symbols come from sjfpo.networks (imported lazily inside a
@@ -389,3 +389,12 @@ def test_no_batchnorm_no_dropout_fp32_everywhere():
         params = list(mod.parameters())
         if params:
             assert next(iter(params)).dtype == torch.float32
+
+
+def test_spectral_encoder_top_p_token_count():
+    nets = make_nets()
+    assert nets.SpectralEncoder().k == 5  # round(0.3 * 16)
+    assert nets.SpectralEncoder(top_p_spectral_tokens=1.0).k == 16
+    assert nets.SpectralEncoder(top_p_spectral_tokens=0.01).k == 1
+    out = nets.SpectralEncoder(top_p_spectral_tokens=0.5)(torch.randn(2, STATE_T, ZD))
+    assert out.shape == (2, 8, 64)  # round(0.5 * 16)
