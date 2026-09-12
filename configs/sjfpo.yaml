@@ -21,7 +21,7 @@ vf_coef: 1.0
 grad_clip: 1.0
 n_obs_steps: 16
 chunk_size: 16
-n_action_steps: 8
-num_spectral_tokens: 5
+executed_vs_predicted_ratio: 0.5
+top_p_spectral_tokens: 0.3
 spectral_dim: 64
 hidden_size: 128
