@@ -10,8 +10,8 @@ Locked contract — see ``.omo/evidence/wandb-simplify/t1-sdk-probe.md``:
   cfg_dict) -> bool`` with SDK-direct ``wandb.init`` kwargs
   (``project=method``, ``name=None``, ``group={method}_{env}``,
   ``job_type`` smoke<=10000/train, locked ``mode`` passthrough,
-  ``reinit="finish_previous"``, ``force=True``) + locked global
-  ``wandb.define_metric("*", step_metric="global_step")``.
+  ``reinit="finish_previous"``, ``force=True``) with no custom step metric
+  (default ``step=global_step`` is the x-axis, matching system auto-logging).
 - ``log_eval_details`` builds ``wandb.Table(columns=cols,
   data=[list(r) for r in rows])`` (list-of-lists) and routes improvement
   ``(curr - prev) / max(abs(prev), 1e-8)`` via ``log_metrics``.
@@ -35,34 +35,34 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from mfpo.config import MFPOConfig, build_legacy_run_matrix
+from sjfpo.config import SJFPOConfig, build_run_matrix
 from tests.fixtures.fake_env import FakeGymEnv
 
 
-def _init_kwargs(recorder):
+def init_kwargs(recorder):
     """Return the kwargs of the single wandb.init call on the mock."""
     recorder.init.assert_called_once()
     return recorder.init.call_args.kwargs
 
 
 class TestWandbDisabled:
-    """Disabled-path tests — MFPO_DISABLE_WANDB=1, helpers no-op."""
+    """Disabled-path tests — SJFPO_DISABLE_WANDB=1, helpers no-op."""
 
     def test_wandb_disabled_flag(self, monkeypatch):
         """wandb_disabled() is True only for exactly '1'."""
-        monkeypatch.delenv("MFPO_DISABLE_WANDB", raising=False)
-        from mfpo.wandb_logging import wandb_disabled
+        monkeypatch.delenv("SJFPO_DISABLE_WANDB", raising=False)
+        from sjfpo.wandb_logging import wandb_disabled
 
         assert wandb_disabled() is False
-        monkeypatch.setenv("MFPO_DISABLE_WANDB", "1")
+        monkeypatch.setenv("SJFPO_DISABLE_WANDB", "1")
         assert wandb_disabled() is True
-        monkeypatch.setenv("MFPO_DISABLE_WANDB", "0")
+        monkeypatch.setenv("SJFPO_DISABLE_WANDB", "0")
         assert wandb_disabled() is False
 
     def test_log_metrics_noop_when_disabled(self, monkeypatch):
-        """MFPO_DISABLE_WANDB=1 → wandb.log is NOT called even if mocked."""
-        monkeypatch.setenv("MFPO_DISABLE_WANDB", "1")
-        import mfpo.wandb_logging as wl
+        """SJFPO_DISABLE_WANDB=1 → wandb.log is NOT called even if mocked."""
+        monkeypatch.setenv("SJFPO_DISABLE_WANDB", "1")
+        import sjfpo.wandb_logging as wl
 
         recorder = MagicMock()
         monkeypatch.setattr(wl, "wandb", recorder)
@@ -71,9 +71,9 @@ class TestWandbDisabled:
         recorder.log.assert_not_called()
 
     def test_finish_run_noop_when_disabled(self, monkeypatch):
-        """MFPO_DISABLE_WANDB=1 → wandb.finish is NOT called even if mocked."""
-        monkeypatch.setenv("MFPO_DISABLE_WANDB", "1")
-        import mfpo.wandb_logging as wl
+        """SJFPO_DISABLE_WANDB=1 → wandb.finish is NOT called even if mocked."""
+        monkeypatch.setenv("SJFPO_DISABLE_WANDB", "1")
+        import sjfpo.wandb_logging as wl
 
         recorder = MagicMock()
         monkeypatch.setattr(wl, "wandb", recorder)
@@ -81,16 +81,18 @@ class TestWandbDisabled:
         wl.finish_run(exit_code=0)
         recorder.finish.assert_not_called()
 
-    def test_init_wandb_run_for_method_returns_false_without_sdk_call(self, monkeypatch):
-        """MFPO_DISABLE_WANDB=1 → init returns False, zero SDK calls."""
-        monkeypatch.setenv("MFPO_DISABLE_WANDB", "1")
-        import mfpo.wandb_logging as wl
+    def test_init_wandb_run_for_method_returns_false_without_sdk_call(
+        self, monkeypatch
+    ):
+        """SJFPO_DISABLE_WANDB=1 → init returns False, zero SDK calls."""
+        monkeypatch.setenv("SJFPO_DISABLE_WANDB", "1")
+        import sjfpo.wandb_logging as wl
 
         recorder = MagicMock()
         monkeypatch.setattr(wl, "wandb", recorder)
 
         result = wl.init_wandb_run_for_method(
-            method="mfpo",
+            method="sjfpo",
             env_name="Hopper-v5",
             seed=3047,
             total_steps=5000,
@@ -101,20 +103,18 @@ class TestWandbDisabled:
         recorder.define_metric.assert_not_called()
 
     def test_wandb_train_run_completes_when_disabled(self, tmp_path, monkeypatch):
-        """MFPO_DISABLE_WANDB=1 → train_run completes without crash."""
-        monkeypatch.setenv("MFPO_DISABLE_WANDB", "1")
-        from mfpo.runner import train_run
+        """SJFPO_DISABLE_WANDB=1 → train_run completes without crash."""
+        monkeypatch.setenv("SJFPO_DISABLE_WANDB", "1")
+        from sjfpo.runner import train_run
 
         env = FakeGymEnv()
         out = tmp_path / "wandb_disabled_run"
-        cfg = MFPOConfig(
-            N_mc=2,
+        cfg = SJFPOConfig(
+            num_mc_samples=2,
             euler_train=4,
             euler_eval=4,
             chunks_per_update=16,
-            epochs=1,
-            minibatch=16,
-            context_len=16,
+            n_obs_steps=16,
         )
         result = train_run(
             env=env,
@@ -133,20 +133,18 @@ class TestWandbDisabled:
         assert "artifacts" in result
 
     def test_csv_contract_unchanged(self, tmp_path, monkeypatch):
-        """MFPO_DISABLE_WANDB=1 → 3-col CSV [episode,return,length] still written."""
-        monkeypatch.setenv("MFPO_DISABLE_WANDB", "1")
-        from mfpo.runner import train_run
+        """SJFPO_DISABLE_WANDB=1 → 3-col CSV [episode,return,length] still written."""
+        monkeypatch.setenv("SJFPO_DISABLE_WANDB", "1")
+        from sjfpo.runner import train_run
 
         env = FakeGymEnv()
         out = tmp_path / "wandb_csv_check"
-        cfg = MFPOConfig(
-            N_mc=2,
+        cfg = SJFPOConfig(
+            num_mc_samples=2,
             euler_train=4,
             euler_eval=4,
             chunks_per_update=16,
-            epochs=1,
-            minibatch=16,
-            context_len=16,
+            n_obs_steps=16,
         )
         train_run(
             env=env,
@@ -178,14 +176,14 @@ class TestInitWandbRunForMethod:
 
     def test_returns_bool_true(self, monkeypatch):
         """Enabled init returns exactly True (bool only, no ctx tuple)."""
-        monkeypatch.delenv("MFPO_DISABLE_WANDB", raising=False)
-        import mfpo.wandb_logging as wl
+        monkeypatch.delenv("SJFPO_DISABLE_WANDB", raising=False)
+        import sjfpo.wandb_logging as wl
 
         recorder = MagicMock()
         monkeypatch.setattr(wl, "wandb", recorder)
 
         result = wl.init_wandb_run_for_method(
-            method="mfpo",
+            method="sjfpo",
             env_name="Hopper-v5",
             seed=3047,
             total_steps=5000,
@@ -196,28 +194,28 @@ class TestInitWandbRunForMethod:
 
     def test_project_group_name_kwargs(self, monkeypatch):
         """project=method, name=None, group={method}_{env}."""
-        monkeypatch.delenv("MFPO_DISABLE_WANDB", raising=False)
-        import mfpo.wandb_logging as wl
+        monkeypatch.delenv("SJFPO_DISABLE_WANDB", raising=False)
+        import sjfpo.wandb_logging as wl
 
         recorder = MagicMock()
         monkeypatch.setattr(wl, "wandb", recorder)
 
         wl.init_wandb_run_for_method(
-            method="mfpo",
+            method="sjfpo",
             env_name="Hopper-v5",
             seed=3047,
             total_steps=5000,
             cfg_dict={},
         )
-        kw = _init_kwargs(recorder)
-        assert kw["project"] == "mfpo"
+        kw = init_kwargs(recorder)
+        assert kw["project"] == "sjfpo"
         assert kw["name"] is None
-        assert kw["group"] == "mfpo_Hopper-v5"
+        assert kw["group"] == "sjfpo_Hopper-v5"
 
     def test_job_type_smoke_and_train(self, monkeypatch):
         """job_type smoke<=10000 (boundary), else train."""
-        monkeypatch.delenv("MFPO_DISABLE_WANDB", raising=False)
-        import mfpo.wandb_logging as wl
+        monkeypatch.delenv("SJFPO_DISABLE_WANDB", raising=False)
+        import sjfpo.wandb_logging as wl
 
         for total_steps, expected in (
             (500, "smoke"),
@@ -234,15 +232,15 @@ class TestInitWandbRunForMethod:
                 total_steps=total_steps,
                 cfg_dict={},
             )
-            kw = _init_kwargs(recorder)
+            kw = init_kwargs(recorder)
             assert kw["job_type"] == expected, (
                 f"total_steps={total_steps}: {kw['job_type']!r} != {expected!r}"
             )
 
     def test_tags_and_config_merge(self, monkeypatch):
         """tags=[method,mujoco,cpu-first]; config merges cfg_dict+method/seed/env."""
-        monkeypatch.delenv("MFPO_DISABLE_WANDB", raising=False)
-        import mfpo.wandb_logging as wl
+        monkeypatch.delenv("SJFPO_DISABLE_WANDB", raising=False)
+        import sjfpo.wandb_logging as wl
 
         recorder = MagicMock()
         monkeypatch.setattr(wl, "wandb", recorder)
@@ -254,7 +252,7 @@ class TestInitWandbRunForMethod:
             total_steps=50000,
             cfg_dict={"lr": 3e-4},
         )
-        kw = _init_kwargs(recorder)
+        kw = init_kwargs(recorder)
         assert kw["tags"] == ["sac", "mujoco", "cpu-first"]
         assert kw["config"]["lr"] == 3e-4
         assert kw["config"]["method"] == "sac"
@@ -263,103 +261,101 @@ class TestInitWandbRunForMethod:
 
     def test_reinit_force_locked_forms(self, monkeypatch):
         """Probe-locked SDK literals: reinit='finish_previous', force=True."""
-        monkeypatch.delenv("MFPO_DISABLE_WANDB", raising=False)
-        import mfpo.wandb_logging as wl
+        monkeypatch.delenv("SJFPO_DISABLE_WANDB", raising=False)
+        import sjfpo.wandb_logging as wl
 
         recorder = MagicMock()
         monkeypatch.setattr(wl, "wandb", recorder)
 
         wl.init_wandb_run_for_method(
-            method="mfpo",
+            method="sjfpo",
             env_name="Hopper-v5",
             seed=3047,
             total_steps=5000,
             cfg_dict={},
         )
-        kw = _init_kwargs(recorder)
+        kw = init_kwargs(recorder)
         assert kw["reinit"] == "finish_previous"
         assert kw["force"] is True
 
-    def test_define_metric_locked_form(self, monkeypatch):
-        """Probe-locked global proxy: wandb.define_metric('*', step_metric='global_step')."""
-        monkeypatch.delenv("MFPO_DISABLE_WANDB", raising=False)
-        import mfpo.wandb_logging as wl
+    def test_no_custom_step_metric(self, monkeypatch):
+        """No custom x-axis: default step=global_step renders line graphs."""
+        monkeypatch.delenv("SJFPO_DISABLE_WANDB", raising=False)
+        import sjfpo.wandb_logging as wl
 
         recorder = MagicMock()
         monkeypatch.setattr(wl, "wandb", recorder)
 
         wl.init_wandb_run_for_method(
-            method="mfpo",
+            method="sjfpo",
             env_name="Hopper-v5",
             seed=3047,
             total_steps=5000,
             cfg_dict={},
         )
-        recorder.define_metric.assert_called_once_with(
-            "*", step_metric="global_step"
-        )
+        recorder.define_metric.assert_not_called()
 
     def test_mode_default_online(self, monkeypatch):
         """WANDB_MODE unset → mode='online' passthrough."""
-        monkeypatch.delenv("MFPO_DISABLE_WANDB", raising=False)
+        monkeypatch.delenv("SJFPO_DISABLE_WANDB", raising=False)
         monkeypatch.delenv("WANDB_MODE", raising=False)
-        import mfpo.wandb_logging as wl
+        import sjfpo.wandb_logging as wl
 
         recorder = MagicMock()
         monkeypatch.setattr(wl, "wandb", recorder)
 
         wl.init_wandb_run_for_method(
-            method="mfpo",
+            method="sjfpo",
             env_name="Hopper-v5",
             seed=3047,
             total_steps=5000,
             cfg_dict={},
         )
-        kw = _init_kwargs(recorder)
+        kw = init_kwargs(recorder)
         assert kw["mode"] == "online"
 
     def test_mode_offline_passthrough(self, monkeypatch):
         """WANDB_MODE=offline → mode='offline' straight through to the SDK."""
-        monkeypatch.delenv("MFPO_DISABLE_WANDB", raising=False)
+        monkeypatch.delenv("SJFPO_DISABLE_WANDB", raising=False)
         monkeypatch.setenv("WANDB_MODE", "offline")
-        import mfpo.wandb_logging as wl
+        import sjfpo.wandb_logging as wl
 
         recorder = MagicMock()
         monkeypatch.setattr(wl, "wandb", recorder)
 
         wl.init_wandb_run_for_method(
-            method="mfpo",
+            method="sjfpo",
             env_name="Hopper-v5",
             seed=3047,
             total_steps=5000,
             cfg_dict={},
         )
-        kw = _init_kwargs(recorder)
+        kw = init_kwargs(recorder)
         assert kw["mode"] == "offline"
 
     def test_mode_other_values_pass_through(self, monkeypatch):
         """Non-allowlist WANDB_MODE passes through to the SDK (no clamp)."""
-        monkeypatch.delenv("MFPO_DISABLE_WANDB", raising=False)
+        monkeypatch.delenv("SJFPO_DISABLE_WANDB", raising=False)
         monkeypatch.setenv("WANDB_MODE", "shared")
-        import mfpo.wandb_logging as wl
+        import sjfpo.wandb_logging as wl
 
         recorder = MagicMock()
         monkeypatch.setattr(wl, "wandb", recorder)
 
         wl.init_wandb_run_for_method(
-            method="mfpo",
+            method="sjfpo",
             env_name="Hopper-v5",
             seed=3047,
             total_steps=5000,
             cfg_dict={},
         )
-        kw = _init_kwargs(recorder)
+        kw = init_kwargs(recorder)
         assert kw["mode"] == "shared"
 
     def test_raising_init_propagates(self, monkeypatch):
         """A raising wandb.init is NEVER swallowed — the run fails fast."""
-        monkeypatch.delenv("MFPO_DISABLE_WANDB", raising=False)
-        import mfpo.wandb_logging as wl
+        monkeypatch.delenv("SJFPO_DISABLE_WANDB", raising=False)
+        import sjfpo.wandb_logging as wl
 
         recorder = MagicMock()
         recorder.init.side_effect = RuntimeError("no key")
@@ -367,7 +363,7 @@ class TestInitWandbRunForMethod:
 
         with pytest.raises(RuntimeError, match="no key"):
             wl.init_wandb_run_for_method(
-                method="mfpo",
+                method="sjfpo",
                 env_name="Hopper-v5",
                 seed=3047,
                 total_steps=5000,
@@ -380,8 +376,8 @@ class TestLogMetrics:
 
     def test_log_metrics_calls_wandb_log_by_default(self, monkeypatch):
         """Switch unset → wandb.log IS called (default-on)."""
-        monkeypatch.delenv("MFPO_DISABLE_WANDB", raising=False)
-        import mfpo.wandb_logging as wl
+        monkeypatch.delenv("SJFPO_DISABLE_WANDB", raising=False)
+        import sjfpo.wandb_logging as wl
 
         recorder = MagicMock()
         monkeypatch.setattr(wl, "wandb", recorder)
@@ -391,8 +387,8 @@ class TestLogMetrics:
 
     def test_log_metrics_raising_propagates(self, monkeypatch):
         """A raising wandb.log propagates — never swallowed."""
-        monkeypatch.delenv("MFPO_DISABLE_WANDB", raising=False)
-        import mfpo.wandb_logging as wl
+        monkeypatch.delenv("SJFPO_DISABLE_WANDB", raising=False)
+        import sjfpo.wandb_logging as wl
 
         recorder = MagicMock()
         recorder.log.side_effect = RuntimeError("send failed")
@@ -407,8 +403,8 @@ class TestLogEvalDetails:
 
     def test_eval_table_direct_constructor_list_of_lists(self, monkeypatch):
         """Table built via wandb.Table(columns=cols, data=[[..]]) list-of-lists."""
-        monkeypatch.delenv("MFPO_DISABLE_WANDB", raising=False)
-        import mfpo.wandb_logging as wl
+        monkeypatch.delenv("SJFPO_DISABLE_WANDB", raising=False)
+        import sjfpo.wandb_logging as wl
 
         recorder = MagicMock()
         monkeypatch.setattr(wl, "wandb", recorder)
@@ -426,8 +422,8 @@ class TestLogEvalDetails:
 
     def test_improvement_math_routes_via_log_metrics(self, monkeypatch):
         """improvement=(curr-prev)/max(abs(prev),1e-8) routed via log_metrics."""
-        monkeypatch.delenv("MFPO_DISABLE_WANDB", raising=False)
-        import mfpo.wandb_logging as wl
+        monkeypatch.delenv("SJFPO_DISABLE_WANDB", raising=False)
+        import sjfpo.wandb_logging as wl
 
         logged = []
         monkeypatch.setattr(
@@ -443,8 +439,8 @@ class TestLogEvalDetails:
 
     def test_improvement_zero_prev_uses_1e8_floor(self, monkeypatch):
         """prev=0.0 → divisor max(abs(0.0),1e-8)=1e-8, no ZeroDivisionError."""
-        monkeypatch.delenv("MFPO_DISABLE_WANDB", raising=False)
-        import mfpo.wandb_logging as wl
+        monkeypatch.delenv("SJFPO_DISABLE_WANDB", raising=False)
+        import sjfpo.wandb_logging as wl
 
         logged = []
         monkeypatch.setattr(
@@ -453,14 +449,14 @@ class TestLogEvalDetails:
 
         wl.log_eval_details([], [0.0, 2.0], global_step=3)
         assert len(logged) == 1
-        data, _step = logged[0]
+        data, step = logged[0]
         assert data["eval/reward_improvement"] == pytest.approx(2.0)
         assert data["eval/reward_improvement_pct"] == pytest.approx(2.0 / 1e-8)
 
     def test_empty_results_no_table(self, monkeypatch):
         """No episodes → no Table construction, improvement still logged."""
-        monkeypatch.delenv("MFPO_DISABLE_WANDB", raising=False)
-        import mfpo.wandb_logging as wl
+        monkeypatch.delenv("SJFPO_DISABLE_WANDB", raising=False)
+        import sjfpo.wandb_logging as wl
 
         recorder = MagicMock()
         monkeypatch.setattr(wl, "wandb", recorder)
@@ -474,9 +470,9 @@ class TestLogEvalDetails:
         assert len(logged) == 1
 
     def test_log_eval_details_noop_when_disabled(self, monkeypatch):
-        """MFPO_DISABLE_WANDB=1 → zero SDK calls."""
-        monkeypatch.setenv("MFPO_DISABLE_WANDB", "1")
-        import mfpo.wandb_logging as wl
+        """SJFPO_DISABLE_WANDB=1 → zero SDK calls."""
+        monkeypatch.setenv("SJFPO_DISABLE_WANDB", "1")
+        import sjfpo.wandb_logging as wl
 
         recorder = MagicMock()
         monkeypatch.setattr(wl, "wandb", recorder)
@@ -490,13 +486,69 @@ class TestLogEvalDetails:
         recorder.log.assert_not_called()
 
 
+class TestLogEvalSummary:
+    """Full eval payload lands in one wandb.log commit."""
+
+    def test_all_eval_metrics_logged(self, monkeypatch):
+        monkeypatch.delenv("SJFPO_DISABLE_WANDB", raising=False)
+        import sjfpo.wandb_logging as wl
+
+        logged = []
+        monkeypatch.setattr(
+            wl, "log_metrics", lambda data, step: logged.append((data, step))
+        )
+
+        results = [
+            {"episode": 0, "return": 1.0, "length": 10},
+            {"episode": 1, "return": 3.0, "length": 20},
+        ]
+        wl.log_eval_summary(
+            2.0,
+            results,
+            [1.0, 2.0],
+            4,
+            100,
+            r_rand=0.5,
+            consecutive_below=1,
+        )
+        assert len(logged) == 1
+        data, step = logged[0]
+        assert step == 100
+        assert data["eval/mean_return"] == pytest.approx(2.0)
+        assert data["eval/min_return"] == pytest.approx(1.0)
+        assert data["eval/max_return"] == pytest.approx(3.0)
+        assert data["eval/std_return"] == pytest.approx(1.0)
+        assert data["eval/mean_length"] == pytest.approx(15.0)
+        assert data["eval/max_length"] == pytest.approx(20.0)
+        assert data["eval/std_length"] == pytest.approx(5.0)
+        assert data["eval/episode_count"] == 4
+        assert data["eval/random_baseline"] == pytest.approx(0.5)
+        assert data["eval/consecutive_below"] == 1
+        assert data["eval/reward_improvement"] == pytest.approx(1.0)
+
+    def test_optional_baseline_keys_absent_when_none(self, monkeypatch):
+        monkeypatch.delenv("SJFPO_DISABLE_WANDB", raising=False)
+        import sjfpo.wandb_logging as wl
+
+        logged = []
+        monkeypatch.setattr(
+            wl, "log_metrics", lambda data, step: logged.append((data, step))
+        )
+
+        wl.log_eval_summary(1.0, [], [1.0], 1, 7)
+        data, _ = logged[0]
+        assert "eval/random_baseline" not in data
+        assert "eval/consecutive_below" not in data
+        assert data["eval/mean_length"] == 0.0
+
+
 class TestFinishRun:
     """Thin finish guard around wandb.finish."""
 
     def test_finish_run_calls_wandb_finish_by_default(self, monkeypatch):
         """Switch unset → wandb.finish IS called with the exit code."""
-        monkeypatch.delenv("MFPO_DISABLE_WANDB", raising=False)
-        import mfpo.wandb_logging as wl
+        monkeypatch.delenv("SJFPO_DISABLE_WANDB", raising=False)
+        import sjfpo.wandb_logging as wl
 
         recorder = MagicMock()
         monkeypatch.setattr(wl, "wandb", recorder)
@@ -506,8 +558,8 @@ class TestFinishRun:
 
     def test_finish_run_raising_propagates(self, monkeypatch):
         """A raising wandb.finish propagates — never swallowed."""
-        monkeypatch.delenv("MFPO_DISABLE_WANDB", raising=False)
-        import mfpo.wandb_logging as wl
+        monkeypatch.delenv("SJFPO_DISABLE_WANDB", raising=False)
+        import sjfpo.wandb_logging as wl
 
         recorder = MagicMock()
         recorder.finish.side_effect = RuntimeError("finish failed")
@@ -522,7 +574,7 @@ class TestSurfaceAndImportGuards:
 
     def test_five_fn_surface(self):
         """Core kept fns present; all old (pre-simplification) names gone."""
-        import mfpo.wandb_logging as wl
+        import sjfpo.wandb_logging as wl
 
         for name in (
             "wandb_disabled",
@@ -543,8 +595,8 @@ class TestSurfaceAndImportGuards:
 
     def test_wandb_attribute_mockable(self, monkeypatch):
         """wl.wandb is settable — log_metrics routes through the mock."""
-        monkeypatch.delenv("MFPO_DISABLE_WANDB", raising=False)
-        import mfpo.wandb_logging as wl
+        monkeypatch.delenv("SJFPO_DISABLE_WANDB", raising=False)
+        import sjfpo.wandb_logging as wl
 
         recorder = MagicMock()
         monkeypatch.setattr(wl, "wandb", recorder)
@@ -552,8 +604,8 @@ class TestSurfaceAndImportGuards:
         recorder.log.assert_called_once()
 
     def test_run_matrix_unchanged(self):
-        """len(build_legacy_run_matrix()) == 45 — cardinality locked."""
-        assert len(build_legacy_run_matrix()) == 45
+        """len(build_run_matrix()) == 45 — cardinality locked."""
+        assert len(build_run_matrix()) == 45
 
     def test_wandb_absent_is_hard_import_error(self):
         """Subprocess guard: wandb hidden → import raises ImportError (hard)."""
@@ -561,7 +613,7 @@ class TestSurfaceAndImportGuards:
             "import sys\n"
             "sys.modules['wandb'] = None\n"
             "sys.path.insert(0, 'src')\n"
-            "try:\n    import mfpo.wandb_logging as wl\n"
+            "try:\n    import sjfpo.wandb_logging as wl\n"
             "except ImportError:\n    print('wandb required guard ok')\n"
             "else:\n    raise SystemExit('expected ImportError')\n"
         )
@@ -580,9 +632,9 @@ class TestSurfaceAndImportGuards:
         """Subprocess guard: default-on → import ok, wl.wandb mockable."""
         code = (
             "import os, sys; "
-            "os.environ.pop('MFPO_DISABLE_WANDB', None); "
+            "os.environ.pop('SJFPO_DISABLE_WANDB', None); "
             "sys.path.insert(0, 'src'); "
-            "import mfpo.wandb_logging as wl; "
+            "import sjfpo.wandb_logging as wl; "
             "assert wl.wandb_disabled() is False; "
             "from unittest.mock import MagicMock; wl.wandb = MagicMock(); "
             "wl.log_metrics({'x': 1}, step=0); "
