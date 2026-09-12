@@ -1,9 +1,9 @@
-"""FPO++ core math tests (plan task 5) — written BEFORE src/mfpo/fpo_core.py.
+"""FPO++ core math tests (plan task 5) — written BEFORE src/sjfpo/fpo_core.py.
 
 Covers the nine numeric gates from plan checkbox 5:
 (a) toy 1D Gaussian reference-equivalence gate (Metis blocker #1),
 (b) fitted-CFM < shuffled-target CFM on >=95% of fixtures,
-(c) per-sample ratio shape [chunks, N_mc=16] + degeneracy guard (blocker #2),
+(c) per-sample ratio shape [chunks, num_mc_samples=16] + degeneracy guard (blocker #2),
 (d) ASPO hand-computed surrogates (tolerance 1e-3),
 (e) STE log-ratio clamp: value capped at exp(cap), gradient still flows,
 (f) negative-advantage clamp: effective Delta-l capped at +cfm_clamp,
@@ -14,7 +14,7 @@ Covers the nine numeric gates from plan checkbox 5:
     bounds; DCT(IDCT(x)) == x roundtrip < 1e-5.
 
 Binding conventions exercised throughout: x_t = t*eps + (1-t)*a (t=1 noise),
-v* = eps - a, tau ~ U[0.005, 0.995], N_mc = 16, fp32 only.
+v* = eps - a, tau ~ U[0.005, 0.995], num_mc_samples = 16, fp32 only.
 """
 
 from __future__ import annotations
@@ -30,17 +30,17 @@ from torch import nn
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from mfpo import config  # noqa: E402
-from mfpo.dct_utils import dct, idct  # noqa: E402
-from mfpo.networks import PolicyFlowHead, timestep_embedding  # noqa: E402
+from sjfpo import config  # noqa: E402
+from sjfpo.dct_utils import dct, idct  # noqa: E402
+from sjfpo.networks import SJFOPolicyModel, get_timestep_embedding  # noqa: E402
 
-from mfpo import fpo_core  # noqa: E402  (RED until implemented)
+from sjfpo import fpo_core  # noqa: E402  (RED until implemented)
 
-_TAU_LO, _TAU_HI = config.MFPO_CFG.tau_range
+TAU_LO, TAU_HI = config.SJFPO_CFG.tau_range
 
 
 class VelocityMLP(nn.Module):
-    """Toy velocity net MLP[in+8 -> 128 -> 128 -> out] ELU.
+    """Toy velocity net MLP[in+8 -> 128 -> 128 -> out] SiLU.
 
     Signature matches the project flow heads: ``net(x_t, t, cond)`` returning
     a tensor with the same shape as ``x_t`` (trailing dims flattened into the
@@ -52,29 +52,28 @@ class VelocityMLP(nn.Module):
         out_dim = in_dim if out_dim is None else out_dim
         self.net = nn.Sequential(
             nn.Linear(in_dim + 8, 128),
-            nn.ELU(),
+            nn.SiLU(),
             nn.Linear(128, 128),
-            nn.ELU(),
+            nn.SiLU(),
             nn.Linear(128, out_dim),
         )
 
     def forward(self, x_t: torch.Tensor, t, cond=None) -> torch.Tensor:
-        temb = timestep_embedding(t, dim=8)
+        temb = get_timestep_embedding(t, dim=8)
         if temb.shape[0] != x_t.shape[0]:
             temb = temb.expand(x_t.shape[0], -1)
         z = self.net(torch.cat([x_t.reshape(x_t.shape[0], -1), temb], dim=-1))
         return z.reshape(x_t.shape)
 
 
-def _draw_tau(shape, generator) -> torch.Tensor:
+def draw_tau(shape, generator) -> torch.Tensor:
     """tau ~ U[0.005, 0.995] (binding tau_range from config)."""
-    return _TAU_LO + (_TAU_HI - _TAU_LO) * torch.rand(shape, generator=generator)
+    return TAU_LO + (TAU_HI - TAU_LO) * torch.rand(shape, generator=generator)
 
-
-# ---------------------------------------------------------------------------
-# (a) Reference-equivalence gate: integrated velocity field reproduces the
-#     data distribution moments (<5% relative error on mean AND variance).
-# ---------------------------------------------------------------------------
+    # ---------------------------------------------------------------------------
+    # (a) Reference-equivalence gate: integrated velocity field reproduces the
+    #     data distribution moments (<5% relative error on mean AND variance).
+    # ---------------------------------------------------------------------------
 
 
 def test_toy_gaussian_reference_gate(capsys):
@@ -85,9 +84,9 @@ def test_toy_gaussian_reference_gate(capsys):
 
     opt = torch.optim.Adam(net.parameters(), lr=1e-3)
     for _ in range(3000):  # full-batch CFM steps
-        # eps [n, N_mc=1, F=1]; tau scalar per step; v* = eps - a inside cfm_loss
+        # eps [n, num_mc_samples=1, F=1]; tau scalar per step; v* = eps - a inside cfm_loss
         eps = torch.randn(4000, 1, 1)
-        tau = float(torch.empty(1).uniform_(_TAU_LO, _TAU_HI))
+        tau = float(torch.empty(1).uniform_(TAU_LO, TAU_HI))
         loss = fpo_core.cfm_loss(net, data, eps, tau, cond=None)
         opt.zero_grad()
         loss.backward()
@@ -109,11 +108,10 @@ def test_toy_gaussian_reference_gate(capsys):
     assert mean_err < 0.05, f"mean {mean_hat:.4f} too far from 2.0"
     assert var_err < 0.05, f"var {var_hat:.4f} too far from 0.25"
 
-
-# ---------------------------------------------------------------------------
-# (b) Fitted check: per-point CFM loss under the correctly-trained net is
-#     lower than under a net trained with row-shuffled noise targets.
-# ---------------------------------------------------------------------------
+    # ---------------------------------------------------------------------------
+    # (b) Fitted check: per-point CFM loss under the correctly-trained net is
+    #     lower than under a net trained with row-shuffled noise targets.
+    # ---------------------------------------------------------------------------
 
 
 def test_fitted_loss_below_shuffled_targets():
@@ -136,7 +134,7 @@ def test_fitted_loss_below_shuffled_targets():
         g = torch.Generator().manual_seed(5)
         for _ in range(3000):
             eps = torch.randn(n, 1, generator=g)
-            tau = float(torch.empty(1).uniform_(_TAU_LO, _TAU_HI, generator=g))
+            tau = float(torch.empty(1).uniform_(TAU_LO, TAU_HI, generator=g))
             x_t = tau * eps + (1.0 - tau) * data  # t*eps + (1-t)*a
             v_hat = net(x_t, torch.full((n,), tau), None)
             target = eps - data  # v* = eps - a
@@ -154,7 +152,7 @@ def test_fitted_loss_below_shuffled_targets():
     fixtures = data[:n_fix]
     g_eval = torch.Generator().manual_seed(13)
     eps_ev = torch.randn(n_fix, 256, 1, generator=g_eval)
-    tau_ev = _draw_tau((n_fix, 256), g_eval)
+    tau_ev = draw_tau((n_fix, 256), g_eval)
     with torch.no_grad():
         l_fit = fpo_core.flow_loglik(net_fit, fixtures, eps_ev, tau_ev, None)
         l_shuf = fpo_core.flow_loglik(net_shuf, fixtures, eps_ev, tau_ev, None)
@@ -162,11 +160,10 @@ def test_fitted_loss_below_shuffled_targets():
     print(f"fitted<shuffled on {wins}/{n_fix} fixtures")
     assert wins >= math.ceil(0.95 * n_fix)  # integer count: no float-boundary flake
 
-
-# ---------------------------------------------------------------------------
-# (c) Per-sample ratios: shape [chunks, N_mc=16]; ONE perturbed update keeps
-#     log-ratios non-degenerate (Var > 0) and centered (|mean| < 0.5).
-# ---------------------------------------------------------------------------
+    # ---------------------------------------------------------------------------
+    # (c) Per-sample ratios: shape [chunks, num_mc_samples=16]; ONE perturbed update keeps
+    #     log-ratios non-degenerate (Var > 0) and centered (|mean| < 0.5).
+    # ---------------------------------------------------------------------------
 
 
 def test_ratio_shape_and_degeneracy_guard():
@@ -175,8 +172,8 @@ def test_ratio_shape_and_degeneracy_guard():
     net_new = copy.deepcopy(net_old)
     a = torch.randn(4, 8, 3)
     g = torch.Generator().manual_seed(22)
-    eps_tr = torch.randn(4, config.MFPO_CFG.N_mc, 8, 3, generator=g)
-    tau_tr = _draw_tau((4, config.MFPO_CFG.N_mc), g)
+    eps_tr = torch.randn(4, config.SJFPO_CFG.num_mc_samples, 8, 3, generator=g)
+    tau_tr = draw_tau((4, config.SJFPO_CFG.num_mc_samples), g)
 
     opt = torch.optim.Adam(net_new.parameters(), lr=1e-3)
     loss = fpo_core.cfm_loss(net_new, a, eps_tr, tau_tr, cond=None)
@@ -184,62 +181,63 @@ def test_ratio_shape_and_degeneracy_guard():
     loss.backward()
     opt.step()  # the ONE perturbed update
 
-    eps_ev = torch.randn(4, config.MFPO_CFG.N_mc, 8, 3, generator=g)
-    tau_ev = _draw_tau((4, config.MFPO_CFG.N_mc), g)
+    eps_ev = torch.randn(4, config.SJFPO_CFG.num_mc_samples, 8, 3, generator=g)
+    tau_ev = draw_tau((4, config.SJFPO_CFG.num_mc_samples), g)
     with torch.no_grad():
         l_old = fpo_core.flow_loglik(net_old, a, eps_ev, tau_ev, None)
         l_new = fpo_core.flow_loglik(net_new, a, eps_ev, tau_ev, None)
         rho = fpo_core.flow_ratio(l_old, l_new)
 
-    assert rho.shape == (4, config.MFPO_CFG.N_mc)
+    assert rho.shape == (4, config.SJFPO_CFG.num_mc_samples)
     log_rho = torch.log(rho)
     assert log_rho.var(unbiased=True).item() > 0.0, "ratios degenerated to a constant"
     assert abs(log_rho.mean().item()) < 0.5, "one update moved ratios too far"
 
-
-# ---------------------------------------------------------------------------
-# (d) ASPO piecewise trust region against hand-computed values (tol 1e-3).
-# ---------------------------------------------------------------------------
+    # ---------------------------------------------------------------------------
+    # (d) ASPO piecewise trust region against hand-computed values (tol 1e-3).
+    # ---------------------------------------------------------------------------
 
 
 def test_aspo_surrogate_hand_computed():
-    eps_clip = config.MFPO_CFG.epsilon_clip  # 0.05
+    clip_range = config.SJFPO_CFG.clip_range  # 0.05
     # Positive advantage: PPO-clip branch.
-    psi_ppo = fpo_core.aspo_surrogate(torch.tensor(1.04), torch.tensor(1.0), eps_clip)
+    psi_ppo = fpo_core.aspo_surrogate(torch.tensor(1.04), torch.tensor(1.0), clip_range)
     assert psi_ppo.item() == pytest.approx(1.04, abs=1e-3)
     # Negative advantage: SPO branch  rho*A - (|A|/(2*eps))*(rho-1)^2.
-    psi_spo = fpo_core.aspo_surrogate(torch.tensor(1.04), torch.tensor(-1.0), eps_clip)
+    psi_spo = fpo_core.aspo_surrogate(
+        torch.tensor(1.04), torch.tensor(-1.0), clip_range
+    )
     expected = -1.04 - (1.0 / 0.1) * 0.04**2  # = -1.056
     assert psi_spo.item() == pytest.approx(expected, abs=1e-3)
     # Mixed batch routes each element through its own branch.
     rho = torch.tensor([1.04, 1.04])
     adv = torch.tensor([1.0, -1.0])
-    mixed = fpo_core.aspo_surrogate(rho, adv, eps_clip)
+    mixed = fpo_core.aspo_surrogate(rho, adv, clip_range)
     assert mixed[0].item() == pytest.approx(1.04, abs=1e-3)
     assert mixed[1].item() == pytest.approx(expected, abs=1e-3)
 
-
-# ---------------------------------------------------------------------------
-# (e) STE log-ratio clamp: Delta_l = 50 -> value exp(10), gradient flows.
-# ---------------------------------------------------------------------------
+    # ---------------------------------------------------------------------------
+    # (e) STE log-ratio clamp: Delta_l = 50 -> value exp(10), gradient flows.
+    # ---------------------------------------------------------------------------
 
 
 def test_ste_clamp_value_and_gradient():
     l_old = torch.tensor([60.0])
     l_new = torch.tensor([10.0], requires_grad=True)  # Delta_l = 50 > cap 10
     rho = fpo_core.flow_ratio(l_old, l_new)
-    assert rho.item() == pytest.approx(math.exp(config.MFPO_CFG.log_ratio_cap), rel=1e-6)
+    assert rho.item() == pytest.approx(
+        math.exp(config.SJFPO_CFG.log_ratio_cap), rel=1e-6
+    )
     rho.backward()
     assert l_new.grad is not None
     assert l_new.grad.abs().item() > 0.0, "straight-through clamp blocked gradients"
     assert l_new.grad.item() == pytest.approx(
-        -math.exp(config.MFPO_CFG.log_ratio_cap), rel=1e-5
+        -math.exp(config.SJFPO_CFG.log_ratio_cap), rel=1e-5
     )
 
-
-# ---------------------------------------------------------------------------
-# (f) Negative-advantage clamp: l_new - l_old effectively capped at +20.
-# ---------------------------------------------------------------------------
+    # ---------------------------------------------------------------------------
+    # (f) Negative-advantage clamp: l_new - l_old effectively capped at +20.
+    # ---------------------------------------------------------------------------
 
 
 def test_neg_advantage_clamp_caps_delta():
@@ -248,13 +246,12 @@ def test_neg_advantage_clamp_caps_delta():
     adv = torch.full((1,), -1.0)
     rho = fpo_core.policy_ratio(l_old, l_new, adv)
     # Effective Delta_l becomes -cfm_clamp = -20, so rho = exp(-20) (NOT exp(-100)).
-    assert rho.item() == pytest.approx(math.exp(-config.MFPO_CFG.cfm_clamp), rel=1e-6)
+    assert rho.item() == pytest.approx(math.exp(-config.SJFPO_CFG.cfm_clamp), rel=1e-6)
 
-
-# ---------------------------------------------------------------------------
-# (g) Finite-difference gradient check of the policy loss w.r.t. one
-#     velocity-net weight (rel. error < 5%).
-# ---------------------------------------------------------------------------
+    # ---------------------------------------------------------------------------
+    # (g) Finite-difference gradient check of the policy loss w.r.t. one
+    #     velocity-net weight (rel. error < 5%).
+    # ---------------------------------------------------------------------------
 
 
 def test_policy_loss_fd_gradient():
@@ -262,8 +259,8 @@ def test_policy_loss_fd_gradient():
     net = VelocityMLP(in_dim=8 * 1)  # small problem keeps FD numerics clean
     a = torch.randn(1, 8, 1)
     g = torch.Generator().manual_seed(32)
-    eps = torch.randn(1, config.MFPO_CFG.N_mc, 8, 1, generator=g)
-    tau = _draw_tau((1, config.MFPO_CFG.N_mc), g)
+    eps = torch.randn(1, config.SJFPO_CFG.num_mc_samples, 8, 1, generator=g)
+    tau = draw_tau((1, config.SJFPO_CFG.num_mc_samples), g)
     adv = torch.tensor([1.0])
 
     with torch.no_grad():
@@ -293,11 +290,10 @@ def test_policy_loss_fd_gradient():
     print(f"fd grad check: analytic={analytic:.6e} fd={fd:.6e} rel_err={rel_err:.2%}")
     assert rel_err < 0.05
 
-
-# ---------------------------------------------------------------------------
-# (h) Euler sampler: descending linspace(1, 0, steps+1) grid, update
-#     x <- x - dt * v_hat, zero-sampling deterministic given weights.
-# ---------------------------------------------------------------------------
+    # ---------------------------------------------------------------------------
+    # (h) Euler sampler: descending linspace(1, 0, steps+1) grid, update
+    #     x <- x - dt * v_hat, zero-sampling deterministic given weights.
+    # ---------------------------------------------------------------------------
 
 
 def test_euler_sampler_grid_update_and_zero_noise():
@@ -334,20 +330,25 @@ def test_euler_sampler_grid_update_and_zero_noise():
     z2 = fpo_core.euler_sample(net, (5, 1), None, steps=16, eps=torch.zeros(5, 1))
     assert torch.equal(z1, z2)
 
-
-# ---------------------------------------------------------------------------
-# (i) SPACE-CONSISTENCY gate: sample action chunks in DCT coefficient space,
-#     map back via IDCT, clip to bounds; DCT(IDCT(x)) == x roundtrip < 1e-5.
-# ---------------------------------------------------------------------------
+    # ---------------------------------------------------------------------------
+    # (i) SPACE-CONSISTENCY gate: sample action chunks in DCT coefficient space,
+    #     map back via IDCT, clip to bounds; DCT(IDCT(x)) == x roundtrip < 1e-5.
+    # ---------------------------------------------------------------------------
 
 
 def test_space_consistency_dct_pipeline():
     torch.manual_seed(51)
-    head = PolicyFlowHead(action_dim=3, cond_dims=(config.MFPO_CFG.Z_dim,))
-    cond = torch.zeros(4, config.MFPO_CFG.context_len, config.MFPO_CFG.Z_dim)
+    policy = SJFOPolicyModel(action_dim=3)
+    cond = torch.zeros(
+        4, config.SJFPO_CFG.num_spectral_tokens, config.SJFPO_CFG.spectral_dim
+    )
     with torch.no_grad():
         coeffs = fpo_core.euler_sample(
-            head, (4, 8, 3), cond, steps=16, generator=torch.Generator().manual_seed(52)
+            policy,
+            (4, 8, 3),
+            cond,
+            steps=16,
+            generator=torch.Generator().manual_seed(52),
         )
         actions = idct(coeffs, dim=1)  # coefficient space -> action space
         low, high = -0.5, 0.5
