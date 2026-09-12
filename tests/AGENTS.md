@@ -1,32 +1,30 @@
 # AGENTS — tests
 
 ## Overview
-263 test functions across 22 test_*.py files, 1:1 per-module gates + pipeline invariants. Full suite ~100s CPU.
+277 collected items (109 fns, heavy parametrize) across 23 test_*.py files. Full suite ~103s CPU. Counts below are collected items (`pytest --collect-only`), recompute on add/remove — never hardcode.
 
 ## Structure
 ```
-test_analysis.py (13)      analyze_results IQM/bootstrap
-test_baselines.py (7)      skrl PPO/SAC drivers
-test_calibration.py (10)   budget gate (build_legacy_run_matrix consumer)
-test_checkpoint.py (5)     atomic ckpt (uses test-local resume_worker helpers)
-test_collector.py (9)      collect_chunks (fake_env)
-test_config.py (15)        dataclasses + 45/TINY matrices (module-reload tests)
+test_wandb_logging.py (30)   default-on gate (imports FakeGymEnv)
+test_einx_migration.py (27)  torch↔einx 1e-6 parity (QUARANTINE per ledger)
+test_networks.py (24)        encoder/spectral/DiT + cross-attn Critic + Epps-Pulley SIGRef
+test_sweep.py (20)           scan_runs/run_pending (imports RunSpec, RUN_MATRIX)
+test_todo4_characterization.py (16) pre-refactor behavior pins (fn-consolidation)
+test_config.py (15)          dataclasses + 45/TINY matrices (module-reload tests)
+test_dct.py (14)             DCT/IDCT roundtrip + Parseval + DC=mean·√H (no scipy)
+test_trainer.py (14)         assemble_update incl. DiT actor + V(s,a) TD-critic + critic-latent SigReg
+test_todo3_characterization.py (13) pre-refactor behavior pins (fn-consolidation)
+test_analysis.py (13)        analyze_results IQM/bootstrap
+test_evaluator.py (11)       Evaluator 3-col CSV
+test_transition_v4.py (11)   Transition 9-key/shape/dtype + continuity + next.action chaining + no-aux-head lock
+test_runner_sjfpo.py (9)     train_run incl. CLI smoke
+test_fpo_core.py (9)         ASPO/CFM (imports euler_sample, SJFOPolicyModel)
+test_collector.py (9)        collect_chunks incl. NEVER-hardcode-horizon guards (fake_env)
+test_pipeline_cpu.py (7)     end-to-end invariants: CSV + 45 + wandb
+test_baselines.py (7)        skrl PPO/SAC drivers + tiny smokes
+test_gae.py (6)              chunk_gae vs zero-shared-code brute-force oracle
+test_checkpoint.py (5)       atomic ckpt (uses test-local resume_worker helpers)
 test_config_yaml_parity.py (1) YAML keys ⊆ dataclass fields (deslop gate)
-test_dct.py (12)           DCT/IDCT (imports discounted_chunk_reward)
-test_einx_migration.py (27)      torch↔einx 1e-6 parity (QUARANTINE per ledger)
-test_evaluator.py (11)     Evaluator 3-col CSV
-test_fpo_core.py (9)       ASPO/CFM (imports euler_sample, PolicyFlowHead)
-test_gae.py (6)            chunk_gae
-test_inference.py (5)      euler/decode (notebook-only surface)
-test_joint_flow.py (6)     JointFlowTransformer (blocks JFT-shape changes)
-test_networks.py (21)      trunk/spectral/EMA + Epps-Pulley SIGReg
-test_pipeline_cpu.py (7)   end-to-end invariants: CSV + 45 + wandb
-test_runner_mfpo.py (9)    train_run
-test_sweep.py (20)         scan_runs/run_pending (imports RunSpec, RUN_MATRIX)
-test_trainer.py (9)        assemble_update (imports ChunkRecord, MFPOAborted)
-test_wandb_logging.py (30)      default-on gate (imports FakeGymEnv)
-test_todo3_characterization.py (13)  pre-refactor behavior pins (fn-consolidation)
-test_todo4_characterization.py (16)  pre-refactor behavior pins (fn-consolidation)
 fixtures/fake_env.py       FakeGymEnv shared fixture
 resume_worker.py           subprocess worker for checkpoint resume determinism
 ```
@@ -34,13 +32,17 @@ resume_worker.py           subprocess worker for checkpoint resume determinism
 ## Where to Look
 - Pipeline lock: `test_pipeline_cpu.py` (CSV schema, 45/TINY cardinality, wandb default-on/disabled)
 - Parity locks: `test_einx_migration.py`, `test_config_yaml_parity.py`, `test_dct.py` (denormalize atol 1e-6)
-- Reload-pattern tests: `test_config.py` (MFPO_TINY_MATRIX swap), `test_pipeline_cpu.py` (tiny reload)
+- Transition lock: `test_transition_v4.py` (exact 9-key set incl. next.action, `n_action_steps == len(next.reward)`, bool dtypes, chunk continuity, next.action chaining)
+- Horizon guards: `test_collector.py` NEVER-hardcodes n_obs_steps/chunk_size/n_action_steps (uses `SJFPO_CFG`)
+- Reload-pattern tests: `test_config.py` (SJFPO_TINY_MATRIX swap), `test_pipeline_cpu.py` (tiny reload)
 - Characterization guards: `test_todo3_characterization.py`, `test_todo4_characterization.py` (pre-refactor pins)
 
 ## Conventions
-- Test-only seams are load-bearing: ChunkRecord/MFPOAborted/policy heads/euler_sample/build_legacy_run_matrix imports — deleting src helpers breaks these first
+- Test-only seams are load-bearing: Transition/SJFPOAborted/policy heads/euler_sample/build_run_matrix imports — deleting src helpers breaks these first
 - Deleting a tested src fn requires deleting/rewriting its test (deslop rule, verified 3×)
-- Fixed tiny counts per file; full-suite count recomputed on test add/remove (never hardcoded)
+- Collected-item counts per file (parametrize-inflated); full-suite count recomputed on test add/remove (never hardcoded)
+- RED-GREEN headers: most files carry a TDD docstring (`RED phase` / `RED until implemented`) — historical, suite is green
+- `sys.path.insert(src)` boilerplate per file (alt: `PYTHONPATH=src`); `conftest.py` autouse-mocks wandb (no test touches network)
 
 ## Anti-Patterns
 - DO NOT delete failing tests to pass — fix src or amend plan
