@@ -126,8 +126,6 @@ class TestSjfpoEvalWrapperCharacterization:
             num_spectral_tokens=cfg.num_spectral_tokens,
             n_obs_steps=cfg.n_obs_steps,
         )
-        with torch.no_grad():
-            spectral.capture_stats(torch.randn(4, cfg.n_obs_steps, cfg.hidden_size))
         return SjfpoEvalWrapper(trunk, policy, spectral, cfg), cfg
 
     def test_single_action_shape_and_open_loop_cadence(self):
