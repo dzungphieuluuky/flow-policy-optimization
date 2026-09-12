@@ -66,7 +66,7 @@ def make_trainer(**overrides) -> SJFPOTrainer:
 def make_chunks(n: int = 128) -> tuple[list[Transition], dict]:
     """Create synthetic transitions with pre-computed advantages."""
     cfg = SJFPOConfig()
-    t_len, h_len, n_steps = cfg.n_obs_steps, cfg.chunk_size, cfg.n_action_steps
+    t_len, h_len, n_steps = cfg.n_obs_steps, cfg.chunk_size, 8
     chunks: list[Transition] = []
     for _ in range(n):
         chunks.append(
@@ -357,10 +357,10 @@ class TestCriticBootstrap:
                     "action": torch.randn(cfg.chunk_size, ACT_DIM) * 0.5,
                     "next.action": torch.randn(cfg.chunk_size, ACT_DIM) * 0.5,
                     "next.observation.state": torch.randn(cfg.n_obs_steps, OBS_DIM),
-                    "next.reward": torch.ones(cfg.n_action_steps),
+                    "next.reward": torch.ones(8),
                     "next.done": torch.tensor(False),
                     "next.truncated": torch.tensor(False),
-                    "n_action_steps": torch.tensor(cfg.n_action_steps),
+                    "n_action_steps": torch.tensor(8),
                     "clip_count": torch.tensor(0),
                 }
             )
