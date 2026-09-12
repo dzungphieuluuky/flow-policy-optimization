@@ -2,23 +2,23 @@
 
 ## Prerequisites
 
-- Python 3.10+ (repo pinned and tested on 3.10)
-- `pip` + venv (`.venv` already present; `requirements-local.txt` is CPU-first —
-  `verify_deps.sh` checks pins)
+- Python ≥ 3.12 (`pyproject.toml` requires it)
+- `pip` + venv (`.venv` already present; `requirements-linux.txt` is the Linux
+  pin set — `verify_deps.sh` checks pins, though it is partly stale, see Notes)
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -U pip
-# if you need full deps: pip install -r requirements-local.txt  # or follow verify_deps.sh
+# if you need full deps: pip install -r requirements-linux.txt  # or: pip install -e .
 ```
 
 ## 5-Minute Smoke Run
 
 ```bash
 # 0. From repo root
-cd /run/media/dung-pham/DATA/Personal/fourier-transform-research
+cd spectral-joint-policy
 
-# 1. All tests (216 passed)
+# 1. All tests (273 passed)
 PYTHONPATH=src .venv/bin/python -m pytest -q
 
 # 2. MuJoCo single-run smoke (200 steps)
@@ -44,13 +44,12 @@ ls -lh spectral_joint_flow.ipynb flow_matching_vs_ppo_sac.ipynb
 
 These mirror the axes `RUN_MATRIX` enumerates — see [Config & Flags](config-flags.md).
 
-## Notebooks on Kaggle
+## Notebooks on Colab
 
-- Upload **only** `spectral_joint_flow.ipynb` — it is self-contained (no `src/`
-  needed; the builder proves tmpdir self-containment).
-- It branches on `IS_KAGGLE` automatically; real-data cells are opt-in.
-- Checkpoint helper `push_checkpoints_to_dataset()` is marked optional — wire
-  your dataset slug before using.
+- Open the `.ipynb` from GitHub in Colab, paste a PAT when prompted
+  (or set the `GITHUB_TOKEN` secret), run top to bottom.
+- The notebook clones this repo, installs `requirements-linux.txt`, then
+  calls `scripts/train.py` — eval runs inside training.
 
 ## Where to Look Next
 

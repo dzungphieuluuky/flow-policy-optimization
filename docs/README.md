@@ -1,8 +1,8 @@
-# Project Navigation — Fourier-Transform Research
+# Project Navigation — spectral-joint-policy
 
-> **One-page map for `fourier-transform-research`:** MuJoCo-only spectral joint
-> flow matching (SJFPO) + skrl PPO/SAC baselines, CPU-first, fp32-only.
-> Suite: `pytest -q` 263 passed.
+> **One-page map for `spectral-joint-policy`:** MuJoCo-only spectral flow
+> matching (SJFPO) + skrl PPO/SAC baselines, CPU-first, fp32-only.
+> Suite: `pytest -q` 273 passed.
 
 ## Start Here (30 seconds)
 
@@ -21,7 +21,7 @@
 
 ```
 stacked obs [T=16,obs_dim] ──► policy_state_encoder ──► Z [16,128]
-Z ──► DCT-II(time) ──► K=5 low bins ──► frozen norm ──► Linear(D→64) → tokens [5,64]
+Z ──► DCT-II(time) ──► K=5 low bins ──► Linear(D→64) → tokens [5,64]
 chunk actions [H=16,Da] ──► DCT ──► DiT-8 velocity (cond = time + pooled tokens) ──► euler_sample t:1→0 ──► IDCT
 stacked obs ──► critic_state_encoder (decoupled) ──► Critic V(s,a) ──► TD + Epps-Pulley SIGReg
 ```
@@ -42,7 +42,7 @@ stacked obs ──► critic_state_encoder (decoupled) ──► Critic V(s,a) �
 ## Quick Commands (copy-paste)
 
 ```bash
-# 1. Full test suite (263 passed)
+# 1. Full test suite (273 passed)
 PYTHONPATH=src .venv/bin/python -m pytest -q
 
 # 2. MuJoCo single-run smoke (200 steps)
@@ -52,6 +52,6 @@ PYTHONPATH=src .venv/bin/python scripts/train.py --method sjfpo --env Hopper-v5 
 PYTHONPATH=src .venv/bin/python scripts/train.py --matrix --methods sjfpo ppo sac --envs Hopper-v5 --seeds 0 --total-steps 200 --out-dir .omo/evidence/smoke
 
 # 4. Build notebooks
-python scripts/build_notebook.py                          # builds both ipynbs (61 + 47 cells)
+python scripts/build_notebook.py                          # builds both minimal ipynbs (6 cells each, no source)
 python scripts/build_notebook.py --spectral-only          # only spectral_joint_flow.ipynb
 ```

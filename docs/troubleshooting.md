@@ -13,16 +13,16 @@ PYTHONPATH=src .venv/bin/python -m pytest -q
 **Spectral test flake**
 
 Keep fp32, no `autocast`/`half`/`bfloat16` — the fp32-only gate scans for
-these. Check the DCT→low-K→frozen→Linear order in
+these. Check the DCT→low-K→Linear order in
 `networks.py::SpectralEncoder` first.
 
 ## Smoke / Runner
 
-**`CalibrationError` or `No eval histories` after smoke**
+**`No eval histories` after smoke**
 
-Smokes write under `--out-dir` (default `.omo/evidence/...`). If you changed
+Smokes write under `--out-dir` (default `.omo/evidence/train`). If you changed
 `--out-dir` or matrix filters mid-run, clear the old dir or re-run with the
-intended flags. The analysis cell's empty-history guard skips gracefully.
+intended flags. `eval_history.csv` appears only after the first eval interval.
 
 **`train_run` exits non-zero**
 
@@ -42,22 +42,17 @@ distributed helpers, drop them; the supported path is `baseline_train_loop`.
 
 ## Notebook Build
 
-**`build_notebook.py` output drifts from `src/`**
+**Notebook content looks stale**
 
-Rebuild after editing `src/` — never hand-edit ipynbs. Verify:
-`grep -n "from src\." spectral_joint_flow.ipynb` must be 0, cell counts
-61 / 47, `nbformat.validate` passes.
+Notebooks carry no source — rebuild after changing the command set:
+`python scripts/build_notebook.py`, then `nbformat.validate` passes and both
+files stay at 6 cells each. Never hand-edit ipynbs.
 
 **`jupyter nbconvert --execute` hangs**
 
-Tiny preset is required locally: `SJFPO_TINY_MATRIX=1 … --ExecutePreprocessor.timeout=1800`.
-Full matrix (45×1M) will time out on a laptop.
-
-**Duplicate class / global collision in concatenated ipynb**
-
-The builder's register-snippet filters `__`-prefixed globals before pumping
-into `sys.modules`. New modules must `__`-prefix internal globals or use a
-unique module name.
+Full runs (1M steps, let alone the 45×1M matrix) exceed Colab/laptop time
+budgets — execute only the smoke cell remotely, keep full runs for machines
+with accelerators.
 
 ## Git
 

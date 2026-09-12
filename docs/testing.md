@@ -1,27 +1,26 @@
 # Testing
 
-## Suites (263 green, no skips)
+## Suites (273 green, no skips)
 
 | Suite | What it locks | Command |
 |---|---|---|
 | Full | Everything | `PYTHONPATH=src .venv/bin/python -m pytest -q` |
-| Pipeline (9) | CSV schema, matrix axes, stub surfaces, wandb gate — **never touch** | `… -m pytest tests/test_pipeline_cpu.py -v` |
+| Pipeline (7) | CSV schema, matrix axes, wandb gate — **never touch** | `… -m pytest tests/test_pipeline_cpu.py -v` |
 | Config | 45-run matrix asserts | `… -m pytest tests/test_config.py -q` |
 | Targeted | e.g. spectral, trainer, baselines, sweep, wandb | `… -m pytest tests/test_networks.py tests/test_trainer.py -q` |
 
-Full suite tail is `263 passed` (6 legacy SIGReg-variant tests retired in the
-single-home migration; see debt ledger).
+Full suite tail is `273 passed`.
 
 ## Numeric Gates (TDD, not vacuous)
 
 - DCT roundtrip `‖x−IDCT(DCT(x))‖ < 1e-5`.
-- Spectral: DCT→low-K→frozen→Linear order, invariance `B=1` vs
+- Spectral: DCT→low-K→Linear order, invariance `B=1` vs
   `B=32` `atol 1e-6`.
 - SIGReg (Epps-Pulley): Gaussian batch total <2.2, degenerate batch >95.0,
   separation >95.0 (empirical, seeded).
 - Flow: trainer 20-step `>1%` (anti-`stays finite` guard).
-- Evaluator: CSV header exactly `episode,return,length`; 20-episode cap;
-  byte-identical determinism.
+- Evaluator: CSV header exactly `episode,return,length`; 12-episode default
+  (`max_episodes=12`); byte-identical determinism under fixed seed.
 - Sweep/analysis: deterministic scan order, diverged excluded, bootstrap
   `n_boot=2000` 95% CI, PNGs >10KB, summary CSV exact header.
 

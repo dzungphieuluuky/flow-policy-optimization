@@ -12,9 +12,9 @@ Action chunk:            [B,H,act_dim] predicted (H=16), first n=8 executed open
 
 ```mermaid
 flowchart LR
-  O[O_t stacked obs] --> PE[policy_state_encoder\nMLP → Z B,T=16,D=128]
+  O[O_t stacked obs] --> PE[policy_state_encoder\nLinear → 2× prenorm blocks → Z B,T=16,D=128]
   Z --> DCT["DCT-II dim=1 → [B,16,D]\nretain bins 0..4 → [B,5,D]"]
-  DCT --> Norm["frozen mu/std (D wide)\n+ Linear D→64"] --> TOK["tokens [B,5,64]"]
+  DCT --> Proj["Linear D→64 (no norm)"] --> TOK["tokens [B,5,64]"]
   TOK --> DIT["SJFOPolicyModel DiT-8 adaLN-Zero\ncond = time + pooled tokens"]
   DIT --> V["v̂ action velocity [B,H,Da] (DCT)"]
   V --> EUL["euler_sample t:1→0 → IDCT → clamp"]
@@ -34,7 +34,7 @@ frame-stacked env through the shared `baseline_train_loop`
   integrates **descending** `x ← x − δ·v̂` 1→0 (`fpo_core.euler_sample`,
   64 train / 16 eval steps). `trainer.py` samples `τ~U[0.005,0.995]`.
 - **Spectral order:** DCT-II over time (dim=1), keep `K=5` low bins, then
-  frozen norm (D-wide stats), then `Linear(D→64)`. Tests assert
+  `Linear(D→64)` with no normalization. Tests assert
   invariance `B=1` vs `B=32`. (rFFT is reserved for observation.image.)
 - **Decoupled encoders:** ASPO grads land on `policy_state_encoder`,
   value-TD + SigReg grads on `critic_state_encoder`; GAE values come from

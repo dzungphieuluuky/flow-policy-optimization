@@ -10,7 +10,7 @@ silent no-op.
 wandb ships with the main requirements (no separate install step):
 
 ```bash
-pip install -r requirements.txt        # includes wandb
+pip install -r requirements-linux.txt  # includes wandb (or requirements-amd.txt on ROCm)
 ```
 
 ## `SJFPO_DISABLE_WANDB` — the Only Off Switch
@@ -70,9 +70,7 @@ all calling the wandb SDK directly (`wandb.init`/`log`/`finish`/
 | `finish_run` | `(exit_code=0) -> None` | Thin disabled-guard around `wandb.finish(exit_code=exit_code)` |
 
 Callers (`runner.py`, `baselines.py`) import at most 6 symbols and hold a
-plain `bool` (`_wandb_enabled = init_wandb_run_for_method(...)`); `wl.wandb` stays
-settable for tests. Three obsolete helpers (the old init/table/run wrappers)
-are deleted (zero hits repo-wide).
+plain `bool` (`wandb_enabled = init_wandb_run_for_method(...)`).
 
 ## Dashboard Structure
 

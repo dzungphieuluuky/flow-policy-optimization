@@ -11,8 +11,8 @@ architecture.md      mermaid flow DCT spectral K5 → DCT action chunks → DiT 
 modules.md           jump table per src/sjfpo file
 getting-started.md   smoke commands (tiny matrix, train.py single-run, notebook)
 config-flags.md      env flags / TINY / LEGACY_MUJOCO / matrix filters
-notebooks.md         build/execute/self-containment (61/47 cells)
-testing.md           suite size + wallclock placeholder note (see Notes: count stale)
+notebooks.md         build/run (6-cell clone notebooks, no source inlined)
+testing.md           suite size (273) + numeric gates
 troubleshooting.md   sys.path, train.py exit codes, AnalysisError fallback
 wandb.md             default-on gate (SJFPO_DISABLE_WANDB=1) + metric namespaces
 kaggle-offline-blackwell.md Blackwell offline runbook (MEASURED GPU content — surgical edits only)
@@ -41,4 +41,4 @@ mkdocs  # not used — plain md only
 
 ## Notes
 - Generated via delegate + manual patch; keep telegraphic, no fluff
-- Known-stale prose (flagged, fix in a docs pass not this update): `architecture.md`/`README.md` mental model still shows H=8 + joint-DCT-135/JFT (config is H=16, live path is Policy/Aux heads); `testing.md` quotes 263 tests (suite is 277 items)
+- Stale claims get fixed in place — do not add "known-stale" placeholders

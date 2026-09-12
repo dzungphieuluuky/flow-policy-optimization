@@ -4,11 +4,11 @@
 
 ```
 .
-├── .omo/                         # plans, evidence (see .omo/plans/oversized-split-proposals.md for split roadmap)
+├── .omo/                         # local plans, evidence (git-ignored)
 ├── configs/                      # shared/sjfpo/ppo/sac YAML defaults (mirror config.py)
 ├── docs/                         # ← you are here
 ├── scripts/
-│   ├── build_notebook.py         # generates both ipynbs from src/*.py (jupytext + CELLORDER)
+│   ├── build_notebook.py         # generates both minimal Colab ipynbs (clone + install + !train.py)
 │   ├── train.py                  # unified trainer: single-run + --matrix sweep (sjfpo/ppo/sac)
 │   └── verify_deps.sh            # pinned dep check
 ├── src/sjfpo/                     # production code (MuJoCo-only, flat Box, fp32, no autocast)
@@ -26,10 +26,11 @@
 │   ├── wandb_logging.py          # hard REQUIRED wandb gate (only file importing wandb)
 │   ├── utils.py                  # safe_float_value
 │   └── __init__.py
-├── tests/                        # 263 green; test_pipeline_cpu.py (9 invariants) never touched
-├── spectral_joint_flow.ipynb     # 61 cells, self-contained, Kaggle-ready (primary deliverable)
-├── flow_matching_vs_ppo_sac.ipynb # 47 cells, SJFPO vs PPO/SAC comparison
-└── requirements-local.txt        # CPU-first pins (+ pyyaml for configs/)
+├── tests/                        # 273 green; test_pipeline_cpu.py (7 tests) never touched
+├── spectral_joint_flow.ipynb     # 6 cells, clone + train (primary deliverable)
+├── flow_matching_vs_ppo_sac.ipynb # 6 cells, matrix sweep + results
+├── requirements-linux.txt        # Linux pins (+ pyyaml for configs/)
+└── requirements-amd.txt          # AMD/ROCm pins
 ```
 
 ## File Roles at a Glance
@@ -39,7 +40,7 @@
 | `src/sjfpo/config.py` | Single source of truth for flags, matrices, budgets, algorithm configs | Changing sweep size, budgets, `D/spectral_dim/K/H/N` |
 | `src/sjfpo/networks.py` | Encoders + spectral + flow + SIGReg | Any shape/dtype or conditioning change |
 | `src/sjfpo/runner.py` | `train_run` entry point | Adding an env |
-| `scripts/build_notebook.py` | Notebook assembler (`CELLORDER`, jupytext) | Cell order, markdown docs, build bugs |
+| `scripts/build_notebook.py` | Minimal Colab notebooks (clone/install/train cells) | Cell contents, repo slug |
 | `scripts/train.py` | Unified CLI (single / `--matrix` / `--tiny`) | CLI flags, dispatch |
 
 ## Ignored / Generated

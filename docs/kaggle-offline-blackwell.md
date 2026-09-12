@@ -1,5 +1,11 @@
 # Run `spectral_joint_flow.ipynb` on Kaggle (RTX PRO 6000 Blackwell, internet OFF)
 
+> **STATUS (2026-09): the notebook is now a 6-cell clone/install/train stub —
+> it carries no source and `!git clone`s this repo, so it needs internet ON
+> (or the repo uploaded as a Kaggle dataset) instead of the offline wheelhouse
+> flow below.** GPU/pin content below is MEASURED and kept as-is; notebook cell
+> references marked [STALE] no longer match.
+>
 > Research journal: `.omo/ulw-research/20260903-225626/` (Wave-1/2 digests, claim graph, execution verification).
 > Lineage labels: **MEASURED** = stated in a fetched source or observed by execution here;
 > **ASSUMED** = inference, flagged; **DERIVED** = computed, formula shown.
@@ -16,16 +22,16 @@
 4. **Attach it** to a new notebook (Add Input → mounts read-only under `/kaggle/input/<slug>/`),
    set **Internet OFF**.
 5. **First cell**: `!pip install --no-index --find-links=/kaggle/input/<slug>/… <packages>`.
-6. **Upload/run only `spectral_joint_flow.ipynb`** (61 cells, self-contained — no `src/` needed).
-   Prepend the `MUJOCO_GL=osmesa` header below; skip the stub cells listed in §5.
+6. **Upload/run only `spectral_joint_flow.ipynb`** [STALE: now 6 cells — clone +
+   install + `!train.py` smoke/full commands, source stays in `src/`].
+   Prepend the `MUJOCO_GL=osmesa` header below.
 7. **Write artifacts to `/kaggle/working`** (≤20 GB MEASURED); Save Version → Save & Run All.
 
 ## 1. What the notebook actually needs (verified by execution)
 
-`spectral_joint_flow.ipynb` = 61 cells (35 code), fully self-contained: all 15 `src/sjfpo`
-modules are inlined as code cells with register-snippets — **no `src/` upload needed**
-and the `sys.path` setup is a no-op guard. **MEASURED** via local AST scan (see journal
-`verify-closure.md`).
+`spectral_joint_flow.ipynb` = 6 cells [STALE: was 61 self-contained cells]: clone +
+install + `!train.py` smoke/full commands — **the repo itself must be reachable**
+(internet ON for `git clone`, or upload it as a dataset).
 
 | Dependency | Role | Tested-good pin |
 |---|---|---|
@@ -139,11 +145,9 @@ print(torch.__version__, torch.version.cuda, torch.cuda.get_arch_list())
 print(torch.cuda.get_device_properties(0))  # expect sm_120 / CC (12,0), ~96 GB
 ```
 
-**Cell order** (spectral notebook has no calibration/sweep/analysis executable cells and no
-`/kaggle` paths — nothing Kaggle-specific to skip there): Setup asserts → 15 module cells
-→ provenance/architecture markdown → spectral self-test → smoke gate
-(prints the `scripts/train.py` pointer note — static cell, safe, keep) →
-flag self-test. `IS_KAGGLE` (= `KAGGLE_KERNEL_RUN_TYPE` set) only changes run-output dirs.
+**Cell order** [STALE — now]: title → access note → `!git clone` → `!pip install` →
+`!train.py` smoke → `!train.py` full run. No setup asserts / module cells /
+self-tests remain in the notebook (that coverage lives in `pytest`).
 
 **Skip / do-not-touch offline**: any `pip install datasets`, `push_checkpoints_to_dataset()`
 (docs-only helper, no code — leave disabled; fetch checkpoints from `/kaggle/working`),
