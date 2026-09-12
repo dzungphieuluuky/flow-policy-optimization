@@ -299,7 +299,7 @@ def aspo_surrogate(
 
     Binding:
         - For Â ≥ 0: standard PPO clipping prevents over-optimistic updates.
-        - For Â < 0: SPO (Soft Penalty Optimization) applies quadratic penalty
+        - For Â < 0: SPO (Simple Policy Optimization) applies quadratic penalty
           around ρ=1, preventing catastrophic degradation on negative-adv samples.
         - ε_clip = 0.05 per plan binding convention.
     """
