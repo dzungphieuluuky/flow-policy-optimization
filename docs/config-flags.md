@@ -27,7 +27,7 @@ Source of truth: `src/sjfpo/config.py`. YAML mirrors in `configs/`
 
 ## Algorithm Dataclasses
 
-`SJFPOConfig` (T=16 state, H=16 predict / n=8 execute, K=5, D=128, spectral_dim=64,
+`SJFPOConfig` (T=16 state, H=16 predict, full-H execute in training / `ratio=0.5` prefix at eval, top_p=0.3 (K=5), D=128, spectral_dim=64,
 `vf_coef=1.0 sigreg_coef=0.1`, Euler 64 train / 16 eval, lr 1e-4, ASPO clip 0.05),
 `PPOConfig`, `SACConfig` (skrl 2.1.0 hyperparams). CLI scalars beat YAML beats dataclass defaults.
 
