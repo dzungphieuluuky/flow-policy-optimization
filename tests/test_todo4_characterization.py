@@ -126,9 +126,6 @@ class TestTrainerGolden:
         spectral = SpectralEncoder(
             hidden_size=cfg.hidden_size, n_obs_steps=cfg.n_obs_steps
         )
-        spectral.set_frozen_stats(
-            torch.zeros(cfg.hidden_size), torch.ones(cfg.hidden_size)
-        )
         critic_state_encoder = StateEncoder(
             obs_dim, n_obs_steps=cfg.n_obs_steps, hidden_size=cfg.hidden_size
         )
