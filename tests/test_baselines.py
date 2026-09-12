@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from tests.fixtures.fake_env import FakeGymEnv
 
-from mfpo.config import PPOConfig, SACConfig
+from sjfpo.config import PPOConfig, SACConfig
 
 
 # ---------------------------------------------------------------------------
@@ -106,7 +106,7 @@ class TestProvenanceTable:
     """Verify the provenance table renders with required (method,key,value,source) quadruples."""
 
     def test_provenance_table_contains_required_quadruples(self):
-        from mfpo.baselines import PROVENANCE_TABLE
+        from sjfpo.baselines import PROVENANCE_TABLE
 
         # PPO quadruples: (method, key, value, source)
         for method, key, value, source in [
@@ -148,8 +148,9 @@ class TestPPOTinySmoke:
 
     def test_ppo_train_run_completes(self, tmp_path, monkeypatch):
         import torch
+
         monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
-        from mfpo.baselines import ppo_train_run
+        from sjfpo.baselines import ppo_train_run
 
         env = FakeGymEnv(obs_dim=4, act_dim=2, max_steps=50)
         cfg = PPOConfig(
@@ -185,8 +186,9 @@ class TestSACTinySmoke:
 
     def test_sac_train_run_completes(self, tmp_path, monkeypatch):
         import torch
+
         monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
-        from mfpo.baselines import sac_train_run
+        from sjfpo.baselines import sac_train_run
 
         env = FakeGymEnv(obs_dim=4, act_dim=2, max_steps=50)
         cfg = SACConfig(
