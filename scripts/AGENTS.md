@@ -1,20 +1,19 @@
 # AGENTS — scripts
 
 ## Overview
-3 entry points: `train.py` (unified CLI, 284L) → `runner`/`baselines`; `build_notebook.py` (notebook generator, 861L); `verify_deps.sh` (dep-pin gate, partly stale — see Notes).
+3 entry points: `train.py` (unified CLI) → `runner`/`baselines`; `build_notebook.py` (minimal Colab notebooks: clone + install + `!train.py`, no source inlined); `verify_deps.sh` (dep-pin gate, partly stale — see Notes).
 
 ## Structure
 ```
 train.py            argparse (singular + plural flags) → matrix/single dispatch → build_cfg → run_single
-build_notebook.py   MODULE_ORDER(_SPECTRAL) + md blocks + cell strings → 2 self-contained .ipynb (61/47 cells)
+build_notebook.py   title/md + clone/install/train cells → 2 source-free .ipynb (6 cells each)
 verify_deps.sh      venv bootstrap + inline version asserts (STALE vs pyproject — see Notes)
 ```
 
 ## Where to Look
 - `train.py:build_cfg` — YAML→dataclass coercion; only dataclass fields pass (`total-steps`/`eval-interval`/`ckpt-interval`/`obs-dim`/`act-dim` are runner scalars, NOT config fields)
 - `train.py:run_matrix_mode` → `sweep.run_pending` (reentrant: scans FS for done runs, dispatches pending sequentially)
-- `build_notebook.py:read_module_source` — strips `# %%`/`# CELLORDER:`; `register_snippet` inlines each `src/sjfpo/*.py` as importable module (self-containment)
-- `build_notebook.py:SWEEP_CELL` — notebook `dispatch()` calls `train_run` directly (bypasses `train.py`)
+- `build_notebook.py:CLONE_CELL` — getpass/GITHUB_TOKEN → `!git clone` (skipped if present) → `%cd`; notebooks never inline `src/`
 
 ## Conventions
 - Precedence: CLI flags > `--config <yaml>` > dataclass defaults (`configs/{sjfpo,ppo,sac,shared}.yaml`; YAML keys ⊆ dataclass fields per `test_config_yaml_parity.py`)
