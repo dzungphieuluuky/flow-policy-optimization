@@ -1,6 +1,6 @@
 # Architecture — Spectral Joint Flow Policy Optimization (SJFPO, MuJoCo-only)
 
-## Data Shapes (`T=16 H=16 K=5 D=128 spectral_dim=64`, `K=round(top_p*T)`)
+## Data Shapes (`T=16 H=16 K=5 D=128`, `K=round(top_p*T)`)
 
 ```
 Observation (per step):  flat Box [obs_dim] (env-dependent; Hopper-v5: 11)
@@ -13,14 +13,15 @@ Action chunk:            [B,H,act_dim] predicted (H=16); training executes all 1
 
 ```mermaid
 flowchart LR
-  O[O_t stacked obs] --> PE[policy_state_encoder\nLinear → 2× prenorm blocks → Z B,T=16,D=128]
-  Z --> DCT["DCT-II dim=1 → [B,16,D]\nretain bins 0..4 → [B,5,D]"]
-  DCT --> Proj["Linear D→64 (no norm)"] --> TOK["tokens [B,5,64]"]
-  TOK --> DIT["SJFOPolicyModel DiT-8 adaLN-Zero\ncond = time + pooled tokens"]
-  DIT --> V["v̂ action velocity [B,H,Da] (DCT)"]
+  O[O_t stacked obs] --> DCT["DCT-II dim=1 → [B,16,obs]\nretain K lowest bins → [B,K,obs]"]
+  DCT --> TOK["tokens [B,K,obs] (raw bins, no projector)"]
+  TOK --> DIT["SJFOPolicyModel DiT-8 adaLN-Zero\n[state prefix; action tokens] + time/pooled cond"]
+  O --> DIT
+  DIT --> V["v̂ velocity [B,Ka,Da] (Ka=top_p·H rows)"]
+  V --> PAD["zero-pad time → [B,H,Da] → IDCT → clamp"]
   V --> EUL["euler_sample t:1→0 → IDCT → clamp"]
-  O --> CE[critic_state_encoder\ndecoupled, same shape as PE]
-  CE --> CR["Critic V(s,a)\n2 cross-attn blocks"]
+  O --> CE[critic_state_encoder\nLinear + sinus PE → 2× prenorm blocks → Z B,T=16,D=128]
+  CE --> CR["Critic V(s,a)\nreal actions +PE query encoded obs"]
   CR --> TD["TD target R + γ^L·V(s',a')"]
   CR --> SIG["Epps-Pulley SIGReg on critic latent\nP=1024, λ=0.1"]
 ```
@@ -36,11 +37,11 @@ frame-stacked env through the shared `baseline_train_loop`
   64 train / 16 eval steps). `trainer.py` samples `τ~U[0.005,0.995]`.
 - **Spectral order:** DCT-II over time (dim=1), keep the `K` lowest
   low-frequency bins (`K=max(1, round(top_p*T))`, default `0.3*16→5`), then
-  `Linear(D→64)` with no normalization. Tests assert
+  with no normalization and no projector (last dim stays `obs_dim`). Tests assert
   invariance `B=1` vs `B=32`. (rFFT is reserved for observation.image.)
-- **Decoupled encoders:** ASPO grads land on `policy_state_encoder`,
-  value-TD + SigReg grads on `critic_state_encoder`; GAE values come from
-  the critic encoder, spectral tokens from the policy encoder.
+- **One encoder:** spectral tokens come straight from the raw obs window
+  (no policy trunk); the only `StateEncoder` left is `critic_state_encoder`,
+  carrying value-TD + SigReg grads. GAE values come from the critic encoder.
 - **Inference:** deterministic zero-sampling eval (`eps=0`), single
   `clamp(-1,1)` after IDCT in `runner.decode_chunk_actions`.
 - **Precision:** fp32 everywhere. No `autocast`/`half`/`bfloat16`/`torch.compile`.
