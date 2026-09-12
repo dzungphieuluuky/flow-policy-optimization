@@ -9,9 +9,9 @@ Research code: correctness, clarity, reproducibility over infrastructure. See `A
 **SJFPO (live train path, actions-only):**
 
 - Stack `T=16` obs frames → `StateEncoder` (per-frame MLP + self-attn) → `Z [N,T,D=128]`.
-- DCT-II over `Z` (time axis) → keep `K=5` low bins → `Linear(D→64)` = `SpectralEncoder` conditioning `[N,K,64]`, no calibration. (rFFT is reserved for `observation.image`; state and action use DCT.)
+- DCT-II over `Z` (time axis) → keep `K` lowest low-frequency bins (`K = round(top_p*T)`, default 5) → `Linear(D→64)` = `SpectralEncoder` conditioning `[N,K,64]`, no calibration. (rFFT is reserved for `observation.image`; state and action use DCT.)
 - Action chunk `[N,H=16,Da]` stored as orthonormal DCT-II coefficients. Flow (DiT-8, adaLN-Zero, `SJFOPolicyModel`) predicts action velocities in DCT space.
-- Sample with `fpo_core.euler_sample` (descending `t: 1→0`, `x ← x − δ·v̂`); decode with `runner.decode_chunk_actions` (IDCT + single `clamp(-1,1)`). Execute first `n_action_steps=8` open-loop, replan.
+- Sample with `fpo_core.euler_sample` (descending `t: 1→0`, `x ← x − δ·v̂`); decode with `runner.decode_chunk_actions` (IDCT + single `clamp(-1,1)`). Training executes the full predicted chunk open-loop (`H=16`); inference/eval execute the `executed_vs_predicted_ratio=0.5` prefix (8 steps), then replan.
 - Update (`SJFPOTrainer.assemble_update`): per-sample MC log-liks `[N,m=16]` → STE-capped ratios → ASPO surrogate (PPO-clip for `A≥0`, SPO penalty for `A<0`, mean-of-ψ) + `V(s,a)` TD critic (`R_k + γ^L·V(s',a')`, terminated never bootstraps) + Epps-Pulley `sigreg_loss` on the critic latent. One AdamW optimizer over trunk + policy + critic + spectral projector; per-module grad-clip; NaN aborts via `SJFPOAborted`.
 - Chunk rollout uses LeRobot-keyed `Transition` dicts; chunk-level semi-MDP GAE (`gae.chunk_gae`, numpy fp64, advantages centered).
 
@@ -33,7 +33,7 @@ src/sjfpo/          # all production code (MuJoCo-only, fp32)
   config.py         # frozen SJFPO/PPO/SAC dataclasses, RUN_MATRIX, build_filtered_matrix
   networks.py       # policy/critic StateEncoders, SpectralEncoder, SJFOPolicyModel (DiT), Critic, sigreg_loss
   fpo_core.py       # CFM losses, flow_ratio (STE cap), aspo_surrogate, policy_ratio, euler_sample, total_update_loss
-  collector.py      # Transition dict (9 LeRobot keys), open-loop H=16/n=8 chunks, next.action chaining
+  collector.py      # Transition dict (9 LeRobot keys), open-loop full-H chunks in training, next.action chaining
   gae.py            # chunk semi-MDP GAE (R_k intradiscounted, γ^L bootstrap, (γλ)^L recursion)
   trainer.py        # SJFPOTrainer.assemble_update (ASPO + V(s,a) TD + SigReg)
   runner.py         # train_run: collect → GAE → update → eval → ckpt; decode_chunk_actions
@@ -84,7 +84,7 @@ Exit codes: `0` success · `1` usage error · `2` runtime/divergence abort · `4
 
 Env switches: `SJFPO_DEVICE=cuda|cpu|auto` · `SJFPO_DISABLE_WANDB=1` (only wandb off switch; wandb is a required import) · `SJFPO_TINY_MATRIX=1` (same as `--tiny`) · `SJFPO_LEGACY_MUJOCO=1` (default, MuJoCo-only).
 
-Key `SJFPOConfig` defaults: `num_mc_samples=16`, `euler_train=64`, `euler_eval=16`, `chunks_per_update=512`, `n_obs_steps=16`, `chunk_size=16`, `n_action_steps=8`, `num_spectral_tokens=5`, `hidden_size=128`, `spectral_dim=64`, `dit_depth=8`, `dit_heads=4`, `dit_mlp_ratio=4.0`, `dit_time_dim=256`, `lr=1e-4`, `wd=1e-4`, `clip_range=0.05`, `cfm_clamp=20`, `log_ratio_cap=10`, `sigreg_coef=0.1`, `vf_coef=1.0`, `grad_clip=1.0`, `gamma=0.99`, `gae_lambda=0.95`.
+Key `SJFPOConfig` defaults: `num_mc_samples=16`, `euler_train=64`, `euler_eval=16`, `chunks_per_update=512`, `n_obs_steps=16`, `chunk_size=16`, `executed_vs_predicted_ratio=0.5`, `top_p_spectral_tokens=0.3`, `hidden_size=128`, `spectral_dim=64`, `dit_depth=8`, `dit_heads=4`, `dit_mlp_ratio=4.0`, `dit_time_dim=256`, `lr=1e-4`, `wd=1e-4`, `clip_range=0.05`, `cfm_clamp=20`, `log_ratio_cap=10`, `sigreg_coef=0.1`, `vf_coef=1.0`, `grad_clip=1.0`, `gamma=0.99`, `gae_lambda=0.95`.
 
 ## Outputs
 
