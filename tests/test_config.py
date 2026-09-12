@@ -93,6 +93,12 @@ def test_every_config_field_non_null():
             )
 
 
+def test_sjfpo_config_rejects_bad_top_p():
+    for bad in (0.0, -0.1, 1.5):
+        with pytest.raises(ValueError, match="top_p_spectral_tokens"):
+            config.SJFPOConfig(top_p_spectral_tokens=bad)
+
+
 def test_sjfpo_config_documented_ranges():
     c = config.SJFPO_CFG
     assert c.num_mc_samples >= 2
@@ -117,8 +123,8 @@ def test_sjfpo_config_documented_ranges():
     assert c.grad_clip > 0
     assert c.n_obs_steps == 16
     assert c.chunk_size == 16
-    assert 1 <= c.n_action_steps <= c.chunk_size
-    assert c.num_spectral_tokens > 0
+    assert c.executed_vs_predicted_ratio == 0.5
+    assert c.top_p_spectral_tokens == 0.3
     assert c.spectral_dim > 0
     assert c.hidden_size > 0
 
