@@ -1,4 +1,4 @@
-"""Tests for src/mfpo/analysis.py (plan task 15).
+"""Tests for src/sjfpo/analysis.py (plan task 15).
 
 Written FIRST (TDD) — all tests must pass after implementation.
 """
@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import numpy as np
 import pytest
 
-from mfpo.analysis import (
+from sjfpo.analysis import (
     bootstrap_ci,
     compute_iqm,
     is_superior,
@@ -197,14 +197,17 @@ def test_per_env_png_created(tmp_path):
 
 
 def test_summary_csv_schema(tmp_path):
-    """Create a minimal analysis, verify CSV has exactly the columns."""
-    # Create a minimal report
+    """CSV carries real per-cell stats with exact columns and diverged status."""
     report = AnalysisReport(
         per_env_curves={"TestEnv": tmp_path / "test_curves.png"},
         aggregate_png=tmp_path / "aggregate.png",
         summary_csv=tmp_path / "results_summary.csv",
-        superiority={"mfpo": True, "ppo": False, "sac": False},
-        excluded_diverged=[],
+        superiority={"sjfpo": True, "ppo": False, "sac": False},
+        excluded_diverged=["ppo_Hopper-v5_seed1"],
+        summary_stats={
+            ("sjfpo", "Hopper-v5"): (100.0, 90.0, 110.0),
+            ("ppo", "Hopper-v5"): (50.0, 40.0, 60.0),
+        },
     )
 
     # Create dummy PNG files
@@ -217,10 +220,13 @@ def test_summary_csv_schema(tmp_path):
     assert csv_path.exists()
 
     with open(csv_path) as f:
-        header = f.readline().strip()
+        lines = [ln.strip() for ln in f.readlines()]
 
-    expected_columns = "method,env,iqm,ci_low,ci_high,wallclock_h,status"
-    assert header == expected_columns, f"Expected '{expected_columns}', got '{header}'"
+    assert lines[0] == "method,env,iqm,ci_low,ci_high,status"
+    assert lines[1:] == [
+        "ppo,Hopper-v5,50.0,40.0,60.0,diverged",
+        "sjfpo,Hopper-v5,100.0,90.0,110.0,complete",
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -230,11 +236,11 @@ def test_summary_csv_schema(tmp_path):
 
 def test_empty_history_raises(tmp_path):
     """Call analyze_results on empty dir → AnalysisError('no eval histories') raised."""
-    from mfpo.config import RunSpec
+    from sjfpo.config import RunSpec
 
     matrix = (
         RunSpec(
-            method="mfpo",
+            method="sjfpo",
             env="TestEnv",
             seed=0,
             total_steps=1000,
@@ -244,7 +250,7 @@ def test_empty_history_raises(tmp_path):
     )
 
     with pytest.raises(AnalysisError, match="no eval histories"):
-        analyze_results(matrix, tmp_path, tmp_path / "output")
+        analyze_results(matrix, tmp_path, tmp_path / "output", eval_interval=500)
 
 
 # ---------------------------------------------------------------------------
@@ -254,10 +260,10 @@ def test_empty_history_raises(tmp_path):
 
 def test_diverged_excluded_and_reported(tmp_path):
     """Create mock run with diverged manifest → excluded from analysis, listed in report."""
-    from mfpo.config import RunSpec
+    from sjfpo.config import RunSpec
 
     # Create a run directory with a diverged manifest
-    run_dir = tmp_path / "mfpo_TestEnv_0"
+    run_dir = tmp_path / "sjfpo_TestEnv_0"
     run_dir.mkdir(parents=True)
 
     # Write eval_history.csv
@@ -278,7 +284,7 @@ def test_diverged_excluded_and_reported(tmp_path):
 
     matrix = (
         RunSpec(
-            method="mfpo",
+            method="sjfpo",
             env="TestEnv",
             seed=0,
             total_steps=1000,
@@ -287,10 +293,10 @@ def test_diverged_excluded_and_reported(tmp_path):
         ),
     )
 
-    report = analyze_results(matrix, tmp_path, tmp_path / "output")
+    report = analyze_results(matrix, tmp_path, tmp_path / "output", eval_interval=500)
 
-    assert "mfpo_TestEnv_0" in report.excluded_diverged
-    assert report.superiority.get("mfpo") is False  # excluded methods not superior
+    assert "sjfpo_TestEnv_0" in report.excluded_diverged
+    assert report.superiority.get("sjfpo") is False  # excluded methods not superior
 
 
 # ---------------------------------------------------------------------------
@@ -301,19 +307,19 @@ def test_diverged_excluded_and_reported(tmp_path):
 def test_normalize_cross_env():
     """Test cross-environment normalization."""
     results_by_env = {
-        "Env1": {"mfpo": [100, 110, 120], "ppo": [80, 90, 100]},
-        "Env2": {"mfpo": [200, 220, 240], "ppo": [150, 160, 170]},
+        "Env1": {"sjfpo": [100, 110, 120], "ppo": [80, 90, 100]},
+        "Env2": {"sjfpo": [200, 220, 240], "ppo": [150, 160, 170]},
     }
 
     normalized = normalize_cross_env(results_by_env)
 
     # Check that values are normalized by max per env
     # Env1 max = 120, Env2 max = 240
-    assert normalized["Env1"]["mfpo"] == pytest.approx(
+    assert normalized["Env1"]["sjfpo"] == pytest.approx(
         [100 / 120, 110 / 120, 120 / 120]
     )
     assert normalized["Env1"]["ppo"] == pytest.approx([80 / 120, 90 / 120, 100 / 120])
-    assert normalized["Env2"]["mfpo"] == pytest.approx(
+    assert normalized["Env2"]["sjfpo"] == pytest.approx(
         [200 / 240, 220 / 240, 240 / 240]
     )
     assert normalized["Env2"]["ppo"] == pytest.approx([150 / 240, 160 / 240, 170 / 240])
@@ -322,7 +328,7 @@ def test_normalize_cross_env():
 def test_load_eval_histories(tmp_path):
     """Test loading eval histories from run directories."""
     # Create run directories with eval_history.csv
-    run1 = tmp_path / "mfpo_HalfCheetah-v5_0"
+    run1 = tmp_path / "sjfpo_HalfCheetah-v5_0"
     run1.mkdir(parents=True)
     import csv
 
@@ -339,10 +345,23 @@ def test_load_eval_histories(tmp_path):
         writer.writeheader()
         writer.writerow({"episode": 0, "return": 80.0, "length": 100})
 
-    histories = load_eval_histories(tmp_path)
+    histories = load_eval_histories(tmp_path, eval_interval=500)
 
     assert len(histories) == 3
     methods = {h["method"] for h in histories}
-    assert methods == {"mfpo", "ppo"}
+    assert methods == {"sjfpo", "ppo"}
     envs = {h["env"] for h in histories}
     assert envs == {"HalfCheetah-v5"}
+    # episode_index * explicit interval, no magic constants
+    assert sorted(h["global_step"] for h in histories) == [0, 0, 500]
+
+
+def test_load_eval_histories_missing_column_raises(tmp_path):
+    """CSV without episode/return columns fails loudly, never defaults to 0."""
+    from sjfpo.analysis import AnalysisError, load_eval_histories
+
+    run = tmp_path / "sjfpo_Hopper-v5_seed0"
+    run.mkdir(parents=True)
+    (run / "eval_history.csv").write_text("foo,bar\n1,2\n", encoding="utf-8")
+    with pytest.raises(AnalysisError, match="missing columns"):
+        load_eval_histories(tmp_path, eval_interval=500)
