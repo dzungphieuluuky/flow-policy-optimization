@@ -113,20 +113,17 @@ class TestEvaluatorCharacterization:
 class TestSjfpoEvalWrapperCharacterization:
     def build(self):
         from sjfpo.config import SJFPOConfig
-        from sjfpo.networks import StateEncoder, SJFOPolicyModel, SpectralEncoder
+        from sjfpo.networks import SJFOPolicyModel, SpectralEncoder
         from sjfpo.runner import SjfpoEvalWrapper
 
         cfg = SJFPOConfig()
-        trunk = StateEncoder(
-            4, n_obs_steps=cfg.n_obs_steps, hidden_size=cfg.hidden_size
-        )
-        policy = SJFOPolicyModel(2, hidden_size=cfg.hidden_size)
+        policy = SJFOPolicyModel(2, 4, hidden_size=cfg.hidden_size)
         spectral = SpectralEncoder(
-            hidden_size=cfg.hidden_size,
+            4,
             top_p_spectral_tokens=cfg.top_p_spectral_tokens,
             n_obs_steps=cfg.n_obs_steps,
         )
-        return SjfpoEvalWrapper(trunk, policy, spectral, cfg), cfg
+        return SjfpoEvalWrapper(policy, spectral, cfg), cfg
 
     def test_single_action_shape_and_open_loop_cadence(self):
         from sjfpo.runner import SjfpoEvalWrapper  # noqa: F401
@@ -265,15 +262,14 @@ class TestExecutedVsPredictedRatio:
         import numpy as np
 
         from sjfpo.config import SJFPOConfig
-        from sjfpo.networks import StateEncoder, SJFOPolicyModel, SpectralEncoder
+        from sjfpo.networks import SJFOPolicyModel, SpectralEncoder
         from sjfpo.runner import SjfpoEvalWrapper
 
         cfg = SJFPOConfig()  # ratio 0.5, H 16 -> 8 buffered
         wrapper = SjfpoEvalWrapper(
-            StateEncoder(4, n_obs_steps=cfg.n_obs_steps, hidden_size=cfg.hidden_size),
-            SJFOPolicyModel(2, hidden_size=cfg.hidden_size),
+            SJFOPolicyModel(2, 4, hidden_size=cfg.hidden_size),
             SpectralEncoder(
-                hidden_size=cfg.hidden_size,
+                4,
                 top_p_spectral_tokens=cfg.top_p_spectral_tokens,
                 n_obs_steps=cfg.n_obs_steps,
             ),
