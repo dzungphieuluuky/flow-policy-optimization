@@ -53,9 +53,6 @@ class TestTrainerDevice:
         policy = SJFOPolicyModel(2, hidden_size=cfg.hidden_size)
         critic = Critic(hidden_size=cfg.hidden_size, act_dim=2)
         spectral = SpectralEncoder(hidden_size=cfg.hidden_size, n_obs_steps=16)
-        spectral.set_frozen_stats(
-            torch.zeros(cfg.hidden_size), torch.ones(cfg.hidden_size)
-        )
         critic_state_encoder = StateEncoder(
             4, n_obs_steps=16, hidden_size=cfg.hidden_size
         )
