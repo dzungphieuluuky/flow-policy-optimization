@@ -84,7 +84,7 @@ def build_sjfpo(obs_dim: int = 4, act_dim: int = 2, cfg=None):
     critic = Critic(hidden_size=cfg.hidden_size, act_dim=act_dim)
     spectral = SpectralEncoder(
         hidden_size=cfg.hidden_size,
-        num_spectral_tokens=cfg.num_spectral_tokens,
+        top_p_spectral_tokens=cfg.top_p_spectral_tokens,
         n_obs_steps=cfg.n_obs_steps,
     )
     return trunk, policy_head, critic, spectral
