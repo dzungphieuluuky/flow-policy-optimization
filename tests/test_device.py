@@ -47,17 +47,13 @@ class TestTrainerDevice:
         from sjfpo.trainer import SJFPOTrainer
 
         cfg = SJFPOConfig(num_mc_samples=2)
-        policy_state_encoder = StateEncoder(
-            4, n_obs_steps=16, hidden_size=cfg.hidden_size
-        )
-        policy = SJFOPolicyModel(2, hidden_size=cfg.hidden_size)
+        policy = SJFOPolicyModel(2, 4, hidden_size=cfg.hidden_size)
         critic = Critic(hidden_size=cfg.hidden_size, act_dim=2)
-        spectral = SpectralEncoder(hidden_size=cfg.hidden_size, n_obs_steps=16)
+        spectral = SpectralEncoder(4, n_obs_steps=16)
         critic_state_encoder = StateEncoder(
             4, n_obs_steps=16, hidden_size=cfg.hidden_size
         )
         return SJFPOTrainer(
-            policy_state_encoder,
             policy,
             critic,
             spectral,
@@ -70,13 +66,12 @@ class TestTrainerDevice:
         t = self.trainer(device="cpu")
         assert t.device == torch.device("cpu")
         for m in (
-            t.policy_state_encoder,
             t.policy_head,
             t.critic,
-            t.spectral,
             t.critic_state_encoder,
         ):
             assert next(m.parameters()).device == torch.device("cpu")
+        assert list(t.spectral.parameters()) == []  # parameter-free DCT
 
     def test_update_on_default_device(self):
         t = self.trainer()
@@ -107,7 +102,7 @@ class TestTrainerDevice:
         t = self.trainer()
         cfg = SJFPOConfig()
         out = infer_chunk_actions(
-            torch.randn(16, 4), t.policy_state_encoder, t.spectral, t.policy_head, cfg
+            torch.randn(16, 4), t.spectral, t.policy_head, cfg
         )
         assert out.device == torch.device("cpu")
         assert out.shape == (cfg.chunk_size, 2)
