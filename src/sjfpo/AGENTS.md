@@ -12,7 +12,7 @@ gae.py            137L — chunk semi-MDP GAE (R_k intradiscounted, γ^L bootstr
 fpo_core.py       432L — CFM/SQL-ℓ [N,m], STE-capped ρ, ASPO piecewise (PPO-clip Â≥0 / SPO Â<0), mean-of-ψ objective, euler_sample t:1→0; total_update_loss (single weight home)
 runner.py         428L — train_run: collect→GAE→update→eval→ckpt; decode_chunk_actions (IDCT + single clamp home)
 dct_utils.py      orthonormal DCT-II/III [H,Da] action chunks + discounted_chunk_reward + einx.id (parity-guarded)
-config.py         360L — frozen dataclasses (SJFPOConfig H=16/n=8/T=16/K=5/D=128, DiT-8/4heads/mlp×4/t256), RUN_MATRIX 45 (TINY 3) + build_run_matrix; SACConfig.polyak is skrl-boundary (keep)
+config.py         360L — frozen dataclasses (SJFPOConfig H=16/T=16/top_p=0.3→K=5/D=128, DiT-8/4heads/mlp×4/t256), RUN_MATRIX 45 (TINY 3) + build_run_matrix; SACConfig.polyak is skrl-boundary (keep)
 baselines.py      690L — skrl PPO/SAC via baseline_train_loop; FrameStackWrapper shared with evaluator
 checkpointing.py  246L — atomic ckpt (models + optimizer + counters)
 evaluator.py      162L — Evaluator MuJoCo 3-col [episode,return,length]
@@ -25,7 +25,7 @@ utils.py           23L — shared pure helpers (safe_float_value), no sjfpo impo
 ## Where to Look
 - `collector.py:51` `Transition`: 9 LeRobot keys (`observation.state [T,Do]`, `action [H,Da]` DCT, `next.action [H,Da]` chained/behavior proposal, `next.*`, `n_action_steps` i64, `clip_count` i64); `next.reward` is variable-length `[L_k]`
 - `trainer.py:assemble_update`: stack (guards H/T) → policy trunk `Z [N,T,D]` → spectral `cond [N,K,spectral_dim]` → policy ℓ/ρ/ψ `[N,m]` → critic trunk `Z [N,T,D]` → V(s,a) TD-critic → SigReg over critic-h → clip → AdamW (one optimizer, two disjoint grad paths)
-- `networks.py:SpectralEncoder`: DCT-II `Z [B,T,D]` over time → keep K=5 low bins → Linear D→64 → `[B,5,64]` (no norm; rFFT reserved for observation.image)
+- `networks.py:SpectralEncoder`: DCT-II `Z [B,T,D]` over time → keep K lowest bins (round(top_p*T)) → Linear D→64 → `[B,K,64]` (no norm; rFFT reserved for observation.image)
 - `gae.py:chunk_gae`: per-chunk `R_k`, `δ_k`, backward `(γλ)^L`; terminated cuts recursion, truncated bootstraps from last next-frame
 - `runner.py:build_training_components`: policy_state_encoder/policy/critic/spectral/critic_state_encoder (no target nets, no aux head); `compute_chunk_values` V(s,a) via critic encoder, bootstraps truncated only
 - `fpo_core.py:total_update_loss` (single cfg-weight home); `sweep.py:ScanResult(pending,skipped,diverged)` deterministic sort (method,env,seed)
