@@ -59,15 +59,16 @@ class TestConfigV4:
     def test_horizon_split_defaults(self):
         cfg = SJFPOConfig()
         assert cfg.chunk_size == 16, "H must be 16 (predict)"
-        assert cfg.n_action_steps == 8, "n must be 8 (execute)"
         assert cfg.n_obs_steps == 16, "T must be 16"
         assert not hasattr(cfg, "context_len"), "context_len must be gone"
 
     def test_n_action_steps_guard(self):
+        env, policy = ScriptedEnv(), lambda obs: np.zeros((16, ACT_DIM))
+        low, high = np.full(ACT_DIM, -1.0), np.full(ACT_DIM, 1.0)
         with pytest.raises(ValueError, match="n_action_steps"):
-            SJFPOConfig(n_action_steps=17)  # n > H forbidden
+            collect_chunks(env, policy, 40, low, high, n_action_steps=17)
         with pytest.raises(ValueError, match="n_action_steps"):
-            SJFPOConfig(n_action_steps=0)  # n >= 1 required
+            collect_chunks(env, policy, 40, low, high, n_action_steps=0)
 
             # ---------------------------------------------------------------------------
             # Collector: Transition dicts with LeRobot keys
@@ -105,7 +106,8 @@ def collect(**kw):
     env = ScriptedEnv(**kw)
     policy = lambda obs: np.zeros((16, ACT_DIM), dtype=np.float32)  # full-H proposal
     return collect_chunks(
-        env, policy, 40, np.full(ACT_DIM, -1.0), np.full(ACT_DIM, 1.0)
+        env, policy, 40, np.full(ACT_DIM, -1.0), np.full(ACT_DIM, 1.0),
+        n_action_steps=8,  # local: executed steps are caller-passed
     )
 
 
