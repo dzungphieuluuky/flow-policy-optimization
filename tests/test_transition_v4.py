@@ -188,17 +188,13 @@ class TestCollectorV4:
 
 def make_trainer_v4(**overrides) -> SJFPOTrainer:
     cfg = SJFPOConfig(**overrides) if overrides else SJFPOConfig()
-    policy_state_encoder = StateEncoder(
-        OBS_DIM, n_obs_steps=16, hidden_size=cfg.hidden_size
-    )
-    policy_head = SJFOPolicyModel(ACT_DIM, hidden_size=cfg.hidden_size)
+    policy_head = SJFOPolicyModel(ACT_DIM, OBS_DIM, hidden_size=cfg.hidden_size)
     critic = Critic(hidden_size=cfg.hidden_size, act_dim=ACT_DIM)
-    spectral = SpectralEncoder(hidden_size=cfg.hidden_size, n_obs_steps=16)
+    spectral = SpectralEncoder(OBS_DIM, n_obs_steps=16)
     critic_state_encoder = StateEncoder(
         OBS_DIM, n_obs_steps=16, hidden_size=cfg.hidden_size
     )
     return SJFPOTrainer(
-        policy_state_encoder=policy_state_encoder,
         policy_head=policy_head,
         critic=critic,
         spectral=spectral,
