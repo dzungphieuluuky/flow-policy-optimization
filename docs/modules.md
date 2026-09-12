@@ -1,24 +1,22 @@
-# Module Guide — src/mfpo & Tests
+# Module Guide — src/sjfpo & Tests
 
 Use this as a jump table. Each row: what the file owns, the key symbols, and the test that locks it.
 
-## `src/mfpo` — Production (MuJoCo-only, flat Box, fp32)
+## `src/sjfpo` — Production (MuJoCo-only, flat Box, fp32)
 
 | Module | Owns | Key symbols | Thread to follow |
 |---|---|---|---|
-| `config.py` | Flags, run matrices, budgets, algorithm dataclasses | `MFPOConfig / PPOConfig / SACConfig`, `RUN_MATRIX` (45), `build_filtered_matrix`, `BUDGET_TOTAL_HOURS=120` | Change sweep size → `--methods/--envs/--seeds` or edit axes |
-| `runner.py` | MFPO train entry | `train_run`, `PolicyCallable`, `MpoEvalWrapper` | `test_runner_mfpo.py` + `test_pipeline_cpu.py` |
-| `trainer.py` | FPO++ ASPO + value update | `MFPOTrainer.assemble_update`, `MFPOAborted` | `test_trainer.py` NaN + param count |
-| `networks.py` | Trunk + spectral + flow + Epps-Pulley SIGReg | `ContextTrunk`, `SpectralTokens(K=5, Dk=64, hann→rFFT→cat→frozen→Linear)`, `FlowHeadBase`/`PolicyFlowHead`/`AuxStateFlowHead`, `ValueCritic`, `EMAProjection`, `JointFlowTransformer`, `PerBranchFlowLoss`, `sigreg_losses` | `test_networks.py` + `test_joint_flow.py` |
-| `dct_utils.py` | DCT orthonormal + joint target norm | `dct`, `idct`, `normalize_joint_targets`, `denormalize_joint_targets`, frozen per-branch stats | `test_dct.py` roundtrip + invariance `atol 1e-6` |
-| `inference.py` | MFPO ODE decode | `euler_integrate_joint` ascending 0→1 (16 train / 8 eval), `decode_joint` with IDCT + gripper `{0,1}` | `test_inference.py` identity `1e-4` |
+| `config.py` | Flags, run matrices, budgets, algorithm dataclasses | `SJFPOConfig / PPOConfig / SACConfig`, `RUN_MATRIX` (45), `build_filtered_matrix`, `BUDGET_TOTAL_HOURS=120` | Change sweep size → `--methods/--envs/--seeds` or edit axes |
+| `runner.py` | SJFPO train entry | `train_run`, `ChunkPolicy`, `SjfpoEvalWrapper` | `test_runner_sjfpo.py` + `test_pipeline_cpu.py` |
+| `trainer.py` | FPO++ ASPO + value update | `SJFPOTrainer.assemble_update`, `SJFPOAborted` | `test_trainer.py` NaN + param count |
+| `networks.py` | Encoder + spectral + DiT flow + Epps-Pulley SIGReg | `StateEncoder`, `SpectralEncoder(K=5, spectral_dim=64, DCT→low-K→frozen→Linear)`, `SJFOPolicyModel` (DiT-8 adaLN-Zero), `Critic` (2 cross-attention blocks) V(s,a), `sigreg_loss` | `test_networks.py` |
+| `dct_utils.py` | DCT orthonormal action chunks | `dct`, `idct`, `discounted_chunk_reward` | `test_dct.py` roundtrip `1e-5` |
 | `evaluator.py` | Metrics | `Evaluator` → 3-col CSV `[episode,return,length]` | `test_evaluator.py` schema + `test_pipeline_cpu.py` |
 | `baselines.py` | skrl PPO/SAC | `ppo_train_run` / `sac_train_run`, shared `GaussianPolicyImpl`, `seed_and_wrap_env`, `mean_action_eval_policy`, `baseline_train_loop`, `FrameStackWrapper` | `test_baselines.py` provenance |
 | `fpo_core.py` | Legacy FPO math | `aspo_surrogate`, `euler_sample` descending 1→0 | `test_fpo_core.py` |
 | `gae.py`, `collector.py`, `checkpointing.py` | Legacy RL loop | GAE, rollout collection, atomic checkpoint I/O | `test_gae.py`, `test_collector.py`, `test_checkpoint.py` |
 | `sweep.py` | Dispatch | `scan_runs`, `run_pending`, `flush_pending_runs`, `format_run_directory_name` | `test_sweep.py` order + resume |
-| `analysis.py` | Stats + plots | `analyze_results`, `bootstrap_ci` (`n_boot=2000`), `compute_iqm`, `is_superior` (stats: do not touch without plan amendment) | `test_analysis.py` |
-| `calibration.py` | Budgets + gating | `calibrate_and_gate`, `project_run_hours`, `build_fallback_ladder`, `render_markdown`, `GateReport` | `test_calibration.py` |
+| `analysis.py` | Stats + plots | `analyze_results`, `bootstrap_ci` (`n_boot=2000`), `compute_iqm`, `is_superior`, `write_summary_csv` (stats: do not touch without plan amendment) | `test_analysis.py` |
 | `wandb_logging.py` | Default-on wandb gate (REQUIRED, hard import) | `wandb_disabled`, `init_wandb_run_for_method` (->bool), `log_metrics`, `log_eval_details`, `log_eval_summary` (shared C4 home), `finish_run` — 6 fns, SDK-direct (only file that imports wandb) | `test_wandb_logging.py` |
 | `utils.py` | Shared pure helpers | `safe_float_value` | imported by trainer |
 
@@ -35,20 +33,19 @@ Use this as a jump table. Each row: what the file owns, the key symbols, and the
 
 | Path | Usage |
 |---|---|
-| `scripts/train.py` | `... --method mfpo --env Hopper-v5 --total-steps 200` (single) or `--matrix --methods … --envs … --seeds …` (sweep) + `--tiny`. Exits 0/1/2/4. |
+| `scripts/train.py` | `... --method sjfpo --env Hopper-v5 --total-steps 200` (single) or `--matrix --methods … --envs … --seeds …` (sweep) + `--tiny`. Exits 0/1/2/4. |
 | `scripts/build_notebook.py` | `python scripts/build_notebook.py` → both ipynbs (61 + 47 cells, validated); `--spectral-only` / `--legacy-only`. Never hand-edit ipynbs. |
 | `scripts/verify_deps.sh` | Pinned dep check. |
-| `configs/{shared,mfpo,ppo,sac}.yaml` | YAML defaults mirroring `config.py` dataclasses (pyyaml `safe_load` only). |
+| `configs/{shared,sjfpo,ppo,sac}.yaml` | YAML defaults mirroring `config.py` dataclasses (pyyaml `safe_load` only). |
 
 ## Reading Order
 
-1. New to the MFPO path: `config.py` → `runner.py::train_run` →
-   `networks.py` (trunk→spectral) → `dct_utils.py` → `trainer.py` →
-   `inference.py` → `evaluator.py` → `sweep.py`/`analysis.py`.
-2. Debugging spectral: jump to `networks.py::SpectralTokens` — order is
-   Hann→rFFT→cat→frozen→Linear.
-3. Touching budgets/sweep: `calibration.py` + `sweep.py` — read
-   `test_calibration.py` for the `BUDGET_TOTAL_HOURS` gate before changing anything.
+1. New to the SJFPO path: `config.py` → `runner.py::train_run` →
+   `networks.py` (encoders→spectral) → `dct_utils.py` → `trainer.py` →
+   `evaluator.py` → `sweep.py`/`analysis.py`.
+2. Debugging spectral: jump to `networks.py::SpectralEncoder` — order is
+   DCT→low-K→frozen→Linear.
+3. Touching sweep dispatch: `sweep.py` — read `test_sweep.py` order + resume invariants before changing anything.
 
 ## Naming Standard (HuggingFace-cited)
 
@@ -60,13 +57,13 @@ HuggingFace convention (transformers / diffusers / accelerate):
   `run_eval_and_record`, `check_divergence`, `log_eval_summary`).
 - CapWords classes with role suffixes: `BertModel` / `BertConfig`
   (transformers), `DDPMScheduler` (diffusers) — mirrored here
-  (`JointFlowTransformer`, `PerBranchFlowLoss`, `MFPOTrainer`, `GateReport`).
+  (`SJFOPolicyModel`, `Critic`, `SJFPOTrainer`).
 - File mirrors class: `modeling_bert.py` → `BertModel`; here `sweep.py` →
-  `SweepError` / `ScanResult`, `calibration.py` → `GateReport`.
-- UPPER_SNAKE constants: `BUDGET_TOTAL_HOURS`, `CHECKPOINT_FILE`, `BASIS_CACHE`.
+  `SweepError` / `ScanResult`.
+- UPPER_SNAKE constants: `CHECKPOINT_FILE`, `BASIS_CACHE`.
 - `_` prefix banned on this repo's public surface: a leading underscore marks
   private API, but every helper here is imported across modules or asserted by
-  tests, so all defs are public (no `def _[a-z]` in `src/mfpo` / `scripts`;
+  tests, so all defs are public (no `def _[a-z]` in `src/sjfpo` / `scripts`;
   test `_` helpers keep pytest convention).
 - Stated deviation: `networks.py` stays one file (trunk + spectral + flow +
   SIGReg) instead of HF-style one-class-per-file — the single-home gate wins.
