@@ -123,7 +123,7 @@ class TestSjfpoEvalWrapperCharacterization:
         policy = SJFOPolicyModel(2, hidden_size=cfg.hidden_size)
         spectral = SpectralEncoder(
             hidden_size=cfg.hidden_size,
-            num_spectral_tokens=cfg.num_spectral_tokens,
+            top_p_spectral_tokens=cfg.top_p_spectral_tokens,
             n_obs_steps=cfg.n_obs_steps,
         )
         return SjfpoEvalWrapper(trunk, policy, spectral, cfg), cfg
@@ -135,12 +135,14 @@ class TestSjfpoEvalWrapperCharacterization:
         obs = np.ones(4, dtype=np.float32)
         first = wrapper(obs)
         assert first.shape == (2,)
-        # Open-loop: next chunk_size-1 calls reuse buffered chunk deterministically
-        seq = [first] + [wrapper(obs) for _ in range(cfg.chunk_size - 1)]
+        # Open-loop: only the executed prefix (ratio * H) is buffered; the
+        # predicted tail is discarded and the next call replans.
+        n_execute = max(1, round(cfg.executed_vs_predicted_ratio * cfg.chunk_size))
+        seq = [first] + [wrapper(obs) for _ in range(n_execute - 1)]
         wrapper2, _ = self.build()
         # fresh wrapper with same init weights would differ; instead pin determinism:
         wrapper.reset()
-        again = [wrapper(obs) for _ in range(cfg.chunk_size)]
+        again = [wrapper(obs) for _ in range(n_execute)]
         assert all(np.array_equal(a, b) for a, b in zip(seq, again))
 
     def test_reset_clears_buffers(self):
@@ -245,3 +247,38 @@ class TestCheckDivergenceGuard:
         for baseline in (0.0, -5.0):
             consecutive, diverged = check_divergence(-100.0, baseline, 2)
             assert (consecutive, diverged) == (0, False)
+
+
+class TestExecutedVsPredictedRatio:
+    def test_ratio_bounds_rejected(self):
+        from sjfpo.config import SJFPOConfig
+
+        for bad in (0.0, -0.5, 1.5):
+            try:
+                SJFPOConfig(executed_vs_predicted_ratio=bad)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError(f"ratio={bad} must be rejected")
+
+    def test_wrapper_buffers_executed_prefix_only(self):
+        import numpy as np
+
+        from sjfpo.config import SJFPOConfig
+        from sjfpo.networks import StateEncoder, SJFOPolicyModel, SpectralEncoder
+        from sjfpo.runner import SjfpoEvalWrapper
+
+        cfg = SJFPOConfig()  # ratio 0.5, H 16 -> 8 buffered
+        wrapper = SjfpoEvalWrapper(
+            StateEncoder(4, n_obs_steps=cfg.n_obs_steps, hidden_size=cfg.hidden_size),
+            SJFOPolicyModel(2, hidden_size=cfg.hidden_size),
+            SpectralEncoder(
+                hidden_size=cfg.hidden_size,
+                top_p_spectral_tokens=cfg.top_p_spectral_tokens,
+                n_obs_steps=cfg.n_obs_steps,
+            ),
+            cfg,
+        )
+        wrapper(np.ones(4, dtype=np.float32))
+        n_execute = max(1, round(cfg.executed_vs_predicted_ratio * cfg.chunk_size))
+        assert len(wrapper.action_buffer) == n_execute - 1  # 8 buffered, 1 popped
