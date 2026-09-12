@@ -1,11 +1,12 @@
 # Architecture — Spectral Joint Flow Policy Optimization (SJFPO, MuJoCo-only)
 
-## Data Shapes (`T=16 H=16 n=8 K=5 D=128 spectral_dim=64`)
+## Data Shapes (`T=16 H=16 K=5 D=128 spectral_dim=64`, `K=round(top_p*T)`)
 
 ```
 Observation (per step):  flat Box [obs_dim] (env-dependent; Hopper-v5: 11)
 State window:            stacked frames [B,T,obs_dim] via deque (T=16)
-Action chunk:            [B,H,act_dim] predicted (H=16), first n=8 executed open-loop
+Action chunk:            [B,H,act_dim] predicted (H=16); training executes all 16
+                       open-loop, eval executes the ratio*H prefix (default 8)
 ```
 
 ## Flow (SJFPO path — the only path)
@@ -33,7 +34,8 @@ frame-stacked env through the shared `baseline_train_loop`
 - **t-convention:** `x_t = t·ε + (1−t)·a`, `t=1` noise, `t=0` data. Sampling
   integrates **descending** `x ← x − δ·v̂` 1→0 (`fpo_core.euler_sample`,
   64 train / 16 eval steps). `trainer.py` samples `τ~U[0.005,0.995]`.
-- **Spectral order:** DCT-II over time (dim=1), keep `K=5` low bins, then
+- **Spectral order:** DCT-II over time (dim=1), keep the `K` lowest
+  low-frequency bins (`K=max(1, round(top_p*T))`, default `0.3*16→5`), then
   `Linear(D→64)` with no normalization. Tests assert
   invariance `B=1` vs `B=32`. (rFFT is reserved for observation.image.)
 - **Decoupled encoders:** ASPO grads land on `policy_state_encoder`,
@@ -45,6 +47,6 @@ frame-stacked env through the shared `baseline_train_loop`
 
 ## Why These Choices
 
-- `K=5` low-frequency DCT tokens condition the flow on
+- Top-`p` low-frequency DCT tokens condition the flow on
   temporal structure of `Z`, not its DC offset.
 - Epps-Pulley SIGReg single-home (`sigreg_loss`, P=1024, λ=0.1) — no Barlow/VICReg twins.
