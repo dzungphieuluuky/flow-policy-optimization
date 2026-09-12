@@ -9,10 +9,10 @@ Research code: correctness, clarity, reproducibility over infrastructure. See `A
 **SJFPO (live train path, actions-only):**
 
 - Stack `T=16` obs frames → `StateEncoder` (per-frame MLP + self-attn) → `Z [N,T,D=128]`.
-- DCT-II over `Z` (time axis) → keep `K` lowest low-frequency bins (`K = round(top_p*T)`, default 5) → `Linear(D→64)` = `SpectralEncoder` conditioning `[N,K,64]`, no calibration. (rFFT is reserved for `observation.image`; state and action use DCT.)
-- Action chunk `[N,H=16,Da]` stored as orthonormal DCT-II coefficients. Flow (DiT-8, adaLN-Zero, `SJFOPolicyModel`) predicts action velocities in DCT space.
+- DCT-II over the raw obs window (time axis) → keep `K` lowest low-frequency bins (`K = round(top_p*T)`, default 5) → raw bins = `SpectralEncoder` conditioning `[N,K,obs]`, no projector, no calibration, no encoder latent. (rFFT is reserved for `observation.image`; state and action use DCT.)
+- Action chunk `[N,H=16,Da]` stored as orthonormal DCT-II coefficients. Flow (DiT-8, adaLN-Zero, `SJFOPolicyModel`) attends over `[state_embed(raw obs); noisy actions]` prefix tokens and predicts action velocities in DCT space.
 - Sample with `fpo_core.euler_sample` (descending `t: 1→0`, `x ← x − δ·v̂`); decode with `runner.decode_chunk_actions` (IDCT + single `clamp(-1,1)`). Training executes the full predicted chunk open-loop (`H=16`); inference/eval execute the `executed_vs_predicted_ratio=0.5` prefix (8 steps), then replan.
-- Update (`SJFPOTrainer.assemble_update`): per-sample MC log-liks `[N,m=16]` → STE-capped ratios → ASPO surrogate (PPO-clip for `A≥0`, SPO penalty for `A<0`, mean-of-ψ) + `V(s,a)` TD critic (`R_k + γ^L·V(s',a')`, terminated never bootstraps) + Epps-Pulley `sigreg_loss` on the critic latent. One AdamW optimizer over trunk + policy + critic + spectral projector; per-module grad-clip; NaN aborts via `SJFPOAborted`.
+- Update (`SJFPOTrainer.assemble_update`): per-sample MC log-liks `[N,m=16]` → STE-capped ratios → ASPO surrogate (PPO-clip for `A≥0`, SPO penalty for `A<0`, mean-of-ψ) + `V(s,a)` TD critic (`R_k + γ^L·V(s',a')`, terminated never bootstraps) + Epps-Pulley `sigreg_loss` on the critic latent. One AdamW optimizer over policy + critic + critic trunk (spectral is parameter-free); per-module grad-clip; NaN aborts via `SJFPOAborted`.
 - Chunk rollout uses LeRobot-keyed `Transition` dicts; chunk-level semi-MDP GAE (`gae.chunk_gae`, numpy fp64, advantages centered).
 
 **Baselines:** skrl 2.1.0 PPO / SAC via shared `baseline_train_loop` (`src/sjfpo/baselines.py`). No spectral/flow code.
@@ -84,7 +84,7 @@ Exit codes: `0` success · `1` usage error · `2` runtime/divergence abort · `4
 
 Env switches: `SJFPO_DEVICE=cuda|cpu|auto` · `SJFPO_DISABLE_WANDB=1` (only wandb off switch; wandb is a required import) · `SJFPO_TINY_MATRIX=1` (same as `--tiny`) · `SJFPO_LEGACY_MUJOCO=1` (default, MuJoCo-only).
 
-Key `SJFPOConfig` defaults: `num_mc_samples=16`, `euler_train=64`, `euler_eval=16`, `chunks_per_update=512`, `n_obs_steps=16`, `chunk_size=16`, `executed_vs_predicted_ratio=0.5`, `top_p_spectral_tokens=0.3`, `hidden_size=128`, `spectral_dim=64`, `dit_depth=8`, `dit_heads=4`, `dit_mlp_ratio=4.0`, `dit_time_dim=256`, `lr=1e-4`, `wd=1e-4`, `clip_range=0.05`, `cfm_clamp=20`, `log_ratio_cap=10`, `sigreg_coef=0.1`, `vf_coef=1.0`, `grad_clip=1.0`, `gamma=0.99`, `gae_lambda=0.95`.
+Key `SJFPOConfig` defaults: `num_mc_samples=16`, `euler_train=64`, `euler_eval=16`, `chunks_per_update=512`, `n_obs_steps=16`, `chunk_size=16`, `executed_vs_predicted_ratio=0.5`, `top_p_spectral_tokens=0.3`, `hidden_size=128`, `dit_depth=8`, `dit_heads=4`, `dit_mlp_ratio=4.0`, `dit_time_dim=256`, `lr=1e-4`, `wd=1e-4`, `clip_range=0.05`, `cfm_clamp=20`, `log_ratio_cap=10`, `sigreg_coef=0.1`, `vf_coef=1.0`, `grad_clip=1.0`, `gamma=0.99`, `gae_lambda=0.95`.
 
 ## Outputs
 
@@ -113,7 +113,7 @@ Regenerates both minimal Colab notebooks (clone + install + `!train.py`, no sour
 
 ## Conventions (read `src/sjfpo/AGENTS.md` first)
 
-- Tensor-order comments on every transform (`[N,T,D]`, `[N,H,Da]`, `[N,K,64]`, `[N,m]`); `einx.id` reshapes must match torch.
+- Tensor-order comments on every transform (`[N,T,D]`, `[N,H,Da]`, `[N,K,obs]`, `[N,Ka,Da]`, `[N,m]`); `einx.id` reshapes must match torch.
 - Frozen dataclass configs; YAML files mirror them field-for-field (`tests/test_config_yaml_parity.py` locks this).
 - `wandb` imported only in `wandb_logging.py`.
 - `retained:`-marked helpers (`cfm_loss`, `flow_loglik`, `policy_loss`, `assert_runtime`, …) are test/notebook seams — don't delete.
