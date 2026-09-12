@@ -25,7 +25,7 @@ utils.py           23L — shared pure helpers (safe_float_value), no sjfpo impo
 ## Where to Look
 - `collector.py:51` `Transition`: 9 LeRobot keys (`observation.state [T,Do]`, `action [H,Da]` DCT, `next.action [H,Da]` chained/behavior proposal, `next.*`, `n_action_steps` i64, `clip_count` i64); `next.reward` is variable-length `[L_k]`
 - `trainer.py:assemble_update`: stack (guards H/T) → policy trunk `Z [N,T,D]` → spectral `cond [N,K,spectral_dim]` → policy ℓ/ρ/ψ `[N,m]` → critic trunk `Z [N,T,D]` → V(s,a) TD-critic → SigReg over critic-h → clip → AdamW (one optimizer, two disjoint grad paths)
-- `networks.py:SpectralEncoder`: DCT-II `Z [B,T,D]` over time → keep K=5 low bins → frozen norm → Linear D→64 → `[B,5,64]` (raises until `set_frozen_stats`/`capture_stats`; rFFT reserved for observation.image)
+- `networks.py:SpectralEncoder`: DCT-II `Z [B,T,D]` over time → keep K=5 low bins → Linear D→64 → `[B,5,64]` (no norm; rFFT reserved for observation.image)
 - `gae.py:chunk_gae`: per-chunk `R_k`, `δ_k`, backward `(γλ)^L`; terminated cuts recursion, truncated bootstraps from last next-frame
 - `runner.py:build_training_components`: policy_state_encoder/policy/critic/spectral/critic_state_encoder (no target nets, no aux head); `compute_chunk_values` V(s,a) via critic encoder, bootstraps truncated only
 - `fpo_core.py:total_update_loss` (single cfg-weight home); `sweep.py:ScanResult(pending,skipped,diverged)` deterministic sort (method,env,seed)
@@ -43,13 +43,13 @@ utils.py           23L — shared pure helpers (safe_float_value), no sjfpo impo
 ## Conventions
 - Tensor order `B,N,H,K,D,Da,Ds` (+ spectral projector dim) — comment dimensions at each transform (Google docstrings + inline `[B,H,Da]`)
 - Live cond is `[N,K,spectral_dim=64]`; the DiT pools it (`cond.mean(1)`) into the adaLN vector
-- Net activations are SiLU everywhere
+- Net activations are SwiGLU everywhere (gate/up/down linears; silu lives only inside SwiGLU)
 - Keep `sigreg_loss` Epps-Pulley CF normality single home in `networks.py` — no Barlow heads
 - `polyak` survives ONLY at the skrl boundary (`SACConfig`, `build_sac_skrl_config`, `sac.yaml`); no EMA/target nets in the sjfpo path
 - einx.id reshapes in collector/fpo_core/trainer (+dct_utils/baselines) must match torch at 1e-6 (`tests/test_einx_migration.py`); ground truth is current torch behavior
 - CUDA-default with CPU fallback, fp32-only (no autocast/bf16/`torch.compile`): `SJFPO_DEVICE=cuda|cpu|auto` overrides; storage (transitions/checkpoints/CSV) stays on CPU, batches move to device per update; LSP absent here — `py_compile` + suite is the gate
 - wandb imported ONLY in `sjfpo.wandb_logging` (sole importer, module-level REQUIRED — absent → hard ImportError); runners route init through `init_wandb_run_for_method()->bool` + `log_eval_details` + `log_metrics(data, step=global_step)` + `finish_run()`; metrics: train/*, eval/*, gae/*, timing/*; `wandb/` dir NOT in .gitignore
-- `# %%` + `# CELLORDER:` markers are load-bearing (`build_notebook.py` strips them into notebook cells) — never delete
+- `# %%` + `# CELLORDER:` markers are vestigial (the builder no longer inlines `src/` into notebooks) — leave them, don't add new ones
 - `retained:`-marked helpers are test seams (flow_loglik/policy_loss, discounted_chunk_reward, assert_runtime) — deleting one breaks its consumer test first
 
 ## Anti-Patterns
