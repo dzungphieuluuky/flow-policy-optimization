@@ -1,26 +1,27 @@
-# MFPO (FPO++ flow-matching) defaults — mirrors src/mfpo/config.py:MFPOConfig (frozen).
-# fp32-only (never autocast/half/bfloat16, no torch.compile). SIGReg-only (lambda_sigreg=0.1).
-# EMA via torch.optim.swa_utils.AveragedModel (ema_decay=0.99, see ema_decay below).
-N_mc: 16
+# SJFPO (FPO++ flow-matching) defaults — mirrors src/sjfpo/config.py:SJFPOConfig (frozen).
+# fp32-only (never autocast/half/bfloat16, no torch.compile). SIGReg-only (sigreg_coef=0.1).
+num_mc_samples: 16
 euler_train: 64
 euler_eval: 16
 chunks_per_update: 512
-epochs: 16
-minibatch: 128
 lr: 0.0001
 wd: 0.0001
 gamma: 0.99
 gae_lambda: 0.95
-epsilon_clip: 0.05
+clip_range: 0.05
 cfm_clamp: 20.0
 log_ratio_cap: 10.0
 tau_range: [0.005, 0.995]
-lambda_aux: 0.5
-lambda_sigreg: 0.1
-c_value: 1.0
-ema_decay: 0.99
+dit_depth: 8
+dit_heads: 4
+dit_mlp_ratio: 4.0
+dit_time_dim: 256
+sigreg_coef: 0.1
+vf_coef: 1.0
 grad_clip: 1.0
-context_len: 16
-chunk_len: 8
-K_spectral: 5
-Z_dim: 128
+n_obs_steps: 16
+chunk_size: 16
+n_action_steps: 8
+num_spectral_tokens: 5
+spectral_dim: 64
+hidden_size: 128
