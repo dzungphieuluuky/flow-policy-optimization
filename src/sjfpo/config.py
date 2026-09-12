@@ -14,7 +14,6 @@ Tensor conventions (used in shape comments across the codebase):
     H: action-chunk horizon (default 8)
     K: low-K spectral tokens (default 5)
     D: fused latent dimension hidden_size (default 128)
-    spectral_dim: spectral projection dimension (default 64)
     Da: action dimension (env-dependent)
     Ds: state dimension (default D = 128)
 
@@ -85,7 +84,6 @@ class SJFPOConfig:
             per replan at inference/eval (0 < r <= 1). Default 0.5.
         top_p_spectral_tokens: Fraction of lowest low-frequency DCT bins kept
             (0 < p <= 1). Effective tokens K = max(1, round(p * T)). Default 0.3.
-        spectral_dim: Spectral projector output dim. Default 64.
         hidden_size: Fused latent dimension D. Default 128.
     """
 
@@ -112,7 +110,6 @@ class SJFPOConfig:
     chunk_size: int = 16  # predicted action-chunk length H
     executed_vs_predicted_ratio: float = 0.5  # inference/eval executed fraction
     top_p_spectral_tokens: float = 0.3  # kept low-freq DCT fraction
-    spectral_dim: int = 64  # spectral projector output dim
     hidden_size: int = 128  # fused latent dim D
 
     def __post_init__(self) -> None:
