@@ -32,11 +32,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from sjfpo import config  # noqa: E402
 from sjfpo.dct_utils import dct, idct  # noqa: E402
-from sjfpo.networks import (  # noqa: E402
-    SJFOPolicyModel,
-    SpectralEncoder,
-    get_timestep_embedding,
-)
+from sjfpo.networks import SJFOPolicyModel, get_timestep_embedding  # noqa: E402
 
 from sjfpo import fpo_core  # noqa: E402  (RED until implemented)
 
@@ -46,9 +42,10 @@ TAU_LO, TAU_HI = config.SJFPO_CFG.tau_range
 class VelocityMLP(nn.Module):
     """Toy velocity net MLP[in+8 -> 128 -> 128 -> out] SiLU.
 
-    Signature matches the project flow heads: ``net(x_t, t, cond)`` returning
-    a tensor with the same shape as ``x_t`` (trailing dims flattened into the
-    input features). ``cond`` is accepted and ignored (unconditional toy).
+    Signature matches the project flow heads: ``net(x_t, t, cond, state)``
+    returning a tensor with the same shape as ``x_t`` (trailing dims flattened
+    into the input features). ``cond``/``state`` are accepted and ignored
+    (unconditional toy).
     """
 
     def __init__(self, in_dim: int, out_dim: int | None = None):
@@ -62,7 +59,7 @@ class VelocityMLP(nn.Module):
             nn.Linear(128, out_dim),
         )
 
-    def forward(self, x_t: torch.Tensor, t, cond=None) -> torch.Tensor:
+    def forward(self, x_t: torch.Tensor, t, cond=None, state=None) -> torch.Tensor:
         temb = get_timestep_embedding(t, dim=8)
         if temb.shape[0] != x_t.shape[0]:
             temb = temb.expand(x_t.shape[0], -1)
@@ -306,9 +303,9 @@ def test_euler_sampler_grid_update_and_zero_noise():
     seen_ts: list[float] = []
 
     class Probe(nn.Module):
-        def forward(self, x_t, t, cond=None):
+        def forward(self, x_t, t, cond=None, state=None):
             seen_ts.append(float(t))
-            return net(x_t, t, cond)
+            return net(x_t, t, cond, state)
 
     out = fpo_core.euler_sample(
         Probe(), (5, 1), None, steps=64, generator=torch.Generator().manual_seed(42)
@@ -326,7 +323,7 @@ def test_euler_sampler_grid_update_and_zero_noise():
     x = eps.clone()
     with torch.no_grad():
         for i in range(64):
-            x = x - (grid[i] - grid[i + 1]) * net(x, grid[i], None)
+            x = x - (grid[i] - grid[i + 1]) * net(x, grid[i], None, None)
     assert torch.allclose(out, x, atol=1e-6), "sampler deviates from x <- x - dt*v_hat"
 
     # Zero-sampling path (eps = 0) is deterministic given the weights.
@@ -342,10 +339,9 @@ def test_euler_sampler_grid_update_and_zero_noise():
 
 def test_space_consistency_dct_pipeline():
     torch.manual_seed(51)
-    policy = SJFOPolicyModel(action_dim=3)
-    cond = torch.zeros(
-        4, SpectralEncoder().k, config.SJFPO_CFG.spectral_dim
-    )
+    policy = SJFOPolicyModel(action_dim=3, obs_dim=4)
+    k = max(1, round(config.SJFPO_CFG.top_p_spectral_tokens * 16))
+    cond = torch.zeros(4, k, 4)
     with torch.no_grad():
         coeffs = fpo_core.euler_sample(
             policy,
@@ -353,6 +349,7 @@ def test_space_consistency_dct_pipeline():
             cond,
             steps=16,
             generator=torch.Generator().manual_seed(52),
+            state=torch.zeros(4, config.SJFPO_CFG.n_obs_steps, 4),
         )
         actions = idct(coeffs, dim=1)  # coefficient space -> action space
         low, high = -0.5, 0.5
