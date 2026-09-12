@@ -20,17 +20,33 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import gymnasium as gym
 
-from mfpo.config import build_legacy_run_matrix, MFPOConfig, PPOConfig, SACConfig
+from sjfpo.config import build_run_matrix, SJFPOConfig, PPOConfig, SACConfig
 from tests.fixtures.fake_env import FakeGymEnv
 
 
 def test_train_run_writes_3col_csv(tmp_path):
-    from mfpo.runner import train_run
+    from sjfpo.runner import train_run
 
     env = FakeGymEnv()
-    out = tmp_path / "mfpo_3col"
-    cfg = MFPOConfig(N_mc=2, euler_train=4, euler_eval=4, chunks_per_update=16, epochs=1, minibatch=16, context_len=16)
-    train_run(env=env, out_dir=out, cfg=cfg, seed=0, total_steps=200, eval_interval=100, ckpt_interval=100, obs_dim=4, act_dim=2)
+    out = tmp_path / "sjfpo_3col"
+    cfg = SJFPOConfig(
+        num_mc_samples=2,
+        euler_train=4,
+        euler_eval=4,
+        chunks_per_update=16,
+        n_obs_steps=16,
+    )
+    train_run(
+        env=env,
+        out_dir=out,
+        cfg=cfg,
+        seed=0,
+        total_steps=200,
+        eval_interval=100,
+        ckpt_interval=100,
+        obs_dim=4,
+        act_dim=2,
+    )
     csv_path = out / "eval_history.csv"
     assert csv_path.exists()
     with open(csv_path, newline="") as f:
@@ -47,11 +63,19 @@ def test_baselines_write_3col_csv(tmp_path, monkeypatch):
     import torch
 
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
-    from mfpo.baselines import ppo_train_run
+    from sjfpo.baselines import ppo_train_run
 
     env = FakeGymEnv()
     cfg = PPOConfig(rollouts=32, learning_epochs=2, mini_batches=2, hidden=(64, 64))
-    result = ppo_train_run(env=env, out_dir=tmp_path / "ppo_3col", cfg=cfg, seed=0, total_steps=200, eval_interval=200, ckpt_interval=200)
+    result = ppo_train_run(
+        env=env,
+        out_dir=tmp_path / "ppo_3col",
+        cfg=cfg,
+        seed=0,
+        total_steps=200,
+        eval_interval=200,
+        ckpt_interval=200,
+    )
     # result dict keys per T4
     assert result["method"] == "ppo"
     assert "reward_mean_last10" in result
@@ -66,31 +90,33 @@ def test_baselines_write_3col_csv(tmp_path, monkeypatch):
 
 
 def test_run_matrix_cardinality_is_45():
-    from mfpo.config import RUN_MATRIX, TINY_MATRIX
+    from sjfpo.config import RUN_MATRIX, TINY_MATRIX
 
-    assert len(build_legacy_run_matrix()) == 45
+    assert len(build_run_matrix()) == 45
     assert len(RUN_MATRIX) == 45
     assert TINY_MATRIX is False
     # tiny env
-    os.environ["MFPO_TINY_MATRIX"] = "1"
+    os.environ["SJFPO_TINY_MATRIX"] = "1"
     try:
         import importlib
-        import mfpo.config as cfg_mod
+        import sjfpo.config as cfg_mod
 
         importlib.reload(cfg_mod)
         assert len(cfg_mod.RUN_MATRIX) == 3
         for s in cfg_mod.RUN_MATRIX:
             assert s.env == "Hopper-v5"
-        importlib.reload(cfg_mod)  # reload back will be handled by fixture in other tests, but restore here
+        importlib.reload(
+            cfg_mod
+        )  # reload back will be handled by fixture in other tests, but restore here
         # force back to default
-        if "MFPO_TINY_MATRIX" in os.environ:
-            del os.environ["MFPO_TINY_MATRIX"]
+        if "SJFPO_TINY_MATRIX" in os.environ:
+            del os.environ["SJFPO_TINY_MATRIX"]
         importlib.reload(cfg_mod)
     finally:
-        if "MFPO_TINY_MATRIX" in os.environ:
-            del os.environ["MFPO_TINY_MATRIX"]
+        if "SJFPO_TINY_MATRIX" in os.environ:
+            del os.environ["SJFPO_TINY_MATRIX"]
         import importlib
-        import mfpo.config as cfg_mod
+        import sjfpo.config as cfg_mod
 
         importlib.reload(cfg_mod)
 
@@ -102,20 +128,18 @@ def test_run_matrix_cardinality_is_45():
 
 
 def test_wandb_logging_does_not_affect_csv(tmp_path, monkeypatch):
-    """MFPO_DISABLE_WANDB=1 → train_run still writes 3-col CSV [episode,return,length]."""
-    monkeypatch.setenv("MFPO_DISABLE_WANDB", "1")
-    from mfpo.runner import train_run
+    """SJFPO_DISABLE_WANDB=1 → train_run still writes 3-col CSV [episode,return,length]."""
+    monkeypatch.setenv("SJFPO_DISABLE_WANDB", "1")
+    from sjfpo.runner import train_run
 
     env = FakeGymEnv()
     out = tmp_path / "wandb_disabled_csv"
-    cfg = MFPOConfig(
-        N_mc=2,
+    cfg = SJFPOConfig(
+        num_mc_samples=2,
         euler_train=4,
         euler_eval=4,
         chunks_per_update=16,
-        epochs=1,
-        minibatch=16,
-        context_len=16,
+        n_obs_steps=16,
     )
     train_run(
         env=env,
@@ -142,16 +166,16 @@ def test_wandb_logging_does_not_affect_csv(tmp_path, monkeypatch):
 
 def test_wandb_logging_does_not_change_run_matrix():
     """RUN_MATRIX cardinality remains 45 regardless of wandb integration."""
-    assert len(build_legacy_run_matrix()) == 45
+    assert len(build_run_matrix()) == 45
 
 
 def test_wandb_soft_import_no_crash():
     """Subprocess guard: fresh Python, deleted-gate contract → import succeeds, wl.wandb mockable."""
     code = (
         "import os, sys; "
-        "os.environ.pop('MFPO_DISABLE_WANDB', None); "
+        "os.environ.pop('SJFPO_DISABLE_WANDB', None); "
         "sys.path.insert(0, 'src'); "
-        "import mfpo.wandb_logging as wl; "
+        "import sjfpo.wandb_logging as wl; "
         "assert wl.wandb_disabled() is False; "
         "from unittest.mock import MagicMock; wl.wandb = MagicMock(); "
         "wl.log_metrics({'x': 1}, step=0); "
@@ -171,20 +195,18 @@ def test_wandb_soft_import_no_crash():
 
 
 def test_wandb_disabled_in_train_run(tmp_path, monkeypatch):
-    """MFPO_DISABLE_WANDB=1 → train_run return dict has expected keys, no wandb artifacts."""
-    monkeypatch.setenv("MFPO_DISABLE_WANDB", "1")
-    from mfpo.runner import train_run
+    """SJFPO_DISABLE_WANDB=1 → train_run return dict has expected keys, no wandb artifacts."""
+    monkeypatch.setenv("SJFPO_DISABLE_WANDB", "1")
+    from sjfpo.runner import train_run
 
     env = FakeGymEnv()
     out = tmp_path / "wandb_unset_return"
-    cfg = MFPOConfig(
-        N_mc=2,
+    cfg = SJFPOConfig(
+        num_mc_samples=2,
         euler_train=4,
         euler_eval=4,
         chunks_per_update=16,
-        epochs=1,
-        minibatch=16,
-        context_len=16,
+        n_obs_steps=16,
     )
     result = train_run(
         env=env,
@@ -210,7 +232,7 @@ def test_wandb_disabled_in_train_run(tmp_path, monkeypatch):
     assert expected_keys == set(result.keys()), (
         f"missing keys: {expected_keys - set(result.keys())}"
     )
-    assert result["method"] == "mfpo"
+    assert result["method"] == "sjfpo"
     assert isinstance(result["artifacts"], list)
     # no wandb-specific artifacts (wandb/, *.wandb files) when disabled
     wandb_artifacts = [
