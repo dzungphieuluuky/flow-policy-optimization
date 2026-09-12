@@ -11,7 +11,6 @@ Tensor conventions (used throughout this module):
     H: action-chunk horizon (default 8)
     K: low-K spectral tokens (default 5)
     D: fused latent dimension hidden_size (default 128)
-    spectral_dim: spectral projection dimension (default 64)
     Da: action dimension (default 7, env-dependent)
     Ds: state dimension (default D = 128)
     T: generic sequence length (often N or H)
@@ -104,6 +103,35 @@ def get_timestep_embedding(t, dim: int = 8) -> torch.Tensor:
     ang = t.unsqueeze(-1) * freqs  # [..., half]
     return torch.cat([ang.sin(), ang.cos()], dim=-1)  # [..., dim]
 
+
+def sinusoidal_positional_encoding(
+    length: int, dim: int, device: torch.device
+) -> torch.Tensor:
+    """Fixed sinusoidal position codes [T, dim] (added to frame projections).
+
+    Same 10000-ladder as ``dit_timestep_embedding`` so encodings stay finite
+    in fp32 at any width; first half sin, second half cos.
+
+    Args:
+        length: Sequence length T.
+        dim: Feature dimension (even in practice; odd dims are truncated).
+        device: Target device.
+
+    Returns:
+        Position codes of shape [length, dim].
+    """
+    pos = torch.arange(length, dtype=torch.float32, device=device).unsqueeze(
+        1
+    )  # [T, 1]
+    half = dim // 2
+    freqs = torch.exp(
+        torch.arange(half, dtype=torch.float32, device=device)
+        * -(math.log(10000.0) / max(half - 1, 1))
+    )  # [half]
+    ang = pos * freqs  # [T, half]
+    pe = torch.cat([ang.sin(), ang.cos()], dim=-1)  # [T, 2*half]
+    return pe[:, :dim]  # [T, dim]
+
     # %% [markdown]
     # ## StateEncoder — frame projection -> two pre-norm residual blocks
     # (attention + SwiGLU, norm before every sublayer) -> Z[B, T, hidden_size].
@@ -112,11 +140,12 @@ def get_timestep_embedding(t, dim: int = 8) -> torch.Tensor:
 
 
 class StateEncoder(nn.Module):
-    """State encoder: frame projection + two pre-norm residual blocks.
+    """State encoder: frame projection + positional encoding + two pre-norm blocks.
 
-    Maps stacked frames to a latent sequence: a linear per-frame projection,
-    then two blocks of split residuals (attention and SwiGLU each under
-    their own residual, RMSNorm before every sublayer).
+    Maps stacked frames to a latent sequence: a linear per-frame projection
+    plus fixed sinusoidal position codes, then two blocks of split residuals
+    (attention and SwiGLU each under their own residual, RMSNorm before
+    every sublayer).
 
     Args:
         obs_dim: Input observation dimension per frame.
@@ -162,6 +191,11 @@ class StateEncoder(nn.Module):
             Z: Latent sequence of shape [B, T, hidden_size].
         """
         h = self.frame_proj(x)  # [B, T, hidden_size]
+        # Fixed sinusoidal position codes: attention is permutation-invariant,
+        # so order must enter here before the blocks.
+        h = h + sinusoidal_positional_encoding(
+            h.shape[1], h.shape[2], h.device
+        )  # [B, T, hidden_size]
         n = self.norm1(h)  # [B, T, hidden_size]
         attn, _ = self.attn1(n, n, n)  # [B, T, hidden_size]
         h = h + attn  # [B, T, hidden_size]
@@ -271,15 +305,14 @@ def sigreg_loss(
     # %% [markdown]
     # ## SpectralEncoder — raw DCT-II low-K tokens, no normalization
     #
-    # Orthonormal DCT preserves energy (Parseval), so raw coefficients go
-    # straight to the projector; the encoder co-adapts end-to-end. No frozen
-    # stats, no calibration, no drift guard.
+    # Orthonormal DCT preserves energy (Parseval), so raw coefficients are
+    # the tokens; no projector, no frozen stats, no calibration, no drift guard.
 
     # %%
 
 
 class SpectralEncoder(nn.Module):
-    """DCT-II spectral encoder: raw low-K bins + learnable projector.
+    """Parameter-free DCT-II spectral encoder over the RAW observation window.
 
     Transform convention (repo-wide): observation.state and action use the
     orthonormal DCT-II (dct_utils.dct); the real FFT (torch.fft.rfft) is
@@ -287,49 +320,47 @@ class SpectralEncoder(nn.Module):
     build).
 
     Order of operations:
-        Z → DCT-II(dim=1) → keep K lowest low-frequency bins → Linear(D→spectral_dim)
-    where K = max(1, min(T, round(top_p * T))).
+        obs → DCT-II(dim=1) → keep K lowest low-frequency bins → tokens
+    where K = max(1, min(T, round(top_p * T))). No projector: the last dim
+    stays obs_dim, so tokens are raw frequency coefficients.
 
     Args:
-        hidden_size: Latent dimension hidden_size (default from config.SJFPO_CFG.hidden_size).
+        obs_dim: Raw observation dimension per frame (env-dependent, required).
         top_p_spectral_tokens: Kept low-frequency fraction (default from config.SJFPO_CFG.top_p_spectral_tokens).
         n_obs_steps: State window length T (default from config.SJFPO_CFG.n_obs_steps).
 
     Attributes:
-        hidden_size: Latent dimension D.
+        obs_dim: Raw observation dimension.
         k: Effective token count K.
-        projector: Linear(hidden_size -> spectral_dim).
     """
 
     def __init__(
         self,
-        hidden_size: int | None = None,
+        obs_dim: int,
         top_p_spectral_tokens: float | None = None,
         n_obs_steps: int | None = None,
     ):
         super().__init__()
-        self.hidden_size = int(resolve_config_value("hidden_size", hidden_size))
+        if obs_dim <= 0:
+            raise ValueError(f"obs_dim={obs_dim} must be positive")
+        self.obs_dim = obs_dim
         t = int(resolve_config_value("n_obs_steps", n_obs_steps))  # DCT-II yields T bins
         p = float(
             resolve_config_value("top_p_spectral_tokens", top_p_spectral_tokens)
         )
         self.k = max(1, min(t, round(p * t)))
-        spectral_dim = int(config.SJFPO_CFG.spectral_dim)
-        self.projector = nn.Linear(
-            self.hidden_size, spectral_dim
-        )  # [D -> spectral_dim]
 
-    def forward(self, z: torch.Tensor) -> torch.Tensor:
-        """Forward pass: Z -> spectral tokens.
+    def forward(self, obs: torch.Tensor) -> torch.Tensor:
+        """Forward pass: raw obs window -> spectral tokens.
 
         Args:
-            z: Latent sequence of shape [B, T, hidden_size] where T = n_obs_steps.
+            obs: Raw observation window of shape [B, T, obs_dim].
 
         Returns:
-            tokens: Spectral tokens of shape [B, K, spectral_dim].
+            tokens: Raw DCT bins of shape [B, K, obs_dim].
         """
-        feat = dct(z, dim=1)  # [B, T, D] DCT-II over time
-        return self.projector(feat[:, : self.k, :])  # [B, K, spectral_dim]
+        feat = dct(obs, dim=1)  # [B, T, obs_dim] DCT-II over time
+        return feat[:, : self.k, :]  # [B, K, obs_dim]
 
         # %% [markdown]
         # ## Flow heads — velocity prediction in orthonormal-DCT coefficient space
@@ -445,17 +476,17 @@ class CrossAttentionBlock(nn.Module):
 
 
 class SJFOPolicyModel(nn.Module):
-    """DiT velocity model over action-chunk DCT coefficients (actions ONLY).
+    """DiT velocity model: raw state prefix tokens + noisy action tokens.
 
-    `dit_depth` pre-norm self-attention blocks with adaLN-Zero over the noisy
-    action tokens; conditioning vector = time-embed + mean-pooled spectral
-    tokens. Same (x_t, t, cond) call signature as before, so the trainer,
-    collector, and Euler sampler are untouched.
+    `dit_depth` pre-norm self-attention blocks with adaLN-Zero over the
+    concatenated sequence [state tokens; action tokens]; conditioning vector
+    = time-embed + mean-pooled spectral tokens. Only the action positions
+    are read out as velocity.
 
     Args:
         action_dim: Action dimension Da (env-dependent).
         hidden_size: Latent dimension (default from config.SJFPO_CFG.hidden_size).
-        cond_dim: Spectral-token dim (default from config.SJFPO_CFG.spectral_dim).
+        obs_dim: Raw obs dim of the spectral tokens (env-dependent, required).
         dit_depth/dit_heads/dit_mlp_ratio/dit_time_dim: DiT hyperparams
             (defaults from config.SJFPO_CFG.dit_*).
     """
@@ -463,24 +494,26 @@ class SJFOPolicyModel(nn.Module):
     def __init__(
         self,
         action_dim: int,
+        obs_dim: int,
         hidden_size: int | None = None,
-        cond_dim: int | None = None,
         dit_depth: int | None = None,
         dit_heads: int | None = None,
         dit_mlp_ratio: float | None = None,
         dit_time_dim: int | None = None,
     ):
         super().__init__()
+        if obs_dim <= 0:
+            raise ValueError(f"obs_dim={obs_dim} must be positive")
         hidden_size = int(resolve_config_value("hidden_size", hidden_size))
-        cond_dim = int(resolve_config_value("spectral_dim", cond_dim))
         dit_depth = int(resolve_config_value("dit_depth", dit_depth))
         dit_heads = int(resolve_config_value("dit_heads", dit_heads))
         dit_mlp_ratio = float(resolve_config_value("dit_mlp_ratio", dit_mlp_ratio))
         dit_time_dim = int(resolve_config_value("dit_time_dim", dit_time_dim))
         self.time_dim = dit_time_dim
         self.in_proj = nn.Linear(action_dim, hidden_size)
+        self.state_embed = nn.Linear(obs_dim, hidden_size)
         self.time_mlp = SwiGLU(dit_time_dim, 4 * hidden_size, hidden_size)
-        self.cond_proj = nn.Linear(cond_dim, hidden_size)
+        self.cond_proj = nn.Linear(obs_dim, hidden_size)
         self.blocks = nn.ModuleList(
             DiTBlock(hidden_size, dit_heads, dit_mlp_ratio) for _ in range(dit_depth)
         )
@@ -490,16 +523,20 @@ class SJFOPolicyModel(nn.Module):
         nn.init.constant_(self.out.weight, 0.0)
         nn.init.constant_(self.out.bias, 0.0)
 
-    def forward(self, x_t: torch.Tensor, t, cond: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, x_t: torch.Tensor, t, cond: torch.Tensor, state: torch.Tensor
+    ) -> torch.Tensor:
         """Forward pass: predict velocity.
 
         Args:
-            x_t: Noisy action chunk (DCT coefficients) of shape [B, H, Da].
+            x_t: Noisy action chunk (DCT coefficients) of shape [B, Ka, Da]
+                where Ka = top-p low-frequency rows (<= H).
             t: Timestep scalar or tensor of shape [B].
-            cond: Spectral tokens of shape [B, K, Dk].
+            cond: Raw spectral tokens of shape [B, K, obs_dim].
+            state: Raw obs window of shape [B, T, obs_dim] (prefix tokens).
 
         Returns:
-            Velocity prediction of shape [B, H, Da].
+            Velocity prediction of shape [B, Ka, Da].
         """
         temb = dit_timestep_embedding(t, dim=self.time_dim).to(
             device=x_t.device, dtype=x_t.dtype
@@ -507,10 +544,12 @@ class SJFOPolicyModel(nn.Module):
         if temb.dim() == 1:
             temb = temb.expand(x_t.shape[0], -1)  # [B, T]
         c = self.time_mlp(temb) + self.cond_proj(cond.mean(dim=1))  # [B, D]
-        h = self.in_proj(x_t)  # [B, H, D]
+        s = self.state_embed(state)  # [B, T, D] own latent for raw states
+        s = s + sinusoidal_positional_encoding(s.shape[1], s.shape[2], s.device)
+        h = torch.cat([s, self.in_proj(x_t)], dim=1)  # [B, T+H, D]
         for blk in self.blocks:
             h = blk(h, c)
-        return self.out(self.norm_out(h))  # [B, H, Da]
+        return self.out(self.norm_out(h[:, -x_t.shape[1] :, :]))  # [B, H, Da]
 
         # %% [markdown]
         # ## Critic — V(s, a): 2 cross-attention fusion blocks -> scalar V[B]
@@ -521,10 +560,11 @@ class SJFOPolicyModel(nn.Module):
 class Critic(nn.Module):
     """State-action critic: cross-attention fusion blocks -> scalar V[B].
 
-    Action tokens query the trunk state sequence (mirror of the actor's
-    conditioning); each block is pre-norm RMSNorm + residual. V(s, a) keeps
-    its TD bootstrap target V(s', a'). The action input stays DCT
-    coefficients [B, H, Da], never raw actions.
+    Inputs are raw (never latents, never DCT): the obs window goes through
+    the critic state encoder, real-space actions go through act_embed plus
+    fixed sinusoidal position codes on the time axis, then the action embeds
+    query the encoded states. Each block is pre-norm RMSNorm + residual.
+    V(s, a) keeps its TD bootstrap target V(s', a').
 
     Args:
         hidden_size: Latent dimension (default from config.SJFPO_CFG.hidden_size).
@@ -557,12 +597,15 @@ class Critic(nn.Module):
 
         Args:
             z: Trunk state sequence of shape [B, T, hidden_size].
-            a: Action chunk (DCT coefficients) of shape [B, H, Da].
+            a: Real-space action chunk of shape [B, H, Da].
 
         Returns:
             Fused vector of shape [B, hidden_size] (unsqueeze(1) feeds sigreg_loss).
         """
-        h = self.act_embed(a)  # [B, H, D]
+        h = self.act_embed(a)  # [B, H, D] real-space actions
+        # Fixed sinusoidal position codes on the time axis: cross-attention
+        # is permutation-invariant, so action order must enter here.
+        h = h + sinusoidal_positional_encoding(h.shape[1], h.shape[2], h.device)
         for blk in self.blocks:
             h = blk(h, z)
         return h.mean(dim=1)  # [B, D]
@@ -572,7 +615,7 @@ class Critic(nn.Module):
 
         Args:
             z: Trunk state sequence of shape [B, T, hidden_size].
-            a: Action chunk (DCT coefficients) of shape [B, H, Da].
+            a: Real-space action chunk of shape [B, H, Da].
 
         Returns:
             V: Scalar value per batch of shape [B].
