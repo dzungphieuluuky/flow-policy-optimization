@@ -125,11 +125,11 @@ def repeat_conditioning(cond, num_mc: int):
     """Repeat per-chunk conditioning along the MC axis (None passes through).
 
     Args:
-        cond: Conditioning tensor [B, K, spectral_dim] or tuple of such tensors, or None.
+        cond: Conditioning tensor [B, K, C] or tuple of such tensors, or None.
         num_mc: Number of Monte Carlo draws per chunk.
 
     Returns:
-        Conditioning repeated along batch dim to [B * num_mc_samples, K, spectral_dim] (or tuple
+        Conditioning repeated along batch dim to [B * num_mc_samples, K, C] (or tuple
         thereof), or None if input was None.
     """
     if cond is None:
@@ -137,7 +137,7 @@ def repeat_conditioning(cond, num_mc: int):
     if isinstance(cond, torch.Tensor):
         return einx.id(
             "b k d -> (b m) k d", cond, m=num_mc
-        )  # [B * num_mc_samples, K, spectral_dim]
+        )  # [B * num_mc_samples, K, C]
     return tuple(repeat_conditioning(c, num_mc) for c in cond)
 
 
@@ -150,7 +150,7 @@ def squared_error(net, a: torch.Tensor, eps: torch.Tensor, tau, cond) -> torch.T
         a: Anchor chunks, shape [B, *flow_shape].
         eps: Noise draws, shape [B, num_mc_samples, *flow_shape].
         tau: Interpolation times, scalar | [num_mc_samples] | [B, num_mc_samples].
-        cond: Conditioning [B, K, spectral_dim] or tuple, or None.
+        cond: Conditioning [B, K, C] or tuple, or None.
 
     Returns:
         Squared errors, shape [B * num_mc_samples, *flow_shape].
@@ -188,7 +188,7 @@ def cfm_loss(net, a: torch.Tensor, eps: torch.Tensor, tau, cond) -> torch.Tensor
         eps: Noise draws, shape [B, num_mc_samples, *flow_shape].
         tau: Interpolation times, scalar | [num_mc_samples] | [B, num_mc_samples].
             Values in [0.005, 0.995] per config.SJFPO_CFG.tau_range.
-        cond: Conditioning [B, K, spectral_dim] or tuple, or None.
+        cond: Conditioning [B, K, C] or tuple, or None.
 
     Returns:
         Scalar tensor — mean squared velocity error over all (B * num_mc_samples * D) elements.
@@ -223,7 +223,7 @@ def flow_loglik(
         a: Anchor chunks, shape [B, *flow_shape].
         eps: Noise draws, shape [B, num_mc_samples, *flow_shape].
         tau: Interpolation times, scalar | [num_mc_samples] | [B, num_mc_samples].
-        cond: Conditioning [B, K, spectral_dim] or tuple, or None.
+        cond: Conditioning [B, K, C] or tuple, or None.
         clamp: Symmetric clamp value. Defaults to config.SJFPO_CFG.cfm_clamp (20.0).
 
     Returns:
@@ -398,6 +398,7 @@ def euler_sample(
     eps: torch.Tensor | None = None,
     generator: torch.Generator | None = None,
     device=None,
+    state=None,
 ) -> torch.Tensor:
     """Integrate the learned ODE from t=1 (noise) to t=0 (data).
 
@@ -408,14 +409,15 @@ def euler_sample(
     Runs under no_grad — sampling never needs gradients.
 
     Args:
-        net: Velocity network callable (x_t, t, cond) -> v_hat.
-            x_t: [*shape], t: scalar, cond: conditioning.
+        net: Velocity network callable (x_t, t, cond, state) -> v_hat.
+            x_t: [*shape], t: scalar, cond/state: conditioning.
         shape: Output tensor shape (e.g., [B, *flow_shape]).
         cond: Conditioning for the network.
         steps: Number of Euler integration steps.
         eps: Initial noise tensor, shape [*shape]. If None, draws N(0, I).
         generator: Optional torch.Generator for reproducible sampling.
         device: Target device for the initial noise (if eps is None).
+        state: Raw obs window passed through to net (SJFPO DiT prefix tokens).
 
     Returns:
         Sampled tensor x_0, shape [*shape] — the denoised output at t=0.
@@ -434,7 +436,7 @@ def euler_sample(
     x = eps  # [*shape]
     with torch.no_grad():
         for i in range(steps):
-            v_hat = net(x, grid[i], cond)  # [*shape]
+            v_hat = net(x, grid[i], cond, state)  # [*shape]
             x = x - (grid[i] - grid[i + 1]) * v_hat  # [*shape]  δ = 1/steps
     return x  # [*shape]
 
