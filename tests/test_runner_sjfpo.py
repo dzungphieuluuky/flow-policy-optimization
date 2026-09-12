@@ -77,17 +77,14 @@ class FakeEnv:
 def build_sjfpo(obs_dim: int = 4, act_dim: int = 2, cfg=None):
     """Construct all SJFPO components for a given obs/act dim."""
     cfg = cfg or SJFPOConfig()
-    trunk = StateEncoder(
-        obs_dim, n_obs_steps=cfg.n_obs_steps, hidden_size=cfg.hidden_size
-    )
-    policy_head = SJFOPolicyModel(act_dim, hidden_size=cfg.hidden_size)
+    policy_head = SJFOPolicyModel(act_dim, obs_dim, hidden_size=cfg.hidden_size)
     critic = Critic(hidden_size=cfg.hidden_size, act_dim=act_dim)
     spectral = SpectralEncoder(
-        hidden_size=cfg.hidden_size,
+        obs_dim,
         top_p_spectral_tokens=cfg.top_p_spectral_tokens,
         n_obs_steps=cfg.n_obs_steps,
     )
-    return trunk, policy_head, critic, spectral
+    return policy_head, critic, spectral
 
 
 def build_run_dir(tmp_path: Path, name: str = "test_run"):
@@ -109,19 +106,22 @@ class TestSJFPOPolicyCallable:
 
         cfg = SJFPOConfig()
         obs_dim, act_dim = 4, 2
-        trunk, policy_head, _, spectral = build_sjfpo(obs_dim, act_dim, cfg)
+        policy_head, _, spectral = build_sjfpo(obs_dim, act_dim, cfg)
 
         def policy(state: torch.Tensor) -> torch.Tensor:
             with torch.no_grad():
-                z = trunk(state.unsqueeze(0))  # [1, T, Z]
-                cond = spectral(z)  # [1, K, 2Z]
+                state_b = state.unsqueeze(0)  # [1, T, obs]
+                cond = spectral(state_b)  # [1, K, obs] raw bins
+                n_coeffs = max(1, round(cfg.top_p_spectral_tokens * cfg.chunk_size))
                 x0 = euler_sample(
                     policy_head,
-                    (1, cfg.chunk_size, act_dim),
+                    (1, n_coeffs, act_dim),
                     cond,
                     steps=cfg.euler_eval,
-                    eps=torch.zeros(1, cfg.chunk_size, act_dim),
-                )
+                    eps=torch.zeros(1, n_coeffs, act_dim),
+                    state=state_b,
+                )  # [1, Ka, Da]
+                x0 = torch.nn.functional.pad(x0, (0, 0, 0, cfg.chunk_size - n_coeffs))
                 actions = idct(x0.squeeze(0), dim=0)
                 return actions.clamp(-1.0, 1.0)
 
@@ -135,19 +135,22 @@ class TestSJFPOPolicyCallable:
 
         cfg = SJFPOConfig()
         obs_dim, act_dim = 4, 2
-        trunk, policy_head, _, spectral = build_sjfpo(obs_dim, act_dim, cfg)
+        policy_head, _, spectral = build_sjfpo(obs_dim, act_dim, cfg)
 
         def policy(state: torch.Tensor) -> torch.Tensor:
             with torch.no_grad():
-                z = trunk(state.unsqueeze(0))
-                cond = spectral(z)
+                state_b = state.unsqueeze(0)  # [1, T, obs]
+                cond = spectral(state_b)
+                n_coeffs = max(1, round(cfg.top_p_spectral_tokens * cfg.chunk_size))
                 x0 = euler_sample(
                     policy_head,
-                    (1, cfg.chunk_size, act_dim),
+                    (1, n_coeffs, act_dim),
                     cond,
                     steps=cfg.euler_eval,
-                    eps=torch.zeros(1, cfg.chunk_size, act_dim),
-                )
+                    eps=torch.zeros(1, n_coeffs, act_dim),
+                    state=state_b,
+                )  # [1, Ka, Da]
+                x0 = torch.nn.functional.pad(x0, (0, 0, 0, cfg.chunk_size - n_coeffs))
                 actions = idct(x0.squeeze(0), dim=0)
                 return actions.clamp(-1.0, 1.0)
 
