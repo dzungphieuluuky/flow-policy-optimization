@@ -32,7 +32,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from sjfpo import config  # noqa: E402
 from sjfpo.dct_utils import dct, idct  # noqa: E402
-from sjfpo.networks import SJFOPolicyModel, get_timestep_embedding  # noqa: E402
+from sjfpo.networks import (  # noqa: E402
+    SJFOPolicyModel,
+    SpectralEncoder,
+    get_timestep_embedding,
+)
 
 from sjfpo import fpo_core  # noqa: E402  (RED until implemented)
 
@@ -340,7 +344,7 @@ def test_space_consistency_dct_pipeline():
     torch.manual_seed(51)
     policy = SJFOPolicyModel(action_dim=3)
     cond = torch.zeros(
-        4, config.SJFPO_CFG.num_spectral_tokens, config.SJFPO_CFG.spectral_dim
+        4, SpectralEncoder().k, config.SJFPO_CFG.spectral_dim
     )
     with torch.no_grad():
         coeffs = fpo_core.euler_sample(
