@@ -81,9 +81,10 @@ class SJFPOConfig:
         grad_clip: Grad-norm clip. Default 1.0.
         n_obs_steps: Frame-stack state window length T. Default 16.
         chunk_size: Predicted action-chunk length H. Default 16.
-        n_action_steps: Executed env steps per chunk (receding horizon).
-            Must satisfy 1 <= n <= chunk_size. Default 8.
-        num_spectral_tokens: Low-K DCT spectral tokens. Default 5.
+        executed_vs_predicted_ratio: Fraction of a predicted chunk executed
+            per replan at inference/eval (0 < r <= 1). Default 0.5.
+        top_p_spectral_tokens: Fraction of lowest low-frequency DCT bins kept
+            (0 < p <= 1). Effective tokens K = max(1, round(p * T)). Default 0.3.
         spectral_dim: Spectral projector output dim. Default 64.
         hidden_size: Fused latent dimension D. Default 128.
     """
@@ -109,18 +110,22 @@ class SJFPOConfig:
     grad_clip: float = 1.0  # grad-norm clip
     n_obs_steps: int = 16  # frame-stack state window length T
     chunk_size: int = 16  # predicted action-chunk length H
-    n_action_steps: int = 8  # executed env steps per chunk (1 <= n <= H)
-    num_spectral_tokens: int = 5  # low-K DCT spectral tokens K
+    executed_vs_predicted_ratio: float = 0.5  # inference/eval executed fraction
+    top_p_spectral_tokens: float = 0.3  # kept low-freq DCT fraction
     spectral_dim: int = 64  # spectral projector output dim
     hidden_size: int = 128  # fused latent dim D
 
     def __post_init__(self) -> None:
-        """Validate horizon/step geometry; raise, never clamp or coerce."""
-        n = self.n_action_steps
-        h = self.chunk_size
-        if not 1 <= n <= h:
+        """Validate the inference/eval execution ratio; raise, never clamp."""
+        r = self.executed_vs_predicted_ratio
+        if not 0.0 < r <= 1.0:
             raise ValueError(
-                f"n_action_steps={n} must satisfy 1 <= n <= chunk_size={h}"
+                f"executed_vs_predicted_ratio={r} must satisfy 0 < r <= 1"
+            )
+        p = self.top_p_spectral_tokens
+        if not 0.0 < p <= 1.0:
+            raise ValueError(
+                f"top_p_spectral_tokens={p} must satisfy 0 < p <= 1"
             )
 
 
