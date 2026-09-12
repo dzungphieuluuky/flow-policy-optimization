@@ -75,18 +75,20 @@ class TestBuilderIncludesUtils:
         spec.loader.exec_module(mod)
         return mod
 
-    def test_module_orders_start_with_utils(self):
+    def test_notebooks_inline_no_source(self):
         b = self.builder()
-        assert b.MODULE_ORDER[0] == "utils.py"
-        assert b.MODULE_ORDER_SPECTRAL[0] == "utils.py"
-        assert b.MODULE_TITLES["utils.py"]
-        assert b.MODULE_TITLES_SPECTRAL["utils.py"]
+        for spectral in (True, False):
+            nb = b.build_notebook(None, spectral=spectral)
+            code = "\n".join(
+                c["source"] for c in nb.cells if c["cell_type"] == "code"
+            )
+            assert "Register inlined" not in code
+            assert "sys.modules['sjfpo" not in code
+            assert "class StateEncoder" not in code
+            assert "scripts/train.py" in code
 
-    def test_cells_use_env_helpers_not_hardcoded_paths(self):
+    def test_clone_cell_uses_token_url(self):
         b = self.builder()
-        for cell in (b.SMOKE_GATE_CELL, b.SWEEP_CELL, b.ANALYSIS_CELL):
-            assert "/kaggle/working" not in cell, cell[:60]
-            assert ".omo/evidence" not in cell, cell[:60]
-        assert "default_runs_base" in b.SWEEP_CELL
-        assert "default_analysis_output" in b.ANALYSIS_CELL
-        assert "default_smoke_dir" in b.SMOKE_GATE_CELL
+        assert "GITHUB_TOKEN" in b.CLONE_CELL
+        assert b.REPO_SLUG in b.CLONE_CELL
+        assert "getpass" in b.CLONE_CELL
