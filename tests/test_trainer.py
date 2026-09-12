@@ -1,11 +1,10 @@
-"""Tests for MFPO trainer update step (plan task 8 — RED phase).
+"""Tests for SJFPO trainer update step (plan task 8 — RED phase).
 
 Covers:
   (a) assemble_update returns finite diagnostics with correct keys
   (b) gradient routing with zeroed loss terms
-  (c) 3 optimizer steps decrease or maintain finite losses + EMA formula
-  (d) NaN injection raises MFPOAborted with diagnostics sink
-  (e) minibatching produces exactly epochs * ceil(N/minibatch) optimizer steps
+  (c) 3 optimizer steps decrease or maintain finite losses
+  (d) NaN injection raises SJFPOAborted with diagnostics sink
 """
 
 from __future__ import annotations
@@ -23,17 +22,15 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from mfpo.config import MFPO_CFG, MFPOConfig
-from mfpo.networks import (
-    AuxStateFlowHead,
-    ContextTrunk,
-    EMAProjection,
-    PolicyFlowHead,
-    SpectralTokens,
-    ValueCritic,
+from sjfpo.config import SJFPO_CFG, SJFPOConfig
+from sjfpo.networks import (
+    StateEncoder,
+    SJFOPolicyModel,
+    SpectralEncoder,
+    Critic,
 )
-from mfpo.collector import ChunkRecord
-from mfpo.trainer import MFPOTrainer, MFPOAborted
+from sjfpo.collector import Transition
+from sjfpo.trainer import SJFPOTrainer, SJFPOAborted
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -43,313 +40,370 @@ OBS_DIM = 17
 ACT_DIM = 4
 
 
-def _make_trainer(**overrides) -> MFPOTrainer:
+def make_trainer(**overrides) -> SJFPOTrainer:
     """Construct a trainer with small dims for fast tests."""
-    cfg = MFPOConfig(**overrides) if overrides else MFPOConfig()
-    trunk = ContextTrunk(OBS_DIM, context_len=cfg.context_len, z_dim=cfg.Z_dim)
-    # SpectralTokens outputs [B, K, Dk=64], so cond_dims must be (64,)
-    policy_head = PolicyFlowHead(ACT_DIM, z_dim=cfg.Z_dim, cond_dims=(64,))
-    aux_head = AuxStateFlowHead(state_dim=cfg.Z_dim, z_dim=cfg.Z_dim, cond_dims=(64,))
-    critic = ValueCritic(z_dim=cfg.Z_dim)
-    ema_proj = EMAProjection(OBS_DIM, latent=cfg.Z_dim)
-    spectral = SpectralTokens(z_dim=cfg.Z_dim, context_len=cfg.context_len)
-    spectral.set_frozen_stats(torch.zeros(2 * cfg.Z_dim), torch.ones(2 * cfg.Z_dim))
-    return MFPOTrainer(
-        trunk=trunk,
+    cfg = SJFPOConfig(**overrides) if overrides else SJFPOConfig()
+    policy_state_encoder = StateEncoder(
+        OBS_DIM, n_obs_steps=cfg.n_obs_steps, hidden_size=cfg.hidden_size
+    )
+    # SpectralEncoder outputs [B, K, spectral_dim=64] conditioning tokens.
+    policy_head = SJFOPolicyModel(ACT_DIM, hidden_size=cfg.hidden_size)
+    critic = Critic(hidden_size=cfg.hidden_size, act_dim=ACT_DIM)
+    spectral = SpectralEncoder(hidden_size=cfg.hidden_size, n_obs_steps=cfg.n_obs_steps)
+    spectral.set_frozen_stats(
+        torch.zeros(cfg.hidden_size), torch.ones(cfg.hidden_size)
+    )
+    critic_state_encoder = StateEncoder(
+        OBS_DIM, n_obs_steps=cfg.n_obs_steps, hidden_size=cfg.hidden_size
+    )
+    return SJFPOTrainer(
+        policy_state_encoder=policy_state_encoder,
         policy_head=policy_head,
-        aux_head=aux_head,
         critic=critic,
-        ema_proj=ema_proj,
         spectral=spectral,
+        critic_state_encoder=critic_state_encoder,
         cfg=cfg,
     )
 
 
-def _make_chunks(n: int = 128) -> tuple[list[ChunkRecord], dict]:
-    """Create synthetic chunk records with pre-computed returns/advantages."""
-    cfg = MFPOConfig()
-    contexts = torch.randn(n, cfg.context_len, OBS_DIM)
-    action_dcts = torch.randn(n, cfg.chunk_len, ACT_DIM) * 0.5
-    rewards_list = [torch.randn(8).abs().tolist() for _ in range(n)]
-    returns = torch.randn(n).cumsum(dim=0) * 0.1
-    advantages = torch.randn(n) * 0.1
-    values = returns - advantages
-
-    chunks = []
-    for i in range(n):
+def make_chunks(n: int = 128) -> tuple[list[Transition], dict]:
+    """Create synthetic transitions with pre-computed advantages."""
+    cfg = SJFPOConfig()
+    t_len, h_len, n_steps = cfg.n_obs_steps, cfg.chunk_size, cfg.n_action_steps
+    chunks: list[Transition] = []
+    for _ in range(n):
         chunks.append(
-            ChunkRecord(
-                context=contexts[i],
-                action_dct=action_dcts[i],
-                rewards=rewards_list[i],
-                done="continue",
-                bootstrap=False,
-                clip_count=0,
-                exec_len=cfg.chunk_len,
-            )
+            {
+                "observation.state": torch.randn(t_len, OBS_DIM),
+                "action": torch.randn(h_len, ACT_DIM) * 0.5,
+                "next.action": torch.randn(h_len, ACT_DIM) * 0.5,
+                "next.observation.state": torch.randn(t_len, OBS_DIM),
+                "next.reward": torch.randn(n_steps).abs() * 0.1,
+                "next.done": torch.tensor(False),
+                "next.truncated": torch.tensor(False),
+                "n_action_steps": torch.tensor(n_steps),
+                "clip_count": torch.tensor(0),
+            }
         )
-    meta = {
-        "returns": returns,
-        "advantages": advantages,
-        "values": values,
-    }
+    advantages = torch.randn(n) * 0.1
+    meta = {"advantages": advantages}
     return chunks, meta
 
 
-def _expected_diag_keys() -> set[str]:
+def expected_diag_keys() -> set[str]:
     return {
         "policy_loss",
         "value_loss",
-        "aux_loss",
         "sigreg_loss",
         "clip_fraction",
         "mean_log_ratio",
         "clamp_engagement",
     }
 
-
-# ---------------------------------------------------------------------------
-# (a) assemble_update returns finite diagnostics with correct keys
-# ---------------------------------------------------------------------------
+    # ---------------------------------------------------------------------------
+    # (a) assemble_update returns finite diagnostics with correct keys
+    # ---------------------------------------------------------------------------
 
 
 class TestAssembleUpdate:
     def test_returns_correct_keys_and_finite(self):
-        trainer = _make_trainer()
-        chunks, meta = _make_chunks(128)
+        trainer = make_trainer()
+        chunks, meta = make_chunks(128)
         diag = trainer.assemble_update(chunks, meta)
 
-        assert set(diag.keys()) == _expected_diag_keys()
+        assert set(diag.keys()) == expected_diag_keys()
         for k, v in diag.items():
             assert isinstance(v, float), f"diagnostics['{k}'] is not float: {type(v)}"
             assert math.isfinite(v), f"diagnostics['{k}'] is not finite: {v}"
 
     def test_deterministic_same_input(self):
         """Two identical trainers on same input produce same diagnostics."""
-        chunks, meta = _make_chunks(64)
+        chunks, meta = make_chunks(64)
         # Seed before each trainer init + before each assemble_update call
         # (assemble_update uses torch.randn for eps/tau internally)
         torch.manual_seed(0)
-        t1 = _make_trainer()
+        t1 = make_trainer()
         torch.manual_seed(0)
         d1 = t1.assemble_update(chunks, meta)
 
         torch.manual_seed(0)
-        t2 = _make_trainer()
+        t2 = make_trainer()
         torch.manual_seed(0)
         d2 = t2.assemble_update(chunks, meta)
 
         for k in d1:
             assert d1[k] == d2[k], f"diagnostics['{k}'] not deterministic"
 
-
-# ---------------------------------------------------------------------------
-# (b) gradient routing with zeroed loss terms
-# ---------------------------------------------------------------------------
+            # ---------------------------------------------------------------------------
+            # (b) gradient routing with zeroed loss terms
+            # ---------------------------------------------------------------------------
 
 
 class TestGradientRouting:
     def test_aspo_only_reaches_policy_head_and_trunk(self):
-        """With aux+sigreg+value zeroed, grads reach ONLY policy-head+trunk."""
-        trainer = _make_trainer()
-        chunks, meta = _make_chunks(32)
+        """Policy + trunk receive grads through the surrogate path."""
+        trainer = make_trainer()
+        chunks, meta = make_chunks(32)
 
-        # Zero out value/aux/sigreg by making their targets match predictions
-        with torch.no_grad():
-            z = trainer.trunk(chunks[0].context.unsqueeze(0))
-            cond = trainer.spectral(z)
-            meta = dict(meta)
-            meta["values"] = trainer.critic(z).expand(len(chunks))
-            meta["returns"] = meta["values"].clone()
-
+        # DiT adaLN-Zero cold start: gates/output leave zero over the first
+        # updates, so deep grads are exactly 0.0 in fp32 until the head
+        # awakens. Warm up (cap 10) until time_mlp sees grads, then probe.
+        for _ in range(10):
+            trainer.assemble_update(chunks, meta)
+            if trainer.policy_head.time_mlp[0].weight.grad.abs().sum() > 0:
+                break
+        trainer.optimizer.zero_grad()
         diag = trainer.assemble_update(chunks, meta)
+        assert math.isfinite(diag["policy_loss"])
 
         # Policy head must have gradients
         for name, p in trainer.policy_head.named_parameters():
             assert p.grad is not None, f"policy_head.{name} has no grad"
             assert p.grad.abs().sum() > 0, f"policy_head.{name} grad is zero"
 
-        # Trunk must have gradients (shared through policy path)
-        for name, p in trainer.trunk.named_parameters():
-            assert p.grad is not None, f"trunk.{name} has no grad"
+            # Policy trunk must have gradients (through policy path)
+        for name, p in trainer.policy_state_encoder.named_parameters():
+            assert p.grad is not None, f"policy_state_encoder.{name} has no grad"
 
-        # Aux head gets nonzero grads through total_loss (aux_loss is nonzero),
-        # but policy_head must be the primary gradient recipient from ASPO.
-        # Key: trunk + policy_head receive grads through the surrogate path.
-        for name, p in trainer.policy_head.named_parameters():
-            assert p.grad is not None, f"policy_head.{name} has no grad"
-            assert p.grad.abs().sum() > 0, f"policy_head.{name} grad is zero"
+            # Critic also receives grads through total_loss.
+        for name, p in trainer.critic.named_parameters():
+            assert p.grad is not None, f"critic.{name} has no grad"
 
-        for name, p in trainer.trunk.named_parameters():
-            assert p.grad is not None, f"trunk.{name} has no grad"
-
-    def test_aux_only_reaches_aux_head(self):
-        """With surrogate zeroed, aux grads reach aux head but NOT policy head."""
-        trainer = _make_trainer()
-        chunks, meta = _make_chunks(32)
-
-        # We can't easily zero the ASPO loss, but we can check the converse:
-        # after assemble_update, aux_head grads should exist and be nonzero.
-        # This is already tested by (a) when aux_loss is finite.
-        # For the negative check, we verify policy_head velocity layers
-        # are not receiving aux gradients by running only the aux backward.
+    def test_critic_only_reaches_critic(self):
+        """Critic TD gradients reach the critic but NOT the policy head."""
+        trainer = make_trainer()
+        chunks, meta = make_chunks(8)
+        dev = trainer.device
+        states, actions, _, _, _, _, _ = trainer.stack_chunk_batch(chunks, meta)
+        states, actions = states.to(dev), actions.to(dev)
         trainer.optimizer.zero_grad()
-
         with torch.no_grad():
-            z = trainer.trunk(chunks[0].context.unsqueeze(0))
-            cond = trainer.spectral(z)
-
-        # Run a forward pass through aux only and backprop
-        cfg = trainer.cfg
-        noise = torch.randn(1, cfg.chunk_len, cfg.Z_dim)
-        tau_val = torch.rand(1)
-        aux_target = torch.randn(1, cfg.chunk_len, cfg.Z_dim)
-        aux_pred = trainer.aux_head(noise, tau_val, cond)
-        loss_aux = (aux_pred - aux_target).pow(2).mean()
-        loss_aux.backward()
-
-        # Aux head must have gradients
-        for name, p in trainer.aux_head.named_parameters():
-            assert p.grad is not None, f"aux_head.{name} has no grad"
-            assert p.grad.abs().sum() > 0, f"aux_head.{name} grad is zero"
-
-        # Policy head must NOT have gradients from aux-only loss
-        # (aux loss flows through trunk→spectral→cond, but NOT through policy_head)
+            z = trainer.critic_state_encoder(states)
+        v_pred = trainer.critic(z, actions)
+        target = torch.zeros_like(v_pred) + 5.0
+        loss = torch.nn.functional.mse_loss(v_pred, target)
+        loss.backward()
+        for name, p in trainer.critic.named_parameters():
+            assert p.grad is not None, f"critic.{name} has no grad"
+            assert p.grad.abs().sum() > 0, f"critic.{name} grad is zero"
         for name, p in trainer.policy_head.named_parameters():
             if p.grad is not None:
                 assert p.grad.abs().sum() == 0, (
-                    f"policy_head.{name} has nonzero grad from aux loss"
+                    f"policy_head.{name} has nonzero grad from critic loss"
                 )
 
-        # Trunk MAY have small grads through shared cond path — that's acceptable
-        # The key invariant: aux_head gets grads, policy_head velocity layers don't
-
-
-# ---------------------------------------------------------------------------
-# (c) 3 optimizer steps — losses decrease or finite, EMA formula
-# ---------------------------------------------------------------------------
+                # ---------------------------------------------------------------------------
+                # (c) 3 optimizer steps — all losses stay finite
+                # ---------------------------------------------------------------------------
 
 
 class TestOptimizerSteps:
     def test_losses_finite_after_steps(self):
-        trainer = _make_trainer(epochs=1)
-        chunks, meta = _make_chunks(128)
-        losses = []
+        trainer = make_trainer()
+        chunks, meta = make_chunks(128)
         for _ in range(3):
             diag = trainer.assemble_update(chunks, meta)
-            loss = diag["policy_loss"]
-            losses.append(loss)
-            assert math.isfinite(loss), f"loss not finite after step: {loss}"
+            for k in ("policy_loss", "value_loss", "sigreg_loss"):
+                assert math.isfinite(diag[k]), f"{k} not finite: {diag[k]}"
 
-        # EMA projection after 3 steps matches manual formula
-        # Manual: target = (decay^3) * init + (1 - decay^3) * current_online
-        decay = trainer.cfg.ema_decay
-        # We can't easily check exact values, but we can verify the target
-        # has been updated (moved from init)
-        for p_t, p_o in zip(
-            trainer.ema_proj.target.parameters(),
-            trainer.ema_proj.online.parameters(),
-        ):
-            # online not in optimizer so target stays equal to online; check finiteness instead
-            assert torch.isfinite(p_t).all(), "EMA target not finite"
-            assert torch.equal(p_t, p_o), "EMA target diverged unexpectedly (online not trained)"
-
-    def test_ema_formula_matches(self):
-        """EMA projection after N steps == manual polyak formula."""
-        trainer = _make_trainer(epochs=1)
-        # Record initial online params
-        init_online = {
-            n: p.clone() for n, p in trainer.ema_proj.online.named_parameters()
-        }
-        # Record initial target params (should equal init online after copy_from)
-        init_target = {
-            n: p.clone() for n, p in trainer.ema_proj.target.named_parameters()
-        }
-
-        chunks, meta = _make_chunks(128)
-        n_steps = 3
-        for _ in range(n_steps):
-            trainer.assemble_update(chunks, meta)
-
-        decay = trainer.cfg.ema_decay
-        # After each optimizer step, EMA update runs:
-        # target = decay * target + (1-decay) * online
-        # After N steps with different online values, the formula is complex.
-        # Instead, verify the EMA update was called by checking target changed.
-        for name, p_t in trainer.ema_proj.target.named_parameters():
-            p_o = dict(trainer.ema_proj.online.named_parameters())[name]
-            init_t = init_target[name]
-            # online not in optimizer so target should remain at init (no movement expected)
-            diff_from_init = (p_t - init_t).abs().sum().item()
-            assert diff_from_init == 0, (
-                f"EMA target.{name} moved unexpectedly (online not trained)"
-            )
-            assert torch.isfinite(p_t).all(), "EMA target not finite"
-
-
-# ---------------------------------------------------------------------------
-# (d) NaN injection raises MFPOAborted with diagnostics written
-# ---------------------------------------------------------------------------
+                # ---------------------------------------------------------------------------
+                # (d) NaN injection raises SJFPOAborted with diagnostics written
+                # ---------------------------------------------------------------------------
 
 
 class TestNaNInjection:
-    def test_nan_loss_raises_mfpo_aborted(self):
-        trainer = _make_trainer()
-        chunks, meta = _make_chunks(32)
+    def test_nan_loss_raises_sjfpo_aborted(self):
+        trainer = make_trainer()
+        chunks, meta = make_chunks(32)
 
-        # Inject NaN into rewards to cause NaN loss
-        nan_meta = dict(meta)
-        nan_meta["returns"] = torch.full_like(meta["returns"], float("nan"))
+        # Inject NaN into chunk rewards to poison the critic TD target.
+        for c in chunks:
+            c["next.reward"] = torch.full_like(c["next.reward"], float("nan"))
 
         with tempfile.TemporaryDirectory() as tmpdir:
             sink = Path(tmpdir) / "diagnostics.json"
 
-            with pytest.raises(MFPOAborted):
-                trainer.assemble_update(chunks, nan_meta, diagnostics_sink=sink)
+            with pytest.raises(SJFPOAborted):
+                trainer.assemble_update(chunks, meta, diagnostics_sink=sink)
 
-            # Diagnostics should have been written before the abort
-            assert sink.exists(), "diagnostics sink not written before MFPOAborted"
+                # Diagnostics should have been written before the abort
+            assert sink.exists(), "diagnostics sink not written before SJFPOAborted"
             data = json.loads(sink.read_text())
             assert "policy_loss" in data
 
+            # ---------------------------------------------------------------------------
+            # (f) critic parameters are optimized (S-critic regression)
+            # ---------------------------------------------------------------------------
 
-# ---------------------------------------------------------------------------
-# (e) minibatching produces correct number of optimizer steps
-# ---------------------------------------------------------------------------
 
+class TestCriticOptimized:
+    def test_critic_params_in_optimizer(self):
+        """Every critic parameter must be stepped by the optimizer."""
+        trainer = make_trainer()
+        opt_ids = {
+            id(p) for group in trainer.optimizer.param_groups for p in group["params"]
+        }
+        for name, p in trainer.critic.named_parameters():
+            assert id(p) in opt_ids, f"critic.{name} not in optimizer"
 
-class TestMinibatching:
-    def test_exact_step_count(self):
-        """128 chunks, minibatch=128, epochs=1 → exactly 1 optimizer step."""
-        trainer = _make_trainer()
-        chunks, meta = _make_chunks(128)
-
-        step_count = 0
-        original_step = trainer.optimizer.step
-
-        def counting_step(*args, **kwargs):
-            nonlocal step_count
-            step_count += 1
-            return original_step(*args, **kwargs)
-
-        trainer.optimizer.step = counting_step
+    def test_critic_moves_after_update(self):
+        """Nonzero TD error must move critic weights after one update."""
+        trainer = make_trainer()
+        before = {n: p.clone() for n, p in trainer.critic.named_parameters()}
+        chunks, meta = make_chunks(32)
+        for c in chunks:
+            c["next.reward"] = c["next.reward"] + 5.0  # force nonzero TD error
         trainer.assemble_update(chunks, meta)
-        assert step_count == 1, f"expected 1 optimizer step, got {step_count}"
+        moved = any(
+            not torch.equal(p, before[n]) for n, p in trainer.critic.named_parameters()
+        )
+        assert moved, "critic parameters did not move after update"
 
-    def test_two_epochs_two_steps(self):
-        """128 chunks, minibatch=128, epochs=2 → exactly 2 optimizer steps."""
-        trainer = _make_trainer()
-        chunks, meta = _make_chunks(128)
+        # ---------------------------------------------------------------------------
+        # (g) spectral projector parameters are optimized (S-projector regression)
+        # ---------------------------------------------------------------------------
 
-        step_count = 0
-        original_step = trainer.optimizer.step
 
-        def counting_step(*args, **kwargs):
-            nonlocal step_count
-            step_count += 1
-            return original_step(*args, **kwargs)
+class TestSpectralProjectorOptimized:
+    def test_spectral_params_in_optimizer(self):
+        """Every spectral parameter (projector) must be stepped by optimizer."""
+        trainer = make_trainer()
+        opt_ids = {
+            id(p) for group in trainer.optimizer.param_groups for p in group["params"]
+        }
+        params = list(trainer.spectral.parameters())
+        assert params, "spectral module has no parameters to optimize"
+        for name, p in trainer.spectral.named_parameters():
+            assert id(p) in opt_ids, f"spectral.{name} not in optimizer"
 
-        trainer.optimizer.step = counting_step
-        for _ in range(2):
+    def test_spectral_projector_moves_after_update(self):
+        """Cond-path loss must move the spectral projector after updates."""
+        trainer = make_trainer()
+        before = {n: p.clone() for n, p in trainer.spectral.named_parameters()}
+        chunks, meta = make_chunks(32)
+        # Same adaLN-Zero cold start as above: the projector only moves
+        # once conditioning grads reach it (cap 10 updates, else real bug).
+        moved = False
+        for _ in range(10):
             trainer.assemble_update(chunks, meta)
-        assert step_count == 2, f"expected 2 optimizer steps, got {step_count}"
+            moved = any(
+                not torch.equal(p, before[n])
+                for n, p in trainer.spectral.named_parameters()
+            )
+            if moved:
+                break
+        assert moved, "spectral projector did not move after update"
+
+        # ---------------------------------------------------------------------------
+        # (h) SigReg on the critic latent only (no next-state terms)
+        # ---------------------------------------------------------------------------
+
+
+class TestCriticLatentSigReg:
+    def test_sigreg_follows_state_and_action_not_next_state(self):
+        """Seeded: state/action moves move sigreg; next_states must NOT."""
+
+        # Fresh identically-initialized trainers per call: assemble_update is
+        # stateful (weights move), so cross-call equality needs equal inits.
+        def sigreg(data):
+            torch.manual_seed(0)
+            trainer = make_trainer()
+            torch.manual_seed(7)
+            return trainer.assemble_update(data, make_chunks(16)[1])["sigreg_loss"]
+
+        torch.manual_seed(0)
+        chunks, _ = make_chunks(16)
+        base = sigreg(chunks)
+        act2 = [dict(c, **{"action": torch.randn(16, ACT_DIM)}) for c in chunks]
+        assert sigreg(act2) != base, "sigreg must see the critic latent (action path)"
+        obs2 = [
+            dict(c, **{"observation.state": torch.randn(16, OBS_DIM)}) for c in chunks
+        ]
+        assert sigreg(obs2) != base, "sigreg must see the critic latent (state path)"
+        next2 = [
+            dict(c, **{"next.observation.state": torch.randn(16, OBS_DIM)})
+            for c in chunks
+        ]
+        assert sigreg(next2) == base, "sigreg must NOT see next-states anymore"
+
+    def test_trunk_receives_grads(self):
+        """Each trunk must get grads through its own path (policy/critic)."""
+        trainer = make_trainer()
+        chunks, meta = make_chunks(16)
+        trainer.assemble_update(chunks, meta)
+        policy_grads = [
+            p.grad for _, p in trainer.policy_state_encoder.named_parameters()
+        ]
+        assert all(g is not None for g in policy_grads), (
+            "policy trunk params missing grads"
+        )
+        critic_grads = [
+            p.grad for _, p in trainer.critic_state_encoder.named_parameters()
+        ]
+        assert all(g is not None for g in critic_grads), (
+            "critic trunk params missing grads"
+        )
+
+        # ---------------------------------------------------------------------------
+        # (i) critic bootstraps V(s',a') with terminated masking
+        # ---------------------------------------------------------------------------
+
+
+class TestCriticBootstrap:
+    def td_chunks(self):
+        cfg = SJFPOConfig()
+        chunks = []
+        for _ in range(4):
+            chunks.append(
+                {
+                    "observation.state": torch.randn(cfg.n_obs_steps, OBS_DIM),
+                    "action": torch.randn(cfg.chunk_size, ACT_DIM) * 0.5,
+                    "next.action": torch.randn(cfg.chunk_size, ACT_DIM) * 0.5,
+                    "next.observation.state": torch.randn(cfg.n_obs_steps, OBS_DIM),
+                    "next.reward": torch.ones(cfg.n_action_steps),
+                    "next.done": torch.tensor(False),
+                    "next.truncated": torch.tensor(False),
+                    "n_action_steps": torch.tensor(cfg.n_action_steps),
+                    "clip_count": torch.tensor(0),
+                }
+            )
+        return chunks
+
+    def test_terminated_masks_bootstrap(self):
+        trainer = make_trainer()
+        chunks = self.td_chunks()
+        v_next = torch.tensor([10.0, 10.0, 10.0, 10.0])
+        live = trainer.compute_critic_targets(chunks, v_next, trainer.cfg.gamma)
+        for c in chunks:
+            c["next.done"] = torch.tensor(True)
+        dead = trainer.compute_critic_targets(chunks, v_next, trainer.cfg.gamma)
+        # terminated target == intradiscounted rewards only, independent of v_next
+        gamma = trainer.cfg.gamma
+        n = int(chunks[0]["n_action_steps"])
+        r = float(sum(gamma**i for i in range(n)))
+        assert torch.allclose(dead.cpu(), torch.full((4,), r)), dead
+        assert bool((live > dead).all()), "live bootstrap must exceed R-only target"
+
+    def test_value_loss_matches_manual_td(self):
+        trainer = make_trainer()
+        chunks, meta = make_chunks(8)
+        dev = trainer.device
+        states, actions, next_states, next_actions, adv, _, _ = (
+            trainer.stack_chunk_batch(chunks, meta)
+        )
+        states, actions, next_states, next_actions = (
+            states.to(dev),
+            actions.to(dev),
+            next_states.to(dev),
+            next_actions.to(dev),
+        )
+        with torch.no_grad():
+            z = trainer.critic_state_encoder(states)
+            v_pred = trainer.critic(z, actions)
+            v_next = trainer.critic(
+                trainer.critic_state_encoder(next_states), next_actions
+            )
+        expected = trainer.compute_critic_targets(chunks, v_next, trainer.cfg.gamma)
+        manual = torch.nn.functional.mse_loss(v_pred, expected)
+        diag = trainer.assemble_update(chunks, meta)
+        assert diag["value_loss"] == pytest.approx(manual.item())
