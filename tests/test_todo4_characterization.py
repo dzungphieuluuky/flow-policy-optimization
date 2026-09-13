@@ -178,7 +178,10 @@ class TestTrainerGolden:
         cond = trainer.spectral(states)
         n_coeffs = max(1, round(cfg.top_p_spectral_tokens * cfg.chunk_size))
         ll = trainer.compute_log_likelihood(
-            actions[:, :n_coeffs, :], cond, states, act_dim=act_dim,
+            actions[:, :n_coeffs, :],
+            cond,
+            states,
+            act_dim=act_dim,
             n_coeffs=n_coeffs,
         )
         assert ll.shape == (4, cfg.num_mc_samples)

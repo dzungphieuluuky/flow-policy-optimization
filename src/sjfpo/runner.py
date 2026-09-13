@@ -79,9 +79,16 @@ def infer_chunk_actions(
         # Autocast to bf16 only where the GPU supports it (else fp32 no-op).
         use_bf16 = dev.type == "cuda" and is_bf16_available()
         steps = cfg.euler_eval if steps is None else steps
-        with torch.autocast(device_type=dev.type, dtype=torch.bfloat16, enabled=use_bf16):
+        with torch.autocast(
+            device_type=dev.type, dtype=torch.bfloat16, enabled=use_bf16
+        ):
             x0 = sample(
-                policy_head, shape, cond, steps=steps, eps=eps, device=dev,
+                policy_head,
+                shape,
+                cond,
+                steps=steps,
+                eps=eps,
+                device=dev,
                 state=state_b,
             )  # [1, Ka, Da]
         x0 = torch.nn.functional.pad(x0, (0, 0, 0, cfg.chunk_size - n_coeffs))
@@ -289,9 +296,7 @@ def compute_chunk_values(critic, chunks, obs_normalizer=None):
     next_lengths = bootstrap_action_lengths(chunks, chunk_size)
     with torch.inference_mode():
         states = torch.stack([c["observation.state"] for c in chunks]).to(dev)
-        next_states = torch.stack(
-            [c["next.observation.state"] for c in chunks]
-        ).to(dev)
+        next_states = torch.stack([c["next.observation.state"] for c in chunks]).to(dev)
         if obs_normalizer is not None:
             states = obs_normalizer(states)
             next_states = obs_normalizer(next_states)
@@ -305,9 +310,7 @@ def compute_chunk_values(critic, chunks, obs_normalizer=None):
             dim=1,
         )
         values = critic(states, a_exec, lengths).cpu().numpy()
-        v_next_all = critic(
-            next_states, a_next_exec, next_lengths
-        ).cpu().numpy()
+        v_next_all = critic(next_states, a_next_exec, next_lengths).cpu().numpy()
         next_values = np.where(
             [not bool(c["next.done"]) for c in chunks], v_next_all, 0.0
         )

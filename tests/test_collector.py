@@ -139,7 +139,11 @@ def test_a_exact_chunk_count_and_replan_every_n_steps():
     policy = FakePolicy(torch.zeros(HORIZON, ACT_DIM))
 
     records = collect_chunks(
-        env, policy, total_steps=20, action_low=-1.0, action_high=1.0,
+        env,
+        policy,
+        total_steps=20,
+        action_low=-1.0,
+        action_high=1.0,
         n_action_steps=N_STEPS,
     )
 
@@ -156,7 +160,11 @@ def test_a_exact_chunk_count_and_replan_every_n_steps():
     env24 = FakeEnv()
     pol24 = FakePolicy(torch.zeros(HORIZON, ACT_DIM))
     recs24 = collect_chunks(
-        env24, pol24, total_steps=24, action_low=-1.0, action_high=1.0,
+        env24,
+        pol24,
+        total_steps=24,
+        action_low=-1.0,
+        action_high=1.0,
         n_action_steps=N_STEPS,
     )
     assert len(recs24) == math.ceil(24 / N_STEPS) == 3
@@ -175,7 +183,11 @@ def test_b_mid_chunk_termination_discards_remaining_and_forbids_bootstrap():
     policy = FakePolicy(torch.zeros(HORIZON, ACT_DIM))
 
     records = collect_chunks(
-        env, policy, total_steps=24, action_low=-1.0, action_high=1.0,
+        env,
+        policy,
+        total_steps=24,
+        action_low=-1.0,
+        action_high=1.0,
         n_action_steps=N_STEPS,
     )
 
@@ -210,7 +222,11 @@ def test_c_truncation_at_chunk_boundary_is_bootstrap_eligible():
     policy = FakePolicy(torch.zeros(HORIZON, ACT_DIM))
 
     records = collect_chunks(
-        env, policy, total_steps=16, action_low=-1.0, action_high=1.0,
+        env,
+        policy,
+        total_steps=16,
+        action_low=-1.0,
+        action_high=1.0,
         n_action_steps=N_STEPS,
     )
 
@@ -229,7 +245,11 @@ def test_c_truncation_mid_chunk_also_bootstraps():
     policy = FakePolicy(torch.zeros(HORIZON, ACT_DIM))
 
     records = collect_chunks(
-        env, policy, total_steps=16, action_low=-1.0, action_high=1.0,
+        env,
+        policy,
+        total_steps=16,
+        action_low=-1.0,
+        action_high=1.0,
         n_action_steps=N_STEPS,
     )
 
@@ -252,7 +272,11 @@ def test_d_warmup_replicates_first_obs_n_obs_steps_times_then_slides():
     total_steps = 20  # 3 replans
 
     records = collect_chunks(
-        env, policy, total_steps=total_steps, action_low=-1.0, action_high=1.0,
+        env,
+        policy,
+        total_steps=total_steps,
+        action_low=-1.0,
+        action_high=1.0,
         n_action_steps=N_STEPS,
     )
 
@@ -292,7 +316,11 @@ def test_e_stores_state_rewards_done_and_dct_of_scaled_chunk():
     policy = FakePolicy(chunk)
 
     records = collect_chunks(
-        env, policy, total_steps=HORIZON, action_low=-2.0, action_high=2.0,
+        env,
+        policy,
+        total_steps=HORIZON,
+        action_low=-2.0,
+        action_high=2.0,
         n_action_steps=N_STEPS,
     )
 
@@ -321,7 +349,11 @@ def test_e_clip_count_counts_out_of_bound_elements_and_executes_clipped():
     policy = FakePolicy(chunk)
 
     records = collect_chunks(
-        env, policy, total_steps=HORIZON, action_low=-2.0, action_high=2.0,
+        env,
+        policy,
+        total_steps=HORIZON,
+        action_low=-2.0,
+        action_high=2.0,
         n_action_steps=N_STEPS,
     )
 
@@ -374,7 +406,11 @@ def test_zero_steps_collects_nothing():
     env = FakeEnv()
     policy = FakePolicy(torch.zeros(HORIZON, ACT_DIM))
     records = collect_chunks(
-        env, policy, total_steps=0, action_low=-1.0, action_high=1.0,
+        env,
+        policy,
+        total_steps=0,
+        action_low=-1.0,
+        action_high=1.0,
         n_action_steps=N_STEPS,
     )
     assert records == []

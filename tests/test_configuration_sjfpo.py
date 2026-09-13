@@ -27,9 +27,7 @@ def test_defaults_mirror_legacy_config():
         SJFPO_CFG.chunk_size,
         SJFPO_CFG.hidden_size,
     )
-    assert cfg.n_action_steps == round(
-        cfg.executed_vs_predicted_ratio * cfg.horizon
-    )
+    assert cfg.n_action_steps == round(cfg.executed_vs_predicted_ratio * cfg.horizon)
     for name in (
         "num_mc_samples",
         "euler_train",

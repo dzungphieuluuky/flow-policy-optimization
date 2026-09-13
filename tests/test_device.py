@@ -96,8 +96,6 @@ class TestTrainerDevice:
 
         t = self.trainer()
         cfg = SJFPOConfig()
-        out = infer_chunk_actions(
-            torch.randn(16, 4), t.spectral, t.policy_head, cfg
-        )
+        out = infer_chunk_actions(torch.randn(16, 4), t.spectral, t.policy_head, cfg)
         assert out.device == torch.device("cpu")
         assert out.shape == (cfg.chunk_size, 2)

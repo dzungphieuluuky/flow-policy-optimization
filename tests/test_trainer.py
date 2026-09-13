@@ -163,7 +163,7 @@ class TestGradientRouting:
             # Spectral encoder is parameter-free (raw DCT bins): nothing to check.
         assert list(trainer.spectral.parameters()) == []
 
-            # Critic also receives grads through total_loss.
+        # Critic also receives grads through total_loss.
         for name, p in trainer.critic.named_parameters():
             assert p.grad is not None, f"critic.{name} has no grad"
 

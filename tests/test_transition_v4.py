@@ -105,7 +105,11 @@ def collect(**kw):
     env = ScriptedEnv(**kw)
     policy = lambda obs: np.zeros((16, ACT_DIM), dtype=np.float32)  # full-H proposal
     return collect_chunks(
-        env, policy, 40, np.full(ACT_DIM, -1.0), np.full(ACT_DIM, 1.0),
+        env,
+        policy,
+        40,
+        np.full(ACT_DIM, -1.0),
+        np.full(ACT_DIM, 1.0),
         n_action_steps=8,  # local: executed steps are caller-passed
     )
 

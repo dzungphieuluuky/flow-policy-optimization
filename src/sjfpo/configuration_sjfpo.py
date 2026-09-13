@@ -95,14 +95,10 @@ class SJFPOConfig(PreTrainedConfig):
             )
         r = self.executed_vs_predicted_ratio
         if not 0.0 < r <= 1.0:
-            raise ValueError(
-                f"executed_vs_predicted_ratio={r} must satisfy 0 < r <= 1"
-            )
+            raise ValueError(f"executed_vs_predicted_ratio={r} must satisfy 0 < r <= 1")
         p = self.top_p_spectral_tokens
         if not 0.0 < p <= 1.0:
-            raise ValueError(
-                f"top_p_spectral_tokens={p} must satisfy 0 < p <= 1"
-            )
+            raise ValueError(f"top_p_spectral_tokens={p} must satisfy 0 < p <= 1")
 
     def validate_features(self) -> None:
         """Validate input/output feature compatibility.

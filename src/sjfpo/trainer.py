@@ -167,8 +167,7 @@ class SJFPOTrainer:
         act_dim = int(actions.shape[-1])
         tau_range = cfg.tau_range
         tau = (
-            torch.rand(num_mc, device=self.device)
-            * (tau_range[1] - tau_range[0])
+            torch.rand(num_mc, device=self.device) * (tau_range[1] - tau_range[0])
             + tau_range[0]
         )  # [num_mc_samples]
         eps = torch.randn(
@@ -227,9 +226,7 @@ class SJFPOTrainer:
                 targets.append(r_chunk + (gamma**length) * float(vn))
         return torch.tensor(targets, dtype=torch.float32, device=self.device)  # [N]
 
-    def combine_and_guard_losses(
-        self, policy_loss, value_loss, cfg, diagnostics_sink
-    ):
+    def combine_and_guard_losses(self, policy_loss, value_loss, cfg, diagnostics_sink):
         """Weight total loss; raise SJFPOAborted with sink dump if non-finite."""
         total_loss = policy_loss + cfg.vf_coef * value_loss
         if not torch.isfinite(total_loss):
@@ -259,9 +256,7 @@ class SJFPOTrainer:
         self.optimizer.step()
         self.step_count += 1
 
-    def build_update_diagnostics(
-        self, l_old, l_new, policy_loss, value_loss, cfg
-    ):
+    def build_update_diagnostics(self, l_old, l_new, policy_loss, value_loss, cfg):
         """Assemble the finite diagnostics dict returned by assemble_update."""
         with torch.inference_mode():
             log_ratios = (l_old - l_new).mean(dim=1)
@@ -334,10 +329,12 @@ class SJFPOTrainer:
         # Full-length chunks get an all-ones mask (exact no-op).
         lengths = [int(c["n_action_steps"]) for c in chunks]
         a_exec = mask_unexecuted_tail(actions, lengths, dim=1)  # [N, H, Da]
-            # Policy path: spectral tokens straight from the raw obs window.
+        # Policy path: spectral tokens straight from the raw obs window.
         # Autocast to bf16 only where the GPU supports it (else fp32 no-op).
         use_bf16 = dev.type == "cuda" and is_bf16_available()
-        with torch.autocast(device_type=dev.type, dtype=torch.bfloat16, enabled=use_bf16):
+        with torch.autocast(
+            device_type=dev.type, dtype=torch.bfloat16, enabled=use_bf16
+        ):
             cond = self.spectral(states)  # [N, K, obs] raw DCT bins
             # Denoise in truncated coefficient space: keep the top-p low-frequency
             # action bins (same top_p as the spectral tokens); the critic keeps
@@ -378,9 +375,7 @@ class SJFPOTrainer:
                 policy_loss, value_loss, cfg, diagnostics_sink
             )
         self.apply_optimizer_step(total_loss)
-        return self.build_update_diagnostics(
-            l_old, l_new, policy_loss, value_loss, cfg
-        )
+        return self.build_update_diagnostics(l_old, l_new, policy_loss, value_loss, cfg)
 
     def interpolate_mc_batch(self, actions, eps, tau, N, cfg):
         """Interpolate x_t = tau*eps + (1-tau)*a and target velocity v*."""

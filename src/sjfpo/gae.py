@@ -51,7 +51,9 @@ def as_chunk_arrays(rewards, values, next_values, n_action_steps, terminated):
     return rewards, values, nv, n_action_steps, terminated, n
 
 
-def validate_chunk_stream(rewards, values, next_values, n_action_steps, terminated, truncated, n):
+def validate_chunk_stream(
+    rewards, values, next_values, n_action_steps, terminated, truncated, n
+):
     """Raise ValueError on shape/count mismatches in the chunk stream."""
     if (
         next_values.shape != (n,)
@@ -158,9 +160,19 @@ def chunk_gae(
         truncated = np.zeros(n, dtype=bool)  # [N]
     else:
         truncated = np.asarray(truncated, dtype=bool)  # [N]
-    validate_chunk_stream(rewards, values, next_values, n_action_steps, terminated, truncated, n)
+    validate_chunk_stream(
+        rewards, values, next_values, n_action_steps, terminated, truncated, n
+    )
     r_chunk = discount_chunk_rewards(rewards, n_action_steps, gamma, n)
     advantages = backward_lambda_pass(
-        r_chunk, values, next_values, n_action_steps, terminated, truncated, gamma, lam, n
+        r_chunk,
+        values,
+        next_values,
+        n_action_steps,
+        terminated,
+        truncated,
+        gamma,
+        lam,
+        n,
     )
     return finalize_gae_outputs(advantages, values, normalize)

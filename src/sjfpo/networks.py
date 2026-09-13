@@ -384,10 +384,10 @@ class SpectralEncoder(nn.Module):
         if obs_dim <= 0:
             raise ValueError(f"obs_dim={obs_dim} must be positive")
         self.obs_dim = obs_dim
-        t = int(resolve_config_value("n_obs_steps", n_obs_steps))  # DCT-II yields T bins
-        p = float(
-            resolve_config_value("top_p_spectral_tokens", top_p_spectral_tokens)
-        )
+        t = int(
+            resolve_config_value("n_obs_steps", n_obs_steps)
+        )  # DCT-II yields T bins
+        p = float(resolve_config_value("top_p_spectral_tokens", top_p_spectral_tokens))
         self.k = max(1, min(t, round(p * t)))
 
     def forward(self, obs: torch.Tensor) -> torch.Tensor:
@@ -556,7 +556,9 @@ class SJFOPolicyModel(nn.Module):
         dit_time_dim = int(resolve_config_value("dit_time_dim", dit_time_dim))
         self.time_dim = dit_time_dim
         self.in_proj = nn.Linear(action_dim, hidden_size)
-        self.state_encoder = StateEncoder(obs_dim, hidden_size=hidden_size)  # policy state encoder
+        self.state_encoder = StateEncoder(
+            obs_dim, hidden_size=hidden_size
+        )  # policy state encoder
         self.time_mlp = SwiGLU(dit_time_dim, 4 * hidden_size, hidden_size)
         self.cond_proj = nn.Linear(obs_dim, hidden_size)
         self.blocks = nn.ModuleList(
@@ -645,7 +647,9 @@ class Critic(nn.Module):
         )
         self.out = nn.Linear(hidden_size, 1)
 
-    def encode(self, states: torch.Tensor, a: torch.Tensor, lengths=None) -> torch.Tensor:
+    def encode(
+        self, states: torch.Tensor, a: torch.Tensor, lengths=None
+    ) -> torch.Tensor:
         """Fuse state/action into the critic latent.
 
         Args:
@@ -672,12 +676,15 @@ class Critic(nn.Module):
         # would still dilute a plain mean by L/H).
         lens = torch.as_tensor(list(lengths), device=h.device)  # [B]
         mask = (
-            torch.arange(h.shape[1], device=h.device).unsqueeze(0)
-            < lens.unsqueeze(1)
-        ).to(h.dtype).unsqueeze(-1)  # [B, H, 1]
+            (torch.arange(h.shape[1], device=h.device).unsqueeze(0) < lens.unsqueeze(1))
+            .to(h.dtype)
+            .unsqueeze(-1)
+        )  # [B, H, 1]
         return (h * mask).sum(dim=1) / lens.unsqueeze(1).to(h.dtype)  # [B, D]
 
-    def forward(self, states: torch.Tensor, a: torch.Tensor, lengths=None) -> torch.Tensor:
+    def forward(
+        self, states: torch.Tensor, a: torch.Tensor, lengths=None
+    ) -> torch.Tensor:
         """Forward pass.
 
         Args:

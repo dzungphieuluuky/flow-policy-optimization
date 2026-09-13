@@ -66,11 +66,7 @@ def bootstrap_action_lengths(chunks, chunk_size: int) -> list[int]:
     n = len(chunks)
     out: list[int] = []
     for i, c in enumerate(chunks):
-        if (
-            not bool(c["next.done"])
-            and not bool(c["next.truncated"])
-            and i + 1 < n
-        ):
+        if not bool(c["next.done"]) and not bool(c["next.truncated"]) and i + 1 < n:
             out.append(int(chunks[i + 1]["n_action_steps"]))
         else:
             out.append(chunk_size)

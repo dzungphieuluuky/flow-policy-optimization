@@ -285,9 +285,7 @@ def test_get_timestep_embedding_sin_cos_values():
     emb = nets.get_timestep_embedding(0.5, dim=8)
     assert emb.shape == (8,)
     freqs = [math.exp(-math.log(10000.0) * k / 3) for k in range(4)]
-    expected = [math.sin(0.5 * f) for f in freqs] + [
-        math.cos(0.5 * f) for f in freqs
-    ]
+    expected = [math.sin(0.5 * f) for f in freqs] + [math.cos(0.5 * f) for f in freqs]
     for got, want in zip(emb.tolist(), expected):
         assert abs(got - want) < 1e-6
 
@@ -358,7 +356,9 @@ def test_policy_dit_zero_velocity_at_init():
     torch.manual_seed(20)
     policy = nets.SJFOPolicyModel(action_dim=3, obs_dim=OBS)
     v = policy(
-        torch.randn(4, CHUNK, 3), 0.5, torch.randn(4, KS, OBS),
+        torch.randn(4, CHUNK, 3),
+        0.5,
+        torch.randn(4, KS, OBS),
         torch.randn(4, STATE_T, OBS),
     )
     assert v.shape == (4, CHUNK, 3)
@@ -506,7 +506,9 @@ def test_policy_forward_truncated_coeff_space():
     policy = nets.SJFOPolicyModel(action_dim=3, obs_dim=OBS)
     ka = max(1, round(0.3 * CHUNK))  # 5
     v = policy(
-        torch.randn(4, ka, 3), 0.5, torch.randn(4, ka, OBS),
+        torch.randn(4, ka, 3),
+        0.5,
+        torch.randn(4, ka, OBS),
         torch.randn(4, STATE_T, OBS),
     )
     assert v.shape == (4, ka, 3)

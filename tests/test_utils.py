@@ -81,9 +81,7 @@ class TestBuilderIncludesUtils:
         b = self.builder()
         for spectral in (True, False):
             nb = b.build_notebook(None, spectral=spectral)
-            code = "\n".join(
-                c["source"] for c in nb.cells if c["cell_type"] == "code"
-            )
+            code = "\n".join(c["source"] for c in nb.cells if c["cell_type"] == "code")
             assert "Register inlined" not in code
             assert "sys.modules['sjfpo" not in code
             assert "class StateEncoder" not in code
