@@ -1,4 +1,4 @@
-"""Networks: state trunk, spectral tokens, flow heads, critic.
+"""Networks: state encoders, spectral tokens, flow heads, critic.
 
 Plan tasks 3-7. All modules are fp32-only, use SwiGLU activations, and contain no
 BatchNorm / Dropout(p>0) / batch-statistics normalization in inference paths.
@@ -446,6 +446,12 @@ def get_timestep_embedding(t, dim: int = 256) -> torch.Tensor:
 
 class DiTBlock(nn.Module):
     """Pre-norm DiT block with adaLN-Zero conditioning (self-attention + MLP).
+    Args:
+        hidden_size: Latent dimension (default from config.SJFPO_CFG.hidden_size).
+        n_heads: Attention heads per block. Default 4.
+        mlp_ratio: MLP width multiplier. Default 4.0.
+    Returns:
+        Tokens of shape [B, H, D].
 
     x <- x + gate_msa * Attn(modulate(norm(x))); x <- x + gate_mlp * MLP(...).
     Zero-initialized modulation makes each block start as the identity.
@@ -515,7 +521,7 @@ class CrossAttentionBlock(nn.Module):
 
 
 class SJFOPolicyModel(nn.Module):
-    """DiT velocity model: StateEncoder prefix tokens + noisy action tokens.
+    """DiT velocity model: policy state encoder prefix tokens + noisy action tokens.
 
     `dit_depth` pre-norm self-attention blocks with adaLN-Zero over the
     concatenated sequence [state tokens; action tokens]; conditioning vector
@@ -550,7 +556,7 @@ class SJFOPolicyModel(nn.Module):
         dit_time_dim = int(resolve_config_value("dit_time_dim", dit_time_dim))
         self.time_dim = dit_time_dim
         self.in_proj = nn.Linear(action_dim, hidden_size)
-        self.state_encoder = StateEncoder(obs_dim, hidden_size=hidden_size)
+        self.state_encoder = StateEncoder(obs_dim, hidden_size=hidden_size)  # policy state encoder
         self.time_mlp = SwiGLU(dit_time_dim, 4 * hidden_size, hidden_size)
         self.cond_proj = nn.Linear(obs_dim, hidden_size)
         self.blocks = nn.ModuleList(
@@ -583,7 +589,7 @@ class SJFOPolicyModel(nn.Module):
         if temb.dim() == 1:
             temb = temb.expand(x_t.shape[0], -1)  # [B, T]
         c = self.time_mlp(temb) + self.cond_proj(cond.mean(dim=1))  # [B, D]
-        s = self.state_encoder(state)  # [B, T, D] encoded state prefix
+        s = self.state_encoder(state)  # [B, T, D] policy state encoder prefix
         h = torch.cat([s, self.in_proj(x_t)], dim=1)  # [B, T+H, D]
         for blk in self.blocks:
             h = blk(h, c)
@@ -596,17 +602,19 @@ class SJFOPolicyModel(nn.Module):
 
 
 class Critic(nn.Module):
-    """State-action critic: cross-attention fusion blocks -> scalar V[B].
+    """State-action critic: owned state encoder + cross-attention fusion -> scalar V[B].
 
     Inputs are raw (never latents, never DCT): the obs window goes through
-    the critic state encoder, real-space actions go through act_embed plus
-    fixed sinusoidal position codes on the time axis, then the action embeds
-    query the encoded states. Each block is pre-norm RMSNorm + residual.
-    V(s, a) keeps its TD bootstrap target V(s', a').
+    the owned critic state encoder, real-space actions go through act_embed
+    plus fixed sinusoidal position codes on the time axis, then the action
+    embeds query the encoded states. Each block is pre-norm RMSNorm +
+    residual. V(s, a) keeps its TD bootstrap target V(s', a').
 
     Args:
-        hidden_size: Latent dimension (default from config.SJFPO_CFG.hidden_size).
+        obs_dim: Raw obs dim per frame (env-dependent, required).
         act_dim: Action dimension Da (env-dependent, required).
+        hidden_size: Latent dimension (default from config.SJFPO_CFG.hidden_size).
+        n_obs_steps: State window length T (default from config.SJFPO_CFG.n_obs_steps).
         depth: Cross-attention blocks. Default 2.
         n_heads: Attention heads per block. Default 4.
         mlp_ratio: MLP width multiplier per block. Default 4.0.
@@ -614,48 +622,70 @@ class Critic(nn.Module):
 
     def __init__(
         self,
+        obs_dim: int,
+        act_dim: int,
         hidden_size: int | None = None,
-        act_dim: int = 0,
+        n_obs_steps: int | None = None,
         depth: int = 2,
         n_heads: int = 4,
         mlp_ratio: float = 4.0,
     ):
         super().__init__()
+        if obs_dim <= 0:
+            raise ValueError(f"obs_dim={obs_dim} must be positive")
         if act_dim <= 0:
             raise ValueError(f"act_dim={act_dim} must be positive (env action dim)")
         hidden_size = resolve_config_value("hidden_size", hidden_size)
+        self.state_encoder = StateEncoder(
+            obs_dim, n_obs_steps=n_obs_steps, hidden_size=hidden_size
+        )  # critic state encoder
         self.act_embed = nn.Linear(act_dim, hidden_size)
         self.blocks = nn.ModuleList(
             CrossAttentionBlock(hidden_size, n_heads, mlp_ratio) for _ in range(depth)
         )
         self.out = nn.Linear(hidden_size, 1)
 
-    def encode(self, z: torch.Tensor, a: torch.Tensor) -> torch.Tensor:
+    def encode(self, states: torch.Tensor, a: torch.Tensor, lengths=None) -> torch.Tensor:
         """Fuse state/action into the critic latent.
 
         Args:
-            z: Trunk state sequence of shape [B, T, hidden_size].
+            states: Raw obs window of shape [B, T, obs_dim].
             a: Real-space action chunk of shape [B, H, Da].
+            lengths: Optional executed steps per row ([B] ints). Masks the
+                mean to executed rows only (None = plain mean).
 
         Returns:
             Fused vector of shape [B, hidden_size].
         """
+        z = self.state_encoder(states)  # [B, T, D] critic state encoder
         h = self.act_embed(a)  # [B, H, D] real-space actions
         # Fixed sinusoidal position codes on the time axis: cross-attention
         # is permutation-invariant, so action order must enter here.
         h = h + sinusoidal_positional_encoding(h.shape[1], h.shape[2], h.device)
         for blk in self.blocks:
             h = blk(h, z)
-        return h.mean(dim=1)  # [B, D]
+        if lengths is None:
+            return h.mean(dim=1)  # [B, D]
+        # Masked mean: cross-attention has no inter-action mixing, so each
+        # position's output depends only on its own action — dropping tail
+        # positions excludes unexecuted steps exactly (zero-padding alone
+        # would still dilute a plain mean by L/H).
+        lens = torch.as_tensor(list(lengths), device=h.device)  # [B]
+        mask = (
+            torch.arange(h.shape[1], device=h.device).unsqueeze(0)
+            < lens.unsqueeze(1)
+        ).to(h.dtype).unsqueeze(-1)  # [B, H, 1]
+        return (h * mask).sum(dim=1) / lens.unsqueeze(1).to(h.dtype)  # [B, D]
 
-    def forward(self, z: torch.Tensor, a: torch.Tensor) -> torch.Tensor:
+    def forward(self, states: torch.Tensor, a: torch.Tensor, lengths=None) -> torch.Tensor:
         """Forward pass.
 
         Args:
-            z: Trunk state sequence of shape [B, T, hidden_size].
+            states: Raw obs window of shape [B, T, obs_dim].
             a: Real-space action chunk of shape [B, H, Da].
+            lengths: Optional executed steps per row (masked mean, see encode).
 
         Returns:
             V: Scalar value per batch of shape [B].
         """
-        return self.out(self.encode(z, a)).squeeze(-1)  # [B]
+        return self.out(self.encode(states, a, lengths)).squeeze(-1)  # [B]
