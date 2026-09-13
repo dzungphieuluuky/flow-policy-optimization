@@ -45,25 +45,25 @@ def make_nets():
     # ---------------------------------------------------------------------------
 
 
-def test_state_trunk_shape_dtype_finite():
+def test_state_encoder_shape_dtype_finite():
     nets = make_nets()
     torch.manual_seed(0)
-    trunk = nets.StateEncoder(obs_dim=11)
-    assert next(trunk.parameters()).dtype == torch.float32
+    encoder = nets.StateEncoder(obs_dim=11)
+    assert next(encoder.parameters()).dtype == torch.float32
     x = torch.randn(32, STATE_T, 11)
-    z = trunk(x)
+    z = encoder(x)
     assert z.shape == (32, STATE_T, ZD)
     assert z.dtype == torch.float32
     assert torch.isfinite(z).all()
 
 
-def test_state_trunk_gradient_flows():
+def test_state_encoder_gradient_flows():
     nets = make_nets()
     torch.manual_seed(1)
-    trunk = nets.StateEncoder(obs_dim=5)
-    z = trunk(torch.randn(4, STATE_T, 5))
+    encoder = nets.StateEncoder(obs_dim=5)
+    z = encoder(torch.randn(4, STATE_T, 5))
     z.sum().backward()
-    grads = [p.grad for p in trunk.parameters()]
+    grads = [p.grad for p in encoder.parameters()]
     assert all(g is not None and torch.isfinite(g).all() for g in grads)
 
     # ---------------------------------------------------------------------------
@@ -382,11 +382,11 @@ def test_cross_attention_block_shape():
 def test_value_critic_shape():
     nets = make_nets()
     torch.manual_seed(14)
-    vc = nets.Critic(act_dim=7)
+    vc = nets.Critic(OBS, 7)
     assert next(vc.parameters()).dtype == torch.float32
-    z = torch.randn(32, STATE_T, ZD)
+    s = torch.randn(32, STATE_T, OBS)
     a = torch.randn(32, CHUNK, 7)
-    v = vc(z, a)
+    v = vc(s, a)
     assert v.shape == (32,)
     assert v.dtype == torch.float32
     assert torch.isfinite(v).all()
@@ -395,17 +395,23 @@ def test_value_critic_shape():
 def test_value_critic_requires_act_dim():
     nets = make_nets()
     with pytest.raises(ValueError, match="act_dim"):
-        nets.Critic(act_dim=0)
+        nets.Critic(OBS, 0)
+
+
+def test_value_critic_requires_obs_dim():
+    nets = make_nets()
+    with pytest.raises(ValueError, match="obs_dim"):
+        nets.Critic(0, 7)
 
 
 def test_value_critic_follows_next_action():
     """V(s,a) must change when the action changes (action conditioning live)."""
     nets = make_nets()
     torch.manual_seed(14)
-    vc = nets.Critic(act_dim=3)
-    z = torch.randn(8, STATE_T, ZD)
-    v1 = vc(z, torch.zeros(8, CHUNK, 3))
-    v2 = vc(z, torch.ones(8, CHUNK, 3))
+    vc = nets.Critic(OBS, 3)
+    s = torch.randn(8, STATE_T, OBS)
+    v1 = vc(s, torch.zeros(8, CHUNK, 3))
+    v2 = vc(s, torch.ones(8, CHUNK, 3))
     assert not torch.equal(v1, v2)
 
 
@@ -413,11 +419,11 @@ def test_value_critic_action_order_sensitive():
     """Flipped action order changes V (action PE lock: mean would hide it)."""
     nets = make_nets()
     torch.manual_seed(15)
-    vc = nets.Critic(act_dim=3)
-    z = torch.randn(4, STATE_T, ZD)
+    vc = nets.Critic(OBS, 3)
+    s = torch.randn(4, STATE_T, OBS)
     a = torch.randn(4, CHUNK, 3)
-    v1 = vc(z, a)
-    v2 = vc(z, a.flip(dims=(1,)))
+    v1 = vc(s, a)
+    v2 = vc(s, a.flip(dims=(1,)))
     assert not torch.allclose(v1, v2, atol=1e-6)
 
     # ---------------------------------------------------------------------------
@@ -432,7 +438,7 @@ def test_no_batchnorm_no_dropout_fp32_everywhere():
         nets.StateEncoder(obs_dim=9),
         nets.SpectralEncoder(obs_dim=9),
         nets.SJFOPolicyModel(action_dim=7, obs_dim=9),
-        nets.Critic(act_dim=7),
+        nets.Critic(9, 7),
     ]
     for mod in modules:
         for name, sub in mod.named_modules():
@@ -460,9 +466,9 @@ def test_state_encoder_position_sensitive():
     """Identical frames still map to distinct latents per position (PE lock)."""
     nets = make_nets()
     torch.manual_seed(2)
-    trunk = nets.StateEncoder(obs_dim=6)
+    encoder = nets.StateEncoder(obs_dim=6)
     x = torch.ones(2, STATE_T, 6)  # no order info in the input itself
-    z = trunk(x)
+    z = encoder(x)
     assert not torch.allclose(z[:, 0, :], z[:, 1, :], atol=1e-6)
 
 
