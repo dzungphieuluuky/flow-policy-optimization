@@ -62,7 +62,7 @@ class SJFPOConfig:
         num_mc_samples: Number of (tau, eps) pairs per chunk. Default 16.
         euler_train: Euler steps during training rollouts. Default 16.
         euler_eval: Euler steps at eval (zero-sampling). Default 16.
-        chunks_per_update: Chunks per update. Default 512.
+        chunks_per_update: Chunks per update. Default 128.
         lr: AdamW learning rate. Default 1e-4.
         wd: AdamW weight decay. Default 1e-4.
         gamma: Discount factor. Default 0.99.
@@ -90,7 +90,7 @@ class SJFPOConfig:
     num_mc_samples: int = 16  # (tau, eps) pairs per chunk
     euler_train: int = 16  # Euler steps during training rollouts
     euler_eval: int = 16  # Euler steps at eval (zero-sampling)
-    chunks_per_update: int = 512
+    chunks_per_update: int = 128
     lr: float = 1e-4  # AdamW learning rate
     wd: float = 1e-4  # AdamW weight decay
     gamma: float = 0.99
