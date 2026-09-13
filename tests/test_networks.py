@@ -9,7 +9,7 @@ Conventions under test (binding, from the plan):
   the projector, never batch statistics (Metis #7).
 - sigreg_loss implements Epps-Pulley CF normality test on Z (single scalar).
 - Flow heads predict velocity in orthonormal-DCT coefficient space with
-  8-dim sinusoidal time embedding cos/sin(t*2^k).
+  diffusers-style sinusoidal time embedding (10000-ladder).
 """
 
 from __future__ import annotations
@@ -248,8 +248,9 @@ def test_get_timestep_embedding_sin_cos_values():
     nets = make_nets()
     emb = nets.get_timestep_embedding(0.5, dim=8)
     assert emb.shape == (8,)
-    expected = [math.sin(0.5 * 2**k) for k in range(4)] + [
-        math.cos(0.5 * 2**k) for k in range(4)
+    freqs = [math.exp(-math.log(10000.0) * k / 3) for k in range(4)]
+    expected = [math.sin(0.5 * f) for f in freqs] + [
+        math.cos(0.5 * f) for f in freqs
     ]
     for got, want in zip(emb.tolist(), expected):
         assert abs(got - want) < 1e-6
@@ -309,9 +310,9 @@ def test_dit_block_identity_at_init():
     assert torch.allclose(blk(x, c), x, atol=1e-5), "adaLN-Zero must start as identity"
 
 
-def test_dit_timestep_embedding_finite_256():
+def test_get_timestep_embedding_finite_256():
     nets = make_nets()
-    emb = nets.dit_timestep_embedding(torch.rand(16), dim=256)
+    emb = nets.get_timestep_embedding(torch.rand(16), dim=256)
     assert emb.shape == (16, 256)
     assert torch.isfinite(emb).all(), "256-dim ladder must stay finite in fp32"
 
