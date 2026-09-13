@@ -5,10 +5,10 @@ MuJoCo-only (LEGACY_MUJOCO=True) hotspot — single live train path, chunked flo
 
 ## Structure
 ```
-networks.py      StateEncoder (critic only) + SpectralEncoder(raw-obs DCT-II, parameter-free) + DiT-8 SJFOPolicyModel ([state;action] tokens) + 2-block cross-attn Critic V(s,a trans real-space +PE query)
-trainer.py        389L — SJFPOTrainer.assemble_update: ASPO (truncated Ka coeffs) + V(s,a) TD-critic on IDCT real actions (R + γ^L·V(s',a')); optimizer = policy+critic+critic trunk; per-module grad-clip; NaN-guard with sink dump
-collector.py      241L — Transition TypedDict (9 LeRobot keys incl. next.action chaining); full-H open-loop chunks; action anchor = DCT of FULL SCALED proposed chunk [H,Da]; terminated kept for GAE, dropped from update
-gae.py            137L — chunk semi-MDP GAE (R_k intradiscounted, γ^L bootstrap, (γλ)^L recursion); terminated never bootstraps; numpy fp64, advantages centered
+networks.py      StateEncoder (critic only) + RunningMeanStd (obs stats, checkpointed) + SpectralEncoder(raw-obs DCT-II, parameter-free) + DiT-8 SJFOPolicyModel ([state;action] tokens) + 2-block cross-attn Critic V(s,a trans real-space +PE query)
+trainer.py        389L — SJFPOTrainer.assemble_update: ASPO (truncated Ka coeffs, negated) + V(s,a) TD-critic on executed-masked real actions (R + γ^L·V(s',a'), PPO-clipped) + running obs norm; optimizer = policy+critic+critic trunk; global grad-clip; NaN-guard with sink dump
+collector.py      241L — Transition TypedDict (9 LeRobot keys incl. next.action chaining); full-H open-loop chunks; action anchor = DCT of FULL SCALED proposed chunk [H,Da]; all chunks train (trainer zero-pads unexecuted tails)
+gae.py            137L — chunk semi-MDP GAE (R_k intradiscounted, γ^L bootstrap, (γλ)^L recursion); terminated never bootstraps; numpy fp64, advantages standardized
 fpo_core.py       432L — CFM/SQL-ℓ [N,m], STE-capped ρ, ASPO piecewise (PPO-clip Â≥0 / SPO Â<0), mean-of-ψ objective, euler_sample t:1→0; total_update_loss (single weight home)
 runner.py         428L — train_run: collect→GAE→update→eval→ckpt; decode_chunk_actions (IDCT + single clamp home)
 dct_utils.py      orthonormal DCT-II/III [H,Da] action chunks + discounted_chunk_reward + einx.id (parity-guarded)
@@ -33,10 +33,10 @@ utils.py           23L — shared pure helpers (safe_float_value), no sjfpo impo
 ## Code Map
 | File | Export | Caller |
 |---|---|---|
-| `networks.py` | `StateEncoder` `SpectralEncoder` `SJFOPolicyModel` `Critic` `sigreg_loss` (test-only) `DiTBlock` `CrossAttentionBlock` | `trainer.py` `runner.py` (live) |
+| `networks.py` | `StateEncoder` `RunningMeanStd` `SpectralEncoder` `SJFOPolicyModel` `Critic` `sigreg_loss` (test-only) `DiTBlock` `CrossAttentionBlock` | `trainer.py` `runner.py` (live) |
 | `collector.py` | `Transition` `collect_chunks` | `trainer.py` `runner.py` `tests/test_transition_v4.py` |
 | `dct_utils.py` | `dct` `idct` `discounted_chunk_reward` | `collector.py` `fpo_core.py` (DCT) + `tests/test_dct.py` |
-| `utils.py` | `safe_float_value` | `trainer.py` |
+| `utils.py` | `safe_float_value` `resolve_device` `is_bf16_available` `resolve_compute_dtype` | `trainer.py` `runner.py` `baselines.py` |
 | `trainer.py` | `SJFPOTrainer` `SJFPOAborted` | `runner.py` `sweep.py` |
 | `wandb_logging.py` | `wandb_disabled` `init_wandb_run_for_method`->bool `log_metrics` `log_eval_details` `log_eval_summary` `finish_run` (6 fns SDK-direct) | `runner.py` `baselines.py` (REQUIRED import, SJFPO_DISABLE_WANDB=1 gate) |
 
