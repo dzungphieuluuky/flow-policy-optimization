@@ -1,7 +1,7 @@
 # SJFPO (FPO++ flow-matching) defaults — mirrors src/sjfpo/config.py:SJFPOConfig (frozen).
 # fp32-only (never autocast/half/bfloat16, no torch.compile). SIGReg-only (sigreg_coef=0.1).
 num_mc_samples: 16
-euler_train: 64
+euler_train: 16
 euler_eval: 16
 chunks_per_update: 512
 lr: 0.0001
