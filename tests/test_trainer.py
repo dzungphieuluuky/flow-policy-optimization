@@ -303,6 +303,28 @@ class TestCriticTrunkGrads:
             "critic trunk params missing grads"
         )
 
+
+class TestSharedMCSamples:
+    def test_identical_weights_give_unit_ratios(self):
+        """l_old/l_new share one draw: identical weights must give rho == 1."""
+        from sjfpo.fpo_core import policy_ratio
+
+        torch.manual_seed(0)
+        trainer = make_trainer()
+        cfg = trainer.cfg
+        n = 4
+        n_coeffs = max(1, round(cfg.top_p_spectral_tokens * cfg.chunk_size))
+        actions = torch.randn(n, n_coeffs, ACT_DIM)
+        cond = torch.randn(n, 5, OBS_DIM)
+        states = torch.randn(n, cfg.n_obs_steps, OBS_DIM)
+        advantages = torch.randn(n) * 0.1
+        _, l_old, l_new, _ = trainer.compute_policy_terms(
+            actions, cond, states, advantages, n, cfg
+        )
+        assert torch.equal(l_old, l_new)
+        rho = policy_ratio(l_old, l_new, adv=advantages.unsqueeze(1))
+        assert torch.equal(rho, torch.ones_like(rho))
+
         # ---------------------------------------------------------------------------
         # (i) critic bootstraps V(s',a') with terminated masking
         # ---------------------------------------------------------------------------
