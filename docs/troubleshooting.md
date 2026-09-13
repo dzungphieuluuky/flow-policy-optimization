@@ -37,7 +37,7 @@ env var (don't just set `os.environ` in a REPL).
 
 **`Sync batchnorm` / `Distributed` errors**
 
-Not used — everything is single-process CPU-first. If you pulled in `skrl`
+Not used — everything is single-process, CUDA-default with CPU fallback. If you pulled in `skrl`
 distributed helpers, drop them; the supported path is `baseline_train_loop`.
 
 ## Notebook Build
