@@ -36,7 +36,6 @@ import pytest
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from sjfpo.checkpointing import (  # noqa: E402
     ResumeError,
@@ -44,7 +43,7 @@ from sjfpo.checkpointing import (  # noqa: E402
     load_checkpoint,
     save_checkpoint,
 )
-from resume_worker import (  # noqa: E402
+from tests.resume_worker import (  # noqa: E402
     build_bundle,
     build_state,
     configure_determinism,
