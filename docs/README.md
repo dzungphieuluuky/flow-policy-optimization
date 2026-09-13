@@ -1,7 +1,7 @@
 # Project Navigation — spectral-joint-policy
 
 > **One-page map for `spectral-joint-policy`:** MuJoCo-only spectral flow
-> matching (SJFPO) + skrl PPO/SAC baselines, CPU-first, fp32-only.
+> matching (SJFPO) + skrl PPO/SAC baselines, CUDA-default with CPU fallback, fp32-only.
 > Suite: `pytest -q` 273 passed.
 
 ## Start Here (30 seconds)
