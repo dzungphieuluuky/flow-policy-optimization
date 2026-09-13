@@ -43,17 +43,18 @@ SETUP_MD = """\
 ## 0. Private-repo access
 
 Create a fine-grained GitHub PAT with **Contents: read** on this repo and
-paste it below when prompted (or set the `GITHUB_TOKEN` Colab secret — it is
-never written into the notebook).
+paste it below when prompted (or set the `GITHUB_TOKEN` secret — it is
+never written into the notebook). Also set the `WANDB_API_KEY` secret
+so wandb login happens automatically (no manual paste).
 """
 
 CLONE_CELL = """\
 # Clone the private repo (skip if already present), enter it.
+# GITHUB_TOKEN comes from the secret store (see cell above); manual paste is the fallback.
 import getpass
-import os
 from pathlib import Path
 
-token = os.environ.get("GITHUB_TOKEN") or getpass.getpass(
+token = load_secret("GITHUB_TOKEN") or getpass.getpass(
     "GitHub token (PAT with Contents:read on this repo): "
 )
 repo_url = f"https://{token}@github.com/REPO_SLUG.git"
@@ -64,8 +65,49 @@ if not Path("REPO_DIR").exists():
 """.replace("REPO_SLUG", REPO_SLUG).replace("REPO_DIR", REPO_DIR)
 
 INSTALL_CELL = """\
-# Install pinned deps (CPU wheels resolve on Colab; GPU torch comes with them).
-!pip install -q -r requirements-linux.txt
+# Install pinned deps with uv (CPU wheels resolve on Colab; GPU torch comes with them).
+!pip install -q uv
+!uv pip install -q -r requirements-linux.txt --system
+"""
+
+ENV_CELL = """\
+# Detect runtime and load secrets from the right store.
+import os
+
+def _detect_env():
+    try:
+        if "google.colab" in str(get_ipython()):
+            return "colab"
+    except NameError:
+        pass
+    if os.environ.get("KAGGLE_KERNEL_RUN_TYPE"):
+        return "kaggle"
+    return "local"
+
+ENV_NAME = _detect_env()
+print(f"Environment: {ENV_NAME}")
+
+def load_secret(key_name):
+    try:
+        if ENV_NAME == "colab":
+            from google.colab import userdata
+            return userdata.get(key_name) or None
+        if ENV_NAME == "kaggle":
+            from kaggle_secrets import UserSecretsClient
+            return UserSecretsClient().get_secret(key_name) or None
+        return os.getenv(key_name)
+    except Exception as e:
+        print(f"load_secret({key_name}) failed: {e}")
+        return None
+"""
+
+WANDB_CELL = """\
+# wandb login from secret store (runs before any training cell).
+_wandb_key = load_secret("WANDB_API_KEY")
+if _wandb_key:
+    !wandb login $_wandb_key
+else:
+    print("WANDB_API_KEY not found; training will run without wandb sync.")
 """
 
 SMOKE_CELL = """\
@@ -118,8 +160,10 @@ def build_notebook(output_path: Path, spectral: bool = False):
     cells = [
         md_block(TITLE_SPECTRAL if spectral else TITLE_COMPARISON),
         md_block(SETUP_MD),
+        code_block(ENV_CELL),
         code_block(CLONE_CELL),
         code_block(INSTALL_CELL),
+        code_block(WANDB_CELL),
     ]
     if spectral:
         cells += [code_block(SMOKE_CELL), code_block(FULL_TRAIN_CELL)]
