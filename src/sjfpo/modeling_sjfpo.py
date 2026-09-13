@@ -30,7 +30,13 @@ from lerobot.utils.constants import ACTION, OBS_STATE
 
 from sjfpo.configuration_sjfpo import SJFPOConfig
 from sjfpo.dct_utils import dct, idct
-from sjfpo.fpo_core import compute_aspo_surrogate, compute_policy_ratio, sample
+from sjfpo.fpo_core import (
+    compute_aspo_surrogate,
+    compute_cfm_loss,
+    compute_policy_ratio,
+    pair_tensor,
+    sample,
+)
 from sjfpo.networks import (
     Critic,
     RunningMeanStd,
@@ -44,7 +50,9 @@ class SJFPOPolicy(PreTrainedPolicy):
     config_class = SJFPOConfig  # must match the string in @register_subclass
     name = "sjfpo"
 
-    def __init__(self, config: SJFPOConfig, dataset_stats: dict[str, Any] | None = None):
+    def __init__(
+        self, config: SJFPOConfig, dataset_stats: dict[str, Any] | None = None
+    ):
         super().__init__(config, dataset_stats)
         config.validate_features()  # not called automatically by the base class
         obs_dim = int(config.robot_state_feature.shape[0])
@@ -75,6 +83,33 @@ class SJFPOPolicy(PreTrainedPolicy):
         # Accepted but unused: obs stats stay online (RunningMeanStd) rather
         # than frozen dataset stats.
         del dataset_stats
+
+    @staticmethod
+    def compute_target_velocity(a: torch.Tensor, eps: torch.Tensor) -> torch.Tensor:
+        """Target velocity v* = ε − a broadcast over MC draws.
+
+        Args:
+            a: Anchors, shape [B, *flow_shape].
+            eps: Noise draws, shape [B, m, *flow_shape].
+
+        Returns:
+            v* of shape [B, m, *flow_shape] (independent of t by construction).
+        """
+        return eps - a.unsqueeze(1)  # [B, m, *flow_shape]
+
+    def compute_predicted_velocity(
+        self, x_t, tau, cond, state, old=False
+    ) -> torch.Tensor:
+        """Velocity prediction from the live head (or frozen snapshot if old).
+
+        Args:
+            x_t: Interpolated points, shape [B * m, *flow_shape].
+            tau: Times, shape [B * m].
+            cond/state: MC-repeated conditioning.
+            old: Read the frozen behavior snapshot (l_old) instead of live weights.
+        """
+        net = self.old_policy_head if old else self.policy_head
+        return net(x_t, tau, cond, state)
 
     def reset(self):
         """Reset per-episode state. Called by lerobot-eval at the start of each episode."""
@@ -179,9 +214,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         cfg = self.config
         states = torch.as_tensor(batch[OBS_STATE], dtype=torch.float32)  # [B, T, obs]
         actions = torch.as_tensor(batch[ACTION], dtype=torch.float32)  # [B, H, Da]
-        advantages = torch.as_tensor(
-            batch["advantages"], dtype=torch.float32
-        )  # [B]
+        advantages = torch.as_tensor(batch["advantages"], dtype=torch.float32)  # [B]
         returns = torch.as_tensor(batch["returns"], dtype=torch.float32)  # [B]
         if states.shape[-2] != cfg.n_obs_steps:
             raise ValueError(
@@ -216,7 +249,41 @@ class SJFPOPolicy(PreTrainedPolicy):
         eps = torch.randn(
             n, cfg.num_mc_samples, n_coeffs, actions.shape[-1], device=states.device
         )  # [N, m, Ka, Da]
-        l_old, l_new = self._flow_logliks(action_coeffs, cond, states, eps, tau)
+
+        # --- Shared MC interpolation: flats serving both likelihoods (same draw,
+        # or rho is pure MC noise).
+        tau_bn, eps_flat, a_rep, flow_shape, num_mc = pair_tensor(
+            action_coeffs, eps, tau
+        )
+        x_t_flat = (
+            tau_bn[:, None] * eps_flat + (1.0 - tau_bn[:, None]) * a_rep
+        ).reshape(-1, *flow_shape)  # [N*m, *flow_shape] t·ε+(1−t)·a
+        cond_flat = einx.id(
+            "n m k d -> (n m) k d", einx.id("n k d -> n m k d", cond, m=num_mc)
+        )
+        state_flat = einx.id(
+            "n m t d -> (n m) t d", einx.id("n t d -> n m t d", states, m=num_mc)
+        )
+        tau_flat = einx.id("m -> n m", tau, n=n).reshape(n * num_mc)
+
+        # --- Velocity predictions: frozen snapshot (l_old) vs live weights.
+        with torch.inference_mode():
+            v_old = self.compute_predicted_velocity(
+                x_t_flat, tau_flat, cond_flat, state_flat, old=True
+            )
+        v_new = self.compute_predicted_velocity(
+            x_t_flat, tau_flat, cond_flat, state_flat
+        )
+
+        # --- Per-sample errors: target velocities + clamped flow-space means.
+        v_star = self.compute_target_velocity(action_coeffs, eps)  # [N, m, *flow_shape]
+        l_old = compute_cfm_loss(
+            v_old.reshape(n, num_mc, *flow_shape), v_star, reduce_mode="sample"
+        )  # [N, m]
+        l_new = compute_cfm_loss(
+            v_new.reshape(n, num_mc, *flow_shape), v_star, reduce_mode="sample"
+        )  # [N, m]
+
         rho = compute_policy_ratio(l_old, l_new, adv=advantages.unsqueeze(1))
         psi = compute_aspo_surrogate(rho, advantages.unsqueeze(1), cfg.clip_range)
         policy_loss = -psi.mean()
@@ -233,9 +300,7 @@ class SJFPOPolicy(PreTrainedPolicy):
                 (v_clipped - returns.to(v_pred.device)).pow(2),
             ).mean()
         else:
-            value_loss = torch.nn.functional.mse_loss(
-                v_pred, returns.to(v_pred.device)
-            )
+            value_loss = torch.nn.functional.mse_loss(v_pred, returns.to(v_pred.device))
         loss = policy_loss + cfg.vf_coef * value_loss
         if not torch.isfinite(loss):
             raise SJFPOAborted(
@@ -249,38 +314,3 @@ class SJFPOPolicy(PreTrainedPolicy):
             "value_loss": float(value_loss.detach()),
             "mean_log_ratio": mean_log_ratio,
         }
-
-    def _flow_logliks(self, actions, cond, states, eps, tau):
-        """Old/new MC log-likelihoods on one shared draw (l_old frozen).
-
-        Inlined forward (compute_cfm_loss reduces to scalar / one net only,
-        while the ratio needs per-sample errors from both nets on the SAME
-        draw, or rho is pure MC noise).
-        """
-        n_coeffs = actions.shape[-2]
-        n = actions.shape[0]
-        cfg = self.config
-        tau_exp = einx.id("m -> 1 m 1 1", tau)  # [1, m, 1, 1]
-        a_exp = einx.id("n h a -> n 1 h a", actions)  # [N, 1, Ka, Da]
-        x_t = tau_exp * eps + (1.0 - tau_exp) * a_exp
-        x_t_flat = einx.id("n m h a -> (n m) h a", x_t)
-        v_star = einx.id("n m h a -> (n m) h a", eps - a_exp)
-        cond_flat = einx.id("n m k d -> (n m) k d", einx.id("n k d -> n m k d", cond, m=cfg.num_mc_samples))
-        state_flat = einx.id(
-            "n m t d -> (n m) t d", einx.id("n t d -> n m t d", states, m=cfg.num_mc_samples)
-        )
-        tau_flat = einx.id("m -> n m", tau, n=n).reshape(n * cfg.num_mc_samples)
-        with torch.inference_mode():
-            v_old = self.old_policy_head(x_t_flat, tau_flat, cond_flat, state_flat)
-        v_new = self.policy_head(x_t_flat, tau_flat, cond_flat, state_flat)
-        l_old = (
-            einx.id("(n m) -> n m", (v_old - v_star).pow(2).mean(dim=(-2, -1)), n=n, m=cfg.num_mc_samples).clamp(
-                -cfg.cfm_clamp, cfg.cfm_clamp
-            )
-        )  # [N, m]
-        l_new = (
-            einx.id("(n m) -> n m", (v_new - v_star).pow(2).mean(dim=(-2, -1)), n=n, m=cfg.num_mc_samples).clamp(
-                -cfg.cfm_clamp, cfg.cfm_clamp
-            )
-        )  # [N, m]
-        return l_old, l_new

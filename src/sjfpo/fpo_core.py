@@ -121,104 +121,53 @@ def pair_tensor(a: torch.Tensor, eps: torch.Tensor, tau):
     )
 
 
-def repeat_conditioning(cond, num_mc: int):
-    """Repeat per-chunk conditioning along the MC axis (None passes through).
-
-    Args:
-        cond: Conditioning tensor [B, K, C] or tuple of such tensors, or None.
-        num_mc: Number of Monte Carlo draws per chunk.
-
-    Returns:
-        Conditioning repeated along batch dim to [B * num_mc_samples, K, C] (or tuple
-        thereof), or None if input was None.
-    """
-    if cond is None:
-        return None
-    if isinstance(cond, torch.Tensor):
-        return einx.id(
-            "b k d -> (b m) k d", cond, m=num_mc
-        )  # [B * num_mc_samples, K, C]
-    return tuple(repeat_conditioning(c, num_mc) for c in cond)
-
-
 def compute_cfm_loss(
-    net: nn.Module,
-    a: torch.Tensor,
-    eps: torch.Tensor,
-    tau,
-    cond,
-    state,
+    v_hat: torch.Tensor,
+    v_star: torch.Tensor,
     reduce_mode: str = "scalar",
     clamp: float | None = None,
 ) -> torch.Tensor:
-    """CFM squared-velocity loss against v* = ε − a, with selectable reduction.
+    """CFM squared-velocity loss with selectable reduction.
 
-    One function for both uses: the interpolation/forward is shared, and
-    ``reduce_mode`` selects the output shape.
+    Pure reduction over precomputed velocities: interpolation, target
+    construction, and network calls happen before this (see
+    SJFPOPolicy.compute_target_velocity / compute_predicted_velocity).
 
     Args:
-        net: Velocity network callable (x_t, t, cond, state) -> v_hat.
-            x_t: [B * num_mc_samples, *flow_shape], t: [B * num_mc_samples],
-            cond/state: MC-repeated (state is REQUIRED: dropping it silently
-            trains a history-blind field).
-        a: Anchor chunks (DCT coefficients), shape [B, *flow_shape].
-        eps: Noise draws, shape [B, num_mc_samples, *flow_shape].
-        tau: Interpolation times, scalar | [num_mc_samples] | [B, num_mc_samples].
-            Values in [0.005, 0.995] per config.SJFPO_CFG.tau_range.
-        cond: Conditioning [B, K, C] or tuple, or None.
-        state: Raw obs window [B, T, obs] or tuple, or None.
+        v_hat: Predicted velocities, shape [B, num_mc_samples, *flow_shape].
+        v_star: Target velocities, same shape as v_hat.
         reduce_mode: Reduction to apply over the squared errors.
             "scalar" — mean over everything (training objective, unclamped).
-            "sample" — mean over flow coords only, reshaped to [B, num_mc_samples]
-            and symmetrically clamped (per-sample ℓ_i for the ratio math).
+            "sample" — mean over flow coords only, shape [B, num_mc_samples],
+            symmetrically clamped (per-sample ℓ_i for the ratio math).
         clamp: Symmetric clamp for "sample" only.
             Defaults to config.SJFPO_CFG.cfm_clamp (20.0).
 
     Returns:
-        "scalar": 0-dim mean squared velocity error over all
-        (B * num_mc_samples * D) elements.
-        "sample": per-sample losses ℓ_i, shape [B, num_mc_samples], each the
-        mean squared velocity error over flow coordinates, clamped to
-        [-clamp, clamp] (NOT the training objective).
+        "scalar": 0-dim mean squared velocity error.
+        "sample": per-sample losses ℓ_i, shape [B, num_mc_samples] (NOT the
+        training objective).
 
     Binding:
-        - x_t = t·ε + (1−t)·a with t=1 pure noise, t=0 data.
-        - Target velocity v* = ε − a (independent of t).
         - The ℓ_i values feed into compute_policy_ratio for importance weights;
           clamping prevents extreme ratios from outlier velocity errors.
     """
-    if reduce_mode not in ("scalar", "sample"):
-        raise ValueError(f"reduce_mode={reduce_mode!r} must be 'scalar' or 'sample'")
-    if reduce_mode == "scalar" and clamp is not None:
-        raise ValueError("clamp applies to reduce_mode='sample' only")
-    tau_bn, eps_flat, a_rep, flow_shape, num_mc = pair_tensor(a, eps, tau)
-    b = a.shape[0]  # B
-    # tau_bn [B * num_mc_samples], eps_flat [B * num_mc_samples, D], a_rep [B * num_mc_samples, D]
-    x_t = (
-        tau_bn[:, None] * eps_flat + (1.0 - tau_bn[:, None]) * a_rep
-    )  # [B * num_mc_samples, D]  t·ε+(1−t)·a
-    x_t = x_t.reshape(
-        -1, *flow_shape
-    )  # [B * num_mc_samples, *flow_shape] -- keep torch: dynamic *flow_shape unpack has no einx equivalent
-    v_hat = net(
-        x_t,
-        tau_bn,
-        repeat_conditioning(cond, num_mc),
-        repeat_conditioning(state, num_mc),
-    )  # [B * num_mc_samples, *flow_shape]
-    v_star = eps_flat - a_rep  # [B * num_mc_samples, D]  binding target velocity ε − a
-    se = (v_hat - v_star.reshape(v_hat.shape)).pow(2)  # [B * num_mc_samples, *flow_shape]
+    if v_hat.shape != v_star.shape:
+        raise ValueError(
+            f"v_hat shape {tuple(v_hat.shape)} != v_star shape {tuple(v_star.shape)}"
+        )
+    se = (v_hat - v_star).pow(2)  # [B, num_mc_samples, *flow_shape]
     if reduce_mode == "scalar":
+        if clamp is not None:
+            raise ValueError("clamp applies to reduce_mode='sample' only")
         return se.mean()  # scalar
     elif reduce_mode == "sample":
-        per = se.flatten(1).mean(dim=1)  # [B * num_mc_samples]
+        per = se.flatten(2).mean(dim=-1)  # [B, num_mc_samples]
     else:
         raise ValueError(f"reduce_mode={reduce_mode!r} must be 'scalar' or 'sample'")
-    
+
     clamp = config.SJFPO_CFG.cfm_clamp if clamp is None else clamp
-    return torch.clamp(
-        einx.id("(b m) -> b m", per, b=b, m=num_mc), min=-clamp, max=clamp
-    )  # [B, num_mc_samples]
+    return torch.clamp(per, min=-clamp, max=clamp)  # [B, num_mc_samples]
 
     # retained: test-only public API — exercised directly by tests/test_fpo_core.py
     # (ratio/loss unit tests); not called by the src train path. Keep per fn-consolidation D1.
@@ -302,6 +251,7 @@ def compute_policy_ratio(
         delta + (torch.clamp(delta, max=cap) - delta).detach()
     )  # [B, num_mc_samples]
     return torch.exp(delta_st)  # [B, num_mc_samples]
+
 
 def compute_policy_loss(
     l_old: torch.Tensor,

@@ -19,7 +19,9 @@ OBS_DIM, ACT_DIM = 4, 2
 
 def make_config(**overrides) -> SJFPOConfig:
     base = dict(
-        input_features={"observation.state": PolicyFeature(FeatureType.STATE, (OBS_DIM,))},
+        input_features={
+            "observation.state": PolicyFeature(FeatureType.STATE, (OBS_DIM,))
+        },
         output_features={"action": PolicyFeature(FeatureType.ACTION, (ACT_DIM,))},
         num_mc_samples=2,
         dit_depth=2,
@@ -101,6 +103,32 @@ def test_optim_params_exclude_snapshot():
     assert optim_ids.isdisjoint(snap_ids)
 
 
+def test_compute_target_velocity_broadcast():
+    a = torch.randn(2, 5, 2)
+    eps = torch.randn(2, 3, 5, 2)
+    v_star = SJFPOPolicy.compute_target_velocity(a, eps)
+    assert v_star.shape == (2, 3, 5, 2)
+    assert torch.equal(v_star[0, 1], eps[0, 1] - a[0])
+
+
+def test_compute_predicted_velocity_old_vs_live():
+    policy = SJFPOPolicy(make_config())
+    x_t = torch.randn(4, 5, ACT_DIM)
+    tau = torch.rand(4)
+    cond = torch.randn(4, 5, OBS_DIM)
+    states = torch.randn(4, 16, OBS_DIM)
+    v_live = policy.compute_predicted_velocity(x_t, tau, cond, states)
+    v_old = policy.compute_predicted_velocity(x_t, tau, cond, states, old=True)
+    assert torch.equal(v_live, v_old)  # snapshot matches at init
+    with torch.no_grad():
+        # Perturb the readout bias: the zero-init final layer would swallow
+        # any upstream perturbation, so touch the output directly.
+        policy.policy_head.out.bias.add_(1.0)
+    v_live2 = policy.compute_predicted_velocity(x_t, tau, cond, states)
+    v_old2 = policy.compute_predicted_velocity(x_t, tau, cond, states, old=True)
+    assert not torch.equal(v_live2, v_old2)
+
+
 def test_snapshot_refresh_tracks_live_weights():
     policy = SJFPOPolicy(make_config())
     with torch.no_grad():
@@ -117,8 +145,6 @@ def test_save_pretrained_roundtrip(tmp_path):
     policy.save_pretrained(tmp_path)
     loaded = SJFPOPolicy.from_pretrained(tmp_path)
     assert loaded.config.type == "sjfpo"
-    for (n1, p1), (n2, p2) in zip(
-        policy.named_parameters(), loaded.named_parameters()
-    ):
+    for (n1, p1), (n2, p2) in zip(policy.named_parameters(), loaded.named_parameters()):
         assert n1 == n2
         assert torch.equal(p1, p2), n1
