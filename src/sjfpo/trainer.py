@@ -4,7 +4,8 @@ Plan task 8. Implements the single-step (or multi-epoch) gradient update for
 the SJFPO agent, combining two loss terms:
 
     total = ASPO_surrogate_mean
-          + vf_coef · MSE(V(s,a), TD_target)   (V(s,a) bootstraps V(s',a'))
+          + vf_coef · MSE(V(s,a), GAE_returns)   (frozen collection-time
+            returns; callers without returns fall back to one-step TD)
 
 The actor predicts action velocities ONLY (DiT, DCT space); there is no
 next-state prediction. AdamW(lr, wd); grad-norm clip; fp32 only.
@@ -37,9 +38,8 @@ import torch.nn as nn
 
 from sjfpo import config
 from sjfpo.collector import Transition, bootstrap_action_lengths
-from sjfpo.fpo_core import aspo_surrogate, policy_ratio, total_update_loss
+from sjfpo.fpo_core import compute_aspo_surrogate, compute_policy_ratio
 from sjfpo.networks import (
-    StateEncoder,
     SJFOPolicyModel,
     SpectralEncoder,
     Critic,
@@ -65,9 +65,8 @@ class SJFPOTrainer:
 
     Attributes:
         policy_head: DiT policy velocity network (SJFOPolicyModel, actions only).
-        critic: State-action value function (Critic, cross-attention fusion).
+        critic: State-action value function (Critic, owns its state encoder).
         spectral: Parameter-free spectral encoder over raw obs (SpectralEncoder).
-        critic_state_encoder: Critic frame encoder (StateEncoder), trainable.
         obs_normalizer: Running obs stats (RunningMeanStd) or None (no norm).
         cfg: Hyperparameters (SJFPOConfig).
         optimizer: AdamW optimizer over trainable parameters.
@@ -75,9 +74,8 @@ class SJFPOTrainer:
 
     Args:
         policy_head: DiT policy velocity network.
-        critic: State-action value function.
+        critic: State-action value function (owns its state encoder).
         spectral: Parameter-free spectral encoder over the raw obs window.
-        critic_state_encoder: Critic frame encoder.
         cfg: Hyperparameters (optional, defaults to config.SJFPO_CFG).
         device: Compute device (default: CUDA if available, else CPU).
         obs_normalizer: Running obs stats module (optional, updated on train batches).
@@ -88,7 +86,6 @@ class SJFPOTrainer:
         policy_head: SJFOPolicyModel,
         critic: Critic,
         spectral: SpectralEncoder,
-        critic_state_encoder: StateEncoder,
         cfg: config.SJFPOConfig | None = None,
         device: torch.device | str | None = None,
         obs_normalizer=None,
@@ -97,7 +94,6 @@ class SJFPOTrainer:
         self.policy_head = policy_head.to(self.device)
         self.critic = critic.to(self.device)
         self.spectral = spectral.to(self.device)
-        self.critic_state_encoder = critic_state_encoder.to(self.device)
         self.obs_normalizer = (
             None if obs_normalizer is None else obs_normalizer.to(self.device)
         )
@@ -107,15 +103,11 @@ class SJFPOTrainer:
         self.old_policy_head: SJFOPolicyModel | None = None
         self.cfg = cfg or config.SJFPO_CFG
 
-        # Collect all trainable parameters (policy model + critic + critic
-        # trunk). The spectral encoder is parameter-free (raw DCT bins), so
-        # the policy head's cond_proj is the only learnable conditioning path.
-        # The critic MUST be optimized against its TD bootstrap target.
-        params = (
-            list(policy_head.parameters())
-            + list(critic.parameters())
-            + list(critic_state_encoder.parameters())
-        )
+        # Collect all trainable parameters (policy model + critic, which owns
+        # its state encoder). The spectral encoder is parameter-free (raw DCT
+        # bins), so the policy head's cond_proj is the only learnable
+        # conditioning path. The critic MUST be optimized against its value target.
+        params = list(policy_head.parameters()) + list(critic.parameters())
         self.optimizer = torch.optim.AdamW(
             params,
             lr=self.cfg.lr,
@@ -202,8 +194,8 @@ class SJFPOTrainer:
             act_dim=int(actions.shape[-1]),
             n_coeffs=n_coeffs,
         )
-        rho = policy_ratio(l_old, l_new, adv=advantages.unsqueeze(1))
-        psi = aspo_surrogate(rho, advantages.unsqueeze(1), cfg.clip_range)
+        rho = compute_policy_ratio(l_old, l_new, adv=advantages.unsqueeze(1))
+        psi = compute_aspo_surrogate(rho, advantages.unsqueeze(1), cfg.clip_range)
         # Maximize the ASPO surrogate → minimize its negation (PPO sign convention).
         return -psi.mean(), l_old, l_new, tau
 
@@ -239,11 +231,7 @@ class SJFPOTrainer:
         self, policy_loss, value_loss, cfg, diagnostics_sink
     ):
         """Weight total loss; raise SJFPOAborted with sink dump if non-finite."""
-        total_loss = total_update_loss(
-            policy_loss,
-            value_loss,
-            vf_coef=cfg.vf_coef,
-        )
+        total_loss = policy_loss + cfg.vf_coef * value_loss
         if not torch.isfinite(total_loss):
             diag: dict[str, float] = {
                 "policy_loss": safe_float_value(policy_loss),
@@ -302,7 +290,9 @@ class SJFPOTrainer:
         Args:
             chunks: Sequence of Transition dicts (LeRobot keys) with fixed
                 shapes ([T, obs] states, [H, act] actions, [H, act] next actions).
-            meta: Dictionary with advantages for the update path.
+            meta: Dictionary with advantages for the update path, plus values
+                (v_old for PPO-style clipping) and returns (frozen GAE value
+                targets; without them the critic falls back to one-step TD).
             diagnostics_sink: Optional path to write diagnostic JSON on NaN/Inf.
 
         Returns:
@@ -357,24 +347,23 @@ class SJFPOTrainer:
             policy_loss, l_old, l_new, tau = self.compute_policy_terms(
                 action_coeffs, cond, states, advantages, N, cfg
             )
-            # Critic path: critic trunk encodes states for V(s,a) (decoupled).
-            z_critic = self.critic_state_encoder(states)  # [N, T, Z]
-            z_critic_next = self.critic_state_encoder(
-                next_states
-            )  # [N, T, Z] for TD bootstrap
-            # Standard critic recursion: V(s,a) bootstraps V(s',a') under inference_mode.
-            # The critic judges clean real-space actions: IDCT the stored DCT
-            # coefficients (same pad+IDCT the rollout path applies to model output).
-            v_pred = self.critic(z_critic, a_exec)  # [N] executed-steps actions
-            # Bootstrap on executed-steps next-actions (same mask rule as values).
-            a_next_exec = mask_unexecuted_tail(
-                next_actions, bootstrap_action_lengths(chunks, chunk_size), dim=1
-            )  # [N, H, Da]
-            with torch.inference_mode():
-                v_next = self.critic(
-                    z_critic_next, a_next_exec
-                )  # [N] fixed bootstrap
-            td_targets = self.compute_critic_targets(chunks, v_next, cfg.gamma)
+            # Critic path: V(s,a) from raw states (owned critic state encoder).
+            v_pred = self.critic(
+                states, a_exec, lengths
+            )  # [N] masked-mean over executed rows only
+            if "returns" in meta:  # frozen GAE returns (PPO semi-gradient target)
+                td_targets = meta["returns"].to(dev)  # [N]
+            else:  # callers without returns (tests): one-step TD target
+                # Bootstrap on executed-steps next-actions (same mask rule as values).
+                next_lengths = bootstrap_action_lengths(chunks, chunk_size)
+                a_next_exec = mask_unexecuted_tail(
+                    next_actions, next_lengths, dim=1
+                )  # [N, H, Da]
+                with torch.inference_mode():
+                    v_next = self.critic(
+                        next_states, a_next_exec, next_lengths
+                    )  # [N] fixed bootstrap
+                td_targets = self.compute_critic_targets(chunks, v_next, cfg.gamma)
             if "values" in meta:  # v_old at collection: PPO-style clipped value loss
                 old_values = meta["values"].to(dev)  # [N]
                 v_clipped = old_values + (v_pred - old_values).clamp(
