@@ -15,11 +15,11 @@
 │   ├── config.py                 # flags, RUN_MATRIX (45), SJFPO/PPO/SAC configs, build_filtered_matrix
 │   ├── runner.py                 # train_run (SJFPO entry)
 │   ├── trainer.py                # assemble_update (ASPO + value)
-│   ├── networks.py               # StateEncoders, SpectralEncoder, DiT flow, Critic
+│   ├── networks.py               # StateEncoder x2 (model-owned), SpectralEncoder, DiT flow, Critic
 │   ├── dct_utils.py              # orthonormal DCT-II/III action chunks
 │   ├── evaluator.py              # Evaluator → 3-col CSV [episode,return,length]
 │   ├── baselines.py              # skrl PPO/SAC (shared GaussianPolicyImpl + baseline_train_loop)
-│   ├── fpo_core.py               # legacy ASPO + euler_sample 1→0 descending
+│   ├── fpo_core.py               # ASPO + sample(mode=euler) 1→0 descending
 │   ├── gae.py / collector.py / checkpointing.py  # legacy RL loop
 │   ├── sweep.py                  # scan_runs / run_pending / format_run_directory_name
 │   ├── analysis.py               # analyze_results (bootstrap 2000, IQM — stats locked)
