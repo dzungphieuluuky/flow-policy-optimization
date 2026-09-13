@@ -9,7 +9,7 @@ Use this as a jump table. Each row: what the file owns, the key symbols, and the
 | `config.py` | Flags, run matrices, budgets, algorithm dataclasses | `SJFPOConfig / PPOConfig / SACConfig`, `RUN_MATRIX` (45), `build_filtered_matrix` | Change sweep size → `--methods/--envs/--seeds` or edit axes |
 | `runner.py` | SJFPO train entry | `train_run`, `ChunkPolicy`, `SjfpoEvalWrapper` | `test_runner_sjfpo.py` + `test_pipeline_cpu.py` |
 | `trainer.py` | FPO++ ASPO + value update | `SJFPOTrainer.assemble_update`, `SJFPOAborted` | `test_trainer.py` NaN + param count |
-| `networks.py` | Encoder + spectral + DiT flow + Epps-Pulley SIGReg | `StateEncoder`, `SpectralEncoder(raw obs→DCT→low-K bins, parameter-free)`, `SJFOPolicyModel` (DiT-8 adaLN-Zero), `Critic` (2 cross-attention blocks) V(s,a), `sigreg_loss` | `test_networks.py` |
+| `networks.py` | Encoder + spectral + DiT flow | `StateEncoder`, `SpectralEncoder(raw obs→DCT→low-K bins, parameter-free)`, `SJFOPolicyModel` (DiT-8 adaLN-Zero), `Critic` (2 cross-attention blocks) V(s,a) | `test_networks.py` |
 | `dct_utils.py` | DCT orthonormal action chunks | `dct`, `idct`, `discounted_chunk_reward` | `test_dct.py` roundtrip `1e-5` |
 | `evaluator.py` | Metrics | `Evaluator` → 3-col CSV `[episode,return,length]` | `test_evaluator.py` schema + `test_pipeline_cpu.py` |
 | `baselines.py` | skrl PPO/SAC | `ppo_train_run` / `sac_train_run`, shared `GaussianPolicyImpl`, `seed_and_wrap_env`, `mean_action_eval_policy`, `baseline_train_loop`, `FrameStackWrapper` | `test_baselines.py` provenance |
@@ -65,5 +65,5 @@ HuggingFace convention (transformers / diffusers / accelerate):
   private API, but every helper here is imported across modules or asserted by
   tests, so all defs are public (no `def _[a-z]` in `src/sjfpo` / `scripts`;
   test `_` helpers keep pytest convention).
-- Stated deviation: `networks.py` stays one file (trunk + spectral + flow +
-  SIGReg) instead of HF-style one-class-per-file — the single-home gate wins.
+- Stated deviation: `networks.py` stays one file (trunk + spectral + flow)
+  instead of HF-style one-class-per-file — the single-home gate wins.
