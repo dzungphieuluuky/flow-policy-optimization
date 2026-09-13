@@ -43,7 +43,7 @@ from sjfpo.networks import (
     SpectralEncoder,
     Critic,
 )
-from sjfpo.dct_utils import idct
+from sjfpo.dct_utils import dct, idct
 from sjfpo.utils import is_bf16_available, resolve_device, safe_float_value
 
 
@@ -67,6 +67,7 @@ class SJFPOTrainer:
         critic: State-action value function (Critic, cross-attention fusion).
         spectral: Parameter-free spectral encoder over raw obs (SpectralEncoder).
         critic_state_encoder: Critic frame encoder (StateEncoder), trainable.
+        obs_normalizer: Running obs stats (RunningMeanStd) or None (no norm).
         cfg: Hyperparameters (SJFPOConfig).
         optimizer: AdamW optimizer over trainable parameters.
         step_count: Internal update counter (checkpoint compat).
@@ -78,6 +79,7 @@ class SJFPOTrainer:
         critic_state_encoder: Critic frame encoder.
         cfg: Hyperparameters (optional, defaults to config.SJFPO_CFG).
         device: Compute device (default: CUDA if available, else CPU).
+        obs_normalizer: Running obs stats module (optional, updated on train batches).
     """
 
     def __init__(
@@ -88,12 +90,16 @@ class SJFPOTrainer:
         critic_state_encoder: StateEncoder,
         cfg: config.SJFPOConfig | None = None,
         device: torch.device | str | None = None,
+        obs_normalizer=None,
     ):
         self.device = torch.device(device) if device is not None else resolve_device()
         self.policy_head = policy_head.to(self.device)
         self.critic = critic.to(self.device)
         self.spectral = spectral.to(self.device)
         self.critic_state_encoder = critic_state_encoder.to(self.device)
+        self.obs_normalizer = (
+            None if obs_normalizer is None else obs_normalizer.to(self.device)
+        )
         self.cfg = cfg or config.SJFPO_CFG
 
         # Collect all trainable parameters (policy model + critic + critic
@@ -176,7 +182,8 @@ class SJFPOTrainer:
         )
         rho = policy_ratio(l_old, l_new, adv=advantages.unsqueeze(1))
         psi = aspo_surrogate(rho, advantages.unsqueeze(1), cfg.clip_range)
-        return psi.mean(), l_old, l_new, tau
+        # Maximize the ASPO surrogate → minimize its negation (PPO sign convention).
+        return -psi.mean(), l_old, l_new, tau
 
     def compute_critic_targets(
         self, chunks: Sequence[Transition], v_next: torch.Tensor, gamma: float
@@ -232,21 +239,13 @@ class SJFPOTrainer:
         return total_loss
 
     def apply_optimizer_step(self, total_loss):
-        """Backward + grad-clip + AdamW step."""
+        """Backward + global grad-clip + AdamW step."""
         self.optimizer.zero_grad()
         total_loss.backward()
-        torch.nn.utils.clip_grad_norm_(
-            self.policy_head.parameters(),
-            self.cfg.grad_clip,
-        )
-        torch.nn.utils.clip_grad_norm_(
-            self.critic.parameters(),
-            self.cfg.grad_clip,
-        )
-        torch.nn.utils.clip_grad_norm_(
-            self.critic_state_encoder.parameters(),
-            self.cfg.grad_clip,
-        )
+        all_params = [
+            p for group in self.optimizer.param_groups for p in group["params"]
+        ]
+        torch.nn.utils.clip_grad_norm_(all_params, self.cfg.grad_clip)
         self.optimizer.step()
         self.step_count += 1
 
@@ -302,6 +301,12 @@ class SJFPOTrainer:
         next_states = next_states.to(dev)  # [N, T, obs]
         next_actions = next_actions.to(dev)  # [N, H, act]
         advantages = advantages.to(dev)  # [N]
+        if self.obs_normalizer is not None:
+            # Running stats update here (train batches only); rollout and eval
+            # normalize frozen through the shared module.
+            self.obs_normalizer.update(torch.cat([states, next_states]))
+            states = self.obs_normalizer(states)
+            next_states = self.obs_normalizer(next_states)
         if chunk_size != cfg.chunk_size:
             raise ValueError(
                 f"stacked action horizon {chunk_size} != "
@@ -312,6 +317,16 @@ class SJFPOTrainer:
                 f"stacked state length {states.shape[-2]} != "
                 f"config.n_obs_steps {cfg.n_obs_steps}"
             )
+        # Fit only executed steps: zero-pad unexecuted tail rows (terminated /
+        # truncated / budget-cut) in real space, back to DCT for the policy.
+        # Full-length chunks get an all-ones mask (exact no-op).
+        lengths = torch.tensor(
+            [int(c["n_action_steps"]) for c in chunks], device=dev
+        )  # [N]
+        exec_mask = (
+            torch.arange(chunk_size, device=dev).unsqueeze(0) < lengths.unsqueeze(1)
+        ).to(actions.dtype).unsqueeze(-1)  # [N, H, 1]
+        a_exec = idct(actions, dim=1) * exec_mask  # [N, H, Da]
             # Policy path: spectral tokens straight from the raw obs window.
         # Autocast to bf16 only where the GPU supports it (else fp32 no-op).
         use_bf16 = dev.type == "cuda" and is_bf16_available()
@@ -321,7 +336,7 @@ class SJFPOTrainer:
             # action bins (same top_p as the spectral tokens); the critic keeps
             # the full-H chunk.
             n_coeffs = max(1, round(cfg.top_p_spectral_tokens * cfg.chunk_size))
-            action_coeffs = actions[:, :n_coeffs, :]  # [N, Ka, act]
+            action_coeffs = dct(a_exec, dim=1)[:, :n_coeffs, :]  # [N, Ka, act]
             policy_loss, l_old, l_new, tau = self.compute_policy_terms(
                 action_coeffs, cond, states, advantages, N, cfg
             )
@@ -333,13 +348,22 @@ class SJFPOTrainer:
             # Standard critic recursion: V(s,a) bootstraps V(s',a') under inference_mode.
             # The critic judges clean real-space actions: IDCT the stored DCT
             # coefficients (same pad+IDCT the rollout path applies to model output).
-            v_pred = self.critic(z_critic, idct(actions, dim=1))  # [N]
+            v_pred = self.critic(z_critic, a_exec)  # [N] executed-steps actions
             with torch.inference_mode():
                 v_next = self.critic(
                     z_critic_next, idct(next_actions, dim=1)
                 )  # [N] fixed bootstrap
             td_targets = self.compute_critic_targets(chunks, v_next, cfg.gamma)
-            value_loss = nn.functional.mse_loss(v_pred, td_targets)
+            if "values" in meta:  # v_old at collection: PPO-style clipped value loss
+                old_values = meta["values"].to(dev)  # [N]
+                v_clipped = old_values + (v_pred - old_values).clamp(
+                    -cfg.clip_range, cfg.clip_range
+                )
+                value_loss = torch.max(
+                    (v_pred - td_targets).pow(2), (v_clipped - td_targets).pow(2)
+                ).mean()
+            else:  # callers without old values (tests): plain TD regression
+                value_loss = nn.functional.mse_loss(v_pred, td_targets)
             total_loss = self.combine_and_guard_losses(
                 policy_loss, value_loss, cfg, diagnostics_sink
             )

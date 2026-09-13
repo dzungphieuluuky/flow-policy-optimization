@@ -34,6 +34,7 @@ from sjfpo.networks import (
     SJFOPolicyModel,
     SpectralEncoder,
     Critic,
+    RunningMeanStd,
 )
 from sjfpo.trainer import SJFPOTrainer
 from sjfpo.wandb_logging import (
@@ -56,6 +57,7 @@ def infer_chunk_actions(
     policy_head,
     cfg,
     noise: bool = False,
+    steps: int | None = None,
 ) -> torch.Tensor:
     """Shared forward path: [T, obs] state → spectral → Euler → [H, A].
 
@@ -63,6 +65,8 @@ def infer_chunk_actions(
     wrappers own buffer/state plumbing, this owns only the forward math.
     Compute runs on the policy head's device; the returned chunk is
     always CPU (env stepping and transition storage stay on CPU).
+    steps defaults to cfg.euler_eval (eval path); the noisy train policy
+    passes cfg.euler_train so the flag is live.
     """
     dev = next(policy_head.parameters()).device
     with torch.inference_mode():
@@ -76,9 +80,10 @@ def infer_chunk_actions(
         eps = None if noise else torch.zeros(*shape, device=dev)
         # Autocast to bf16 only where the GPU supports it (else fp32 no-op).
         use_bf16 = dev.type == "cuda" and is_bf16_available()
+        steps = cfg.euler_eval if steps is None else steps
         with torch.autocast(device_type=dev.type, dtype=torch.bfloat16, enabled=use_bf16):
             x0 = euler_sample(
-                policy_head, shape, cond, steps=cfg.euler_eval, eps=eps, device=dev,
+                policy_head, shape, cond, steps=steps, eps=eps, device=dev,
                 state=state_b,
             )  # [1, Ka, Da]
         x0 = torch.nn.functional.pad(x0, (0, 0, 0, cfg.chunk_size - n_coeffs))
@@ -94,23 +99,29 @@ class ChunkPolicy:
         spectral: SpectralEncoder,
         cfg: SJFPOConfig,
         noise: bool = False,
+        obs_normalizer=None,
     ) -> None:
         self.policy_head = policy_head
         self.spectral = spectral
         self.cfg = cfg
         self.noise = noise
+        self.obs_normalizer = obs_normalizer
 
     def __call__(self, state) -> torch.Tensor:
         if isinstance(state, np.ndarray):
             state = torch.as_tensor(state, dtype=torch.float32)
         if state.dim() == 1:
             state = einx.id("d -> t d", state, t=self.cfg.n_obs_steps)
+        if self.obs_normalizer is not None:
+            state = self.obs_normalizer(state)
+        steps = self.cfg.euler_train if self.noise else self.cfg.euler_eval
         return infer_chunk_actions(
             state,
             self.spectral,
             self.policy_head,
             self.cfg,
             noise=self.noise,
+            steps=steps,
         )
 
 
@@ -129,10 +140,12 @@ class SjfpoEvalWrapper:
         policy_head: SJFOPolicyModel,
         spectral: SpectralEncoder,
         cfg: SJFPOConfig,
+        obs_normalizer=None,
     ):
         self.policy_head = policy_head
         self.spectral = spectral
         self.cfg = cfg
+        self.obs_normalizer = obs_normalizer
         self.frame_buffer: deque[torch.Tensor] = deque(maxlen=cfg.n_obs_steps)
         self.action_buffer: deque[torch.Tensor] = deque()
 
@@ -154,6 +167,8 @@ class SjfpoEvalWrapper:
         if not self.action_buffer:
             # Compute new chunk via the shared forward path (buffer-rotate stays here)
             state = torch.stack(tuple(self.frame_buffer), dim=0)  # [T, obs]
+            if self.obs_normalizer is not None:
+                state = self.obs_normalizer(state)
             actions = infer_chunk_actions(
                 state,
                 self.spectral,
@@ -233,18 +248,24 @@ def build_training_components(
     critic_state_encoder = StateEncoder(
         obs_dim, n_obs_steps=cfg.n_obs_steps, hidden_size=hidden_dim
     ).to(dev)
+    obs_normalizer = RunningMeanStd(obs_dim).to(dev)
     return {
         "policy_head": policy_head,
         "critic": critic,
         "spectral": spectral,
         "critic_state_encoder": critic_state_encoder,
+        "obs_normalizer": obs_normalizer,
     }
 
 
-def create_run_policies(policy_head, spectral, cfg):
+def create_run_policies(policy_head, spectral, cfg, obs_normalizer=None):
     """Create noisy train policy and chunk-aware eval wrapper."""
-    train_policy = ChunkPolicy(policy_head, spectral, cfg, noise=True)
-    eval_wrapper = SjfpoEvalWrapper(policy_head, spectral, cfg)
+    train_policy = ChunkPolicy(
+        policy_head, spectral, cfg, noise=True, obs_normalizer=obs_normalizer
+    )
+    eval_wrapper = SjfpoEvalWrapper(
+        policy_head, spectral, cfg, obs_normalizer=obs_normalizer
+    )
     return train_policy, eval_wrapper  # evaluator calls eval_wrapper(obs)
 
 
@@ -260,11 +281,13 @@ def compute_divergence_baseline(evaluator, env, seed) -> float:
     return r_rand
 
 
-def compute_chunk_values(critic_state_encoder, critic, chunks):
+def compute_chunk_values(critic_state_encoder, critic, chunks, obs_normalizer=None):
     """Compute V(s,a) chunk values and truncated-bootstrap next values."""
     dev = next(critic_state_encoder.parameters()).device
     with torch.inference_mode():
         states = torch.stack([c["observation.state"] for c in chunks]).to(dev)
+        if obs_normalizer is not None:
+            states = obs_normalizer(states)
         actions = torch.stack([c["action"] for c in chunks]).to(dev)
         # Real-space actions for the critic: IDCT the stored DCT coefficients.
         values = critic(
@@ -273,9 +296,10 @@ def compute_chunk_values(critic_state_encoder, critic, chunks):
         next_values = np.zeros(len(chunks))  # terminated/continue chunks keep 0
         for i, c in enumerate(chunks):
             if bool(c["next.truncated"]):  # truncated: bootstrap V(s',a')
-                z_next = critic_state_encoder(
-                    c["next.observation.state"].unsqueeze(0).to(dev)
-                )
+                next_state = c["next.observation.state"].unsqueeze(0).to(dev)
+                if obs_normalizer is not None:
+                    next_state = obs_normalizer(next_state)
+                z_next = critic_state_encoder(next_state)
                 next_values[i] = critic(
                     z_next, idct(c["next.action"].unsqueeze(0).to(dev), dim=1)
                 ).item()
@@ -297,7 +321,10 @@ def collect_gae_inputs(chunks):
 def compute_gae_targets(state, chunks):
     """Compute GAE advantages, returns, and values for collected chunks."""
     values, next_values = compute_chunk_values(
-        state.models["critic_state_encoder"], state.models["critic"], chunks
+        state.models["critic_state_encoder"],
+        state.models["critic"],
+        chunks,
+        obs_normalizer=state.models.get("obs_normalizer"),
     )
     all_rewards, n_action_steps, terminated = collect_gae_inputs(chunks)
     advantages, returns_np = chunk_gae(
@@ -331,22 +358,22 @@ def log_trainer_diagnostics(state, diag, extra: dict | None = None) -> None:
 
 
 def execute_trainer_update(state, chunks, advantages, returns_np, values):
-    """Train on non-terminated chunks; terminated chunks keep GAE-only role."""
-    train_idx = [i for i, c in enumerate(chunks) if not bool(c["next.done"])]
-    if not train_idx:  # every chunk terminated: nothing to fit this round
-        return None
-    meta = {"advantages": torch.tensor(advantages[train_idx], dtype=torch.float32)}
+    """Train on all chunks; terminated tails are zero-padded in the trainer."""
+    meta = {
+        "advantages": torch.tensor(advantages, dtype=torch.float32),
+        "values": torch.tensor(values, dtype=torch.float32),
+    }
     gae_data = (
         {
             "gae/advantages_mean": float(meta["advantages"].mean()),
             "gae/advantages_std": float(meta["advantages"].std()),
-            "gae/returns_mean": float(returns_np[train_idx].mean()),
-            "gae/values_mean": float(values[train_idx].mean()),
+            "gae/returns_mean": float(returns_np.mean()),
+            "gae/values_mean": float(values.mean()),
         }
         if state.wandb_enabled
         else None
     )
-    diag = state.trainer.assemble_update([chunks[i] for i in train_idx], meta)
+    diag = state.trainer.assemble_update(chunks, meta)
     if state.wandb_enabled:
         log_trainer_diagnostics(state, diag, extra=gae_data)
     return diag
@@ -400,6 +427,7 @@ def save_run_checkpoint(state, label) -> str:
             "critic": models["critic"],
             "spectral": models["spectral"],
             "critic_state_encoder": models["critic_state_encoder"],
+            "obs_normalizer": models["obs_normalizer"],
         },
         "optimizer": state.trainer.optimizer,
         "counters": {
@@ -521,10 +549,14 @@ def assemble_run_state(
         parts["critic_state_encoder"],
         cfg=cfg,
         device=device,
+        obs_normalizer=parts["obs_normalizer"],
     )
     evaluator = Evaluator(env, eval_seed=10000 + seed, max_episodes=12)
     train_policy, eval_policy = create_run_policies(
-        parts["policy_head"], parts["spectral"], cfg
+        parts["policy_head"],
+        parts["spectral"],
+        cfg,
+        obs_normalizer=parts["obs_normalizer"],
     )
     r_rand = compute_divergence_baseline(evaluator, env, seed)
     cfg_dict = dataclasses.asdict(cfg)
