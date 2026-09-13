@@ -383,3 +383,24 @@ def test_zero_steps_collects_nothing():
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+def test_bootstrap_action_lengths_rule():
+    """Interior-continue masks to the NEXT chunk's length; rest stay full."""
+    from sjfpo.collector import bootstrap_action_lengths
+
+    def chunk(done, truncated, n):
+        return {
+            "next.done": torch.tensor(done),
+            "next.truncated": torch.tensor(truncated),
+            "n_action_steps": torch.tensor(n),
+        }
+
+    chunks = [
+        chunk(False, False, 16),  # interior continue → L_1 = 8
+        chunk(False, False, 8),  # interior continue → L_2 = 5
+        chunk(False, True, 5),  # truncated proposal stays full
+        chunk(True, False, 3),  # terminated unused → full
+        chunk(False, False, 16),  # budget-cut tail → full
+    ]
+    assert bootstrap_action_lengths(chunks, 16) == [8, 5, 16, 16, 16]

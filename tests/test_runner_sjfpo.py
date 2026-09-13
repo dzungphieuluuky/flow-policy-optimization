@@ -399,3 +399,43 @@ class TestCLISmoke:
             timeout=10,
         )
         assert result.returncode != 0
+
+
+class TestChunkBootstrapValues:
+    """compute_chunk_values bootstraps every non-terminated chunk."""
+
+    def test_continue_chains_and_tail_bootstraps(self):
+        from sjfpo.runner import compute_chunk_values
+
+        torch.manual_seed(0)
+        cfg = SJFPOConfig()
+        obs_dim, act_dim = 4, 2
+        H, T = cfg.chunk_size, cfg.n_obs_steps
+        trunk = StateEncoder(obs_dim, n_obs_steps=T, hidden_size=cfg.hidden_size)
+        critic = Critic(hidden_size=cfg.hidden_size, act_dim=act_dim)
+
+        def chunk(done, truncated, n):
+            return {
+                "observation.state": torch.randn(T, obs_dim),
+                "action": torch.randn(H, act_dim),
+                "next.action": torch.randn(H, act_dim),
+                "next.observation.state": torch.randn(T, obs_dim),
+                "next.reward": torch.zeros(n),
+                "next.done": torch.tensor(done),
+                "next.truncated": torch.tensor(truncated),
+                "n_action_steps": torch.tensor(n),
+                "clip_count": torch.tensor(0),
+            }
+
+        chunks = [
+            chunk(False, False, H),
+            chunk(True, False, 5),
+            chunk(False, False, H),
+        ]
+        # Open-loop chaining: chunk0's next pair IS chunk1's state/action.
+        chunks[0]["next.observation.state"] = chunks[1]["observation.state"].clone()
+        chunks[0]["next.action"] = chunks[1]["action"].clone()
+        values, next_values = compute_chunk_values(trunk, critic, chunks)
+        assert next_values[0] == values[1]  # interior continue bootstraps V_{k+1}
+        assert next_values[1] == 0.0  # terminated cuts recursion
+        assert next_values[2] != 0.0  # budget-cut tail bootstraps live window

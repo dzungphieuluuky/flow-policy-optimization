@@ -361,23 +361,22 @@ class TestSharedMCSamples:
         rho = policy_ratio(l_old, l_new, adv=advantages.unsqueeze(1))
         assert torch.equal(rho, torch.ones_like(rho))
 
-    def test_tau_quadrature_and_antithetic_eps(self):
-        """tau is fixed linspace; eps second half negates the first."""
+    def test_old_and_new_share_samples(self):
+        """l_old and l_new see identical (eps, tau): one shared plain-MC draw."""
         torch.manual_seed(0)
         trainer = make_trainer()
         cfg = trainer.cfg
-        seen = {}
+        seen = []
         orig = trainer.compute_log_likelihood
 
         def spy(actions, cond, states, **kw):
-            seen["eps"] = kw["eps"].clone()
-            seen["tau"] = kw["tau"].clone()
+            seen.append((kw["eps"].clone(), kw["tau"].clone()))
             return orig(actions, cond, states, **kw)
 
         trainer.compute_log_likelihood = spy
         n = 4
         n_coeffs = max(1, round(cfg.top_p_spectral_tokens * cfg.chunk_size))
-        _, _, _, tau = trainer.compute_policy_terms(
+        trainer.compute_policy_terms(
             torch.randn(n, n_coeffs, ACT_DIM),
             torch.randn(n, 5, OBS_DIM),
             torch.randn(n, cfg.n_obs_steps, OBS_DIM),
@@ -386,10 +385,37 @@ class TestSharedMCSamples:
             cfg,
         )
         m = cfg.num_mc_samples
-        assert torch.equal(tau, torch.linspace(*cfg.tau_range, m))
-        assert torch.equal(seen["tau"], tau)
-        half = m // 2
-        assert torch.equal(seen["eps"][:, half : 2 * half], -seen["eps"][:, :half])
+        assert len(seen) == 2  # l_old + l_new
+        assert torch.equal(seen[0][0], seen[1][0])
+        assert torch.equal(seen[0][1], seen[1][1])
+        assert seen[0][0].shape == (n, m, n_coeffs, ACT_DIM)
+        assert seen[0][1].shape == (m,)
+
+    def test_snapshot_freezes_old_policy(self):
+        """l_old reads collection-time weights even after the live net moves."""
+        torch.manual_seed(0)
+        trainer = make_trainer()
+        cfg = trainer.cfg
+        n = 4
+        n_coeffs = max(1, round(cfg.top_p_spectral_tokens * cfg.chunk_size))
+        actions = torch.randn(n, n_coeffs, ACT_DIM)
+        cond = torch.randn(n, 5, OBS_DIM)
+        states = torch.randn(n, cfg.n_obs_steps, OBS_DIM)
+        advantages = torch.randn(n) * 0.1
+        trainer.snapshot_policy()
+        torch.manual_seed(7)
+        _, l_old_before, _, _ = trainer.compute_policy_terms(
+            actions, cond, states, advantages, n, cfg
+        )
+        with torch.no_grad():
+            for p in trainer.policy_head.parameters():
+                p.add_(1.0)  # live weights move (a later epoch)
+        torch.manual_seed(7)  # identical draws: only weights differ
+        _, l_old_after, l_new_after, _ = trainer.compute_policy_terms(
+            actions, cond, states, advantages, n, cfg
+        )
+        assert torch.equal(l_old_before, l_old_after)  # frozen snapshot
+        assert not torch.equal(l_new_after, l_old_after)  # live moved
 
         # ---------------------------------------------------------------------------
         # (i) critic bootstraps V(s',a') with terminated masking
@@ -444,18 +470,25 @@ class TestCriticBootstrap:
             next_states.to(dev),
             next_actions.to(dev),
         )
+        from sjfpo.collector import bootstrap_action_lengths
+        from sjfpo.dct_utils import mask_unexecuted_tail
+
         with torch.no_grad():
             z = trainer.critic_state_encoder(states)
             # Mirror the trainer: zero-pad unexecuted tail rows; the critic
-            # judges executed-steps real-space actions.
-            lengths = torch.tensor([int(c["n_action_steps"]) for c in chunks])
-            exec_mask = (
-                torch.arange(actions.shape[-2]).unsqueeze(0) < lengths.unsqueeze(1)
-            ).to(actions.dtype).unsqueeze(-1)
-            v_pred = trainer.critic(z, idct(actions, dim=1) * exec_mask)
+            # judges executed-steps real-space actions (anchor and bootstrap).
+            lengths = [int(c["n_action_steps"]) for c in chunks]
+            chunk_size = actions.shape[-2]
+            v_pred = trainer.critic(
+                z, mask_unexecuted_tail(actions, lengths, dim=1)
+            )
             v_next = trainer.critic(
                 trainer.critic_state_encoder(next_states),
-                idct(next_actions, dim=1),
+                mask_unexecuted_tail(
+                    next_actions,
+                    bootstrap_action_lengths(chunks, chunk_size),
+                    dim=1,
+                ),
             )
         expected = trainer.compute_critic_targets(chunks, v_next, trainer.cfg.gamma)
         manual = torch.nn.functional.mse_loss(v_pred, expected)

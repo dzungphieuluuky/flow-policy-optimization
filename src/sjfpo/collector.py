@@ -53,7 +53,28 @@ import torch
 from sjfpo.config import SJFPO_CFG
 from sjfpo.dct_utils import dct
 
-__all__ = ["Transition", "collect_chunks"]
+__all__ = ["Transition", "collect_chunks", "bootstrap_action_lengths"]
+
+
+def bootstrap_action_lengths(chunks, chunk_size: int) -> list[int]:
+    """Executed-step mask lengths for bootstrap next-actions.
+
+    Interior-continue chunks mask to the NEXT chunk's executed length (same
+    episode, chained proposal); truncated/tail proposals stay full (nothing
+    executes after them); terminated entries are unused by targets (full).
+    """
+    n = len(chunks)
+    out: list[int] = []
+    for i, c in enumerate(chunks):
+        if (
+            not bool(c["next.done"])
+            and not bool(c["next.truncated"])
+            and i + 1 < n
+        ):
+            out.append(int(chunks[i + 1]["n_action_steps"]))
+        else:
+            out.append(chunk_size)
+    return out
 
 
 Transition = TypedDict(

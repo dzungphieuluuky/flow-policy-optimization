@@ -25,7 +25,12 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from sjfpo.dct_utils import dct, discounted_chunk_reward, idct  # noqa: E402
+from sjfpo.dct_utils import (  # noqa: E402
+    dct,
+    discounted_chunk_reward,
+    idct,
+    mask_unexecuted_tail,
+)
 
 # Chunk length H=8 per plan; A_dim varies. Both plan-mandated shapes.
 SHAPES = [(4, 8, 3), (7, 8, 11)]
@@ -185,3 +190,21 @@ def test_discounted_chunk_reward_batched_shape():
     assert out.shape == (6,)
     manual_first = sum((0.99**t) * r[0, t].item() for t in range(8))
     assert abs(out[0].item() - manual_first) < 1e-5
+
+
+def test_mask_unexecuted_tail_full_length_is_roundtrip():
+    """All-ones mask (L == H) recovers the signal up to round-off."""
+    torch.manual_seed(0)
+    x = torch.randn(4, 16, 3)
+    out = mask_unexecuted_tail(dct(x, dim=1), [16, 16, 16, 16], dim=1)
+    assert torch.allclose(out, x, atol=1e-5)
+
+
+def test_mask_unexecuted_tail_zeroes_tail_rows():
+    """Rows past each row's executed length are exactly zero; kept rows match."""
+    torch.manual_seed(1)
+    x = torch.randn(2, 16, 3)
+    out = mask_unexecuted_tail(dct(x, dim=1), [8, 16], dim=1)
+    assert torch.equal(out[0, 8:], torch.zeros(8, 3))
+    assert torch.allclose(out[0, :8], x[0, :8], atol=1e-5)
+    assert torch.allclose(out[1], x[1], atol=1e-5)

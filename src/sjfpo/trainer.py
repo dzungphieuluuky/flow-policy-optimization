@@ -25,6 +25,7 @@ MuJoCo-only: FPO++ path (ASPO + V(s,a) critic).
 
 from __future__ import annotations
 
+import copy
 import json
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -35,7 +36,7 @@ import torch
 import torch.nn as nn
 
 from sjfpo import config
-from sjfpo.collector import Transition
+from sjfpo.collector import Transition, bootstrap_action_lengths
 from sjfpo.fpo_core import aspo_surrogate, policy_ratio, total_update_loss
 from sjfpo.networks import (
     StateEncoder,
@@ -43,7 +44,7 @@ from sjfpo.networks import (
     SpectralEncoder,
     Critic,
 )
-from sjfpo.dct_utils import dct, idct
+from sjfpo.dct_utils import dct, mask_unexecuted_tail
 from sjfpo.utils import is_bf16_available, resolve_device, safe_float_value
 
 
@@ -100,6 +101,10 @@ class SJFPOTrainer:
         self.obs_normalizer = (
             None if obs_normalizer is None else obs_normalizer.to(self.device)
         )
+        # Frozen behavior-policy snapshot (PPO π_θold): refreshed once per
+        # collection round via snapshot_policy(); l_old always reads this.
+        # Never in the optimizer — plain attribute, not a trained submodule.
+        self.old_policy_head: SJFOPolicyModel | None = None
         self.cfg = cfg or config.SJFPO_CFG
 
         # Collect all trainable parameters (policy model + critic + critic
@@ -118,6 +123,15 @@ class SJFPOTrainer:
         )
 
         self.step_count = 0
+
+    def snapshot_policy(self) -> None:
+        """Freeze current weights as the behavior policy for l_old.
+
+        Call once per collection round, before any update on the new batch
+        (the driver does this in execute_trainer_update). Later epochs on the
+        same batch keep comparing against collection-time weights.
+        """
+        self.old_policy_head = copy.deepcopy(self.policy_head)
 
     @staticmethod
     def stack_chunk_batch(chunks: Sequence[Transition], meta: Mapping[str, Any]):
@@ -142,25 +156,32 @@ class SJFPOTrainer:
         )
 
     def compute_policy_terms(self, actions, cond, states, advantages, N, cfg):
-        """Old/new MC log-likelihoods plus ASPO surrogate policy loss."""
+        """Old/new MC log-likelihoods plus ASPO surrogate policy loss.
+
+        l_old reads the frozen snapshot (behavior weights); l_new reads the
+        live policy. Without a snapshot (unit tests) both read live weights.
+        """
+        old_policy = (
+            self.old_policy_head
+            if self.old_policy_head is not None
+            else self.policy_head
+        )
         n_coeffs = int(actions.shape[-2])  # truncated Ka rows, not full H
-        # Single shared (eps, tau) draw: l_old and l_new must compare old vs
-        # new weights on the SAME samples, or rho is pure MC noise (eval decay).
-        # tau: fixed uniform quadrature nodes (no 1-D sampling noise, no clumping).
-        # eps: antithetic pairs {e, -e} halving Gaussian variance at equal cost.
+        # Single shared plain-MC draw: l_old and l_new must compare old vs new
+        # weights on the SAME samples, or rho is pure MC noise (eval decay).
+        # Uniform tau + standard-normal eps (no fixed grids: they desync
+        # train-time t from the Euler query points used at inference).
         num_mc = cfg.num_mc_samples
         act_dim = int(actions.shape[-1])
         tau_range = cfg.tau_range
-        tau = torch.linspace(
-            tau_range[0], tau_range[1], num_mc, device=self.device
+        tau = (
+            torch.rand(num_mc, device=self.device)
+            * (tau_range[1] - tau_range[0])
+            + tau_range[0]
         )  # [num_mc_samples]
-        half = num_mc // 2
-        eps_half = torch.randn(N, half, n_coeffs, act_dim, device=self.device)
-        eps = torch.cat([eps_half, -eps_half], dim=1)  # [N, 2*half, Ka, act]
-        if eps.shape[1] < num_mc:  # odd num_mc_samples: one extra unpaired draw
-            eps = torch.cat(
-                [eps, torch.randn(N, 1, n_coeffs, act_dim, device=self.device)], dim=1
-            )
+        eps = torch.randn(
+            N, num_mc, n_coeffs, act_dim, device=self.device
+        )  # [N, num_mc_samples, Ka, act]
         with torch.inference_mode():
             l_old = self.compute_log_likelihood(
                 actions,
@@ -170,6 +191,7 @@ class SJFPOTrainer:
                 tau=tau,
                 act_dim=int(actions.shape[-1]),
                 n_coeffs=n_coeffs,
+                net=old_policy,
             )  # [N, num_mc_samples]
         l_new = self.compute_log_likelihood(
             actions,
@@ -320,13 +342,8 @@ class SJFPOTrainer:
         # Fit only executed steps: zero-pad unexecuted tail rows (terminated /
         # truncated / budget-cut) in real space, back to DCT for the policy.
         # Full-length chunks get an all-ones mask (exact no-op).
-        lengths = torch.tensor(
-            [int(c["n_action_steps"]) for c in chunks], device=dev
-        )  # [N]
-        exec_mask = (
-            torch.arange(chunk_size, device=dev).unsqueeze(0) < lengths.unsqueeze(1)
-        ).to(actions.dtype).unsqueeze(-1)  # [N, H, 1]
-        a_exec = idct(actions, dim=1) * exec_mask  # [N, H, Da]
+        lengths = [int(c["n_action_steps"]) for c in chunks]
+        a_exec = mask_unexecuted_tail(actions, lengths, dim=1)  # [N, H, Da]
             # Policy path: spectral tokens straight from the raw obs window.
         # Autocast to bf16 only where the GPU supports it (else fp32 no-op).
         use_bf16 = dev.type == "cuda" and is_bf16_available()
@@ -349,15 +366,19 @@ class SJFPOTrainer:
             # The critic judges clean real-space actions: IDCT the stored DCT
             # coefficients (same pad+IDCT the rollout path applies to model output).
             v_pred = self.critic(z_critic, a_exec)  # [N] executed-steps actions
+            # Bootstrap on executed-steps next-actions (same mask rule as values).
+            a_next_exec = mask_unexecuted_tail(
+                next_actions, bootstrap_action_lengths(chunks, chunk_size), dim=1
+            )  # [N, H, Da]
             with torch.inference_mode():
                 v_next = self.critic(
-                    z_critic_next, idct(next_actions, dim=1)
+                    z_critic_next, a_next_exec
                 )  # [N] fixed bootstrap
             td_targets = self.compute_critic_targets(chunks, v_next, cfg.gamma)
             if "values" in meta:  # v_old at collection: PPO-style clipped value loss
                 old_values = meta["values"].to(dev)  # [N]
                 v_clipped = old_values + (v_pred - old_values).clamp(
-                    -cfg.clip_range, cfg.clip_range
+                    -cfg.clip_range_vf, cfg.clip_range_vf
                 )
                 value_loss = torch.max(
                     (v_pred - td_targets).pow(2), (v_clipped - td_targets).pow(2)
@@ -394,10 +415,13 @@ class SJFPOTrainer:
         n_coeffs: int,
         eps: torch.Tensor | None = None,
         tau: torch.Tensor | None = None,
+        net=None,
     ) -> torch.Tensor:
         """Compute per-sample flow log-likelihood for each chunk.
 
         Returns [N, num_mc_samples] tensor of l_i values.
+        net defaults to the live policy head (l_new); pass the frozen
+        snapshot for l_old.
         """
         N = actions.shape[0]
         cfg = self.cfg
@@ -432,7 +456,8 @@ class SJFPOTrainer:
         tau_flat = einx.id("m -> n m", tau, n=N).reshape(
             N * cfg.num_mc_samples
         )  # [N*num_mc_samples] via einx broadcast
-        v_hat = self.policy_head(x_t_flat, tau_flat, cond_flat, state_flat)
+        model = self.policy_head if net is None else net
+        v_hat = model(x_t_flat, tau_flat, cond_flat, state_flat)
 
         # Squared error, mean over flow dims, per sample
         se = (v_hat - v_star_flat).pow(2).mean(dim=(-2, -1))  # [N*num_mc_samples]

@@ -21,9 +21,9 @@ import einx
 import gymnasium as gym
 
 from sjfpo.checkpointing import save_checkpoint
-from sjfpo.collector import collect_chunks
+from sjfpo.collector import bootstrap_action_lengths, collect_chunks
 from sjfpo.config import SJFPOConfig
-from sjfpo.dct_utils import dct, idct
+from sjfpo.dct_utils import dct, idct, mask_unexecuted_tail
 from sjfpo.evaluator import Evaluator, check_divergence
 from sjfpo.fpo_core import total_update_loss
 from sjfpo.fpo_core import euler_sample
@@ -282,27 +282,40 @@ def compute_divergence_baseline(evaluator, env, seed) -> float:
 
 
 def compute_chunk_values(critic_state_encoder, critic, chunks, obs_normalizer=None):
-    """Compute V(s,a) chunk values and truncated-bootstrap next values."""
+    """Compute V(s,a) chunk values and next-chunk bootstrap values.
+
+    next_values gets a critic eval for every non-terminated chunk (truncated,
+    continue, and budget-cut tails alike); terminated keeps 0 (recursion cut).
+    Actions on both sides are masked to executed steps (shared helper).
+    """
     dev = next(critic_state_encoder.parameters()).device
+    chunk_size = int(chunks[0]["action"].shape[-2])
+    lengths = [int(c["n_action_steps"]) for c in chunks]
+    next_lengths = bootstrap_action_lengths(chunks, chunk_size)
     with torch.inference_mode():
         states = torch.stack([c["observation.state"] for c in chunks]).to(dev)
+        next_states = torch.stack(
+            [c["next.observation.state"] for c in chunks]
+        ).to(dev)
         if obs_normalizer is not None:
             states = obs_normalizer(states)
-        actions = torch.stack([c["action"] for c in chunks]).to(dev)
-        # Real-space actions for the critic: IDCT the stored DCT coefficients.
-        values = critic(
-            critic_state_encoder(states), idct(actions, dim=1)
+            next_states = obs_normalizer(next_states)
+        # Executed-steps real-space actions (mask helper shared with trainer).
+        a_exec = mask_unexecuted_tail(
+            torch.stack([c["action"] for c in chunks]).to(dev), lengths, dim=1
+        )
+        a_next_exec = mask_unexecuted_tail(
+            torch.stack([c["next.action"] for c in chunks]).to(dev),
+            next_lengths,
+            dim=1,
+        )
+        values = critic(critic_state_encoder(states), a_exec).cpu().numpy()
+        v_next_all = critic(
+            critic_state_encoder(next_states), a_next_exec
         ).cpu().numpy()
-        next_values = np.zeros(len(chunks))  # terminated/continue chunks keep 0
-        for i, c in enumerate(chunks):
-            if bool(c["next.truncated"]):  # truncated: bootstrap V(s',a')
-                next_state = c["next.observation.state"].unsqueeze(0).to(dev)
-                if obs_normalizer is not None:
-                    next_state = obs_normalizer(next_state)
-                z_next = critic_state_encoder(next_state)
-                next_values[i] = critic(
-                    z_next, idct(c["next.action"].unsqueeze(0).to(dev), dim=1)
-                ).item()
+        next_values = np.where(
+            [not bool(c["next.done"]) for c in chunks], v_next_all, 0.0
+        )
     return values, next_values
 
 
@@ -373,6 +386,9 @@ def execute_trainer_update(state, chunks, advantages, returns_np, values):
         if state.wandb_enabled
         else None
     )
+    # Freeze behavior weights first: l_old must read collection-time weights
+    # even if later epochs move the live policy.
+    state.trainer.snapshot_policy()
     diag = state.trainer.assemble_update(chunks, meta)
     if state.wandb_enabled:
         log_trainer_diagnostics(state, diag, extra=gae_data)

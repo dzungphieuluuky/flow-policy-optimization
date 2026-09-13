@@ -40,6 +40,7 @@ import torch
 __all__ = [
     "dct",
     "idct",
+    "mask_unexecuted_tail",
     "discounted_chunk_reward",
 ]
 
@@ -125,6 +126,32 @@ def idct(x: torch.Tensor, dim: int = -1) -> torch.Tensor:
         Reconstructed signal of same shape as x.
     """
     return apply_matrix_along_dim(x, dim, dct_basis_matrix(x.shape[dim % x.dim()]))
+
+
+def mask_unexecuted_tail(
+    actions_dct: torch.Tensor, lengths, dim: int = 1
+) -> torch.Tensor:
+    """Zero-pad unexecuted tail rows in real space; return real-space actions.
+
+    The critic and the executed-step anchor must see only executed steps:
+    IDCT back to real space, zero rows past each row's executed length,
+    leave full-length rows bit-close to the roundtrip. Stored rows are DCT
+    frequency bins (NOT time steps) — masking must happen post-IDCT.
+
+    Args:
+        actions_dct: DCT coefficients of shape [N, H, Da].
+        lengths: Executed steps per row ([N] ints, 1 <= L <= H).
+        dim: Time axis. Default 1.
+
+    Returns:
+        Real-space actions [N, H, Da] with unexecuted tails zeroed.
+    """
+    real = idct(actions_dct, dim=dim)  # [N, H, Da]
+    h = actions_dct.shape[dim % actions_dct.dim()]
+    lens = torch.as_tensor(list(lengths), device=real.device)  # [N]
+    row = torch.arange(h, device=real.device).unsqueeze(0)  # [1, H]
+    mask = (row < lens.unsqueeze(1)).to(real.dtype).unsqueeze(-1)  # [N, H, 1]
+    return real * mask  # [N, H, Da]
 
     # retained: test-only public API — exercised directly by tests/test_dct.py;
     # not called by the src train path. Keep per fn-consolidation D1.
