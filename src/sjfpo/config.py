@@ -75,7 +75,6 @@ class SJFPOConfig:
         dit_heads: Attention heads per DiT block. Default 4.
         dit_mlp_ratio: MLP width multiplier per DiT block. Default 4.0.
         dit_time_dim: Sinusoidal timestep embedding dim for DiT. Default 256.
-        sigreg_coef: SIGReg (Epps-Pulley CF normality) weight. Default 0.1.
         vf_coef: Value-loss coefficient. Default 1.0.
         grad_clip: Grad-norm clip. Default 1.0.
         n_obs_steps: Frame-stack state window length T. Default 16.
@@ -103,7 +102,6 @@ class SJFPOConfig:
     dit_heads: int = 4  # attention heads per DiT block
     dit_mlp_ratio: float = 4.0  # MLP width multiplier per DiT block
     dit_time_dim: int = 256  # sinusoidal timestep embedding dim for DiT
-    sigreg_coef: float = 0.1  # SIGReg (Epps-Pulley CF normality) weight
     vf_coef: float = 1.0  # value-loss coefficient
     grad_clip: float = 1.0  # grad-norm clip
     n_obs_steps: int = 16  # frame-stack state window length T
