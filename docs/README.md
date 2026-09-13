@@ -21,7 +21,7 @@
 
 ```
 stacked obs [T=16,obs_dim] ──► DCT-II(time) ──► K lowest bins (top_p=0.3 → 5) → tokens [5,obs] (raw, no projector)
-chunk actions [H=16,Da] ──► DCT ──► DiT-8 velocity (cond = time + pooled tokens) ──► sample t:1→0 ──► IDCT
+chunk actions [H=16,Da] ──► DCT ──► DiT-8 velocity (condition = time + pooled tokens) ──► sample t:1→0 ──► IDCT
 stacked obs ──► Critic V(s,a, owns state encoder) ──► GAE-returns value target
 ```
 

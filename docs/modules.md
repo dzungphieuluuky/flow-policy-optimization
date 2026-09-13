@@ -16,7 +16,7 @@ Use this as a jump table. Each row: what the file owns, the key symbols, and the
 | `gae.py`, `collector.py`, `checkpointing.py` | Chunk rollout + GAE + checkpoints | `chunk_gae`, `collect_chunks`/`Transition`, `save/load_checkpoint` + `save/load_policy_checkpoint` (Hub config + safetensors) | `test_gae.py`, `test_collector.py`, `test_checkpoint.py`, `test_policy_checkpoint.py` |
 | `sweep.py` | Dispatch | `scan_runs`, `run_pending`, `flush_pending_runs`, `format_run_directory_name` | `test_sweep.py` order + resume |
 | `analysis.py` | Stats + plots | `analyze_results`, `bootstrap_ci` (`n_boot=2000`), `compute_iqm`, `is_superior`, `write_summary_csv` (stats: do not touch without plan amendment) | `test_analysis.py` |
-| `wandb_logging.py` | Default-on wandb gate (REQUIRED, hard import) | `wandb_disabled`, `init_wandb_run_for_method` (->bool), `log_metrics`, `log_eval_details`, `log_eval_summary` (shared C4 home), `finish_run` — 6 fns, SDK-direct (only file that imports wandb) | `test_wandb_logging.py` |
+| `wandb_logging.py` | Default-on wandb gate (REQUIRED, hard import) | `wandb_disabled`, `init_wandb_run_for_method` (->bool), `log_metrics`, `log_eval_summary`, `finish_run` — 5 fns, SDK-direct (only file that imports wandb) | `test_wandb_logging.py` |
 | `utils.py` | Shared pure helpers | `safe_float_value` | imported by trainer |
 
 ## `tests` — What Locks What (273 green)

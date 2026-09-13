@@ -42,7 +42,7 @@ src/sjfpo/          # all production code (MuJoCo-only, fp32)
   checkpointing.py  # atomic checkpoints + Hub policy checkpoints (config.json + safetensors)
   sweep.py          # scan_runs / run_pending, format_run_directory_name
   analysis.py       # IQM + bootstrap (n_boot=2000), invoked from notebooks
-  wandb_logging.py  # sole wandb importer (REQUIRED); 6 fns, SJFPO_DISABLE_WANDB=1 off switch
+  wandb_logging.py  # sole wandb importer (REQUIRED); 5 fns, SJFPO_DISABLE_WANDB=1 off switch
   utils.py          # resolve_device, safe_float_value (no sjfpo imports)
 configs/            # sjfpo.yaml, ppo.yaml, sac.yaml, shared.yaml (mirror config.py)
 scripts/train.py    # unified CLI (single-run + --matrix)

@@ -52,7 +52,7 @@ After an offline run, push artifacts to wandb cloud:
 wandb sync wandb/run-<id>/
 ```
 
-## API Surface (6 fns, SDK-direct, 159 LOC)
+## API Surface (5 fns, SDK-direct)
 
 `src/sjfpo/wandb_logging.py` is the sole file that imports wandb (module-level
 REQUIRED import; absent package is a hard ImportError). 6 public
