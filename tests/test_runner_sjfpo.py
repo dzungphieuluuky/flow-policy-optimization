@@ -19,7 +19,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from sjfpo.config import SJFPOConfig
 from sjfpo.networks import (
-    StateEncoder,
     SJFOPolicyModel,
     SpectralEncoder,
     Critic,
@@ -78,7 +77,7 @@ def build_sjfpo(obs_dim: int = 4, act_dim: int = 2, cfg=None):
     """Construct all SJFPO components for a given obs/act dim."""
     cfg = cfg or SJFPOConfig()
     policy_head = SJFOPolicyModel(act_dim, obs_dim, hidden_size=cfg.hidden_size)
-    critic = Critic(hidden_size=cfg.hidden_size, act_dim=act_dim)
+    critic = Critic(obs_dim, act_dim, hidden_size=cfg.hidden_size)
     spectral = SpectralEncoder(
         obs_dim,
         top_p_spectral_tokens=cfg.top_p_spectral_tokens,
@@ -102,7 +101,7 @@ class TestSJFPOPolicyCallable:
 
     def test_policy_returns_correct_action_shape(self):
         from sjfpo.dct_utils import idct
-        from sjfpo.fpo_core import euler_sample
+        from sjfpo.fpo_core import sample
 
         cfg = SJFPOConfig()
         obs_dim, act_dim = 4, 2
@@ -113,7 +112,7 @@ class TestSJFPOPolicyCallable:
                 state_b = state.unsqueeze(0)  # [1, T, obs]
                 cond = spectral(state_b)  # [1, K, obs] raw bins
                 n_coeffs = max(1, round(cfg.top_p_spectral_tokens * cfg.chunk_size))
-                x0 = euler_sample(
+                x0 = sample(
                     policy_head,
                     (1, n_coeffs, act_dim),
                     cond,
@@ -131,7 +130,7 @@ class TestSJFPOPolicyCallable:
 
     def test_policy_deterministic(self):
         from sjfpo.dct_utils import idct
-        from sjfpo.fpo_core import euler_sample
+        from sjfpo.fpo_core import sample
 
         cfg = SJFPOConfig()
         obs_dim, act_dim = 4, 2
@@ -142,7 +141,7 @@ class TestSJFPOPolicyCallable:
                 state_b = state.unsqueeze(0)  # [1, T, obs]
                 cond = spectral(state_b)
                 n_coeffs = max(1, round(cfg.top_p_spectral_tokens * cfg.chunk_size))
-                x0 = euler_sample(
+                x0 = sample(
                     policy_head,
                     (1, n_coeffs, act_dim),
                     cond,
@@ -411,8 +410,7 @@ class TestChunkBootstrapValues:
         cfg = SJFPOConfig()
         obs_dim, act_dim = 4, 2
         H, T = cfg.chunk_size, cfg.n_obs_steps
-        trunk = StateEncoder(obs_dim, n_obs_steps=T, hidden_size=cfg.hidden_size)
-        critic = Critic(hidden_size=cfg.hidden_size, act_dim=act_dim)
+        critic = Critic(obs_dim, act_dim, hidden_size=cfg.hidden_size)
 
         def chunk(done, truncated, n):
             return {
@@ -435,7 +433,7 @@ class TestChunkBootstrapValues:
         # Open-loop chaining: chunk0's next pair IS chunk1's state/action.
         chunks[0]["next.observation.state"] = chunks[1]["observation.state"].clone()
         chunks[0]["next.action"] = chunks[1]["action"].clone()
-        values, next_values = compute_chunk_values(trunk, critic, chunks)
+        values, next_values = compute_chunk_values(critic, chunks)
         assert next_values[0] == values[1]  # interior continue bootstraps V_{k+1}
         assert next_values[1] == 0.0  # terminated cuts recursion
         assert next_values[2] != 0.0  # budget-cut tail bootstraps live window
