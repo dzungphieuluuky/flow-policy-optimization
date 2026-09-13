@@ -393,9 +393,10 @@ def record_agent_transition(
 ):
     """Coerce transition tensors; record and post-interaction with the agent."""
     next_obs_t = torch.as_tensor(next_obs, dtype=torch.float32)
-    reward_t = torch.as_tensor([reward], dtype=torch.float32)
-    terminated_t = torch.as_tensor([terminated])
-    truncated_t = torch.as_tensor([truncated])
+    # skrl convention is [num_envs, 1]; [1] breaks in-place bootstrap math.
+    reward_t = torch.as_tensor([[reward]], dtype=torch.float32)
+    terminated_t = torch.as_tensor([[terminated]])
+    truncated_t = torch.as_tensor([[truncated]])
     obs_t = (
         observations
         if torch.is_tensor(observations)
@@ -654,7 +655,7 @@ def build_ppo_skrl_config(cfg):
         kl_threshold=cfg.kl_threshold,
         random_timesteps=0,
         learning_starts=0,
-        time_limit_bootstrap=False,
+        time_limit_bootstrap=True,
         mixed_precision=False,
     )
 
