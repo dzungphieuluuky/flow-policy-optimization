@@ -166,7 +166,6 @@ class TestTrainerGolden:
         assert set(diag) == {
             "policy_loss",
             "value_loss",
-            "sigreg_loss",
             "clip_fraction",
             "mean_log_ratio",
             "clamp_engagement",
