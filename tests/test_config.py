@@ -24,6 +24,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from sjfpo import config  # noqa: E402
+from sjfpo.configuration_sjfpo import SJFPOConfig
 
 ENV_VARS = (
     "KAGGLE_KERNEL_RUN_TYPE",
@@ -85,8 +86,10 @@ def test_run_matrix_45_unique_tuples_and_seeds():
 
 
 def test_every_config_field_non_null():
-    for instance in (config.SJFPO_CFG, config.PPO_CFG, config.SAC_CFG):
+    for instance in (SJFPOConfig(), config.PPO_CFG, config.SAC_CFG):
         for field in dataclasses.fields(instance):
+            if field.default is None:
+                continue  # Hub-inherited optional (repo_id, ...) unset pre-push
             value = getattr(instance, field.name)
             assert value is not None, (
                 f"{type(instance).__name__}.{field.name} must not be None"
@@ -96,17 +99,18 @@ def test_every_config_field_non_null():
 def test_sjfpo_config_rejects_bad_top_p():
     for bad in (0.0, -0.1, 1.5):
         with pytest.raises(ValueError, match="top_p_spectral_tokens"):
-            config.SJFPOConfig(top_p_spectral_tokens=bad)
+            SJFPOConfig(top_p_spectral_tokens=bad)
 
 
 def test_sjfpo_config_documented_ranges():
-    c = config.SJFPO_CFG
+    c = SJFPOConfig()
     assert c.num_mc_samples >= 2
     assert c.euler_train >= 1
     assert c.euler_eval >= 1
     assert c.chunks_per_update >= 1
-    assert c.lr > 0
-    assert c.wd >= 0
+    assert c.num_epochs >= 1
+    assert c.optimizer_lr > 0
+    assert c.optimizer_weight_decay >= 0
     assert 0 < c.gamma < 1
     assert 0 < c.gae_lambda < 1
     assert 0 < c.clip_range < 1
@@ -119,12 +123,12 @@ def test_sjfpo_config_documented_ranges():
     assert c.dit_heads >= 1
     assert c.dit_mlp_ratio > 0
     assert c.dit_time_dim >= 8
-    assert c.grad_clip > 0
+    assert c.grad_clip_norm > 0
     assert c.n_obs_steps == 16
-    assert c.chunk_size == 16
+    assert c.horizon == 16
     assert c.executed_vs_predicted_ratio == 0.5
     assert c.top_p_spectral_tokens == 0.3
-    assert c.hidden_size > 0
+    assert c.hidden_dim > 0
 
 
 def test_ppo_config_documented_ranges():

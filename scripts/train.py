@@ -38,13 +38,13 @@ from sjfpo.config import (  # noqa: E402
     EVAL_INTERVAL,
     METHODS,
     SEEDS,
-    SJFPOConfig,
     PPOConfig,
     RunSpec,
     SACConfig,
     TOTAL_STEPS,
     build_filtered_matrix,
 )
+from sjfpo.configuration_sjfpo import SJFPOConfig  # noqa: E402
 
 VALID_ENVS = ENVS
 VALID_METHODS = METHODS

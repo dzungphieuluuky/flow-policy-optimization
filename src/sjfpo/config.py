@@ -55,77 +55,6 @@ CKPT_INTERVAL = 25_000
 
 
 @dataclass(frozen=True)
-class SJFPOConfig:
-    """Spectral Joint Flow Policy Optimization.
-
-    Attributes:
-        num_mc_samples: Number of (tau, eps) pairs per chunk. Default 16.
-        euler_train: Euler steps during training rollouts. Default 16.
-        euler_eval: Euler steps at eval (zero-sampling). Default 16.
-        chunks_per_update: Chunks per update. Default 128.
-        lr: AdamW learning rate. Default 1e-4.
-        wd: AdamW weight decay. Default 1e-4.
-        gamma: Discount factor. Default 0.99.
-        gae_lambda: GAE lambda. Default 0.95.
-        clip_range: ASPO trust-region width. Default 0.05.
-        clip_range_vf: PPO-style value-loss clip (return units, not ratios).
-            Chunk TD targets live at return scale (tens), so the clip must
-            too — a ratio-scale 0.05 freezes the critic. Default 10.0.
-        cfm_clamp: Symmetric clamp on CFM losses. Default 20.0.
-        log_ratio_cap: STE cap on log-ratio magnitude. Default 10.0.
-        tau_range: Flow time range (t_min, t_max). Default (0.005, 0.995).
-        dit_depth: DiT blocks in the policy flow model. Default 8.
-        dit_heads: Attention heads per DiT block. Default 4.
-        dit_mlp_ratio: MLP width multiplier per DiT block. Default 4.0.
-        dit_time_dim: Sinusoidal timestep embedding dim for DiT. Default 256.
-        vf_coef: Value-loss coefficient (return-scale MSE vs O(1) surrogate).
-            Default 0.1.
-        grad_clip: Grad-norm clip. Default 1.0.
-        n_obs_steps: Frame-stack state window length T. Default 16.
-        chunk_size: Predicted action-chunk length H. Default 16.
-        executed_vs_predicted_ratio: Fraction of a predicted chunk executed
-            per replan at inference/eval (0 < r <= 1). Default 0.5.
-        top_p_spectral_tokens: Fraction of lowest low-frequency DCT bins kept
-            (0 < p <= 1). Effective tokens K = max(1, round(p * T)). Default 0.3.
-        hidden_size: Fused latent dimension D. Default 128.
-    """
-
-    num_mc_samples: int = 16  # (tau, eps) pairs per chunk
-    euler_train: int = 16  # Euler steps during training rollouts
-    euler_eval: int = 16  # Euler steps at eval (zero-sampling)
-    chunks_per_update: int = 128
-    lr: float = 1e-4  # AdamW learning rate
-    wd: float = 1e-4  # AdamW weight decay
-    gamma: float = 0.99
-    gae_lambda: float = 0.95
-    clip_range: float = 0.05  # ASPO trust-region width
-    clip_range_vf: float = 10.0  # value-loss clip (return units)
-    cfm_clamp: float = 20.0  # symmetric clamp on CFM losses
-    log_ratio_cap: float = 10.0  # STE cap on log-ratio magnitude
-    tau_range: tuple[float, float] = (0.005, 0.995)
-    dit_depth: int = 8  # DiT blocks in the policy flow head
-    dit_heads: int = 4  # attention heads per DiT block
-    dit_mlp_ratio: float = 4.0  # MLP width multiplier per DiT block
-    dit_time_dim: int = 256  # sinusoidal timestep embedding dim for DiT
-    vf_coef: float = 0.1  # value-loss coefficient
-    grad_clip: float = 1.0  # grad-norm clip
-    n_obs_steps: int = 16  # frame-stack state window length T
-    chunk_size: int = 16  # predicted action-chunk length H
-    executed_vs_predicted_ratio: float = 0.5  # inference/eval executed fraction
-    top_p_spectral_tokens: float = 0.3  # kept low-freq DCT fraction
-    hidden_size: int = 128  # fused latent dim D
-
-    def __post_init__(self) -> None:
-        """Validate the inference/eval execution ratio; raise, never clamp."""
-        r = self.executed_vs_predicted_ratio
-        if not 0.0 < r <= 1.0:
-            raise ValueError(f"executed_vs_predicted_ratio={r} must satisfy 0 < r <= 1")
-        p = self.top_p_spectral_tokens
-        if not 0.0 < p <= 1.0:
-            raise ValueError(f"top_p_spectral_tokens={p} must satisfy 0 < p <= 1")
-
-
-@dataclass(frozen=True)
 class PPOConfig:
     """skrl PPO baseline (skrl 2.1.0 PPO_CFG keys).
 
@@ -181,7 +110,6 @@ class SACConfig:
     hidden: tuple[int, ...] = (256, 256, 256)
 
 
-SJFPO_CFG = SJFPOConfig()
 PPO_CFG = PPOConfig()
 SAC_CFG = SACConfig()
 

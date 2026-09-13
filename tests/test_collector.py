@@ -34,11 +34,13 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from sjfpo.collector import Transition, collect_chunks  # noqa: E402, F401
-from sjfpo.config import SJFPO_CFG  # noqa: E402
+from sjfpo.configuration_sjfpo import SJFPOConfig  # noqa: E402
+
+_DEFAULTS = SJFPOConfig()
 from sjfpo.dct_utils import dct as dct_fn  # noqa: E402
 
-STATE_T = SJFPO_CFG.n_obs_steps  # imported constant — NEVER hardcode 16
-HORIZON = SJFPO_CFG.chunk_size  # imported constant — NEVER hardcode 16
+STATE_T = _DEFAULTS.n_obs_steps  # imported constant — NEVER hardcode 16
+HORIZON = _DEFAULTS.horizon  # imported constant — NEVER hardcode 16
 N_STEPS = 8  # local: executed steps are caller-passed, no config default
 
 OBS_DIM = 4

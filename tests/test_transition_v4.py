@@ -25,7 +25,6 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from sjfpo.collector import Transition, collect_chunks  # noqa: E402
-from sjfpo.config import SJFPOConfig  # noqa: E402
 
 OBS_DIM = 4
 ACT_DIM = 2
@@ -50,8 +49,10 @@ EXPECTED_KEYS = {
 
 class TestConfigV4:
     def test_horizon_split_defaults(self):
+        from sjfpo.configuration_sjfpo import SJFPOConfig
+
         cfg = SJFPOConfig()
-        assert cfg.chunk_size == 16, "H must be 16 (predict)"
+        assert cfg.horizon == 16, "H must be 16 (predict)"
         assert cfg.n_obs_steps == 16, "T must be 16"
         assert not hasattr(cfg, "context_len"), "context_len must be gone"
 

@@ -30,14 +30,16 @@ from torch import nn
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from sjfpo import config  # noqa: E402
+from sjfpo.configuration_sjfpo import SJFPOConfig  # noqa: E402
+
+_DEFAULTS = SJFPOConfig()
 from sjfpo.dct_utils import dct, idct  # noqa: E402
 from sjfpo.networks import SJFOPolicyModel, get_timestep_embedding  # noqa: E402
 from sjfpo.modeling_sjfpo import SJFPOPolicy  # noqa: E402 (velocity helpers under test)
 
 from sjfpo import fpo_core  # noqa: E402  (RED until implemented)
 
-TAU_LO, TAU_HI = config.SJFPO_CFG.tau_range
+TAU_LO, TAU_HI = _DEFAULTS.tau_range
 
 
 class VelocityMLP(nn.Module):
@@ -195,11 +197,11 @@ def test_ratio_shape_and_degeneracy_guard():
     net_new = copy.deepcopy(net_old)
     a = torch.randn(4, 8, 3)
     g = torch.Generator().manual_seed(22)
-    eps_tr = torch.randn(4, config.SJFPO_CFG.num_mc_samples, 8, 3, generator=g)
-    tau_tr = draw_tau((4, config.SJFPO_CFG.num_mc_samples), g)
+    eps_tr = torch.randn(4, _DEFAULTS.num_mc_samples, 8, 3, generator=g)
+    tau_tr = draw_tau((4, _DEFAULTS.num_mc_samples), g)
 
     opt = torch.optim.Adam(net_new.parameters(), lr=1e-3)
-    m = config.SJFPO_CFG.num_mc_samples
+    m = _DEFAULTS.num_mc_samples
     t = tau_tr.unsqueeze(-1).unsqueeze(-1)  # [4, m, 1, 1]
     x_t = t * eps_tr + (1.0 - t) * a.unsqueeze(1)  # [4, m, 8, 3]
     v_star_tr = SJFPOPolicy.compute_target_velocity(a, eps_tr)
@@ -213,8 +215,8 @@ def test_ratio_shape_and_degeneracy_guard():
     loss.backward()
     opt.step()  # the ONE perturbed update
 
-    eps_ev = torch.randn(4, config.SJFPO_CFG.num_mc_samples, 8, 3, generator=g)
-    tau_ev = draw_tau((4, config.SJFPO_CFG.num_mc_samples), g)
+    eps_ev = torch.randn(4, _DEFAULTS.num_mc_samples, 8, 3, generator=g)
+    tau_ev = draw_tau((4, _DEFAULTS.num_mc_samples), g)
     with torch.no_grad():
         t = tau_ev.unsqueeze(-1).unsqueeze(-1)  # [4, m, 1, 1]
         x_t = t * eps_ev + (1.0 - t) * a.unsqueeze(1)  # [4, m, 8, 3]
@@ -235,7 +237,7 @@ def test_ratio_shape_and_degeneracy_guard():
         )
         rho = fpo_core.compute_policy_ratio(l_old, l_new, torch.zeros_like(l_old))
 
-    assert rho.shape == (4, config.SJFPO_CFG.num_mc_samples)
+    assert rho.shape == (4, _DEFAULTS.num_mc_samples)
     log_rho = torch.log(rho)
     assert log_rho.var(unbiased=True).item() > 0.0, "ratios degenerated to a constant"
     assert abs(log_rho.mean().item()) < 0.5, "one update moved ratios too far"
@@ -246,7 +248,7 @@ def test_ratio_shape_and_degeneracy_guard():
 
 
 def test_aspo_surrogate_hand_computed():
-    clip_range = config.SJFPO_CFG.clip_range  # 0.05
+    clip_range = _DEFAULTS.clip_range  # 0.05
     # Positive advantage: PPO-clip branch.
     psi_ppo = fpo_core.compute_aspo_surrogate(
         torch.tensor(1.04), torch.tensor(1.0), clip_range
@@ -275,13 +277,13 @@ def test_ste_clamp_value_and_gradient():
     l_new = torch.tensor([10.0], requires_grad=True)  # Delta_l = 50 > cap 10
     rho = fpo_core.compute_policy_ratio(l_old, l_new, torch.zeros_like(l_old))
     assert rho.item() == pytest.approx(
-        math.exp(config.SJFPO_CFG.log_ratio_cap), rel=1e-6
+        math.exp(_DEFAULTS.log_ratio_cap), rel=1e-6
     )
     rho.backward()
     assert l_new.grad is not None
     assert l_new.grad.abs().item() > 0.0, "straight-through clamp blocked gradients"
     assert l_new.grad.item() == pytest.approx(
-        -math.exp(config.SJFPO_CFG.log_ratio_cap), rel=1e-5
+        -math.exp(_DEFAULTS.log_ratio_cap), rel=1e-5
     )
 
     # ---------------------------------------------------------------------------
@@ -295,7 +297,7 @@ def test_neg_advantage_clamp_caps_delta():
     advantage = torch.full((1,), -1.0)
     rho = fpo_core.compute_policy_ratio(l_old, l_new, advantage)
     # Effective Delta_l becomes -cfm_clamp = -20, so rho = exp(-20) (NOT exp(-100)).
-    assert rho.item() == pytest.approx(math.exp(-config.SJFPO_CFG.cfm_clamp), rel=1e-6)
+    assert rho.item() == pytest.approx(math.exp(-_DEFAULTS.cfm_clamp), rel=1e-6)
 
     # ---------------------------------------------------------------------------
     # (g) Finite-difference gradient check of the policy loss w.r.t. one
@@ -308,10 +310,10 @@ def test_policy_loss_fd_gradient():
     net = VelocityMLP(in_dim=8 * 1)  # small problem keeps FD numerics clean
     a = torch.randn(1, 8, 1)
     g = torch.Generator().manual_seed(32)
-    eps = torch.randn(1, config.SJFPO_CFG.num_mc_samples, 8, 1, generator=g)
-    tau = draw_tau((1, config.SJFPO_CFG.num_mc_samples), g)
+    eps = torch.randn(1, _DEFAULTS.num_mc_samples, 8, 1, generator=g)
+    tau = draw_tau((1, _DEFAULTS.num_mc_samples), g)
     advantage = torch.tensor([1.0])
-    m = config.SJFPO_CFG.num_mc_samples
+    m = _DEFAULTS.num_mc_samples
     t = tau.unsqueeze(-1).unsqueeze(-1)  # [1, m, 1, 1]
     x_t = t * eps + (1.0 - t) * a.unsqueeze(1)  # [1, m, 8, 1]
     x_t_flat = x_t.reshape(m, 8, 1)
@@ -397,7 +399,7 @@ def test_euler_sampler_grid_update_and_zero_noise():
 def test_space_consistency_dct_pipeline():
     torch.manual_seed(51)
     policy = SJFOPolicyModel(action_dim=3, obs_dim=4)
-    k = max(1, round(config.SJFPO_CFG.top_p_spectral_tokens * 16))
+    k = max(1, round(_DEFAULTS.top_p_spectral_tokens * 16))
     condition = torch.zeros(4, k, 4)
     with torch.no_grad():
         coeffs = fpo_core.sample(
@@ -406,7 +408,7 @@ def test_space_consistency_dct_pipeline():
             condition,
             steps=16,
             generator=torch.Generator().manual_seed(52),
-            state=torch.zeros(4, config.SJFPO_CFG.n_obs_steps, 4),
+            state=torch.zeros(4, _DEFAULTS.n_obs_steps, 4),
         )
         actions = idct(coeffs, dim=1)  # coefficient space -> action space
         low, high = -0.5, 0.5

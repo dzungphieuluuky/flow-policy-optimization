@@ -6,7 +6,7 @@ Use this as a jump table. Each row: what the file owns, the key symbols, and the
 
 | Module | Owns | Key symbols | Thread to follow |
 |---|---|---|---|
-| `config.py` | Flags, run matrices, budgets, algorithm dataclasses | `SJFPOConfig / PPOConfig / SACConfig`, `RUN_MATRIX` (45), `build_filtered_matrix` | Change sweep size → `--methods/--envs/--seeds` or edit axes |
+| `config.py` | Flags, run matrices, budgets, PPO/SAC dataclasses | `PPOConfig / SACConfig`, `RUN_MATRIX` (45), `build_filtered_matrix` (SJFPO hyperparams live in `configuration_sjfpo.py::SJFPOConfig` only) | Change sweep size → `--methods/--envs/--seeds` or edit axes |
 | `modeling_sjfpo.py` | SJFPO policy (FPO++ ASPO + value update) | `SJFPOPolicy.forward`, `SJFPOAborted` | `test_modeling_sjfpo.py` NaN + param count |
 | `networks.py` | Encoder + spectral + DiT flow | `StateEncoder`, `ActionEncoder` (same definition), `SpectralEncoder(raw obs→DCT→low-K bins, parameter-free)`, `SJFOPolicyModel` (DiT-8 adaLN-Zero), `Critic` (1 cross-attention block) V(s,a) | `test_networks.py` |
 | `dct_utils.py` | DCT orthonormal action chunks | `dct`, `idct`, `discounted_chunk_reward` | `test_dct.py` roundtrip `1e-5` |
@@ -39,7 +39,7 @@ Use this as a jump table. Each row: what the file owns, the key symbols, and the
 
 ## Reading Order
 
-1. New to the SJFPO path: `config.py` → `modeling_sjfpo.py::SJFPOPolicy` →
+1. New to the SJFPO path: `configuration_sjfpo.py` → `modeling_sjfpo.py::SJFPOPolicy` →
    `networks.py` (encoders→spectral) → `dct_utils.py` → `modeling_sjfpo.py` →
    `evaluator.py` → `sweep.py`/`analysis.py`.
 2. Debugging spectral: jump to `networks.py::SpectralEncoder` — order is

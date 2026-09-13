@@ -12,7 +12,7 @@ collector.py      241L — Transition TypedDict (9 LeRobot keys incl. next.actio
 gae.py            137L — chunk semi-MDP GAE (R_k intradiscounted, γ^L bootstrap, (γλ)^L recursion); terminated cuts all, truncated bootstraps δ but cuts recursion; train advantages raw (ASPO sign)
 fpo_core.py       432L — CFM/SQL-ℓ [N,m], STE-capped ρ, ASPO piecewise (PPO-clip Â≥0 / SPO Â<0), mean-of-ψ objective, sample(mode=euler) t:1→0; policy + vf_coef·value summed inline in forward
 dct_utils.py      orthonormal DCT-II/III [H,Da] action chunks + discounted_chunk_reward + einx.id (parity-guarded)
-config.py         360L — frozen dataclasses (SJFPOConfig H=16/T=16/top_p=0.3→K=5/D=128, DiT-8/4heads/mlp×4/t256), RUN_MATRIX 45 (TINY 3) + build_run_matrix; SACConfig.polyak is skrl-boundary (keep)
+config.py         flags + PPO/SAC dataclasses, RUN_MATRIX 45 (TINY 3) + build_run_matrix; SACConfig.polyak is skrl-boundary (keep). SJFPO hyperparams live ONLY in configuration_sjfpo.py::SJFPOConfig (H=16/T=16/top_p=0.3→K=5/D=128, DiT-8/4heads/mlp×4/t256)
 baselines.py      690L — skrl PPO/SAC via baseline_train_loop; FrameStackWrapper shared with evaluator
 checkpointing.py  246L — atomic ckpt (models + optimizer + counters) + Hub policy ckpt (config.json + safetensors via save/load_policy_checkpoint)
 evaluator.py      162L — Evaluator MuJoCo 3-col [episode,return,length]

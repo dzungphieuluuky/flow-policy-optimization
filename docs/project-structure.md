@@ -12,7 +12,8 @@
 │   ├── train.py                  # unified trainer: single-run + --matrix sweep (sjfpo/ppo/sac)
 │   └── verify_deps.sh            # pinned dep check
 ├── src/sjfpo/                     # production code (MuJoCo-only, flat Box, fp32, no autocast)
-│   ├── config.py                 # flags, RUN_MATRIX (45), SJFPO/PPO/SAC configs, build_filtered_matrix
+│   ├── config.py                 # flags, RUN_MATRIX (45), PPO/SAC configs, build_filtered_matrix
+│   ├── configuration_sjfpo.py      # SJFPO policy config (sole hyperparam source)
 │   ├── modeling_sjfpo.py         # SJFPOPolicy (ASPO + value update, owns all modules)
 │   ├── train_sjfpo.py            # online train entry used by scripts/train.py
 │   ├── networks.py               # StateEncoder x2 (model-owned), SpectralEncoder, DiT flow, Critic

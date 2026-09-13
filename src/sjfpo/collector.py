@@ -50,7 +50,9 @@ from typing import TypedDict
 import numpy as np
 import torch
 
-from sjfpo.config import SJFPO_CFG
+from sjfpo.configuration_sjfpo import SJFPOConfig
+
+_DEFAULTS = SJFPOConfig()  # bare policy config: single source for defaults
 from sjfpo.dct_utils import dct
 
 __all__ = ["Transition", "collect_chunks", "bootstrap_action_lengths"]
@@ -270,14 +272,14 @@ def collect_chunks(
     action_low: float | np.ndarray,
     action_high: float | np.ndarray,
     *,
-    n_obs_steps: int = SJFPO_CFG.n_obs_steps,
+    n_obs_steps: int = _DEFAULTS.n_obs_steps,
     n_action_steps: int,  # required: no config default; training passes chunk_size
     on_error_flush: Callable[[], None] | None = None,
 ) -> list[Transition]:
     """Roll out ``env`` with open-loop chunk execution for ``total_steps``."""
     low = as_float_tensor(action_low)
     high = as_float_tensor(action_high)
-    chunk_size = SJFPO_CFG.chunk_size
+    chunk_size = _DEFAULTS.horizon
     if not 1 <= n_action_steps <= chunk_size:
         raise ValueError(
             f"n_action_steps={n_action_steps} must satisfy "

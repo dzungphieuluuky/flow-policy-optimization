@@ -30,7 +30,8 @@ Single source of truth: every module under `src/sjfpo/` is on the live path. The
 
 ```
 src/sjfpo/          # all production code (MuJoCo-only, fp32)
-  config.py         # frozen SJFPO/PPO/SAC dataclasses, RUN_MATRIX, build_filtered_matrix
+  config.py         # flags, PPO/SAC dataclasses, RUN_MATRIX, build_filtered_matrix
+  configuration_sjfpo.py  # sole SJFPO hyperparam source (LeRobot PreTrainedConfig)
   networks.py       # policy/critic StateEncoders, SpectralEncoder, SJFOPolicyModel (DiT), Critic
   fpo_core.py       # CFM losses, compute_policy_ratio (STE cap), compute_aspo_surrogate, compute_policy_loss, sample
   collector.py      # Transition dict (9 LeRobot keys), open-loop full-H chunks in training, next.action chaining

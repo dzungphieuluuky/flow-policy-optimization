@@ -22,7 +22,7 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from sjfpo.config import SJFPOConfig
+from sjfpo.configuration_sjfpo import SJFPOConfig
 from sjfpo.networks import SpectralEncoder
 from sjfpo.networks import SJFOPolicyModel
 from sjfpo.fpo_core import sample
@@ -99,7 +99,7 @@ class SJFPOPolicyAdapter:
             condition = self.spectral(state)
             # Policy model (zero noise via eps=zeros for deterministic eval)
             n_coeffs = max(
-                1, round(self.cfg.top_p_spectral_tokens * self.cfg.chunk_size)
+                1, round(self.cfg.top_p_spectral_tokens * self.cfg.horizon)
             )
             chunk = sample(
                 self.policy_head,
@@ -110,7 +110,7 @@ class SJFPOPolicyAdapter:
                 state=state,
             )  # [1, Ka, Da]
             chunk = torch.nn.functional.pad(
-                chunk, (0, 0, 0, self.cfg.chunk_size - n_coeffs)
+                chunk, (0, 0, 0, self.cfg.horizon - n_coeffs)
             )
         return chunk.squeeze(0).cpu().numpy()
 
@@ -176,7 +176,7 @@ class TestPolicyKinds:
 
     def test_sjfpo_zero_noise(self):
         cfg = SJFPOConfig()
-        policy_head = SJFOPolicyModel(4, 17, hidden_size=cfg.hidden_size)
+        policy_head = SJFOPolicyModel(4, 17, hidden_size=cfg.hidden_dim)
         spectral = SpectralEncoder(17, n_obs_steps=cfg.n_obs_steps)
 
         env = FakeEnv(obs_dim=17, action_dim=4)
@@ -246,7 +246,7 @@ class TestDeterminism:
 class TestBatchSizeOne:
     def test_b1_no_calibration_needed(self):
         cfg = SJFPOConfig()
-        policy_head = SJFOPolicyModel(4, 17, hidden_size=cfg.hidden_size)
+        policy_head = SJFOPolicyModel(4, 17, hidden_size=cfg.hidden_dim)
         spectral = SpectralEncoder(17, n_obs_steps=cfg.n_obs_steps)
 
         env = FakeEnv(obs_dim=17, action_dim=4)

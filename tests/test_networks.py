@@ -23,13 +23,15 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from sjfpo import config  # noqa: E402
+from sjfpo.configuration_sjfpo import SJFPOConfig  # noqa: E402
 
-STATE_T = config.SJFPO_CFG.n_obs_steps  # 16
-ZD = config.SJFPO_CFG.hidden_size  # 128
+_DEFAULTS = SJFPOConfig()
+
+STATE_T = _DEFAULTS.n_obs_steps  # 16
+ZD = _DEFAULTS.hidden_dim  # 128
 OBS = 11  # raw obs dim feeding SpectralEncoder (env-like)
-KS = max(1, round(config.SJFPO_CFG.top_p_spectral_tokens * STATE_T))  # 5
-CHUNK = config.SJFPO_CFG.chunk_size  # 16
+KS = max(1, round(_DEFAULTS.top_p_spectral_tokens * STATE_T))  # 5
+CHUNK = _DEFAULTS.horizon  # 16
 
 # All network symbols come from sjfpo.networks (imported lazily inside a
 # helper so that RED phase reports one clean collection error per use).

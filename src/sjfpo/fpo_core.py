@@ -24,10 +24,10 @@
 # Tensor Shape Conventions
 # ------------------------
 # - B: chunk batch size (number of action chunks)
-# - num_mc_samples: Monte Carlo draws per chunk (default 16, config.SJFPO_CFG.num_mc_samples)
+# - num_mc_samples: Monte Carlo draws per chunk (default 16)
 # - flow_shape: trailing dimensions of the flow space (e.g., DCT coefficients per chunk)
 #   Typically a 1D shape like (D,) where D = chunk_size * action_dim, but kept generic.
-# - t (tau): interpolation time in [0.005, 0.995] (config.SJFPO_CFG.tau_range)
+# - t (tau): interpolation time in [0.005, 0.995] (policy SJFPOConfig.tau_range)
 #   Can be scalar, [num_mc_samples], or [B, num_mc_samples] — broadcast to [B, num_mc_samples] internally.
 #
 # Common shapes used throughout:
@@ -60,7 +60,12 @@ from __future__ import annotations
 import einx
 import torch
 from torch import nn
-from sjfpo import config
+from sjfpo.configuration_sjfpo import SJFPOConfig
+
+
+# Bare policy config: single source for ``None``-fallback defaults (replaces
+# the deleted legacy config.SJFPO_CFG global).
+_DEFAULTS = SJFPOConfig()
 
 
 def pair_tensor(a: torch.Tensor, eps: torch.Tensor, tau):
@@ -70,7 +75,7 @@ def pair_tensor(a: torch.Tensor, eps: torch.Tensor, tau):
         a: Anchor chunks (DCT coefficients), shape [B, *flow_shape].
         eps: Noise draws, shape [B, num_mc_samples, *flow_shape].
         tau: Interpolation times. Can be scalar, [num_mc_samples], or [B, num_mc_samples].
-            Values in [0.005, 0.995] per config.SJFPO_CFG.tau_range.
+            Values in [0.005, 0.995] per policy SJFPOConfig.tau_range.
 
     Returns:
         tuple: (tau_bn, eps_flat, a_rep, flow_shape, num_mc) where
@@ -141,7 +146,7 @@ def compute_cfm_loss(
             "sample" — mean over flow coords only, shape [B, num_mc_samples],
             symmetrically clamped (per-sample ℓ_i for the ratio math).
         clamp: Symmetric clamp for "sample" only.
-            Defaults to config.SJFPO_CFG.cfm_clamp (20.0).
+            Defaults to the policy default (20.0).
 
     Returns:
         "scalar": 0-dim mean squared velocity error.
@@ -166,7 +171,7 @@ def compute_cfm_loss(
     else:
         raise ValueError(f"reduce_mode={reduce_mode!r} must be 'scalar' or 'sample'")
 
-    clamp = config.SJFPO_CFG.cfm_clamp if clamp is None else clamp
+    clamp = _DEFAULTS.cfm_clamp if clamp is None else clamp
     return torch.clamp(per_sample, min=-clamp, max=clamp)  # [B, num_mc_samples]
 
     # retained: test-only public API — exercised directly by tests/test_fpo_core.py
@@ -187,7 +192,7 @@ def compute_aspo_surrogate(
     Args:
         rho: Importance ratios ρ_i, shape [B, num_mc_samples] or broadcastable.
         advantage: Advantages Â_i, shape [B, num_mc_samples] or broadcastable.
-        clip_range: PPO/SPO clip epsilon (default config.SJFPO_CFG.clip_range = 0.05).
+        clip_range: PPO/SPO clip epsilon (policy default 0.05).
 
     Returns:
         ASPO surrogate values ψ_i, shape [B, num_mc_samples] (or broadcast result).
@@ -229,8 +234,8 @@ def compute_policy_ratio(
         l_new: New per-sample losses ℓ_new, shape [B, num_mc_samples].
         advantage: Advantages Â_i, shape [B, num_mc_samples].
         cfm_clamp: Clamp for negative-advantage ℓ_new adjustment.
-            Defaults to config.SJFPO_CFG.cfm_clamp (20.0).
-        cap: Log-ratio cap for STE. Defaults to config.SJFPO_CFG.log_ratio_cap.
+            Defaults to the policy default (20.0).
+        cap: Log-ratio cap for STE. Defaults to the policy default.
 
     Returns:
         Importance ratios ρ_i, shape [B, num_mc_samples]. Always positive.
@@ -240,11 +245,11 @@ def compute_policy_ratio(
         - Δℓ = ℓ_old − ℓ_new_eff; positive Δℓ means new policy fits better.
         - STE clamp: forward = clamp(Δℓ, max=cap), backward grad = 1.
     """
-    cfm_clamp = config.SJFPO_CFG.cfm_clamp if cfm_clamp is None else cfm_clamp
+    cfm_clamp = _DEFAULTS.cfm_clamp if cfm_clamp is None else cfm_clamp
     l_new_eff = torch.where(
         advantage < 0, torch.minimum(l_new, l_old + cfm_clamp), l_new
     )  # [B, num_mc_samples]
-    cap = config.SJFPO_CFG.log_ratio_cap if cap is None else cap
+    cap = _DEFAULTS.log_ratio_cap if cap is None else cap
     delta = l_old - l_new_eff  # [B, num_mc_samples]
     # Straight-through: forward value = clamp(delta, max=cap), backward grad = 1.
     delta_st = (
@@ -269,9 +274,9 @@ def compute_policy_loss(
         l_old: Old per-sample losses ℓ_old, shape [B, num_mc_samples].
         l_new: New per-sample losses ℓ_new, shape [B, num_mc_samples].
         advantage: Advantages Â_i, shape [B, num_mc_samples].
-        clip_range: ASPO clip epsilon. Defaults to config.SJFPO_CFG.clip_range (0.05).
-        cfm_clamp: Negative-advantage clamp. Defaults to config.SJFPO_CFG.cfm_clamp (20.0).
-        cap: Log-ratio cap for STE. Defaults to config.SJFPO_CFG.log_ratio_cap.
+        clip_range: ASPO clip epsilon. Defaults to the policy default (0.05).
+        cfm_clamp: Negative-advantage clamp. Defaults to the policy default (20.0).
+        cap: Log-ratio cap for STE. Defaults to the policy default.
 
     Returns:
         Scalar tensor — mean of ASPO surrogate ψ over all (B * num_mc_samples) samples.
@@ -280,7 +285,7 @@ def compute_policy_loss(
         - Objective = mean(ψ_i) per paper Eq.13, NOT exp(mean(log ρ)).
         - This is the policy gradient objective maximized during PPO-style updates.
     """
-    clip_range = config.SJFPO_CFG.clip_range if clip_range is None else clip_range
+    clip_range = _DEFAULTS.clip_range if clip_range is None else clip_range
     rho = compute_policy_ratio(
         l_old, l_new, advantage, cfm_clamp=cfm_clamp, cap=cap
     )  # [B, num_mc_samples]

@@ -27,8 +27,14 @@ import math
 import torch
 from torch import nn
 
-from sjfpo import config
+from sjfpo.configuration_sjfpo import SJFPOConfig
 from sjfpo.dct_utils import dct
+
+# Bare policy config: single source for constructor defaults (replaces the
+# deleted legacy config.SJFPO_CFG global). One legacy name differs:
+# networks predate the policy config (hidden_size <-> hidden_dim).
+_DEFAULTS = SJFPOConfig()
+_LEGACY_NAMES = {"hidden_size": "hidden_dim"}
 
 
 class SwiGLU(nn.Module):
@@ -65,13 +71,15 @@ def resolve_config_value(name: str, override):
     """Config default with explicit-argument override.
 
     Args:
-        name: Attribute name on ``config.SJFPO_CFG``.
+        name: Attribute name on the policy ``SJFPOConfig`` (one legacy
+            alias: ``hidden_size`` reads ``hidden_dim``).
         override: Explicit value to use if not ``None``.
 
     Returns:
-        The override value if provided, otherwise ``getattr(config.SJFPO_CFG, name)``.
+        The override value if provided, otherwise the policy default.
     """
-    return override if override is not None else getattr(config.SJFPO_CFG, name)
+    key = _LEGACY_NAMES.get(name, name)
+    return override if override is not None else getattr(_DEFAULTS, key)
 
     # %% [markdown]
     # ## Sinusoidal timestep embedding (diffusers-style 10000-ladder)
@@ -129,8 +137,8 @@ class StateEncoder(nn.Module):
 
     Args:
         obs_dim: Input observation dimension per frame.
-        n_obs_steps: Number of stacked frames (default from config.SJFPO_CFG.n_obs_steps).
-        hidden_size: Latent dimension (default from config.SJFPO_CFG.hidden_size).
+        n_obs_steps: Number of stacked frames (policy SJFPOConfig default).
+        hidden_size: Latent dimension (policy SJFPOConfig default).
         n_heads: Number of attention heads. Default 4.
 
     Attributes:
@@ -201,7 +209,7 @@ class ActionEncoder(nn.Module):
         act_dim: Input action dimension per step.
         n_obs_steps: Unused window hint (kept for signature parity with
             StateEncoder; positions come from the input length).
-        hidden_size: Latent dimension (default from config.SJFPO_CFG.hidden_size).
+        hidden_size: Latent dimension (policy SJFPOConfig default).
         n_heads: Number of attention heads. Default 4.
     """
 
@@ -441,8 +449,8 @@ class SpectralEncoder(nn.Module):
 
     Args:
         obs_dim: Raw observation dimension per frame (env-dependent, required).
-        top_p_spectral_tokens: Kept low-frequency fraction (default from config.SJFPO_CFG.top_p_spectral_tokens).
-        n_obs_steps: State window length T (default from config.SJFPO_CFG.n_obs_steps).
+        top_p_spectral_tokens: Kept low-frequency fraction (policy SJFPOConfig default).
+        n_obs_steps: State window length T (policy SJFPOConfig default).
 
     Attributes:
         obs_dim: Raw observation dimension.
@@ -522,7 +530,7 @@ def get_timestep_embedding(t, dim: int = 256) -> torch.Tensor:
 class DiTBlock(nn.Module):
     """Pre-norm DiT block with adaLN-Zero conditioning (self-attention + MLP).
     Args:
-        hidden_size: Latent dimension (default from config.SJFPO_CFG.hidden_size).
+        hidden_size: Latent dimension (policy SJFPOConfig default).
         n_heads: Attention heads per block. Default 4.
         mlp_ratio: MLP width multiplier. Default 4.0.
     Returns:
@@ -605,10 +613,10 @@ class SJFOPolicyModel(nn.Module):
 
     Args:
         action_dim: Action dimension Da (env-dependent).
-        hidden_size: Latent dimension (default from config.SJFPO_CFG.hidden_size).
+        hidden_size: Latent dimension (policy SJFPOConfig default).
         obs_dim: Raw obs dim of the spectral tokens (env-dependent, required).
         dit_depth/dit_heads/dit_mlp_ratio/dit_time_dim: DiT hyperparams
-            (defaults from config.SJFPO_CFG.dit_*).
+            (policy SJFPOConfig dit_* defaults).
     """
 
     def __init__(
@@ -690,8 +698,8 @@ class Critic(nn.Module):
     Args:
         obs_dim: Raw obs dim per frame (env-dependent, required).
         act_dim: Action dimension Da (env-dependent, required).
-        hidden_size: Latent dimension (default from config.SJFPO_CFG.hidden_size).
-        n_obs_steps: State window length T (default from config.SJFPO_CFG.n_obs_steps).
+        hidden_size: Latent dimension (policy SJFPOConfig default).
+        n_obs_steps: State window length T (policy SJFPOConfig default).
         num_attn_blocks: Cross-attention blocks. Default 1.
         n_heads: Attention heads per block. Default 4.
         mlp_ratio: MLP width multiplier per block. Default 4.0.

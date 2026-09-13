@@ -9,7 +9,8 @@ from pathlib import Path
 
 import yaml
 
-from sjfpo.config import SJFPOConfig, PPOConfig, SACConfig
+from sjfpo.config import PPOConfig, SACConfig
+from sjfpo.configuration_sjfpo import SJFPOConfig
 
 CASES = [
     ("configs/sjfpo.yaml", SJFPOConfig),

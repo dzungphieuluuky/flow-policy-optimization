@@ -19,7 +19,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import gymnasium as gym
 
-from sjfpo.config import build_run_matrix, SJFPOConfig, PPOConfig, SACConfig
+from sjfpo.config import build_run_matrix, PPOConfig, SACConfig
+from sjfpo.configuration_sjfpo import SJFPOConfig
 from tests.fixtures.fake_env import FakeGymEnv
 
 

@@ -251,7 +251,7 @@ class TestCheckDivergenceGuard:
 
 class TestExecutedVsPredictedRatio:
     def test_ratio_bounds_rejected(self):
-        from sjfpo.config import SJFPOConfig
+        from sjfpo.configuration_sjfpo import SJFPOConfig
 
         for bad in (0.0, -0.5, 1.5):
             try:

@@ -18,42 +18,14 @@ def test_registered_as_sjfpo_choice():
     assert SJFPOConfig().type == "sjfpo"
 
 
-def test_defaults_mirror_legacy_config():
-    from sjfpo.config import SJFPO_CFG
-
+def test_canonical_defaults():
     cfg = SJFPOConfig()
-    assert (cfg.n_obs_steps, cfg.horizon, cfg.hidden_dim) == (
-        SJFPO_CFG.n_obs_steps,
-        SJFPO_CFG.chunk_size,
-        SJFPO_CFG.hidden_size,
-    )
+    assert (cfg.n_obs_steps, cfg.horizon, cfg.hidden_dim) == (16, 16, 128)
     assert cfg.n_action_steps == round(cfg.executed_vs_predicted_ratio * cfg.horizon)
-    for name in (
-        "num_mc_samples",
-        "euler_train",
-        "euler_eval",
-        "chunks_per_update",
-        "gamma",
-        "gae_lambda",
-        "clip_range",
-        "clip_range_vf",
-        "cfm_clamp",
-        "log_ratio_cap",
-        "tau_range",
-        "dit_depth",
-        "dit_heads",
-        "dit_mlp_ratio",
-        "dit_time_dim",
-        "vf_coef",
-        "top_p_spectral_tokens",
-        "executed_vs_predicted_ratio",
-    ):
-        assert getattr(cfg, name) == getattr(SJFPO_CFG, name), name
-    assert (cfg.optimizer_lr, cfg.optimizer_weight_decay) == (
-        SJFPO_CFG.lr,
-        SJFPO_CFG.wd,
-    )
-    assert cfg.grad_clip_norm == SJFPO_CFG.grad_clip
+    assert (cfg.optimizer_lr, cfg.optimizer_weight_decay) == (1e-4, 1e-4)
+    assert cfg.grad_clip_norm == 1.0
+    assert cfg.num_epochs == 10
+    assert cfg.chunks_per_update == 128
 
 
 def test_post_init_rejects_bad_geometry():
