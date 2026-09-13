@@ -26,8 +26,7 @@ import torch
 from lerobot.configs.types import FeatureType, PolicyFeature
 
 from sjfpo.checkpointing import save_policy_checkpoint
-from sjfpo.config import SJFPOConfig
-from sjfpo.configuration_sjfpo import SJFPOConfig as SJFPOPolicyConfig
+from sjfpo.configuration_sjfpo import SJFPOConfig
 from sjfpo.evaluator import Evaluator, check_divergence
 from sjfpo.modeling_sjfpo import SJFPOPolicy
 from sjfpo.utils import resolve_device
@@ -56,40 +55,15 @@ class _EvalPolicy:
 def build_policy(
     obs_dim: int, act_dim: int, cfg: SJFPOConfig, device=None
 ) -> SJFPOPolicy:
-    """Translate the legacy config into a LeRobot policy on device."""
+    """Attach runtime observation/action features, then build the policy."""
     device = torch.device(device) if device is not None else resolve_device()
-    policy_cfg = SJFPOPolicyConfig(
+    policy_cfg = dataclasses.replace(
+        cfg,
         input_features={
             "observation.state": PolicyFeature(FeatureType.STATE, (obs_dim,))
         },
         output_features={"action": PolicyFeature(FeatureType.ACTION, (act_dim,))},
-        n_obs_steps=cfg.n_obs_steps,
-        horizon=cfg.chunk_size,
-        n_action_steps=max(
-            1, round(cfg.executed_vs_predicted_ratio * cfg.chunk_size)
-        ),
-        hidden_dim=cfg.hidden_size,
-        num_mc_samples=cfg.num_mc_samples,
-        euler_train=cfg.euler_train,
-        euler_eval=cfg.euler_eval,
-        chunks_per_update=cfg.chunks_per_update,
-        gamma=cfg.gamma,
-        gae_lambda=cfg.gae_lambda,
-        clip_range=cfg.clip_range,
-        clip_range_vf=cfg.clip_range_vf,
-        cfm_clamp=cfg.cfm_clamp,
-        log_ratio_cap=cfg.log_ratio_cap,
-        tau_range=cfg.tau_range,
-        dit_depth=cfg.dit_depth,
-        dit_heads=cfg.dit_heads,
-        dit_mlp_ratio=cfg.dit_mlp_ratio,
-        dit_time_dim=cfg.dit_time_dim,
-        vf_coef=cfg.vf_coef,
-        grad_clip_norm=cfg.grad_clip,
-        top_p_spectral_tokens=cfg.top_p_spectral_tokens,
-        executed_vs_predicted_ratio=cfg.executed_vs_predicted_ratio,
-        optimizer_lr=cfg.lr,
-        optimizer_weight_decay=cfg.wd,
+        n_action_steps=max(1, round(cfg.executed_vs_predicted_ratio * cfg.horizon)),
     )
     return SJFPOPolicy(policy_cfg).to(device)
 
@@ -129,7 +103,9 @@ def train_sjfpo_run(
     policy = build_policy(obs_dim, act_dim, cfg, device=device)
     print(policy, file=sys.stderr)
     optimizer = torch.optim.AdamW(
-        policy.get_optim_params()["params"], lr=cfg.lr, weight_decay=cfg.wd
+        policy.get_optim_params()["params"],
+        lr=cfg.optimizer_lr,
+        weight_decay=cfg.optimizer_weight_decay,
     )
     evaluator = Evaluator(env, eval_seed=10000 + seed, max_episodes=12)
     eval_policy = _EvalPolicy(policy)
@@ -152,20 +128,28 @@ def train_sjfpo_run(
     try:
         while global_step < total_steps:
             steps_to_go = total_steps - global_step
-            collect_steps = min(cfg.chunks_per_update * cfg.chunk_size, steps_to_go)
+            collect_steps = min(cfg.chunks_per_update * cfg.horizon, steps_to_go)
             batch = policy.generate_rollout(env, collect_steps)
             global_step += int((~batch["action_is_pad"]).sum())
-            policy.snapshot_behavior_policy()
             policy.train()
-            loss, info = policy(batch)
-            optimizer.zero_grad()
-            loss.backward()
-            all_params = [
-                p for group in optimizer.param_groups for p in group["params"]
-            ]
-            torch.nn.utils.clip_grad_norm_(all_params, cfg.grad_clip)
-            optimizer.step()
-            policy.step_count += 1
+            infos = []
+            for _ in range(cfg.num_epochs):
+                # Rolling one-step delay: forward compares live weights to the
+                # previous step's snapshot, then the snapshot is refreshed to
+                # the pre-step weights BEFORE stepping (snapshot-then-step
+                # would compare the weights to themselves and log ratio 0).
+                loss, epoch_info = policy(batch)
+                optimizer.zero_grad()
+                loss.backward()
+                all_params = [
+                    p for group in optimizer.param_groups for p in group["params"]
+                ]
+                torch.nn.utils.clip_grad_norm_(all_params, cfg.grad_clip_norm)
+                policy.snapshot_behavior_policy()
+                optimizer.step()
+                policy.step_count += 1
+                infos.append(epoch_info)
+            info = {k: sum(d[k] for d in infos) / len(infos) for k in infos[0]}
             if wandb_enabled:
                 data = {f"train/{k}": v for k, v in info.items()}
                 data["train/total_loss"] = (
@@ -180,7 +164,7 @@ def train_sjfpo_run(
                     }
                 )
                 log_metrics(data, step=global_step)
-            if global_step % eval_interval < cfg.chunk_size or global_step >= total_steps:
+            if global_step % eval_interval < cfg.horizon or global_step >= total_steps:
                 eval_results = evaluator.evaluate(eval_policy, out_dir=out_dir)
                 mean_return = float(np.mean([r["return"] for r in eval_results]))
                 all_eval_returns.append(mean_return)
@@ -210,7 +194,7 @@ def train_sjfpo_run(
                         f"< 0.10*R_rand={0.10 * r_rand:.2f}"
                     )
                     break
-            if global_step % ckpt_interval < cfg.chunk_size or global_step >= total_steps:
+            if global_step % ckpt_interval < cfg.horizon or global_step >= total_steps:
                 ckpt_dir = out_dir / f"checkpoint_{global_step}"
                 save_policy_checkpoint(
                     ckpt_dir, policy=policy, optimizer=optimizer, global_step=global_step

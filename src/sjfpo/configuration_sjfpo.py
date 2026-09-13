@@ -35,6 +35,7 @@ class SJFPOConfig(PreTrainedConfig):
         euler_train: Euler steps for training rollouts (stochastic).
         euler_eval: Euler steps for eval (deterministic zero-sampling).
         chunks_per_update: Chunks collected per update round.
+        num_epochs: Gradient steps per collected batch.
         gamma: Discount factor.
         gae_lambda: GAE lambda for chunk semi-MDP advantages.
         clip_range: ASPO trust-region width (ratios).
@@ -63,6 +64,7 @@ class SJFPOConfig(PreTrainedConfig):
     euler_train: int = 16
     euler_eval: int = 16
     chunks_per_update: int = 128
+    num_epochs: int = 10
 
     gamma: float = 0.99
     gae_lambda: float = 0.95
