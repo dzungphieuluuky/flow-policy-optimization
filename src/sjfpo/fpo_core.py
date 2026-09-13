@@ -406,7 +406,7 @@ def euler_sample(
     ``x ← x − δ·v̂`` with δ = 1/steps using the left-endpoint t. ``eps=None``
     draws N(0, I) via ``generator``; passing explicit ``eps`` (e.g. zeros for
     the deterministic zero-sampling eval path) bypasses randomness entirely.
-    Runs under no_grad — sampling never needs gradients.
+    Runs under inference_mode — sampling never needs gradients.
 
     Args:
         net: Velocity network callable (x_t, t, cond, state) -> v_hat.
@@ -434,7 +434,7 @@ def euler_sample(
         if device is not None:
             eps = eps.to(device)
     x = eps  # [*shape]
-    with torch.no_grad():
+    with torch.inference_mode():
         for i in range(steps):
             v_hat = net(x, grid[i], cond, state)  # [*shape]
             x = x - (grid[i] - grid[i + 1]) * v_hat  # [*shape]  δ = 1/steps
