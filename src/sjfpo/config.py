@@ -60,7 +60,7 @@ class SJFPOConfig:
 
     Attributes:
         num_mc_samples: Number of (tau, eps) pairs per chunk. Default 16.
-        euler_train: Euler steps during training rollouts. Default 64.
+        euler_train: Euler steps during training rollouts. Default 16.
         euler_eval: Euler steps at eval (zero-sampling). Default 16.
         chunks_per_update: Chunks per update. Default 512.
         lr: AdamW learning rate. Default 1e-4.
@@ -88,7 +88,7 @@ class SJFPOConfig:
     """
 
     num_mc_samples: int = 16  # (tau, eps) pairs per chunk
-    euler_train: int = 64  # Euler steps during training rollouts
+    euler_train: int = 16  # Euler steps during training rollouts
     euler_eval: int = 16  # Euler steps at eval (zero-sampling)
     chunks_per_update: int = 512
     lr: float = 1e-4  # AdamW learning rate
