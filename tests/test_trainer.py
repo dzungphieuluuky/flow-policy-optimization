@@ -109,6 +109,17 @@ class TestAssembleUpdate:
             assert isinstance(v, float), f"diagnostics['{k}'] is not float: {type(v)}"
             assert math.isfinite(v), f"diagnostics['{k}'] is not finite: {v}"
 
+    def test_clipped_value_loss_engages_with_old_values(self):
+        trainer = make_trainer()
+        chunks, meta = make_chunks(16)
+        plain = trainer.assemble_update(chunks, meta)
+        assert math.isfinite(plain["value_loss"])
+        # Absurd old values: clipped loss must differ from plain TD regression.
+        meta_far = dict(meta, values=torch.full((16,), 1e6))
+        clipped = trainer.assemble_update(chunks, meta_far)
+        assert math.isfinite(clipped["value_loss"])
+        assert clipped["value_loss"] != plain["value_loss"]
+
     def test_deterministic_same_input(self):
         """Two identical trainers on same input produce same diagnostics."""
         chunks, meta = make_chunks(64)
@@ -304,6 +315,31 @@ class TestCriticTrunkGrads:
         )
 
 
+class TestTerminatedMasking:
+    def test_unexecuted_tail_ignored(self):
+        """Terminated chunks train on executed rows only; giant tails are no-ops."""
+        from sjfpo.dct_utils import dct, idct
+
+        torch.manual_seed(3)
+        chunks, meta = make_chunks(8)
+        chunks[0]["next.done"] = torch.tensor(True)
+        # Garbage in unexecuted TIME rows (n_action_steps=8): IDCT mixes it
+        # into every DCT bin, but the trainer's real-space mask drops it.
+        real = idct(chunks[0]["action"], dim=0)
+        garb = real.clone()
+        garb[8:] = 100.0
+        alt = [dict(c) for c in chunks]
+        alt[0]["action"] = dct(garb, dim=0)
+        torch.manual_seed(0)
+        d1 = make_trainer().assemble_update(chunks, meta)
+        torch.manual_seed(0)
+        d2 = make_trainer().assemble_update(alt, meta)
+        # approx (not ==): DCT roundtrip leaves ~1e-7 float noise; without
+        # the mask the same tail would move losses by O(1+).
+        for k in d1:
+            assert d1[k] == pytest.approx(d2[k], abs=1e-5), f"{k} sees tail"
+
+
 class TestSharedMCSamples:
     def test_identical_weights_give_unit_ratios(self):
         """l_old/l_new share one draw: identical weights must give rho == 1."""
@@ -410,8 +446,13 @@ class TestCriticBootstrap:
         )
         with torch.no_grad():
             z = trainer.critic_state_encoder(states)
-            # Mirror the trainer: the critic judges IDCT real-space actions.
-            v_pred = trainer.critic(z, idct(actions, dim=1))
+            # Mirror the trainer: zero-pad unexecuted tail rows; the critic
+            # judges executed-steps real-space actions.
+            lengths = torch.tensor([int(c["n_action_steps"]) for c in chunks])
+            exec_mask = (
+                torch.arange(actions.shape[-2]).unsqueeze(0) < lengths.unsqueeze(1)
+            ).to(actions.dtype).unsqueeze(-1)
+            v_pred = trainer.critic(z, idct(actions, dim=1) * exec_mask)
             v_next = trainer.critic(
                 trainer.critic_state_encoder(next_states),
                 idct(next_actions, dim=1),

@@ -9,8 +9,8 @@ Transition storage is a plain tensor dict with LeRobot-style keys
 (``observation.state`` / ``action`` / ``next.*``). The ``action`` anchor is the
 orthonormal DCT-II of the FULL proposed scaled chunk (shape [H, act] always),
 so every transition stacks into fixed-shape batches regardless of how many
-steps were actually executed. Terminated chunks are still collected (their
-rewards matter for GAE) but the runner drops them from the policy update.
+steps were actually executed. All chunks train (policy and value); the trainer
+zero-pads unexecuted tail rows so only executed steps are fitted.
 
 Boundary semantics (plan Scope §Chunk-level semi-MDP GAE, BINDING):
     terminated  -> stop executing immediately, DISCARD all remaining
