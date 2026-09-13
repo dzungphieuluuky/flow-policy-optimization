@@ -8,7 +8,7 @@ GREEN as W2-W4 land. New vocabulary under test:
   next.action / next.observation.state / next.reward / next.done / next.truncated
   (+ repo extensions n_action_steps / clip_count).
 - H (chunk_size) = 16 predict, n (n_action_steps) = 8 execute, T = 16.
-- next-state loss target = trainable trunk encoding of next.observation.state
+- next-state loss target = trainable critic state encoder encoding of next.observation.state
   (grad flows, no target net); critic V(s,a) bootstraps V(s',a').
 """
 
@@ -27,7 +27,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from sjfpo.collector import Transition, collect_chunks  # noqa: E402
 from sjfpo.config import SJFPOConfig  # noqa: E402
 from sjfpo.networks import (  # noqa: E402
-    StateEncoder,
     SJFOPolicyModel,
     SpectralEncoder,
     Critic,
@@ -189,16 +188,12 @@ class TestCollectorV4:
 def make_trainer_v4(**overrides) -> SJFPOTrainer:
     cfg = SJFPOConfig(**overrides) if overrides else SJFPOConfig()
     policy_head = SJFOPolicyModel(ACT_DIM, OBS_DIM, hidden_size=cfg.hidden_size)
-    critic = Critic(hidden_size=cfg.hidden_size, act_dim=ACT_DIM)
+    critic = Critic(OBS_DIM, ACT_DIM, hidden_size=cfg.hidden_size)
     spectral = SpectralEncoder(OBS_DIM, n_obs_steps=16)
-    critic_state_encoder = StateEncoder(
-        OBS_DIM, n_obs_steps=16, hidden_size=cfg.hidden_size
-    )
     return SJFPOTrainer(
         policy_head=policy_head,
         critic=critic,
         spectral=spectral,
-        critic_state_encoder=critic_state_encoder,
         cfg=cfg,
     )
 
