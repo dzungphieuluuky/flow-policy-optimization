@@ -12,7 +12,7 @@ test_sweep.py (20)           scan_runs/run_pending (imports RunSpec, RUN_MATRIX)
 test_todo4_characterization.py (16) pre-refactor behavior pins (fn-consolidation)
 test_config.py (15)          dataclasses + 45/TINY matrices (module-reload tests)
 test_dct.py (14)             DCT/IDCT roundtrip + Parseval + DC=mean·√H (no scipy)
-test_trainer.py (14)         assemble_update incl. DiT actor + V(s,a) TD-critic + critic-latent SigReg
+test_trainer.py (14)         assemble_update incl. DiT actor + V(s,a) TD-critic
 test_todo3_characterization.py (13) pre-refactor behavior pins (fn-consolidation)
 test_analysis.py (13)        analyze_results IQM/bootstrap
 test_evaluator.py (11)       Evaluator 3-col CSV
