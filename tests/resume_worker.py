@@ -54,7 +54,7 @@ def build_bundle(seed: int = 0):
     """
     torch.manual_seed(seed)
     models = {
-        "trunk": torch.nn.Sequential(
+        "encoder": torch.nn.Sequential(
             torch.nn.Linear(16, 32), torch.nn.Tanh(), torch.nn.Linear(32, 16)
         ),
         "policy_head": torch.nn.Linear(16, 4),
@@ -66,7 +66,7 @@ def build_bundle(seed: int = 0):
     }
     optimizers = {
         "policy_opt": torch.optim.Adam(
-            list(models["trunk"].parameters())
+            list(models["encoder"].parameters())
             + list(models["policy_head"].parameters())
             + list(models["aux_head"].parameters()),
             lr=1e-3,
@@ -84,7 +84,7 @@ def scripted_step(models: dict, optimizers: dict, t: int) -> float:
     optimizer updates so weights AND optimizer state must survive a resume.
     """
     obs = torch.sin(torch.arange(16, dtype=torch.float32) * 0.1 + t)
-    z = models["trunk"](obs)
+    z = models["encoder"](obs)
     action = models["policy_head"](z)
     noise = torch.randn(4)  # torch RNG draw #1
     acted = action + 0.1 * noise
@@ -148,7 +148,7 @@ def main(argv: list[str]) -> int:
     # expected_keys must be dotted paths matching the manifest, not top-level
     # dict keys.  Pass the list of dotted paths that the manifest enumerates.
     dotted_keys = [
-        "models.trunk",
+        "models.encoder",
         "models.policy_head",
         "models.aux_head",
         "models.critic",

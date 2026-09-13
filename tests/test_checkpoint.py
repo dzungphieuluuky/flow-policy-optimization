@@ -56,7 +56,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 # Explicit enumeration of every manifest field required by plan 9(a).
 EXPECTED_KEYS = [
-    "models.trunk",
+    "models.encoder",
     "models.policy_head",
     "models.aux_head",
     "models.critic",
@@ -161,7 +161,7 @@ def test_roundtrip_restores_every_manifest_field(tmp_path):
     }
     restored = load_checkpoint(ckpt, expected_keys=EXPECTED_KEYS, state=template)
 
-    for name in ("trunk", "policy_head", "aux_head", "critic", "ema_proj"):
+    for name in ("encoder", "policy_head", "aux_head", "critic", "ema_proj"):
         ref = state["models"][name].state_dict()
         live = models2[name].state_dict()
         payload = restored["models"][name]
