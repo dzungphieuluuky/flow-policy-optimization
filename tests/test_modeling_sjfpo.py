@@ -1,0 +1,124 @@
+"""Tests for src/sjfpo/modeling_sjfpo.py (LeRobot-native SJFPO policy)."""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+import torch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from lerobot.configs.types import FeatureType, PolicyFeature  # noqa: E402
+
+from sjfpo.configuration_sjfpo import SJFPOConfig  # noqa: E402
+from sjfpo.modeling_sjfpo import SJFPOPolicy  # noqa: E402
+
+OBS_DIM, ACT_DIM = 4, 2
+
+
+def make_config(**overrides) -> SJFPOConfig:
+    base = dict(
+        input_features={"observation.state": PolicyFeature(FeatureType.STATE, (OBS_DIM,))},
+        output_features={"action": PolicyFeature(FeatureType.ACTION, (ACT_DIM,))},
+        num_mc_samples=2,
+        dit_depth=2,
+    )
+    base.update(overrides)
+    return SJFPOConfig(**base)
+
+
+def make_batch(n: int = 2, h: int = 16, pad_tail: int = 0) -> dict:
+    is_pad = torch.zeros(n, h, dtype=torch.bool)
+    if pad_tail:
+        is_pad[:, -pad_tail:] = True
+    return {
+        "observation.state": torch.randn(n, 16, OBS_DIM),
+        "action": torch.randn(n, h, ACT_DIM).clamp(-1.0, 1.0),
+        "action_is_pad": is_pad,
+        "advantages": torch.randn(n) * 0.1,
+        "returns": torch.randn(n) * 10.0,
+    }
+
+
+def test_name_and_config_class_and_modules():
+    policy = SJFPOPolicy(make_config())
+    assert policy.name == "sjfpo"
+    assert policy.config_class is SJFPOConfig
+    for m in (
+        policy.policy_head,
+        policy.spectral,
+        policy.critic,
+        policy.obs_normalizer,
+        policy.old_policy_head,
+    ):
+        assert isinstance(m, torch.nn.Module)
+    # Snapshot matches live weights at init (unit ratios).
+    for p_old, p_live in zip(
+        policy.old_policy_head.parameters(), policy.policy_head.parameters()
+    ):
+        assert torch.equal(p_old, p_live)
+
+
+def test_predict_action_chunk_shape_and_bounds():
+    policy = SJFPOPolicy(make_config())
+    chunk = policy.predict_action_chunk(make_batch(n=3))
+    assert chunk.shape == (3, 16, ACT_DIM)
+    assert chunk.dtype == torch.float32
+    assert torch.isfinite(chunk).all()
+    assert (chunk <= 1.0).all() and (chunk >= -1.0).all()
+
+
+def test_select_action_buffers_and_reset():
+    policy = SJFPOPolicy(make_config())
+    obs = torch.randn(OBS_DIM)
+    a1 = policy.select_action({"observation.state": obs})
+    assert a1.shape == (ACT_DIM,)
+    assert len(policy._action_buffer) == 7  # 8-step prefix, one consumed
+    policy.reset()
+    assert len(policy._action_buffer) == 0 and len(policy._frame_buffer) == 0
+    a1_again = policy.select_action({"observation.state": obs})
+    assert torch.equal(a1, a1_again)  # deterministic replans match
+
+
+def test_forward_finite_loss_and_native_dict():
+    policy = SJFPOPolicy(make_config())
+    policy.train()
+    loss, info = policy(make_batch(pad_tail=8))
+    assert loss.dim() == 0 and torch.isfinite(loss)
+    assert set(info) == {"policy_loss", "value_loss", "mean_log_ratio"}
+    assert all(isinstance(v, float) for v in info.values())
+
+
+def test_optim_params_exclude_snapshot():
+    policy = SJFPOPolicy(make_config())
+    optim_ids = {id(p) for p in policy.get_optim_params()["params"]}
+    live_ids = {id(p) for p in policy.policy_head.parameters()} | {
+        id(p) for p in policy.critic.parameters()
+    }
+    assert optim_ids == live_ids
+    snap_ids = {id(p) for p in policy.old_policy_head.parameters()}
+    assert optim_ids.isdisjoint(snap_ids)
+
+
+def test_snapshot_refresh_tracks_live_weights():
+    policy = SJFPOPolicy(make_config())
+    with torch.no_grad():
+        next(policy.policy_head.parameters()).add_(1.0)
+    policy.snapshot_behavior_policy()
+    for p_old, p_live in zip(
+        policy.old_policy_head.parameters(), policy.policy_head.parameters()
+    ):
+        assert torch.equal(p_old, p_live)
+
+
+def test_save_pretrained_roundtrip(tmp_path):
+    policy = SJFPOPolicy(make_config())
+    policy.save_pretrained(tmp_path)
+    loaded = SJFPOPolicy.from_pretrained(tmp_path)
+    assert loaded.config.type == "sjfpo"
+    for (n1, p1), (n2, p2) in zip(
+        policy.named_parameters(), loaded.named_parameters()
+    ):
+        assert n1 == n2
+        assert torch.equal(p1, p2), n1
