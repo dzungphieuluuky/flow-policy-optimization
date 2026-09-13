@@ -87,7 +87,7 @@ All metrics use `step=global_step` (default wandb x-axis, one commit per step).
 
 | Prefix | Keys |
 |---|---|
-| `train/*` | `policy_loss`, `value_loss`, `sigreg_loss`, `clip_fraction`, `mean_log_ratio`, `clamp_engagement`, `total_loss` |
+| `train/*` | `policy_loss`, `value_loss`, `clip_fraction`, `mean_log_ratio`, `clamp_engagement`, `total_loss` |
 | `gae/*` | `advantages_mean`, `advantages_std`, `returns_mean`, `values_mean` |
 | `eval/*` | `mean_return`, `min_return`, `max_return`, `std_return`, `mean_length`, `max_length`, `std_length`, `episode_count`, `random_baseline`, `consecutive_below`, `reward_improvement(+_pct)`, `episodes` Table, `diverged`, `diverge_step` |
 | `timing/*` | `fps`, `elapsed_s` |
