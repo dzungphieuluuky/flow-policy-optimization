@@ -1,4 +1,4 @@
-"""Networks: state trunk, SigReg, spectral tokens, flow heads, critic.
+"""Networks: state trunk, spectral tokens, flow heads, critic.
 
 Plan tasks 3-7. All modules are fp32-only, use SwiGLU activations, and contain no
 BatchNorm / Dropout(p>0) / batch-statistics normalization in inference paths.
@@ -224,6 +224,9 @@ def get_quadrature(knots: int, device: torch.device):
     return t, w_phi, phi
 
     # %%
+    # retained: test-only public API — exercised directly by tests/test_networks.py
+    # and tests/test_einx_migration.py; not called by the src train path.
+    # Keep per fn-consolidation D1.
 
 
 def sigreg_loss(
@@ -568,14 +571,14 @@ class Critic(nn.Module):
         self.out = nn.Linear(hidden_size, 1)
 
     def encode(self, z: torch.Tensor, a: torch.Tensor) -> torch.Tensor:
-        """Fuse state/action into the critic latent (SigReg-compatible).
+        """Fuse state/action into the critic latent.
 
         Args:
             z: Trunk state sequence of shape [B, T, hidden_size].
             a: Real-space action chunk of shape [B, H, Da].
 
         Returns:
-            Fused vector of shape [B, hidden_size] (unsqueeze(1) feeds sigreg_loss).
+            Fused vector of shape [B, hidden_size].
         """
         h = self.act_embed(a)  # [B, H, D] real-space actions
         # Fixed sinusoidal position codes on the time axis: cross-attention
