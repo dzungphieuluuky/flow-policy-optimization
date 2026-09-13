@@ -65,7 +65,7 @@ def infer_chunk_actions(
     always CPU (env stepping and transition storage stay on CPU).
     """
     dev = next(policy_head.parameters()).device
-    with torch.no_grad():
+    with torch.inference_mode():
         state_b = einx.id("t d -> 1 t d", state).to(dev)  # [1, T, obs]
         cond = spectral(state_b)
         act_dim = policy_head.out.out_features
@@ -263,7 +263,7 @@ def compute_divergence_baseline(evaluator, env, seed) -> float:
 def compute_chunk_values(critic_state_encoder, critic, chunks):
     """Compute V(s,a) chunk values and truncated-bootstrap next values."""
     dev = next(critic_state_encoder.parameters()).device
-    with torch.no_grad():
+    with torch.inference_mode():
         states = torch.stack([c["observation.state"] for c in chunks]).to(dev)
         actions = torch.stack([c["action"] for c in chunks]).to(dev)
         # Real-space actions for the critic: IDCT the stored DCT coefficients.
