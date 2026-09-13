@@ -21,33 +21,6 @@ def wandb_disabled() -> bool:
     return os.environ.get("SJFPO_DISABLE_WANDB") == "1"
 
 
-def resolve_wandb_job_type(total_steps: int) -> str:
-    """Map the training budget to the wandb job_type label."""
-    return "smoke" if total_steps <= 10000 else "train"
-
-
-def open_wandb_run(
-    *,
-    method: str,
-    env_name: str,
-    seed: int,
-    total_steps: int,
-    cfg_dict: dict,
-) -> None:
-    """Open the per-algo run; init errors propagate (fail fast)."""
-    wandb.init(
-        project=method,
-        group=f"{method}_{env_name}",
-        name=None,
-        tags=[method, "mujoco", "cpu-first"],
-        config={**cfg_dict, "method": method, "seed": seed, "env": env_name},
-        job_type=resolve_wandb_job_type(total_steps),
-        mode=os.environ.get("WANDB_MODE", "online"),
-        reinit="finish_previous",
-        force=True,
-    )
-
-
 def init_wandb_run_for_method(
     *,
     method: str,
@@ -77,12 +50,16 @@ def init_wandb_run_for_method(
     """
     if wandb_disabled():
         return False
-    open_wandb_run(
-        method=method,
-        env_name=env_name,
-        seed=seed,
-        total_steps=total_steps,
-        cfg_dict=cfg_dict,
+    wandb.init(
+        project=method,
+        group=f"{method}_{env_name}",
+        name=None,
+        tags=[method, "mujoco", "cpu-first"],
+        config={**cfg_dict, "method": method, "seed": seed, "env": env_name},
+        job_type="smoke" if total_steps <= 10000 else "train",
+        mode=os.environ.get("WANDB_MODE", "online"),
+        reinit="finish_previous",
+        force=True,
     )
     return True
 
@@ -92,31 +69,6 @@ def log_metrics(data: dict, step: int) -> None:
     if wandb_disabled():
         return
     wandb.log(data, step=step)
-
-
-def log_eval_details(
-    eval_results: list[dict], all_eval_returns: list[float], global_step: int
-) -> None:
-    """Log per-episode Table + reward improvement (shared runner/baselines shape).
-
-    Single commit per step so scalar history stays dense (one row per
-    global_step, like wandb system auto-logging).
-    """
-    if wandb_disabled():
-        return
-    data: dict = {}
-    if eval_results:
-        rows = [(r["episode"], r["return"], r["length"]) for r in eval_results]
-        data["eval/episodes"] = wandb.Table(
-            columns=["episode", "return", "length"],
-            data=[list(r) for r in rows],
-        )
-    if len(all_eval_returns) >= 2:
-        prev, curr = all_eval_returns[-2], all_eval_returns[-1]
-        data["eval/reward_improvement"] = curr - prev
-        data["eval/reward_improvement_pct"] = (curr - prev) / max(abs(prev), 1e-8)
-    if data:
-        log_metrics(data, step=global_step)
 
 
 def log_eval_summary(

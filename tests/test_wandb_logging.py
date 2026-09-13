@@ -2,8 +2,7 @@
 
 Locked contract — see ``.omo/evidence/wandb-simplify/t1-sdk-probe.md``:
 - Core presence assertion: ``wandb_disabled``, ``init_wandb_run_for_method``,
-  ``log_metrics``, ``log_eval_details``, ``finish_run`` (plus the later additive
-  shared helper ``log_eval_summary`` from fn-consolidation C4).
+  ``log_metrics``, ``log_eval_summary``, ``finish_run``.
 - Deleted: ``wandb_init``, ``wandb_table``, ``initWandbRun`` (+ renames
   ``wandb_log`` -> ``log_metrics``, ``wandb_finish`` -> ``finish_run``).
 - ``init_wandb_run_for_method(*, method, env_name, seed, total_steps,
@@ -12,7 +11,7 @@ Locked contract — see ``.omo/evidence/wandb-simplify/t1-sdk-probe.md``:
   ``job_type`` smoke<=10000/train, locked ``mode`` passthrough,
   ``reinit="finish_previous"``, ``force=True``) with no custom step metric
   (default ``step=global_step`` is the x-axis, matching system auto-logging).
-- ``log_eval_details`` builds ``wandb.Table(columns=cols,
+- ``log_eval_summary`` builds ``wandb.Table(columns=cols,
   data=[list(r) for r in rows])`` (list-of-lists) and routes improvement
   ``(curr - prev) / max(abs(prev), 1e-8)`` via ``log_metrics``.
 - Bool return only (no ``ctx``); init+log+finish errors propagate.
@@ -328,94 +327,6 @@ class TestLogMetrics:
             wl.log_metrics({"a": 1}, step=5)
 
 
-class TestLogEvalDetails:
-    """Eval Table + improvement logging via the locked forms."""
-
-    def test_eval_table_direct_constructor_list_of_lists(self, monkeypatch):
-        """Table built via wandb.Table(columns=cols, data=[[..]]) list-of-lists."""
-        monkeypatch.delenv("SJFPO_DISABLE_WANDB", raising=False)
-        import sjfpo.wandb_logging as wl
-
-        recorder = MagicMock()
-        monkeypatch.setattr(wl, "wandb", recorder)
-
-        wl.log_eval_details(
-            [{"episode": 0, "return": 1.5, "length": 10}],
-            [1.5],
-            global_step=7,
-        )
-        recorder.Table.assert_called_once()
-        table_kw = recorder.Table.call_args.kwargs
-        assert table_kw["columns"] == ["episode", "return", "length"]
-        assert table_kw["data"] == [[0, 1.5, 10]]
-        assert all(type(row) is list for row in table_kw["data"])
-
-    def test_improvement_math_routes_via_log_metrics(self, monkeypatch):
-        """improvement=(curr-prev)/max(abs(prev),1e-8) routed via log_metrics."""
-        monkeypatch.delenv("SJFPO_DISABLE_WANDB", raising=False)
-        import sjfpo.wandb_logging as wl
-
-        logged = []
-        monkeypatch.setattr(
-            wl, "log_metrics", lambda data, step: logged.append((data, step))
-        )
-
-        wl.log_eval_details([], [2.0, 3.0], global_step=9)
-        assert len(logged) == 1
-        data, step = logged[0]
-        assert step == 9
-        assert data["eval/reward_improvement"] == pytest.approx(1.0)
-        assert data["eval/reward_improvement_pct"] == pytest.approx(0.5)
-
-    def test_improvement_zero_prev_uses_1e8_floor(self, monkeypatch):
-        """prev=0.0 → divisor max(abs(0.0),1e-8)=1e-8, no ZeroDivisionError."""
-        monkeypatch.delenv("SJFPO_DISABLE_WANDB", raising=False)
-        import sjfpo.wandb_logging as wl
-
-        logged = []
-        monkeypatch.setattr(
-            wl, "log_metrics", lambda data, step: logged.append((data, step))
-        )
-
-        wl.log_eval_details([], [0.0, 2.0], global_step=3)
-        assert len(logged) == 1
-        data, step = logged[0]
-        assert data["eval/reward_improvement"] == pytest.approx(2.0)
-        assert data["eval/reward_improvement_pct"] == pytest.approx(2.0 / 1e-8)
-
-    def test_empty_results_no_table(self, monkeypatch):
-        """No episodes → no Table construction, improvement still logged."""
-        monkeypatch.delenv("SJFPO_DISABLE_WANDB", raising=False)
-        import sjfpo.wandb_logging as wl
-
-        recorder = MagicMock()
-        monkeypatch.setattr(wl, "wandb", recorder)
-        logged = []
-        monkeypatch.setattr(
-            wl, "log_metrics", lambda data, step: logged.append((data, step))
-        )
-
-        wl.log_eval_details([], [1.0, 2.0], global_step=4)
-        recorder.Table.assert_not_called()
-        assert len(logged) == 1
-
-    def test_log_eval_details_noop_when_disabled(self, monkeypatch):
-        """SJFPO_DISABLE_WANDB=1 → zero SDK calls."""
-        monkeypatch.setenv("SJFPO_DISABLE_WANDB", "1")
-        import sjfpo.wandb_logging as wl
-
-        recorder = MagicMock()
-        monkeypatch.setattr(wl, "wandb", recorder)
-
-        wl.log_eval_details(
-            [{"episode": 0, "return": 1.5, "length": 10}],
-            [1.0, 1.5],
-            global_step=7,
-        )
-        recorder.Table.assert_not_called()
-        recorder.log.assert_not_called()
-
-
 class TestLogEvalSummary:
     """Full eval payload lands in one wandb.log commit."""
 
@@ -471,6 +382,40 @@ class TestLogEvalSummary:
         assert "eval/consecutive_below" not in data
         assert data["eval/mean_length"] == 0.0
 
+    def test_eval_table_list_of_lists(self, monkeypatch):
+        """Table built via wandb.Table(columns=cols, data=[[..]]) list-of-lists."""
+        monkeypatch.delenv("SJFPO_DISABLE_WANDB", raising=False)
+        import sjfpo.wandb_logging as wl
+
+        recorder = MagicMock()
+        monkeypatch.setattr(wl, "wandb", recorder)
+        logged = []
+        monkeypatch.setattr(
+            wl, "log_metrics", lambda data, step: logged.append((data, step))
+        )
+
+        wl.log_eval_summary(
+            1.5, [{"episode": 0, "return": 1.5, "length": 10}], [1.5], 1, 7
+        )
+        table_kw = recorder.Table.call_args.kwargs
+        assert table_kw["columns"] == ["episode", "return", "length"]
+        assert table_kw["data"] == [[0, 1.5, 10]]
+        assert all(type(row) is list for row in table_kw["data"])
+
+    def test_log_eval_summary_noop_when_disabled(self, monkeypatch):
+        """SJFPO_DISABLE_WANDB=1 → zero SDK calls."""
+        monkeypatch.setenv("SJFPO_DISABLE_WANDB", "1")
+        import sjfpo.wandb_logging as wl
+
+        recorder = MagicMock()
+        monkeypatch.setattr(wl, "wandb", recorder)
+
+        wl.log_eval_summary(
+            1.5, [{"episode": 0, "return": 1.5, "length": 10}], [1.0, 1.5], 1, 7
+        )
+        recorder.Table.assert_not_called()
+        recorder.log.assert_not_called()
+
 
 class TestFinishRun:
     """Thin finish guard around wandb.finish."""
@@ -510,7 +455,7 @@ class TestSurfaceAndImportGuards:
             "wandb_disabled",
             "init_wandb_run_for_method",
             "log_metrics",
-            "log_eval_details",
+            "log_eval_summary",
             "finish_run",
         ):
             assert callable(getattr(wl, name, None)), f"missing: {name}"
