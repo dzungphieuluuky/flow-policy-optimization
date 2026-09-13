@@ -25,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from sjfpo.config import SJFPOConfig
 from sjfpo.networks import SpectralEncoder
 from sjfpo.networks import SJFOPolicyModel
-from sjfpo.fpo_core import euler_sample
+from sjfpo.fpo_core import sample
 from sjfpo.evaluator import Evaluator
 
 
@@ -99,7 +99,7 @@ class SJFPOPolicyAdapter:
             cond = self.spectral(state)
             # Policy model (zero noise via eps=zeros for deterministic eval)
             n_coeffs = max(1, round(self.cfg.top_p_spectral_tokens * self.cfg.chunk_size))
-            chunk = euler_sample(
+            chunk = sample(
                 self.policy_head,
                 (1, n_coeffs, self.action_dim),
                 cond,
