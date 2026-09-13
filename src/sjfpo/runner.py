@@ -28,7 +28,7 @@ from sjfpo.evaluator import Evaluator, check_divergence
 from sjfpo.fpo_core import total_update_loss
 from sjfpo.fpo_core import euler_sample
 from sjfpo.gae import chunk_gae
-from sjfpo.utils import resolve_device
+from sjfpo.utils import is_bf16_available, resolve_device
 from sjfpo.networks import (
     StateEncoder,
     SJFOPolicyModel,
@@ -74,10 +74,13 @@ def infer_chunk_actions(
         n_coeffs = max(1, round(cfg.top_p_spectral_tokens * cfg.chunk_size))
         shape = (1, n_coeffs, act_dim)
         eps = None if noise else torch.zeros(*shape, device=dev)
-        x0 = euler_sample(
-            policy_head, shape, cond, steps=cfg.euler_eval, eps=eps, device=dev,
-            state=state_b,
-        )  # [1, Ka, Da]
+        # Autocast to bf16 only where the GPU supports it (else fp32 no-op).
+        use_bf16 = dev.type == "cuda" and is_bf16_available()
+        with torch.autocast(device_type=dev.type, dtype=torch.bfloat16, enabled=use_bf16):
+            x0 = euler_sample(
+                policy_head, shape, cond, steps=cfg.euler_eval, eps=eps, device=dev,
+                state=state_b,
+            )  # [1, Ka, Da]
         x0 = torch.nn.functional.pad(x0, (0, 0, 0, cfg.chunk_size - n_coeffs))
         return decode_chunk_actions(x0).cpu()  # [H, Da]
 
@@ -320,9 +323,7 @@ def log_trainer_diagnostics(state, diag, extra: dict | None = None) -> None:
     data["train/total_loss"] = total_update_loss(
         diag["policy_loss"],
         diag["value_loss"],
-        diag["sigreg_loss"],
         vf_coef=cfg.vf_coef,
-        sigreg_coef=cfg.sigreg_coef,
     )
     if extra:
         data.update(extra)
