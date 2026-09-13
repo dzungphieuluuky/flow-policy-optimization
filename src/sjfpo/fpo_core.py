@@ -446,10 +446,8 @@ def euler_sample(
 def total_update_loss(
     policy_loss,
     value_loss,
-    sigreg_loss,
     *,
     vf_coef: float,
-    sigreg_coef: float,
 ):
-    """Sum the three update terms under caller-supplied weights (single weight home)."""
-    return policy_loss + vf_coef * value_loss + sigreg_coef * sigreg_loss
+    """Sum the two update terms under caller-supplied weights (single weight home)."""
+    return policy_loss + vf_coef * value_loss
