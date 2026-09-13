@@ -36,10 +36,10 @@ src/sjfpo/          # all production code (MuJoCo-only, fp32)
   collector.py      # Transition dict (9 LeRobot keys), open-loop full-H chunks in training, next.action chaining
   gae.py            # chunk semi-MDP GAE (R_k intradiscounted, γ^L bootstrap, (γλ)^L recursion)
   modeling_sjfpo.py  # SJFPOPolicy.forward (ASPO + V(s,a) on GAE returns)
-  runner.py         # train_run: collect → GAE → update → eval → ckpt; decode_chunk_actions
+  train_sjfpo.py    # online train entry: rollout → update → eval → ckpt via SJFPOPolicy
   baselines.py      # skrl PPO/SAC (FrameStackWrapper, baseline_train_loop)
   evaluator.py      # Evaluator → 3-col CSV [episode,return,length] + divergence gate
-  checkpointing.py  # atomic checkpoints (models + optimizer + counters)
+  checkpointing.py  # atomic checkpoints + Hub policy checkpoints (config.json + safetensors)
   sweep.py          # scan_runs / run_pending, format_run_directory_name
   analysis.py       # IQM + bootstrap (n_boot=2000), invoked from notebooks
   wandb_logging.py  # sole wandb importer (REQUIRED); 6 fns, SJFPO_DISABLE_WANDB=1 off switch
@@ -77,6 +77,7 @@ PYTHONPATH=src .venv/bin/python scripts/train.py \
 # tiny smoke: 3 runs, Hopper-v5 seed 0, 20k steps (overrides filters)
 PYTHONPATH=src .venv/bin/python scripts/train.py --matrix --tiny
 ```
+
 
 Precedence: **CLI flags > `--config <file>.yaml` > dataclass defaults**. Singular `--method/--env/--seed` for single runs; plural `--methods/--envs/--seeds` only with `--matrix` (`--tiny` requires `--matrix`).
 

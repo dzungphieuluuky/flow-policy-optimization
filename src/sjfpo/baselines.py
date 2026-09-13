@@ -1,7 +1,7 @@
 """skrl PPO/SAC baselines (plan tasks 11-12).
 
-Wraps skrl 2.1.0 PPO/SAC into the same ``*_train_run`` interface as SJFPO's
-``train_run`` (runner.py), sharing ``Evaluator`` and checkpointing.
+Wraps skrl 2.1.0 PPO/SAC into ``*_train_run`` functions sharing ``Evaluator`` and checkpointing.
+(SJFPO trains through ``SJFPOPolicy`` now; the custom runner is gone.)
 Frame-stacking is identical (n_obs_steps=16 → flat ``[obs_dim*16]``).
 
 Tensor conventions:
@@ -584,7 +584,7 @@ def baseline_train_loop(
 ):
     """Run the skrl agent through a standard act→step→record→post_interaction loop.
 
-    Returns the same result-dict shape as SJFPO's train_run.
+    Returns the standard result dict (method, reward_mean_last10, artifacts, diverged).
     """
     evaluator, state = init_baseline_run(
         env, eval_env, out_dir, method_name, seed, total_steps, cfg_dict
@@ -687,7 +687,7 @@ def launch_baseline_loop(
     r_rand,
     cfg,
 ):
-    """Invoke baseline_train_loop with the standard train_run arguments."""
+    """Invoke baseline_train_loop with the standard run arguments."""
     return baseline_train_loop(
         skrl_env,
         agent,
@@ -717,7 +717,7 @@ def ppo_train_run(
 ) -> dict[str, Any]:
     """Run a single PPO training run using skrl 2.1.0.
 
-    Returns the same result-dict shape as SJFPO's train_run.
+    Returns the standard result dict (method, reward_mean_last10, artifacts, diverged).
     """
     import_skrl_dependencies()
 
@@ -818,7 +818,7 @@ def sac_train_run(
 ) -> dict[str, Any]:
     """Run a single SAC training run using skrl 2.1.0.
 
-    Returns the same result-dict shape as SJFPO's train_run.
+    Returns the standard result dict (method, reward_mean_last10, artifacts, diverged).
     """
     import_skrl_dependencies()
 

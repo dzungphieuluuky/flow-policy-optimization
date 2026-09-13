@@ -13,8 +13,8 @@
 │   └── verify_deps.sh            # pinned dep check
 ├── src/sjfpo/                     # production code (MuJoCo-only, flat Box, fp32, no autocast)
 │   ├── config.py                 # flags, RUN_MATRIX (45), SJFPO/PPO/SAC configs, build_filtered_matrix
-│   ├── runner.py                 # train_run (SJFPO entry)
 │   ├── modeling_sjfpo.py         # SJFPOPolicy (ASPO + value update, owns all modules)
+│   ├── train_sjfpo.py            # online train entry used by scripts/train.py
 │   ├── networks.py               # StateEncoder x2 (model-owned), SpectralEncoder, DiT flow, Critic
 │   ├── dct_utils.py              # orthonormal DCT-II/III action chunks
 │   ├── evaluator.py              # Evaluator → 3-col CSV [episode,return,length]
@@ -39,7 +39,7 @@
 |---|---|---|
 | `src/sjfpo/config.py` | Single source of truth for flags, matrices, budgets, algorithm configs | Changing sweep size, budgets, `D/K/H/N` |
 | `src/sjfpo/networks.py` | Encoders + spectral + flow | Any shape/dtype or conditioning change |
-| `src/sjfpo/runner.py` | `train_run` entry point | Adding an env |
+| `src/sjfpo/modeling_sjfpo.py` | `SJFPOPolicy` entry point | Adding an env |
 | `scripts/build_notebook.py` | Minimal Colab notebooks (clone/install/train cells) | Cell contents, repo slug |
 | `scripts/train.py` | Unified CLI (single / `--matrix` / `--tiny`) | CLI flags, dispatch |
 

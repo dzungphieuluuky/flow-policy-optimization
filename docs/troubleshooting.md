@@ -24,7 +24,7 @@ Smokes write under `--out-dir` (default `.omo/evidence/train`). If you changed
 `--out-dir` or matrix filters mid-run, clear the old dir or re-run with the
 intended flags. `eval_history.csv` appears only after the first eval interval.
 
-**`train_run` exits non-zero**
+**SJFPO runs** exit non-zero
 
 `scripts/train.py` exits: 0 ok, 1 usage conflict (e.g. `--tiny` without
 `--matrix`, singular + plural flag mix), 2 runtime exception, 4 missing

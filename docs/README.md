@@ -34,7 +34,7 @@ stacked obs ──► Critic V(s,a, owns state encoder) ──► GAE-returns va
 `scripts/train.py --method {sjfpo,ppo,sac}` on MuJoCo locomotion
 (HalfCheetah/Walker2d/Hopper), 45-run matrix (`test_config.py` locks it).
 
-- `sjfpo`: spectral flow path above (trainer ASPO + value).
+- `sjfpo`: spectral flow path above (`SJFPOPolicy` + `train_sjfpo.py` online loop).
 - `ppo` / `sac`: skrl 2.1.0 baselines via shared `baseline_train_loop`;
   eval is always 3-col CSV `[episode,return,length]`.
 

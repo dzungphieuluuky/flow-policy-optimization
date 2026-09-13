@@ -7,24 +7,24 @@ MuJoCo-only (LEGACY_MUJOCO=True) hotspot — single live train path, chunked flo
 ```
 networks.py      StateEncoder + ActionEncoder (same definition; policy state encoder inside SJFOPolicyModel, state+action encoders inside Critic) + RunningMeanStd (obs stats, checkpointed) + SpectralEncoder(raw-obs DCT-II, parameter-free) + DiT-8 SJFOPolicyModel ([state;action] tokens) + 1-block cross-attn Critic V(s,a trans real-space +PE query)
 modeling_sjfpo.py   SJFPOPolicy.forward: ASPO (truncated Ka coeffs, negated) + V(s,a) critic on executed-masked real actions (frozen GAE returns, PPO-clipped) + running obs norm; optimizer = live policy weights; global grad-clip; NaN-guard aborts
+train_sjfpo.py    online train entry: generate_rollout → forward → AdamW step → eval → Hub ckpt
 collector.py      241L — Transition TypedDict (9 LeRobot keys incl. next.action chaining); full-H open-loop chunks; action anchor = DCT of FULL SCALED proposed chunk [H,Da]; all chunks train (trainer zero-pads unexecuted tails)
 gae.py            137L — chunk semi-MDP GAE (R_k intradiscounted, γ^L bootstrap, (γλ)^L recursion); terminated cuts all, truncated bootstraps δ but cuts recursion; train advantages raw (ASPO sign)
-fpo_core.py       432L — CFM/SQL-ℓ [N,m], STE-capped ρ, ASPO piecewise (PPO-clip Â≥0 / SPO Â<0), mean-of-ψ objective, sample(mode=euler) t:1→0; policy + vf_coef·value summed inline in trainer
-runner.py         428L — train_run: collect→GAE→update→eval→ckpt; decode_chunk_actions (IDCT + single clamp home)
+fpo_core.py       432L — CFM/SQL-ℓ [N,m], STE-capped ρ, ASPO piecewise (PPO-clip Â≥0 / SPO Â<0), mean-of-ψ objective, sample(mode=euler) t:1→0; policy + vf_coef·value summed inline in forward
 dct_utils.py      orthonormal DCT-II/III [H,Da] action chunks + discounted_chunk_reward + einx.id (parity-guarded)
 config.py         360L — frozen dataclasses (SJFPOConfig H=16/T=16/top_p=0.3→K=5/D=128, DiT-8/4heads/mlp×4/t256), RUN_MATRIX 45 (TINY 3) + build_run_matrix; SACConfig.polyak is skrl-boundary (keep)
 baselines.py      690L — skrl PPO/SAC via baseline_train_loop; FrameStackWrapper shared with evaluator
-checkpointing.py  246L — atomic ckpt (models + optimizer + counters)
+checkpointing.py  246L — atomic ckpt (models + optimizer + counters) + Hub policy ckpt (config.json + safetensors via save/load_policy_checkpoint)
 evaluator.py      162L — Evaluator MuJoCo 3-col [episode,return,length]
 sweep.py          227L — scan_runs/run_pending state machine
 analysis.py       IQM+bootstrap 2000, notebook-invoked (train.py never imports it; risk boundary)
-wandb_logging.py  159L — sole wandb importer (REQUIRED, hard import): 6 fns SDK-direct (wandb_disabled, init_wandb_run_for_method->bool, log_metrics, log_eval_details, log_eval_summary, finish_run; shared runner/baselines)
+wandb_logging.py  159L — sole wandb importer (REQUIRED, hard import): 6 fns SDK-direct (wandb_disabled, init_wandb_run_for_method->bool, log_metrics, log_eval_details, log_eval_summary, finish_run; shared baselines)
 utils.py           23L — shared pure helpers (safe_float_value), no sjfpo imports
 ```
 
 ## Where to Look
 - `collector.py:51` `Transition`: 9 LeRobot keys (`observation.state [T,Do]`, `action [H,Da]` DCT, `next.action [H,Da]` chained/behavior proposal, `next.*`, `n_action_steps` i64, `clip_count` i64); `next.reward` is variable-length `[L_k]`
-- `modeling_sjfpo.py:forward`: stack (guards H/T) → spectral `condition [N,K,obs]` (raw bins) → policy ℓ/ρ/ψ `[N,m]` → critic `V(s,a)` → clip → loss (optimizer steps in runner)
+- `modeling_sjfpo.py:forward`: stack (guards H/T) → spectral `condition [N,K,obs]` (raw bins) → policy ℓ/ρ/ψ `[N,m]` → critic `V(s,a)` → clip → loss (stepped by the training loop)
 - `networks.py:SpectralEncoder`: DCT-II raw obs `[B,T,obs]` over time → keep K lowest bins (round(top_p*T)) → `[B,K,obs]` raw tokens (parameter-free; rFFT reserved for observation.image)
 - `gae.py:chunk_gae`: per-chunk `R_k`, `δ_k`, backward `(γλ)^L`; terminated cuts recursion, truncated bootstraps δ from last next-frame but cuts recursion
 - `runner.py:build_training_components`: policy/critic/spectral (each model owns its state encoder, no target nets, no aux head); `compute_chunk_values` V(s,a) via Critic, bootstraps truncated only
@@ -33,11 +33,11 @@ utils.py           23L — shared pure helpers (safe_float_value), no sjfpo impo
 ## Code Map
 | File | Export | Caller |
 |---|---|---|
-| `networks.py` | `StateEncoder` `RunningMeanStd` `SpectralEncoder` `SJFOPolicyModel` `Critic` `sigreg_loss` (test-only) `DiTBlock` `CrossAttentionBlock` | `modeling_sjfpo.py` `runner.py` (live) |
-| `collector.py` | `Transition` `collect_chunks` | `runner.py` `tests/test_transition_v4.py` |
+| `networks.py` | `StateEncoder` `RunningMeanStd` `SpectralEncoder` `SJFOPolicyModel` `Critic` `sigreg_loss` (test-only) `DiTBlock` `CrossAttentionBlock` | `modeling_sjfpo.py` (live) |
+| `collector.py` | `Transition` `collect_chunks` | `tests/test_transition_v4.py` |
 | `dct_utils.py` | `dct` `idct` `discounted_chunk_reward` | `collector.py` `fpo_core.py` (DCT) + `tests/test_dct.py` |
-| `utils.py` | `safe_float_value` `resolve_device` `is_bf16_available` `resolve_compute_dtype` | `runner.py` `baselines.py` |
-| `modeling_sjfpo.py` | `SJFPOPolicy` `SJFPOAborted` | `runner.py` `sweep.py` |
+| `utils.py` | `safe_float_value` `resolve_device` `is_bf16_available` `resolve_compute_dtype` | `baselines.py` |
+| `modeling_sjfpo.py` | `SJFPOPolicy` `SJFPOAborted` | `sweep.py` |
 | `wandb_logging.py` | `wandb_disabled` `init_wandb_run_for_method`->bool `log_metrics` `log_eval_details` `log_eval_summary` `finish_run` (6 fns SDK-direct) | `runner.py` `baselines.py` (REQUIRED import, SJFPO_DISABLE_WANDB=1 gate) |
 
 ## Conventions
@@ -48,7 +48,7 @@ utils.py           23L — shared pure helpers (safe_float_value), no sjfpo impo
 - `polyak` survives ONLY at the skrl boundary (`SACConfig`, `build_sac_skrl_config`, `sac.yaml`); no EMA/target nets in the sjfpo path
 - einx.id reshapes in collector/fpo_core/trainer (+dct_utils/baselines) must match torch at 1e-6 (`tests/test_einx_migration.py`); ground truth is current torch behavior
 - CUDA-default with CPU fallback, fp32-only (no autocast/bf16/`torch.compile`): `SJFPO_DEVICE=cuda|cpu|auto` overrides; storage (transitions/checkpoints/CSV) stays on CPU, batches move to device per update; LSP absent here — `py_compile` + suite is the gate
-- wandb imported ONLY in `sjfpo.wandb_logging` (sole importer, module-level REQUIRED — absent → hard ImportError); runners route init through `init_wandb_run_for_method()->bool` + `log_eval_details` + `log_metrics(data, step=global_step)` + `finish_run()`; metrics: train/*, eval/*, gae/*, timing/*; `wandb/` dir NOT in .gitignore
+- wandb imported ONLY in `sjfpo.wandb_logging` (sole importer, module-level REQUIRED — absent → hard ImportError); baselines route init through `init_wandb_run_for_method()->bool` + `log_eval_details` + `log_metrics(data, step=global_step)` + `finish_run()`; metrics: train/*, eval/*, gae/*, timing/*; `wandb/` dir NOT in .gitignore
 - `# %%` + `# CELLORDER:` markers are vestigial (the builder no longer inlines `src/` into notebooks) — leave them, don't add new ones
 - `retained:`-marked helpers are test seams (compute_cfm_loss/compute_policy_loss, discounted_chunk_reward, assert_runtime) — deleting one breaks its consumer test first
 

@@ -69,7 +69,7 @@ all calling the wandb SDK directly (`wandb.init`/`log`/`finish`/
 | `log_eval_summary` | `(mean_return, eval_results, all_eval_returns, eval_count, global_step) -> None` | Shared runner/baselines eval payload (mean/length/max/std/count + Table + improvement in one commit); single home per fn-consolidation C4 |
 | `finish_run` | `(exit_code=0) -> None` | Thin disabled-guard around `wandb.finish(exit_code=exit_code)` |
 
-Callers (`runner.py`, `baselines.py`) import at most 6 symbols and hold a
+Callers (`baselines.py`) import at most 6 symbols and hold a
 plain `bool` (`wandb_enabled = init_wandb_run_for_method(...)`).
 
 ## Dashboard Structure
