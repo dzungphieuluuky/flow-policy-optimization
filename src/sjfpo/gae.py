@@ -16,8 +16,9 @@ semi-MDP decision epochs). For chunk k with executed length L_k:
   death / mid-chunk TimeLimit) are handled by exponentiating with THIS
   chunk's length.
 - terminated chunks NEVER bootstrap from V(next obs) and cut the recursion.
-- truncated (TimeLimit) chunks DO bootstrap from V(next obs); the stream
-  continues, so only their own flag masks nothing (they are not terminated).
+- truncated (TimeLimit) chunks DO bootstrap from V(next obs) in δ, but cut
+  the λ-recursion: the next stream chunk starts a fresh episode, so its
+  advantage must not flow back.
 - advantages are centered afterwards (mean 0); returns are NOT recentered.
 
 Per-chunk V values are consumed as black-box scalars: any history/frame-stack
@@ -50,16 +51,18 @@ def as_chunk_arrays(rewards, values, next_values, n_action_steps, terminated):
     return rewards, values, nv, n_action_steps, terminated, n
 
 
-def validate_chunk_stream(rewards, values, next_values, n_action_steps, terminated, n):
+def validate_chunk_stream(rewards, values, next_values, n_action_steps, terminated, truncated, n):
     """Raise ValueError on shape/count mismatches in the chunk stream."""
     if (
         next_values.shape != (n,)
         or n_action_steps.shape != (n,)
         or terminated.shape != (n,)
+        or truncated.shape != (n,)
     ):
         raise ValueError(
             f"shape mismatch: values {values.shape}, next_values {next_values.shape}, "
-            f"n_action_steps {n_action_steps.shape}, terminated {terminated.shape}"
+            f"n_action_steps {n_action_steps.shape}, terminated {terminated.shape}, "
+            f"truncated {truncated.shape}"
         )
     if n_action_steps.ndim != 1 or n == 0:
         raise ValueError("need a non-empty 1-D stream of chunks")
@@ -83,15 +86,20 @@ def discount_chunk_rewards(rewards, n_action_steps, gamma, n):
 
 
 def backward_lambda_pass(
-    r_chunk, values, next_values, n_action_steps, terminated, gamma, lam, n
+    r_chunk, values, next_values, n_action_steps, terminated, truncated, gamma, lam, n
 ):
-    """Backward GAE recursion over decision epochs; terminated cuts bootstrap."""
+    """Backward GAE recursion; terminated cuts all, truncated cuts recursion only."""
     advantages = np.empty(n, dtype=np.float64)  # [N] chunk advantages
     next_advantage = 0.0  # A_{k+1} scalar; zero past the end of the stream
     for k in range(n - 1, -1, -1):  # reversed decision epochs
         length = int(n_action_steps[k])  # scalar executed steps this chunk
         if terminated[k]:  # terminal epoch: no bootstrap, recursion cut
             delta = r_chunk[k] - values[k]  # scalar TD residual
+            continuation = 0.0  # scalar recursion weight
+        elif truncated[k]:  # timeout: bootstrap pre-reset V, but cut the
+            # post-reset episode out of the recursion (its A_{k+1} belongs
+            # to a fresh state, not to this chunk's continuation).
+            delta = r_chunk[k] + (gamma**length) * next_values[k] - values[k]  # scalar
             continuation = 0.0  # scalar recursion weight
         else:  # continuing epoch: bootstrap with gamma^L_k
             delta = r_chunk[k] + (gamma**length) * next_values[k] - values[k]  # scalar
@@ -118,6 +126,7 @@ def chunk_gae(
     gamma: float = 0.99,
     lam: float = 0.95,
     normalize: bool = True,
+    truncated=None,
 ):
     """Semi-MDP chunk-level GAE over a stream of executed chunks.
 
@@ -130,10 +139,13 @@ def chunk_gae(
             that dies mid-way stores only its executed length).
         terminated: [N] bool — True when chunk k ended the episode by
             termination (no bootstrap, recursion cut). Truncated/ongoing
-            chunks are False and bootstrap normally.
+            chunks are False here (truncation arrives via ``truncated``).
         gamma: discount (config: 0.99).
         lam: GAE lambda (config: 0.95).
         normalize: standardize advantages to zero mean, unit variance afterwards.
+        truncated: [N] bool or None — True when chunk k hit the TimeLimit
+            (bootstrap V(next obs) in δ, but cut the λ-recursion into the
+            post-reset episode). None behaves as all-False.
 
     Returns:
         (advantages [N], returns [N]) float64; returns = raw advantages + V
@@ -142,9 +154,13 @@ def chunk_gae(
     rewards, values, next_values, n_action_steps, terminated, n = as_chunk_arrays(
         rewards, values, next_values, n_action_steps, terminated
     )
-    validate_chunk_stream(rewards, values, next_values, n_action_steps, terminated, n)
+    if truncated is None:  # legacy callers (tests): no timeouts in stream
+        truncated = np.zeros(n, dtype=bool)  # [N]
+    else:
+        truncated = np.asarray(truncated, dtype=bool)  # [N]
+    validate_chunk_stream(rewards, values, next_values, n_action_steps, terminated, truncated, n)
     r_chunk = discount_chunk_rewards(rewards, n_action_steps, gamma, n)
     advantages = backward_lambda_pass(
-        r_chunk, values, next_values, n_action_steps, terminated, gamma, lam, n
+        r_chunk, values, next_values, n_action_steps, terminated, truncated, gamma, lam, n
     )
     return finalize_gae_outputs(advantages, values, normalize)
