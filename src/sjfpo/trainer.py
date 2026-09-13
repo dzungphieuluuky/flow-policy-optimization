@@ -140,19 +140,21 @@ class SJFPOTrainer:
         n_coeffs = int(actions.shape[-2])  # truncated Ka rows, not full H
         # Single shared (eps, tau) draw: l_old and l_new must compare old vs
         # new weights on the SAME samples, or rho is pure MC noise (eval decay).
-        eps = torch.randn(
-            N,
-            cfg.num_mc_samples,
-            n_coeffs,
-            int(actions.shape[-1]),
-            device=self.device,
-        )
+        # tau: fixed uniform quadrature nodes (no 1-D sampling noise, no clumping).
+        # eps: antithetic pairs {e, -e} halving Gaussian variance at equal cost.
+        num_mc = cfg.num_mc_samples
+        act_dim = int(actions.shape[-1])
         tau_range = cfg.tau_range
-        tau = (
-            torch.rand(cfg.num_mc_samples, device=self.device)
-            * (tau_range[1] - tau_range[0])
-            + tau_range[0]
-        )
+        tau = torch.linspace(
+            tau_range[0], tau_range[1], num_mc, device=self.device
+        )  # [num_mc_samples]
+        half = num_mc // 2
+        eps_half = torch.randn(N, half, n_coeffs, act_dim, device=self.device)
+        eps = torch.cat([eps_half, -eps_half], dim=1)  # [N, 2*half, Ka, act]
+        if eps.shape[1] < num_mc:  # odd num_mc_samples: one extra unpaired draw
+            eps = torch.cat(
+                [eps, torch.randn(N, 1, n_coeffs, act_dim, device=self.device)], dim=1
+            )
         with torch.inference_mode():
             l_old = self.compute_log_likelihood(
                 actions,
