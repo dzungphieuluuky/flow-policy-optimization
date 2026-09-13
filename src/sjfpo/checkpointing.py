@@ -12,7 +12,7 @@ same API with the real trainer bundle):
   counters, flags, dicts of floats, ...)
 
 Only plain ``dict`` mappings nest; every other value is a leaf. Manifest
-keys are dotted paths (e.g. ``"models.trunk"``, ``"counters.global_step"``).
+keys are dotted paths (e.g. ``"models.critic"``, ``"counters.global_step"``).
 
 On-disk layout inside ``dir_path``:
 
