@@ -12,6 +12,8 @@ from sjfpo.utils import (  # noqa: E402
     default_runs_base,
     default_smoke_dir,
     detect_runtime_env,
+    is_bf16_available,
+    resolve_compute_dtype,
 )
 
 
@@ -92,3 +94,12 @@ class TestBuilderIncludesUtils:
         assert "GITHUB_TOKEN" in b.CLONE_CELL
         assert b.REPO_SLUG in b.CLONE_CELL
         assert "getpass" in b.CLONE_CELL
+
+
+class TestBf16AutoDetect:
+    def test_detector_agrees_with_dtype(self):
+        import torch
+
+        avail = is_bf16_available()
+        assert isinstance(avail, bool)
+        assert resolve_compute_dtype() == (torch.bfloat16 if avail else torch.float32)
