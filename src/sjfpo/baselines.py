@@ -244,7 +244,7 @@ def mean_action_eval_policy(agent: Any) -> Any:
         obs_t = einx.id(
             "d -> 1 d", torch.as_tensor(obs, dtype=torch.float32)
         )  # [1, obs]
-        with torch.no_grad():
+        with torch.inference_mode():
             agent.enable_training_mode(False)
             actions, outputs = agent.act(obs_t, None, timestep=0, timesteps=1)
             agent.enable_training_mode(True)
@@ -354,8 +354,8 @@ def resolve_eval_policy(agent, eval_policy_fn):
 
 
 def query_agent_actions(agent, observations, states, global_step, total_steps):
-    """Run agent.act under no_grad; coerce the observation to a tensor."""
-    with torch.no_grad():
+    """Run agent.act under inference_mode; coerce the observation to a tensor."""
+    with torch.inference_mode():
         actions, outputs = agent.act(
             observations
             if torch.is_tensor(observations)
