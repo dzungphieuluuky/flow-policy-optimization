@@ -14,8 +14,8 @@
 ├── src/sjfpo/                     # production code (MuJoCo-only, flat Box, fp32, no autocast)
 │   ├── config.py                 # flags, RUN_MATRIX (45), SJFPO/PPO/SAC configs, build_filtered_matrix
 │   ├── runner.py                 # train_run (SJFPO entry)
-│   ├── trainer.py                # assemble_update (ASPO + value + Epps-Pulley SIGReg)
-│   ├── networks.py               # StateEncoders, SpectralEncoder, DiT flow, Critic, sigreg_loss
+│   ├── trainer.py                # assemble_update (ASPO + value)
+│   ├── networks.py               # StateEncoders, SpectralEncoder, DiT flow, Critic
 │   ├── dct_utils.py              # orthonormal DCT-II/III action chunks
 │   ├── evaluator.py              # Evaluator → 3-col CSV [episode,return,length]
 │   ├── baselines.py              # skrl PPO/SAC (shared GaussianPolicyImpl + baseline_train_loop)
@@ -38,7 +38,7 @@
 | Path | What it does | When you touch it |
 |---|---|---|
 | `src/sjfpo/config.py` | Single source of truth for flags, matrices, budgets, algorithm configs | Changing sweep size, budgets, `D/K/H/N` |
-| `src/sjfpo/networks.py` | Encoders + spectral + flow + SIGReg | Any shape/dtype or conditioning change |
+| `src/sjfpo/networks.py` | Encoders + spectral + flow | Any shape/dtype or conditioning change |
 | `src/sjfpo/runner.py` | `train_run` entry point | Adding an env |
 | `scripts/build_notebook.py` | Minimal Colab notebooks (clone/install/train cells) | Cell contents, repo slug |
 | `scripts/train.py` | Unified CLI (single / `--matrix` / `--tiny`) | CLI flags, dispatch |
