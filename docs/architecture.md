@@ -19,10 +19,9 @@ flowchart LR
   O --> DIT
   DIT --> V["v̂ velocity [B,Ka,Da] (Ka=top_p·H rows)"]
   V --> PAD["zero-pad time → [B,H,Da] → IDCT → clamp"]
-  V --> EUL["euler_sample t:1→0 → IDCT → clamp"]
-  O --> CE[critic_state_encoder\nLinear + sinus PE → 2× prenorm blocks → Z B,T=16,D=128]
-  CE --> CR["Critic V(s,a)\nreal actions +PE query encoded obs"]
-  CR --> TD["TD target R + γ^L·V(s',a')"]
+  V --> EUL["sample(mode=euler) t:1→0 → IDCT → clamp"]
+  O --> CR["Critic V(s,a)\nowns state encoder: Linear + sinus PE → 2× prenorm blocks → Z B,T=16,D=128\nreal actions +PE query encoded obs"]
+  CR --> TD["GAE-returns target (one-step TD fallback)"]
 ```
 
 Baseline path: `baselines.py` trains skrl 2.1.0 PPO/SAC on the same
@@ -32,15 +31,16 @@ frame-stacked env through the shared `baseline_train_loop`
 ## Key Contracts (break silently if flipped)
 
 - **t-convention:** `x_t = t·ε + (1−t)·a`, `t=1` noise, `t=0` data. Sampling
-  integrates **descending** `x ← x − δ·v̂` 1→0 (`fpo_core.euler_sample`,
+  integrates **descending** `x ← x − δ·v̂` 1→0 (`fpo_core.sample`,
   64 train / 16 eval steps). `trainer.py` samples `τ~U[0.005,0.995]`.
 - **Spectral order:** DCT-II over time (dim=1), keep the `K` lowest
   low-frequency bins (`K=max(1, round(top_p*T))`, default `0.3*16→5`), then
   with no normalization and no projector (last dim stays `obs_dim`). Tests assert
   invariance `B=1` vs `B=32`. (rFFT is reserved for observation.image.)
-- **One encoder:** spectral tokens come straight from the raw obs window
-  (no policy trunk); the only `StateEncoder` left is `critic_state_encoder`,
-  carrying value-TD grads. GAE values come from the critic encoder.
+- **One encoder per model:** spectral tokens come straight from the raw obs window
+  (no standalone policy state encoder — it lives inside `SJFOPolicyModel`);
+  `Critic` owns its critic state encoder, carrying value grads.
+  GAE values come from the Critic.
 - **Inference:** deterministic zero-sampling eval (`eps=0`), single
   `clamp(-1,1)` after IDCT in `runner.decode_chunk_actions`.
 - **Precision:** fp32 everywhere. No `autocast`/`half`/`bfloat16`/`torch.compile`.
