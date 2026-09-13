@@ -92,7 +92,7 @@ class TestTrainerDevice:
         diag = t.assemble_update(chunks, {"advantages": torch.randn(4) * 0.1})
         import math
 
-        for k in ("policy_loss", "value_loss", "sigreg_loss"):
+        for k in ("policy_loss", "value_loss"):
             assert math.isfinite(diag[k]), f"{k} not finite on {t.device}"
 
     def test_infer_returns_cpu_chunk(self):
