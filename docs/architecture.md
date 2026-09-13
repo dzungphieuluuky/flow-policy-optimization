@@ -23,7 +23,6 @@ flowchart LR
   O --> CE[critic_state_encoder\nLinear + sinus PE → 2× prenorm blocks → Z B,T=16,D=128]
   CE --> CR["Critic V(s,a)\nreal actions +PE query encoded obs"]
   CR --> TD["TD target R + γ^L·V(s',a')"]
-  CR --> SIG["Epps-Pulley SIGReg on critic latent\nP=1024, λ=0.1"]
 ```
 
 Baseline path: `baselines.py` trains skrl 2.1.0 PPO/SAC on the same
@@ -41,7 +40,7 @@ frame-stacked env through the shared `baseline_train_loop`
   invariance `B=1` vs `B=32`. (rFFT is reserved for observation.image.)
 - **One encoder:** spectral tokens come straight from the raw obs window
   (no policy trunk); the only `StateEncoder` left is `critic_state_encoder`,
-  carrying value-TD + SigReg grads. GAE values come from the critic encoder.
+  carrying value-TD grads. GAE values come from the critic encoder.
 - **Inference:** deterministic zero-sampling eval (`eps=0`), single
   `clamp(-1,1)` after IDCT in `runner.decode_chunk_actions`.
 - **Precision:** fp32 everywhere. No `autocast`/`half`/`bfloat16`/`torch.compile`.
@@ -50,4 +49,3 @@ frame-stacked env through the shared `baseline_train_loop`
 
 - Top-`p` low-frequency DCT tokens condition the flow on
   temporal structure of `Z`, not its DC offset.
-- Epps-Pulley SIGReg single-home (`sigreg_loss`, P=1024, λ=0.1) — no Barlow/VICReg twins.
