@@ -44,8 +44,9 @@ class VelocityMLP(nn.Module):
 
     Signature matches the project flow heads: ``net(x_t, t, cond, state)``
     returning a tensor with the same shape as ``x_t`` (trailing dims flattened
-    into the input features). ``cond``/``state`` are accepted and ignored
-    (unconditional toy).
+    into the input features). ``cond``/``state`` are REQUIRED (positional,
+    may be None) and ignored (unconditional toy) — omitting ``state`` must
+    fail loudly, never train a history-blind field silently.
     """
 
     def __init__(self, in_dim: int, out_dim: int | None = None):
@@ -59,7 +60,7 @@ class VelocityMLP(nn.Module):
             nn.Linear(128, out_dim),
         )
 
-    def forward(self, x_t: torch.Tensor, t, cond=None, state=None) -> torch.Tensor:
+    def forward(self, x_t: torch.Tensor, t, cond, state) -> torch.Tensor:
         temb = get_timestep_embedding(t, dim=8)
         if temb.shape[0] != x_t.shape[0]:
             temb = temb.expand(x_t.shape[0], -1)
@@ -88,7 +89,7 @@ def test_toy_gaussian_reference_gate(capsys):
         # eps [n, num_mc_samples=1, F=1]; tau scalar per step; v* = eps - a inside cfm_loss
         eps = torch.randn(4000, 1, 1)
         tau = float(torch.empty(1).uniform_(TAU_LO, TAU_HI))
-        loss = fpo_core.cfm_loss(net, data, eps, tau, cond=None)
+        loss = fpo_core.cfm_loss(net, data, eps, tau, cond=None, state=None)
         opt.zero_grad()
         loss.backward()
         opt.step()
@@ -137,7 +138,7 @@ def test_fitted_loss_below_shuffled_targets():
             eps = torch.randn(n, 1, generator=g)
             tau = float(torch.empty(1).uniform_(TAU_LO, TAU_HI, generator=g))
             x_t = tau * eps + (1.0 - tau) * data  # t*eps + (1-t)*a
-            v_hat = net(x_t, torch.full((n,), tau), None)
+            v_hat = net(x_t, torch.full((n,), tau), None, None)
             target = eps - data  # v* = eps - a
             if shuffle:
                 target = target[perm]  # break target<->anchor pairing
@@ -155,8 +156,8 @@ def test_fitted_loss_below_shuffled_targets():
     eps_ev = torch.randn(n_fix, 256, 1, generator=g_eval)
     tau_ev = draw_tau((n_fix, 256), g_eval)
     with torch.no_grad():
-        l_fit = fpo_core.flow_loglik(net_fit, fixtures, eps_ev, tau_ev, None)
-        l_shuf = fpo_core.flow_loglik(net_shuf, fixtures, eps_ev, tau_ev, None)
+        l_fit = fpo_core.flow_loglik(net_fit, fixtures, eps_ev, tau_ev, None, None)
+        l_shuf = fpo_core.flow_loglik(net_shuf, fixtures, eps_ev, tau_ev, None, None)
     wins = int((l_fit.mean(dim=1) < l_shuf.mean(dim=1)).sum().item())
     print(f"fitted<shuffled on {wins}/{n_fix} fixtures")
     assert wins >= math.ceil(0.95 * n_fix)  # integer count: no float-boundary flake
@@ -177,7 +178,7 @@ def test_ratio_shape_and_degeneracy_guard():
     tau_tr = draw_tau((4, config.SJFPO_CFG.num_mc_samples), g)
 
     opt = torch.optim.Adam(net_new.parameters(), lr=1e-3)
-    loss = fpo_core.cfm_loss(net_new, a, eps_tr, tau_tr, cond=None)
+    loss = fpo_core.cfm_loss(net_new, a, eps_tr, tau_tr, cond=None, state=None)
     opt.zero_grad()
     loss.backward()
     opt.step()  # the ONE perturbed update
@@ -185,8 +186,8 @@ def test_ratio_shape_and_degeneracy_guard():
     eps_ev = torch.randn(4, config.SJFPO_CFG.num_mc_samples, 8, 3, generator=g)
     tau_ev = draw_tau((4, config.SJFPO_CFG.num_mc_samples), g)
     with torch.no_grad():
-        l_old = fpo_core.flow_loglik(net_old, a, eps_ev, tau_ev, None)
-        l_new = fpo_core.flow_loglik(net_new, a, eps_ev, tau_ev, None)
+        l_old = fpo_core.flow_loglik(net_old, a, eps_ev, tau_ev, None, None)
+        l_new = fpo_core.flow_loglik(net_new, a, eps_ev, tau_ev, None, None)
         rho = fpo_core.flow_ratio(l_old, l_new)
 
     assert rho.shape == (4, config.SJFPO_CFG.num_mc_samples)
@@ -265,10 +266,10 @@ def test_policy_loss_fd_gradient():
     adv = torch.tensor([1.0])
 
     with torch.no_grad():
-        l_old = fpo_core.flow_loglik(net, a, eps, tau, None)
+        l_old = fpo_core.flow_loglik(net, a, eps, tau, None, None)
 
     def policy_loss_value() -> torch.Tensor:
-        l_new = fpo_core.flow_loglik(net, a, eps, tau, None)
+        l_new = fpo_core.flow_loglik(net, a, eps, tau, None, None)
         return fpo_core.policy_loss(l_old.detach(), l_new, adv)
 
     policy_loss_value().backward()

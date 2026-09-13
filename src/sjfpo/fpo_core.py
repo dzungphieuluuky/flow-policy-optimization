@@ -59,7 +59,7 @@ from __future__ import annotations
 
 import einx
 import torch
-
+from torch import nn
 from sjfpo import config
 
 
@@ -141,16 +141,21 @@ def repeat_conditioning(cond, num_mc: int):
     return tuple(repeat_conditioning(c, num_mc) for c in cond)
 
 
-def squared_error(net, a: torch.Tensor, eps: torch.Tensor, tau, cond) -> torch.Tensor:
+def squared_error(
+    net: nn.Module, a: torch.Tensor, eps: torch.Tensor, tau, cond, state
+) -> torch.Tensor:
     """Per-(chunk, mc-draw) squared velocity errors.
 
     Args:
-        net: Velocity network callable (x_t, t, cond) -> v_hat.
-            x_t: [B * num_mc_samples, *flow_shape], t: [B * num_mc_samples], cond: repeated.
+        net: Velocity network callable (x_t, t, cond, state) -> v_hat.
+            x_t: [B * num_mc_samples, *flow_shape], t: [B * num_mc_samples],
+            cond/state: MC-repeated (state is REQUIRED: dropping it silently
+            trains a history-blind field).
         a: Anchor chunks, shape [B, *flow_shape].
         eps: Noise draws, shape [B, num_mc_samples, *flow_shape].
         tau: Interpolation times, scalar | [num_mc_samples] | [B, num_mc_samples].
         cond: Conditioning [B, K, C] or tuple, or None.
+        state: Raw obs window [B, T, obs] or tuple, or None.
 
     Returns:
         Squared errors, shape [B * num_mc_samples, *flow_shape].
@@ -168,7 +173,10 @@ def squared_error(net, a: torch.Tensor, eps: torch.Tensor, tau, cond) -> torch.T
         -1, *flow_shape
     )  # [B * num_mc_samples, *flow_shape] -- keep torch: dynamic *flow_shape unpack has no einx equivalent
     v_hat = net(
-        x_t, tau_bn, repeat_conditioning(cond, num_mc)
+        x_t,
+        tau_bn,
+        repeat_conditioning(cond, num_mc),
+        repeat_conditioning(state, num_mc),
     )  # [B * num_mc_samples, *flow_shape]
     v_star = eps_flat - a_rep  # [B * num_mc_samples, D]  binding target velocity ε − a
     return (
@@ -178,17 +186,21 @@ def squared_error(net, a: torch.Tensor, eps: torch.Tensor, tau, cond) -> torch.T
     # %%
 
 
-def cfm_loss(net, a: torch.Tensor, eps: torch.Tensor, tau, cond) -> torch.Tensor:
+def cfm_loss(
+    net: nn.Module, a: torch.Tensor, eps: torch.Tensor, tau, cond, state
+) -> torch.Tensor:
     """Scalar CFM training loss: mean squared error against v* = ε − a.
 
     Args:
-        net: Velocity network callable (x_t, t, cond) -> v_hat.
-            x_t: [B * num_mc_samples, *flow_shape], t: [B * num_mc_samples], cond: repeated.
+        net: Velocity network callable (x_t, t, cond, state) -> v_hat.
+            x_t: [B * num_mc_samples, *flow_shape], t: [B * num_mc_samples],
+            cond/state: MC-repeated.
         a: Anchor chunks (DCT coefficients), shape [B, *flow_shape].
         eps: Noise draws, shape [B, num_mc_samples, *flow_shape].
         tau: Interpolation times, scalar | [num_mc_samples] | [B, num_mc_samples].
             Values in [0.005, 0.995] per config.SJFPO_CFG.tau_range.
         cond: Conditioning [B, K, C] or tuple, or None.
+        state: Raw obs window [B, T, obs] or tuple, or None.
 
     Returns:
         Scalar tensor — mean squared velocity error over all (B * num_mc_samples * D) elements.
@@ -197,18 +209,19 @@ def cfm_loss(net, a: torch.Tensor, eps: torch.Tensor, tau, cond) -> torch.Tensor
         - Training objective for the CFM velocity network.
         - No clamping applied here (clamping is in flow_loglik for ratio math).
     """
-    return squared_error(net, a, eps, tau, cond).mean()  # scalar
+    return squared_error(net, a, eps, tau, cond, state).mean()  # scalar
 
     # retained: test-only public API — exercised directly by tests/test_fpo_core.py
     # (ratio/loss unit tests); not called by the src train path. Keep per fn-consolidation D1.
 
 
 def flow_loglik(
-    net,
+    net: nn.Module,
     a: torch.Tensor,
     eps: torch.Tensor,
     tau,
     cond,
+    state,
     clamp: float | None = None,
 ) -> torch.Tensor:
     """Per-sample flow 'log-likelihood' losses ℓ_i, shape [B, num_mc_samples].
@@ -218,12 +231,14 @@ def flow_loglik(
     the quantities consumed by the ratio math (NOT the training objective).
 
     Args:
-        net: Velocity network callable (x_t, t, cond) -> v_hat.
-            x_t: [B * num_mc_samples, *flow_shape], t: [B * num_mc_samples], cond: repeated.
+        net: Velocity network callable (x_t, t, cond, state) -> v_hat.
+            x_t: [B * num_mc_samples, *flow_shape], t: [B * num_mc_samples],
+            cond/state: MC-repeated.
         a: Anchor chunks, shape [B, *flow_shape].
         eps: Noise draws, shape [B, num_mc_samples, *flow_shape].
         tau: Interpolation times, scalar | [num_mc_samples] | [B, num_mc_samples].
         cond: Conditioning [B, K, C] or tuple, or None.
+        state: Raw obs window [B, T, obs] or tuple, or None.
         clamp: Symmetric clamp value. Defaults to config.SJFPO_CFG.cfm_clamp (20.0).
 
     Returns:
@@ -238,7 +253,7 @@ def flow_loglik(
     _, _, _, flow_shape, num_mc = pair_tensor(a, eps, tau)
     b = a.shape[0]  # B
     per = (
-        squared_error(net, a, eps, tau, cond).flatten(1).mean(dim=1)
+        squared_error(net, a, eps, tau, cond, state).flatten(1).mean(dim=1)
     )  # [B * num_mc_samples]
     return torch.clamp(
         einx.id("(b m) -> b m", per, b=b, m=num_mc), min=-clamp, max=clamp
@@ -350,10 +365,6 @@ def policy_ratio(
     )  # [B, num_mc_samples]
     return flow_ratio(l_old, l_new_eff, cap)  # [B, num_mc_samples]
 
-    # retained: test-only public API — exercised directly by tests/test_fpo_core.py
-    # (finite-difference gradient test); not called by the src train path. Keep per fn-consolidation D1.
-
-
 def policy_loss(
     l_old: torch.Tensor,
     l_new: torch.Tensor,
@@ -391,7 +402,7 @@ def policy_loss(
 
 
 def euler_sample(
-    net,
+    net: nn.Module,
     shape,
     cond,
     steps: int,
