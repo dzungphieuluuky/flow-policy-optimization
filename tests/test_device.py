@@ -41,23 +41,18 @@ class TestTrainerDevice:
         from sjfpo.networks import (
             SpectralEncoder,
             SJFOPolicyModel,
-            StateEncoder,
             Critic,
         )
         from sjfpo.trainer import SJFPOTrainer
 
         cfg = SJFPOConfig(num_mc_samples=2)
         policy = SJFOPolicyModel(2, 4, hidden_size=cfg.hidden_size)
-        critic = Critic(hidden_size=cfg.hidden_size, act_dim=2)
+        critic = Critic(4, 2, hidden_size=cfg.hidden_size)
         spectral = SpectralEncoder(4, n_obs_steps=16)
-        critic_state_encoder = StateEncoder(
-            4, n_obs_steps=16, hidden_size=cfg.hidden_size
-        )
         return SJFPOTrainer(
             policy,
             critic,
             spectral,
-            critic_state_encoder,
             cfg=cfg,
             **kw,
         )
@@ -68,9 +63,9 @@ class TestTrainerDevice:
         for m in (
             t.policy_head,
             t.critic,
-            t.critic_state_encoder,
         ):
             assert next(m.parameters()).device == torch.device("cpu")
+        assert next(t.critic.state_encoder.parameters()).device == torch.device("cpu")
         assert list(t.spectral.parameters()) == []  # parameter-free DCT
 
     def test_update_on_default_device(self):
