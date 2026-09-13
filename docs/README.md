@@ -22,7 +22,7 @@
 ```
 stacked obs [T=16,obs_dim] ──► DCT-II(time) ──► K lowest bins (top_p=0.3 → 5) → tokens [5,obs] (raw, no projector)
 chunk actions [H=16,Da] ──► DCT ──► DiT-8 velocity (cond = time + pooled tokens) ──► euler_sample t:1→0 ──► IDCT
-stacked obs ──► critic_state_encoder (decoupled) ──► Critic V(s,a) ──► TD + Epps-Pulley SIGReg
+stacked obs ──► critic_state_encoder (decoupled) ──► Critic V(s,a) ──► TD
 ```
 
 **Binding contracts you cannot flip silently:** `x_t=t·ε+(1−t)·a` with
@@ -34,7 +34,7 @@ stacked obs ──► critic_state_encoder (decoupled) ──► Critic V(s,a) �
 `scripts/train.py --method {sjfpo,ppo,sac}` on MuJoCo locomotion
 (HalfCheetah/Walker2d/Hopper), 45-run matrix (`test_config.py` locks it).
 
-- `sjfpo`: spectral flow path above (trainer ASPO + value + Epps-Pulley SIGReg).
+- `sjfpo`: spectral flow path above (trainer ASPO + value).
 - `ppo` / `sac`: skrl 2.1.0 baselines via shared `baseline_train_loop`;
   eval is always 3-col CSV `[episode,return,length]`.
 
