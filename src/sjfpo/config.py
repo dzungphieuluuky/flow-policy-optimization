@@ -68,6 +68,9 @@ class SJFPOConfig:
         gamma: Discount factor. Default 0.99.
         gae_lambda: GAE lambda. Default 0.95.
         clip_range: ASPO trust-region width. Default 0.05.
+        clip_range_vf: PPO-style value-loss clip (return units, not ratios).
+            Defaults to clip_range; raise it toward return magnitudes when the
+            critic rate-limits. Default 0.05.
         cfm_clamp: Symmetric clamp on CFM losses. Default 20.0.
         log_ratio_cap: STE cap on log-ratio magnitude. Default 10.0.
         tau_range: Flow time range (t_min, t_max). Default (0.005, 0.995).
@@ -95,6 +98,7 @@ class SJFPOConfig:
     gamma: float = 0.99
     gae_lambda: float = 0.95
     clip_range: float = 0.05  # ASPO trust-region width
+    clip_range_vf: float = 0.05  # value-loss clip (return units)
     cfm_clamp: float = 20.0  # symmetric clamp on CFM losses
     log_ratio_cap: float = 10.0  # STE cap on log-ratio magnitude
     tau_range: tuple[float, float] = (0.005, 0.995)

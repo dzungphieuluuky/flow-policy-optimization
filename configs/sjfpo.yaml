@@ -9,6 +9,7 @@ wd: 0.0001
 gamma: 0.99
 gae_lambda: 0.95
 clip_range: 0.05
+clip_range_vf: 0.05
 cfm_clamp: 20.0
 log_ratio_cap: 10.0
 tau_range: [0.005, 0.995]

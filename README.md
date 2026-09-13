@@ -84,7 +84,7 @@ Exit codes: `0` success · `1` usage error · `2` runtime/divergence abort · `4
 
 Env switches: `SJFPO_DEVICE=cuda|cpu|auto` · `SJFPO_DISABLE_WANDB=1` (only wandb off switch; wandb is a required import) · `SJFPO_TINY_MATRIX=1` (same as `--tiny`) · `SJFPO_LEGACY_MUJOCO=1` (default, MuJoCo-only).
 
-Key `SJFPOConfig` defaults: `num_mc_samples=16`, `euler_train=16`, `euler_eval=16`, `chunks_per_update=128`, `n_obs_steps=16`, `chunk_size=16`, `executed_vs_predicted_ratio=0.5`, `top_p_spectral_tokens=0.3`, `hidden_size=128`, `dit_depth=8`, `dit_heads=4`, `dit_mlp_ratio=4.0`, `dit_time_dim=256`, `lr=1e-4`, `wd=1e-4`, `clip_range=0.05`, `cfm_clamp=20`, `log_ratio_cap=10`, `vf_coef=1.0`, `grad_clip=1.0`, `gamma=0.99`, `gae_lambda=0.95`.
+Key `SJFPOConfig` defaults: `num_mc_samples=16`, `euler_train=16`, `euler_eval=16`, `chunks_per_update=128`, `n_obs_steps=16`, `chunk_size=16`, `executed_vs_predicted_ratio=0.5`, `top_p_spectral_tokens=0.3`, `hidden_size=128`, `dit_depth=8`, `dit_heads=4`, `dit_mlp_ratio=4.0`, `dit_time_dim=256`, `lr=1e-4`, `wd=1e-4`, `clip_range=0.05`, `clip_range_vf=0.05`, `cfm_clamp=20`, `log_ratio_cap=10`, `vf_coef=1.0`, `grad_clip=1.0`, `gamma=0.99`, `gae_lambda=0.95`.
 
 ## Outputs
 

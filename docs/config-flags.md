@@ -35,5 +35,5 @@ Source of truth: `src/sjfpo/config.py`. YAML mirrors in `configs/`
 
 - **Shave runtime:** `SJFPO_TINY_MATRIX=1`, `scripts/train.py --total-steps N`,
   or shrink the matrix with `--methods/--envs/--seeds`.
-- **Change binding:** `clip_range / cfm_clamp / vf_coef / top_p / H`
+- **Change binding:** `clip_range / clip_range_vf / cfm_clamp / vf_coef / top_p / H`
   live in `SJFPOConfig` (mirrored in `configs/sjfpo.yaml`).
