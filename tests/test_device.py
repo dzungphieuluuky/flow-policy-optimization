@@ -35,33 +35,30 @@ class TestResolveDevice:
         assert resolve_device() == torch.device("cpu")
 
 
-class TestTrainerDevice:
-    def trainer(self, **kw):
-        from sjfpo.config import SJFPOConfig
-        from sjfpo.networks import (
-            SpectralEncoder,
-            SJFOPolicyModel,
-            Critic,
-        )
-        from sjfpo.trainer import SJFPOTrainer
+class TestPolicyDevice:
+    def policy(self, **kw):
+        from lerobot.configs.types import FeatureType, PolicyFeature
 
-        cfg = SJFPOConfig(num_mc_samples=2)
-        policy = SJFOPolicyModel(2, 4, hidden_size=cfg.hidden_size)
-        critic = Critic(4, 2, hidden_size=cfg.hidden_size)
-        spectral = SpectralEncoder(4, n_obs_steps=16)
-        return SJFPOTrainer(
-            policy,
-            critic,
-            spectral,
-            cfg=cfg,
-            **kw,
-        )
+        from sjfpo.configuration_sjfpo import SJFPOConfig
+        from sjfpo.modeling_sjfpo import SJFPOPolicy
 
-    def test_modules_live_on_trainer_device(self):
-        t = self.trainer(device="cpu")
-        assert t.device == torch.device("cpu")
+        device = kw.pop("device", None)
+        cfg = SJFPOConfig(
+            num_mc_samples=2,
+            input_features={
+                "observation.state": PolicyFeature(FeatureType.STATE, (4,))
+            },
+            output_features={"action": PolicyFeature(FeatureType.ACTION, (2,))},
+        )
+        policy = SJFPOPolicy(cfg)
+        if device is not None:
+            policy = policy.to(device)
+        return policy
+
+    def test_modules_live_on_policy_device(self):
+        t = self.policy(device="cpu")
         for m in (
-            t.policy_head,
+            t.actor,
             t.critic,
         ):
             assert next(m.parameters()).device == torch.device("cpu")
@@ -69,33 +66,26 @@ class TestTrainerDevice:
         assert list(t.spectral.parameters()) == []  # parameter-free DCT
 
     def test_update_on_default_device(self):
-        t = self.trainer()
-        chunks = [
-            {
-                "observation.state": torch.randn(16, 4),
-                "action": torch.randn(16, 2) * 0.5,
-                "next.action": torch.randn(16, 2) * 0.5,
-                "next.observation.state": torch.randn(16, 4),
-                "next.reward": torch.rand(8),
-                "next.done": torch.tensor(False),
-                "next.truncated": torch.tensor(False),
-                "n_action_steps": torch.tensor(8),
-                "clip_count": torch.tensor(0),
-            }
-            for _ in range(4)
-        ]
-        diag = t.assemble_update(chunks, {"advantages": torch.randn(4) * 0.1})
+        t = self.policy()
+        batch = {
+            "observation.state": torch.randn(4, 16, 4),
+            "action": torch.randn(4, 16, 2) * 0.5,
+            "action_is_pad": torch.zeros(4, 16, dtype=torch.bool),
+            "advantages": torch.randn(4) * 0.1,
+            "returns": torch.randn(4) * 10.0,
+        }
+        loss, info = t(batch)
         import math
 
         for k in ("policy_loss", "value_loss"):
-            assert math.isfinite(diag[k]), f"{k} not finite on {t.device}"
+            assert math.isfinite(info[k]), f"{k} not finite"
 
     def test_infer_returns_cpu_chunk(self):
         from sjfpo.config import SJFPOConfig
         from sjfpo.runner import infer_chunk_actions
 
-        t = self.trainer()
+        t = self.policy()
         cfg = SJFPOConfig()
-        out = infer_chunk_actions(torch.randn(16, 4), t.spectral, t.policy_head, cfg)
+        out = infer_chunk_actions(torch.randn(16, 4), t.spectral, t.actor, cfg)
         assert out.device == torch.device("cpu")
         assert out.shape == (cfg.chunk_size, 2)

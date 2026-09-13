@@ -106,31 +106,23 @@ class TestCheckpointGolden:
 
 
 class TestTrainerGolden:
-    def trainer(self):
-        from sjfpo.config import SJFPOConfig
-        from sjfpo.networks import (
-            SJFOPolicyModel,
-            SpectralEncoder,
-            Critic,
-        )
-        from sjfpo.trainer import SJFPOTrainer
+    def policy(self):
+        from lerobot.configs.types import FeatureType, PolicyFeature
+
+        from sjfpo.configuration_sjfpo import SJFPOConfig
+        from sjfpo.modeling_sjfpo import SJFPOPolicy
 
         obs_dim, act_dim = 17, 4
-        cfg = SJFPOConfig(num_mc_samples=2)
-        policy_head = SJFOPolicyModel(act_dim, obs_dim, hidden_size=cfg.hidden_size)
-        critic = Critic(obs_dim, act_dim, hidden_size=cfg.hidden_size)
-        spectral = SpectralEncoder(obs_dim, n_obs_steps=cfg.n_obs_steps)
-        return (
-            SJFPOTrainer(
-                policy_head=policy_head,
-                critic=critic,
-                spectral=spectral,
-                cfg=cfg,
-            ),
-            cfg,
-            obs_dim,
-            act_dim,
+        cfg = SJFPOConfig(
+            num_mc_samples=2,
+            input_features={
+                "observation.state": PolicyFeature(FeatureType.STATE, (obs_dim,))
+            },
+            output_features={
+                "action": PolicyFeature(FeatureType.ACTION, (act_dim,))
+            },
         )
+        return SJFPOPolicy(cfg), cfg, obs_dim, act_dim
 
     def chunks(self, cfg, obs_dim, act_dim, n=4):
         torch.manual_seed(0)
@@ -139,8 +131,8 @@ class TestTrainerGolden:
             chunks.append(
                 {
                     "observation.state": torch.randn(cfg.n_obs_steps, obs_dim),
-                    "action": torch.randn(cfg.chunk_size, act_dim) * 0.5,
-                    "next.action": torch.randn(cfg.chunk_size, act_dim) * 0.5,
+                    "action": torch.randn(cfg.horizon, act_dim) * 0.5,
+                    "next.action": torch.randn(cfg.horizon, act_dim) * 0.5,
                     "next.observation.state": torch.randn(cfg.n_obs_steps, obs_dim),
                     "next.reward": torch.rand(8),
                     "next.done": torch.tensor(False),
@@ -154,38 +146,40 @@ class TestTrainerGolden:
         }
         return chunks, meta
 
-    def test_assemble_update_keys_finite(self):
-        trainer, cfg, obs_dim, act_dim = self.trainer()
-        chunks, meta = self.chunks(cfg, obs_dim, act_dim)
-        diag = trainer.assemble_update(chunks, meta)
-        assert set(diag) == {
-            "policy_loss",
-            "value_loss",
-            "clip_fraction",
-            "mean_log_ratio",
-            "clamp_engagement",
+    def batch(self, chunks, meta, n):
+        lengths = [int(c["n_action_steps"]) for c in chunks]
+        h = chunks[0]["action"].shape[0]
+        return {
+            "observation.state": torch.stack([c["observation.state"] for c in chunks]),
+            "action": torch.stack([c["action"] for c in chunks]),
+            "action_is_pad": torch.arange(h).unsqueeze(0)
+            >= torch.tensor(lengths).unsqueeze(1),
+            "advantages": meta["advantages"],
+            "returns": torch.randn(n) * 10.0,
         }
-        for v in diag.values():
+
+    def test_assemble_update_keys_finite(self):
+        policy, cfg, obs_dim, act_dim = self.policy()
+        chunks, meta = self.chunks(cfg, obs_dim, act_dim)
+        loss, info = policy(self.batch(chunks, meta, 4))
+        assert set(info) == {"policy_loss", "value_loss", "mean_log_ratio"}
+        for v in info.values():
             assert isinstance(v, float)
             assert np.isfinite(v)
+        assert torch.isfinite(loss)
 
     def test_compute_log_likelihood_shape(self):
-        trainer, cfg, obs_dim, act_dim = self.trainer()
-        dev = trainer.device
+        policy, cfg, obs_dim, act_dim = self.policy()
+        dev = next(policy.parameters()).device
         torch.manual_seed(1)
-        actions = (torch.randn(4, cfg.chunk_size, act_dim) * 0.5).to(dev)
-        states = torch.randn(4, cfg.n_obs_steps, obs_dim).to(dev)
-        cond = trainer.spectral(states)
-        n_coeffs = max(1, round(cfg.top_p_spectral_tokens * cfg.chunk_size))
-        ll = trainer.compute_log_likelihood(
-            actions[:, :n_coeffs, :],
-            cond,
-            states,
-            act_dim=act_dim,
-            n_coeffs=n_coeffs,
-        )
-        assert ll.shape == (4, cfg.num_mc_samples)
-        assert torch.isfinite(ll).all()
+        n_coeffs = max(1, round(cfg.top_p_spectral_tokens * cfg.horizon))
+        x_t = torch.randn(4 * cfg.num_mc_samples, n_coeffs, act_dim).to(dev)
+        tau = torch.rand(4 * cfg.num_mc_samples, device=dev)
+        condition = torch.randn(4 * cfg.num_mc_samples, 5, obs_dim).to(dev)
+        states = torch.randn(4 * cfg.num_mc_samples, cfg.n_obs_steps, obs_dim).to(dev)
+        v = policy.compute_predicted_velocity(x_t, tau, condition, states)
+        assert v.shape == (4 * cfg.num_mc_samples, n_coeffs, act_dim)
+        assert torch.isfinite(v).all()
 
 
 class TestBaselinesHelpersGolden:

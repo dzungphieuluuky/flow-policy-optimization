@@ -104,7 +104,7 @@ def test_toy_gaussian_reference_gate(capsys):
         samples = fpo_core.sample(
             net,
             (4000, 1),
-            cond=None,
+            condition=None,
             steps=64,
             generator=torch.Generator().manual_seed(7),
         )

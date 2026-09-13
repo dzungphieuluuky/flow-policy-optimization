@@ -283,7 +283,7 @@ class TestTrainRun:
             n_obs_steps=16,
         )
 
-        # NaN rewards → SJFPOAborted from trainer, should exit cleanly
+        # NaN rewards → SJFPOAborted from the policy, should exit cleanly
         with pytest.raises((RuntimeError, ValueError)):
             train_run(
                 env=env,
@@ -404,13 +404,26 @@ class TestChunkBootstrapValues:
     """compute_chunk_values bootstraps every non-terminated chunk."""
 
     def test_continue_chains_and_tail_bootstraps(self):
+        from lerobot.configs.types import FeatureType, PolicyFeature
+
+        from sjfpo.configuration_sjfpo import SJFPOConfig as SJFPOPolicyConfig
+        from sjfpo.modeling_sjfpo import SJFPOPolicy
         from sjfpo.runner import compute_chunk_values
 
         torch.manual_seed(0)
         cfg = SJFPOConfig()
         obs_dim, act_dim = 4, 2
         H, T = cfg.chunk_size, cfg.n_obs_steps
-        critic = Critic(obs_dim, act_dim, hidden_size=cfg.hidden_size)
+        policy = SJFPOPolicy(
+            SJFPOPolicyConfig(
+                input_features={
+                    "observation.state": PolicyFeature(FeatureType.STATE, (obs_dim,))
+                },
+                output_features={
+                    "action": PolicyFeature(FeatureType.ACTION, (act_dim,))
+                },
+            )
+        )
 
         def chunk(done, truncated, n):
             return {
@@ -433,7 +446,8 @@ class TestChunkBootstrapValues:
         # Open-loop chaining: chunk0's next pair IS chunk1's state/action.
         chunks[0]["next.observation.state"] = chunks[1]["observation.state"].clone()
         chunks[0]["next.action"] = chunks[1]["action"].clone()
-        values, next_values = compute_chunk_values(critic, chunks)
-        assert next_values[0] == values[1]  # interior continue bootstraps V_{k+1}
+        values, next_values = compute_chunk_values(policy, chunks)
+        # Same-chunk bootstrap, equal up to batched-GEMM rounding (1-2 ULP).
+        assert abs(float(next_values[0]) - float(values[1])) < 1e-6
         assert next_values[1] == 0.0  # terminated cuts recursion
         assert next_values[2] != 0.0  # budget-cut tail bootstraps live window

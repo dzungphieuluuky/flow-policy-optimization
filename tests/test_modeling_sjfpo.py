@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import math
 import sys
 from pathlib import Path
 
+import pytest
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -48,16 +50,16 @@ def test_name_and_config_class_and_modules():
     assert policy.name == "sjfpo"
     assert policy.config_class is SJFPOConfig
     for m in (
-        policy.policy_head,
+        policy.actor,
         policy.spectral,
         policy.critic,
         policy.obs_normalizer,
-        policy.old_policy_head,
+        policy.old_actor,
     ):
         assert isinstance(m, torch.nn.Module)
     # Snapshot matches live weights at init (unit ratios).
     for p_old, p_live in zip(
-        policy.old_policy_head.parameters(), policy.policy_head.parameters()
+        policy.old_actor.parameters(), policy.actor.parameters()
     ):
         assert torch.equal(p_old, p_live)
 
@@ -95,11 +97,11 @@ def test_forward_finite_loss_and_native_dict():
 def test_optim_params_exclude_snapshot():
     policy = SJFPOPolicy(make_config())
     optim_ids = {id(p) for p in policy.get_optim_params()["params"]}
-    live_ids = {id(p) for p in policy.policy_head.parameters()} | {
+    live_ids = {id(p) for p in policy.actor.parameters()} | {
         id(p) for p in policy.critic.parameters()
     }
     assert optim_ids == live_ids
-    snap_ids = {id(p) for p in policy.old_policy_head.parameters()}
+    snap_ids = {id(p) for p in policy.old_actor.parameters()}
     assert optim_ids.isdisjoint(snap_ids)
 
 
@@ -115,29 +117,75 @@ def test_compute_predicted_velocity_old_vs_live():
     policy = SJFPOPolicy(make_config())
     x_t = torch.randn(4, 5, ACT_DIM)
     tau = torch.rand(4)
-    cond = torch.randn(4, 5, OBS_DIM)
+    condition = torch.randn(4, 5, OBS_DIM)
     states = torch.randn(4, 16, OBS_DIM)
-    v_live = policy.compute_predicted_velocity(x_t, tau, cond, states)
-    v_old = policy.compute_predicted_velocity(x_t, tau, cond, states, old=True)
+    v_live = policy.compute_predicted_velocity(x_t, tau, condition, states)
+    v_old = policy.compute_predicted_velocity(x_t, tau, condition, states, old=True)
     assert torch.equal(v_live, v_old)  # snapshot matches at init
     with torch.no_grad():
         # Perturb the readout bias: the zero-init final layer would swallow
         # any upstream perturbation, so touch the output directly.
-        policy.policy_head.out.bias.add_(1.0)
-    v_live2 = policy.compute_predicted_velocity(x_t, tau, cond, states)
-    v_old2 = policy.compute_predicted_velocity(x_t, tau, cond, states, old=True)
+        policy.actor.out.bias.add_(1.0)
+    v_live2 = policy.compute_predicted_velocity(x_t, tau, condition, states)
+    v_old2 = policy.compute_predicted_velocity(x_t, tau, condition, states, old=True)
     assert not torch.equal(v_live2, v_old2)
 
 
 def test_snapshot_refresh_tracks_live_weights():
     policy = SJFPOPolicy(make_config())
     with torch.no_grad():
-        next(policy.policy_head.parameters()).add_(1.0)
+        next(policy.actor.parameters()).add_(1.0)
     policy.snapshot_behavior_policy()
     for p_old, p_live in zip(
-        policy.old_policy_head.parameters(), policy.policy_head.parameters()
+        policy.old_actor.parameters(), policy.actor.parameters()
     ):
         assert torch.equal(p_old, p_live)
+
+
+def test_forward_deterministic_same_input():
+    torch.manual_seed(0)
+    p1 = SJFPOPolicy(make_config())
+    torch.manual_seed(0)
+    loss1, info1 = p1(make_batch())
+    torch.manual_seed(0)
+    p2 = SJFPOPolicy(make_config())
+    torch.manual_seed(0)
+    loss2, info2 = p2(make_batch())
+    assert loss1.item() == loss2.item()
+    assert info1 == info2
+
+
+def test_forward_nan_raises_aborted():
+    from sjfpo.modeling_sjfpo import SJFPOAborted
+
+    policy = SJFPOPolicy(make_config())
+    batch = make_batch()
+    batch["returns"] = torch.full((2,), float("nan"))
+    with pytest.raises(SJFPOAborted):
+        policy(batch)
+
+
+def test_forward_clipped_value_loss_engages():
+    torch.manual_seed(3)
+    p_plain = SJFPOPolicy(make_config())
+    _, info_plain = p_plain(make_batch())
+    torch.manual_seed(3)
+    p_clip = SJFPOPolicy(make_config())
+    batch_far = dict(make_batch(), values=torch.full((2,), 1e6))
+    _, info_clip = p_clip(batch_far)
+    assert math.isfinite(info_clip["value_loss"])
+    assert info_clip["value_loss"] != info_plain["value_loss"]
+
+
+def test_critic_encoder_receives_grads():
+    policy = SJFPOPolicy(make_config())
+    loss, _ = policy(make_batch())
+    policy.zero_grad()
+    loss.backward()
+    grads = [p.grad for p in policy.critic.state_encoder.parameters()]
+    assert all(
+        g is not None and g.abs().sum() > 0 for g in grads
+    ), "critic state encoder missing grads"
 
 
 def test_save_pretrained_roundtrip(tmp_path):

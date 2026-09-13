@@ -3,8 +3,8 @@
 TDD: written BEFORE the implementation exists — the first pytest run must
 fail RED on the missing module, then go GREEN once checkpointing.py lands.
 
-Contract under test (generic; sjfpo.trainer does not exist yet and task 8
-will consume this exact API):
+Contract under test (generic; the runner consumes this exact API with the
+policy bundle):
 
 * ``save_checkpoint(dir_path, state)`` serializes a nested ``state`` mapping
   whose leaves are torch modules / optimizers / tensors / plain python

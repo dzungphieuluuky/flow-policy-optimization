@@ -26,12 +26,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from sjfpo.collector import Transition, collect_chunks  # noqa: E402
 from sjfpo.config import SJFPOConfig  # noqa: E402
-from sjfpo.networks import (  # noqa: E402
-    SJFOPolicyModel,
-    SpectralEncoder,
-    Critic,
-)
-from sjfpo.trainer import SJFPOTrainer  # noqa: E402
 
 OBS_DIM = 4
 ACT_DIM = 2
@@ -189,17 +183,20 @@ class TestCollectorV4:
             # ---------------------------------------------------------------------------
 
 
-def make_trainer_v4(**overrides) -> SJFPOTrainer:
-    cfg = SJFPOConfig(**overrides) if overrides else SJFPOConfig()
-    policy_head = SJFOPolicyModel(ACT_DIM, OBS_DIM, hidden_size=cfg.hidden_size)
-    critic = Critic(OBS_DIM, ACT_DIM, hidden_size=cfg.hidden_size)
-    spectral = SpectralEncoder(OBS_DIM, n_obs_steps=16)
-    return SJFPOTrainer(
-        policy_head=policy_head,
-        critic=critic,
-        spectral=spectral,
-        cfg=cfg,
+def make_policy_v4(**overrides):
+    from lerobot.configs.types import FeatureType, PolicyFeature
+
+    from sjfpo.configuration_sjfpo import SJFPOConfig
+    from sjfpo.modeling_sjfpo import SJFPOPolicy
+
+    cfg = SJFPOConfig(
+        input_features={
+            "observation.state": PolicyFeature(FeatureType.STATE, (OBS_DIM,))
+        },
+        output_features={"action": PolicyFeature(FeatureType.ACTION, (ACT_DIM,))},
+        **overrides,
     )
+    return SJFPOPolicy(cfg)
 
 
 def make_transitions(n: int = 32):
@@ -221,36 +218,40 @@ def make_transitions(n: int = 32):
     return out
 
 
-def make_meta(n: int = 32):
-    return {"advantages": torch.randn(n) * 0.1}
+def make_forward_batch(chunks, n: int):
+    lengths = [int(c["n_action_steps"]) for c in chunks]
+    h = chunks[0]["action"].shape[0]
+    return {
+        "observation.state": torch.stack([c["observation.state"] for c in chunks]),
+        "action": torch.stack([c["action"] for c in chunks]),
+        "action_is_pad": torch.arange(h).unsqueeze(0)
+        >= torch.tensor(lengths).unsqueeze(1),
+        "advantages": torch.randn(n) * 0.1,
+        "returns": torch.randn(n) * 10.0,
+    }
 
 
 class TestNoAuxHeadV4:
     def test_no_aux_head_or_next_state_loss(self):
         """The next-state path is deleted: no head, no loss key."""
-        trainer = make_trainer_v4()
-        assert not hasattr(trainer, "aux_head"), "aux_head must be gone"
-        diag = trainer.assemble_update(make_transitions(8), make_meta(8))
-        assert "next_state_loss" not in diag
-        assert set(diag) == {
-            "policy_loss",
-            "value_loss",
-            "clip_fraction",
-            "mean_log_ratio",
-            "clamp_engagement",
-        }
+        policy = make_policy_v4()
+        assert not hasattr(policy, "aux_head"), "aux_head must be gone"
+        _, info = policy(make_forward_batch(make_transitions(8), 8))
+        assert "next_state_loss" not in info
+        assert set(info) == {"policy_loss", "value_loss", "mean_log_ratio"}
 
     def test_policy_head_in_optimizer_and_moves(self):
-        trainer = make_trainer_v4()
-        opt_ids = {
-            id(p) for group in trainer.optimizer.param_groups for p in group["params"]
-        }
-        for name, p in trainer.policy_head.named_parameters():
-            assert id(p) in opt_ids, f"policy_head.{name} not in optimizer"
-        before = {n: p.clone() for n, p in trainer.policy_head.named_parameters()}
-        trainer.assemble_update(make_transitions(32), make_meta())
+        policy = make_policy_v4()
+        opt = torch.optim.AdamW(policy.get_optim_params()["params"])
+        opt_ids = {id(p) for group in opt.param_groups for p in group["params"]}
+        for name, p in policy.actor.named_parameters():
+            assert id(p) in opt_ids, f"actor.{name} not in optimizer"
+        before = {n: p.clone() for n, p in policy.actor.named_parameters()}
+        opt.zero_grad()
+        loss, _ = policy(make_forward_batch(make_transitions(32), 32))
+        loss.backward()
+        opt.step()
         moved = any(
-            not torch.equal(p, before[n])
-            for n, p in trainer.policy_head.named_parameters()
+            not torch.equal(p, before[n]) for n, p in policy.actor.named_parameters()
         )
-        assert moved, "policy_head parameters did not move after update"
+        assert moved, "actor parameters did not move after update"

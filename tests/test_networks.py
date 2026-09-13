@@ -472,12 +472,38 @@ def test_state_encoder_position_sensitive():
     assert not torch.allclose(z[:, 0, :], z[:, 1, :], atol=1e-6)
 
 
-def test_sinusoidal_positional_encoding_shape():
+def test_action_encoder_matches_state_encoder():
+    """ActionEncoder duplicates StateEncoder (same keys, same unmasked behavior)."""
     nets = make_nets()
-    pe = nets.sinusoidal_positional_encoding(STATE_T, ZD, torch.device("cpu"))
-    assert pe.shape == (STATE_T, ZD)
-    assert torch.isfinite(pe).all()
-    assert not torch.allclose(pe[0], pe[1])  # positions differ
+    torch.manual_seed(20)
+    enc = nets.ActionEncoder(act_dim=6)
+    ref = nets.StateEncoder(obs_dim=6)
+    assert [n for n, _ in enc.named_parameters()] == [n for n, _ in ref.named_parameters()]
+    ref.load_state_dict(enc.state_dict())
+    x = torch.randn(3, STATE_T, 6)
+    assert torch.equal(enc(x), ref(x))
+
+
+def test_critic_value_ignores_padded_tails():
+    """Garbage tails must not move V: key-masked in the encoder, dropped in pooling."""
+    nets = make_nets()
+    torch.manual_seed(21)
+    critic = nets.Critic(OBS, 3)
+    s = torch.randn(2, STATE_T, OBS)
+    a = torch.randn(2, CHUNK, 3)
+    garb = a.clone()
+    garb[:, 8:, :] = 100.0
+    v1 = critic(s, a, [8, 8])
+    v2 = critic(s, garb, [8, 8])
+    assert torch.allclose(v1, v2, atol=1e-6)
+
+
+def test_positional_encoding_shape():
+    nets = make_nets()
+    out = nets.PositionalEncoding()(torch.zeros(2, STATE_T, ZD))
+    assert out.shape == (2, STATE_T, ZD)
+    assert torch.isfinite(out).all()
+    assert not torch.allclose(out[:, 0, :], out[:, 1, :])  # positions differ
 
 
 def test_policy_reads_raw_state_prefix():
