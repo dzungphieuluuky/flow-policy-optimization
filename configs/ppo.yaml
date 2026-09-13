@@ -1,5 +1,5 @@
 # skrl PPO baseline defaults — mirrors src/sjfpo/config.py:PPOConfig (frozen, skrl 2.1.0).
-# CPU-first (device hardcoded cpu in baselines.py). Frame-stack n_obs_steps=16 passthrough.
+# CUDA-default with CPU fallback (resolve_device, SJFPO_DEVICE override). Frame-stack n_obs_steps=16 passthrough.
 rollouts: 2048
 learning_epochs: 10
 mini_batches: 8
