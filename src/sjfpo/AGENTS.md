@@ -1,12 +1,12 @@
 # AGENTS — src/sjfpo
 
 ## Overview
-MuJoCo-only (LEGACY_MUJOCO=True) hotspot — single live train path, chunked flow policy: Transition-dict rollout (H=16/n=8/T=16, next.action chaining) → chunk GAE → ASPO + V(s,a) TD-critic + Epps-Pulley SIGReg; CUDA-default (CPU fallback) fp32, einx.id shapes (collector/fpo_core/trainer + dct_utils/baselines), RUN_MATRIX 45. analysis.py is notebook-invoked (train.py never imports it), everything else is live.
+MuJoCo-only (LEGACY_MUJOCO=True) hotspot — single live train path, chunked flow policy: Transition-dict rollout (H=16/n=8/T=16, next.action chaining) → chunk GAE → ASPO + V(s,a) TD-critic; CUDA-default (CPU fallback) fp32, einx.id shapes (collector/fpo_core/trainer + dct_utils/baselines), RUN_MATRIX 45. analysis.py is notebook-invoked (train.py never imports it), everything else is live.
 
 ## Structure
 ```
-networks.py      StateEncoder (critic only) + SpectralEncoder(raw-obs DCT-II, parameter-free) + DiT-8 SJFOPolicyModel ([state;action] tokens) + 2-block cross-attn Critic V(s,a trans real-space +PE query) + Epps-Pulley SIGReg on critic latent (single home)
-trainer.py        389L — SJFPOTrainer.assemble_update: ASPO (truncated Ka coeffs) + V(s,a) TD-critic on IDCT real actions (R + γ^L·V(s',a')) + critic-latent SIGReg; optimizer = policy+critic+critic trunk; per-module grad-clip; NaN-guard with sink dump
+networks.py      StateEncoder (critic only) + SpectralEncoder(raw-obs DCT-II, parameter-free) + DiT-8 SJFOPolicyModel ([state;action] tokens) + 2-block cross-attn Critic V(s,a trans real-space +PE query)
+trainer.py        389L — SJFPOTrainer.assemble_update: ASPO (truncated Ka coeffs) + V(s,a) TD-critic on IDCT real actions (R + γ^L·V(s',a')); optimizer = policy+critic+critic trunk; per-module grad-clip; NaN-guard with sink dump
 collector.py      241L — Transition TypedDict (9 LeRobot keys incl. next.action chaining); full-H open-loop chunks; action anchor = DCT of FULL SCALED proposed chunk [H,Da]; terminated kept for GAE, dropped from update
 gae.py            137L — chunk semi-MDP GAE (R_k intradiscounted, γ^L bootstrap, (γλ)^L recursion); terminated never bootstraps; numpy fp64, advantages centered
 fpo_core.py       432L — CFM/SQL-ℓ [N,m], STE-capped ρ, ASPO piecewise (PPO-clip Â≥0 / SPO Â<0), mean-of-ψ objective, euler_sample t:1→0; total_update_loss (single weight home)
@@ -24,7 +24,7 @@ utils.py           23L — shared pure helpers (safe_float_value), no sjfpo impo
 
 ## Where to Look
 - `collector.py:51` `Transition`: 9 LeRobot keys (`observation.state [T,Do]`, `action [H,Da]` DCT, `next.action [H,Da]` chained/behavior proposal, `next.*`, `n_action_steps` i64, `clip_count` i64); `next.reward` is variable-length `[L_k]`
-- `trainer.py:assemble_update`: stack (guards H/T) → spectral `cond [N,K,obs]` (raw bins) → policy ℓ/ρ/ψ `[N,m]` → critic trunk `Z [N,T,D]` → V(s,a) TD-critic → SigReg over critic-h → clip → AdamW
+- `trainer.py:assemble_update`: stack (guards H/T) → spectral `cond [N,K,obs]` (raw bins) → policy ℓ/ρ/ψ `[N,m]` → critic trunk `Z [N,T,D]` → V(s,a) TD-critic → clip → AdamW
 - `networks.py:SpectralEncoder`: DCT-II raw obs `[B,T,obs]` over time → keep K lowest bins (round(top_p*T)) → `[B,K,obs]` raw tokens (parameter-free; rFFT reserved for observation.image)
 - `gae.py:chunk_gae`: per-chunk `R_k`, `δ_k`, backward `(γλ)^L`; terminated cuts recursion, truncated bootstraps from last next-frame
 - `runner.py:build_training_components`: policy/critic/spectral/critic_state_encoder (no policy trunk, no target nets, no aux head); `compute_chunk_values` V(s,a) via critic encoder, bootstraps truncated only
@@ -33,7 +33,7 @@ utils.py           23L — shared pure helpers (safe_float_value), no sjfpo impo
 ## Code Map
 | File | Export | Caller |
 |---|---|---|
-| `networks.py` | `StateEncoder` `SpectralEncoder` `SJFOPolicyModel` `Critic` `sigreg_loss` `DiTBlock` `CrossAttentionBlock` | `trainer.py` `runner.py` (live) |
+| `networks.py` | `StateEncoder` `SpectralEncoder` `SJFOPolicyModel` `Critic` `sigreg_loss` (test-only) `DiTBlock` `CrossAttentionBlock` | `trainer.py` `runner.py` (live) |
 | `collector.py` | `Transition` `collect_chunks` | `trainer.py` `runner.py` `tests/test_transition_v4.py` |
 | `dct_utils.py` | `dct` `idct` `discounted_chunk_reward` | `collector.py` `fpo_core.py` (DCT) + `tests/test_dct.py` |
 | `utils.py` | `safe_float_value` | `trainer.py` |
@@ -44,7 +44,7 @@ utils.py           23L — shared pure helpers (safe_float_value), no sjfpo impo
 - Tensor order `B,N,H,K,D,Da,Ds` — comment dimensions at each transform (Google docstrings + inline `[B,H,Da]`)
 - Live cond is `[N,K,obs]` raw bins; the DiT pools it (`cond.mean(1)`) into the adaLN vector AND reads raw states as `[T,obs]→state_embed` prefix tokens (action positions only read out)
 - Net activations are SwiGLU everywhere (gate/up/down linears; silu lives only inside SwiGLU)
-- Keep `sigreg_loss` Epps-Pulley CF normality single home in `networks.py` — no Barlow heads
+- `sigreg_loss` stays in `networks.py` as a test-only seam (not in the update path) — no Barlow heads
 - `polyak` survives ONLY at the skrl boundary (`SACConfig`, `build_sac_skrl_config`, `sac.yaml`); no EMA/target nets in the sjfpo path
 - einx.id reshapes in collector/fpo_core/trainer (+dct_utils/baselines) must match torch at 1e-6 (`tests/test_einx_migration.py`); ground truth is current torch behavior
 - CUDA-default with CPU fallback, fp32-only (no autocast/bf16/`torch.compile`): `SJFPO_DEVICE=cuda|cpu|auto` overrides; storage (transitions/checkpoints/CSV) stays on CPU, batches move to device per update; LSP absent here — `py_compile` + suite is the gate
@@ -53,11 +53,10 @@ utils.py           23L — shared pure helpers (safe_float_value), no sjfpo impo
 - `retained:`-marked helpers are test seams (flow_loglik/policy_loss, discounted_chunk_reward, assert_runtime) — deleting one breaks its consumer test first
 
 ## Anti-Patterns
-- DO NOT reintroduce a standalone SIGReg module — single source in `networks.py`
 - DO NOT reintroduce a policy trunk or target/EMA nets (`target_trunk`, `EMAProjection`, `ema_power`) — policy conditioning is raw-obs DCT tokens, no second copy
 - DO NOT reintroduce `Polyak`/`ema_decay` naming in the sjfpo path
 - DO NOT touch `analysis.py` statistics/plotting (bootstrap, IQM n_boot 2000, CI) without explicit plan amendment — risk boundary, off train path
-- DO NOT add RL heads to the flow loss — Epps-Pulley SIGReg-only gate (ASPO+value live in `assemble_update`, not in the flow)
+- DO NOT add RL heads to the flow loss (ASPO+value live in `assemble_update`, not in the flow)
 - DO NOT import `wandb` outside `sjfpo.wandb_logging` (sole importer); do NOT log secrets/API keys
 - DO NOT change `AnalysisError` hierarchy without updating `build_notebook.py` Analysis fallback
 
@@ -69,5 +68,5 @@ PYTHONPATH=src .venv/bin/python scripts/train.py --method sjfpo --env Hopper-v5 
 ```
 
 ## Notes
-- One StateEncoder left (`critic_state_encoder`: value-TD + SigReg grads); ASPO grads land on the policy head (incl. state_embed + cond_proj)
+- One StateEncoder left (`critic_state_encoder`: value-TD grads); ASPO grads land on the policy head (incl. state_embed + cond_proj)
 - `compute_chunk_values` bootstraps truncated chunks from the full next window + stored `next.action`
