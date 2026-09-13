@@ -88,7 +88,6 @@ def expected_diag_keys() -> set[str]:
     return {
         "policy_loss",
         "value_loss",
-        "sigreg_loss",
         "clip_fraction",
         "mean_log_ratio",
         "clamp_engagement",
@@ -196,7 +195,7 @@ class TestOptimizerSteps:
         chunks, meta = make_chunks(128)
         for _ in range(3):
             diag = trainer.assemble_update(chunks, meta)
-            for k in ("policy_loss", "value_loss", "sigreg_loss"):
+            for k in ("policy_loss", "value_loss"):
                 assert math.isfinite(diag[k]), f"{k} not finite: {diag[k]}"
 
                 # ---------------------------------------------------------------------------
@@ -284,37 +283,11 @@ class TestSpectralParameterFree:
         assert moved, "cond_proj did not move after update"
 
         # ---------------------------------------------------------------------------
-        # (h) SigReg on the critic latent only (no next-state terms)
+        # (h) critic trunk gradients (SigReg removed; trunk trains via TD only)
         # ---------------------------------------------------------------------------
 
 
-class TestCriticLatentSigReg:
-    def test_sigreg_follows_state_and_action_not_next_state(self):
-        """Seeded: state/action moves move sigreg; next_states must NOT."""
-
-        # Fresh identically-initialized trainers per call: assemble_update is
-        # stateful (weights move), so cross-call equality needs equal inits.
-        def sigreg(data):
-            torch.manual_seed(0)
-            trainer = make_trainer()
-            torch.manual_seed(7)
-            return trainer.assemble_update(data, make_chunks(16)[1])["sigreg_loss"]
-
-        torch.manual_seed(0)
-        chunks, _ = make_chunks(16)
-        base = sigreg(chunks)
-        act2 = [dict(c, **{"action": torch.randn(16, ACT_DIM)}) for c in chunks]
-        assert sigreg(act2) != base, "sigreg must see the critic latent (action path)"
-        obs2 = [
-            dict(c, **{"observation.state": torch.randn(16, OBS_DIM)}) for c in chunks
-        ]
-        assert sigreg(obs2) != base, "sigreg must see the critic latent (state path)"
-        next2 = [
-            dict(c, **{"next.observation.state": torch.randn(16, OBS_DIM)})
-            for c in chunks
-        ]
-        assert sigreg(next2) == base, "sigreg must NOT see next-states anymore"
-
+class TestCriticTrunkGrads:
     def test_trunk_receives_grads(self):
         """Policy head (incl. cond_proj) and critic trunk must get grads."""
         trainer = make_trainer()
