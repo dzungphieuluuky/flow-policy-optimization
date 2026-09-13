@@ -86,16 +86,16 @@ def test_toy_gaussian_reference_gate(capsys):
 
     opt = torch.optim.Adam(net.parameters(), lr=1e-3)
     for _ in range(3000):  # full-batch CFM steps
-        # eps [n, num_mc_samples=1, F=1]; tau scalar per step; v* = eps - a inside cfm_loss
+        # eps [n, num_mc_samples=1, F=1]; tau scalar per step; v* = eps - a inside compute_cfm_loss
         eps = torch.randn(4000, 1, 1)
         tau = float(torch.empty(1).uniform_(TAU_LO, TAU_HI))
-        loss = fpo_core.cfm_loss(net, data, eps, tau, cond=None, state=None)
+        loss = fpo_core.compute_cfm_loss(net, data, eps, tau, cond=None, state=None)
         opt.zero_grad()
         loss.backward()
         opt.step()
 
     with torch.no_grad():
-        samples = fpo_core.euler_sample(
+        samples = fpo_core.sample(
             net,
             (4000, 1),
             cond=None,
@@ -128,7 +128,7 @@ def test_fitted_loss_below_shuffled_targets():
     net_shuf.load_state_dict(copy.deepcopy(net_fit.state_dict()))  # same init
 
     def train(net: VelocityMLP, shuffle: bool) -> None:
-        # Manual CFM loop (same interpolation/target conventions as cfm_loss)
+        # Manual CFM loop (same interpolation/target conventions as compute_cfm_loss)
         # so the SHUFFLED variant can corrupt the TARGETS (eps - a) themselves;
         # permuting eps rows alone would leave the (a, eps) joint unchanged
         # (iid noise is exchangeable) and the comparison would be vacuous.
@@ -156,8 +156,8 @@ def test_fitted_loss_below_shuffled_targets():
     eps_ev = torch.randn(n_fix, 256, 1, generator=g_eval)
     tau_ev = draw_tau((n_fix, 256), g_eval)
     with torch.no_grad():
-        l_fit = fpo_core.flow_loglik(net_fit, fixtures, eps_ev, tau_ev, None, None)
-        l_shuf = fpo_core.flow_loglik(net_shuf, fixtures, eps_ev, tau_ev, None, None)
+        l_fit = fpo_core.compute_cfm_loss(net_fit, fixtures, eps_ev, tau_ev, None, None, reduce_mode="sample")
+        l_shuf = fpo_core.compute_cfm_loss(net_shuf, fixtures, eps_ev, tau_ev, None, None, reduce_mode="sample")
     wins = int((l_fit.mean(dim=1) < l_shuf.mean(dim=1)).sum().item())
     print(f"fitted<shuffled on {wins}/{n_fix} fixtures")
     assert wins >= math.ceil(0.95 * n_fix)  # integer count: no float-boundary flake
@@ -178,7 +178,7 @@ def test_ratio_shape_and_degeneracy_guard():
     tau_tr = draw_tau((4, config.SJFPO_CFG.num_mc_samples), g)
 
     opt = torch.optim.Adam(net_new.parameters(), lr=1e-3)
-    loss = fpo_core.cfm_loss(net_new, a, eps_tr, tau_tr, cond=None, state=None)
+    loss = fpo_core.compute_cfm_loss(net_new, a, eps_tr, tau_tr, cond=None, state=None)
     opt.zero_grad()
     loss.backward()
     opt.step()  # the ONE perturbed update
@@ -186,9 +186,9 @@ def test_ratio_shape_and_degeneracy_guard():
     eps_ev = torch.randn(4, config.SJFPO_CFG.num_mc_samples, 8, 3, generator=g)
     tau_ev = draw_tau((4, config.SJFPO_CFG.num_mc_samples), g)
     with torch.no_grad():
-        l_old = fpo_core.flow_loglik(net_old, a, eps_ev, tau_ev, None, None)
-        l_new = fpo_core.flow_loglik(net_new, a, eps_ev, tau_ev, None, None)
-        rho = fpo_core.flow_ratio(l_old, l_new)
+        l_old = fpo_core.compute_cfm_loss(net_old, a, eps_ev, tau_ev, None, None, reduce_mode="sample")
+        l_new = fpo_core.compute_cfm_loss(net_new, a, eps_ev, tau_ev, None, None, reduce_mode="sample")
+        rho = fpo_core.compute_policy_ratio(l_old, l_new, torch.zeros_like(l_old))
 
     assert rho.shape == (4, config.SJFPO_CFG.num_mc_samples)
     log_rho = torch.log(rho)
@@ -203,10 +203,10 @@ def test_ratio_shape_and_degeneracy_guard():
 def test_aspo_surrogate_hand_computed():
     clip_range = config.SJFPO_CFG.clip_range  # 0.05
     # Positive advantage: PPO-clip branch.
-    psi_ppo = fpo_core.aspo_surrogate(torch.tensor(1.04), torch.tensor(1.0), clip_range)
+    psi_ppo = fpo_core.compute_aspo_surrogate(torch.tensor(1.04), torch.tensor(1.0), clip_range)
     assert psi_ppo.item() == pytest.approx(1.04, abs=1e-3)
     # Negative advantage: SPO branch  rho*A - (|A|/(2*eps))*(rho-1)^2.
-    psi_spo = fpo_core.aspo_surrogate(
+    psi_spo = fpo_core.compute_aspo_surrogate(
         torch.tensor(1.04), torch.tensor(-1.0), clip_range
     )
     expected = -1.04 - (1.0 / 0.1) * 0.04**2  # = -1.056
@@ -214,7 +214,7 @@ def test_aspo_surrogate_hand_computed():
     # Mixed batch routes each element through its own branch.
     rho = torch.tensor([1.04, 1.04])
     adv = torch.tensor([1.0, -1.0])
-    mixed = fpo_core.aspo_surrogate(rho, adv, clip_range)
+    mixed = fpo_core.compute_aspo_surrogate(rho, adv, clip_range)
     assert mixed[0].item() == pytest.approx(1.04, abs=1e-3)
     assert mixed[1].item() == pytest.approx(expected, abs=1e-3)
 
@@ -226,7 +226,7 @@ def test_aspo_surrogate_hand_computed():
 def test_ste_clamp_value_and_gradient():
     l_old = torch.tensor([60.0])
     l_new = torch.tensor([10.0], requires_grad=True)  # Delta_l = 50 > cap 10
-    rho = fpo_core.flow_ratio(l_old, l_new)
+    rho = fpo_core.compute_policy_ratio(l_old, l_new, torch.zeros_like(l_old))
     assert rho.item() == pytest.approx(
         math.exp(config.SJFPO_CFG.log_ratio_cap), rel=1e-6
     )
@@ -246,7 +246,7 @@ def test_neg_advantage_clamp_caps_delta():
     l_old = torch.zeros(1)
     l_new = torch.full((1,), 100.0)  # raw Delta_l = -100
     adv = torch.full((1,), -1.0)
-    rho = fpo_core.policy_ratio(l_old, l_new, adv)
+    rho = fpo_core.compute_policy_ratio(l_old, l_new, adv)
     # Effective Delta_l becomes -cfm_clamp = -20, so rho = exp(-20) (NOT exp(-100)).
     assert rho.item() == pytest.approx(math.exp(-config.SJFPO_CFG.cfm_clamp), rel=1e-6)
 
@@ -266,11 +266,11 @@ def test_policy_loss_fd_gradient():
     adv = torch.tensor([1.0])
 
     with torch.no_grad():
-        l_old = fpo_core.flow_loglik(net, a, eps, tau, None, None)
+        l_old = fpo_core.compute_cfm_loss(net, a, eps, tau, None, None, reduce_mode="sample")
 
     def policy_loss_value() -> torch.Tensor:
-        l_new = fpo_core.flow_loglik(net, a, eps, tau, None, None)
-        return fpo_core.policy_loss(l_old.detach(), l_new, adv)
+        l_new = fpo_core.compute_cfm_loss(net, a, eps, tau, None, None, reduce_mode="sample")
+        return fpo_core.compute_policy_loss(l_old.detach(), l_new, adv)
 
     policy_loss_value().backward()
     param = net.net[-1].weight  # last Linear, direct path to the loss
@@ -308,7 +308,7 @@ def test_euler_sampler_grid_update_and_zero_noise():
             seen_ts.append(float(t))
             return net(x_t, t, cond, state)
 
-    out = fpo_core.euler_sample(
+    out = fpo_core.sample(
         Probe(), (5, 1), None, steps=64, generator=torch.Generator().manual_seed(42)
     )
 
@@ -328,8 +328,8 @@ def test_euler_sampler_grid_update_and_zero_noise():
     assert torch.allclose(out, x, atol=1e-6), "sampler deviates from x <- x - dt*v_hat"
 
     # Zero-sampling path (eps = 0) is deterministic given the weights.
-    z1 = fpo_core.euler_sample(net, (5, 1), None, steps=16, eps=torch.zeros(5, 1))
-    z2 = fpo_core.euler_sample(net, (5, 1), None, steps=16, eps=torch.zeros(5, 1))
+    z1 = fpo_core.sample(net, (5, 1), None, steps=16, eps=torch.zeros(5, 1))
+    z2 = fpo_core.sample(net, (5, 1), None, steps=16, eps=torch.zeros(5, 1))
     assert torch.equal(z1, z2)
 
     # ---------------------------------------------------------------------------
@@ -344,7 +344,7 @@ def test_space_consistency_dct_pipeline():
     k = max(1, round(config.SJFPO_CFG.top_p_spectral_tokens * 16))
     cond = torch.zeros(4, k, 4)
     with torch.no_grad():
-        coeffs = fpo_core.euler_sample(
+        coeffs = fpo_core.sample(
             policy,
             (4, 8, 3),
             cond,
@@ -366,3 +366,26 @@ def test_space_consistency_dct_pipeline():
     rt_actions = (idct(dct(actions, dim=1), dim=1) - actions).abs().max().item()
     assert rt_coeffs < 1e-5
     assert rt_actions < 1e-5
+
+    # ---------------------------------------------------------------------------
+    # (j) compute_cfm_loss reduce_mode: "scalar" vs "sample" shapes +
+    #     validation (unified flow_loglik lives behind reduce_mode="sample").
+    # ---------------------------------------------------------------------------
+
+
+def test_compute_cfm_loss_reduce_mode_contract():
+    torch.manual_seed(61)
+    net = VelocityMLP(1, 1)
+    a = torch.randn(2, 1)
+    g = torch.Generator().manual_seed(62)
+    eps = torch.randn(2, 4, 1, generator=g)
+    tau = draw_tau((2, 4), g)
+    scalar = fpo_core.compute_cfm_loss(net, a, eps, tau, None, None)
+    assert scalar.dim() == 0
+    per_sample = fpo_core.compute_cfm_loss(net, a, eps, tau, None, None, reduce_mode="sample")
+    assert per_sample.shape == (2, 4)
+    assert per_sample.mean().item() == pytest.approx(scalar.item(), rel=1e-5)
+    with pytest.raises(ValueError, match="reduce_mode"):
+        fpo_core.compute_cfm_loss(net, a, eps, tau, None, None, reduce_mode="mean")
+    with pytest.raises(ValueError, match="clamp"):
+        fpo_core.compute_cfm_loss(net, a, eps, tau, None, None, clamp=1.0)
