@@ -28,12 +28,12 @@ Source of truth: `src/sjfpo/config.py`. YAML mirrors in `configs/`
 ## Algorithm Dataclasses
 
 `SJFPOConfig` (T=16 state, H=16 predict, full-H execute in training / `ratio=0.5` prefix at eval, top_p=0.3 (K=5), D=128,
-`vf_coef=1.0 sigreg_coef=0.1`, Euler 16 train / 16 eval, lr 1e-4, ASPO clip 0.05),
+`vf_coef=1.0`, Euler 16 train / 16 eval, lr 1e-4, ASPO clip 0.05),
 `PPOConfig`, `SACConfig` (skrl 2.1.0 hyperparams). CLI scalars beat YAML beats dataclass defaults.
 
 ## Tuning Guide
 
 - **Shave runtime:** `SJFPO_TINY_MATRIX=1`, `scripts/train.py --total-steps N`,
   or shrink the matrix with `--methods/--envs/--seeds`.
-- **Change binding:** `clip_range / cfm_clamp / sigreg_coef / vf_coef / top_p / H`
+- **Change binding:** `clip_range / cfm_clamp / vf_coef / top_p / H`
   live in `SJFPOConfig` (mirrored in `configs/sjfpo.yaml`).
