@@ -318,12 +318,42 @@ class TestSharedMCSamples:
         cond = torch.randn(n, 5, OBS_DIM)
         states = torch.randn(n, cfg.n_obs_steps, OBS_DIM)
         advantages = torch.randn(n) * 0.1
-        _, l_old, l_new, _ = trainer.compute_policy_terms(
+        _, l_old, l_new, tau = trainer.compute_policy_terms(
             actions, cond, states, advantages, n, cfg
         )
         assert torch.equal(l_old, l_new)
         rho = policy_ratio(l_old, l_new, adv=advantages.unsqueeze(1))
         assert torch.equal(rho, torch.ones_like(rho))
+
+    def test_tau_quadrature_and_antithetic_eps(self):
+        """tau is fixed linspace; eps second half negates the first."""
+        torch.manual_seed(0)
+        trainer = make_trainer()
+        cfg = trainer.cfg
+        seen = {}
+        orig = trainer.compute_log_likelihood
+
+        def spy(actions, cond, states, **kw):
+            seen["eps"] = kw["eps"].clone()
+            seen["tau"] = kw["tau"].clone()
+            return orig(actions, cond, states, **kw)
+
+        trainer.compute_log_likelihood = spy
+        n = 4
+        n_coeffs = max(1, round(cfg.top_p_spectral_tokens * cfg.chunk_size))
+        _, _, _, tau = trainer.compute_policy_terms(
+            torch.randn(n, n_coeffs, ACT_DIM),
+            torch.randn(n, 5, OBS_DIM),
+            torch.randn(n, cfg.n_obs_steps, OBS_DIM),
+            torch.randn(n) * 0.1,
+            n,
+            cfg,
+        )
+        m = cfg.num_mc_samples
+        assert torch.equal(tau, torch.linspace(*cfg.tau_range, m))
+        assert torch.equal(seen["tau"], tau)
+        half = m // 2
+        assert torch.equal(seen["eps"][:, half : 2 * half], -seen["eps"][:, :half])
 
         # ---------------------------------------------------------------------------
         # (i) critic bootstraps V(s',a') with terminated masking
