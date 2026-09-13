@@ -109,7 +109,6 @@ class TestTrainerGolden:
     def trainer(self):
         from sjfpo.config import SJFPOConfig
         from sjfpo.networks import (
-            StateEncoder,
             SJFOPolicyModel,
             SpectralEncoder,
             Critic,
@@ -119,17 +118,13 @@ class TestTrainerGolden:
         obs_dim, act_dim = 17, 4
         cfg = SJFPOConfig(num_mc_samples=2)
         policy_head = SJFOPolicyModel(act_dim, obs_dim, hidden_size=cfg.hidden_size)
-        critic = Critic(hidden_size=cfg.hidden_size, act_dim=act_dim)
+        critic = Critic(obs_dim, act_dim, hidden_size=cfg.hidden_size)
         spectral = SpectralEncoder(obs_dim, n_obs_steps=cfg.n_obs_steps)
-        critic_state_encoder = StateEncoder(
-            obs_dim, n_obs_steps=cfg.n_obs_steps, hidden_size=cfg.hidden_size
-        )
         return (
             SJFPOTrainer(
                 policy_head=policy_head,
                 critic=critic,
                 spectral=spectral,
-                critic_state_encoder=critic_state_encoder,
                 cfg=cfg,
             ),
             cfg,
