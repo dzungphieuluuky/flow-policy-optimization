@@ -24,6 +24,28 @@ def resolve_device() -> torch.device:
     return torch.device("cpu")
 
 
+def is_bf16_available() -> bool:
+    """BF16 matmul support on the current CUDA device (torch-native check).
+
+    Same probe accelerate's ``is_bf16_available`` uses under the hood
+    (``torch.cuda.is_bf16_supported``); kept torch-native so this repo
+    gains no new dependency. False on CPU-only machines.
+    """
+    try:
+        return bool(torch.cuda.is_available() and torch.cuda.is_bf16_supported())
+    except Exception:
+        return False
+
+
+def resolve_compute_dtype() -> torch.dtype:
+    """Compute dtype: bf16 when the GPU supports it, else fp32.
+
+    Params and storage stay fp32; autocast casts matmuls on the fly
+    (bf16 needs no loss scaler, unlike fp16).
+    """
+    return torch.bfloat16 if is_bf16_available() else torch.float32
+
+
 def detect_runtime_env() -> str:
     """Runtime environment: ``kaggle`` | ``colab`` | ``local``.
 
