@@ -57,7 +57,7 @@ def build_policy(
     obs_dim: int, act_dim: int, cfg: SJFPOConfig, device=None
 ) -> SJFPOPolicy:
     """Translate the legacy config into a LeRobot policy on device."""
-    dev = torch.device(device) if device is not None else resolve_device()
+    device = torch.device(device) if device is not None else resolve_device()
     policy_cfg = SJFPOPolicyConfig(
         input_features={
             "observation.state": PolicyFeature(FeatureType.STATE, (obs_dim,))
@@ -91,7 +91,7 @@ def build_policy(
         optimizer_lr=cfg.lr,
         optimizer_weight_decay=cfg.wd,
     )
-    return SJFPOPolicy(policy_cfg).to(dev)
+    return SJFPOPolicy(policy_cfg).to(device)
 
 
 def random_baseline(evaluator: Evaluator, env: Any, seed: int) -> float:

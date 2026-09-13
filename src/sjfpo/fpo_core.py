@@ -156,18 +156,18 @@ def compute_cfm_loss(
         raise ValueError(
             f"v_hat shape {tuple(v_hat.shape)} != v_star shape {tuple(v_star.shape)}"
         )
-    se = (v_hat - v_star).pow(2)  # [B, num_mc_samples, *flow_shape]
+    squared_errors = (v_hat - v_star).pow(2)  # [B, num_mc_samples, *flow_shape]
     if reduce_mode == "scalar":
         if clamp is not None:
             raise ValueError("clamp applies to reduce_mode='sample' only")
-        return se.mean()  # scalar
+        return squared_errors.mean()  # scalar
     elif reduce_mode == "sample":
-        per = se.flatten(2).mean(dim=-1)  # [B, num_mc_samples]
+        per_sample = squared_errors.flatten(2).mean(dim=-1)  # [B, num_mc_samples]
     else:
         raise ValueError(f"reduce_mode={reduce_mode!r} must be 'scalar' or 'sample'")
 
     clamp = config.SJFPO_CFG.cfm_clamp if clamp is None else clamp
-    return torch.clamp(per, min=-clamp, max=clamp)  # [B, num_mc_samples]
+    return torch.clamp(per_sample, min=-clamp, max=clamp)  # [B, num_mc_samples]
 
     # retained: test-only public API — exercised directly by tests/test_fpo_core.py
     # (ratio/loss unit tests); not called by the src train path. Keep per fn-consolidation D1.
@@ -176,7 +176,7 @@ def compute_cfm_loss(
 
 
 def compute_aspo_surrogate(
-    rho: torch.Tensor, adv: torch.Tensor, clip_range: float
+    rho: torch.Tensor, advantage: torch.Tensor, clip_range: float
 ) -> torch.Tensor:
     """ASPO piecewise trust region ψ(ρ, Â) (paper Eq.12).
 
@@ -186,7 +186,7 @@ def compute_aspo_surrogate(
 
     Args:
         rho: Importance ratios ρ_i, shape [B, num_mc_samples] or broadcastable.
-        adv: Advantages Â_i, shape [B, num_mc_samples] or broadcastable.
+        advantage: Advantages Â_i, shape [B, num_mc_samples] or broadcastable.
         clip_range: PPO/SPO clip epsilon (default config.SJFPO_CFG.clip_range = 0.05).
 
     Returns:
@@ -195,25 +195,25 @@ def compute_aspo_surrogate(
     Binding:
         - For Â ≥ 0: standard PPO clipping prevents over-optimistic updates.
         - For Â < 0: SPO (Simple Policy Optimization) applies quadratic penalty
-          around ρ=1, preventing catastrophic degradation on negative-adv samples.
+          around ρ=1, preventing catastrophic degradation on negative-advantage samples.
         - ε_clip = 0.05 per plan binding convention.
     """
     pos = torch.min(
-        rho * adv,  # [B, num_mc_samples]
+        rho * advantage,  # [B, num_mc_samples]
         torch.clamp(rho, 1.0 - clip_range, 1.0 + clip_range)
-        * adv,  # [B, num_mc_samples]
+        * advantage,  # [B, num_mc_samples]
     )  # [B, num_mc_samples]
     neg = (
-        rho * adv
-        - (adv.abs() / (2.0 * clip_range)) * (rho - 1.0) ** 2  # [B, num_mc_samples]
+        rho * advantage
+        - (advantage.abs() / (2.0 * clip_range)) * (rho - 1.0) ** 2  # [B, num_mc_samples]
     )  # [B, num_mc_samples]
-    return torch.where(adv >= 0, pos, neg)  # [B, num_mc_samples]
+    return torch.where(advantage >= 0, pos, neg)  # [B, num_mc_samples]
 
 
 def compute_policy_ratio(
     l_old: torch.Tensor,
     l_new: torch.Tensor,
-    adv: torch.Tensor,
+    advantage: torch.Tensor,
     cfm_clamp: float | None = None,
     cap: float | None = None,
 ) -> torch.Tensor:
@@ -227,7 +227,7 @@ def compute_policy_ratio(
     Args:
         l_old: Old per-sample losses ℓ_old, shape [B, num_mc_samples].
         l_new: New per-sample losses ℓ_new, shape [B, num_mc_samples].
-        adv: Advantages Â_i, shape [B, num_mc_samples].
+        advantage: Advantages Â_i, shape [B, num_mc_samples].
         cfm_clamp: Clamp for negative-advantage ℓ_new adjustment.
             Defaults to config.SJFPO_CFG.cfm_clamp (20.0).
         cap: Log-ratio cap for STE. Defaults to config.SJFPO_CFG.log_ratio_cap.
@@ -242,7 +242,7 @@ def compute_policy_ratio(
     """
     cfm_clamp = config.SJFPO_CFG.cfm_clamp if cfm_clamp is None else cfm_clamp
     l_new_eff = torch.where(
-        adv < 0, torch.minimum(l_new, l_old + cfm_clamp), l_new
+        advantage < 0, torch.minimum(l_new, l_old + cfm_clamp), l_new
     )  # [B, num_mc_samples]
     cap = config.SJFPO_CFG.log_ratio_cap if cap is None else cap
     delta = l_old - l_new_eff  # [B, num_mc_samples]
@@ -256,7 +256,7 @@ def compute_policy_ratio(
 def compute_policy_loss(
     l_old: torch.Tensor,
     l_new: torch.Tensor,
-    adv: torch.Tensor,
+    advantage: torch.Tensor,
     clip_range: float | None = None,
     cfm_clamp: float | None = None,
     cap: float | None = None,
@@ -268,7 +268,7 @@ def compute_policy_loss(
     Args:
         l_old: Old per-sample losses ℓ_old, shape [B, num_mc_samples].
         l_new: New per-sample losses ℓ_new, shape [B, num_mc_samples].
-        adv: Advantages Â_i, shape [B, num_mc_samples].
+        advantage: Advantages Â_i, shape [B, num_mc_samples].
         clip_range: ASPO clip epsilon. Defaults to config.SJFPO_CFG.clip_range (0.05).
         cfm_clamp: Negative-advantage clamp. Defaults to config.SJFPO_CFG.cfm_clamp (20.0).
         cap: Log-ratio cap for STE. Defaults to config.SJFPO_CFG.log_ratio_cap.
@@ -282,9 +282,9 @@ def compute_policy_loss(
     """
     clip_range = config.SJFPO_CFG.clip_range if clip_range is None else clip_range
     rho = compute_policy_ratio(
-        l_old, l_new, adv, cfm_clamp=cfm_clamp, cap=cap
+        l_old, l_new, advantage, cfm_clamp=cfm_clamp, cap=cap
     )  # [B, num_mc_samples]
-    return compute_aspo_surrogate(rho, adv, clip_range).mean()  # scalar
+    return compute_aspo_surrogate(rho, advantage, clip_range).mean()  # scalar
 
     # %%
 

@@ -43,9 +43,9 @@ TAU_LO, TAU_HI = config.SJFPO_CFG.tau_range
 class VelocityMLP(nn.Module):
     """Toy velocity net MLP[in+8 -> 128 -> 128 -> out] SiLU.
 
-    Signature matches the project flow heads: ``net(x_t, t, cond, state)``
+    Signature matches the project flow heads: ``net(x_t, t, condition, state)``
     returning a tensor with the same shape as ``x_t`` (trailing dims flattened
-    into the input features). ``cond``/``state`` are REQUIRED (positional,
+    into the input features). ``condition``/``state`` are REQUIRED (positional,
     may be None) and ignored (unconditional toy) — omitting ``state`` must
     fail loudly, never train a history-blind field silently.
     """
@@ -61,7 +61,7 @@ class VelocityMLP(nn.Module):
             nn.Linear(128, out_dim),
         )
 
-    def forward(self, x_t: torch.Tensor, t, cond, state) -> torch.Tensor:
+    def forward(self, x_t: torch.Tensor, t, condition, state) -> torch.Tensor:
         temb = get_timestep_embedding(t, dim=8)
         if temb.shape[0] != x_t.shape[0]:
             temb = temb.expand(x_t.shape[0], -1)
@@ -260,8 +260,8 @@ def test_aspo_surrogate_hand_computed():
     assert psi_spo.item() == pytest.approx(expected, abs=1e-3)
     # Mixed batch routes each element through its own branch.
     rho = torch.tensor([1.04, 1.04])
-    adv = torch.tensor([1.0, -1.0])
-    mixed = fpo_core.compute_aspo_surrogate(rho, adv, clip_range)
+    advantage = torch.tensor([1.0, -1.0])
+    mixed = fpo_core.compute_aspo_surrogate(rho, advantage, clip_range)
     assert mixed[0].item() == pytest.approx(1.04, abs=1e-3)
     assert mixed[1].item() == pytest.approx(expected, abs=1e-3)
 
@@ -292,8 +292,8 @@ def test_ste_clamp_value_and_gradient():
 def test_neg_advantage_clamp_caps_delta():
     l_old = torch.zeros(1)
     l_new = torch.full((1,), 100.0)  # raw Delta_l = -100
-    adv = torch.full((1,), -1.0)
-    rho = fpo_core.compute_policy_ratio(l_old, l_new, adv)
+    advantage = torch.full((1,), -1.0)
+    rho = fpo_core.compute_policy_ratio(l_old, l_new, advantage)
     # Effective Delta_l becomes -cfm_clamp = -20, so rho = exp(-20) (NOT exp(-100)).
     assert rho.item() == pytest.approx(math.exp(-config.SJFPO_CFG.cfm_clamp), rel=1e-6)
 
@@ -310,7 +310,7 @@ def test_policy_loss_fd_gradient():
     g = torch.Generator().manual_seed(32)
     eps = torch.randn(1, config.SJFPO_CFG.num_mc_samples, 8, 1, generator=g)
     tau = draw_tau((1, config.SJFPO_CFG.num_mc_samples), g)
-    adv = torch.tensor([1.0])
+    advantage = torch.tensor([1.0])
     m = config.SJFPO_CFG.num_mc_samples
     t = tau.unsqueeze(-1).unsqueeze(-1)  # [1, m, 1, 1]
     x_t = t * eps + (1.0 - t) * a.unsqueeze(1)  # [1, m, 8, 1]
@@ -326,7 +326,7 @@ def test_policy_loss_fd_gradient():
 
     def policy_loss_value() -> torch.Tensor:
         l_new = fpo_core.compute_cfm_loss(v_hat_of(net), v_star, reduce_mode="sample")
-        return fpo_core.compute_policy_loss(l_old.detach(), l_new, adv)
+        return fpo_core.compute_policy_loss(l_old.detach(), l_new, advantage)
 
     policy_loss_value().backward()
     param = net.net[-1].weight  # last Linear, direct path to the loss
@@ -360,9 +360,9 @@ def test_euler_sampler_grid_update_and_zero_noise():
     seen_ts: list[float] = []
 
     class Probe(nn.Module):
-        def forward(self, x_t, t, cond=None, state=None):
+        def forward(self, x_t, t, condition=None, state=None):
             seen_ts.append(float(t))
-            return net(x_t, t, cond, state)
+            return net(x_t, t, condition, state)
 
     out = fpo_core.sample(
         Probe(), (5, 1), None, steps=64, generator=torch.Generator().manual_seed(42)
@@ -398,12 +398,12 @@ def test_space_consistency_dct_pipeline():
     torch.manual_seed(51)
     policy = SJFOPolicyModel(action_dim=3, obs_dim=4)
     k = max(1, round(config.SJFPO_CFG.top_p_spectral_tokens * 16))
-    cond = torch.zeros(4, k, 4)
+    condition = torch.zeros(4, k, 4)
     with torch.no_grad():
         coeffs = fpo_core.sample(
             policy,
             (4, 8, 3),
-            cond,
+            condition,
             steps=16,
             generator=torch.Generator().manual_seed(52),
             state=torch.zeros(4, config.SJFPO_CFG.n_obs_steps, 4),

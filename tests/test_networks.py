@@ -296,8 +296,8 @@ def test_policy_flow_head_shape_scalar_t():
     policy = nets.SJFOPolicyModel(action_dim=7, obs_dim=OBS)
     assert next(policy.parameters()).dtype == torch.float32
     x_t = torch.randn(32, CHUNK, 7)  # DCT-coefficient space per Scope
-    cond = torch.randn(32, KS, OBS)  # raw spectral tokens [B, K, obs]
-    v = policy(x_t, 0.37, cond, torch.randn(32, STATE_T, OBS))
+    condition = torch.randn(32, KS, OBS)  # raw spectral tokens [B, K, obs]
+    v = policy(x_t, 0.37, condition, torch.randn(32, STATE_T, OBS))
     assert v.shape == (32, CHUNK, 7)
     assert torch.isfinite(v).all()
 
@@ -308,8 +308,8 @@ def test_policy_flow_head_tensor_t_and_grad():
     policy = nets.SJFOPolicyModel(action_dim=3, obs_dim=OBS)
     x_t = torch.randn(8, CHUNK, 3)
     t = torch.rand(8)
-    cond = torch.randn(8, KS, OBS)  # raw spectral tokens [B, K, obs]
-    v = policy(x_t, t, cond, torch.randn(8, STATE_T, OBS))
+    condition = torch.randn(8, KS, OBS)  # raw spectral tokens [B, K, obs]
+    v = policy(x_t, t, condition, torch.randn(8, STATE_T, OBS))
     assert v.shape == (8, CHUNK, 3)
     v.sum().backward()
     assert all(
@@ -318,7 +318,7 @@ def test_policy_flow_head_tensor_t_and_grad():
 
 
 def test_policy_flow_head_cond_from_spectral():
-    """Plan: cond from SpectralEncoder outputs [B, K, obs] raw bins."""
+    """Plan: condition from SpectralEncoder outputs [B, K, obs] raw bins."""
     nets = make_nets()
     torch.manual_seed(18)
     policy = nets.SJFOPolicyModel(action_dim=7, obs_dim=OBS)
@@ -338,10 +338,10 @@ def test_policy_flow_head_cond_from_spectral():
 def test_dit_block_identity_at_init():
     nets = make_nets()
     torch.manual_seed(19)
-    blk = nets.DiTBlock(128, 4, 4.0)
+    block = nets.DiTBlock(128, 4, 4.0)
     x = torch.randn(2, 8, 128)
     c = torch.randn(2, 128)
-    assert torch.allclose(blk(x, c), x, atol=1e-5), "adaLN-Zero must start as identity"
+    assert torch.allclose(block(x, c), x, atol=1e-5), "adaLN-Zero must start as identity"
 
 
 def test_get_timestep_embedding_finite_256():
@@ -369,8 +369,8 @@ def test_policy_dit_zero_velocity_at_init():
 def test_cross_attention_block_shape():
     nets = make_nets()
     torch.manual_seed(21)
-    blk = nets.CrossAttentionBlock(128, 4, 4.0)
-    y = blk(torch.randn(3, 8, 128), torch.randn(3, 16, 128))
+    block = nets.CrossAttentionBlock(128, 4, 4.0)
+    y = block(torch.randn(3, 8, 128), torch.randn(3, 16, 128))
     assert y.shape == (3, 8, 128)
     assert torch.isfinite(y).all()
 
@@ -513,15 +513,15 @@ def test_policy_reads_raw_state_prefix():
     policy = nets.SJFOPolicyModel(action_dim=3, obs_dim=OBS)
     # Wake the zero-init (adaLN gates + final out) so inputs matter.
     with torch.no_grad():
-        for blk in policy.blocks:
-            blk.adaLN.down.weight.normal_(std=0.1)
+        for block in policy.blocks:
+            block.adaLN.down.weight.normal_(std=0.1)
         policy.out.weight.normal_(std=0.1)
     x_t = torch.randn(4, CHUNK, 3)
-    cond = torch.randn(4, KS, OBS)
+    condition = torch.randn(4, KS, OBS)
     s1 = torch.randn(4, STATE_T, OBS)
-    v1 = policy(x_t, 0.5, cond, s1)
+    v1 = policy(x_t, 0.5, condition, s1)
     assert v1.shape == (4, CHUNK, 3)  # only action positions read out
-    v2 = policy(x_t, 0.5, cond, torch.randn(4, STATE_T, OBS))
+    v2 = policy(x_t, 0.5, condition, torch.randn(4, STATE_T, OBS))
     assert not torch.allclose(v1, v2, atol=1e-6)
 
 

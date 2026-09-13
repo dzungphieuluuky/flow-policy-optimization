@@ -23,7 +23,7 @@ class TestChunkGaeGolden:
     def test_single_chunk_hand_computed(self):
         from sjfpo.gae import chunk_gae
 
-        adv, ret = chunk_gae(
+        advantage, ret = chunk_gae(
             [1.0, 1.0],
             [0.5],
             [0.0],
@@ -33,13 +33,13 @@ class TestChunkGaeGolden:
             lam=0.95,
             normalize=False,
         )
-        assert adv == pytest.approx([1.49], abs=1e-9)
+        assert advantage == pytest.approx([1.49], abs=1e-9)
         assert ret == pytest.approx([1.99], abs=1e-9)
 
     def test_two_chunk_recursion_hand_computed(self):
         from sjfpo.gae import chunk_gae
 
-        adv, ret = chunk_gae(
+        advantage, ret = chunk_gae(
             [1.0, 2.0],
             [0.0, 0.0],
             [0.0, 0.0],
@@ -49,13 +49,13 @@ class TestChunkGaeGolden:
             lam=0.95,
             normalize=False,
         )
-        assert adv == pytest.approx([2.881, 2.0], abs=1e-9)
+        assert advantage == pytest.approx([2.881, 2.0], abs=1e-9)
         assert ret == pytest.approx([2.881, 2.0], abs=1e-9)
 
     def test_terminated_cuts_bootstrap(self):
         from sjfpo.gae import chunk_gae
 
-        adv, _ = chunk_gae(
+        advantage, _ = chunk_gae(
             [1.0],
             [0.5],
             [9.0],
@@ -65,12 +65,12 @@ class TestChunkGaeGolden:
             lam=0.95,
             normalize=False,
         )
-        assert adv == pytest.approx([0.5], abs=1e-9)
+        assert advantage == pytest.approx([0.5], abs=1e-9)
 
     def test_normalize_zero_mean(self):
         from sjfpo.gae import chunk_gae
 
-        adv, _ = chunk_gae(
+        advantage, _ = chunk_gae(
             [1.0, 2.0, 3.0],
             [0.0, 0.0, 0.0],
             [0.0, 0.0, 0.0],
@@ -80,7 +80,7 @@ class TestChunkGaeGolden:
             lam=0.95,
             normalize=True,
         )
-        assert float(np.mean(adv)) == pytest.approx(0.0, abs=1e-9)
+        assert float(np.mean(advantage)) == pytest.approx(0.0, abs=1e-9)
 
 
 class TestCheckpointGolden:
@@ -170,13 +170,13 @@ class TestTrainerGolden:
 
     def test_compute_log_likelihood_shape(self):
         policy, cfg, obs_dim, act_dim = self.policy()
-        dev = next(policy.parameters()).device
+        device = next(policy.parameters()).device
         torch.manual_seed(1)
         n_coeffs = max(1, round(cfg.top_p_spectral_tokens * cfg.horizon))
-        x_t = torch.randn(4 * cfg.num_mc_samples, n_coeffs, act_dim).to(dev)
-        tau = torch.rand(4 * cfg.num_mc_samples, device=dev)
-        condition = torch.randn(4 * cfg.num_mc_samples, 5, obs_dim).to(dev)
-        states = torch.randn(4 * cfg.num_mc_samples, cfg.n_obs_steps, obs_dim).to(dev)
+        x_t = torch.randn(4 * cfg.num_mc_samples, n_coeffs, act_dim).to(device)
+        tau = torch.rand(4 * cfg.num_mc_samples, device=device)
+        condition = torch.randn(4 * cfg.num_mc_samples, 5, obs_dim).to(device)
+        states = torch.randn(4 * cfg.num_mc_samples, cfg.n_obs_steps, obs_dim).to(device)
         v = policy.compute_predicted_velocity(x_t, tau, condition, states)
         assert v.shape == (4 * cfg.num_mc_samples, n_coeffs, act_dim)
         assert torch.isfinite(v).all()

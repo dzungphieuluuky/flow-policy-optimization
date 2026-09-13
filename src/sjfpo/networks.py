@@ -668,8 +668,8 @@ class SJFOPolicyModel(nn.Module):
         c = self.time_mlp(temb) + self.cond_proj(condition.mean(dim=1))  # [B, D]
         s = self.state_encoder(state)  # [B, T, D] policy state encoder prefix
         h = torch.cat([s, self.in_proj(x_t)], dim=1)  # [B, T+H, D]
-        for blk in self.blocks:
-            h = blk(h, c)
+        for block in self.blocks:
+            h = block(h, c)
         return self.out(self.norm_out(h[:, -x_t.shape[1] :, :]))  # [B, H, Da]
 
         # %% [markdown]
@@ -742,8 +742,8 @@ class Critic(nn.Module):
         """
         z = self.state_encoder(states)  # [B, T, D] critic state encoder
         h = self.action_encoder(a, real_action_lengths)  # [B, H, D] tails invisible as keys
-        for blk in self.blocks:
-            h = blk(h, z)
+        for block in self.blocks:
+            h = block(h, z)
         if real_action_lengths is None:
             pooled = h.mean(dim=1)  # [B, D]
         else:

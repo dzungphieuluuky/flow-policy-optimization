@@ -96,7 +96,7 @@ class SJFPOPolicyAdapter:
         self.window.append(obs_t)
         state = torch.stack(list(self.window), dim=0).unsqueeze(0)  # [1, T, obs]
         with torch.no_grad():
-            cond = self.spectral(state)
+            condition = self.spectral(state)
             # Policy model (zero noise via eps=zeros for deterministic eval)
             n_coeffs = max(
                 1, round(self.cfg.top_p_spectral_tokens * self.cfg.chunk_size)
@@ -104,7 +104,7 @@ class SJFPOPolicyAdapter:
             chunk = sample(
                 self.policy_head,
                 (1, n_coeffs, self.action_dim),
-                cond,
+                condition,
                 steps=self.cfg.euler_eval,
                 eps=torch.zeros(1, n_coeffs, self.action_dim),
                 state=state,

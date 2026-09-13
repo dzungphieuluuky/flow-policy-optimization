@@ -111,7 +111,7 @@ def test_bruteforce_mc_equality_random_stream():
     """Chunk-GAE output == explicitly-unrolled return computation (<1e-6)."""
     rewards, values, final_value, n_action_steps, terminated = random_stream(seed=7)
 
-    adv, ret = chunk_gae(
+    advantage, ret = chunk_gae(
         rewards,
         values,
         final_value,
@@ -127,13 +127,13 @@ def test_bruteforce_mc_equality_random_stream():
     )
     oracle_adv = oracle_ret - values
 
-    adv_diff = float(np.max(np.abs(adv - oracle_adv)))
+    advantage_diff = float(np.max(np.abs(advantage - oracle_adv)))
     ret_diff = float(np.max(np.abs(ret - oracle_ret)))
     print(
-        f"\nbrute-force max-abs-diff advantages={adv_diff:.3e} returns={ret_diff:.3e}"
+        f"\nbrute-force max-abs-diff advantages={advantage_diff:.3e} returns={ret_diff:.3e}"
     )
 
-    assert adv_diff < 1e-6, f"advantage mismatch {adv_diff}"
+    assert advantage_diff < 1e-6, f"advantage mismatch {advantage_diff}"
     assert ret_diff < 1e-6, f"return mismatch {ret_diff}"
 
 
@@ -149,7 +149,7 @@ def test_mid_chunk_death_semantics():
     lens = [8, 3]
     terminated = [False, True]
 
-    adv, ret = chunk_gae(
+    advantage, ret = chunk_gae(
         r, values, final_value, lens, terminated, gamma=gamma, lam=lam, normalize=False
     )
 
@@ -157,7 +157,7 @@ def test_mid_chunk_death_semantics():
     r1_expected = 1.1 + gamma * 1.2 + gamma**2 * 1.3
     # Terminated epoch: no bootstrap, no recursion -> A_1 = R_1 - V_1 exactly.
     a1_expected = r1_expected - values[1]
-    np.testing.assert_allclose(adv[1], a1_expected, atol=1e-12)
+    np.testing.assert_allclose(advantage[1], a1_expected, atol=1e-12)
 
     # Preceding alive epoch recurses into A_1 with (gamma*lam)^8 (its own
     # terminated flag is False) and bootstraps V_1 = values[1] with gamma^8.
@@ -165,9 +165,9 @@ def test_mid_chunk_death_semantics():
     a0_expected = (r0_expected + gamma**8 * values[1] - values[0]) + (
         gamma * lam
     ) ** 8 * a1_expected
-    np.testing.assert_allclose(adv[0], a0_expected, atol=1e-12)
+    np.testing.assert_allclose(advantage[0], a0_expected, atol=1e-12)
 
-    np.testing.assert_allclose(ret, adv + values, atol=1e-12)
+    np.testing.assert_allclose(ret, advantage + values, atol=1e-12)
 
 
 def test_discount_compounding_gamma_once_per_chunk():
@@ -182,7 +182,7 @@ def test_discount_compounding_gamma_once_per_chunk():
 
     # Fixed-length variant: both chunks len 8, none terminated -> the last
     # chunk bootstraps the stream-end value.
-    adv, _ = chunk_gae(
+    advantage, _ = chunk_gae(
         r,
         values,
         final_value,
@@ -196,7 +196,7 @@ def test_discount_compounding_gamma_once_per_chunk():
     r1 = sum(gamma**i * ri for i, ri in enumerate(r[8:16]))
     a1 = r1 + gamma**8 * final_value - values[1]
     a0 = r0 + gamma**8 * values[1] - values[0] + (gamma * lam) ** 8 * a1
-    np.testing.assert_allclose(adv, [a0, a1], atol=1e-12)
+    np.testing.assert_allclose(advantage, [a0, a1], atol=1e-12)
 
     # Variable-length variant: first chunk executes only 5 steps ->
     # multipliers become gamma^5 / (gamma*lam)^5 for THAT transition.
