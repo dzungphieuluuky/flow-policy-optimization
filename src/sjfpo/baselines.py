@@ -30,6 +30,7 @@ import torch.nn as nn
 
 from sjfpo.config import PPOConfig, SACConfig
 from sjfpo.evaluator import Evaluator, check_divergence, compute_random_baseline
+from sjfpo.utils import resolve_device
 from sjfpo.wandb_logging import (
     init_wandb_run_for_method,
     log_eval_summary,
@@ -134,7 +135,7 @@ def create_gaussian_policy_class(GM, Model):
                 self,
                 observation_space=gym.spaces.Box(-1, 1, (obs_dim,)),
                 action_space=gym.spaces.Box(-1, 1, (act_dim,)),
-                device="cpu",
+                device=str(resolve_device()),
             )
             GM.__init__(
                 self,
@@ -163,7 +164,7 @@ def create_ppo_value_class(DM, Model):
             Model.__init__(
                 self,
                 observation_space=gym.spaces.Box(-1, 1, (obs_dim,)),
-                device="cpu",
+                device=str(resolve_device()),
             )
             DM.__init__(self, clip_actions=False)
             self.net = build_mlp_layer(obs_dim, hidden, 1)
@@ -185,7 +186,7 @@ def create_sac_critic_class(DM, Model):
                 self,
                 observation_space=gym.spaces.Box(-1, 1, (obs_dim,)),
                 action_space=gym.spaces.Box(-1, 1, (act_dim,)),
-                device="cpu",
+                device=str(resolve_device()),
             )
             DM.__init__(self, clip_actions=False)
             self.net = build_mlp_layer(obs_dim + act_dim, hidden, 1)
@@ -721,7 +722,7 @@ def ppo_train_run(
 
     cfg = cfg or PPOConfig()
     out_dir = Path(out_dir)
-    device = "cpu"
+    device = str(resolve_device())
     wrapped_env, skrl_env, obs_dim, act_dim = seed_and_wrap_env(env, seed, n_obs_steps)
     policy = PPOPolicy(obs_dim, act_dim, cfg.hidden)
     value = PPOValue(obs_dim, cfg.hidden)
@@ -822,7 +823,7 @@ def sac_train_run(
 
     cfg = cfg or SACConfig()
     out_dir = Path(out_dir)
-    device = "cpu"
+    device = str(resolve_device())
     wrapped_env, skrl_env, obs_dim, act_dim = seed_and_wrap_env(env, seed, n_obs_steps)
     policy = SACPolicy(obs_dim, act_dim, cfg.hidden)
     critic_1 = SACCritic(obs_dim, act_dim, cfg.hidden)
