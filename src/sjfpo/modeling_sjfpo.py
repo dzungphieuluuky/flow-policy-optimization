@@ -427,13 +427,13 @@ class SJFPOPolicy(PreTrainedPolicy):
             raise ValueError(f"reduction={reduction!r} must be 'mean' or 'none'")
         if not bool(torch.isfinite(loss).all()):
             raise SJFPOAborted(
-                f"Non-finite loss: policy={float(policy_per_chunk.mean())}, "
-                f"value={float(value_per_chunk.mean())}"
+                f"Non-finite loss: policy={float(policy_per_chunk.mean().detach())}, "
+                f"value={float(value_per_chunk.mean().detach())}"
             )
         with torch.inference_mode():
             mean_log_ratio = float((l_old - l_new).mean())
         return loss, {
-            "policy_loss": float(policy_per_chunk.mean()),
-            "value_loss": float(value_per_chunk.mean()),
+            "policy_loss": float(policy_per_chunk.mean().detach()),
+            "value_loss": float(value_per_chunk.mean().detach()),
             "mean_log_ratio": mean_log_ratio,
         }
