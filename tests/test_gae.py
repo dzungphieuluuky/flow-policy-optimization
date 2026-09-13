@@ -119,7 +119,7 @@ def test_bruteforce_mc_equality_random_stream():
         terminated,
         gamma=GAMMA,
         lam=LAM,
-        center=False,
+        normalize=False,
     )
 
     oracle_ret = oracle_returns(
@@ -150,7 +150,7 @@ def test_mid_chunk_death_semantics():
     terminated = [False, True]
 
     adv, ret = chunk_gae(
-        r, values, final_value, lens, terminated, gamma=gamma, lam=lam, center=False
+        r, values, final_value, lens, terminated, gamma=gamma, lam=lam, normalize=False
     )
 
     # R_1 uses ONLY the 3 executed steps, internally discounted gamma^i.
@@ -190,7 +190,7 @@ def test_discount_compounding_gamma_once_per_chunk():
         [False, False],
         gamma=gamma,
         lam=lam,
-        center=False,
+        normalize=False,
     )
     r0 = sum(gamma**i * ri for i, ri in enumerate(r[:8]))
     r1 = sum(gamma**i * ri for i, ri in enumerate(r[8:16]))
@@ -209,7 +209,7 @@ def test_discount_compounding_gamma_once_per_chunk():
         [False, False],
         gamma=gamma,
         lam=lam,
-        center=False,
+        normalize=False,
     )
     r0_5 = sum(gamma**i * ri for i, ri in enumerate(r5[:5]))
     r1_5 = sum(gamma**i * ri for i, ri in enumerate(r5[5:13]))
@@ -229,7 +229,7 @@ def test_discount_compounding_gamma_once_per_chunk():
         [True],
         gamma=gamma,
         lam=lam,
-        center=False,
+        normalize=False,
     )
     np.testing.assert_allclose(adv_disc[0], sum(gamma**i for i in range(4)), atol=1e-12)
     assert abs(adv_disc[0] - 4.0) > 1e-3, "discounting inside R_k not applied"
@@ -261,7 +261,7 @@ def test_truncated_bootstraps_terminated_does_not():
     )
     values = np.array([0.1, 0.4])
     big_final = 1e6  # any leakage of this into terminated paths explodes the diff
-    common = dict(gamma=gamma, lam=lam, center=False)
+    common = dict(gamma=gamma, lam=lam, normalize=False)
     lens = [8, 8]
 
     # --- second chunk TERMINATES: no stream-end bootstrap, recursion cut ---
@@ -288,8 +288,8 @@ def test_truncated_bootstraps_terminated_does_not():
 
 
 def test_advantages_centered_afterward():
-    """Advantages are centered (mean ~= 0 within float tolerance) by default;
-    returns are unaffected by centering."""
+    """Advantages are standardized (mean ~= 0, std ~= 1) by default;
+    returns are unaffected by normalization."""
     rewards, values, final_value, n_action_steps, terminated = random_stream(seed=3)
 
     adv_c, ret_c = chunk_gae(
@@ -300,9 +300,10 @@ def test_advantages_centered_afterward():
         terminated,
         gamma=GAMMA,
         lam=LAM,
-        center=True,
+        normalize=True,
     )
-    assert abs(float(np.mean(adv_c))) < 1e-12
+    assert abs(float(np.mean(adv_c))) < 1e-9
+    assert abs(float(np.std(adv_c)) - 1.0) < 1e-6
 
     adv_r, ret_r = chunk_gae(
         rewards,
@@ -312,12 +313,14 @@ def test_advantages_centered_afterward():
         terminated,
         gamma=GAMMA,
         lam=LAM,
-        center=False,
+        normalize=False,
     )
-    # Centering shifts advantages by exactly their mean; returns identical.
-    np.testing.assert_allclose(adv_c, adv_r - adv_r.mean(), atol=1e-12)
+    # Normalization standardizes raw advantages; returns identical.
+    np.testing.assert_allclose(
+        adv_c, (adv_r - adv_r.mean()) / (adv_r.std() + 1e-8), atol=1e-12
+    )
     np.testing.assert_allclose(ret_c, ret_r, atol=1e-12)
-    assert abs(float(np.mean(adv_r))) > 1e-6  # uncentered stream is off-center
+    assert abs(float(np.mean(adv_r))) > 1e-6  # unnormalized stream is off-center
 
 
 def test_input_validation():

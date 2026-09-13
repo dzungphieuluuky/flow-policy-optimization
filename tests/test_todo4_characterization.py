@@ -31,7 +31,7 @@ class TestChunkGaeGolden:
             [False],
             gamma=0.99,
             lam=0.95,
-            center=False,
+            normalize=False,
         )
         assert adv == pytest.approx([1.49], abs=1e-9)
         assert ret == pytest.approx([1.99], abs=1e-9)
@@ -47,7 +47,7 @@ class TestChunkGaeGolden:
             [False, False],
             gamma=0.99,
             lam=0.95,
-            center=False,
+            normalize=False,
         )
         assert adv == pytest.approx([2.881, 2.0], abs=1e-9)
         assert ret == pytest.approx([2.881, 2.0], abs=1e-9)
@@ -63,11 +63,11 @@ class TestChunkGaeGolden:
             [True],
             gamma=0.99,
             lam=0.95,
-            center=False,
+            normalize=False,
         )
         assert adv == pytest.approx([0.5], abs=1e-9)
 
-    def test_center_zero_mean(self):
+    def test_normalize_zero_mean(self):
         from sjfpo.gae import chunk_gae
 
         adv, _ = chunk_gae(
@@ -78,7 +78,7 @@ class TestChunkGaeGolden:
             [False, False, False],
             gamma=0.99,
             lam=0.95,
-            center=True,
+            normalize=True,
         )
         assert float(np.mean(adv)) == pytest.approx(0.0, abs=1e-9)
 

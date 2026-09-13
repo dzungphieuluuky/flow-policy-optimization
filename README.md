@@ -13,7 +13,7 @@ Research code: correctness, clarity, reproducibility over infrastructure. See `A
 - Action chunk `[N,H=16,Da]` stored as orthonormal DCT-II coefficients. Flow (DiT-8, adaLN-Zero, `SJFOPolicyModel`) attends over `[state_embed(raw obs); noisy actions]` prefix tokens and predicts action velocities in DCT space.
 - Sample with `fpo_core.euler_sample` (descending `t: 1→0`, `x ← x − δ·v̂`); decode with `runner.decode_chunk_actions` (IDCT + single `clamp(-1,1)`). Training executes the full predicted chunk open-loop (`H=16`); inference/eval execute the `executed_vs_predicted_ratio=0.5` prefix (8 steps), then replan.
 - Update (`SJFPOTrainer.assemble_update`): per-sample MC log-liks `[N,m=16]` → STE-capped ratios → ASPO surrogate (PPO-clip for `A≥0`, SPO penalty for `A<0`, mean-of-ψ) + `V(s,a)` TD critic (`R_k + γ^L·V(s',a')`, terminated never bootstraps). One AdamW optimizer over policy + critic + critic trunk (spectral is parameter-free); per-module grad-clip; NaN aborts via `SJFPOAborted`.
-- Chunk rollout uses LeRobot-keyed `Transition` dicts; chunk-level semi-MDP GAE (`gae.chunk_gae`, numpy fp64, advantages centered).
+- Chunk rollout uses LeRobot-keyed `Transition` dicts; chunk-level semi-MDP GAE (`gae.chunk_gae`, numpy fp64, advantages standardized).
 
 **Baselines:** skrl 2.1.0 PPO / SAC via shared `baseline_train_loop` (`src/sjfpo/baselines.py`). No spectral/flow code.
 

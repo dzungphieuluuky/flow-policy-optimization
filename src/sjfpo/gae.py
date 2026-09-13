@@ -101,11 +101,11 @@ def backward_lambda_pass(
     return advantages  # [N]
 
 
-def finalize_gae_outputs(advantages, values, center):
-    """Form returns from raw advantages; optionally center the advantages."""
+def finalize_gae_outputs(advantages, values, normalize):
+    """Form returns from raw advantages; optionally standardize the advantages."""
     returns = advantages + values
-    if center:
-        advantages = advantages - advantages.mean()
+    if normalize:
+        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
     return advantages, returns
 
 
@@ -117,7 +117,7 @@ def chunk_gae(
     terminated,
     gamma: float = 0.99,
     lam: float = 0.95,
-    center: bool = True,
+    normalize: bool = True,
 ):
     """Semi-MDP chunk-level GAE over a stream of executed chunks.
 
@@ -133,11 +133,11 @@ def chunk_gae(
             chunks are False and bootstrap normally.
         gamma: discount (config: 0.99).
         lam: GAE lambda (config: 0.95).
-        center: subtract the mean of the advantages afterwards.
+        normalize: standardize advantages to zero mean, unit variance afterwards.
 
     Returns:
         (advantages [N], returns [N]) float64; returns = raw advantages + V
-        (computed before centering).
+        (computed before normalization).
     """
     rewards, values, next_values, n_action_steps, terminated, n = as_chunk_arrays(
         rewards, values, next_values, n_action_steps, terminated
@@ -147,4 +147,4 @@ def chunk_gae(
     advantages = backward_lambda_pass(
         r_chunk, values, next_values, n_action_steps, terminated, gamma, lam, n
     )
-    return finalize_gae_outputs(advantages, values, center)
+    return finalize_gae_outputs(advantages, values, normalize)
