@@ -1,11 +1,10 @@
-"""SJFPO trainer: FPO++ update assembly with SigReg term and NaN guards.
+"""SJFPO trainer: FPO++ update assembly with NaN guards.
 
 Plan task 8. Implements the single-step (or multi-epoch) gradient update for
-the SJFPO agent, combining three loss terms:
+the SJFPO agent, combining two loss terms:
 
     total = ASPO_surrogate_mean
           + vf_coef · MSE(V(s,a), TD_target)   (V(s,a) bootstraps V(s',a'))
-          + sigreg_coef · sigreg_loss (Epps-Pulley on the critic latent)
 
 The actor predicts action velocities ONLY (DiT, DCT space); there is no
 next-state prediction. AdamW(lr, wd); grad-norm clip; fp32 only.
@@ -21,7 +20,7 @@ Tensor dimension conventions (used throughout this module):
     Ds: state dimension
     num_mc_samples: Monte Carlo samples for flow likelihood (config.num_mc_samples)
 
-MuJoCo-only: FPO++ path (ASPO + V(s,a) critic + next-state CFM + SigReg).
+MuJoCo-only: FPO++ path (ASPO + V(s,a) critic).
 """
 
 from __future__ import annotations
@@ -43,10 +42,9 @@ from sjfpo.networks import (
     SJFOPolicyModel,
     SpectralEncoder,
     Critic,
-    sigreg_loss,
 )
 from sjfpo.dct_utils import idct
-from sjfpo.utils import resolve_device, safe_float_value
+from sjfpo.utils import is_bf16_available, resolve_device, safe_float_value
 
 
 class SJFPOAborted(RuntimeError):
@@ -203,21 +201,18 @@ class SJFPOTrainer:
         return torch.tensor(targets, dtype=torch.float32, device=self.device)  # [N]
 
     def combine_and_guard_losses(
-        self, policy_loss, value_loss, sigreg_loss, cfg, diagnostics_sink
+        self, policy_loss, value_loss, cfg, diagnostics_sink
     ):
         """Weight total loss; raise SJFPOAborted with sink dump if non-finite."""
         total_loss = total_update_loss(
             policy_loss,
             value_loss,
-            sigreg_loss,
             vf_coef=cfg.vf_coef,
-            sigreg_coef=cfg.sigreg_coef,
         )
         if not torch.isfinite(total_loss):
             diag: dict[str, float] = {
                 "policy_loss": safe_float_value(policy_loss),
                 "value_loss": safe_float_value(value_loss),
-                "sigreg_loss": safe_float_value(sigreg_loss),
                 "clip_fraction": float("nan"),
                 "mean_log_ratio": float("nan"),
                 "clamp_engagement": float("nan"),
@@ -226,7 +221,7 @@ class SJFPOTrainer:
                 Path(diagnostics_sink).write_text(json.dumps(diag, indent=2))
             raise SJFPOAborted(
                 f"Non-finite loss: policy={diag['policy_loss']}, "
-                f"value={diag['value_loss']}, sigreg={diag['sigreg_loss']}"
+                f"value={diag['value_loss']}"
             )
         return total_loss
 
@@ -250,7 +245,7 @@ class SJFPOTrainer:
         self.step_count += 1
 
     def build_update_diagnostics(
-        self, l_old, l_new, policy_loss, value_loss, sigreg_loss, cfg
+        self, l_old, l_new, policy_loss, value_loss, cfg
     ):
         """Assemble the finite diagnostics dict returned by assemble_update."""
         with torch.no_grad():
@@ -263,7 +258,6 @@ class SJFPOTrainer:
         return {
             "policy_loss": float(policy_loss.detach()),
             "value_loss": float(value_loss.detach()),
-            "sigreg_loss": float(sigreg_loss.detach()),
             "clip_fraction": clip_frac,
             "mean_log_ratio": mean_lr,
             "clamp_engagement": clamp_eng,
@@ -276,7 +270,7 @@ class SJFPOTrainer:
         *,
         diagnostics_sink: str | Path | None = None,
     ) -> dict[str, float]:
-        """Assemble MuJoCo update (ASPO + V(s,a) critic + critic-latent SigReg).
+        """Assemble MuJoCo update (ASPO + V(s,a) critic).
 
         Args:
             chunks: Sequence of Transition dicts (LeRobot keys) with fixed
@@ -313,39 +307,39 @@ class SJFPOTrainer:
                 f"config.n_obs_steps {cfg.n_obs_steps}"
             )
             # Policy path: spectral tokens straight from the raw obs window.
-        cond = self.spectral(states)  # [N, K, obs] raw DCT bins
-        # Denoise in truncated coefficient space: keep the top-p low-frequency
-        # action bins (same top_p as the spectral tokens); the critic keeps
-        # the full-H chunk.
-        n_coeffs = max(1, round(cfg.top_p_spectral_tokens * cfg.chunk_size))
-        action_coeffs = actions[:, :n_coeffs, :]  # [N, Ka, act]
-        policy_loss, l_old, l_new, tau = self.compute_policy_terms(
-            action_coeffs, cond, states, advantages, N, cfg
-        )
-        # Critic path: critic trunk encodes states for V(s,a) (decoupled).
-        z_critic = self.critic_state_encoder(states)  # [N, T, Z]
-        z_critic_next = self.critic_state_encoder(
-            next_states
-        )  # [N, T, Z] for TD bootstrap
-        # Standard critic recursion: V(s,a) bootstraps V(s',a') under no_grad.
-        # The critic judges clean real-space actions: IDCT the stored DCT
-        # coefficients (same pad+IDCT the rollout path applies to model output).
-        v_pred = self.critic(z_critic, idct(actions, dim=1))  # [N]
-        with torch.no_grad():
-            v_next = self.critic(
-                z_critic_next, idct(next_actions, dim=1)
-            )  # [N] fixed bootstrap
-        td_targets = self.compute_critic_targets(chunks, v_next, cfg.gamma)
-        value_loss = nn.functional.mse_loss(v_pred, td_targets)
-        # SigReg on the critic latent only.
-        h = self.critic.encode(z_critic, actions)  # [N, D] fused critic latent
-        sigreg = sigreg_loss(h.unsqueeze(1))
-        total_loss = self.combine_and_guard_losses(
-            policy_loss, value_loss, sigreg, cfg, diagnostics_sink
-        )
+        # Autocast to bf16 only where the GPU supports it (else fp32 no-op).
+        use_bf16 = dev.type == "cuda" and is_bf16_available()
+        with torch.autocast(device_type=dev.type, dtype=torch.bfloat16, enabled=use_bf16):
+            cond = self.spectral(states)  # [N, K, obs] raw DCT bins
+            # Denoise in truncated coefficient space: keep the top-p low-frequency
+            # action bins (same top_p as the spectral tokens); the critic keeps
+            # the full-H chunk.
+            n_coeffs = max(1, round(cfg.top_p_spectral_tokens * cfg.chunk_size))
+            action_coeffs = actions[:, :n_coeffs, :]  # [N, Ka, act]
+            policy_loss, l_old, l_new, tau = self.compute_policy_terms(
+                action_coeffs, cond, states, advantages, N, cfg
+            )
+            # Critic path: critic trunk encodes states for V(s,a) (decoupled).
+            z_critic = self.critic_state_encoder(states)  # [N, T, Z]
+            z_critic_next = self.critic_state_encoder(
+                next_states
+            )  # [N, T, Z] for TD bootstrap
+            # Standard critic recursion: V(s,a) bootstraps V(s',a') under no_grad.
+            # The critic judges clean real-space actions: IDCT the stored DCT
+            # coefficients (same pad+IDCT the rollout path applies to model output).
+            v_pred = self.critic(z_critic, idct(actions, dim=1))  # [N]
+            with torch.no_grad():
+                v_next = self.critic(
+                    z_critic_next, idct(next_actions, dim=1)
+                )  # [N] fixed bootstrap
+            td_targets = self.compute_critic_targets(chunks, v_next, cfg.gamma)
+            value_loss = nn.functional.mse_loss(v_pred, td_targets)
+            total_loss = self.combine_and_guard_losses(
+                policy_loss, value_loss, cfg, diagnostics_sink
+            )
         self.apply_optimizer_step(total_loss)
         return self.build_update_diagnostics(
-            l_old, l_new, policy_loss, value_loss, sigreg, cfg
+            l_old, l_new, policy_loss, value_loss, cfg
         )
 
     def interpolate_mc_batch(self, actions, eps, tau, N, cfg):
