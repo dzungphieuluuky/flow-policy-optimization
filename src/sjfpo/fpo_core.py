@@ -141,30 +141,58 @@ def repeat_conditioning(cond, num_mc: int):
     return tuple(repeat_conditioning(c, num_mc) for c in cond)
 
 
-def squared_error(
-    net: nn.Module, a: torch.Tensor, eps: torch.Tensor, tau, cond, state
+def compute_cfm_loss(
+    net: nn.Module,
+    a: torch.Tensor,
+    eps: torch.Tensor,
+    tau,
+    cond,
+    state,
+    reduce_mode: str = "scalar",
+    clamp: float | None = None,
 ) -> torch.Tensor:
-    """Per-(chunk, mc-draw) squared velocity errors.
+    """CFM squared-velocity loss against v* = ε − a, with selectable reduction.
+
+    One function for both uses: the interpolation/forward is shared, and
+    ``reduce_mode`` selects the output shape.
 
     Args:
         net: Velocity network callable (x_t, t, cond, state) -> v_hat.
             x_t: [B * num_mc_samples, *flow_shape], t: [B * num_mc_samples],
             cond/state: MC-repeated (state is REQUIRED: dropping it silently
             trains a history-blind field).
-        a: Anchor chunks, shape [B, *flow_shape].
+        a: Anchor chunks (DCT coefficients), shape [B, *flow_shape].
         eps: Noise draws, shape [B, num_mc_samples, *flow_shape].
         tau: Interpolation times, scalar | [num_mc_samples] | [B, num_mc_samples].
+            Values in [0.005, 0.995] per config.SJFPO_CFG.tau_range.
         cond: Conditioning [B, K, C] or tuple, or None.
         state: Raw obs window [B, T, obs] or tuple, or None.
+        reduce_mode: Reduction to apply over the squared errors.
+            "scalar" — mean over everything (training objective, unclamped).
+            "sample" — mean over flow coords only, reshaped to [B, num_mc_samples]
+            and symmetrically clamped (per-sample ℓ_i for the ratio math).
+        clamp: Symmetric clamp for "sample" only.
+            Defaults to config.SJFPO_CFG.cfm_clamp (20.0).
 
     Returns:
-        Squared errors, shape [B * num_mc_samples, *flow_shape].
+        "scalar": 0-dim mean squared velocity error over all
+        (B * num_mc_samples * D) elements.
+        "sample": per-sample losses ℓ_i, shape [B, num_mc_samples], each the
+        mean squared velocity error over flow coordinates, clamped to
+        [-clamp, clamp] (NOT the training objective).
 
     Binding:
         - x_t = t·ε + (1−t)·a with t=1 pure noise, t=0 data.
         - Target velocity v* = ε − a (independent of t).
+        - The ℓ_i values feed into compute_policy_ratio for importance weights;
+          clamping prevents extreme ratios from outlier velocity errors.
     """
+    if reduce_mode not in ("scalar", "sample"):
+        raise ValueError(f"reduce_mode={reduce_mode!r} must be 'scalar' or 'sample'")
+    if reduce_mode == "scalar" and clamp is not None:
+        raise ValueError("clamp applies to reduce_mode='sample' only")
     tau_bn, eps_flat, a_rep, flow_shape, num_mc = pair_tensor(a, eps, tau)
+    b = a.shape[0]  # B
     # tau_bn [B * num_mc_samples], eps_flat [B * num_mc_samples, D], a_rep [B * num_mc_samples, D]
     x_t = (
         tau_bn[:, None] * eps_flat + (1.0 - tau_bn[:, None]) * a_rep
@@ -179,123 +207,26 @@ def squared_error(
         repeat_conditioning(state, num_mc),
     )  # [B * num_mc_samples, *flow_shape]
     v_star = eps_flat - a_rep  # [B * num_mc_samples, D]  binding target velocity ε − a
-    return (
-        v_hat - v_star.reshape(v_hat.shape)
-    ) ** 2  # [B * num_mc_samples, *flow_shape]
-
-    # %%
-
-
-def cfm_loss(
-    net: nn.Module, a: torch.Tensor, eps: torch.Tensor, tau, cond, state
-) -> torch.Tensor:
-    """Scalar CFM training loss: mean squared error against v* = ε − a.
-
-    Args:
-        net: Velocity network callable (x_t, t, cond, state) -> v_hat.
-            x_t: [B * num_mc_samples, *flow_shape], t: [B * num_mc_samples],
-            cond/state: MC-repeated.
-        a: Anchor chunks (DCT coefficients), shape [B, *flow_shape].
-        eps: Noise draws, shape [B, num_mc_samples, *flow_shape].
-        tau: Interpolation times, scalar | [num_mc_samples] | [B, num_mc_samples].
-            Values in [0.005, 0.995] per config.SJFPO_CFG.tau_range.
-        cond: Conditioning [B, K, C] or tuple, or None.
-        state: Raw obs window [B, T, obs] or tuple, or None.
-
-    Returns:
-        Scalar tensor — mean squared velocity error over all (B * num_mc_samples * D) elements.
-
-    Binding:
-        - Training objective for the CFM velocity network.
-        - No clamping applied here (clamping is in flow_loglik for ratio math).
-    """
-    return squared_error(net, a, eps, tau, cond, state).mean()  # scalar
-
-    # retained: test-only public API — exercised directly by tests/test_fpo_core.py
-    # (ratio/loss unit tests); not called by the src train path. Keep per fn-consolidation D1.
-
-
-def flow_loglik(
-    net: nn.Module,
-    a: torch.Tensor,
-    eps: torch.Tensor,
-    tau,
-    cond,
-    state,
-    clamp: float | None = None,
-) -> torch.Tensor:
-    """Per-sample flow 'log-likelihood' losses ℓ_i, shape [B, num_mc_samples].
-
-    ℓ_i = mean over the flow coords of the squared velocity error, clamped to
-    ±``clamp`` (symmetric cfm_clamp, default config.SJFPO_CFG.cfm_clamp). These are
-    the quantities consumed by the ratio math (NOT the training objective).
-
-    Args:
-        net: Velocity network callable (x_t, t, cond, state) -> v_hat.
-            x_t: [B * num_mc_samples, *flow_shape], t: [B * num_mc_samples],
-            cond/state: MC-repeated.
-        a: Anchor chunks, shape [B, *flow_shape].
-        eps: Noise draws, shape [B, num_mc_samples, *flow_shape].
-        tau: Interpolation times, scalar | [num_mc_samples] | [B, num_mc_samples].
-        cond: Conditioning [B, K, C] or tuple, or None.
-        state: Raw obs window [B, T, obs] or tuple, or None.
-        clamp: Symmetric clamp value. Defaults to config.SJFPO_CFG.cfm_clamp (20.0).
-
-    Returns:
-        Per-sample losses ℓ_i, shape [B, num_mc_samples]. Each entry is the mean squared
-        velocity error over flow coordinates, clamped to [-clamp, clamp].
-
-    Binding:
-        - These ℓ_i values feed into flow_ratio for importance weights.
-        - Clamping prevents extreme ratios from outlier velocity errors.
-    """
+    se = (v_hat - v_star.reshape(v_hat.shape)).pow(2)  # [B * num_mc_samples, *flow_shape]
+    if reduce_mode == "scalar":
+        return se.mean()  # scalar
+    elif reduce_mode == "sample":
+        per = se.flatten(1).mean(dim=1)  # [B * num_mc_samples]
+    else:
+        raise ValueError(f"reduce_mode={reduce_mode!r} must be 'scalar' or 'sample'")
+    
     clamp = config.SJFPO_CFG.cfm_clamp if clamp is None else clamp
-    _, _, _, flow_shape, num_mc = pair_tensor(a, eps, tau)
-    b = a.shape[0]  # B
-    per = (
-        squared_error(net, a, eps, tau, cond, state).flatten(1).mean(dim=1)
-    )  # [B * num_mc_samples]
     return torch.clamp(
         einx.id("(b m) -> b m", per, b=b, m=num_mc), min=-clamp, max=clamp
     )  # [B, num_mc_samples]
 
+    # retained: test-only public API — exercised directly by tests/test_fpo_core.py
+    # (ratio/loss unit tests); not called by the src train path. Keep per fn-consolidation D1.
+
     # %%
 
 
-def flow_ratio(
-    l_old: torch.Tensor,
-    l_new: torch.Tensor,
-    cap: float | None = None,
-) -> torch.Tensor:
-    """Per-sample importance ratios ρ_i = exp(min(ℓ_old,i − ℓ_new,i, cap)).
-
-    Straight-through clamp: the FORWARD value uses the capped Δℓ while the
-    backward pass sees the identity, so gradients keep flowing to ℓ_new even
-    when the cap engages.
-
-    Args:
-        l_old: Old per-sample losses ℓ_old, shape [B, num_mc_samples].
-        l_new: New per-sample losses ℓ_new, shape [B, num_mc_samples].
-        cap: Log-ratio cap. Defaults to config.SJFPO_CFG.log_ratio_cap.
-
-    Returns:
-        Importance ratios ρ_i, shape [B, num_mc_samples]. Always positive.
-
-    Binding:
-        - Δℓ = ℓ_old − ℓ_new; positive Δℓ means new policy fits better.
-        - STE clamp: forward = clamp(Δℓ, max=cap), backward grad = 1.
-        - This prevents ratio explosion while preserving gradient flow.
-    """
-    cap = config.SJFPO_CFG.log_ratio_cap if cap is None else cap
-    delta = l_old - l_new  # [B, num_mc_samples]
-    # Straight-through: forward value = clamp(delta, max=cap), backward grad = 1.
-    delta_st = (
-        delta + (torch.clamp(delta, max=cap) - delta).detach()
-    )  # [B, num_mc_samples]
-    return torch.exp(delta_st)  # [B, num_mc_samples]
-
-
-def aspo_surrogate(
+def compute_aspo_surrogate(
     rho: torch.Tensor, adv: torch.Tensor, clip_range: float
 ) -> torch.Tensor:
     """ASPO piecewise trust region ψ(ρ, Â) (paper Eq.12).
@@ -330,18 +261,19 @@ def aspo_surrogate(
     return torch.where(adv >= 0, pos, neg)  # [B, num_mc_samples]
 
 
-def policy_ratio(
+def compute_policy_ratio(
     l_old: torch.Tensor,
     l_new: torch.Tensor,
     adv: torch.Tensor,
     cfm_clamp: float | None = None,
     cap: float | None = None,
 ) -> torch.Tensor:
-    """Ratios after the negative-advantage trust clamp.
+    """Per-sample importance ratios: negative-advantage trust clamp + STE cap.
 
     Iff Â < 0: ℓ_new ← min(ℓ_new, ℓ_old + cfm_clamp) before the STE-capped
     exponential, bounding how much worse the new policy may fit a chunk whose
-    advantage is negative.
+    advantage is negative. Then ρ_i = exp(min(ℓ_old,i − ℓ_new,i, cap)) with a
+    straight-through clamp (forward value clamped, gradient flows).
 
     Args:
         l_old: Old per-sample losses ℓ_old, shape [B, num_mc_samples].
@@ -352,20 +284,26 @@ def policy_ratio(
         cap: Log-ratio cap for STE. Defaults to config.SJFPO_CFG.log_ratio_cap.
 
     Returns:
-        Adjusted importance ratios ρ_i, shape [B, num_mc_samples].
+        Importance ratios ρ_i, shape [B, num_mc_samples]. Always positive.
 
     Binding:
         - Negative-advantage clamp: if Â < 0, ℓ_new_eff = min(ℓ_new, ℓ_old + cfm_clamp).
-        - This limits how much the new policy can degrade fit on bad-advantage chunks.
-        - Then applies flow_ratio with STE-capped exponential.
+        - Δℓ = ℓ_old − ℓ_new_eff; positive Δℓ means new policy fits better.
+        - STE clamp: forward = clamp(Δℓ, max=cap), backward grad = 1.
     """
     cfm_clamp = config.SJFPO_CFG.cfm_clamp if cfm_clamp is None else cfm_clamp
     l_new_eff = torch.where(
         adv < 0, torch.minimum(l_new, l_old + cfm_clamp), l_new
     )  # [B, num_mc_samples]
-    return flow_ratio(l_old, l_new_eff, cap)  # [B, num_mc_samples]
+    cap = config.SJFPO_CFG.log_ratio_cap if cap is None else cap
+    delta = l_old - l_new_eff  # [B, num_mc_samples]
+    # Straight-through: forward value = clamp(delta, max=cap), backward grad = 1.
+    delta_st = (
+        delta + (torch.clamp(delta, max=cap) - delta).detach()
+    )  # [B, num_mc_samples]
+    return torch.exp(delta_st)  # [B, num_mc_samples]
 
-def policy_loss(
+def compute_policy_loss(
     l_old: torch.Tensor,
     l_new: torch.Tensor,
     adv: torch.Tensor,
@@ -393,15 +331,15 @@ def policy_loss(
         - This is the policy gradient objective maximized during PPO-style updates.
     """
     clip_range = config.SJFPO_CFG.clip_range if clip_range is None else clip_range
-    rho = policy_ratio(
+    rho = compute_policy_ratio(
         l_old, l_new, adv, cfm_clamp=cfm_clamp, cap=cap
     )  # [B, num_mc_samples]
-    return aspo_surrogate(rho, adv, clip_range).mean()  # scalar
+    return compute_aspo_surrogate(rho, adv, clip_range).mean()  # scalar
 
     # %%
 
 
-def euler_sample(
+def sample(
     net: nn.Module,
     shape,
     cond,
@@ -410,8 +348,13 @@ def euler_sample(
     generator: torch.Generator | None = None,
     device=None,
     state=None,
+    mode: str = "euler",
 ) -> torch.Tensor:
-    """Integrate the learned ODE from t=1 (noise) to t=0 (data).
+    """Sample the learned flow from t=1 (noise) to t=0 (data).
+
+    ``mode="euler"`` integrates the ODE with ``steps`` Euler steps
+    (``x ← x − δ·v̂`` on the descending linspace(1, 0, steps+1) grid);
+    other samplers plug in here under new mode names.
 
     t-grid = linspace(1, 0, steps+1) DESCENDING; each step updates
     ``x ← x − δ·v̂`` with δ = 1/steps using the left-endpoint t. ``eps=None``
@@ -429,6 +372,7 @@ def euler_sample(
         generator: Optional torch.Generator for reproducible sampling.
         device: Target device for the initial noise (if eps is None).
         state: Raw obs window passed through to net (SJFPO DiT prefix tokens).
+        mode: Sampler name. Only "euler" exists; raise, never silently fall back.
 
     Returns:
         Sampled tensor x_0, shape [*shape] — the denoised output at t=0.
@@ -439,6 +383,8 @@ def euler_sample(
         - Uses left-endpoint t (grid[i]) for velocity evaluation.
         - No gradients — sampling is inference only.
     """
+    if mode != "euler":
+        raise ValueError(f"mode={mode!r} unknown; expected 'euler'")
     grid = torch.linspace(1.0, 0.0, steps + 1)  # [steps + 1] descending
     if eps is None:
         eps = torch.randn(*shape, generator=generator)  # [*shape]
@@ -450,15 +396,3 @@ def euler_sample(
             v_hat = net(x, grid[i], cond, state)  # [*shape]
             x = x - (grid[i] - grid[i + 1]) * v_hat  # [*shape]  δ = 1/steps
     return x  # [*shape]
-
-    # %%
-
-
-def total_update_loss(
-    policy_loss,
-    value_loss,
-    *,
-    vf_coef: float,
-):
-    """Sum the two update terms under caller-supplied weights (single weight home)."""
-    return policy_loss + vf_coef * value_loss
