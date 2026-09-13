@@ -45,11 +45,16 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 import torch
+from huggingface_hub.constants import CONFIG_NAME, SAFETENSORS_SINGLE_FILE
 
 CHECKPOINT_FILE = "checkpoint.pt"
 MANIFEST_FILE = "manifest.json"
 FORMAT = 1
 KEYS_FIELD = "_manifest_keys"
+
+# Policy-checkpoint layout (HubMixin files + training state).
+OPTIMIZER_FILE = "optimizer.pt"
+COUNTERS_FILE = "counters.json"
 
 
 class ResumeError(RuntimeError):
@@ -125,6 +130,100 @@ def save_checkpoint(dir_path: str | os.PathLike, state: Mapping[str, Any]) -> No
     )
     os.replace(blob_tmp, d / CHECKPOINT_FILE)
     os.replace(manifest_tmp, d / MANIFEST_FILE)
+
+
+def save_policy_checkpoint(
+    dir_path: str | os.PathLike,
+    *,
+    policy,
+    optimizer: torch.optim.Optimizer,
+    global_step: int,
+) -> None:
+    """Save an SJFPO policy checkpoint through LeRobot's HubMixin.
+
+    Layout inside ``dir_path``:
+        * ``config.json`` + ``model.safetensors`` via ``policy.save_pretrained``
+          (config carries the ``"sjfpo"`` type tag, feature shapes, and every
+          hyperparameter, so loading rebuilds components without caller args).
+        * ``optimizer.pt`` — ``optimizer.state_dict()``.
+        * ``counters.json`` — ``{"global_step", "step_count"}``.
+
+    Args:
+        dir_path: Destination directory (created if needed).
+        policy: SJFPOPolicy to save (must be one; other policies fail loudly).
+        optimizer: Optimizer whose state rides along.
+        global_step: Env-step counter recorded into counters.json.
+    """
+    from sjfpo.modeling_sjfpo import SJFPOPolicy  # lazy: keeps this module import-light
+
+    if not isinstance(policy, SJFPOPolicy):
+        raise ValueError(
+            f"save_policy_checkpoint needs an SJFPOPolicy, got {type(policy).__name__}"
+        )
+    d = Path(dir_path)
+    d.mkdir(parents=True, exist_ok=True)
+    policy.save_pretrained(d)
+    torch.save(optimizer.state_dict(), d / OPTIMIZER_FILE)
+    (d / COUNTERS_FILE).write_text(
+        json.dumps(
+            {"global_step": int(global_step), "step_count": int(policy.step_count)},
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+
+def load_policy_checkpoint(
+    dir_path: str | os.PathLike,
+    *,
+    device: str | torch.device | None = None,
+):
+    """Load an SJFPO policy checkpoint written by :func:`save_policy_checkpoint`.
+
+    ``config.json`` resolves the ``SJFPOPolicy`` subclass and its hyperparameters,
+    so components are rebuilt from the file (no caller-supplied dims); then
+    ``model.safetensors`` loads into them, the optimizer is rebuilt from the
+    policy's own optimizer preset, and ``optimizer.pt`` + counters restore on top.
+
+    Args:
+        dir_path: Checkpoint directory.
+        device: Optional device override after loading (default: config.device).
+
+    Returns:
+        ``(policy, optimizer, counters)`` with ``counters`` a
+        ``{"global_step", "step_count"}`` dict; the policy is left in eval
+        mode (callers training onward switch back with ``policy.train()``).
+
+    Raises:
+        ResumeError: If any of the four files is missing or unreadable.
+    """
+    from sjfpo.modeling_sjfpo import SJFPOPolicy  # lazy: keeps this module import-light
+
+    d = Path(dir_path)
+    missing = [
+        f
+        for f in (CONFIG_NAME, SAFETENSORS_SINGLE_FILE, OPTIMIZER_FILE, COUNTERS_FILE)
+        if not (d / f).is_file()
+    ]
+    if missing:
+        raise ResumeError(f"incomplete policy checkpoint in {d}: missing {missing}")
+    policy = SJFPOPolicy.from_pretrained(d)
+    if device is not None:
+        policy.to(device)
+    optimizer = policy.config.get_optimizer_preset().build(
+        policy.get_optim_params()["params"]
+    )
+    try:
+        opt_state = torch.load(d / OPTIMIZER_FILE, map_location="cpu", weights_only=True)
+    except Exception as e:
+        raise ResumeError(f"failed to unpickle {d / OPTIMIZER_FILE}: {e}") from e
+    optimizer.load_state_dict(opt_state)
+    try:
+        counters = json.loads((d / COUNTERS_FILE).read_text(encoding="utf-8"))
+        policy.step_count = int(counters["step_count"])
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError) as e:
+        raise ResumeError(f"corrupt counters in {d}: {e}") from e
+    return policy, optimizer, {"global_step": int(counters["global_step"]), "step_count": policy.step_count}
 
 
 def walk_mapping(mapping: Mapping[str, Any], prefix: str = "") -> Iterable[str]:
