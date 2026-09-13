@@ -21,8 +21,8 @@
 
 ```
 stacked obs [T=16,obs_dim] ──► DCT-II(time) ──► K lowest bins (top_p=0.3 → 5) → tokens [5,obs] (raw, no projector)
-chunk actions [H=16,Da] ──► DCT ──► DiT-8 velocity (cond = time + pooled tokens) ──► euler_sample t:1→0 ──► IDCT
-stacked obs ──► critic_state_encoder (decoupled) ──► Critic V(s,a) ──► TD
+chunk actions [H=16,Da] ──► DCT ──► DiT-8 velocity (cond = time + pooled tokens) ──► sample t:1→0 ──► IDCT
+stacked obs ──► Critic V(s,a, owns state encoder) ──► GAE-returns value target
 ```
 
 **Binding contracts you cannot flip silently:** `x_t=t·ε+(1−t)·a` with
