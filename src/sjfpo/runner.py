@@ -25,12 +25,10 @@ from sjfpo.collector import bootstrap_action_lengths, collect_chunks
 from sjfpo.config import SJFPOConfig
 from sjfpo.dct_utils import dct, idct, mask_unexecuted_tail
 from sjfpo.evaluator import Evaluator, check_divergence
-from sjfpo.fpo_core import total_update_loss
-from sjfpo.fpo_core import euler_sample
+from sjfpo.fpo_core import sample
 from sjfpo.gae import chunk_gae
 from sjfpo.utils import is_bf16_available, resolve_device
 from sjfpo.networks import (
-    StateEncoder,
     SJFOPolicyModel,
     SpectralEncoder,
     Critic,
@@ -82,7 +80,7 @@ def infer_chunk_actions(
         use_bf16 = dev.type == "cuda" and is_bf16_available()
         steps = cfg.euler_eval if steps is None else steps
         with torch.autocast(device_type=dev.type, dtype=torch.bfloat16, enabled=use_bf16):
-            x0 = euler_sample(
+            x0 = sample(
                 policy_head, shape, cond, steps=steps, eps=eps, device=dev,
                 state=state_b,
             )  # [1, Ka, Da]
@@ -235,25 +233,21 @@ def resolve_training_dims(env, obs_dim, act_dim):
 def build_training_components(
     obs_dim: int, act_dim: int, cfg: SJFPOConfig, device=None
 ) -> dict:
-    """Build flow policy, action-critic, raw-obs spectral tokens, critic trunk (all on device)."""
+    """Build flow policy, action-critic (owns its state encoder), and raw-obs spectral tokens (all on device)."""
     dev = torch.device(device) if device is not None else resolve_device()
     hidden_dim = cfg.hidden_size
     policy_head = SJFOPolicyModel(act_dim, obs_dim, hidden_size=hidden_dim).to(dev)
-    critic = Critic(hidden_size=hidden_dim, act_dim=act_dim).to(dev)
+    critic = Critic(obs_dim, act_dim, hidden_size=hidden_dim).to(dev)
     spectral = SpectralEncoder(
         obs_dim,
         top_p_spectral_tokens=cfg.top_p_spectral_tokens,
         n_obs_steps=cfg.n_obs_steps,
-    ).to(dev)
-    critic_state_encoder = StateEncoder(
-        obs_dim, n_obs_steps=cfg.n_obs_steps, hidden_size=hidden_dim
     ).to(dev)
     obs_normalizer = RunningMeanStd(obs_dim).to(dev)
     return {
         "policy_head": policy_head,
         "critic": critic,
         "spectral": spectral,
-        "critic_state_encoder": critic_state_encoder,
         "obs_normalizer": obs_normalizer,
     }
 
@@ -281,14 +275,15 @@ def compute_divergence_baseline(evaluator, env, seed) -> float:
     return r_rand
 
 
-def compute_chunk_values(critic_state_encoder, critic, chunks, obs_normalizer=None):
+def compute_chunk_values(critic, chunks, obs_normalizer=None):
     """Compute V(s,a) chunk values and next-chunk bootstrap values.
 
     next_values gets a critic eval for every non-terminated chunk (truncated,
     continue, and budget-cut tails alike); terminated keeps 0 (recursion cut).
-    Actions on both sides are masked to executed steps (shared helper).
+    Actions on both sides are masked to executed steps (shared helper) and
+    pooled by masked mean over executed rows only.
     """
-    dev = next(critic_state_encoder.parameters()).device
+    dev = next(critic.parameters()).device
     chunk_size = int(chunks[0]["action"].shape[-2])
     lengths = [int(c["n_action_steps"]) for c in chunks]
     next_lengths = bootstrap_action_lengths(chunks, chunk_size)
@@ -309,9 +304,9 @@ def compute_chunk_values(critic_state_encoder, critic, chunks, obs_normalizer=No
             next_lengths,
             dim=1,
         )
-        values = critic(critic_state_encoder(states), a_exec).cpu().numpy()
+        values = critic(states, a_exec, lengths).cpu().numpy()
         v_next_all = critic(
-            critic_state_encoder(next_states), a_next_exec
+            next_states, a_next_exec, next_lengths
         ).cpu().numpy()
         next_values = np.where(
             [not bool(c["next.done"]) for c in chunks], v_next_all, 0.0
@@ -320,26 +315,27 @@ def compute_chunk_values(critic_state_encoder, critic, chunks, obs_normalizer=No
 
 
 def collect_gae_inputs(chunks):
-    """Flatten chunk rewards, lengths, and termination flags for chunk_gae."""
+    """Flatten chunk rewards, lengths, and termination/truncation flags for chunk_gae."""
     all_rewards = []
     n_action_steps = []
     terminated = []
+    truncated = []
     for c in chunks:
         all_rewards.extend(c["next.reward"].tolist())
         n_action_steps.append(int(c["n_action_steps"]))
         terminated.append(bool(c["next.done"]))
-    return all_rewards, n_action_steps, terminated
+        truncated.append(bool(c["next.truncated"]))
+    return all_rewards, n_action_steps, terminated, truncated
 
 
 def compute_gae_targets(state, chunks):
     """Compute GAE advantages, returns, and values for collected chunks."""
     values, next_values = compute_chunk_values(
-        state.models["critic_state_encoder"],
         state.models["critic"],
         chunks,
         obs_normalizer=state.models.get("obs_normalizer"),
     )
-    all_rewards, n_action_steps, terminated = collect_gae_inputs(chunks)
+    all_rewards, n_action_steps, terminated, truncated = collect_gae_inputs(chunks)
     advantages, returns_np = chunk_gae(
         all_rewards,
         values,
@@ -348,6 +344,10 @@ def compute_gae_targets(state, chunks):
         np.array(terminated),
         gamma=state.cfg.gamma,
         lam=state.cfg.gae_lambda,
+        # Raw advantages: ASPO's arms key on the sign of A, and centering
+        # would force half of every batch into the SPO penalty arm.
+        normalize=False,
+        truncated=np.array(truncated),
     )
     return advantages, returns_np, values
 
@@ -360,11 +360,7 @@ def log_trainer_diagnostics(state, diag, extra: dict | None = None) -> None:
     """
     cfg = state.cfg
     data = {f"train/{k}": v for k, v in diag.items()}
-    data["train/total_loss"] = total_update_loss(
-        diag["policy_loss"],
-        diag["value_loss"],
-        vf_coef=cfg.vf_coef,
-    )
+    data["train/total_loss"] = diag["policy_loss"] + cfg.vf_coef * diag["value_loss"]
     if extra:
         data.update(extra)
     log_metrics(data, step=state.global_step)
@@ -375,6 +371,7 @@ def execute_trainer_update(state, chunks, advantages, returns_np, values):
     meta = {
         "advantages": torch.tensor(advantages, dtype=torch.float32),
         "values": torch.tensor(values, dtype=torch.float32),
+        "returns": torch.tensor(returns_np, dtype=torch.float32),
     }
     gae_data = (
         {
@@ -442,7 +439,6 @@ def save_run_checkpoint(state, label) -> str:
             "policy_head": models["policy_head"],
             "critic": models["critic"],
             "spectral": models["spectral"],
-            "critic_state_encoder": models["critic_state_encoder"],
             "obs_normalizer": models["obs_normalizer"],
         },
         "optimizer": state.trainer.optimizer,
@@ -562,7 +558,6 @@ def assemble_run_state(
         parts["policy_head"],
         parts["critic"],
         parts["spectral"],
-        parts["critic_state_encoder"],
         cfg=cfg,
         device=device,
         obs_normalizer=parts["obs_normalizer"],
