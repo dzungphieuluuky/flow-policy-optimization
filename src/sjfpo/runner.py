@@ -1,6 +1,6 @@
 """SJFPO end-to-end run driver (MuJoCo-only).
 
-Glues collector → GAE → trainer → evaluator → checkpointing with
+Glues collector → GAE → policy update → evaluator → checkpointing with
 global-step accounting. MuJoCo-only, flat Box obs.
 """
 
@@ -20,21 +20,18 @@ import torch
 import einx
 import gymnasium as gym
 
+from lerobot.configs.types import FeatureType, PolicyFeature
+
 from sjfpo.checkpointing import save_checkpoint
 from sjfpo.collector import bootstrap_action_lengths, collect_chunks
 from sjfpo.config import SJFPOConfig
+from sjfpo.configuration_sjfpo import SJFPOConfig as SJFPOPolicyConfig
 from sjfpo.dct_utils import dct, idct, mask_unexecuted_tail
 from sjfpo.evaluator import Evaluator, check_divergence
 from sjfpo.fpo_core import sample
 from sjfpo.gae import chunk_gae
+from sjfpo.modeling_sjfpo import SJFPOPolicy
 from sjfpo.utils import is_bf16_available, resolve_device
-from sjfpo.networks import (
-    SJFOPolicyModel,
-    SpectralEncoder,
-    Critic,
-    RunningMeanStd,
-)
-from sjfpo.trainer import SJFPOTrainer
 from sjfpo.wandb_logging import (
     init_wandb_run_for_method,
     log_eval_summary,
@@ -201,7 +198,8 @@ class TrainLoopState:
     env_name: str
     seed: int
     models: dict[str, Any]
-    trainer: SJFPOTrainer
+    policy: SJFPOPolicy
+    optimizer: torch.optim.Optimizer
     evaluator: Evaluator
     train_policy: ChunkPolicy
     eval_policy: Any
@@ -240,32 +238,52 @@ def resolve_training_dims(env, obs_dim, act_dim):
 def build_training_components(
     obs_dim: int, act_dim: int, cfg: SJFPOConfig, device=None
 ) -> dict:
-    """Build flow policy, action-critic (owns its state encoder), and raw-obs spectral tokens (all on device)."""
+    """Build the SJFPO policy (owns all modules) on device."""
     dev = torch.device(device) if device is not None else resolve_device()
-    hidden_dim = cfg.hidden_size
-    policy_head = SJFOPolicyModel(act_dim, obs_dim, hidden_size=hidden_dim).to(dev)
-    critic = Critic(obs_dim, act_dim, hidden_size=hidden_dim).to(dev)
-    spectral = SpectralEncoder(
-        obs_dim,
-        top_p_spectral_tokens=cfg.top_p_spectral_tokens,
+    policy_cfg = SJFPOPolicyConfig(
+        input_features={
+            "observation.state": PolicyFeature(FeatureType.STATE, (obs_dim,))
+        },
+        output_features={"action": PolicyFeature(FeatureType.ACTION, (act_dim,))},
         n_obs_steps=cfg.n_obs_steps,
-    ).to(dev)
-    obs_normalizer = RunningMeanStd(obs_dim).to(dev)
-    return {
-        "policy_head": policy_head,
-        "critic": critic,
-        "spectral": spectral,
-        "obs_normalizer": obs_normalizer,
-    }
+        horizon=cfg.chunk_size,
+        n_action_steps=max(
+            1, round(cfg.executed_vs_predicted_ratio * cfg.chunk_size)
+        ),
+        hidden_dim=cfg.hidden_size,
+        num_mc_samples=cfg.num_mc_samples,
+        euler_train=cfg.euler_train,
+        euler_eval=cfg.euler_eval,
+        chunks_per_update=cfg.chunks_per_update,
+        gamma=cfg.gamma,
+        gae_lambda=cfg.gae_lambda,
+        clip_range=cfg.clip_range,
+        clip_range_vf=cfg.clip_range_vf,
+        cfm_clamp=cfg.cfm_clamp,
+        log_ratio_cap=cfg.log_ratio_cap,
+        tau_range=cfg.tau_range,
+        dit_depth=cfg.dit_depth,
+        dit_heads=cfg.dit_heads,
+        dit_mlp_ratio=cfg.dit_mlp_ratio,
+        dit_time_dim=cfg.dit_time_dim,
+        vf_coef=cfg.vf_coef,
+        grad_clip_norm=cfg.grad_clip,
+        top_p_spectral_tokens=cfg.top_p_spectral_tokens,
+        executed_vs_predicted_ratio=cfg.executed_vs_predicted_ratio,
+        optimizer_lr=cfg.lr,
+        optimizer_weight_decay=cfg.wd,
+    )
+    policy = SJFPOPolicy(policy_cfg).to(dev)
+    return {"policy": policy}
 
 
-def create_run_policies(policy_head, spectral, cfg, obs_normalizer=None):
+def create_run_policies(policy, cfg):
     """Create noisy train policy and chunk-aware eval wrapper."""
     train_policy = ChunkPolicy(
-        policy_head, spectral, cfg, noise=True, obs_normalizer=obs_normalizer
+        policy.actor, policy.spectral, cfg, noise=True, obs_normalizer=policy.obs_normalizer
     )
     eval_wrapper = SjfpoEvalWrapper(
-        policy_head, spectral, cfg, obs_normalizer=obs_normalizer
+        policy.actor, policy.spectral, cfg, obs_normalizer=policy.obs_normalizer
     )
     return train_policy, eval_wrapper  # evaluator calls eval_wrapper(obs)
 
@@ -282,7 +300,7 @@ def compute_divergence_baseline(evaluator, env, seed) -> float:
     return r_rand
 
 
-def compute_chunk_values(critic, chunks, obs_normalizer=None):
+def compute_chunk_values(policy, chunks):
     """Compute V(s,a) chunk values and next-chunk bootstrap values.
 
     next_values gets a critic eval for every non-terminated chunk (truncated,
@@ -290,17 +308,16 @@ def compute_chunk_values(critic, chunks, obs_normalizer=None):
     Actions on both sides are masked to executed steps (shared helper) and
     pooled by masked mean over executed rows only.
     """
-    dev = next(critic.parameters()).device
+    dev = next(policy.parameters()).device
     chunk_size = int(chunks[0]["action"].shape[-2])
     lengths = [int(c["n_action_steps"]) for c in chunks]
     next_lengths = bootstrap_action_lengths(chunks, chunk_size)
     with torch.inference_mode():
         states = torch.stack([c["observation.state"] for c in chunks]).to(dev)
         next_states = torch.stack([c["next.observation.state"] for c in chunks]).to(dev)
-        if obs_normalizer is not None:
-            states = obs_normalizer(states)
-            next_states = obs_normalizer(next_states)
-        # Executed-steps real-space actions (mask helper shared with trainer).
+        states = policy.obs_normalizer(states)
+        next_states = policy.obs_normalizer(next_states)
+        # Executed-steps real-space actions (mask helper shared with the update).
         a_exec = mask_unexecuted_tail(
             torch.stack([c["action"] for c in chunks]).to(dev), lengths, dim=1
         )
@@ -309,8 +326,8 @@ def compute_chunk_values(critic, chunks, obs_normalizer=None):
             next_lengths,
             dim=1,
         )
-        values = critic(states, a_exec, lengths).cpu().numpy()
-        v_next_all = critic(next_states, a_next_exec, next_lengths).cpu().numpy()
+        values = policy.critic(states, a_exec, lengths).cpu().numpy()
+        v_next_all = policy.critic(next_states, a_next_exec, next_lengths).cpu().numpy()
         next_values = np.where(
             [not bool(c["next.done"]) for c in chunks], v_next_all, 0.0
         )
@@ -333,11 +350,7 @@ def collect_gae_inputs(chunks):
 
 def compute_gae_targets(state, chunks):
     """Compute GAE advantages, returns, and values for collected chunks."""
-    values, next_values = compute_chunk_values(
-        state.models["critic"],
-        chunks,
-        obs_normalizer=state.models.get("obs_normalizer"),
-    )
+    values, next_values = compute_chunk_values(state.models["policy"], chunks)
     all_rewards, n_action_steps, terminated, truncated = collect_gae_inputs(chunks)
     advantages, returns_np = chunk_gae(
         all_rewards,
@@ -355,8 +368,8 @@ def compute_gae_targets(state, chunks):
     return advantages, returns_np, values
 
 
-def log_trainer_diagnostics(state, diag, extra: dict | None = None) -> None:
-    """Log per-step trainer diagnostics and the total update loss.
+def log_update_diagnostics(state, diag, extra: dict | None = None) -> None:
+    """Log per-step update diagnostics and the total update loss.
 
     Single commit per step (diag + total_loss + optional extra, e.g. gae/*)
     so train/* history stays dense like wandb system auto-logging.
@@ -369,17 +382,41 @@ def log_trainer_diagnostics(state, diag, extra: dict | None = None) -> None:
     log_metrics(data, step=state.global_step)
 
 
-def execute_trainer_update(state, chunks, advantages, returns_np, values):
-    """Train on all chunks; terminated tails are zero-padded in the trainer."""
-    meta = {
-        "advantages": torch.tensor(advantages, dtype=torch.float32),
-        "values": torch.tensor(values, dtype=torch.float32),
-        "returns": torch.tensor(returns_np, dtype=torch.float32),
+def apply_optimizer_step(state, loss) -> None:
+    """Backward + global grad-clip + AdamW step."""
+    opt = state.optimizer
+    opt.zero_grad()
+    loss.backward()
+    all_params = [p for group in opt.param_groups for p in group["params"]]
+    torch.nn.utils.clip_grad_norm_(all_params, state.cfg.grad_clip)
+    opt.step()
+    state.policy.step_count += 1
+
+
+def execute_policy_update(state, chunks, advantages, returns_np, values):
+    """One policy update on all chunks (returns are the frozen value target)."""
+    policy = state.policy
+    dev = next(policy.parameters()).device
+    chunk_size = state.cfg.chunk_size
+    lengths = [int(c["n_action_steps"]) for c in chunks]
+    batch = {
+        "observation.state": torch.stack(
+            [c["observation.state"] for c in chunks]
+        ).to(dev),
+        # Stored actions are DCT coefficients; the policy takes real space.
+        "action": idct(
+            torch.stack([c["action"] for c in chunks]).to(dev), dim=1
+        ),
+        "action_is_pad": torch.arange(chunk_size).unsqueeze(0)
+        >= torch.tensor(lengths).unsqueeze(1),
+        "advantages": torch.tensor(advantages, dtype=torch.float32).to(dev),
+        "returns": torch.tensor(returns_np, dtype=torch.float32).to(dev),
+        "values": torch.tensor(values, dtype=torch.float32).to(dev),
     }
     gae_data = (
         {
-            "gae/advantages_mean": float(meta["advantages"].mean()),
-            "gae/advantages_std": float(meta["advantages"].std()),
+            "gae/advantages_mean": float(batch["advantages"].mean()),
+            "gae/advantages_std": float(batch["advantages"].std()),
             "gae/returns_mean": float(returns_np.mean()),
             "gae/values_mean": float(values.mean()),
         }
@@ -388,10 +425,12 @@ def execute_trainer_update(state, chunks, advantages, returns_np, values):
     )
     # Freeze behavior weights first: l_old must read collection-time weights
     # even if later epochs move the live policy.
-    state.trainer.snapshot_policy()
-    diag = state.trainer.assemble_update(chunks, meta)
+    policy.snapshot_behavior_policy()
+    policy.train()
+    loss, diag = policy(batch)
+    apply_optimizer_step(state, loss)
     if state.wandb_enabled:
-        log_trainer_diagnostics(state, diag, extra=gae_data)
+        log_update_diagnostics(state, diag, extra=gae_data)
     return diag
 
 
@@ -439,15 +478,12 @@ def save_run_checkpoint(state, label) -> str:
     models = state.models
     checkpoint_state = {
         "models": {
-            "policy_head": models["policy_head"],
-            "critic": models["critic"],
-            "spectral": models["spectral"],
-            "obs_normalizer": models["obs_normalizer"],
+            "policy": models["policy"],
         },
-        "optimizer": state.trainer.optimizer,
+        "optimizer": state.optimizer,
         "counters": {
             "global_step": state.global_step,
-            "_step_count": state.trainer.step_count,
+            "_step_count": state.policy.step_count,
         },
     }
     save_checkpoint(ckpt_dir, checkpoint_state)
@@ -475,7 +511,7 @@ def drive_training_loop(state) -> None:
             break
         state.global_step += sum(int(c["n_action_steps"]) for c in chunks)
         advantages, returns_np, values = compute_gae_targets(state, chunks)
-        execute_trainer_update(state, chunks, advantages, returns_np, values)
+        execute_policy_update(state, chunks, advantages, returns_np, values)
         if (
             state.global_step % state.eval_interval < cfg.chunk_size
             or state.global_step >= state.total_steps
@@ -547,7 +583,7 @@ def print_training_modules(parts: dict) -> None:
 def assemble_run_state(
     env, out_dir, cfg, seed, total_steps, eval_interval, ckpt_interval, obs_dim, act_dim
 ) -> TrainLoopState:
-    """Build networks, trainer, evaluator, policies, and baseline state."""
+    """Build policy, evaluator, rollout policies, and baseline state."""
     out_dir = Path(out_dir)
     env_name_str = resolve_env_name(env)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -557,21 +593,12 @@ def assemble_run_state(
     device = resolve_device()  # CUDA if available, else CPU (SJFPO_DEVICE overrides)
     parts = build_training_components(obs_dim, act_dim, cfg, device=device)
     print_training_modules(parts)
-    trainer = SJFPOTrainer(
-        parts["policy_head"],
-        parts["critic"],
-        parts["spectral"],
-        cfg=cfg,
-        device=device,
-        obs_normalizer=parts["obs_normalizer"],
+    policy = parts["policy"]
+    optimizer = torch.optim.AdamW(
+        policy.get_optim_params()["params"], lr=cfg.lr, weight_decay=cfg.wd
     )
     evaluator = Evaluator(env, eval_seed=10000 + seed, max_episodes=12)
-    train_policy, eval_policy = create_run_policies(
-        parts["policy_head"],
-        parts["spectral"],
-        cfg,
-        obs_normalizer=parts["obs_normalizer"],
-    )
+    train_policy, eval_policy = create_run_policies(parts["policy"], cfg)
     r_rand = compute_divergence_baseline(evaluator, env, seed)
     cfg_dict = dataclasses.asdict(cfg)
     wandb_enabled = init_wandb_run_for_method(
@@ -588,7 +615,8 @@ def assemble_run_state(
         env_name=env_name_str,
         seed=seed,
         models=parts,
-        trainer=trainer,
+        policy=policy,
+        optimizer=optimizer,
         evaluator=evaluator,
         train_policy=train_policy,
         eval_policy=eval_policy,

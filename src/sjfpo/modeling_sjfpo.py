@@ -3,7 +3,7 @@
 Single ``PreTrainedPolicy`` owning every SJFPO nn.Module as attributes:
 policy flow head (with its policy state encoder), spectral encoder, critic
 (with its critic state encoder), and the running obs normalizer. Mirrors the
-math of the ``collector -> GAE -> SJFPOTrainer`` path, reorganized around
+math of the ``collector -> GAE -> update`` path, reorganized around
 LeRobot batch dicts keyed by ``observation.state`` / ``action``.
 
 Batch contract for ``forward`` (all fp32, on the policy device):
@@ -43,7 +43,18 @@ from sjfpo.networks import (
     SJFOPolicyModel,
     SpectralEncoder,
 )
-from sjfpo.trainer import SJFPOAborted
+
+
+class SJFPOAborted(RuntimeError):
+    """Raised when NaN/Inf is detected in training losses.
+
+    Attributes:
+        message: Human-readable description of which loss term became non-finite.
+    """
+
+    def __init__(self, message: str):
+        super().__init__(message)
+        self.message = message
 
 
 class SJFPOPolicy(PreTrainedPolicy):
@@ -57,7 +68,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         config.validate_features()  # not called automatically by the base class
         obs_dim = int(config.robot_state_feature.shape[0])
         act_dim = int(config.action_feature.shape[0])
-        self.policy_head = SJFOPolicyModel(
+        self.actor = SJFOPolicyModel(
             act_dim, obs_dim, hidden_size=config.hidden_dim
         )
         self.spectral = SpectralEncoder(
@@ -76,10 +87,12 @@ class SJFPOPolicy(PreTrainedPolicy):
         # (unit ratios), refreshed once per collection round via
         # snapshot_behavior_policy(). Registered like a target net so it rides
         # state_dict, but excluded from get_optim_params().
-        self.old_policy_head = copy.deepcopy(self.policy_head)
+        self.old_actor = copy.deepcopy(self.actor)
         # Single-env inference buffers (mirrors SjfpoEvalWrapper semantics).
         self._frame_buffer: deque[torch.Tensor] = deque(maxlen=config.n_obs_steps)
         self._action_buffer: deque[torch.Tensor] = deque()
+        # Update counter (checkpoint compat; incremented by the driver loop).
+        self.step_count = 0
         # Accepted but unused: obs stats stay online (RunningMeanStd) rather
         # than frozen dataset stats.
         del dataset_stats
@@ -98,18 +111,18 @@ class SJFPOPolicy(PreTrainedPolicy):
         return eps - a.unsqueeze(1)  # [B, m, *flow_shape]
 
     def compute_predicted_velocity(
-        self, x_t, tau, cond, state, old=False
+        self, x_t, tau, condition, state, old=False
     ) -> torch.Tensor:
         """Velocity prediction from the live head (or frozen snapshot if old).
 
         Args:
             x_t: Interpolated points, shape [B * m, *flow_shape].
             tau: Times, shape [B * m].
-            cond/state: MC-repeated conditioning.
+            condition/state: MC-repeated conditioning.
             old: Read the frozen behavior snapshot (l_old) instead of live weights.
         """
-        net = self.old_policy_head if old else self.policy_head
-        return net(x_t, tau, cond, state)
+        net = self.old_actor if old else self.actor
+        return net(x_t, tau, condition, state)
 
     def reset(self):
         """Reset per-episode state. Called by lerobot-eval at the start of each episode."""
@@ -121,15 +134,15 @@ class SJFPOPolicy(PreTrainedPolicy):
 
         Call once per collection round, before any update on the new batch.
         """
-        self.old_policy_head = copy.deepcopy(self.policy_head)
+        self.old_actor = copy.deepcopy(self.actor)
 
     def get_optim_params(self) -> dict:
         """Return parameters to pass to the optimizer (e.g. with per-group lr/wd)."""
-        # Single AdamW group over live weights only (mirrors SJFPOTrainer);
-        # spectral is parameter-free, the normalizer holds buffers, and the
-        # behavior snapshot never trains.
+        # Single AdamW group over live weights only: spectral is
+        # parameter-free, the normalizer holds buffers, and the behavior
+        # snapshot never trains.
         return {
-            "params": list(self.policy_head.parameters())
+            "params": list(self.actor.parameters())
             + list(self.critic.parameters())
         }
 
@@ -157,14 +170,14 @@ class SJFPOPolicy(PreTrainedPolicy):
         n_coeffs = max(1, round(cfg.top_p_spectral_tokens * cfg.horizon))
         act_dim = int(self.config.action_feature.shape[0])
         with torch.inference_mode():
-            cond = self.spectral(states)  # [B, K, obs] raw DCT bins
+            condition = self.spectral(states)  # [B, K, obs] raw DCT bins
             shape = (states.shape[0], n_coeffs, act_dim)
             eps = None if noise else torch.zeros(*shape, device=states.device)
             steps = cfg.euler_train if noise else cfg.euler_eval
             x0 = sample(
-                self.policy_head,
+                self.actor,
                 shape,
-                cond,
+                condition,
                 steps=steps,
                 eps=eps,
                 device=states.device,
@@ -234,12 +247,12 @@ class SJFPOPolicy(PreTrainedPolicy):
             lengths = [actions.shape[1]] * actions.shape[0]
             a_exec = actions
         else:
-            is_pad = torch.as_tensor(is_pad, dtype=torch.bool)
+            is_pad = torch.as_tensor(is_pad, dtype=torch.bool, device=actions.device)
             lengths = (~is_pad).sum(dim=1)  # [B] executed steps
             a_exec = actions * (~is_pad).to(actions.dtype).unsqueeze(-1)
         n_coeffs = max(1, round(cfg.top_p_spectral_tokens * cfg.horizon))
         action_coeffs = dct(a_exec, dim=1)[:, :n_coeffs, :]  # [N, Ka, Da]
-        cond = self.spectral(states)  # [N, K, obs] raw DCT bins
+        condition = self.spectral(states)  # [N, K, obs] raw DCT bins
         n = states.shape[0]
         tau = (
             torch.rand(cfg.num_mc_samples, device=states.device)
@@ -259,7 +272,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             tau_bn[:, None] * eps_flat + (1.0 - tau_bn[:, None]) * a_rep
         ).reshape(-1, *flow_shape)  # [N*m, *flow_shape] t·ε+(1−t)·a
         cond_flat = einx.id(
-            "n m k d -> (n m) k d", einx.id("n k d -> n m k d", cond, m=num_mc)
+            "n m k d -> (n m) k d", einx.id("n k d -> n m k d", condition, m=num_mc)
         )
         state_flat = einx.id(
             "n m t d -> (n m) t d", einx.id("n t d -> n m t d", states, m=num_mc)
