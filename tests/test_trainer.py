@@ -24,7 +24,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from sjfpo.config import SJFPO_CFG, SJFPOConfig
 from sjfpo.networks import (
-    StateEncoder,
     SJFOPolicyModel,
     SpectralEncoder,
     Critic,
@@ -46,16 +45,12 @@ def make_trainer(**overrides) -> SJFPOTrainer:
     cfg = SJFPOConfig(**overrides) if overrides else SJFPOConfig()
     # SpectralEncoder outputs [B, K, obs] raw DCT bins straight from the obs window.
     policy_head = SJFOPolicyModel(ACT_DIM, OBS_DIM, hidden_size=cfg.hidden_size)
-    critic = Critic(hidden_size=cfg.hidden_size, act_dim=ACT_DIM)
+    critic = Critic(OBS_DIM, ACT_DIM, hidden_size=cfg.hidden_size)
     spectral = SpectralEncoder(OBS_DIM, n_obs_steps=cfg.n_obs_steps)
-    critic_state_encoder = StateEncoder(
-        OBS_DIM, n_obs_steps=cfg.n_obs_steps, hidden_size=cfg.hidden_size
-    )
     return SJFPOTrainer(
         policy_head=policy_head,
         critic=critic,
         spectral=spectral,
-        critic_state_encoder=critic_state_encoder,
         cfg=cfg,
     )
 
@@ -180,9 +175,7 @@ class TestGradientRouting:
         states, actions, _, _, _, _, _ = trainer.stack_chunk_batch(chunks, meta)
         states, actions = states.to(dev), actions.to(dev)
         trainer.optimizer.zero_grad()
-        with torch.no_grad():
-            z = trainer.critic_state_encoder(states)
-        v_pred = trainer.critic(z, actions)
+        v_pred = trainer.critic(states, actions)
         target = torch.zeros_like(v_pred) + 5.0
         loss = torch.nn.functional.mse_loss(v_pred, target)
         loss.backward()
@@ -294,13 +287,13 @@ class TestSpectralParameterFree:
         assert moved, "cond_proj did not move after update"
 
         # ---------------------------------------------------------------------------
-        # (h) critic trunk gradients (SigReg removed; trunk trains via TD only)
+        # (h) critic state encoder gradients (SigReg removed; encoder trains via value loss only)
         # ---------------------------------------------------------------------------
 
 
-class TestCriticTrunkGrads:
-    def test_trunk_receives_grads(self):
-        """Policy head (incl. cond_proj) and critic trunk must get grads."""
+class TestCriticStateEncoderGrads:
+    def test_critic_state_encoder_receives_grads(self):
+        """Policy head (incl. cond_proj) and critic state encoder must get grads."""
         trainer = make_trainer()
         chunks, meta = make_chunks(16)
         trainer.assemble_update(chunks, meta)
@@ -308,10 +301,10 @@ class TestCriticTrunkGrads:
             "cond_proj missing grads"
         )
         critic_grads = [
-            p.grad for _, p in trainer.critic_state_encoder.named_parameters()
+            p.grad for _, p in trainer.critic.state_encoder.named_parameters()
         ]
         assert all(g is not None for g in critic_grads), (
-            "critic trunk params missing grads"
+            "critic state encoder params missing grads"
         )
 
 
@@ -343,7 +336,7 @@ class TestTerminatedMasking:
 class TestSharedMCSamples:
     def test_identical_weights_give_unit_ratios(self):
         """l_old/l_new share one draw: identical weights must give rho == 1."""
-        from sjfpo.fpo_core import policy_ratio
+        from sjfpo.fpo_core import compute_policy_ratio
 
         torch.manual_seed(0)
         trainer = make_trainer()
@@ -358,7 +351,7 @@ class TestSharedMCSamples:
             actions, cond, states, advantages, n, cfg
         )
         assert torch.equal(l_old, l_new)
-        rho = policy_ratio(l_old, l_new, adv=advantages.unsqueeze(1))
+        rho = compute_policy_ratio(l_old, l_new, adv=advantages.unsqueeze(1))
         assert torch.equal(rho, torch.ones_like(rho))
 
     def test_old_and_new_share_samples(self):
@@ -474,23 +467,42 @@ class TestCriticBootstrap:
         from sjfpo.dct_utils import mask_unexecuted_tail
 
         with torch.no_grad():
-            z = trainer.critic_state_encoder(states)
             # Mirror the trainer: zero-pad unexecuted tail rows; the critic
             # judges executed-steps real-space actions (anchor and bootstrap).
             lengths = [int(c["n_action_steps"]) for c in chunks]
             chunk_size = actions.shape[-2]
+            next_lengths = bootstrap_action_lengths(chunks, chunk_size)
             v_pred = trainer.critic(
-                z, mask_unexecuted_tail(actions, lengths, dim=1)
+                states, mask_unexecuted_tail(actions, lengths, dim=1), lengths
             )
             v_next = trainer.critic(
-                trainer.critic_state_encoder(next_states),
+                next_states,
                 mask_unexecuted_tail(
                     next_actions,
-                    bootstrap_action_lengths(chunks, chunk_size),
+                    next_lengths,
                     dim=1,
                 ),
+                next_lengths,
             )
         expected = trainer.compute_critic_targets(chunks, v_next, trainer.cfg.gamma)
         manual = torch.nn.functional.mse_loss(v_pred, expected)
+        diag = trainer.assemble_update(chunks, meta)
+        assert diag["value_loss"] == pytest.approx(manual.item())
+
+    def test_value_loss_fits_frozen_gae_returns(self):
+        trainer = make_trainer()
+        chunks, meta = make_chunks(8)
+        meta = dict(meta, returns=torch.randn(8) * 10.0)
+        dev = trainer.device
+        states, actions, _, _, _, _, _ = trainer.stack_chunk_batch(chunks, meta)
+        states, actions = states.to(dev), actions.to(dev)
+        from sjfpo.dct_utils import mask_unexecuted_tail
+
+        with torch.no_grad():
+            lengths = [int(c["n_action_steps"]) for c in chunks]
+            v_pred = trainer.critic(
+                states, mask_unexecuted_tail(actions, lengths, dim=1), lengths
+            )
+        manual = torch.nn.functional.mse_loss(v_pred, meta["returns"].to(dev))
         diag = trainer.assemble_update(chunks, meta)
         assert diag["value_loss"] == pytest.approx(manual.item())
