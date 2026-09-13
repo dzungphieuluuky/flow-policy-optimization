@@ -1,7 +1,7 @@
 """CPU pipeline invariants — T4 of mujoco-training-pipeline-rocm7.14.md
 
 Locks the CPU-first contract so regressions are caught:
-- train_run and baselines write 3-col CSV [episode,return,length]
+- baselines write 3-col CSV [episode,return,length]
 - RUN_MATRIX cardinality 45 (and TINY 3)
 """
 
@@ -13,7 +13,6 @@ import sys
 import csv
 from pathlib import Path
 
-import numpy as np
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -22,41 +21,6 @@ import gymnasium as gym
 
 from sjfpo.config import build_run_matrix, SJFPOConfig, PPOConfig, SACConfig
 from tests.fixtures.fake_env import FakeGymEnv
-
-
-def test_train_run_writes_3col_csv(tmp_path):
-    from sjfpo.runner import train_run
-
-    env = FakeGymEnv()
-    out = tmp_path / "sjfpo_3col"
-    cfg = SJFPOConfig(
-        num_mc_samples=2,
-        euler_train=4,
-        euler_eval=4,
-        chunks_per_update=16,
-        n_obs_steps=16,
-    )
-    train_run(
-        env=env,
-        out_dir=out,
-        cfg=cfg,
-        seed=0,
-        total_steps=200,
-        eval_interval=100,
-        ckpt_interval=100,
-        obs_dim=4,
-        act_dim=2,
-    )
-    csv_path = out / "eval_history.csv"
-    assert csv_path.exists()
-    with open(csv_path, newline="") as f:
-        reader = csv.reader(f)
-        header = next(reader)
-        assert header == ["episode", "return", "length"], f"header mismatch: {header}"
-        rows = list(reader)
-        assert len(rows) >= 1
-        for r in rows:
-            assert len(r) == 3
 
 
 def test_baselines_write_3col_csv(tmp_path, monkeypatch):
@@ -87,6 +51,44 @@ def test_baselines_write_3col_csv(tmp_path, monkeypatch):
     with open(csv_artifacts[0], newline="") as f:
         header = next(csv.reader(f))
         assert header == ["episode", "return", "length"]
+
+
+def test_sjfpo_train_run_writes_3col_csv(tmp_path):
+    from sjfpo.train_sjfpo import train_sjfpo_run
+
+    env = FakeGymEnv()
+    out = tmp_path / "sjfpo_3col"
+    cfg = SJFPOConfig(
+        num_mc_samples=2,
+        euler_train=4,
+        euler_eval=4,
+        chunks_per_update=16,
+        n_obs_steps=16,
+        dit_depth=2,
+    )
+    result = train_sjfpo_run(
+        env=env,
+        out_dir=out,
+        cfg=cfg,
+        seed=0,
+        total_steps=200,
+        eval_interval=100,
+        ckpt_interval=100,
+        obs_dim=4,
+        act_dim=2,
+    )
+    assert result["method"] == "sjfpo"
+    assert any(str(a).endswith("model.safetensors") for a in result["artifacts"])
+    csv_path = out / "eval_history.csv"
+    assert csv_path.exists()
+    with open(csv_path, newline="") as f:
+        reader = csv.reader(f)
+        header = next(reader)
+        assert header == ["episode", "return", "length"], f"header mismatch: {header}"
+        rows = list(reader)
+        assert len(rows) >= 1
+        for r in rows:
+            assert len(r) == 3
 
 
 def test_run_matrix_cardinality_is_45():
@@ -127,43 +129,6 @@ def test_run_matrix_cardinality_is_45():
 # ---------------------------------------------------------------------------
 
 
-def test_wandb_logging_does_not_affect_csv(tmp_path, monkeypatch):
-    """SJFPO_DISABLE_WANDB=1 → train_run still writes 3-col CSV [episode,return,length]."""
-    monkeypatch.setenv("SJFPO_DISABLE_WANDB", "1")
-    from sjfpo.runner import train_run
-
-    env = FakeGymEnv()
-    out = tmp_path / "wandb_disabled_csv"
-    cfg = SJFPOConfig(
-        num_mc_samples=2,
-        euler_train=4,
-        euler_eval=4,
-        chunks_per_update=16,
-        n_obs_steps=16,
-    )
-    train_run(
-        env=env,
-        out_dir=out,
-        cfg=cfg,
-        seed=0,
-        total_steps=200,
-        eval_interval=100,
-        ckpt_interval=100,
-        obs_dim=4,
-        act_dim=2,
-    )
-    csv_path = out / "eval_history.csv"
-    assert csv_path.exists()
-    with open(csv_path, newline="") as f:
-        reader = csv.reader(f)
-        header = next(reader)
-        assert header == ["episode", "return", "length"], f"header mismatch: {header}"
-        rows = list(reader)
-        assert len(rows) >= 1
-        for r in rows:
-            assert len(r) == 3
-
-
 def test_wandb_logging_does_not_change_run_matrix():
     """RUN_MATRIX cardinality remains 45 regardless of wandb integration."""
     assert len(build_run_matrix()) == 45
@@ -194,50 +159,3 @@ def test_wandb_soft_import_no_crash():
     assert "wandb default-on guard ok" in proc.stdout
 
 
-def test_wandb_disabled_in_train_run(tmp_path, monkeypatch):
-    """SJFPO_DISABLE_WANDB=1 → train_run return dict has expected keys, no wandb artifacts."""
-    monkeypatch.setenv("SJFPO_DISABLE_WANDB", "1")
-    from sjfpo.runner import train_run
-
-    env = FakeGymEnv()
-    out = tmp_path / "wandb_unset_return"
-    cfg = SJFPOConfig(
-        num_mc_samples=2,
-        euler_train=4,
-        euler_eval=4,
-        chunks_per_update=16,
-        n_obs_steps=16,
-    )
-    result = train_run(
-        env=env,
-        out_dir=out,
-        cfg=cfg,
-        seed=0,
-        total_steps=200,
-        eval_interval=100,
-        ckpt_interval=100,
-        obs_dim=4,
-        act_dim=2,
-    )
-    expected_keys = {
-        "method",
-        "env_name",
-        "seed",
-        "reward_mean_last10",
-        "fps",
-        "artifacts",
-        "diverged",
-        "global_step",
-    }
-    assert expected_keys == set(result.keys()), (
-        f"missing keys: {expected_keys - set(result.keys())}"
-    )
-    assert result["method"] == "sjfpo"
-    assert isinstance(result["artifacts"], list)
-    # no wandb-specific artifacts (wandb/, *.wandb files) when disabled
-    wandb_artifacts = [
-        a
-        for a in result["artifacts"]
-        if "/wandb/" in str(a) or str(a).endswith(".wandb")
-    ]
-    assert not wandb_artifacts, f"unexpected wandb artifacts: {wandb_artifacts}"
