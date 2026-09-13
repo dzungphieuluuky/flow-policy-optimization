@@ -67,6 +67,42 @@ def test_state_trunk_gradient_flows():
     assert all(g is not None and torch.isfinite(g).all() for g in grads)
 
     # ---------------------------------------------------------------------------
+    # RunningMeanStd — running obs stats, checkpointed with the models
+    # ---------------------------------------------------------------------------
+
+
+def test_running_stats_identity_until_first_update():
+    nets = make_nets()
+    norm = nets.RunningMeanStd(4)
+    x = torch.randn(8, 16, 4) * 100.0
+    assert torch.equal(norm(x), x)
+    assert int(norm.count) == 0
+
+
+def test_running_stats_normalize_and_checkpoint():
+    nets = make_nets()
+    torch.manual_seed(0)
+    norm = nets.RunningMeanStd(4)
+    batch = torch.randn(64, 16, 4) * 5.0 + 3.0
+    norm.update(batch)
+    assert int(norm.count) == 64 * 16
+    out = norm(batch)
+    assert torch.isfinite(out).all()
+    assert abs(float(out.mean())) < 0.05
+    assert abs(float(out.std()) - 1.0) < 0.05
+    assert float(out.abs().max()) <= 10.0
+    # Buffers ride the state_dict → stored alongside model parameters.
+    restored = nets.RunningMeanStd(4)
+    restored.load_state_dict(norm.state_dict())
+    assert torch.equal(restored(batch), out)
+
+
+def test_running_stats_rejects_nonpositive_dim():
+    nets = make_nets()
+    with pytest.raises(ValueError):
+        nets.RunningMeanStd(0)
+
+    # ---------------------------------------------------------------------------
     # sigreg_loss — Sketched Isotropic Gaussian Regularizer (SIGReg, Epps-Pulley)
     #
     # Replicates lucas-maes/le-wm SIGReg.forward(): empirical characteristic

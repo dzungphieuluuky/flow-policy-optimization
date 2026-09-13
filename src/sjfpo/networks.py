@@ -184,6 +184,66 @@ class StateEncoder(nn.Module):
         return h
 
         # %% [markdown]
+        # ## RunningMeanStd — per-dim running obs stats (SB3 VecNormalize-style)
+        #
+        # Buffers ride the module state_dict, so checkpointing stores them
+        # alongside the model parameters. update() folds a batch in with
+        # parallel Welford; forward() normalizes frozen (call update explicitly).
+
+        # %%
+
+
+class RunningMeanStd(nn.Module):
+    """Per-dim running mean/variance over raw obs frames.
+
+    Buffers (mean/var/count) ride the module state_dict, so checkpoints
+    store them alongside the model parameters. update() folds raw frames in
+    with parallel Welford; forward() normalizes with frozen stats (no update).
+    A fresh module (count == 0) is the identity — no clipping of raw obs
+    before stats exist.
+
+    Args:
+        dim: Raw observation dimension per frame (env-dependent, required).
+        eps: Numerical floor inside the sqrt. Default 1e-8.
+        clip: Symmetric clamp on normalized output. Default 10.0.
+    """
+
+    def __init__(self, dim: int, eps: float = 1e-8, clip: float = 10.0):
+        super().__init__()
+        if dim <= 0:
+            raise ValueError(f"dim={dim} must be positive")
+        self.register_buffer("mean", torch.zeros(dim))
+        self.register_buffer("var", torch.ones(dim))
+        self.register_buffer("count", torch.tensor(0.0))
+        self.eps = eps
+        self.clip = clip
+
+    def update(self, x: torch.Tensor) -> None:
+        """Fold raw frames into the running stats (any device, no grad)."""
+        batch = x.detach().reshape(-1, x.shape[-1]).to(self.mean.device)
+        b = batch.shape[0]
+        if b == 0:
+            return
+        b_mean = batch.mean(dim=0)
+        b_var = batch.var(dim=0, unbiased=False)
+        delta = b_mean - self.mean
+        total = self.count + b
+        self.mean += delta * b / total
+        self.var = (
+            self.count * self.var + b * b_var + delta.square() * self.count * b / total
+        ) / total
+        self.count = total
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Normalize with frozen stats; identity until the first update."""
+        if int(self.count) == 0:
+            return x
+        norm = (x - self.mean.to(x.device)) / torch.sqrt(
+            self.var.to(x.device) + self.eps
+        )
+        return norm.clamp(-self.clip, self.clip)
+
+        # %% [markdown]
         # ## SIGReg — Sketched Isotropic Gaussian Regularizer (Epps-Pulley, LeWorldModel)
         #
         # Penalizes the empirical characteristic function (CF) of resampled random 1-D
