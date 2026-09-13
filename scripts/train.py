@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Unified training CLI for SJFPO vs PPO/SAC (MuJoCo-only, CUDA-default, fp32).
+"""Unified training CLI for SJFPO/PPO/SAC (MuJoCo-only, CUDA-default, fp32).
+
+SJFPO trains through SJFPOPolicy (src/sjfpo/train_sjfpo.py).
 
 Single-run (default):
     python scripts/train.py --method sjfpo --env Hopper-v5 --seed 0 --total-steps 2000
@@ -177,15 +179,15 @@ def run_single(
     act_dim: int | None,
     n_obs_steps: int = 16,
 ) -> dict:
-    """Dispatch one run to train_run/ppo_train_run/sac_train_run."""
+    """Dispatch one run to train_sjfpo_run/ppo_train_run/sac_train_run."""
     import gymnasium as gym
 
     env = gym.make(env_id)
     try:
         if method == "sjfpo":
-            from sjfpo.runner import train_run
+            from sjfpo.train_sjfpo import train_sjfpo_run
 
-            return train_run(
+            return train_sjfpo_run(
                 env=env,
                 out_dir=out_dir,
                 cfg=cfg,

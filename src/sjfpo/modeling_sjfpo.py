@@ -23,13 +23,15 @@ from collections import deque
 from typing import Any
 
 import einx
+import numpy as np
 import torch
 
 from lerobot.policies import PreTrainedPolicy
 from lerobot.utils.constants import ACTION, OBS_STATE
 
 from sjfpo.configuration_sjfpo import SJFPOConfig
-from sjfpo.dct_utils import dct, idct
+from sjfpo.collector import bootstrap_action_lengths, collect_chunks
+from sjfpo.dct_utils import dct, idct, mask_unexecuted_tail
 from sjfpo.fpo_core import (
     compute_aspo_surrogate,
     compute_cfm_loss,
@@ -37,6 +39,7 @@ from sjfpo.fpo_core import (
     pair_tensor,
     sample,
 )
+from sjfpo.gae import chunk_gae
 from sjfpo.networks import (
     Critic,
     RunningMeanStd,
@@ -88,7 +91,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         # snapshot_behavior_policy(). Registered like a target net so it rides
         # state_dict, but excluded from get_optim_params().
         self.old_actor = copy.deepcopy(self.actor)
-        # Single-env inference buffers (mirrors SjfpoEvalWrapper semantics).
+        # Single-env inference buffers (chunked open-loop eval semantics).
         self._frame_buffer: deque[torch.Tensor] = deque(maxlen=config.n_obs_steps)
         self._action_buffer: deque[torch.Tensor] = deque()
         # Update counter (checkpoint compat; incremented by the driver loop).
@@ -214,6 +217,96 @@ class SJFPOPolicy(PreTrainedPolicy):
             for i in range(n_execute - 1, -1, -1):
                 self._action_buffer.append(chunk[0, i])
         return self._action_buffer.popleft()  # [Da]
+
+    def generate_rollout(
+        self,
+        env,
+        total_steps: int,
+        *,
+        action_low: float = -1.0,
+        action_high: float = 1.0,
+        noisy: bool = True,
+    ) -> dict[str, torch.Tensor]:
+        """Interact with env to gather chunk transitions; return a forward-ready batch.
+
+        Rolls out full-horizon open-loop chunks (training semantics) with the
+        noisy behavior policy by default, evaluates V(s,a) under frozen stats,
+        runs chunk GAE, and assembles the batch dict ``forward`` consumes.
+        Obs stats are NOT updated here (rollout path stays frozen; ``forward``
+        updates them in train mode).
+
+        Args:
+            env: Gymnasium env with flat Box obs and ``[low, high]`` actions.
+            total_steps: Env steps to collect (> 0).
+            action_low/action_high: Action bounds for clip counting/scaling.
+            noisy: Sample chunks from random Euler noise (True, training) or
+                deterministically from zeros (False).
+
+        Returns:
+            Batch on the policy device with ``observation.state`` [N,T,obs],
+            ``action`` [N,H,Da] real-space, ``action_is_pad`` [N,H] bool,
+            ``advantages``/``returns``/``values`` [N] — pass straight to ``forward``.
+        """
+        if total_steps <= 0:
+            raise ValueError(f"total_steps={total_steps} must be positive")
+        cfg = self.config
+        dev = next(self.parameters()).device
+
+        def _propose(state: torch.Tensor) -> torch.Tensor:
+            chunk = self.predict_action_chunk(
+                {OBS_STATE: state.to(dev)}, noise=noisy
+            )[0]
+            return chunk.cpu()  # env stepping stays on CPU
+
+        chunks = collect_chunks(
+            env,
+            _propose,
+            total_steps,
+            action_low,
+            action_high,
+            n_obs_steps=cfg.n_obs_steps,
+            n_action_steps=cfg.horizon,
+        )
+        lengths = [int(c["n_action_steps"]) for c in chunks]
+        next_lengths = bootstrap_action_lengths(chunks, cfg.horizon)
+        with torch.inference_mode():
+            states = torch.stack([c["observation.state"] for c in chunks]).to(dev)
+            next_states = torch.stack([c["next.observation.state"] for c in chunks]).to(dev)
+            states_n = self.obs_normalizer(states)
+            next_states_n = self.obs_normalizer(next_states)
+            a_exec = mask_unexecuted_tail(
+                torch.stack([c["action"] for c in chunks]).to(dev), lengths, dim=1
+            )
+            a_next_exec = mask_unexecuted_tail(
+                torch.stack([c["next.action"] for c in chunks]).to(dev),
+                next_lengths,
+                dim=1,
+            )
+            values = self.critic(states_n, a_exec, lengths)  # [N]
+            v_next_all = self.critic(next_states_n, a_next_exec, next_lengths)  # [N]
+            terminated = torch.tensor([bool(c["next.done"]) for c in chunks], device=dev)
+            next_values = torch.where(terminated, 0.0, v_next_all)
+        all_rewards = [r for c in chunks for r in c["next.reward"].tolist()]
+        advantages, returns = chunk_gae(
+            all_rewards,
+            values.cpu().numpy(),
+            next_values.cpu().numpy(),
+            np.array(lengths),
+            np.array([bool(c["next.done"]) for c in chunks]),
+            gamma=cfg.gamma,
+            lam=cfg.gae_lambda,
+            normalize=False,
+            truncated=np.array([bool(c["next.truncated"]) for c in chunks]),
+        )
+        is_pad = torch.arange(cfg.horizon).unsqueeze(0) >= torch.tensor(lengths).unsqueeze(1)
+        return {
+            OBS_STATE: torch.stack([c["observation.state"] for c in chunks]).to(dev),
+            ACTION: idct(torch.stack([c["action"] for c in chunks]).to(dev), dim=1),
+            "action_is_pad": is_pad.to(dev),
+            "advantages": torch.tensor(advantages, dtype=torch.float32, device=dev),
+            "returns": torch.tensor(returns, dtype=torch.float32, device=dev),
+            "values": values.detach().to(dev),
+        }
 
     def forward(
         self, batch: dict[str, torch.Tensor]
