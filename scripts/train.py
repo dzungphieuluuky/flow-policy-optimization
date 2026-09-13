@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unified training CLI for SJFPO vs PPO/SAC (MuJoCo-only, CPU-first, fp32).
+"""Unified training CLI for SJFPO vs PPO/SAC (MuJoCo-only, CUDA-default, fp32).
 
 Single-run (default):
     python scripts/train.py --method sjfpo --env Hopper-v5 --seed 0 --total-steps 2000
