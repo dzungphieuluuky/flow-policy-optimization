@@ -1,7 +1,7 @@
 # AGENTS — tests
 
 ## Overview
-277 collected items (109 fns, heavy parametrize) across 23 test_*.py files. Full suite ~103s CPU. Counts below are collected items (`pytest --collect-only`), recompute on add/remove — never hardcode.
+299 collected items across 23 test_*.py files. Full suite ~103s CPU. Counts below are collected items (`pytest --collect-only`), recompute on add/remove — never hardcode.
 
 ## Structure
 ```
@@ -12,7 +12,7 @@ test_sweep.py (20)           scan_runs/run_pending (imports RunSpec, RUN_MATRIX)
 test_todo4_characterization.py (16) pre-refactor behavior pins (fn-consolidation)
 test_config.py (15)          dataclasses + 45/TINY matrices (module-reload tests)
 test_dct.py (14)             DCT/IDCT roundtrip + Parseval + DC=mean·√H (no scipy)
-test_trainer.py (14)         assemble_update incl. DiT actor + V(s,a) TD-critic
+test_modeling_sjfpo.py (13)  SJFPOPolicy modules/inference/forward/hub roundtrip
 test_todo3_characterization.py (13) pre-refactor behavior pins (fn-consolidation)
 test_analysis.py (13)        analyze_results IQM/bootstrap
 test_evaluator.py (11)       Evaluator 3-col CSV
@@ -23,6 +23,7 @@ test_collector.py (9)        collect_chunks incl. NEVER-hardcode-horizon guards 
 test_pipeline_cpu.py (7)     end-to-end invariants: CSV + 45 + wandb
 test_baselines.py (7)        skrl PPO/SAC drivers + tiny smokes
 test_gae.py (6)              chunk_gae vs zero-shared-code brute-force oracle
+test_configuration_sjfpo.py (6) LeRobot SJFPOConfig registry/parity/validation
 test_checkpoint.py (5)       atomic ckpt (uses test-local resume_worker helpers)
 test_config_yaml_parity.py (1) YAML keys ⊆ dataclass fields (deslop gate)
 fixtures/fake_env.py       FakeGymEnv shared fixture

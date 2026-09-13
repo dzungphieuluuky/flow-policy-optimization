@@ -7,7 +7,7 @@
 | Full | Everything | `PYTHONPATH=src .venv/bin/python -m pytest -q` |
 | Pipeline (7) | CSV schema, matrix axes, wandb gate — **never touch** | `… -m pytest tests/test_pipeline_cpu.py -v` |
 | Config | 45-run matrix asserts | `… -m pytest tests/test_config.py -q` |
-| Targeted | e.g. spectral, trainer, baselines, sweep, wandb | `… -m pytest tests/test_networks.py tests/test_trainer.py -q` |
+| Targeted | e.g. spectral, policy, baselines, sweep, wandb | `… -m pytest tests/test_networks.py tests/test_modeling_sjfpo.py -q` |
 
 Full suite tail is `273 passed`.
 

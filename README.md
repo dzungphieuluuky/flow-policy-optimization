@@ -12,7 +12,7 @@ Research code: correctness, clarity, reproducibility over infrastructure. See `A
 - DCT-II over the raw obs window (time axis) → keep `K` lowest low-frequency bins (`K = round(top_p*T)`, default 5) → raw bins = `SpectralEncoder` conditioning `[N,K,obs]`, no projector, no calibration, no encoder latent. (rFFT is reserved for `observation.image`; state and action use DCT.)
 - Action chunk `[N,H=16,Da]` stored as orthonormal DCT-II coefficients. Flow (DiT-8, adaLN-Zero, `SJFOPolicyModel`) attends over `[state_embed(raw obs); noisy actions]` prefix tokens and predicts action velocities in DCT space.
 - Sample with `fpo_core.sample` (mode="euler", descending `t: 1→0`, `x ← x − δ·v̂`); decode with `runner.decode_chunk_actions` (IDCT + single `clamp(-1,1)`). Training executes the full predicted chunk open-loop (`H=16`); inference/eval execute the `executed_vs_predicted_ratio=0.5` prefix (8 steps), then replan.
-- Update (`SJFPOTrainer.assemble_update`): per-sample MC log-liks `[N,m=16]` → STE-capped ratios → ASPO surrogate (PPO-clip for `A≥0`, SPO penalty for `A<0`, mean-of-ψ) + `V(s,a)` TD critic (`R_k + γ^L·V(s',a')`, terminated never bootstraps). One AdamW optimizer over policy + critic + critic state encoder (spectral is parameter-free); per-module grad-clip; NaN aborts via `SJFPOAborted`.
+- Update (`SJFPOPolicy.forward`): per-sample MC log-liks `[N,m=16]` → STE-capped ratios → ASPO surrogate (PPO-clip for `A≥0`, SPO penalty for `A<0`, mean-of-ψ) + `V(s,a)` critic on frozen GAE returns. One AdamW optimizer over the policy's live weights (spectral is parameter-free); global grad-clip; NaN aborts via `SJFPOAborted`.
 - Chunk rollout uses LeRobot-keyed `Transition` dicts; chunk-level semi-MDP GAE (`gae.chunk_gae`, numpy fp64, advantages standardized).
 
 **Baselines:** skrl 2.1.0 PPO / SAC via shared `baseline_train_loop` (`src/sjfpo/baselines.py`). No spectral/flow code.
@@ -35,7 +35,7 @@ src/sjfpo/          # all production code (MuJoCo-only, fp32)
   fpo_core.py       # CFM losses, compute_policy_ratio (STE cap), compute_aspo_surrogate, compute_policy_loss, sample
   collector.py      # Transition dict (9 LeRobot keys), open-loop full-H chunks in training, next.action chaining
   gae.py            # chunk semi-MDP GAE (R_k intradiscounted, γ^L bootstrap, (γλ)^L recursion)
-  trainer.py        # SJFPOTrainer.assemble_update (ASPO + V(s,a) TD)
+  modeling_sjfpo.py  # SJFPOPolicy.forward (ASPO + V(s,a) on GAE returns)
   runner.py         # train_run: collect → GAE → update → eval → ckpt; decode_chunk_actions
   baselines.py      # skrl PPO/SAC (FrameStackWrapper, baseline_train_loop)
   evaluator.py      # Evaluator → 3-col CSV [episode,return,length] + divergence gate

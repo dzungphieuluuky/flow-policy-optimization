@@ -1,7 +1,6 @@
 """Checkpoint/resume IO: manifest-complete atomic save/load (plan task 9).
 
-Generic contract (sjfpo.trainer does not exist yet; task 8 will call this
-same API with the real trainer bundle):
+Generic contract (the runner calls this same API with the policy bundle):
 
 ``state`` is a nested mapping whose LEAVES are one of
 

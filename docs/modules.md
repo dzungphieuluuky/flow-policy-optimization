@@ -8,8 +8,8 @@ Use this as a jump table. Each row: what the file owns, the key symbols, and the
 |---|---|---|---|
 | `config.py` | Flags, run matrices, budgets, algorithm dataclasses | `SJFPOConfig / PPOConfig / SACConfig`, `RUN_MATRIX` (45), `build_filtered_matrix` | Change sweep size → `--methods/--envs/--seeds` or edit axes |
 | `runner.py` | SJFPO train entry | `train_run`, `ChunkPolicy`, `SjfpoEvalWrapper` | `test_runner_sjfpo.py` + `test_pipeline_cpu.py` |
-| `trainer.py` | FPO++ ASPO + value update | `SJFPOTrainer.assemble_update`, `SJFPOAborted` | `test_trainer.py` NaN + param count |
-| `networks.py` | Encoder + spectral + DiT flow | `StateEncoder`, `SpectralEncoder(raw obs→DCT→low-K bins, parameter-free)`, `SJFOPolicyModel` (DiT-8 adaLN-Zero), `Critic` (2 cross-attention blocks) V(s,a) | `test_networks.py` |
+| `modeling_sjfpo.py` | SJFPO policy (FPO++ ASPO + value update) | `SJFPOPolicy.forward`, `SJFPOAborted` | `test_modeling_sjfpo.py` NaN + param count |
+| `networks.py` | Encoder + spectral + DiT flow | `StateEncoder`, `ActionEncoder` (same definition), `SpectralEncoder(raw obs→DCT→low-K bins, parameter-free)`, `SJFOPolicyModel` (DiT-8 adaLN-Zero), `Critic` (1 cross-attention block) V(s,a) | `test_networks.py` |
 | `dct_utils.py` | DCT orthonormal action chunks | `dct`, `idct`, `discounted_chunk_reward` | `test_dct.py` roundtrip `1e-5` |
 | `evaluator.py` | Metrics | `Evaluator` → 3-col CSV `[episode,return,length]` | `test_evaluator.py` schema + `test_pipeline_cpu.py` |
 | `baselines.py` | skrl PPO/SAC | `ppo_train_run` / `sac_train_run`, shared `GaussianPolicyImpl`, `seed_and_wrap_env`, `mean_action_eval_policy`, `baseline_train_loop`, `FrameStackWrapper` | `test_baselines.py` provenance |
@@ -41,7 +41,7 @@ Use this as a jump table. Each row: what the file owns, the key symbols, and the
 ## Reading Order
 
 1. New to the SJFPO path: `config.py` → `runner.py::train_run` →
-   `networks.py` (encoders→spectral) → `dct_utils.py` → `trainer.py` →
+   `networks.py` (encoders→spectral) → `dct_utils.py` → `modeling_sjfpo.py` →
    `evaluator.py` → `sweep.py`/`analysis.py`.
 2. Debugging spectral: jump to `networks.py::SpectralEncoder` — order is
    DCT→low-K→Linear, no normalization.
@@ -57,9 +57,9 @@ HuggingFace convention (transformers / diffusers / accelerate):
   `check_divergence`, `log_eval_summary`).
 - CapWords classes with role suffixes: `BertModel` / `BertConfig`
   (transformers), `DDPMScheduler` (diffusers) — mirrored here
-  (`SJFOPolicyModel`, `Critic`, `SJFPOTrainer`).
+  (`SJFOPolicyModel`, `Critic`, `SJFPOPolicy`).
 - File mirrors class: `modeling_bert.py` → `BertModel`; here `sweep.py` →
-  `SweepError` / `ScanResult`, `trainer.py` → `SJFPOTrainer` / `SJFPOAborted`.
+  `SweepError` / `ScanResult`, `modeling_sjfpo.py` → `SJFPOPolicy` / `SJFPOAborted`.
 - UPPER_SNAKE constants: `CHECKPOINT_FILE`, `BASIS_CACHE`.
 - `_` prefix banned on this repo's public surface: a leading underscore marks
   private API, but every helper here is imported across modules or asserted by

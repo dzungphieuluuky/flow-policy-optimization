@@ -14,7 +14,7 @@
 ├── src/sjfpo/                     # production code (MuJoCo-only, flat Box, fp32, no autocast)
 │   ├── config.py                 # flags, RUN_MATRIX (45), SJFPO/PPO/SAC configs, build_filtered_matrix
 │   ├── runner.py                 # train_run (SJFPO entry)
-│   ├── trainer.py                # assemble_update (ASPO + value)
+│   ├── modeling_sjfpo.py         # SJFPOPolicy (ASPO + value update, owns all modules)
 │   ├── networks.py               # StateEncoder x2 (model-owned), SpectralEncoder, DiT flow, Critic
 │   ├── dct_utils.py              # orthonormal DCT-II/III action chunks
 │   ├── evaluator.py              # Evaluator → 3-col CSV [episode,return,length]

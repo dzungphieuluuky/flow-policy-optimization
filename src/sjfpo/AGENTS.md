@@ -5,8 +5,8 @@ MuJoCo-only (LEGACY_MUJOCO=True) hotspot — single live train path, chunked flo
 
 ## Structure
 ```
-networks.py      StateEncoder (policy state encoder inside SJFOPolicyModel + critic state encoder inside Critic) + RunningMeanStd (obs stats, checkpointed) + SpectralEncoder(raw-obs DCT-II, parameter-free) + DiT-8 SJFOPolicyModel ([state;action] tokens) + 2-block cross-attn Critic V(s,a trans real-space +PE query)
-trainer.py        389L — SJFPOTrainer.assemble_update: ASPO (truncated Ka coeffs, negated) + V(s,a) critic on executed-masked real actions (frozen GAE returns, PPO-clipped; one-step TD fallback without returns) + running obs norm; optimizer = policy + critic + critic state encoder; global grad-clip; NaN-guard with sink dump
+networks.py      StateEncoder + ActionEncoder (same definition; policy state encoder inside SJFOPolicyModel, state+action encoders inside Critic) + RunningMeanStd (obs stats, checkpointed) + SpectralEncoder(raw-obs DCT-II, parameter-free) + DiT-8 SJFOPolicyModel ([state;action] tokens) + 1-block cross-attn Critic V(s,a trans real-space +PE query)
+modeling_sjfpo.py   SJFPOPolicy.forward: ASPO (truncated Ka coeffs, negated) + V(s,a) critic on executed-masked real actions (frozen GAE returns, PPO-clipped) + running obs norm; optimizer = live policy weights; global grad-clip; NaN-guard aborts
 collector.py      241L — Transition TypedDict (9 LeRobot keys incl. next.action chaining); full-H open-loop chunks; action anchor = DCT of FULL SCALED proposed chunk [H,Da]; all chunks train (trainer zero-pads unexecuted tails)
 gae.py            137L — chunk semi-MDP GAE (R_k intradiscounted, γ^L bootstrap, (γλ)^L recursion); terminated cuts all, truncated bootstraps δ but cuts recursion; train advantages raw (ASPO sign)
 fpo_core.py       432L — CFM/SQL-ℓ [N,m], STE-capped ρ, ASPO piecewise (PPO-clip Â≥0 / SPO Â<0), mean-of-ψ objective, sample(mode=euler) t:1→0; policy + vf_coef·value summed inline in trainer
@@ -24,7 +24,7 @@ utils.py           23L — shared pure helpers (safe_float_value), no sjfpo impo
 
 ## Where to Look
 - `collector.py:51` `Transition`: 9 LeRobot keys (`observation.state [T,Do]`, `action [H,Da]` DCT, `next.action [H,Da]` chained/behavior proposal, `next.*`, `n_action_steps` i64, `clip_count` i64); `next.reward` is variable-length `[L_k]`
-- `trainer.py:assemble_update`: stack (guards H/T) → spectral `cond [N,K,obs]` (raw bins) → policy ℓ/ρ/ψ `[N,m]` → critic state encoder `Z [N,T,D]` → V(s,a) critic → clip → AdamW
+- `modeling_sjfpo.py:forward`: stack (guards H/T) → spectral `condition [N,K,obs]` (raw bins) → policy ℓ/ρ/ψ `[N,m]` → critic `V(s,a)` → clip → loss (optimizer steps in runner)
 - `networks.py:SpectralEncoder`: DCT-II raw obs `[B,T,obs]` over time → keep K lowest bins (round(top_p*T)) → `[B,K,obs]` raw tokens (parameter-free; rFFT reserved for observation.image)
 - `gae.py:chunk_gae`: per-chunk `R_k`, `δ_k`, backward `(γλ)^L`; terminated cuts recursion, truncated bootstraps δ from last next-frame but cuts recursion
 - `runner.py:build_training_components`: policy/critic/spectral (each model owns its state encoder, no target nets, no aux head); `compute_chunk_values` V(s,a) via Critic, bootstraps truncated only
@@ -33,11 +33,11 @@ utils.py           23L — shared pure helpers (safe_float_value), no sjfpo impo
 ## Code Map
 | File | Export | Caller |
 |---|---|---|
-| `networks.py` | `StateEncoder` `RunningMeanStd` `SpectralEncoder` `SJFOPolicyModel` `Critic` `sigreg_loss` (test-only) `DiTBlock` `CrossAttentionBlock` | `trainer.py` `runner.py` (live) |
-| `collector.py` | `Transition` `collect_chunks` | `trainer.py` `runner.py` `tests/test_transition_v4.py` |
+| `networks.py` | `StateEncoder` `RunningMeanStd` `SpectralEncoder` `SJFOPolicyModel` `Critic` `sigreg_loss` (test-only) `DiTBlock` `CrossAttentionBlock` | `modeling_sjfpo.py` `runner.py` (live) |
+| `collector.py` | `Transition` `collect_chunks` | `runner.py` `tests/test_transition_v4.py` |
 | `dct_utils.py` | `dct` `idct` `discounted_chunk_reward` | `collector.py` `fpo_core.py` (DCT) + `tests/test_dct.py` |
-| `utils.py` | `safe_float_value` `resolve_device` `is_bf16_available` `resolve_compute_dtype` | `trainer.py` `runner.py` `baselines.py` |
-| `trainer.py` | `SJFPOTrainer` `SJFPOAborted` | `runner.py` `sweep.py` |
+| `utils.py` | `safe_float_value` `resolve_device` `is_bf16_available` `resolve_compute_dtype` | `runner.py` `baselines.py` |
+| `modeling_sjfpo.py` | `SJFPOPolicy` `SJFPOAborted` | `runner.py` `sweep.py` |
 | `wandb_logging.py` | `wandb_disabled` `init_wandb_run_for_method`->bool `log_metrics` `log_eval_details` `log_eval_summary` `finish_run` (6 fns SDK-direct) | `runner.py` `baselines.py` (REQUIRED import, SJFPO_DISABLE_WANDB=1 gate) |
 
 ## Conventions
@@ -68,5 +68,5 @@ PYTHONPATH=src .venv/bin/python scripts/train.py --method sjfpo --env Hopper-v5 
 ```
 
 ## Notes
-- Two StateEncoders, each owned by its model (policy state encoder in SJFOPolicyModel, critic state encoder in Critic); ASPO grads land on the policy head (incl. state_embed + cond_proj)
+- Three StateEncoders, each owned by its model (policy state encoder in SJFOPolicyModel, state + action encoders in Critic); ASPO grads land on the policy head (incl. state_embed + cond_proj)
 - `compute_chunk_values` bootstraps truncated chunks from the full next window + stored `next.action`
