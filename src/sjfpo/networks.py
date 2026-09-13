@@ -74,34 +74,11 @@ def resolve_config_value(name: str, override):
     return override if override is not None else getattr(config.SJFPO_CFG, name)
 
     # %% [markdown]
-    # ## Sinusoidal timestep embedding (8 dims: cos/sin of t*2^k)
+    # ## Sinusoidal timestep embedding (diffusers-style 10000-ladder)
     #
-    # Convention from amazon-far/fpo-control `_embed_timestep` (arXiv 2602.02481
-    # III-A): the first half is sin(t*2^k), the second half cos(t*2^k),
-    # k = 0 .. dim/2-1.
+    # First half sin, second half cos; finite in fp32 at any width.
 
     # %%
-
-
-def get_timestep_embedding(t, dim: int = 8) -> torch.Tensor:
-    """Embed scalar-or-[B] timestep(s) as [..., dim] sinusoidal features.
-
-    Convention from amazon-far/fpo-control `_embed_timestep` (arXiv 2602.02481
-    III-A): the first half is sin(t*2^k), the second half cos(t*2^k),
-    k = 0 .. dim/2-1.
-
-    Args:
-        t: Scalar or tensor of shape [..., B] or [B].
-        dim: Embedding dimension (must be even). Default 8.
-
-    Returns:
-        Tensor of shape [..., dim] with sin/cos features.
-    """
-    t = torch.as_tensor(t, dtype=torch.float32)
-    half = dim // 2
-    freqs = 2.0 ** torch.arange(half, dtype=torch.float32, device=t.device)  # [half]
-    ang = t.unsqueeze(-1) * freqs  # [..., half]
-    return torch.cat([ang.sin(), ang.cos()], dim=-1)  # [..., dim]
 
 
 def sinusoidal_positional_encoding(
@@ -109,7 +86,7 @@ def sinusoidal_positional_encoding(
 ) -> torch.Tensor:
     """Fixed sinusoidal position codes [T, dim] (added to frame projections).
 
-    Same 10000-ladder as ``dit_timestep_embedding`` so encodings stay finite
+    Same 10000-ladder as ``get_timestep_embedding`` so encodings stay finite
     in fp32 at any width; first half sin, second half cos.
 
     Args:
@@ -381,11 +358,10 @@ def modulate(x: torch.Tensor, shift: torch.Tensor, scale: torch.Tensor) -> torch
     return x * (1.0 + scale) + shift  # [..., D]
 
 
-def dit_timestep_embedding(t, dim: int = 256) -> torch.Tensor:
+def get_timestep_embedding(t, dim: int = 256) -> torch.Tensor:
     """Diffusers-style sinusoidal timestep embedding with inverse-frequency ladder.
 
-    Unlike get_timestep_embedding (2^k ladder, only valid for tiny dims), this
-    uses exp(-log(10000) * k / (half - 1)) so dim=256 stays finite in fp32.
+    Uses exp(-log(10000) * k / (half - 1)) so any dim stays finite in fp32.
     First half sin, second half cos.
 
     Args:
@@ -476,7 +452,7 @@ class CrossAttentionBlock(nn.Module):
 
 
 class SJFOPolicyModel(nn.Module):
-    """DiT velocity model: raw state prefix tokens + noisy action tokens.
+    """DiT velocity model: StateEncoder prefix tokens + noisy action tokens.
 
     `dit_depth` pre-norm self-attention blocks with adaLN-Zero over the
     concatenated sequence [state tokens; action tokens]; conditioning vector
@@ -511,7 +487,7 @@ class SJFOPolicyModel(nn.Module):
         dit_time_dim = int(resolve_config_value("dit_time_dim", dit_time_dim))
         self.time_dim = dit_time_dim
         self.in_proj = nn.Linear(action_dim, hidden_size)
-        self.state_embed = nn.Linear(obs_dim, hidden_size)
+        self.state_encoder = StateEncoder(obs_dim, hidden_size=hidden_size)
         self.time_mlp = SwiGLU(dit_time_dim, 4 * hidden_size, hidden_size)
         self.cond_proj = nn.Linear(obs_dim, hidden_size)
         self.blocks = nn.ModuleList(
@@ -538,14 +514,13 @@ class SJFOPolicyModel(nn.Module):
         Returns:
             Velocity prediction of shape [B, Ka, Da].
         """
-        temb = dit_timestep_embedding(t, dim=self.time_dim).to(
+        temb = get_timestep_embedding(t, dim=self.time_dim).to(
             device=x_t.device, dtype=x_t.dtype
         )  # [B, T] or [T]
         if temb.dim() == 1:
             temb = temb.expand(x_t.shape[0], -1)  # [B, T]
         c = self.time_mlp(temb) + self.cond_proj(cond.mean(dim=1))  # [B, D]
-        s = self.state_embed(state)  # [B, T, D] own latent for raw states
-        s = s + sinusoidal_positional_encoding(s.shape[1], s.shape[2], s.device)
+        s = self.state_encoder(state)  # [B, T, D] encoded state prefix
         h = torch.cat([s, self.in_proj(x_t)], dim=1)  # [B, T+H, D]
         for blk in self.blocks:
             h = blk(h, c)
