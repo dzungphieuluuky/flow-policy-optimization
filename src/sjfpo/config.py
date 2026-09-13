@@ -69,8 +69,8 @@ class SJFPOConfig:
         gae_lambda: GAE lambda. Default 0.95.
         clip_range: ASPO trust-region width. Default 0.05.
         clip_range_vf: PPO-style value-loss clip (return units, not ratios).
-            Defaults to clip_range; raise it toward return magnitudes when the
-            critic rate-limits. Default 0.05.
+            Chunk TD targets live at return scale (tens), so the clip must
+            too — a ratio-scale 0.05 freezes the critic. Default 10.0.
         cfm_clamp: Symmetric clamp on CFM losses. Default 20.0.
         log_ratio_cap: STE cap on log-ratio magnitude. Default 10.0.
         tau_range: Flow time range (t_min, t_max). Default (0.005, 0.995).
@@ -78,7 +78,8 @@ class SJFPOConfig:
         dit_heads: Attention heads per DiT block. Default 4.
         dit_mlp_ratio: MLP width multiplier per DiT block. Default 4.0.
         dit_time_dim: Sinusoidal timestep embedding dim for DiT. Default 256.
-        vf_coef: Value-loss coefficient. Default 1.0.
+        vf_coef: Value-loss coefficient (return-scale MSE vs O(1) surrogate).
+            Default 0.1.
         grad_clip: Grad-norm clip. Default 1.0.
         n_obs_steps: Frame-stack state window length T. Default 16.
         chunk_size: Predicted action-chunk length H. Default 16.
@@ -98,7 +99,7 @@ class SJFPOConfig:
     gamma: float = 0.99
     gae_lambda: float = 0.95
     clip_range: float = 0.05  # ASPO trust-region width
-    clip_range_vf: float = 0.05  # value-loss clip (return units)
+    clip_range_vf: float = 10.0  # value-loss clip (return units)
     cfm_clamp: float = 20.0  # symmetric clamp on CFM losses
     log_ratio_cap: float = 10.0  # STE cap on log-ratio magnitude
     tau_range: tuple[float, float] = (0.005, 0.995)
@@ -106,7 +107,7 @@ class SJFPOConfig:
     dit_heads: int = 4  # attention heads per DiT block
     dit_mlp_ratio: float = 4.0  # MLP width multiplier per DiT block
     dit_time_dim: int = 256  # sinusoidal timestep embedding dim for DiT
-    vf_coef: float = 1.0  # value-loss coefficient
+    vf_coef: float = 0.1  # value-loss coefficient
     grad_clip: float = 1.0  # grad-norm clip
     n_obs_steps: int = 16  # frame-stack state window length T
     chunk_size: int = 16  # predicted action-chunk length H
