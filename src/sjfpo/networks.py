@@ -81,33 +81,36 @@ def resolve_config_value(name: str, override):
     # %%
 
 
-def sinusoidal_positional_encoding(
-    length: int, dim: int, device: torch.device
-) -> torch.Tensor:
-    """Fixed sinusoidal position codes [T, dim] (added to frame projections).
+class PositionalEncoding(nn.Module):
+    """Fixed sinusoidal position codes added to token embeds.
 
-    Same 10000-ladder as ``get_timestep_embedding`` so encodings stay finite
-    in fp32 at any width; first half sin, second half cos.
-
-    Args:
-        length: Sequence length T.
-        dim: Feature dimension (even in practice; odd dims are truncated).
-        device: Target device.
-
-    Returns:
-        Position codes of shape [length, dim].
+    Stateless: codes are computed on the fly for the input length/dim/device,
+    so nothing enters the state_dict (checkpoint-safe). Same 10000-ladder as
+    ``get_timestep_embedding`` so encodings stay finite in fp32 at any width;
+    first half sin, second half cos.
     """
-    pos = torch.arange(length, dtype=torch.float32, device=device).unsqueeze(
-        1
-    )  # [T, 1]
-    half = dim // 2
-    freqs = torch.exp(
-        torch.arange(half, dtype=torch.float32, device=device)
-        * -(math.log(10000.0) / max(half - 1, 1))
-    )  # [half]
-    ang = pos * freqs  # [T, half]
-    pe = torch.cat([ang.sin(), ang.cos()], dim=-1)  # [T, 2*half]
-    return pe[:, :dim]  # [T, dim]
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Add position codes.
+
+        Args:
+            x: Tokens of shape [..., T, D].
+
+        Returns:
+            Tokens of shape [..., T, D] with position codes added.
+        """
+        t, dim = x.shape[-2], x.shape[-1]
+        pos = torch.arange(t, dtype=torch.float32, device=x.device).unsqueeze(
+            1
+        )  # [T, 1]
+        half = dim // 2
+        freqs = torch.exp(
+            torch.arange(half, dtype=torch.float32, device=x.device)
+            * -(math.log(10000.0) / max(half - 1, 1))
+        )  # [half]
+        ang = pos * freqs  # [T, half]
+        pe = torch.cat([ang.sin(), ang.cos()], dim=-1)  # [T, 2*half]
+        return x + pe[:, :dim]  # [..., T, dim]
 
     # %% [markdown]
     # ## StateEncoder — frame projection -> two pre-norm residual blocks
@@ -149,6 +152,7 @@ class StateEncoder(nn.Module):
         n_obs_steps = resolve_config_value("n_obs_steps", n_obs_steps)
         hidden_size = resolve_config_value("hidden_size", hidden_size)
         self.frame_proj = nn.Linear(obs_dim, hidden_size)
+        self.pos_encoding = PositionalEncoding()
         self.norm1 = nn.RMSNorm(hidden_size, eps=1e-6)
         self.attn1 = nn.MultiheadAttention(hidden_size, n_heads, batch_first=True)
         self.norm2 = nn.RMSNorm(hidden_size, eps=1e-6)
@@ -170,9 +174,7 @@ class StateEncoder(nn.Module):
         h = self.frame_proj(x)  # [B, T, hidden_size]
         # Fixed sinusoidal position codes: attention is permutation-invariant,
         # so order must enter here before the blocks.
-        h = h + sinusoidal_positional_encoding(
-            h.shape[1], h.shape[2], h.device
-        )  # [B, T, hidden_size]
+        h = self.pos_encoding(h)  # [B, T, hidden_size]
         n = self.norm1(h)  # [B, T, hidden_size]
         attn, _ = self.attn1(n, n, n)  # [B, T, hidden_size]
         h = h + attn  # [B, T, hidden_size]
@@ -181,6 +183,79 @@ class StateEncoder(nn.Module):
         attn, _ = self.attn2(n, n, n)  # [B, T, hidden_size]
         h = h + attn  # [B, T, hidden_size]
         h = h + self.swiglu2(self.norm4(h))  # [B, T, hidden_size]
+        return h
+
+
+class ActionEncoder(nn.Module):
+    """Action-sequence encoder: per-step projection + two pre-norm blocks.
+
+    Deliberate duplicate of StateEncoder (not a subclass): the critic action
+    path must read explicitly on its own. THE ONLY DIFFERENCE vs
+    StateEncoder is the key-padding mask — ``real_action_lengths`` marks
+    executed rows and tail (padded) positions are masked out as attention
+    keys, so fake tails cannot influence real actions. Everything else
+    (submodule names, shapes, math) is identical by construction, which the
+    parity test locks via ``load_state_dict``.
+
+    Args:
+        act_dim: Input action dimension per step.
+        n_obs_steps: Unused window hint (kept for signature parity with
+            StateEncoder; positions come from the input length).
+        hidden_size: Latent dimension (default from config.SJFPO_CFG.hidden_size).
+        n_heads: Number of attention heads. Default 4.
+    """
+
+    def __init__(
+        self,
+        act_dim: int,
+        n_obs_steps: int | None = None,
+        hidden_size: int | None = None,
+        n_heads: int = 4,
+    ):
+        super().__init__()
+        n_obs_steps = resolve_config_value("n_obs_steps", n_obs_steps)
+        hidden_size = resolve_config_value("hidden_size", hidden_size)
+        self.frame_proj = nn.Linear(act_dim, hidden_size)
+        self.pos_encoding = PositionalEncoding()
+        self.norm1 = nn.RMSNorm(hidden_size, eps=1e-6)
+        self.attn1 = nn.MultiheadAttention(hidden_size, n_heads, batch_first=True)
+        self.norm2 = nn.RMSNorm(hidden_size, eps=1e-6)
+        self.swiglu1 = SwiGLU(hidden_size, hidden_size, hidden_size)
+        self.norm3 = nn.RMSNorm(hidden_size, eps=1e-6)
+        self.attn2 = nn.MultiheadAttention(hidden_size, n_heads, batch_first=True)
+        self.norm4 = nn.RMSNorm(hidden_size, eps=1e-6)
+        self.swiglu2 = SwiGLU(hidden_size, hidden_size, hidden_size)
+
+    def forward(self, x: torch.Tensor, real_action_lengths=None) -> torch.Tensor:
+        """Forward pass.
+
+        Args:
+            x: Action chunk of shape [B, H, Da].
+            real_action_lengths: Executed steps per row ([B] ints). Tail
+                positions are masked out as attention keys, so padded rows
+                cannot influence real positions. None = full attention.
+
+        Returns:
+            Latent action sequence of shape [B, H, hidden_size].
+        """
+        h = self.frame_proj(x)  # [B, H, hidden_size]
+        # Fixed sinusoidal position codes: attention is permutation-invariant,
+        # so order must enter here before the blocks.
+        h = self.pos_encoding(h)  # [B, H, hidden_size]
+        # DIVERGENCE FROM StateEncoder: key-padding mask over executed rows.
+        key_mask = None
+        if real_action_lengths is not None:
+            n_real = torch.as_tensor(list(real_action_lengths), device=h.device)  # [B]
+            step = torch.arange(h.shape[1], device=h.device).unsqueeze(0)  # [1, H]
+            key_mask = step >= n_real.unsqueeze(1)  # [B, H] True = pad, ignore as key
+        n = self.norm1(h)  # [B, H, hidden_size]
+        attn, _ = self.attn1(n, n, n, key_padding_mask=key_mask)  # [B, H, hidden_size]
+        h = h + attn  # [B, H, hidden_size]
+        h = h + self.swiglu1(self.norm2(h))  # [B, H, hidden_size]
+        n = self.norm3(h)  # [B, H, hidden_size]
+        attn, _ = self.attn2(n, n, n, key_padding_mask=key_mask)  # [B, H, hidden_size]
+        h = h + attn  # [B, H, hidden_size]
+        h = h + self.swiglu2(self.norm4(h))  # [B, H, hidden_size]
         return h
 
         # %% [markdown]
@@ -407,7 +482,7 @@ class SpectralEncoder(nn.Module):
         # %% [markdown]
         # ## Flow policy — DiT velocity model over action-chunk DCT coefficients
         #
-        # The actor predicts ONLY action velocities v(x_t, t, cond) in orthonormal-DCT
+        # The actor predicts ONLY action velocities v(x_t, t, condition) in orthonormal-DCT
         # space (no next-state prediction). DiT
         # (Peebles & Xie) with adaLN-Zero: `dit_depth` pre-norm self-attention blocks
         # over the noisy action tokens, conditioned by one vector (time-embed +
@@ -571,7 +646,7 @@ class SJFOPolicyModel(nn.Module):
         nn.init.constant_(self.out.bias, 0.0)
 
     def forward(
-        self, x_t: torch.Tensor, t, cond: torch.Tensor, state: torch.Tensor
+        self, x_t: torch.Tensor, t, condition: torch.Tensor, state: torch.Tensor
     ) -> torch.Tensor:
         """Forward pass: predict velocity.
 
@@ -579,7 +654,7 @@ class SJFOPolicyModel(nn.Module):
             x_t: Noisy action chunk (DCT coefficients) of shape [B, Ka, Da]
                 where Ka = top-p low-frequency rows (<= H).
             t: Timestep scalar or tensor of shape [B].
-            cond: Raw spectral tokens of shape [B, K, obs_dim].
+            condition: Raw spectral tokens of shape [B, K, obs_dim].
             state: Raw obs window of shape [B, T, obs_dim] (prefix tokens).
 
         Returns:
@@ -590,7 +665,7 @@ class SJFOPolicyModel(nn.Module):
         )  # [B, T] or [T]
         if temb.dim() == 1:
             temb = temb.expand(x_t.shape[0], -1)  # [B, T]
-        c = self.time_mlp(temb) + self.cond_proj(cond.mean(dim=1))  # [B, D]
+        c = self.time_mlp(temb) + self.cond_proj(condition.mean(dim=1))  # [B, D]
         s = self.state_encoder(state)  # [B, T, D] policy state encoder prefix
         h = torch.cat([s, self.in_proj(x_t)], dim=1)  # [B, T+H, D]
         for blk in self.blocks:
@@ -604,20 +679,20 @@ class SJFOPolicyModel(nn.Module):
 
 
 class Critic(nn.Module):
-    """State-action critic: owned state encoder + cross-attention fusion -> scalar V[B].
+    """State-action critic: owned encoders + cross-attention fusion -> scalar V[B].
 
     Inputs are raw (never latents, never DCT): the obs window goes through
-    the owned critic state encoder, real-space actions go through act_embed
-    plus fixed sinusoidal position codes on the time axis, then the action
-    embeds query the encoded states. Each block is pre-norm RMSNorm +
-    residual. V(s, a) keeps its TD bootstrap target V(s', a').
+    the owned critic state encoder, the action chunk through the owned
+    critic action encoder (same definition as the state encoder), then the
+    encoded actions query the encoded states through ``num_attn_blocks``
+    cross-attention blocks. V(s, a) keeps its TD bootstrap target V(s', a').
 
     Args:
         obs_dim: Raw obs dim per frame (env-dependent, required).
         act_dim: Action dimension Da (env-dependent, required).
         hidden_size: Latent dimension (default from config.SJFPO_CFG.hidden_size).
         n_obs_steps: State window length T (default from config.SJFPO_CFG.n_obs_steps).
-        depth: Cross-attention blocks. Default 2.
+        num_attn_blocks: Cross-attention blocks. Default 1.
         n_heads: Attention heads per block. Default 4.
         mlp_ratio: MLP width multiplier per block. Default 4.0.
     """
@@ -628,7 +703,7 @@ class Critic(nn.Module):
         act_dim: int,
         hidden_size: int | None = None,
         n_obs_steps: int | None = None,
-        depth: int = 2,
+        num_attn_blocks: int = 1,
         n_heads: int = 4,
         mlp_ratio: float = 4.0,
     ):
@@ -641,58 +716,45 @@ class Critic(nn.Module):
         self.state_encoder = StateEncoder(
             obs_dim, n_obs_steps=n_obs_steps, hidden_size=hidden_size
         )  # critic state encoder
-        self.act_embed = nn.Linear(act_dim, hidden_size)
+        self.action_encoder = ActionEncoder(
+            act_dim, n_obs_steps=n_obs_steps, hidden_size=hidden_size
+        )  # critic action encoder
         self.blocks = nn.ModuleList(
-            CrossAttentionBlock(hidden_size, n_heads, mlp_ratio) for _ in range(depth)
+            CrossAttentionBlock(hidden_size, n_heads, mlp_ratio)
+            for _ in range(num_attn_blocks)
         )
         self.out = nn.Linear(hidden_size, 1)
 
-    def encode(
-        self, states: torch.Tensor, a: torch.Tensor, lengths=None
-    ) -> torch.Tensor:
-        """Fuse state/action into the critic latent.
-
-        Args:
-            states: Raw obs window of shape [B, T, obs_dim].
-            a: Real-space action chunk of shape [B, H, Da].
-            lengths: Optional executed steps per row ([B] ints). Masks the
-                mean to executed rows only (None = plain mean).
-
-        Returns:
-            Fused vector of shape [B, hidden_size].
-        """
-        z = self.state_encoder(states)  # [B, T, D] critic state encoder
-        h = self.act_embed(a)  # [B, H, D] real-space actions
-        # Fixed sinusoidal position codes on the time axis: cross-attention
-        # is permutation-invariant, so action order must enter here.
-        h = h + sinusoidal_positional_encoding(h.shape[1], h.shape[2], h.device)
-        for blk in self.blocks:
-            h = blk(h, z)
-        if lengths is None:
-            return h.mean(dim=1)  # [B, D]
-        # Masked mean: cross-attention has no inter-action mixing, so each
-        # position's output depends only on its own action — dropping tail
-        # positions excludes unexecuted steps exactly (zero-padding alone
-        # would still dilute a plain mean by L/H).
-        lens = torch.as_tensor(list(lengths), device=h.device)  # [B]
-        mask = (
-            (torch.arange(h.shape[1], device=h.device).unsqueeze(0) < lens.unsqueeze(1))
-            .to(h.dtype)
-            .unsqueeze(-1)
-        )  # [B, H, 1]
-        return (h * mask).sum(dim=1) / lens.unsqueeze(1).to(h.dtype)  # [B, D]
-
     def forward(
-        self, states: torch.Tensor, a: torch.Tensor, lengths=None
+        self, states: torch.Tensor, a: torch.Tensor, real_action_lengths=None
     ) -> torch.Tensor:
-        """Forward pass.
+        """State-action value: encode states, fuse actions, pool to scalar V.
 
         Args:
             states: Raw obs window of shape [B, T, obs_dim].
             a: Real-space action chunk of shape [B, H, Da].
-            lengths: Optional executed steps per row (masked mean, see encode).
+            real_action_lengths: Executed steps per row ([B] ints). Tails stay
+                invisible as attention keys inside the action encoder and are
+                dropped from the mean (None = plain mean over all rows).
 
         Returns:
             V: Scalar value per batch of shape [B].
         """
-        return self.out(self.encode(states, a, lengths)).squeeze(-1)  # [B]
+        z = self.state_encoder(states)  # [B, T, D] critic state encoder
+        h = self.action_encoder(a, real_action_lengths)  # [B, H, D] tails invisible as keys
+        for blk in self.blocks:
+            h = blk(h, z)
+        if real_action_lengths is None:
+            pooled = h.mean(dim=1)  # [B, D]
+        else:
+            # Masked mean over executed rows: tails are already invisible as
+            # attention keys inside the action encoder, so dropping their
+            # outputs here excludes unexecuted steps exactly.
+            n_real = torch.as_tensor(list(real_action_lengths), device=h.device)  # [B]
+            exec_mask = (
+                (torch.arange(h.shape[1], device=h.device).unsqueeze(0) < n_real.unsqueeze(1))
+                .to(h.dtype)
+                .unsqueeze(-1)
+            )  # [B, H, 1] 1 = real row
+            pooled = (h * exec_mask).sum(dim=1) / exec_mask.sum(dim=1)  # [B, D]
+        return self.out(pooled).squeeze(-1)  # [B]

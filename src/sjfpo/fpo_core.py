@@ -292,7 +292,7 @@ def compute_policy_loss(
 def sample(
     net: nn.Module,
     shape,
-    cond,
+    condition,
     steps: int,
     eps: torch.Tensor | None = None,
     generator: torch.Generator | None = None,
@@ -313,10 +313,10 @@ def sample(
     Runs under inference_mode — sampling never needs gradients.
 
     Args:
-        net: Velocity network callable (x_t, t, cond, state) -> v_hat.
-            x_t: [*shape], t: scalar, cond/state: conditioning.
+        net: Velocity network callable (x_t, t, condition, state) -> v_hat.
+            x_t: [*shape], t: scalar, condition/state: conditioning.
         shape: Output tensor shape (e.g., [B, *flow_shape]).
-        cond: Conditioning for the network.
+        condition: Conditioning for the network.
         steps: Number of Euler integration steps.
         eps: Initial noise tensor, shape [*shape]. If None, draws N(0, I).
         generator: Optional torch.Generator for reproducible sampling.
@@ -343,6 +343,6 @@ def sample(
     x = eps  # [*shape]
     with torch.inference_mode():
         for i in range(steps):
-            v_hat = net(x, grid[i], cond, state)  # [*shape]
+            v_hat = net(x, grid[i], condition, state)  # [*shape]
             x = x - (grid[i] - grid[i + 1]) * v_hat  # [*shape]  δ = 1/steps
     return x  # [*shape]
