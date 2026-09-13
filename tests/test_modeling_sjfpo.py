@@ -143,6 +143,33 @@ def test_snapshot_refresh_tracks_live_weights():
         assert torch.equal(p_old, p_live)
 
 
+def test_forward_reduction_none_returns_per_chunk_vector():
+    policy = SJFPOPolicy(make_config())
+    batch = make_batch()
+    loss_vec, info = policy(batch, reduction="none")
+    assert loss_vec.shape == (2,)
+    assert torch.isfinite(loss_vec).all()
+    loss_scalar, _ = policy(batch)
+    assert loss_vec.mean().item() == pytest.approx(loss_scalar.item(), rel=1e-5)
+    assert set(info) == {"policy_loss", "value_loss", "mean_log_ratio"}
+    with pytest.raises(ValueError, match="reduction"):
+        policy(batch, reduction="sum")
+
+
+def test_predict_noisy_kwarg_and_select_extra_kwargs():
+    torch.manual_seed(0)
+    policy = SJFPOPolicy(make_config())
+    batch = {"observation.state": torch.randn(2, 16, OBS_DIM)}
+    det = policy.predict_action_chunk(batch)
+    noisy = policy.predict_action_chunk(batch, noise=True)
+    assert noisy.shape == det.shape
+    assert torch.isfinite(noisy).all()
+    assert not torch.equal(noisy, det)
+    obs = torch.randn(OBS_DIM)
+    a = policy.select_action({"observation.state": obs}, foo=1)
+    assert a.shape == (ACT_DIM,)
+
+
 def test_forward_deterministic_same_input():
     torch.manual_seed(0)
     p1 = SJFPOPolicy(make_config())
