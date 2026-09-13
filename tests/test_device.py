@@ -81,11 +81,21 @@ class TestPolicyDevice:
             assert math.isfinite(info[k]), f"{k} not finite"
 
     def test_infer_returns_cpu_chunk(self):
-        from sjfpo.config import SJFPOConfig
-        from sjfpo.runner import infer_chunk_actions
+        from lerobot.configs.types import FeatureType, PolicyFeature
 
-        t = self.policy()
-        cfg = SJFPOConfig()
-        out = infer_chunk_actions(torch.randn(16, 4), t.spectral, t.actor, cfg)
+        from sjfpo.configuration_sjfpo import SJFPOConfig
+        from sjfpo.modeling_sjfpo import SJFPOPolicy
+
+        policy = SJFPOPolicy(
+            SJFPOConfig(
+                input_features={
+                    "observation.state": PolicyFeature(FeatureType.STATE, (4,))
+                },
+                output_features={"action": PolicyFeature(FeatureType.ACTION, (2,))},
+            )
+        )
+        out = policy.predict_action_chunk(
+            {"observation.state": torch.randn(1, 16, 4)}
+        )
         assert out.device == torch.device("cpu")
-        assert out.shape == (cfg.chunk_size, 2)
+        assert out.shape == (1, 16, 2)

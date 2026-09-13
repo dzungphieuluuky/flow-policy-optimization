@@ -2,7 +2,7 @@
 
 Pins current observable behavior of the runner+sweep+collector+evaluator
 chain so behavior-identical pure-extraction splits cannot change results.
-Fast unit-level only (no train_run — covered by test_runner_sjfpo.py).
+Fast unit-level only (no end-to-end runs here).
 """
 
 from __future__ import annotations
@@ -110,45 +110,48 @@ class TestEvaluatorCharacterization:
             Evaluator(env)
 
 
-class TestSjfpoEvalWrapperCharacterization:
+class TestSelectActionCharacterization:
     def build(self):
-        from sjfpo.config import SJFPOConfig
-        from sjfpo.networks import SJFOPolicyModel, SpectralEncoder
-        from sjfpo.runner import SjfpoEvalWrapper
+        from lerobot.configs.types import FeatureType, PolicyFeature
 
-        cfg = SJFPOConfig()
-        policy = SJFOPolicyModel(2, 4, hidden_size=cfg.hidden_size)
-        spectral = SpectralEncoder(
-            4,
-            top_p_spectral_tokens=cfg.top_p_spectral_tokens,
-            n_obs_steps=cfg.n_obs_steps,
+        from sjfpo.configuration_sjfpo import SJFPOConfig
+        from sjfpo.modeling_sjfpo import SJFPOPolicy
+
+        cfg = SJFPOConfig(
+            input_features={
+                "observation.state": PolicyFeature(FeatureType.STATE, (4,))
+            },
+            output_features={"action": PolicyFeature(FeatureType.ACTION, (2,))},
         )
-        return SjfpoEvalWrapper(policy, spectral, cfg), cfg
+        return SJFPOPolicy(cfg), cfg
 
     def test_single_action_shape_and_open_loop_cadence(self):
-        from sjfpo.runner import SjfpoEvalWrapper  # noqa: F401
-
-        wrapper, cfg = self.build()
+        policy, cfg = self.build()
         obs = np.ones(4, dtype=np.float32)
-        first = wrapper(obs)
+        first = policy.select_action({"observation.state": obs})
         assert first.shape == (2,)
-        # Open-loop: only the executed prefix (ratio * H) is buffered; the
+        # Open-loop: only the executed prefix (n_action_steps) is buffered; the
         # predicted tail is discarded and the next call replans.
-        n_execute = max(1, round(cfg.executed_vs_predicted_ratio * cfg.chunk_size))
-        seq = [first] + [wrapper(obs) for _ in range(n_execute - 1)]
-        wrapper2, _ = self.build()
-        # fresh wrapper with same init weights would differ; instead pin determinism:
-        wrapper.reset()
-        again = [wrapper(obs) for _ in range(n_execute)]
-        assert all(np.array_equal(a, b) for a, b in zip(seq, again))
+        n_execute = cfg.n_action_steps
+        seq = [first] + [
+            policy.select_action({"observation.state": obs})
+            for _ in range(n_execute - 1)
+        ]
+        # fresh policy with same init weights would differ; instead pin determinism:
+        policy.reset()
+        again = [
+            policy.select_action({"observation.state": obs})
+            for _ in range(n_execute)
+        ]
+        assert all(torch.equal(a, b) for a, b in zip(seq, again))
 
     def test_reset_clears_buffers(self):
-        wrapper, _ = self.build()
+        policy, _ = self.build()
         obs = np.ones(4, dtype=np.float32)
-        wrapper(obs)
-        wrapper.reset()
-        assert len(wrapper.frame_buffer) == 0
-        assert len(wrapper.action_buffer) == 0
+        policy.select_action({"observation.state": obs})
+        policy.reset()
+        assert len(policy._frame_buffer) == 0
+        assert len(policy._action_buffer) == 0
 
 
 class TestSweepCharacterization:
@@ -259,22 +262,17 @@ class TestExecutedVsPredictedRatio:
                 raise AssertionError(f"ratio={bad} must be rejected")
 
     def test_wrapper_buffers_executed_prefix_only(self):
-        import numpy as np
+        from lerobot.configs.types import FeatureType, PolicyFeature
 
-        from sjfpo.config import SJFPOConfig
-        from sjfpo.networks import SJFOPolicyModel, SpectralEncoder
-        from sjfpo.runner import SjfpoEvalWrapper
+        from sjfpo.configuration_sjfpo import SJFPOConfig
+        from sjfpo.modeling_sjfpo import SJFPOPolicy
 
-        cfg = SJFPOConfig()  # ratio 0.5, H 16 -> 8 buffered
-        wrapper = SjfpoEvalWrapper(
-            SJFOPolicyModel(2, 4, hidden_size=cfg.hidden_size),
-            SpectralEncoder(
-                4,
-                top_p_spectral_tokens=cfg.top_p_spectral_tokens,
-                n_obs_steps=cfg.n_obs_steps,
-            ),
-            cfg,
+        cfg = SJFPOConfig(
+            input_features={
+                "observation.state": PolicyFeature(FeatureType.STATE, (4,))
+            },
+            output_features={"action": PolicyFeature(FeatureType.ACTION, (2,))},
         )
-        wrapper(np.ones(4, dtype=np.float32))
-        n_execute = max(1, round(cfg.executed_vs_predicted_ratio * cfg.chunk_size))
-        assert len(wrapper.action_buffer) == n_execute - 1  # 8 buffered, 1 popped
+        policy = SJFPOPolicy(cfg)
+        policy.select_action({"observation.state": np.ones(4, dtype=np.float32)})
+        assert len(policy._action_buffer) == cfg.n_action_steps - 1

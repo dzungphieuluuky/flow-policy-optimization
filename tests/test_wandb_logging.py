@@ -25,7 +25,6 @@ mocks ``wl.wandb`` — no test touches the network. All SDK access via the
 
 from __future__ import annotations
 
-import csv
 import subprocess
 import sys
 from pathlib import Path
@@ -35,8 +34,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from sjfpo.config import SJFPOConfig, build_run_matrix
-from tests.fixtures.fake_env import FakeGymEnv
+from sjfpo.config import build_run_matrix
 
 
 def init_kwargs(recorder):
@@ -101,74 +99,6 @@ class TestWandbDisabled:
         assert result is False
         recorder.init.assert_not_called()
         recorder.define_metric.assert_not_called()
-
-    def test_wandb_train_run_completes_when_disabled(self, tmp_path, monkeypatch):
-        """SJFPO_DISABLE_WANDB=1 → train_run completes without crash."""
-        monkeypatch.setenv("SJFPO_DISABLE_WANDB", "1")
-        from sjfpo.runner import train_run
-
-        env = FakeGymEnv()
-        out = tmp_path / "wandb_disabled_run"
-        cfg = SJFPOConfig(
-            num_mc_samples=2,
-            euler_train=4,
-            euler_eval=4,
-            chunks_per_update=16,
-            n_obs_steps=16,
-        )
-        result = train_run(
-            env=env,
-            out_dir=out,
-            cfg=cfg,
-            seed=0,
-            total_steps=200,
-            eval_interval=100,
-            ckpt_interval=100,
-            obs_dim=4,
-            act_dim=2,
-        )
-        # Return dict has expected keys
-        assert "reward_mean_last10" in result
-        assert "fps" in result
-        assert "artifacts" in result
-
-    def test_csv_contract_unchanged(self, tmp_path, monkeypatch):
-        """SJFPO_DISABLE_WANDB=1 → 3-col CSV [episode,return,length] still written."""
-        monkeypatch.setenv("SJFPO_DISABLE_WANDB", "1")
-        from sjfpo.runner import train_run
-
-        env = FakeGymEnv()
-        out = tmp_path / "wandb_csv_check"
-        cfg = SJFPOConfig(
-            num_mc_samples=2,
-            euler_train=4,
-            euler_eval=4,
-            chunks_per_update=16,
-            n_obs_steps=16,
-        )
-        train_run(
-            env=env,
-            out_dir=out,
-            cfg=cfg,
-            seed=0,
-            total_steps=200,
-            eval_interval=100,
-            ckpt_interval=100,
-            obs_dim=4,
-            act_dim=2,
-        )
-        csv_path = out / "eval_history.csv"
-        assert csv_path.exists()
-        with open(csv_path, newline="") as f:
-            reader = csv.reader(f)
-            header = next(reader)
-            assert header == ["episode", "return", "length"], (
-                f"header mismatch: {header}"
-            )
-            rows = list(reader)
-            assert len(rows) >= 1
-            for r in rows:
-                assert len(r) == 3
 
 
 class TestInitWandbRunForMethod:

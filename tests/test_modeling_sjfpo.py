@@ -15,6 +15,7 @@ from lerobot.configs.types import FeatureType, PolicyFeature  # noqa: E402
 
 from sjfpo.configuration_sjfpo import SJFPOConfig  # noqa: E402
 from sjfpo.modeling_sjfpo import SJFPOPolicy  # noqa: E402
+from tests.fixtures.fake_env import FakeGymEnv  # noqa: E402
 
 OBS_DIM, ACT_DIM = 4, 2
 
@@ -186,6 +187,26 @@ def test_critic_encoder_receives_grads():
     assert all(
         g is not None and g.abs().sum() > 0 for g in grads
     ), "critic state encoder missing grads"
+
+
+def test_generate_rollout_returns_forward_ready_batch():
+    torch.manual_seed(0)
+    policy = SJFPOPolicy(make_config())
+    env = FakeGymEnv(obs_dim=OBS_DIM, act_dim=ACT_DIM, max_steps=20)
+    batch = policy.generate_rollout(env, total_steps=32)
+    n = batch["observation.state"].shape[0]
+    assert n >= 1
+    assert batch["observation.state"].shape == (n, 16, OBS_DIM)
+    assert batch["action"].shape == (n, 16, ACT_DIM)
+    assert batch["action_is_pad"].shape == (n, 16)
+    assert batch["action_is_pad"].sum() > 0  # truncated tail present
+    for k in ("advantages", "returns", "values"):
+        assert batch[k].shape == (n,)
+        assert torch.isfinite(batch[k]).all()
+    policy.train()
+    loss, info = policy(batch)
+    assert torch.isfinite(loss)
+    assert set(info) == {"policy_loss", "value_loss", "mean_log_ratio"}
 
 
 def test_save_pretrained_roundtrip(tmp_path):
