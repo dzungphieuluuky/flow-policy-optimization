@@ -138,14 +138,8 @@ class SJFPOTrainer:
     def compute_policy_terms(self, actions, cond, states, advantages, N, cfg):
         """Old/new MC log-likelihoods plus ASPO surrogate policy loss."""
         n_coeffs = int(actions.shape[-2])  # truncated Ka rows, not full H
-        with torch.no_grad():
-            l_old = self.compute_log_likelihood(
-                actions,
-                cond,
-                states,
-                act_dim=int(actions.shape[-1]),
-                n_coeffs=n_coeffs,
-            )  # [N, num_mc_samples]
+        # Single shared (eps, tau) draw: l_old and l_new must compare old vs
+        # new weights on the SAME samples, or rho is pure MC noise (eval decay).
         eps = torch.randn(
             N,
             cfg.num_mc_samples,
@@ -159,6 +153,16 @@ class SJFPOTrainer:
             * (tau_range[1] - tau_range[0])
             + tau_range[0]
         )
+        with torch.inference_mode():
+            l_old = self.compute_log_likelihood(
+                actions,
+                cond,
+                states,
+                eps=eps,
+                tau=tau,
+                act_dim=int(actions.shape[-1]),
+                n_coeffs=n_coeffs,
+            )  # [N, num_mc_samples]
         l_new = self.compute_log_likelihood(
             actions,
             cond,
@@ -248,7 +252,7 @@ class SJFPOTrainer:
         self, l_old, l_new, policy_loss, value_loss, cfg
     ):
         """Assemble the finite diagnostics dict returned by assemble_update."""
-        with torch.no_grad():
+        with torch.inference_mode():
             log_ratios = (l_old - l_new).mean(dim=1)
             clip_frac = float((log_ratios.abs() > cfg.log_ratio_cap).float().mean())
             mean_lr = float(log_ratios.mean())
@@ -324,11 +328,11 @@ class SJFPOTrainer:
             z_critic_next = self.critic_state_encoder(
                 next_states
             )  # [N, T, Z] for TD bootstrap
-            # Standard critic recursion: V(s,a) bootstraps V(s',a') under no_grad.
+            # Standard critic recursion: V(s,a) bootstraps V(s',a') under inference_mode.
             # The critic judges clean real-space actions: IDCT the stored DCT
             # coefficients (same pad+IDCT the rollout path applies to model output).
             v_pred = self.critic(z_critic, idct(actions, dim=1))  # [N]
-            with torch.no_grad():
+            with torch.inference_mode():
                 v_next = self.critic(
                     z_critic_next, idct(next_actions, dim=1)
                 )  # [N] fixed bootstrap
