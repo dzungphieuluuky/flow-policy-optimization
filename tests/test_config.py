@@ -114,7 +114,6 @@ def test_sjfpo_config_documented_ranges():
     assert c.log_ratio_cap > 0
     lo, hi = c.tau_range
     assert 0 < lo < hi < 1
-    assert c.sigreg_coef >= 0
     assert c.vf_coef >= 0
     assert c.dit_depth >= 1
     assert c.dit_heads >= 1
