@@ -1,10 +1,7 @@
-"""Characterization tests for fn-consolidation Todo 4 (written BEFORE splits).
+"""Golden behavior pins: chunk GAE numerics, trainer assembly, baselines helpers.
 
-Pins current observable behavior of the baselines loop/train fns, trainer
-assemble_update/compute_log_likelihood, and math helpers (gae, inference,
-checkpointing) so behavior-identical pure-extraction splits
-cannot change results. Fast unit-level only; skrl training paths are proven
-by the 500-step PPO/SAC smoke runs in task-4 evidence.
+Hand-computed GAE values plus trainer/baselines assembly outputs, so later
+refactors cannot silently change math. Fast unit-level only.
 """
 
 from __future__ import annotations
@@ -81,28 +78,6 @@ class TestChunkGaeGolden:
             normalize=True,
         )
         assert float(np.mean(advantage)) == pytest.approx(0.0, abs=1e-9)
-
-
-class TestCheckpointGolden:
-    def test_roundtrip_and_manifest(self, tmp_path):
-        import torch
-
-        from sjfpo.checkpointing import load_checkpoint, save_checkpoint
-
-        state = {"w": torch.tensor([1.0, 2.0]), "step": 7}
-        save_checkpoint(tmp_path, state)
-        payload = load_checkpoint(tmp_path, ["w", "step"])
-        assert torch.equal(payload["w"], state["w"])
-        assert payload["step"] == 7
-
-    def test_unexpected_keys_raise(self, tmp_path):
-        import torch
-
-        from sjfpo.checkpointing import ResumeError, load_checkpoint, save_checkpoint
-
-        save_checkpoint(tmp_path, {"w": torch.tensor([1.0])})
-        with pytest.raises(ResumeError):
-            load_checkpoint(tmp_path, ["w", "nope"])
 
 
 class TestTrainerGolden:

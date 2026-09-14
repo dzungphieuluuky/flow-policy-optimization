@@ -1,13 +1,8 @@
-"""Unit tests for src/sjfpo/config.py (plan task 2).
+"""Unit tests for src/sjfpo/config.py.
 
-Written BEFORE the assert_runtime()/validate_run_matrix() implementation
-(TDD): the first pytest run must fail RED on the missing attributes, then go
-GREEN once config.py is extended.
-
-Module-level mode switches are read from environment variables ONCE at import
-time by design, so env-var semantics are tested via importlib.reload under
-monkeypatch. An autouse fixture restores a clean-env reload after every test
-so mutated module state never leaks between tests.
+Mode switches are read once at import; env-var semantics are tested via
+importlib.reload under monkeypatch, with an autouse fixture restoring
+clean-env state after every test.
 """
 
 from __future__ import annotations
@@ -29,7 +24,6 @@ from sjfpo.configuration_sjfpo import SJFPOConfig
 ENV_VARS = (
     "KAGGLE_KERNEL_RUN_TYPE",
     "SJFPO_TINY_MATRIX",
-    "SJFPO_RESUME_ONLY",
 )
 
 
@@ -77,7 +71,24 @@ def test_run_matrix_45_unique_tuples_and_seeds():
         "Hopper-v5",
     }
 
-    # 2. Config dataclass fields: non-null + documented ranges
+    # 2. Env registry: measured dims + prototype envs outside the matrix
+
+
+def test_lookup_env_dims_measured():
+    assert config.lookup_env_dims("Hopper-v5") == (11, 3)
+    assert config.lookup_env_dims("Ant-v5") == (105, 8)
+    assert config.lookup_env_dims("Humanoid-v5") == (348, 17)
+    assert config.lookup_env_dims("AdroitHandDoor-v1") == (39, 28)
+
+
+def test_lookup_env_dims_unknown_raises():
+    with pytest.raises(KeyError):
+        config.lookup_env_dims("NotAnEnv-v0")
+
+
+def test_known_envs_extends_matrix_envs():
+    assert set(config.ENVS) <= set(config.KNOWN_ENVS)
+    assert len(config.RUN_MATRIX) == 45  # prototypes stay out of the default matrix
 
 def test_every_config_field_non_null():
     for instance in (SJFPOConfig(), config.PPO_CFG, config.SAC_CFG):
@@ -189,14 +200,6 @@ def test_tiny_matrix_env_var_swaps_run_matrix(monkeypatch):
     m_default = reload_with_env(monkeypatch)
     assert m_default.TINY_MATRIX is False
     assert len(m_default.RUN_MATRIX) == 45
-
-
-def test_resume_only_true_iff_env_var_present(monkeypatch):
-    for value in ("1", "0", "yes", ""):
-        m = reload_with_env(monkeypatch, SJFPO_RESUME_ONLY=value)
-        assert m.RESUME_ONLY is True, f"SJFPO_RESUME_ONLY={value!r} must parse True"
-    m = reload_with_env(monkeypatch)
-    assert m.RESUME_ONLY is False
 
 
 def test_is_kaggle_true_for_any_value(monkeypatch):

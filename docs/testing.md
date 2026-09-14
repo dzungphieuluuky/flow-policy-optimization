@@ -31,8 +31,6 @@ Full suite tail is `273 passed`.
 PYTHONPATH=src .venv/bin/python scripts/train.py --method sjfpo --env Hopper-v5 --total-steps 200 --out-dir .omo/evidence/smoke
 # Matrix smoke (explicit filters, 3 methods x Hopper x seed 0)
 PYTHONPATH=src .venv/bin/python scripts/train.py --matrix --methods sjfpo ppo sac --envs Hopper-v5 --seeds 0 --total-steps 200 --out-dir .omo/evidence/smoke
-# Resume
-python tests/resume_worker.py   # or re-run smoke — PARTIAL resumes at stored step
 ```
 
 ## Adding a Test

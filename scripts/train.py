@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import json
+import math
 import os
 import sys
 from pathlib import Path
@@ -38,6 +39,7 @@ from sjfpo.config import (  # noqa: E402
     CKPT_INTERVAL,
     ENVS,
     EVAL_INTERVAL,
+    KNOWN_ENVS,
     METHODS,
     SEEDS,
     PPOConfig,
@@ -45,10 +47,11 @@ from sjfpo.config import (  # noqa: E402
     SACConfig,
     TOTAL_STEPS,
     build_filtered_matrix,
+    lookup_env_dims,
 )
 from sjfpo.configuration_sjfpo import SJFPOConfig  # noqa: E402
 
-VALID_ENVS = ENVS
+VALID_ENVS = KNOWN_ENVS
 VALID_METHODS = METHODS
 TINY_STEPS = 20_000
 TINY_INTERVAL = 10_000
@@ -184,38 +187,41 @@ def run_single(
     """Dispatch one run to train_sjfpo_run/ppo_train_run/sac_train_run."""
     import gymnasium as gym
 
+    if env_id.startswith("AdroitHand"):
+        try:
+            import gymnasium_robotics  # noqa: F401 (registers Adroit env ids)
+        except ImportError:
+            raise RuntimeError(
+                f"{env_id} needs gymnasium-robotics (pip install gymnasium-robotics)"
+            )
     env = gym.make(env_id)
     try:
-        if method == "sjfpo":
-            from sjfpo.train_sjfpo import train_sjfpo_run
-
-            return train_sjfpo_run(
-                env=env,
-                out_dir=out_dir,
-                cfg=cfg,
-                seed=seed,
-                total_steps=total_steps,
-                eval_interval=eval_interval,
-                ckpt_interval=ckpt_interval,
-                obs_dim=obs_dim,
-                act_dim=act_dim,
+        # Registry fills unset dims; the live space is ground truth on mismatch.
+        reg_obs, reg_act = lookup_env_dims(env_id)
+        live_obs = int(math.prod(env.observation_space.shape))
+        live_act = int(math.prod(env.action_space.shape))
+        if (reg_obs, reg_act) != (live_obs, live_act):
+            raise ValueError(
+                f"registry dims {(reg_obs, reg_act)} != live {env_id} dims "
+                f"{(live_obs, live_act)}; update configs/envs.yaml"
             )
-        if method == "ppo":
-            from sjfpo.baselines import ppo_train_run
-
-            return ppo_train_run(
-                env=env,
-                out_dir=out_dir,
-                cfg=cfg,
-                seed=seed,
-                total_steps=total_steps,
-                eval_interval=eval_interval,
-                ckpt_interval=ckpt_interval,
-                n_obs_steps=n_obs_steps,
+        obs_dim = reg_obs if obs_dim is None else obs_dim
+        act_dim = reg_act if act_dim is None else act_dim
+        if (obs_dim, act_dim) != (live_obs, live_act):
+            raise ValueError(
+                f"requested dims {(obs_dim, act_dim)} != live {env_id} dims "
+                f"{(live_obs, live_act)}"
             )
-        from sjfpo.baselines import sac_train_run
+        from sjfpo.baselines import ppo_train_run, sac_train_run
+        from sjfpo.train_sjfpo import train_sjfpo_run
 
-        return sac_train_run(
+        runners = {
+            "sjfpo": (train_sjfpo_run, {"obs_dim": obs_dim, "act_dim": act_dim}),
+            "ppo": (ppo_train_run, {"n_obs_steps": n_obs_steps}),
+            "sac": (sac_train_run, {"n_obs_steps": n_obs_steps}),
+        }
+        run_fn, extra = runners[method]
+        return run_fn(
             env=env,
             out_dir=out_dir,
             cfg=cfg,
@@ -223,7 +229,7 @@ def run_single(
             total_steps=total_steps,
             eval_interval=eval_interval,
             ckpt_interval=ckpt_interval,
-            n_obs_steps=n_obs_steps,
+            **extra,
         )
     finally:
         env.close()

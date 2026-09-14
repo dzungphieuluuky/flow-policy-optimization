@@ -1,7 +1,7 @@
 # AGENTS — src/sjfpo
 
 ## Overview
-MuJoCo-only (LEGACY_MUJOCO=True) hotspot — single live train path, chunked flow policy: Transition-dict rollout (H=16/n=8/T=16, next.action chaining) → chunk GAE → ASPO + V(s,a) TD-critic; CUDA-default (CPU fallback) fp32, einx.id shapes (collector/fpo_core/trainer + dct_utils/baselines), RUN_MATRIX 45. analysis.py is notebook-invoked (train.py never imports it), everything else is live.
+MuJoCo-only hotspot — single live train path, chunked flow policy: Transition-dict rollout (H=16/n=8/T=16, next.action chaining) → chunk GAE → ASPO + V(s,a) TD-critic; CUDA-default (CPU fallback) fp32, einx.id shapes (collector/fpo_core/trainer + dct_utils/baselines), RUN_MATRIX 45. analysis.py is notebook-invoked (train.py never imports it), everything else is live.
 
 ## Structure
 ```
@@ -14,7 +14,7 @@ fpo_core.py       432L — CFM/SQL-ℓ [N,m], STE-capped ρ, ASPO piecewise (PPO
 dct_utils.py      orthonormal DCT-II/III [H,action_dim] action chunks + discounted_chunk_reward + einx.id (parity-guarded)
 config.py         flags + PPO/SAC dataclasses, RUN_MATRIX 45 (TINY 3) + build_run_matrix; SACConfig.polyak is skrl-boundary (keep). SJFPO hyperparams live ONLY in configuration_sjfpo.py::SJFPOConfig (H=16/T=16/top_p=0.3→K=5/D=128, DiT-8/4heads/mlp×4/t256)
 baselines.py      690L — skrl PPO/SAC via baseline_train_loop; FrameStackWrapper shared with evaluator
-checkpointing.py  246L — atomic ckpt (models + optimizer + counters) + Hub policy ckpt (config.json + safetensors via save/load_policy_checkpoint)
+checkpointing.py  Hub policy ckpt (config.json + safetensors via save/load_policy_checkpoint)
 evaluator.py      162L — Evaluator MuJoCo 3-col [episode,return,length]
 sweep.py          227L — scan_runs/run_pending state machine
 analysis.py       IQM+bootstrap 2000, notebook-invoked (train.py never imports it; risk boundary)

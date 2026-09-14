@@ -1,8 +1,8 @@
-"""Characterization tests for fn-consolidation Todo 3 (written BEFORE splits).
+"""Golden behavior pins: evaluator, select_action, sweep, collector, guards.
 
-Pins current observable behavior of the runner+sweep+collector+evaluator
-chain so behavior-identical pure-extraction splits cannot change results.
-Fast unit-level only (no end-to-end runs here).
+Locks observable outputs (CSV schema, open-loop cadence, pending/flush
+format, truncation/bootstrap semantics, divergence/ratio guards) so later
+refactors cannot silently change results. Fast unit-level only.
 """
 
 from __future__ import annotations

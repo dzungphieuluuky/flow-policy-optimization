@@ -10,19 +10,31 @@ from __future__ import annotations
 import os
 from collections.abc import Iterable
 from dataclasses import dataclass
+from pathlib import Path
 
 # Mode switches (plain module-level constants; read env at import time ONLY)
 
 IS_KAGGLE = os.environ.get("KAGGLE_KERNEL_RUN_TYPE") is not None
 TINY_MATRIX = os.environ.get("SJFPO_TINY_MATRIX") == "1"
-RESUME_ONLY = os.environ.get("SJFPO_RESUME_ONLY") is not None
-legacy_mujoco_env = os.environ.get("SJFPO_LEGACY_MUJOCO")
-LEGACY_MUJOCO = legacy_mujoco_env is None or legacy_mujoco_env == "1"
 
 # Run-matrix axes
 
 METHODS = ("sjfpo", "ppo", "sac")
 ENVS = ("HalfCheetah-v5", "Walker2d-v5", "Hopper-v5")
+PROTOTYPE_ENVS = (
+    "InvertedPendulum-v5",
+    "InvertedDoublePendulum-v5",
+    "Reacher-v5",
+    "Swimmer-v5",
+    "Pusher-v5",
+    "Ant-v5",
+    "Humanoid-v5",
+    "AdroitHandDoor-v1",
+    "AdroitHandPen-v1",
+    "AdroitHandHammer-v1",
+)
+KNOWN_ENVS = ENVS + PROTOTYPE_ENVS  # --env choices; matrix still uses ENVS only
+ENV_REGISTRY_PATH = Path(__file__).resolve().parents[2] / "configs" / "envs.yaml"
 SEEDS = (0, 1, 2, 3, 4)
 
 TOTAL_STEPS = 1_000_000
@@ -124,7 +136,7 @@ def build_filtered_matrix(
             ckpt_interval=ckpt_interval,
         )
         for m in [x for x in METHODS if x in methods]
-        for e in [x for x in ENVS if x in envs]
+        for e in [x for x in KNOWN_ENVS if x in envs]
         for s in seeds
     )
 
@@ -190,3 +202,18 @@ def assert_runtime(allow_fp16: bool = False) -> None:
 
 
 validate_run_matrix(RUN_MATRIX)
+
+
+def lookup_env_dims(env_id: str) -> tuple[int, int]:
+    """(obs_dim, action_dim) from configs/envs.yaml; KeyError on unknown ids."""
+    try:
+        import yaml
+    except ImportError:
+        raise RuntimeError("pyyaml required for --env lookup (pip install pyyaml)")
+    with open(ENV_REGISTRY_PATH) as f:
+        registry = yaml.safe_load(f)
+    try:
+        entry = registry[env_id]
+    except KeyError:
+        raise KeyError(f"unknown env {env_id!r}; add it to {ENV_REGISTRY_PATH}")
+    return int(entry["obs_dim"]), int(entry["action_dim"])

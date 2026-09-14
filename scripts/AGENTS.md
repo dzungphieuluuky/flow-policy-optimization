@@ -19,7 +19,7 @@ verify_deps.sh      venv bootstrap + inline version asserts (STALE vs pyproject 
 - Precedence: CLI flags > `--config <yaml>` > dataclass defaults (`configs/{sjfpo,ppo,sac,shared}.yaml`; YAML keys ⊆ dataclass fields per `test_config_yaml_parity.py`)
 - Exit codes: 0 ok · 1 usage · 2 runtime/divergence · 4 missing artifact
 - `sys.path.insert(src)` in `train.py` (alt: `PYTHONPATH=src`); `.venv/bin/python` is the working interpreter (torch 2.14.0)
-- Env switches: `SJFPO_TINY_MATRIX=1` (3-run matrix), `SJFPO_DISABLE_WANDB=1`, `SJFPO_LEGACY_MUJOCO` (default 1)
+- Env switches: `SJFPO_TINY_MATRIX=1` (3-run matrix), `SJFPO_DISABLE_WANDB=1`
 
 ## Anti-Patterns
 - DO NOT add runner-level scalars (`total-steps`, intervals, dims) as dataclass fields — they bypass config by design

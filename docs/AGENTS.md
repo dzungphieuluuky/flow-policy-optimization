@@ -10,7 +10,7 @@ project-structure.md directory tree roles
 architecture.md      mermaid flow DCT spectral K5 → DCT action chunks → DiT policy + V(s,a) critic
 modules.md           jump table per src/sjfpo file
 getting-started.md   smoke commands (tiny matrix, train.py single-run, notebook)
-config-flags.md      env flags / TINY / LEGACY_MUJOCO / matrix filters
+config-flags.md      env flags / TINY / matrix filters
 notebooks.md         build/run (6-cell clone notebooks, no source inlined)
 testing.md           suite size (273) + numeric gates
 troubleshooting.md   sys.path, train.py exit codes, AnalysisError fallback
@@ -22,7 +22,7 @@ kaggle-offline-blackwell.md Blackwell offline runbook (MEASURED GPU content — 
 - `README.md:1` mental model diagram — start here for newcomers
 - `architecture.md` mermaid — copy into papers
 - `modules.md` table — fastest jump to `networks.py:179` / `dct_utils.py:223`
-- `config-flags.md` — `SJFPO_LEGACY_MUJOCO`, `SJFPO_TINY_MATRIX`, `IS_KAGGLE` branching
+- `config-flags.md` — `SJFPO_TINY_MATRIX`, `IS_KAGGLE` branching
 
 ## Conventions
 - Keep 12-file set stable — one topic per file, no new pinned deps docs

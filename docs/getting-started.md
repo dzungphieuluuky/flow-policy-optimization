@@ -40,7 +40,6 @@ ls -lh spectral_joint_flow.ipynb flow_matching_vs_ppo_sac.ipynb
 | `SJFPO_TINY_MATRIX` | `0` | `1` → tiny preset (Hopper-v5 × seed 0, short budgets) |
 | `SJFPO_DISABLE_WANDB` | unset (enabled) | `1` → disable wandb logging (only off switch; wandb is required) |
 | `IS_KAGGLE` | autodetect | Kaggle run-output dirs; local stays synthetic — no download |
-| `SJFPO_RESUME_ONLY` | `0` | Sweep cells skip `MISSING` runs when set |
 
 These mirror the axes `RUN_MATRIX` enumerates — see [Config & Flags](config-flags.md).
 

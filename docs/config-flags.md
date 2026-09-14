@@ -7,9 +7,7 @@ Source of truth: `src/sjfpo/config.py`. YAML mirrors in `configs/`
 
 | Flag | Type | Default | Meaning |
 |---|---|---|---|
-| `SJFPO_LEGACY_MUJOCO` | env str `0`/`1` | `1` (None → True) | Compat parse; only the MuJoCo path exists. Any other value is unsupported. |
 | `SJFPO_TINY_MATRIX` | env str | `0` | When `1`: tiny preset (Hopper-v5 × seed 0, short budgets) for smokes. |
-| `SJFPO_RESUME_ONLY` | env str | `0` | Sweep skips `MISSING`, only resumes `PARTIAL`. |
 | `SJFPO_DISABLE_WANDB` | env str | unset (enabled) | `1` disables wandb via `wandb_logging`; wandb is REQUIRED, init failure is fatal. |
 | `IS_KAGGLE` | autodetect | `KAGGLE_KERNEL_RUN_TYPE` set → True | Kaggle run-output dirs. |
 

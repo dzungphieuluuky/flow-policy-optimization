@@ -1,7 +1,7 @@
 # AGENTS — tests
 
 ## Overview
-299 collected items across 23 test_*.py files. Full suite ~103s CPU. Counts below are collected items (`pytest --collect-only`), recompute on add/remove — never hardcode.
+289 collected items across 22 test_*.py files. Full suite ~103s CPU. Counts below are collected items (`pytest --collect-only`), recompute on add/remove — never hardcode.
 
 ## Structure
 ```
@@ -9,11 +9,11 @@ test_wandb_logging.py (30)   default-on gate (imports FakeGymEnv)
 test_einx_migration.py (27)  torch↔einx 1e-6 parity (QUARANTINE per ledger)
 test_networks.py (24)        encoder/spectral/DiT + cross-attn Critic + Epps-Pulley SIGRef
 test_sweep.py (20)           scan_runs/run_pending (imports RunSpec, RUN_MATRIX)
-test_todo4_characterization.py (16) pre-refactor behavior pins (fn-consolidation)
-test_config.py (15)          dataclasses + 45/TINY matrices (module-reload tests)
+test_todo4_characterization.py (9) behavior pins (GAE/trainer/baselines goldens)
+test_config.py (17)          dataclasses + 45/TINY matrices (module-reload tests)
 test_dct.py (14)             DCT/IDCT roundtrip + Parseval + DC=mean·√H (no scipy)
 test_modeling_sjfpo.py (13)  SJFPOPolicy modules/inference/forward/hub roundtrip
-test_todo3_characterization.py (13) pre-refactor behavior pins (fn-consolidation)
+test_todo3_characterization.py (15) behavior pins (evaluator/sweep/collector goldens)
 test_analysis.py (13)        analyze_results IQM/bootstrap
 test_evaluator.py (11)       Evaluator 3-col CSV
 test_transition_v4.py (11)   Transition 9-key/shape/dtype + continuity + next.action chaining + no-aux-head lock
@@ -24,10 +24,8 @@ test_pipeline_cpu.py (7)     end-to-end invariants: CSV + 45 + wandb
 test_baselines.py (7)        skrl PPO/SAC drivers + tiny smokes
 test_gae.py (6)              compute_advantages vs zero-shared-code brute-force oracle
 test_configuration_sjfpo.py (6) LeRobot SJFPOConfig registry/parity/validation
-test_checkpoint.py (5)       atomic ckpt (uses test-local resume_worker helpers)
 test_config_yaml_parity.py (1) YAML keys ⊆ dataclass fields (deslop gate)
 fixtures/fake_env.py       FakeGymEnv shared fixture
-resume_worker.py           subprocess worker for checkpoint resume determinism
 ```
 
 ## Where to Look
@@ -36,7 +34,7 @@ resume_worker.py           subprocess worker for checkpoint resume determinism
 - Transition lock: `test_transition_v4.py` (exact 9-key set incl. next.action, `n_action_steps == len(next.reward)`, bool dtypes, chunk continuity, next.action chaining)
 - Horizon guards: `test_collector.py` NEVER-hardcodes n_obs_steps/horizon (uses policy `SJFPOConfig` defaults); executed steps are caller-passed (`N_STEPS = 8` local)
 - Reload-pattern tests: `test_config.py` (SJFPO_TINY_MATRIX swap), `test_pipeline_cpu.py` (tiny reload)
-- Characterization guards: `test_todo3_characterization.py`, `test_todo4_characterization.py` (pre-refactor pins)
+- Characterization guards: `test_todo3_characterization.py`, `test_todo4_characterization.py` (behavior pins)
 
 ## Conventions
 - Test-only seams are load-bearing: Transition/SJFPOAborted/policy heads/euler_sample/build_run_matrix imports — deleting src helpers breaks these first
@@ -49,7 +47,7 @@ resume_worker.py           subprocess worker for checkpoint resume determinism
 - DO NOT delete failing tests to pass — fix src or amend plan
 - DO NOT touch test_einx_migration.py (quarantine) or analysis stats tests without amendment
 - DO NOT weaken pipeline invariants (CSV cols, 45, is_stub) silently
-- DO NOT remove characterization tests (test_todo3/4) — they are pre-refactor behavior pins
+- DO NOT remove characterization tests (test_todo3/4) — they are behavior pins
 
 ## Commands
 ```bash

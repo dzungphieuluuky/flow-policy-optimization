@@ -1,0 +1,18 @@
+# State-based MuJoCo prototype ladder. `train.py --env <id>` resolves
+# obs_dim/action_dim here; --obs-dim/--act-dim still override, and the live
+# env space is validated against the registry at startup (mismatch = loud
+# error, usually a gym version change — re-measure and update).
+# Dims below MEASURED with gymnasium 1.x + mujoco on 2026-09-14.
+InvertedPendulum-v5: {obs_dim: 4, action_dim: 1, tier: smoke}
+InvertedDoublePendulum-v5: {obs_dim: 9, action_dim: 1, tier: smoke}
+Reacher-v5: {obs_dim: 10, action_dim: 2, tier: smoke}
+Hopper-v5: {obs_dim: 11, action_dim: 3, tier: core}
+HalfCheetah-v5: {obs_dim: 17, action_dim: 6, tier: core}
+Walker2d-v5: {obs_dim: 17, action_dim: 6, tier: core}
+Swimmer-v5: {obs_dim: 8, action_dim: 2, tier: core}
+Pusher-v5: {obs_dim: 23, action_dim: 7, tier: hard}
+Ant-v5: {obs_dim: 105, action_dim: 8, tier: hard}
+Humanoid-v5: {obs_dim: 348, action_dim: 17, tier: hard}
+AdroitHandDoor-v1: {obs_dim: 39, action_dim: 28, tier: dexterous, requires: gymnasium-robotics}
+AdroitHandPen-v1: {obs_dim: 45, action_dim: 24, tier: dexterous, requires: gymnasium-robotics}
+AdroitHandHammer-v1: {obs_dim: 46, action_dim: 26, tier: dexterous, requires: gymnasium-robotics}
