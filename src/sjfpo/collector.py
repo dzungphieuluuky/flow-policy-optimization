@@ -1,44 +1,18 @@
-"""Chunked open-loop rollout collector (plan task 6 + v4 transition dict).
+"""Chunked open-loop rollout collector.
 
-Collects environment interaction in H-step predicted action chunks: the policy is
-queried ONCE per chunk (conditioned on the stacked state window) and the first
-``n_action_steps`` proposed actions are executed OPEN-LOOP — replanning happens
-exactly every n env steps unless the episode ends first (1 <= n <= H enforced).
+The policy is queried ONCE per chunk; the first ``n_action_steps`` proposed
+actions execute OPEN-LOOP (1 <= n <= H). Transitions are plain tensor dicts
+with LeRobot-style keys; ``action``/``next.action`` are the FULL proposed
+chunks in real scaled space ([H, action_dim], one row per predicted step;
+DCT happens downstream in ``forward``).
 
-Transition storage is a plain tensor dict with LeRobot-style keys
-(``observation.state`` / ``action`` / ``next.*``). The ``action`` anchor is the
-orthonormal DCT-II of the FULL proposed scaled chunk (shape [H, act] always),
-so every transition stacks into fixed-shape batches regardless of how many
-steps were actually executed. All chunks train (policy and value); the trainer
-zero-pads unexecuted tail rows so only executed steps are fitted.
-
-Boundary semantics (plan Scope §Chunk-level semi-MDP GAE, BINDING):
-    terminated  -> stop executing immediately, DISCARD all remaining
-                   proposed actions of the chunk, next.done=True,
-                   V-bootstrap FORBIDDEN (next.truncated=False)
-    truncated   -> gymnasium TimeLimit semantics; stop executing,
-                   next.done=False, next.truncated=True (bootstrap-eligible)
-    neither     -> chunk ran to completion (or the step budget ran out
-                   mid-chunk), next.done=False, next.truncated=False
-
-Next-action semantics (chunk-level SARSA bootstrapping): every transition
-carries ``next.action`` — the DCT of the chunk proposed at the NEXT replan
-([H, act], same pipeline as ``action``). For ``continue`` chunks this is the
-next record's ``action`` (filled once it is proposed); for ``truncated``
-chunks it is an extra behavior-policy proposal on the pre-reset next-state
-window; for ``terminated`` chunks (no bootstrap) and stream-end tails it is
-zeros of the same shape.
-
-Action-space handling (plan Scope §Flow space): the policy proposes raw
-actions; elements outside ``[action_low, action_high]`` are clipped before
-execution and EVERY clipped element is counted per chunk (never silent).
-The stored action representation is the orthonormal DCT-II of the SCALED
-full proposed chunk, where scaling maps bounds to [-1, 1]:
-``scaled = 2·(a − low)/(high − low) − 1``.
-
-Error path: if the env raises at any point, the optional
-``on_error_flush`` checkpoint hook is attempted FIRST (its own failure is
-swallowed) and the ORIGINAL exception is then re-raised untouched.
+Boundary semantics: terminated stops at once (no bootstrap, next.action
+zeros); truncated stops with bootstrap-eligible next.action (fresh behavior
+proposal on the pre-reset window); continue chains next.action from the next
+proposal (budget-exhausted tails get a live-window proposal). Actions are
+clipped to bounds before execution and every clipped element is counted.
+On env error the ``on_error_flush`` hook runs first, then the original
+exception re-raises.
 """
 
 from __future__ import annotations
@@ -53,7 +27,6 @@ import torch
 from sjfpo.configuration_sjfpo import SJFPOConfig
 
 _DEFAULTS = SJFPOConfig()  # bare policy config: single source for defaults
-from sjfpo.dct_utils import dct
 
 __all__ = ["Transition", "collect_chunks", "bootstrap_action_lengths"]
 
@@ -61,9 +34,8 @@ __all__ = ["Transition", "collect_chunks", "bootstrap_action_lengths"]
 def bootstrap_action_lengths(chunks, chunk_size: int) -> list[int]:
     """Executed-step mask lengths for bootstrap next-actions.
 
-    Interior-continue chunks mask to the NEXT chunk's executed length (same
-    episode, chained proposal); truncated/tail proposals stay full (nothing
-    executes after them); terminated entries are unused by targets (full).
+    Interior-continue chunks use the NEXT chunk's executed length; truncated
+    and tail proposals stay full; terminated entries are unused (full).
     """
     n = len(chunks)
     out: list[int] = []
@@ -79,8 +51,8 @@ Transition = TypedDict(
     "Transition",
     {
         "observation.state": torch.Tensor,  # [T, obs] state window at replan time
-        "action": torch.Tensor,  # [H, act] DCT of FULL SCALED proposed chunk
-        "next.action": torch.Tensor,  # [H, act] DCT of NEXT proposed chunk
+        "action": torch.Tensor,  # [H, action_dim] real SCALED FULL proposed chunk
+        "next.action": torch.Tensor,  # [H, action_dim] real SCALED NEXT proposed chunk
         "next.observation.state": torch.Tensor,  # [T, obs] window after execution
         "next.reward": torch.Tensor,  # [n_executed] per executed step
         "next.done": torch.Tensor,  # bool scalar, terminated only
@@ -92,14 +64,7 @@ Transition = TypedDict(
 
 
 def as_float_tensor(x: object) -> torch.Tensor:
-    """Coerce numpy arrays / torch tensors to a detached fp32 tensor.
-
-    Args:
-        x: Array-like with shape ``[... ]`` (obs ``[obs_dim]``, action ``[chunk_size, act_dim]``).
-
-    Returns:
-        Detached fp32 tensor ``[..., ]`` preserving shape.
-    """
+    """Numpy/torch input -> detached fp32 tensor, shape preserved."""
     if isinstance(x, torch.Tensor):
         return x.detach().to(torch.float32)  # [...] -> [...] fp32 detached
     return torch.as_tensor(np.asarray(x, dtype=np.float32))  # [...] -> [...] fp32
@@ -108,7 +73,7 @@ def as_float_tensor(x: object) -> torch.Tensor:
 def scale_and_clip_chunk(
     proposed: torch.Tensor, low: torch.Tensor, high: torch.Tensor
 ) -> tuple[torch.Tensor, torch.Tensor, int]:
-    """Clip a proposed chunk to bounds; return (executed, scaled, clip_count)."""
+    """Clip to bounds; return (executed, scaled-to-[-1,1], clip_count)."""
     clip_count = int(((proposed < low) | (proposed > high)).sum())
     executed = torch.clamp(proposed, min=low, max=high)
     scaled = 2.0 * (executed - low) / (high - low) - 1.0
@@ -118,7 +83,7 @@ def scale_and_clip_chunk(
 def build_warmup_window(
     first_obs: torch.Tensor, n_obs_steps: int
 ) -> deque[torch.Tensor]:
-    """Replicate the first obs EXACTLY n_obs_steps times."""
+    """First obs replicated exactly n_obs_steps times."""
     return deque((first_obs.clone() for _ in range(n_obs_steps)), maxlen=n_obs_steps)
 
 
@@ -156,17 +121,14 @@ def execute_open_loop_steps(
     return rewards, done_kind
 
 
-def propose_action_coeffs(
+def propose_action_chunk(
     policy: Callable[[torch.Tensor], torch.Tensor],
     state: torch.Tensor,
     low: torch.Tensor,
     high: torch.Tensor,
     chunk_size: int,
 ) -> torch.Tensor:
-    """Propose a chunk on a state window; return DCT of scaled chunk [H, act].
-
-        Same propose → clip → scale → DCT pipeline as the rollout path, without
-    executing anything. Used for bootstrap-eligible boundary next-actions."""
+    """Propose without executing; return the real scaled chunk (boundary next-actions)."""
     proposed = as_float_tensor(policy(state))
     executed, scaled, clip_count = scale_and_clip_chunk(proposed, low, high)
     if scaled.shape[0] != chunk_size:
@@ -174,7 +136,7 @@ def propose_action_coeffs(
             f"proposed chunk has {scaled.shape[0]} rows, "
             f"expected chunk_size={chunk_size}"
         )
-    return dct(scaled, dim=0)  # [H, act]
+    return scaled
 
 
 def finalize_transition(
@@ -200,12 +162,11 @@ def finalize_transition(
             f"1 <= n <= chunk_size={chunk_size}"
         )
     n_executed = len(rewards)
-    coeff = dct(scaled, dim=0)  # DCT of FULL SCALED proposed chunk [H, act]
     if next_action is None:
-        next_action = torch.zeros_like(coeff)  # placeholder; filled by chaining
+        next_action = torch.zeros_like(scaled)  # placeholder; filled by chaining
     return {
         "observation.state": state,
-        "action": coeff,
+        "action": scaled,
         "next.action": next_action,
         "next.observation.state": next_state,
         "next.reward": torch.tensor(rewards, dtype=torch.float32),
@@ -234,12 +195,11 @@ def propose_and_execute_chunk(
     rewards, done_kind = execute_open_loop_steps(
         env, executed, window, executed_total, total_steps, n_action_steps
     )
-    next_state = torch.stack(tuple(window), dim=0)  # post-execution window, pre-reset
+    next_state = torch.stack(tuple(window), dim=0)
     if done_kind == "truncated":
-        # Bootstrap-eligible boundary: behavior next-action on the pre-reset window.
-        next_action = propose_action_coeffs(policy, next_state, low, high, chunk_size)
+        next_action = propose_action_chunk(policy, next_state, low, high, chunk_size)
     else:
-        next_action = None  # terminated: masked anyway; continue: chained later
+        next_action = None
     record = finalize_transition(
         state,
         next_state,
@@ -262,7 +222,7 @@ def flush_on_collection_error(
         try:
             on_error_flush()
         except Exception:
-            pass  # hook failure must never mask the original error
+            pass
 
 
 def collect_chunks(
@@ -315,7 +275,7 @@ def collect_chunks(
                 window = reset_chunk_window(env, n_obs_steps)
         if records and prev_done == "continue":
             # Budget exhausted mid-episode: behavior proposal on the live window.
-            records[-1]["next.action"] = propose_action_coeffs(
+            records[-1]["next.action"] = propose_action_chunk(
                 policy, torch.stack(tuple(window), dim=0), low, high, chunk_size
             )
         return records

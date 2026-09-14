@@ -123,12 +123,8 @@ def test_run_matrix_cardinality_is_45():
 
         importlib.reload(cfg_mod)
 
-
-# ---------------------------------------------------------------------------
 # T7 — wandb integration invariants (mujoco-wandb-logging plan)
 # Recovered from pre-existing uncommitted working-tree additions (see tmp/t8-noisy).
-# ---------------------------------------------------------------------------
-
 
 def test_wandb_logging_does_not_change_run_matrix():
     """RUN_MATRIX cardinality remains 45 regardless of wandb integration."""

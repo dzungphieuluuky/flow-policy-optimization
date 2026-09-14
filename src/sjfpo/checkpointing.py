@@ -1,43 +1,15 @@
-"""Checkpoint/resume IO: manifest-complete atomic save/load (plan task 9).
+"""Checkpoint/resume IO: atomic save/load with manifest completeness.
 
-Generic contract (the runner calls this same API with the policy bundle):
-
-``state`` is a nested mapping whose LEAVES are one of
-
-* ``torch.nn.Module``            -> stored as its ``state_dict()``
-* ``torch.optim.Optimizer``      -> stored as its ``state_dict()``
-* ``torch.Tensor``               -> stored directly
-* any picklable python object    -> stored directly (deques, RNG bit-states,
-  counters, flags, dicts of floats, ...)
-
-Only plain ``dict`` mappings nest; every other value is a leaf. Manifest
-keys are dotted paths (e.g. ``"models.critic"``, ``"counters.global_step"``).
-
-On-disk layout inside ``dir_path``:
-
-* ``checkpoint.pt``   torch.save zip archive containing the payload tree
-  plus an embedded copy of the manifest keys (torn-write detector).
-* ``manifest.json``   sidecar listing EVERY key with its kind; presence of a
-  complete manifest implies a complete blob.
-
-Both files are written to ``<name>.tmp`` and moved into place with
-``os.replace`` (atomic on POSIX), so a process killed mid-save always leaves
-either the previous checkpoint or the new one — never a half-written final
-file. If a kill lands between the two renames, the embedded-keys check in
-``load_checkpoint`` turns the resulting manifest/blob mismatch into a loud
-ResumeError instead of silent corruption.
-
-Resume semantics (plan Scope): deterministic continuation is guaranteed only
-WITHIN an identical hardware/software stack. The env fingerprint recorded in
-the state ({gpu_name, torch_version, cuda_version}) must be CHECKED by the
-caller at resume time and any mismatch WARNED loudly, never silenced.
-
-Retained public API (dead in the src train path, kept per fn-consolidation D1):
-``capture_env_fingerprint`` (tests/resume_worker.py + tests/test_checkpoint.py).
+``state`` is a nested mapping of modules / optimizers / tensors / picklable
+objects (only plain dicts nest). On disk: ``checkpoint.pt`` (payload +
+embedded manifest keys as torn-write detector) + ``manifest.json`` sidecar,
+both via tmp-file + ``os.replace``. Same-stack resume only (see env
+fingerprint); mismatches warn loudly, never silenced.
 """
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import warnings
@@ -52,28 +24,50 @@ MANIFEST_FILE = "manifest.json"
 FORMAT = 1
 KEYS_FIELD = "_manifest_keys"
 
-# Policy-checkpoint layout (HubMixin files + training state).
+# Policy-checkpoint files (HubMixin + training state).
 OPTIMIZER_FILE = "optimizer.pt"
 COUNTERS_FILE = "counters.json"
 
 
 class ResumeError(RuntimeError):
-    """Raised when a checkpoint cannot be resumed (missing/corrupt manifest,
-    missing keys, unpicklable/truncated blob, or manifest/blob mismatch)."""
+    """Unresumable checkpoint (missing/corrupt manifest, blob mismatch)."""
 
-    # retained: public resume/test API — used by tests/resume_worker.py and
-    # tests/test_checkpoint.py; not called by the src train path. Keep per fn-consolidation D1.
+
+def unwrap_compiled(module: torch.nn.Module) -> torch.nn.Module:
+    """Return the eager module inside a torch.compile wrapper, else itself.
+
+    The wrapper shares the inner module's tensors, so state_dicts differ
+    only in the ``_orig_mod.`` key prefix — values are identical.
+    """
+    return getattr(module, "_orig_mod", module)
+
+
+@contextlib.contextmanager
+def unwrapped_policy(policy):
+    """Temporarily expose a policy's eager submodules for checkpoint IO.
+
+    Swap torch.compile wrappers for their inner modules (and swap back
+    afterwards); params are shared, so training continues untouched and the
+    artifact holds plain eager keys whatever SJFPO_COMPILE was.
+    """
+    swapped = []
+    for name in ("actor", "old_actor", "critic"):
+        module = getattr(policy, name, None)
+        if getattr(module, "_orig_mod", None) is not None:
+            setattr(policy, name, module._orig_mod)
+            swapped.append((name, module))
+    try:
+        yield policy
+    finally:
+        for name, module in swapped:
+            setattr(policy, name, module)
 
 
 def capture_env_fingerprint() -> dict[str, str | None]:
-    """Environment fingerprint for same-stack resume checks.
-
-    ``gpu_name`` falls back to ``'cpu'`` on CPU-only machines; ``cuda_version``
-    is ``None`` for CPU-only torch builds.
-    """
+    """Same-stack resume fingerprint (gpu/cpu, torch + cuda versions)."""
     try:
         gpu_name: str | None = torch.cuda.get_device_name(0)
-    except Exception:  # no CUDA device / no driver — CPU-bound run
+    except Exception:
         gpu_name = "cpu"
     return {
         "gpu_name": gpu_name,
@@ -97,7 +91,7 @@ def serialize_tree(state: Mapping[str, Any], prefix: str = "") -> tuple[dict, di
             payload[name] = sub_payload
             keys.update(sub_keys)
         elif isinstance(value, torch.nn.Module):
-            payload[name] = value.state_dict()
+            payload[name] = unwrap_compiled(value).state_dict()
             keys[path] = "module"
         elif isinstance(value, torch.optim.Optimizer):
             payload[name] = value.state_dict()
@@ -112,14 +106,11 @@ def serialize_tree(state: Mapping[str, Any], prefix: str = "") -> tuple[dict, di
 
 
 def save_checkpoint(dir_path: str | os.PathLike, state: Mapping[str, Any]) -> None:
-    """Atomically write ``state`` as checkpoint.pt + manifest.json.
-
-    tmp-file then ``os.replace`` per file; blob first, manifest second.
-    """
+    """Atomically write ``state`` as checkpoint.pt + manifest.json."""
     d = Path(dir_path)
     d.mkdir(parents=True, exist_ok=True)
     payload, keys = serialize_tree(state)
-    payload[KEYS_FIELD] = dict(keys)  # embedded copy: torn-write detector
+    payload[KEYS_FIELD] = dict(keys)
     manifest = {"format": FORMAT, "keys": keys}
 
     blob_tmp = d / (CHECKPOINT_FILE + ".tmp")
@@ -139,20 +130,10 @@ def save_policy_checkpoint(
     optimizer: torch.optim.Optimizer,
     global_step: int,
 ) -> None:
-    """Save an SJFPO policy checkpoint through LeRobot's HubMixin.
+    """Save through LeRobot's HubMixin (+ optimizer.pt, counters.json).
 
-    Layout inside ``dir_path``:
-        * ``config.json`` + ``model.safetensors`` via ``policy.save_pretrained``
-          (config carries the ``"sjfpo"`` type tag, feature shapes, and every
-          hyperparameter, so loading rebuilds components without caller args).
-        * ``optimizer.pt`` — ``optimizer.state_dict()``.
-        * ``counters.json`` — ``{"global_step", "step_count"}``.
-
-    Args:
-        dir_path: Destination directory (created if needed).
-        policy: SJFPOPolicy to save (must be one; other policies fail loudly).
-        optimizer: Optimizer whose state rides along.
-        global_step: Env-step counter recorded into counters.json.
+    ``model.safetensors`` holds unwrapped eager keys, so artifacts are
+    compile-mode independent. ``config.json`` carries shapes + hypers.
     """
     from sjfpo.modeling_sjfpo import SJFPOPolicy  # lazy: keeps this module import-light
 
@@ -162,7 +143,8 @@ def save_policy_checkpoint(
         )
     d = Path(dir_path)
     d.mkdir(parents=True, exist_ok=True)
-    policy.save_pretrained(d)
+    with unwrapped_policy(policy):
+        policy.save_pretrained(d)
     torch.save(optimizer.state_dict(), d / OPTIMIZER_FILE)
     (d / COUNTERS_FILE).write_text(
         json.dumps(
@@ -178,24 +160,10 @@ def load_policy_checkpoint(
     *,
     device: str | torch.device | None = None,
 ):
-    """Load an SJFPO policy checkpoint written by :func:`save_policy_checkpoint`.
+    """Load a checkpoint from :func:`save_policy_checkpoint`.
 
-    ``config.json`` resolves the ``SJFPOPolicy`` subclass and its hyperparameters,
-    so components are rebuilt from the file (no caller-supplied dims); then
-    ``model.safetensors`` loads into them, the optimizer is rebuilt from the
-    policy's own optimizer preset, and ``optimizer.pt`` + counters restore on top.
-
-    Args:
-        dir_path: Checkpoint directory.
-        device: Optional device override after loading (default: config.device).
-
-    Returns:
-        ``(policy, optimizer, counters)`` with ``counters`` a
-        ``{"global_step", "step_count"}`` dict; the policy is left in eval
-        mode (callers training onward switch back with ``policy.train()``).
-
-    Raises:
-        ResumeError: If any of the four files is missing or unreadable.
+    Rebuilds components from ``config.json`` (no caller dims); policy left in
+eval mode. Raises ResumeError on missing/unreadable files.
     """
     from sjfpo.modeling_sjfpo import SJFPOPolicy  # lazy: keeps this module import-light
 
@@ -242,7 +210,7 @@ def flatten_expected(spec: Iterable[str] | Mapping[str, Any]) -> set[str]:
 
 
 def read_checkpoint_manifest(d: Path) -> tuple[Path, dict]:
-    """Locate blob + manifest paths and validate the manifest JSON envelope."""
+    """Locate blob + manifest paths and validate the manifest envelope."""
     manifest_path = d / MANIFEST_FILE
     blob_path = d / CHECKPOINT_FILE
     if not manifest_path.is_file():
@@ -265,7 +233,11 @@ def load_checkpoint_blob(
     expected_keys: Iterable[str] | Mapping[str, Any] | None,
     d: Path,
 ) -> dict[str, Any]:
-    """Unpickle the blob; enforce expected keys and manifest/blob agreement."""
+    """Unpickle the blob; enforce expected keys and manifest/blob agreement.
+
+    weights_only=False: the payload carries numpy RNG bit-states and deques
+    outside torch's safe-globals allowlist.
+    """
     if expected_keys is not None:
         missing = sorted(flatten_expected(expected_keys) - set(keys))
         if missing:
@@ -294,18 +266,7 @@ def load_checkpoint(
     expected_keys: Iterable[str] | Mapping[str, Any] | None = None,
     state: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Load a checkpoint written by :func:`save_checkpoint`.
-
-    * Validates manifest completeness against ``expected_keys`` (iterable of
-      dotted paths, or nested mapping whose leaf values are ignored); raises
-      ResumeError listing every missing key.
-    * If ``state`` is given, restores in-place into live objects found there:
-      modules/optimizers via ``load_state_dict``, tensors via ``copy_``.
-      Template slots set to ``None`` (or plain non-tensor values) are skipped
-      — read those fields from the returned payload instead.
-    * Returns the deserialized payload tree (modules/optimizers appear as
-      their state_dicts).
-    """
+    """Load a checkpoint from :func:`save_checkpoint` (validates + restores)."""
     d = Path(dir_path)
     blob_path, keys = read_checkpoint_manifest(d)
     payload = load_checkpoint_blob(blob_path, keys, expected_keys, d)
@@ -337,7 +298,9 @@ def restore_tree(
             continue
         kind = keys.get(path)
         if kind == "module":
-            tval.load_state_dict(node)
+            # Load into the eager module: same tensors as any compile
+            # wrapper, but plain keys (see save side above).
+            unwrap_compiled(tval).load_state_dict(node)
         elif kind == "optimizer":
             tval.load_state_dict(node)
         elif kind == "tensor":

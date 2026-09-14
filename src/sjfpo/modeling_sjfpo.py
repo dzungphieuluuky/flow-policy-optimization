@@ -1,19 +1,9 @@
-"""SJFPO policy (LeRobot-native).
+"""SJFPO policy (LeRobot-native): flow head + spectral encoder + critic + obs stats.
 
-Single ``PreTrainedPolicy`` owning every SJFPO nn.Module as attributes:
-policy flow head (with its policy state encoder), spectral encoder, critic
-(with its critic state encoder), and the running obs normalizer. Mirrors the
-math of the ``collector -> GAE -> update`` path, reorganized around
-LeRobot batch dicts keyed by ``observation.state`` / ``action``.
-
-Batch contract for ``forward`` (all fp32, on the policy device):
-    observation.state: [B, T, obs] raw obs windows.
-    action: [B, H, Da] real-space scaled actions (DCT + truncation inside).
-    action_is_pad: optional [B, H] bool, True = unexecuted tail rows
-        (LeRobot-native executed-step mask; absent = all executed).
-    advantages: [B] raw chunk advantages from chunk GAE.
-    returns: [B] frozen GAE value targets.
-    values: optional [B] v_old at collection (PPO-style clipped value loss).
+Batch contract for ``forward`` (fp32, on policy device): observation.state
+[B, T, obs], action [B, H, action_dim] real scaled, action_is_pad [B, H]
+bool (absent = all executed), advantages/returns [B] (frozen GAE),
+values [B] optional (v_old at collection for clipped value loss).
 """
 
 from __future__ import annotations
@@ -38,6 +28,8 @@ from sjfpo.fpo_core import (
     compute_policy_ratio,
     run_mc_simulation,
     sample,
+    sample_noise,
+    sample_timesteps,
 )
 from sjfpo.gae import compute_advantages
 from sjfpo.utils import autocast_context
@@ -50,11 +42,7 @@ from sjfpo.networks import (
 
 
 class SJFPOAborted(RuntimeError):
-    """Raised when NaN/Inf is detected in training losses.
-
-    Attributes:
-        message: Human-readable description of which loss term became non-finite.
-    """
+    """Non-finite training loss (message names the offending term)."""
 
     def __init__(self, message: str):
         super().__init__(message)
@@ -69,11 +57,13 @@ class SJFPOPolicy(PreTrainedPolicy):
         self, config: SJFPOConfig, dataset_stats: dict[str, Any] | None = None
     ):
         super().__init__(config, dataset_stats)
-        config.validate_features()  # not called automatically by the base class
+        config.validate_features()
         obs_dim = int(config.robot_state_feature.shape[0])
         act_dim = int(config.action_feature.shape[0])
         self.actor = SJFOPolicyModel(
-            act_dim, obs_dim, hidden_size=config.hidden_dim
+            act_dim, obs_dim,
+            hidden_size=config.hidden_dim,
+            spectral_pool=config.spectral_pool,
         )
         self.spectral = SpectralEncoder(
             obs_dim,
@@ -87,44 +77,23 @@ class SJFPOPolicy(PreTrainedPolicy):
             n_obs_steps=config.n_obs_steps,
         )
         self.obs_normalizer = RunningMeanStd(obs_dim)
-        # Frozen behavior-policy snapshot (PPO π_θold): same weights at init
-        # (unit ratios), refreshed once per collection round via
-        # snapshot_behavior_policy(). Registered like a target net so it rides
-        # state_dict, but excluded from get_optim_params().
+        # Frozen behavior snapshot (PPO π_old): unit ratios at init, refreshed
+        # per collection round; rides state_dict but excluded from the optimizer.
         self.old_actor = copy.deepcopy(self.actor)
-        # Single-env inference buffers (chunked open-loop eval semantics).
         self._frame_buffer: deque[torch.Tensor] = deque(maxlen=config.n_obs_steps)
         self._action_buffer: deque[torch.Tensor] = deque()
-        # Update counter (checkpoint compat; incremented by the driver loop).
         self.step_count = 0
-        # Accepted but unused: obs stats stay online (RunningMeanStd) rather
-        # than frozen dataset stats.
-        del dataset_stats
+        del dataset_stats  # stats stay online (RunningMeanStd), never frozen
 
     @staticmethod
     def compute_target_velocity(a: torch.Tensor, eps: torch.Tensor) -> torch.Tensor:
-        """Target velocity v* = ε − a broadcast over MC draws.
-
-        Args:
-            a: Anchors, shape [B, *flow_shape].
-            eps: Noise draws, shape [B, m, *flow_shape].
-
-        Returns:
-            v* of shape [B, m, *flow_shape] (independent of t by construction).
-        """
-        return eps - a.unsqueeze(1)  # [B, m, *flow_shape]
+        """v* = a − ε broadcast over MC draws: [B, *flow] x [B, m, *flow] -> [B, m, *flow]."""
+        return a.unsqueeze(1) - eps
 
     def compute_predicted_velocity(
         self, x_t, tau, condition, state, old=False
     ) -> torch.Tensor:
-        """Velocity prediction from the live head (or frozen snapshot if old).
-
-        Args:
-            x_t: Interpolated points, shape [B * m, *flow_shape].
-            tau: Times, shape [B * m].
-            condition/state: MC-repeated conditioning.
-            old: Read the frozen behavior snapshot (l_old) instead of live weights.
-        """
+        """Velocity from the live head, or the frozen snapshot when old."""
         net = self.old_actor if old else self.actor
         return net(x_t, tau, condition, state)
 
@@ -141,10 +110,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         self.old_actor = copy.deepcopy(self.actor)
 
     def get_optim_params(self) -> dict:
-        """Return parameters to pass to the optimizer (e.g. with per-group lr/wd)."""
-        # Single AdamW group over live weights only: spectral is
-        # parameter-free, the normalizer holds buffers, and the behavior
-        # snapshot never trains.
+        """Live weights only (spectral is parameter-free, snapshot never trains)."""
         return {
             "params": list(self.actor.parameters())
             + list(self.critic.parameters())
@@ -164,23 +130,17 @@ class SJFPOPolicy(PreTrainedPolicy):
         )
 
     def predict_action_chunk(self, batch: dict[str, torch.Tensor], **kwargs) -> torch.Tensor:
-        """Return the full action chunk (B, horizon, action_dim) for the current observation.
-
-        Extra kwargs are ignored, except ``noise`` (bool, default False):
-        sample chunks from random Euler noise (training rollouts) instead of
-        deterministically from zeros (eval).
-        """
+        """Full action chunk [B, H, action_dim]; ``noise=True`` samples, else zeros."""
         noise = kwargs.get("noise", False)
         cfg = self.config
-        states = self._window_from_batch(batch[OBS_STATE])  # [B, T, obs]
-        # Eval/select_action builds windows on CPU; run where the weights live.
+        states = self._window_from_batch(batch[OBS_STATE])
         states = states.to(next(self.actor.parameters()).device)
         if self.obs_normalizer is not None:
             states = self.obs_normalizer(states)
         n_coeffs = max(1, round(cfg.top_p_spectral_tokens * cfg.horizon))
         act_dim = int(self.config.action_feature.shape[0])
         with torch.inference_mode(), autocast_context(states.device):
-            condition = self.spectral(states)  # [B, K, obs] raw DCT bins
+            condition = self.spectral(states)
             shape = (states.shape[0], n_coeffs, act_dim)
             eps = None if noise else torch.zeros(*shape, device=states.device)
             steps = cfg.euler_train if noise else cfg.euler_eval
@@ -192,20 +152,14 @@ class SJFPOPolicy(PreTrainedPolicy):
                 eps=eps,
                 device=states.device,
                 state=states,
-            )  # [B, Ka, Da] bf16 matmuls inside, fp32 I/O
-            x0 = x0.float()  # autocast may return bf16; DCT/env need fp32
+            )
+            x0 = x0.float()
         x0 = torch.nn.functional.pad(x0, (0, 0, 0, cfg.horizon - n_coeffs))
         raw = idct(x0, dim=1)
-        return raw.clamp(-1.0, 1.0)  # [B, H, Da] scaled actions
+        return raw.clamp(-1.0, 1.0)
 
     def select_action(self, batch: dict[str, torch.Tensor], **kwargs) -> torch.Tensor:
-        """Return a single action for the current timestep (called every step at inference).
-
-        Single-env contract: batch[observation.state] is [obs] (live step) or
-        [T, obs] (prefilled window). Executes the ``n_action_steps`` prefix of
-        each predicted chunk open-loop, then replans. Extra kwargs forward to
-        ``predict_action_chunk``.
-        """
+        """One action per call: replan a chunk, drain its executed prefix open-loop."""
         obs = torch.as_tensor(batch[OBS_STATE], dtype=torch.float32)
         if obs.dim() == 1:
             if not self._frame_buffer:
@@ -221,11 +175,11 @@ class SJFPOPolicy(PreTrainedPolicy):
                 f"select_action expects [obs] or [T, obs]; got {tuple(obs.shape)}"
             )
         if not self._action_buffer:
-            chunk = self.predict_action_chunk({OBS_STATE: window}, **kwargs)  # [1, H, Da]
+            chunk = self.predict_action_chunk({OBS_STATE: window}, **kwargs)
             n_execute = max(1, min(self.config.n_action_steps, chunk.shape[1]))
             for i in range(n_execute - 1, -1, -1):
                 self._action_buffer.append(chunk[0, i])
-        return self._action_buffer.popleft()  # [Da]
+        return self._action_buffer.popleft()
 
     def generate_rollout(
         self,
@@ -236,25 +190,10 @@ class SJFPOPolicy(PreTrainedPolicy):
         action_high: float = 1.0,
         noisy: bool = True,
     ) -> dict[str, torch.Tensor]:
-        """Interact with env to gather chunk transitions; return a forward-ready batch.
+        """Roll out open-loop chunks; return a forward-ready batch.
 
-        Rolls out full-horizon open-loop chunks (training semantics) with the
-        noisy behavior policy by default, evaluates V(s,a) under frozen stats,
-        runs chunk GAE, and assembles the batch dict ``forward`` consumes.
-        Obs stats are NOT updated here (rollout path stays frozen; ``forward``
-        updates them in train mode).
-
-        Args:
-            env: Gymnasium env with flat Box obs and ``[low, high]`` actions.
-            total_steps: Env steps to collect (> 0).
-            action_low/action_high: Action bounds for clip counting/scaling.
-            noisy: Sample chunks from random Euler noise (True, training) or
-                deterministically from zeros (False).
-
-        Returns:
-            Batch on the policy device with ``observation.state`` [N,T,obs],
-            ``action`` [N,H,Da] real-space, ``action_is_pad`` [N,H] bool,
-            ``advantages``/``returns``/``values`` [N] — pass straight to ``forward``.
+        Full-horizon noisy rollouts, V(s,a) under frozen stats, chunk GAE.
+        Obs stats stay frozen here; ``forward`` updates them in train mode.
         """
         if total_steps <= 0:
             raise ValueError(f"total_steps={total_steps} must be positive")
@@ -276,8 +215,12 @@ class SJFPOPolicy(PreTrainedPolicy):
             n_obs_steps=cfg.n_obs_steps,
             n_action_steps=cfg.horizon,
         )
-        lengths = [int(c["n_action_steps"]) for c in chunks]
-        next_lengths = bootstrap_action_lengths(chunks, cfg.horizon)
+        lengths = torch.tensor(
+            [int(c["n_action_steps"]) for c in chunks], dtype=torch.long
+        )  # [N] CPU; compiled critic takes the device copy below
+        next_lengths = torch.tensor(
+            bootstrap_action_lengths(chunks, cfg.horizon), dtype=torch.long
+        )  # [N] CPU
         with torch.inference_mode():
             states = torch.stack([c["observation.state"] for c in chunks]).to(device)
             next_states = torch.stack([c["next.observation.state"] for c in chunks]).to(device)
@@ -292,8 +235,8 @@ class SJFPOPolicy(PreTrainedPolicy):
                 dim=1,
             )
             with autocast_context(device):
-                values = self.critic(states_n, a_exec, lengths).float()  # [N]
-                v_next_all = self.critic(next_states_n, a_next_exec, next_lengths).float()  # [N]
+                values = self.critic(states_n, a_exec, lengths.to(device)).float()
+                v_next_all = self.critic(next_states_n, a_next_exec, next_lengths.to(device)).float()
             terminated = torch.tensor([bool(c["next.done"]) for c in chunks], device=device)
             next_values = torch.where(terminated, 0.0, v_next_all)
         all_rewards = [r for c in chunks for r in c["next.reward"].tolist()]
@@ -301,7 +244,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             all_rewards,
             values.cpu().numpy(),
             next_values.cpu().numpy(),
-            np.array(lengths),
+            lengths.numpy(),
             np.array([bool(c["next.done"]) for c in chunks]),
             gamma=cfg.gamma,
             lam=cfg.gae_lambda,
@@ -311,7 +254,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         is_pad = torch.arange(cfg.horizon).unsqueeze(0) >= torch.tensor(lengths).unsqueeze(1)
         return {
             OBS_STATE: torch.stack([c["observation.state"] for c in chunks]).to(device),
-            ACTION: idct(torch.stack([c["action"] for c in chunks]).to(device), dim=1),
+            ACTION: torch.stack([c["action"] for c in chunks]).to(device),
             "action_is_pad": is_pad.to(device),
             "advantages": torch.tensor(advantages, dtype=torch.float32, device=device),
             "returns": torch.tensor(returns, dtype=torch.float32, device=device),
@@ -321,22 +264,11 @@ class SJFPOPolicy(PreTrainedPolicy):
     def forward(
         self, batch: dict[str, torch.Tensor], reduction: str = "mean"
     ) -> tuple[torch.Tensor, dict | None]:
-        """Compute the training loss.
-
-        Returns `(loss, output_dict)` with logging-friendly Python natives.
-        Advantages/returns come precomputed (chunk GAE over the rollout that
-        produced this batch); the policy never bootstraps inside ``forward``.
-
-        Args:
-            batch: Batch dict per the class contract.
-            reduction: How to reduce per-chunk losses ([N]). ``"mean"``
-                returns the scalar training objective; ``"none"`` returns the
-                per-chunk vector for external weighting.
-        """
+        """Training loss from a generate_rollout batch (advantages/returns precomputed)."""
         cfg = self.config
-        states = torch.as_tensor(batch[OBS_STATE], dtype=torch.float32)  # [B, T, obs]
-        actions = torch.as_tensor(batch[ACTION], dtype=torch.float32)  # [B, H, Da]
-        advantages = torch.as_tensor(batch["advantages"], dtype=torch.float32)  # [B]
+        states = torch.as_tensor(batch[OBS_STATE], dtype=torch.float32)
+        actions = torch.as_tensor(batch[ACTION], dtype=torch.float32)
+        advantages = torch.as_tensor(batch["advantages"], dtype=torch.float32)
         returns = torch.as_tensor(batch["returns"], dtype=torch.float32)  # [B]
         if states.shape[-2] != cfg.n_obs_steps:
             raise ValueError(
@@ -347,39 +279,35 @@ class SJFPOPolicy(PreTrainedPolicy):
                 f"action horizon {actions.shape[-2]} != horizon {cfg.horizon}"
             )
         if self.training:
-            # Running stats update here (train batches only); rollout and eval
-            # normalize frozen through the shared module.
-            self.obs_normalizer.update(states)
+            self.obs_normalizer.update(states)  # train batches only; rollout/eval frozen
         states = self.obs_normalizer(states)
         is_pad = batch.get("action_is_pad")
         if is_pad is None:
-            lengths = [actions.shape[1]] * actions.shape[0]
+            lengths = torch.full(
+                (actions.shape[0],), actions.shape[1],
+                dtype=torch.long, device=actions.device,
+            )  # [B] all executed
             a_exec = actions
         else:
             is_pad = torch.as_tensor(is_pad, dtype=torch.bool, device=actions.device)
             lengths = (~is_pad).sum(dim=1)  # [B] executed steps
             a_exec = actions * (~is_pad).to(actions.dtype).unsqueeze(-1)
         n_coeffs = max(1, round(cfg.top_p_spectral_tokens * cfg.horizon))
-        action_coeffs = dct(a_exec, dim=1)[:, :n_coeffs, :]  # [N, Ka, Da]
-        condition = self.spectral(states)  # [N, K, obs] raw DCT bins
+        action_coeffs = dct(a_exec, dim=1)[:, :n_coeffs, :]
+        condition = self.spectral(states)
         n = states.shape[0]
-        tau = (
-            torch.rand(cfg.num_mc_samples, device=states.device)
-            * (cfg.tau_range[1] - cfg.tau_range[0])
-            + cfg.tau_range[0]
-        )  # [m]
-        eps = torch.randn(
-            n, cfg.num_mc_samples, n_coeffs, actions.shape[-1], device=states.device
-        )  # [N, m, Ka, Da]
+        tau = sample_timesteps(cfg.num_mc_samples, cfg.tau_range, device=states.device)
+        eps = sample_noise(
+            (n, cfg.num_mc_samples, n_coeffs, actions.shape[-1]),
+            device=states.device,
+        )
 
-        # --- Shared MC interpolation: flats serving both likelihoods (same draw,
-        # or rho is pure MC noise).
         tau_bn, eps_flat, a_rep, flow_shape, num_mc = run_mc_simulation(
             action_coeffs, eps, tau
         )
         x_t_flat = (
-            tau_bn[:, None] * eps_flat + (1.0 - tau_bn[:, None]) * a_rep
-        ).reshape(-1, *flow_shape)  # [N*m, *flow_shape] t·ε+(1−t)·a
+            (1.0 - tau_bn[:, None]) * eps_flat + tau_bn[:, None] * a_rep
+        ).reshape(-1, *flow_shape)  # (1−t)·ε+t·a
         cond_flat = einx.id(
             "n m k d -> (n m) k d", einx.id("n k d -> n m k d", condition, m=num_mc)
         )
@@ -388,8 +316,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         )
         tau_flat = einx.id("m -> n m", tau, n=n).reshape(n * num_mc)
 
-        # --- Velocity predictions: frozen snapshot (l_old) vs live weights.
-        # bf16 autocast on matmuls only; DCT/CFM/ratio math stays fp32.
+        # Frozen snapshot (l_old) vs live weights; DCT/CFM/ratio math stays fp32.
         with torch.inference_mode(), autocast_context(states.device):
             v_old = self.compute_predicted_velocity(
                 x_t_flat, tau_flat, cond_flat, state_flat, old=True
@@ -399,38 +326,39 @@ class SJFPOPolicy(PreTrainedPolicy):
                 x_t_flat, tau_flat, cond_flat, state_flat
             ).float()
 
-        # --- Per-sample errors: target velocities + clamped flow-space means.
-        v_star = self.compute_target_velocity(action_coeffs, eps)  # [N, m, *flow_shape]
+        v_star = self.compute_target_velocity(action_coeffs, eps)
         l_old = compute_cfm_loss(
             v_old.reshape(n, num_mc, *flow_shape), v_star, reduce_mode="sample"
-        )  # [N, m]
+        )
         l_new = compute_cfm_loss(
             v_new.reshape(n, num_mc, *flow_shape), v_star, reduce_mode="sample"
-        )  # [N, m]
+        )
 
         rho = compute_policy_ratio(l_old, l_new, advantage=advantages.unsqueeze(1))
-        psi = compute_aspo_surrogate(rho, advantages.unsqueeze(1), cfg.clip_range)
-        policy_per_chunk = -psi.mean(dim=1)  # [N]
+        psi = compute_aspo_surrogate(
+            rho, advantages.unsqueeze(1), cfg.epsilon_low, cfg.epsilon_high
+        )
+        policy_per_chunk = -psi.mean(dim=1)
         with autocast_context(states.device):
-            v_pred = self.critic(states, a_exec, lengths).float()  # [N] values
+            v_pred = self.critic(states, a_exec, lengths).float()
         returns_d = returns.to(v_pred.device)
-        se = (v_pred - returns_d).pow(2)  # [N]
-        if "values" in batch:  # v_old at collection: PPO-style clipped value loss
+        se = (v_pred - returns_d).pow(2)
+        if "values" in batch:  # PPO-style clipped value loss against v_old
             old_values = torch.as_tensor(batch["values"], dtype=torch.float32).to(
                 v_pred.device
             )
             v_clipped = old_values + (v_pred - old_values).clamp(
                 -cfg.clip_range_vf, cfg.clip_range_vf
             )
-            value_per_chunk = torch.max(se, (v_clipped - returns_d).pow(2))  # [N]
+            value_per_chunk = torch.max(se, (v_clipped - returns_d).pow(2))
         else:
-            value_per_chunk = se  # [N]
+            value_per_chunk = se
         if reduction == "mean":
             policy_loss = policy_per_chunk.mean()
             value_loss = value_per_chunk.mean()
             loss = policy_loss + cfg.vf_coef * value_loss
         elif reduction == "none":
-            loss = policy_per_chunk + cfg.vf_coef * value_per_chunk  # [N]
+            loss = policy_per_chunk + cfg.vf_coef * value_per_chunk
         else:
             raise ValueError(f"reduction={reduction!r} must be 'mean' or 'none'")
         if not bool(torch.isfinite(loss).all()):

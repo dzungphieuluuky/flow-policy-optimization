@@ -1,7 +1,4 @@
-"""Unit tests for src/sjfpo/gae.py (plan task 7).
-
-TDD: written BEFORE the implementation exists — the first pytest run must
-fail RED on the missing module, then go GREEN once gae.py lands.
+"""Unit tests for src/sjfpo/gae.py.
 
 BINDING semantics (plan Scope §Chunk-level semi-MDP GAE, Metis majors #8/#11):
 each executed chunk is ONE semi-MDP decision epoch with
@@ -44,11 +41,9 @@ from sjfpo.gae import compute_advantages  # noqa: E402
 GAMMA = 0.99
 LAM = 0.95
 
-
-# ---------------------------------------------------------------------------
 # Brute-force oracle: forward-unrolled lambda-return over decision epochs.
 # Shares ZERO code with the implementation (which recurses backwards).
-# ---------------------------------------------------------------------------
+
 def oracle_returns(
     per_step_rewards, values, final_value, n_action_steps, terminated, gamma, lam
 ):

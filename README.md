@@ -10,8 +10,8 @@ Research code: correctness, clarity, reproducibility over infrastructure. See `A
 
 - Stack `T=16` obs frames → `StateEncoder` (per-frame MLP + self-attn) → `Z [N,T,D=128]`.
 - DCT-II over the raw obs window (time axis) → keep `K` lowest low-frequency bins (`K = round(top_p*T)`, default 5) → raw bins = `SpectralEncoder` conditioning `[N,K,obs]`, no projector, no calibration, no encoder latent. (rFFT is reserved for `observation.image`; state and action use DCT.)
-- Action chunk `[N,H=16,Da]` stored as orthonormal DCT-II coefficients. Flow (DiT-8, adaLN-Zero, `SJFOPolicyModel`) attends over `[state_embed(raw obs); noisy actions]` prefix tokens and predicts action velocities in DCT space.
-- Sample with `fpo_core.sample` (mode="euler", descending `t: 1→0`, `x ← x − δ·v̂`); decode with `runner.decode_chunk_actions` (IDCT + single `clamp(-1,1)`). Training executes the full predicted chunk open-loop (`H=16`); inference/eval execute the `executed_vs_predicted_ratio=0.5` prefix (8 steps), then replan.
+- Action chunk `[N,H=16,action_dim]` stored real-space scaled to [-1,1] (one row per predicted step). Flow (DiT-8, adaLN-Zero, `SJFOPolicyModel`) DCTs it internally and predicts action velocities in DCT space.
+- Sample with `fpo_core.sample` (mode="euler", ascending `t: 0→1`, `x ← x + δ·v̂`); decode with `runner.decode_chunk_actions` (IDCT + single `clamp(-1,1)`). Training executes the full predicted chunk open-loop (`H=16`); inference/eval execute the `executed_vs_predicted_ratio=0.5` prefix (8 steps), then replan.
 - Update (`SJFPOPolicy.forward`): per-sample MC log-liks `[N,m=16]` → STE-capped ratios → ASPO surrogate (PPO-clip for `A≥0`, SPO penalty for `A<0`, mean-of-ψ) + `V(s,a)` critic on frozen GAE returns. One AdamW optimizer over the policy's live weights (spectral is parameter-free); global grad-clip; NaN aborts via `SJFPOAborted`.
 - Chunk rollout uses LeRobot-keyed `Transition` dicts; chunk-level semi-MDP GAE (`gae.compute_advantages`, numpy fp64, advantages standardized).
 
@@ -24,7 +24,7 @@ Single source of truth: every module under `src/sjfpo/` is on the live path. The
 | Tasks | `HalfCheetah-v5`, `Walker2d-v5`, `Hopper-v5` (flat Box, MuJoCo-only) |
 | Methods | `sjfpo`, `ppo`, `sac` |
 | Matrix | 45 runs: 3 methods × 3 envs × 5 seeds × 1M steps; tiny = 3 runs (Hopper-v5, seed 0, 20k steps) |
-| Precision/device | fp32 only (no autocast/half/compile); CUDA-default with CPU fallback (`SJFPO_DEVICE=cuda\|cpu\|auto`) |
+| Precision/device | fp32 storage (bf16 autocast matmuls on CUDA, `torch.compile` on by default); CUDA-default with CPU fallback (`SJFPO_DEVICE=cuda\|cpu\|auto`, `SJFPO_COMPILE=0` to disable compile) |
 
 ## Layout
 
@@ -115,7 +115,7 @@ Regenerates both minimal Colab notebooks (clone + install + `!train.py`, no sour
 
 ## Conventions (read `src/sjfpo/AGENTS.md` first)
 
-- Tensor-order comments on every transform (`[N,T,D]`, `[N,H,Da]`, `[N,K,obs]`, `[N,Ka,Da]`, `[N,m]`); `einx.id` reshapes must match torch.
+- Tensor-order comments on every transform (`[N,T,D]`, `[N,H,action_dim]`, `[N,K,obs]`, `[N,Ka,action_dim]`, `[N,m]`); `einx.id` reshapes must match torch.
 - Frozen dataclass configs; YAML files mirror them field-for-field (`tests/test_config_yaml_parity.py` locks this).
 - `wandb` imported only in `wandb_logging.py`.
 - `retained:`-marked helpers (`compute_cfm_loss`, `compute_policy_loss`, `assert_runtime`, …) are test/notebook seams — don't delete.

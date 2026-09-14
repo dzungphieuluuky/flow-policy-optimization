@@ -63,10 +63,7 @@ def fake_version(monkeypatch: pytest.MonkeyPatch, overrides: dict[str, str]) -> 
 
     monkeypatch.setattr(importlib.metadata, "version", fake)
 
-    # ---------------------------------------------------------------------------
     # 1. Run matrix shape / uniqueness / seeds
-    # ---------------------------------------------------------------------------
-
 
 def test_run_matrix_45_unique_tuples_and_seeds():
     assert len(config.RUN_MATRIX) == 45
@@ -80,10 +77,7 @@ def test_run_matrix_45_unique_tuples_and_seeds():
         "Hopper-v5",
     }
 
-    # ---------------------------------------------------------------------------
     # 2. Config dataclass fields: non-null + documented ranges
-    # ---------------------------------------------------------------------------
-
 
 def test_every_config_field_non_null():
     for instance in (SJFPOConfig(), config.PPO_CFG, config.SAC_CFG):
@@ -113,7 +107,7 @@ def test_sjfpo_config_documented_ranges():
     assert c.optimizer_weight_decay >= 0
     assert 0 < c.gamma < 1
     assert 0 < c.gae_lambda < 1
-    assert 0 < c.clip_range < 1
+    assert 0 < c.epsilon_low <= c.epsilon_high < 1
     assert c.cfm_clamp > 0
     assert c.log_ratio_cap > 0
     lo, hi = c.tau_range
@@ -157,10 +151,7 @@ def test_sac_config_documented_ranges():
     assert c.initial_random_steps >= 0
     assert len(c.hidden) > 0 and all(h > 0 for h in c.hidden)
 
-    # ---------------------------------------------------------------------------
     # 3. assert_runtime(): dependency pins + precision flag
-    # ---------------------------------------------------------------------------
-
 
 def test_assert_runtime_passes_on_pinned_env():
     config.assert_runtime()
@@ -183,10 +174,7 @@ def test_assert_runtime_rejects_fp16_request():
     with pytest.raises(RuntimeError, match="fp16|bf16"):
         config.assert_runtime(allow_fp16=True)
 
-        # ---------------------------------------------------------------------------
         # 4. Env-var semantics via importlib.reload under monkeypatch
-        # ---------------------------------------------------------------------------
-
 
 def test_tiny_matrix_env_var_swaps_run_matrix(monkeypatch):
     m = reload_with_env(monkeypatch, SJFPO_TINY_MATRIX="1")
@@ -218,10 +206,7 @@ def test_is_kaggle_true_for_any_value(monkeypatch):
     m = reload_with_env(monkeypatch)
     assert m.IS_KAGGLE is False
 
-    # ---------------------------------------------------------------------------
     # 5. validate_run_matrix(): duplicate-seed injection raises AssertionError
-    # ---------------------------------------------------------------------------
-
 
 def test_validate_run_matrix_accepts_current_matrix():
     config.validate_run_matrix(config.RUN_MATRIX)

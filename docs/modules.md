@@ -12,7 +12,7 @@ Use this as a jump table. Each row: what the file owns, the key symbols, and the
 | `dct_utils.py` | DCT orthonormal action chunks | `dct`, `idct`, `discounted_chunk_reward` | `test_dct.py` roundtrip `1e-5` |
 | `evaluator.py` | Metrics | `Evaluator` → 3-col CSV `[episode,return,length]` | `test_evaluator.py` schema + `test_pipeline_cpu.py` |
 | `baselines.py` | skrl PPO/SAC | `ppo_train_run` / `sac_train_run`, shared `GaussianPolicyImpl`, `seed_and_wrap_env`, `mean_action_eval_policy`, `baseline_train_loop`, `FrameStackWrapper` | `test_baselines.py` provenance |
-| `fpo_core.py` | FPO++ core math (CFM, ratios, ASPO, sampling) | `compute_aspo_surrogate`, `compute_policy_ratio`, `sample(mode=euler)` descending 1→0, losses summed inline in trainer | `test_fpo_core.py` |
+| `fpo_core.py` | FPO++ core math (CFM, ratios, ASPO, sampling) | `compute_aspo_surrogate`, `compute_policy_ratio`, `sample(mode=euler)` ascending 0→1, losses summed inline in trainer | `test_fpo_core.py` |
 | `gae.py`, `collector.py`, `checkpointing.py` | Chunk rollout + GAE + checkpoints | `compute_advantages`, `collect_chunks`/`Transition`, `save/load_checkpoint` + `save/load_policy_checkpoint` (Hub config + safetensors) | `test_gae.py`, `test_collector.py`, `test_checkpoint.py`, `test_policy_checkpoint.py` |
 | `sweep.py` | Dispatch | `scan_runs`, `run_pending`, `flush_pending_runs`, `format_run_directory_name` | `test_sweep.py` order + resume |
 | `analysis.py` | Stats + plots | `analyze_results`, `bootstrap_ci` (`n_boot=2000`), `compute_iqm`, `is_superior`, `write_summary_csv` (stats: do not touch without plan amendment) | `test_analysis.py` |

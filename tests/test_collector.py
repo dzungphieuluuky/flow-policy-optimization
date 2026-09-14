@@ -1,7 +1,4 @@
-"""Unit tests for src/sjfpo/collector.py (plan task 6 + v4 transition dict).
-
-TDD: written BEFORE the implementation exists — the first pytest run must
-fail RED on the missing module, then go GREEN once collector.py lands.
+"""Unit tests for src/sjfpo/collector.py.
 
 Boundary semantics under test (plan Scope §Chunk-level semi-MDP GAE):
     terminated (anywhere)  -> stop executing, discard remaining actions,
@@ -12,8 +9,9 @@ Boundary semantics under test (plan Scope §Chunk-level semi-MDP GAE):
 
 Transitions are plain dicts with LeRobot keys (observation.state / action /
 next.*). The policy proposes HORIZON actions but only N_STEPS are executed
-(receding horizon); the stored action anchor is always the DCT of the FULL
-proposed chunk, shape [HORIZON, ACT_DIM].
+(receding horizon); the stored action anchor is always the real-space SCALED
+FULL proposed chunk, shape [HORIZON, ACT_DIM] (one row per predicted step;
+DCT happens downstream in forward).
 
 The fake env is scripted gymnasium-v5 style: step() returns the 5-tuple
 (obs, reward, terminated, truncated, info) and termination/truncation can
@@ -37,7 +35,6 @@ from sjfpo.collector import Transition, collect_chunks  # noqa: E402, F401
 from sjfpo.configuration_sjfpo import SJFPOConfig  # noqa: E402
 
 _DEFAULTS = SJFPOConfig()
-from sjfpo.dct_utils import dct as dct_fn  # noqa: E402
 
 STATE_T = _DEFAULTS.n_obs_steps  # imported constant — NEVER hardcode 16
 HORIZON = _DEFAULTS.horizon  # imported constant — NEVER hardcode 16
@@ -131,10 +128,7 @@ def expected_window(markers: list[int], upto: int) -> torch.Tensor:
 def is_continue(t: Transition) -> bool:
     return not bool(t["next.done"]) and not bool(t["next.truncated"])
 
-    # ---------------------------------------------------------------------------
     # (a) chunk counts + open-loop replan cadence (every N_STEPS)
-    # ---------------------------------------------------------------------------
-
 
 def test_a_exact_chunk_count_and_replan_every_n_steps():
     env = FakeEnv()
@@ -173,10 +167,7 @@ def test_a_exact_chunk_count_and_replan_every_n_steps():
     assert [int(r["n_action_steps"]) for r in recs24] == [8, 8, 8]
     assert len(pol24.states) == 4  # 3 replans + 1 tail proposal
 
-    # ---------------------------------------------------------------------------
     # (b) mid-chunk termination: discard rest, no bootstrap, full-H anchor kept
-    # ---------------------------------------------------------------------------
-
 
 def test_b_mid_chunk_termination_discards_remaining_and_forbids_bootstrap():
     # Global steps 9,10,11 are actions 1..3 of chunk index 1; termination
@@ -214,10 +205,7 @@ def test_b_mid_chunk_termination_discards_remaining_and_forbids_bootstrap():
     assert is_continue(records[2]) and int(records[2]["n_action_steps"]) == 8
     assert is_continue(records[3]) and int(records[3]["n_action_steps"]) == 5
 
-    # ---------------------------------------------------------------------------
     # (c) truncation (TimeLimit semantics): boundary + mid-chunk, bootstrap-eligible
-    # ---------------------------------------------------------------------------
-
 
 def test_c_truncation_at_chunk_boundary_is_bootstrap_eligible():
     env = FakeEnv(truncate_at=8)  # TimeLimit fires exactly on the last executed action
@@ -263,10 +251,7 @@ def test_c_truncation_mid_chunk_also_bootstraps():
     assert cut["action"].shape == (HORIZON, ACT_DIM)
     assert len(env.applied_actions) == 16
 
-    # ---------------------------------------------------------------------------
     # (d) frame buffer: warmup replication + sliding windows
-    # ---------------------------------------------------------------------------
-
 
 def test_d_warmup_replicates_first_obs_n_obs_steps_times_then_slides():
     env = FakeEnv()
@@ -305,13 +290,10 @@ def test_d_warmup_replicates_first_obs_n_obs_steps_times_then_slides():
     assert executed == total_steps
     assert ptr == len(env.obs_markers)
 
-    # ---------------------------------------------------------------------------
-    # (e) stored per-chunk fields: state, DCT of full SCALED proposal, rewards,
+    # (e) stored per-chunk fields: state, real SCALED FULL proposal, rewards,
     #     done flags, clip count
-    # ---------------------------------------------------------------------------
 
-
-def test_e_stores_state_rewards_done_and_dct_of_scaled_chunk():
+def test_e_stores_state_rewards_done_and_real_scaled_chunk():
     # Bounds [-2, 2]; constant proposal 1.0 is IN bounds and scales to 0.5.
     env = FakeEnv()
     chunk = torch.full((HORIZON, ACT_DIM), 1.0)
@@ -334,13 +316,9 @@ def test_e_stores_state_rewards_done_and_dct_of_scaled_chunk():
     assert int(rec["clip_count"]) == 0
     assert rec["next.reward"].tolist() == [float(i) for i in range(1, N_STEPS + 1)]
 
-    # DCT must be taken on the SCALED FULL proposal: scaled(1.0; [-2,2]) = 0.5.
-    expected = dct_fn(torch.full((HORIZON, ACT_DIM), 0.5), dim=0)
-    assert torch.allclose(rec["action"], expected, atol=1e-6)
-    # Non-circular DC check: orthonormal DCT-II DC coeff = mean * sqrt(N).
-    assert torch.allclose(
-        rec["action"][0], torch.full((ACT_DIM,), 0.5 * math.sqrt(HORIZON)), atol=1e-6
-    )
+    # Stored action is the real SCALED FULL proposal: scaled(1.0; [-2,2]) = 0.5.
+    expected = torch.full((HORIZON, ACT_DIM), 0.5)
+    assert torch.equal(rec["action"], expected)
 
 
 def test_e_clip_count_counts_out_of_bound_elements_and_executes_clipped():
@@ -366,18 +344,13 @@ def test_e_clip_count_counts_out_of_bound_elements_and_executes_clipped():
     assert np.all(applied[:, 0] <= 2.0) and np.allclose(applied[:, 0], 2.0)
     assert np.all(applied[:, 1] >= -2.0) and np.allclose(applied[:, 1], -2.0)
     assert np.allclose(applied[:, 2], 0.5)
-    # DCT of the SCALED CLIPPED proposal: col0 scales to +1.0, col1 to -1.0.
-    assert torch.allclose(
-        rec["action"][0, 0], torch.tensor(1.0 * math.sqrt(HORIZON)), atol=1e-6
-    )
-    assert torch.allclose(
-        rec["action"][0, 1], torch.tensor(-1.0 * math.sqrt(HORIZON)), atol=1e-6
-    )
+    # Stored action is the real SCALED CLIPPED proposal: col0 -> +1.0, col1 -> -1.0,
+    # col2 raw 0.5 scales to 0.25 on [-2, 2].
+    assert torch.equal(rec["action"][:, 0], torch.full((HORIZON,), 1.0))
+    assert torch.equal(rec["action"][:, 1], torch.full((HORIZON,), -1.0))
+    assert torch.equal(rec["action"][:, 2], torch.full((HORIZON,), 0.25))
 
-    # ---------------------------------------------------------------------------
     # QA failure scenario: env raising mid-chunk propagates AFTER flush attempt
-    # ---------------------------------------------------------------------------
-
 
 def test_env_exception_propagates_after_checkpoint_flush_attempt():
     env = FakeEnv(raise_at_step=5)

@@ -1,15 +1,8 @@
-"""Unit tests for src/sjfpo/networks.py (plan task 4).
+"""Unit tests for src/sjfpo/networks.py.
 
-TDD: written BEFORE the implementation exists — the first pytest run must
-fail RED on the missing module, then go GREEN once networks.py lands.
-
-Conventions under test (binding, from the plan):
-- fp32 everywhere; SwiGLU activations; no BatchNorm / Dropout(p>0) anywhere.
-- SpectralEncoder needs no calibration: raw DCT low-K bins go straight to
-  the projector, never batch statistics (Metis #7).
-- sigreg_loss implements Epps-Pulley CF normality test on Z (single scalar).
-- Flow heads predict velocity in orthonormal-DCT coefficient space with
-  diffusers-style sinusoidal time embedding (10000-ladder).
+Conventions under test: fp32 params; SwiGLU; no BatchNorm/Dropout;
+SpectralEncoder needs no calibration (raw DCT bins, no batch stats);
+flow heads predict velocity in DCT space with sinusoidal time embedding.
 """
 
 from __future__ import annotations
@@ -33,8 +26,7 @@ OBS = 11  # raw obs dim feeding SpectralEncoder (env-like)
 KS = max(1, round(_DEFAULTS.top_p_spectral_tokens * STATE_T))  # 5
 CHUNK = _DEFAULTS.horizon  # 16
 
-# All network symbols come from sjfpo.networks (imported lazily inside a
-# helper so that RED phase reports one clean collection error per use).
+# Networks import lazily so a missing module reports one clean collection error.
 
 
 def make_nets():
@@ -42,10 +34,7 @@ def make_nets():
 
     return nets
 
-    # ---------------------------------------------------------------------------
     # StateEncoder
-    # ---------------------------------------------------------------------------
-
 
 def test_state_encoder_shape_dtype_finite():
     nets = make_nets()
@@ -68,10 +57,7 @@ def test_state_encoder_gradient_flows():
     grads = [p.grad for p in encoder.parameters()]
     assert all(g is not None and torch.isfinite(g).all() for g in grads)
 
-    # ---------------------------------------------------------------------------
     # RunningMeanStd — running obs stats, checkpointed with the models
-    # ---------------------------------------------------------------------------
-
 
 def test_running_stats_identity_until_first_update():
     nets = make_nets()
@@ -93,7 +79,6 @@ def test_running_stats_normalize_and_checkpoint():
     assert abs(float(out.mean())) < 0.05
     assert abs(float(out.std()) - 1.0) < 0.05
     assert float(out.abs().max()) <= 10.0
-    # Buffers ride the state_dict → stored alongside model parameters.
     restored = nets.RunningMeanStd(4)
     restored.load_state_dict(norm.state_dict())
     assert torch.equal(restored(batch), out)
@@ -104,7 +89,6 @@ def test_running_stats_rejects_nonpositive_dim():
     with pytest.raises(ValueError):
         nets.RunningMeanStd(0)
 
-    # ---------------------------------------------------------------------------
     # sigreg_loss — Sketched Isotropic Gaussian Regularizer (SIGReg, Epps-Pulley)
     #
     # Replicates lucas-maes/le-wm SIGReg.forward(): empirical characteristic
@@ -116,8 +100,6 @@ def test_running_stats_rejects_nonpositive_dim():
     # The optional `projection` arg pins the random projection matrix for
     # deterministic reference tests and reproducible experiments; when None the
     # projections are resampled (unit-norm columns) on every call.
-    # ---------------------------------------------------------------------------
-
 
 def fixed_projection(d, m, seed):
     """Deterministic unit-norm-column projection matrix of shape [d, m]."""
@@ -194,10 +176,7 @@ def test_sigreg_gradients_flow():
     assert loss.ndim == 0
     assert z.grad is not None and torch.isfinite(z.grad).all()
 
-    # ---------------------------------------------------------------------------
     # SpectralEncoder — raw DCT low-K bins, batch invariance, determinism
-    # ---------------------------------------------------------------------------
-
 
 def make_pinned_spectral(nets):
     """Two fresh constructions under manual_seed(0); bitwise-equal weights."""
@@ -277,10 +256,7 @@ def test_spectral_encoder_nan_propagates_detectably():
     out = st(x)
     assert torch.isnan(out).any()
 
-    # ---------------------------------------------------------------------------
     # timestep embedding + flow heads
-    # ---------------------------------------------------------------------------
-
 
 def test_get_timestep_embedding_sin_cos_values():
     nets = make_nets()
@@ -332,10 +308,7 @@ def test_policy_flow_head_cond_from_spectral():
         p.grad is not None and torch.isfinite(p.grad).all() for p in policy.parameters()
     )
 
-    # ---------------------------------------------------------------------------
     # DiT blocks (adaLN-Zero identity init + finite time embeddings)
-    # ---------------------------------------------------------------------------
-
 
 def test_dit_block_identity_at_init():
     nets = make_nets()
@@ -376,10 +349,7 @@ def test_cross_attention_block_shape():
     assert y.shape == (3, 8, 128)
     assert torch.isfinite(y).all()
 
-    # ---------------------------------------------------------------------------
     # Critic
-    # ---------------------------------------------------------------------------
-
 
 def test_value_critic_shape():
     nets = make_nets()
@@ -428,10 +398,7 @@ def test_value_critic_action_order_sensitive():
     v2 = vc(s, a.flip(dims=(1,)))
     assert not torch.allclose(v1, v2, atol=1e-6)
 
-    # ---------------------------------------------------------------------------
     # global hygiene: fp32-only, no BatchNorm / Dropout
-    # ---------------------------------------------------------------------------
-
 
 def test_no_batchnorm_no_dropout_fp32_everywhere():
     nets = make_nets()

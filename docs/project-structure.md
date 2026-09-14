@@ -20,7 +20,7 @@
 │   ├── dct_utils.py              # orthonormal DCT-II/III action chunks
 │   ├── evaluator.py              # Evaluator → 3-col CSV [episode,return,length]
 │   ├── baselines.py              # skrl PPO/SAC (shared GaussianPolicyImpl + baseline_train_loop)
-│   ├── fpo_core.py               # ASPO + sample(mode=euler) 1→0 descending
+│   ├── fpo_core.py               # ASPO + sample(mode=euler) 0→1 ascending
 │   ├── gae.py / collector.py / checkpointing.py  # legacy RL loop
 │   ├── sweep.py                  # scan_runs / run_pending / format_run_directory_name
 │   ├── analysis.py               # analyze_results (bootstrap 2000, IQM — stats locked)

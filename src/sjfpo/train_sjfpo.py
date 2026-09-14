@@ -1,16 +1,7 @@
 """SJFPO online training entry (LeRobot-native, MuJoCo-only).
 
-Single-round loop reusing the available pieces, no custom rollout/update
-machinery of its own: ``SJFPOPolicy.generate_rollout`` gathers a
-forward-ready batch, ``SJFPOPolicy.forward`` computes the loss, and the
-loop below only steps the optimizer, evaluates, and checkpoints.
-
-Call convention mirrors the old ``run_single`` driver so
-``scripts/train.py`` dispatches here with its existing CLI args::
-
-    train_sjfpo_run(env, out_dir, cfg, seed=..., total_steps=...,
-                    eval_interval=..., ckpt_interval=...,
-                    obs_dim=..., act_dim=...)
+``generate_rollout`` gathers a batch, ``forward`` computes the loss; this loop
+only steps the optimizer, evaluates, and checkpoints.
 """
 
 from __future__ import annotations
@@ -66,9 +57,8 @@ def build_policy(
         n_action_steps=max(1, round(cfg.executed_vs_predicted_ratio * cfg.horizon)),
     )
     policy = SJFPOPolicy(policy_cfg).to(device)
-    # All parametric modules (spectral is parameter-free, normalizer is
-    # buffers-only). snapshot_behavior_policy deep-copies the compiled actor,
-    # so l_old stays compiled too; state_dict keys are preserved.
+    # Spectral is parameter-free, normalizer is buffers-only; the snapshot
+    # deep-copies the compiled actor so l_old stays compiled too.
     policy.actor = maybe_compile(policy.actor)
     policy.old_actor = maybe_compile(policy.old_actor)
     policy.critic = maybe_compile(policy.critic)
@@ -141,10 +131,9 @@ def train_sjfpo_run(
             policy.train()
             infos = []
             for _ in range(cfg.num_epochs):
-                # Rolling one-step delay: forward compares live weights to the
-                # previous step's snapshot, then the snapshot is refreshed to
-                # the pre-step weights BEFORE stepping (snapshot-then-step
-                # would compare the weights to themselves and log ratio 0).
+                # Rolling one-step delay: compare live weights to the previous
+                # step's snapshot, refresh the snapshot pre-step (post-step
+                # would compare weights to themselves: ratio 0).
                 loss, epoch_info = policy(batch)
                 optimizer.zero_grad()
                 loss.backward()

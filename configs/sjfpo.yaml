@@ -1,5 +1,5 @@
 # SJFPO defaults — mirrors src/sjfpo/configuration_sjfpo.py:SJFPOConfig.
-# fp32-only (never autocast/half/bfloat16, no torch.compile).
+# fp32 storage (bf16 autocast matmuls on CUDA; torch.compile on, SJFPO_COMPILE=0 off).
 num_mc_samples: 16
 euler_train: 8
 euler_eval: 16
@@ -9,7 +9,8 @@ optimizer_lr: 0.0003
 optimizer_weight_decay: 0.0001
 gamma: 0.999
 gae_lambda: 0.995
-clip_range: 0.05
+epsilon_low: 0.2
+epsilon_high: 0.28
 clip_range_vf: 10.0
 cfm_clamp: 20.0
 log_ratio_cap: 10.0
@@ -24,4 +25,5 @@ n_obs_steps: 16
 horizon: 16
 executed_vs_predicted_ratio: 0.5
 top_p_spectral_tokens: 1.0
+spectral_pool: mean
 hidden_dim: 128

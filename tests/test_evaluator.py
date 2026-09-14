@@ -1,4 +1,4 @@
-"""Tests for shared evaluator (plan task 10 — RED phase).
+"""Tests for shared evaluator.
 
 Covers:
   (a) drives fake policies of all three kinds (callable, zero-noise SJFPO,
@@ -28,11 +28,7 @@ from sjfpo.networks import SJFOPolicyModel
 from sjfpo.fpo_core import sample
 from sjfpo.evaluator import Evaluator
 
-
-# ---------------------------------------------------------------------------
 # Fake environment
-# ---------------------------------------------------------------------------
-
 
 class FakeEnv:
     """Minimal fake MuJoCo-like env for evaluator tests."""
@@ -61,10 +57,7 @@ class FakeEnv:
         truncated = False
         return obs, reward, terminated, truncated, {}
 
-        # ---------------------------------------------------------------------------
         # Policy adapters
-        # ---------------------------------------------------------------------------
-
 
 def callable_policy(obs: np.ndarray) -> np.ndarray:
     """Simple callable returning random actions."""
@@ -108,7 +101,7 @@ class SJFPOPolicyAdapter:
                 steps=self.cfg.euler_eval,
                 eps=torch.zeros(1, n_coeffs, self.action_dim),
                 state=state,
-            )  # [1, Ka, Da]
+            )  # [1, Ka, action_dim]
             chunk = torch.nn.functional.pad(
                 chunk, (0, 0, 0, self.cfg.horizon - n_coeffs)
             )
@@ -143,10 +136,7 @@ class SACPolicyAdapter:
     def __call__(self, obs: np.ndarray) -> np.ndarray:
         return np.ones(self.action_dim, dtype=np.float32) * 0.5
 
-        # ---------------------------------------------------------------------------
         # (a) drives fake policies of all three kinds
-        # ---------------------------------------------------------------------------
-
 
 class TestPolicyKinds:
     def test_callable_policy(self):
@@ -202,10 +192,7 @@ class TestPolicyKinds:
                 assert "return" in row
                 assert "length" in row
 
-                # ---------------------------------------------------------------------------
                 # (b) determinism: same weights+eval_seed twice → identical episode returns
-                # ---------------------------------------------------------------------------
-
 
 class TestDeterminism:
     def test_same_seed_same_returns(self):
@@ -238,10 +225,7 @@ class TestDeterminism:
         returns2 = [r["return"] for r in r2]
         assert returns1 != returns2, "different seeds produced identical returns"
 
-        # ---------------------------------------------------------------------------
         # (c) acting batch B=1 works out of the box (no calibration)
-        # ---------------------------------------------------------------------------
-
 
 class TestBatchSizeOne:
     def test_b1_no_calibration_needed(self):
@@ -259,10 +243,7 @@ class TestBatchSizeOne:
         for r in results:
             assert math.isfinite(r["return"])
 
-            # ---------------------------------------------------------------------------
             # (d) 12-episode default + max-steps cap respected
-            # ---------------------------------------------------------------------------
-
 
 class TestEpisodeAndStepLimits:
     def test_max_episodes_respected(self):

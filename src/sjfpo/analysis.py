@@ -1,8 +1,4 @@
-"""Analysis module for SJFPO benchmark results.
-
-Provides bootstrap confidence intervals, IQM computation, superiority testing,
-cross-environment normalization, plotting, and CSV export.
-"""
+"""Benchmark analysis: bootstrap CIs, IQM, superiority, normalization, plots, CSV."""
 
 from __future__ import annotations
 
@@ -22,15 +18,11 @@ from sjfpo.config import RunSpec
 
 
 class AnalysisError(Exception):
-    """Raised when analysis cannot proceed due to missing or invalid data."""
+    """Analysis cannot proceed (missing/invalid data)."""
 
     pass
 
-
-# ---------------------------------------------------------------------------
 # Bootstrap confidence intervals
-# ---------------------------------------------------------------------------
-
 
 def bootstrap_ci(
     data: np.ndarray,
@@ -38,24 +30,7 @@ def bootstrap_ci(
     ci: float = 0.95,
     seed: int = 42,
 ) -> tuple[float, float, float]:
-    """Compute bootstrap confidence interval using percentile method.
-
-    Parameters
-    ----------
-    data : np.ndarray
-        1D array of values (e.g., per-seed IQMs).
-    n_boot : int
-        Number of bootstrap resamples.
-    ci : float
-        Confidence level (e.g., 0.95 for 95% CI).
-    seed : int
-        Random seed for reproducibility.
-
-    Returns
-    -------
-    tuple[float, float, float]
-        (mean, ci_low, ci_high) of the bootstrap distribution.
-    """
+    """Percentile bootstrap CI: (mean, ci_low, ci_high)."""
     if len(data) == 0:
         raise ValueError("data must not be empty")
 
@@ -64,7 +39,6 @@ def bootstrap_ci(
     boot_means = np.empty(n_boot)
 
     for i in range(n_boot):
-        # Stratified bootstrap over seeds: resample with replacement
         indices = rng.integers(0, n, size=n)
         boot_sample = data[indices]
         boot_means[i] = np.mean(boot_sample)
@@ -76,28 +50,10 @@ def bootstrap_ci(
 
     return float(mean), float(ci_low), float(ci_high)
 
-
-# ---------------------------------------------------------------------------
 # Interquartile Mean (IQM)
-# ---------------------------------------------------------------------------
-
 
 def compute_iqm(returns_per_seed: list[float]) -> float:
-    """Compute Interquartile Mean (IQM) of final returns.
-
-    IQM = mean after trimming bottom 25% and top 25% of values.
-    If fewer than 4 values, return the mean (can't trim meaningfully).
-
-    Parameters
-    ----------
-    returns_per_seed : list[float]
-        List of final-episode returns, one per seed.
-
-    Returns
-    -------
-    float
-        Interquartile mean.
-    """
+    """Mean after trimming top/bottom 25%; plain mean when n < 4."""
     if not returns_per_seed:
         raise ValueError("returns_per_seed must not be empty")
 
@@ -107,9 +63,8 @@ def compute_iqm(returns_per_seed: list[float]) -> float:
     if n < 4:
         return float(np.mean(arr))
 
-    # Sort and trim bottom 25% and top 25% by count
     sorted_arr = np.sort(arr)
-    trim_count = n // 4  # floor division for 25%
+    trim_count = n // 4
 
     if trim_count == 0:
         return float(np.mean(arr))
@@ -117,56 +72,18 @@ def compute_iqm(returns_per_seed: list[float]) -> float:
     trimmed = sorted_arr[trim_count : n - trim_count]
     return float(np.mean(trimmed))
 
-
-# ---------------------------------------------------------------------------
 # Superiority testing
-# ---------------------------------------------------------------------------
-
 
 def is_superior(ci_low: float, ci_high: float) -> bool:
-    """Check if 95% CI of difference excludes 0 on the positive side.
-
-    Returns True if ci_low > 0 (significantly better).
-    Returns False if CI crosses 0 or is entirely negative.
-
-    Parameters
-    ----------
-    ci_low : float
-        Lower bound of confidence interval.
-    ci_high : float
-        Upper bound of confidence interval.
-
-    Returns
-    -------
-    bool
-        True if significantly better (CI entirely above 0), False otherwise.
-    """
+    """True iff the CI of the difference excludes 0 on the positive side."""
     return ci_low > 0
 
-
-# ---------------------------------------------------------------------------
 # Cross-environment normalization
-# ---------------------------------------------------------------------------
-
 
 def normalize_cross_env(
     results_by_env: dict[str, dict[str, list[float]]],
 ) -> dict[str, dict[str, list[float]]]:
-    """Normalize returns across environments by max running return baseline.
-
-    Per env, divide all method returns by max running return baseline
-    (max of final returns across methods). Pool normalized values across envs.
-
-    Parameters
-    ----------
-    results_by_env : dict[str, dict[str, list[float]]]
-        Nested dict: env_name -> method -> list of returns per seed.
-
-    Returns
-    -------
-    dict[str, dict[str, list[float]]]
-        Normalized results with same structure.
-    """
+    """Divide each env's returns by its max final return across methods."""
     normalized = {}
 
     for env_name, methods in results_by_env.items():
@@ -182,7 +99,7 @@ def normalize_cross_env(
 
         max_return = max(all_final_returns)
         if max_return == 0:
-            max_return = 1.0  # avoid division by zero
+            max_return = 1.0
 
         normalized[env_name] = {}
         for method, returns in methods.items():
@@ -190,34 +107,14 @@ def normalize_cross_env(
 
     return normalized
 
-
-# ---------------------------------------------------------------------------
 # Load evaluation histories
-# ---------------------------------------------------------------------------
-
 
 def load_eval_histories(run_dir: Path, *, eval_interval: int) -> list[dict[str, Any]]:
-    """Scan a run directory for eval_history.csv files.
+    """Scan run dirs for eval_history.csv files.
 
-    Returns list of dicts with keys: method, env, seed, global_step, return.
-    ``global_step`` is ``episode_index * eval_interval`` — the CSV schema
-    ([episode, return, length]) carries no step column, so the interval must
-    be stated explicitly by the caller (no magic constants here).
-
-    Malformed rows/headers raise loudly (AnalysisError/ValueError), never
-    default to zero.
-
-    Parameters
-    ----------
-    run_dir : Path
-        Directory containing per-run subdirectories.
-    eval_interval : int
-        Eval cadence in env steps (required keyword-only).
-
-    Returns
-    -------
-    list[dict]
-        List of evaluation history records.
+    Returns [{method, env, seed, global_step, return}]; global_step is
+    episode_index * eval_interval (the CSV has no step column).
+    Malformed rows/headers raise loudly, never default to zero.
     """
     histories = []
 
@@ -225,14 +122,12 @@ def load_eval_histories(run_dir: Path, *, eval_interval: int) -> list[dict[str, 
         if not subdir.is_dir():
             continue
 
-        # Parse method, env, seed from directory name
-        # Expected format: {method}_{env}_{seed}
         parts = subdir.name.split("_")
         if len(parts) < 3:
             continue
 
         method = parts[0]
-        env = "_".join(parts[1:-1])  # env may contain underscores
+        env = "_".join(parts[1:-1])
         seed_str = parts[-1].removeprefix("seed")
         try:
             seed = int(seed_str)
@@ -261,55 +156,27 @@ def load_eval_histories(run_dir: Path, *, eval_interval: int) -> list[dict[str, 
 
     return histories
 
-
-# ---------------------------------------------------------------------------
-# Analysis report dataclass
-# ---------------------------------------------------------------------------
-
-
 @dataclass(frozen=True)
 class AnalysisReport:
-    """Container for MuJoCo analysis results."""
+    """MuJoCo analysis results."""
 
     per_env_curves: dict[str, Path]
     aggregate_png: Path
     summary_csv: Path
     superiority: dict[str, bool]
     excluded_diverged: list[str]
-    # (method, env) -> (iqm, ci_low, ci_high) of final returns across seeds.
     summary_stats: dict[tuple[str, str], tuple[float, float, float]] = field(
-        default_factory=dict
+        default_factory=dict  # (method, env) -> (iqm, ci_low, ci_high)
     )
 
-
-# ---------------------------------------------------------------------------
 # Plotting functions
-# ---------------------------------------------------------------------------
-
 
 def plot_per_env_curves(
     env_name: str,
     curves_by_method: dict[str, dict[str, Any]],
     output_dir: Path,
 ) -> Path:
-    """Plot learning curves for a single environment.
-
-    Parameters
-    ----------
-    env_name : str
-        Environment name.
-    curves_by_method : dict
-        Dict mapping method name to dict with keys:
-        - 'eval_points': list of x values
-        - 'returns_per_seed': list of lists (one per seed)
-    output_dir : Path
-        Directory to save the plot.
-
-    Returns
-    -------
-    Path
-        Path to the saved PNG file.
-    """
+    """Learning curves with bootstrap-CI shading for one env."""
     output_dir.mkdir(parents=True, exist_ok=True)
 
     fig, ax = plt.subplots(figsize=(10, 6))
@@ -326,7 +193,6 @@ def plot_per_env_curves(
         returns_array = np.array(returns_per_seed)
         mean_returns = np.mean(returns_array, axis=0)
 
-        # Bootstrap CI for shading
         ci_low = np.empty(len(eval_points))
         ci_high = np.empty(len(eval_points))
         for i in range(len(eval_points)):
@@ -351,7 +217,6 @@ def plot_per_env_curves(
     ax.legend()
     ax.grid(True, alpha=0.3)
 
-    # Format x-axis in scientific notation
     ax.ticklabel_format(style="sci", axis="x", scilimits=(0, 0))
 
     plt.tight_layout()
@@ -366,29 +231,14 @@ def plot_aggregate(
     aggregate_data: dict[str, dict[str, list[float]]],
     output_dir: Path,
 ) -> Path:
-    """Plot normalized cross-environment comparison bar chart.
-
-    Parameters
-    ----------
-    aggregate_data : dict
-        Normalized data: env_name -> method -> list of normalized returns.
-    output_dir : Path
-        Directory to save the plot.
-
-    Returns
-    -------
-    Path
-        Path to the saved PNG file.
-    """
+    """Normalized cross-env bar chart with bootstrap-CI error bars."""
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Collect all methods
     methods = set()
     for env_data in aggregate_data.values():
         methods.update(env_data.keys())
     methods = sorted(methods)
 
-    # Compute mean and CI per method across all envs and seeds
     method_means = {}
     method_cis = {}
 
@@ -442,25 +292,10 @@ def plot_aggregate(
 
     return png_path
 
-
-# ---------------------------------------------------------------------------
 # CSV export
-# ---------------------------------------------------------------------------
-
 
 def write_summary_csv(report: AnalysisReport, output_dir: Path) -> None:
-    """Write results summary CSV from the report's per-cell statistics.
-
-    Columns: method,env,iqm,ci_low,ci_high,status. One row per (method, env)
-    present in ``report.summary_stats`` (no hardcoded grid, no placeholders).
-
-    Parameters
-    ----------
-    report : AnalysisReport
-        Analysis report containing results.
-    output_dir : Path
-        Directory to write the CSV file.
-    """
+    """Summary CSV (method,env,iqm,ci_low,ci_high,status) from report cells."""
     output_dir.mkdir(parents=True, exist_ok=True)
     csv_path = output_dir / "results_summary.csv"
 
@@ -477,11 +312,7 @@ def write_summary_csv(report: AnalysisReport, output_dir: Path) -> None:
                 status = "diverged"
             writer.writerow([method, env, iqm, ci_low, ci_high, status])
 
-
-# ---------------------------------------------------------------------------
 # Main analysis entry point
-# ---------------------------------------------------------------------------
-
 
 def analyze_results(
     matrix: tuple[RunSpec, ...],
@@ -490,34 +321,14 @@ def analyze_results(
     *,
     eval_interval: int,
 ) -> AnalysisReport:
-    """Main analysis entry point.
-
-    Parameters
-    ----------
-    matrix : tuple[RunSpec]
-        Run specifications.
-    base_dir : Path
-        Directory containing per-run subdirectories.
-    output_dir : Path
-        Directory to write outputs.
-    eval_interval : int
-        Eval cadence in env steps (required keyword-only; forwarded to
-        load_eval_histories for the episode → global_step mapping).
-
-    Returns
-    -------
-    AnalysisReport
-        Analysis results.
-    """
+    """Run the full analysis: histories → curves → aggregate → plots → CSV."""
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Load all evaluation histories
     histories = load_eval_histories(base_dir, eval_interval=eval_interval)
 
     if not histories:
         raise AnalysisError("no eval histories")
 
-    # Group by method, env, seed
     from collections import defaultdict
 
     grouped = defaultdict(lambda: defaultdict(list))
@@ -527,7 +338,7 @@ def analyze_results(
         grouped[key]["returns"].append(h["return"])
         grouped[key]["eval_points"].append(h["global_step"])
 
-    # Check for diverged runs
+    # Diverged runs (diverged.json) are excluded from curves.
     excluded_diverged = []
     for subdir in base_dir.iterdir():
         if not subdir.is_dir():
@@ -593,13 +404,11 @@ def analyze_results(
     # Compute superiority
     superiority = {}
     for method in ["sjfpo", "ppo", "sac"]:
-        # Compare against best baseline (excluding self)
         baseline_methods = [m for m in ["sjfpo", "ppo", "sac"] if m != method]
         if not baseline_methods:
             superiority[method] = False
             continue
 
-        # Pool all seeds across envs for this method
         method_returns = []
         for env_data in final_returns_by_env.values():
             if method in env_data:
@@ -609,7 +418,6 @@ def analyze_results(
             superiority[method] = False
             continue
 
-        # Find best baseline
         best_baseline_returns = []
         for baseline in baseline_methods:
             baseline_returns = []
@@ -626,7 +434,6 @@ def analyze_results(
         best_baseline_returns.sort(reverse=True)
         best_baseline_method = best_baseline_returns[0][1]
 
-        # Get baseline returns
         baseline_returns = []
         for env_data in final_returns_by_env.values():
             if best_baseline_method in env_data:
@@ -636,7 +443,6 @@ def analyze_results(
             superiority[method] = False
             continue
 
-        # Compute difference CI
         min_len = min(len(method_returns), len(baseline_returns))
         if min_len < 2:
             superiority[method] = False
@@ -646,7 +452,6 @@ def analyze_results(
         _, ci_low, ci_high = bootstrap_ci(diff, n_boot=2000, ci=0.95, seed=42)
         superiority[method] = is_superior(ci_low, ci_high)
 
-    # Write summary CSV
     summary_csv = output_dir / "results_summary.csv"
     write_summary_csv(
         AnalysisReport(

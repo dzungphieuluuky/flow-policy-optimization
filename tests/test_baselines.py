@@ -1,8 +1,4 @@
-"""Tests for skrl PPO/SAC baseline drivers (plan task 12).
-
-Uses a proper gymnasium.Env FakeEnv so skrl's wrap_env works.
-Tests follow TDD: written BEFORE baselines.py implementation.
-"""
+"""Tests for skrl PPO/SAC baseline drivers (gymnasium FakeEnv so wrap_env works)."""
 
 from __future__ import annotations
 
@@ -20,11 +16,7 @@ from tests.fixtures.fake_env import FakeGymEnv
 
 from sjfpo.config import PPOConfig, SACConfig
 
-
-# ---------------------------------------------------------------------------
 # Config tests
-# ---------------------------------------------------------------------------
-
 
 class TestPPOConfig:
     """Verify PPOConfig fields match skrl 2.1.0 PPO_CFG dataclass defaults."""
@@ -137,11 +129,7 @@ class TestProvenanceTable:
                 f"Missing provenance: ({method}, {key}, {value}, {source})"
             )
 
-
-# ---------------------------------------------------------------------------
 # Tiny smoke tests (require skrl + gymnasium but NOT mujoco)
-# ---------------------------------------------------------------------------
-
 
 class TestPPOTinySmoke:
     """PPO on FakeGymEnv should complete and produce result dict."""

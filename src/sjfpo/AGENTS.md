@@ -8,10 +8,10 @@ MuJoCo-only (LEGACY_MUJOCO=True) hotspot — single live train path, chunked flo
 networks.py      StateEncoder + ActionEncoder (same definition; policy state encoder inside SJFOPolicyModel, state+action encoders inside Critic) + RunningMeanStd (obs stats, checkpointed) + SpectralEncoder(raw-obs DCT-II, parameter-free) + DiT-8 SJFOPolicyModel ([state;action] tokens) + 1-block cross-attn Critic V(s,a trans real-space +PE query)
 modeling_sjfpo.py   SJFPOPolicy.forward: ASPO (truncated Ka coeffs, negated) + V(s,a) critic on executed-masked real actions (frozen GAE returns, PPO-clipped) + running obs norm; optimizer = live policy weights; global grad-clip; NaN-guard aborts
 train_sjfpo.py    online train entry: generate_rollout → forward → AdamW step → eval → Hub ckpt
-collector.py      241L — Transition TypedDict (9 LeRobot keys incl. next.action chaining); full-H open-loop chunks; action anchor = DCT of FULL SCALED proposed chunk [H,Da]; all chunks train (trainer zero-pads unexecuted tails)
+collector.py      241L — Transition TypedDict (9 LeRobot keys incl. next.action chaining); full-H open-loop chunks; real-space scaled action anchor [H,action_dim] (DCT downstream in forward); all chunks train (trainer zero-pads unexecuted tails)
 gae.py            137L — chunk semi-MDP GAE (R_k intradiscounted, γ^L bootstrap, (γλ)^L recursion); terminated cuts all, truncated bootstraps δ but cuts recursion; train advantages raw (ASPO sign)
-fpo_core.py       432L — CFM/SQL-ℓ [N,m], STE-capped ρ, ASPO piecewise (PPO-clip Â≥0 / SPO Â<0), mean-of-ψ objective, sample(mode=euler) t:1→0; policy + vf_coef·value summed inline in forward
-dct_utils.py      orthonormal DCT-II/III [H,Da] action chunks + discounted_chunk_reward + einx.id (parity-guarded)
+fpo_core.py       432L — CFM/SQL-ℓ [N,m], STE-capped ρ, ASPO piecewise (PPO-clip Â≥0 / SPO Â<0), mean-of-ψ objective, sample(mode=euler) t:0→1; policy + vf_coef·value summed inline in forward
+dct_utils.py      orthonormal DCT-II/III [H,action_dim] action chunks + discounted_chunk_reward + einx.id (parity-guarded)
 config.py         flags + PPO/SAC dataclasses, RUN_MATRIX 45 (TINY 3) + build_run_matrix; SACConfig.polyak is skrl-boundary (keep). SJFPO hyperparams live ONLY in configuration_sjfpo.py::SJFPOConfig (H=16/T=16/top_p=0.3→K=5/D=128, DiT-8/4heads/mlp×4/t256)
 baselines.py      690L — skrl PPO/SAC via baseline_train_loop; FrameStackWrapper shared with evaluator
 checkpointing.py  246L — atomic ckpt (models + optimizer + counters) + Hub policy ckpt (config.json + safetensors via save/load_policy_checkpoint)
@@ -23,7 +23,7 @@ utils.py           23L — shared pure helpers (safe_float_value), no sjfpo impo
 ```
 
 ## Where to Look
-- `collector.py:51` `Transition`: 9 LeRobot keys (`observation.state [T,Do]`, `action [H,Da]` DCT, `next.action [H,Da]` chained/behavior proposal, `next.*`, `n_action_steps` i64, `clip_count` i64); `next.reward` is variable-length `[L_k]`
+- `collector.py:51` `Transition`: 9 LeRobot keys (`observation.state [T,obs_dim]`, real scaled `action [H,action_dim]`, `next.action [H,action_dim]` chained/behavior proposal, `next.*`, `n_action_steps` i64, `clip_count` i64); `next.reward` is variable-length `[L_k]`
 - `modeling_sjfpo.py:forward`: stack (guards H/T) → spectral `condition [N,K,obs]` (raw bins) → policy ℓ/ρ/ψ `[N,m]` → critic `V(s,a)` → clip → loss (stepped by the training loop)
 - `networks.py:SpectralEncoder`: DCT-II raw obs `[B,T,obs]` over time → keep K lowest bins (round(top_p*T)) → `[B,K,obs]` raw tokens (parameter-free; rFFT reserved for observation.image)
 - `gae.py:compute_advantages`: per-chunk `R_k`, `δ_k`, backward `(γλ)^L`; terminated cuts recursion, truncated bootstraps δ from last next-frame but cuts recursion
@@ -41,8 +41,8 @@ utils.py           23L — shared pure helpers (safe_float_value), no sjfpo impo
 | `wandb_logging.py` | `wandb_disabled` `init_wandb_run_for_method`->bool `log_metrics` `log_eval_summary` `finish_run` (5 fns SDK-direct) | `runner.py` `baselines.py` (REQUIRED import, SJFPO_DISABLE_WANDB=1 gate) |
 
 ## Conventions
-- Tensor order `B,N,H,K,D,Da,Ds` — comment dimensions at each transform (Google docstrings + inline `[B,H,Da]`)
-- Live condition is `[N,K,obs]` raw bins; the DiT pools it (`condition.mean(1)`) into the adaLN vector AND reads raw states as `[T,obs]→state_embed` prefix tokens (action positions only read out)
+- Tensor order `B,N,H,K,D,action_dim,Ds` — comment dimensions at each transform (Google docstrings + inline `[B,H,action_dim]`)
+- Live condition is `[N,K,obs]` raw bins; the DiT pools it into the adaLN vector (`spectral_pool="mean"`: `condition.mean(1)` via `cond_proj`; `"attention"`: `SpectralAttentionPool` query from time-embed, weights in `last_pool_weights`) AND reads raw states as `[T,obs]→state_embed` prefix tokens (action positions only read out)
 - Net activations are SwiGLU everywhere (gate/up/down linears; silu lives only inside SwiGLU)
 - `sigreg_loss` stays in `networks.py` as a test-only seam (not in the update path) — no Barlow heads
 - `polyak` survives ONLY at the skrl boundary (`SACConfig`, `build_sac_skrl_config`, `sac.yaml`); no EMA/target nets in the sjfpo path

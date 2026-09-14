@@ -17,9 +17,9 @@ flowchart LR
   DCT --> TOK["tokens [B,K,obs] (raw bins, no projector)"]
   TOK --> DIT["SJFOPolicyModel DiT-8 adaLN-Zero\n[state prefix; action tokens] + time/pooled condition"]
   O --> DIT
-  DIT --> V["v̂ velocity [B,Ka,Da] (Ka=top_p·H rows)"]
-  V --> PAD["zero-pad time → [B,H,Da] → IDCT → clamp"]
-  V --> EUL["sample(mode=euler) t:1→0 → IDCT → clamp"]
+  DIT --> V["v̂ velocity [B,Ka,action_dim] (Ka=top_p·H rows)"]
+  V --> PAD["zero-pad time → [B,H,action_dim] → IDCT → clamp"]
+  V --> EUL["sample(mode=euler) t:0→1 → IDCT → clamp"]
   O --> CR["Critic V(s,a)\nowns state encoder: Linear + sinus PE → 2× prenorm blocks → Z B,T=16,D=128\nreal actions +PE query encoded obs"]
   CR --> TD["GAE-returns target (one-step TD fallback)"]
 ```
@@ -30,8 +30,8 @@ frame-stacked env through the shared `baseline_train_loop`
 
 ## Key Contracts (break silently if flipped)
 
-- **t-convention:** `x_t = t·ε + (1−t)·a`, `t=1` noise, `t=0` data. Sampling
-  integrates **descending** `x ← x − δ·v̂` 1→0 (`fpo_core.sample`,
+- **t-convention:** `x_t = (1−t)·ε + t·a`, `t=0` noise, `t=1` data. Sampling
+  integrates **ascending** `x ← x + δ·v̂` 0→1 (`fpo_core.sample`,
   64 train / 16 eval steps). `modeling_sjfpo.py` samples `τ~U[0.005,0.995]`.
 - **Spectral order:** DCT-II over time (dim=1), keep the `K` lowest
   low-frequency bins (`K=max(1, round(top_p*T))`, default `0.3*16→5`), then
@@ -43,7 +43,7 @@ frame-stacked env through the shared `baseline_train_loop`
   GAE values come from the Critic.
 - **Inference:** deterministic zero-sampling eval (`eps=0`), single
   `clamp(-1,1)` after IDCT in `runner.decode_chunk_actions`.
-- **Precision:** fp32 everywhere. No `autocast`/`half`/`bfloat16`/`torch.compile`.
+- **Precision:** fp32 storage/buffers; bf16 autocast matmuls on CUDA; `torch.compile` on by default (`SJFPO_COMPILE=0` off).
 
 ## Why These Choices
 

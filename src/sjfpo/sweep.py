@@ -1,9 +1,4 @@
-"""Reentrant sweep executor state machine (plan task 14).
-
-Scans per-run directories for checkpoint manifests, classifies runs as
-pending/skipped/diverged, and executes pending runs sequentially with
-deterministic ordering. Provides atexit safety net for SIGTERM'd sessions.
-"""
+"""Reentrant sweep executor: scan run dirs, execute pending runs in order."""
 
 from __future__ import annotations
 
@@ -18,44 +13,23 @@ from typing import Any
 from sjfpo.config import RunSpec
 
 
-# ---------------------------------------------------------------------------
-# Exceptions
-# ---------------------------------------------------------------------------
-
-
 class SweepError(RuntimeError):
-    """Raised for scan-time errors (corrupted manifest, missing files, etc.)."""
+    """Scan-time errors (corrupt manifest, missing files)."""
 
     pass
 
 
-# ---------------------------------------------------------------------------
-# Data structures
-# ---------------------------------------------------------------------------
-
-
 @dataclass(frozen=True)
 class ScanResult:
-    """Result of scanning the run matrix against the filesystem.
-
-    Attributes:
-        pending: Runs to execute (MISSING + PARTIAL).
-        skipped: Already COMPLETE runs.
-        diverged: Runs flagged as diverged (excluded from pending).
-    """
+    """Scan outcome: pending (missing+partial), skipped (complete), diverged."""
 
     pending: list[RunSpec]
     skipped: list[RunSpec]
     diverged: list[RunSpec]
 
 
-# ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
-
-
 def format_run_directory_name(spec: RunSpec) -> str:
-    """Generate the per-run subdir name: {method}_{env}_seed{seed}/"""
+    """Per-run subdir: {method}_{env}_seed{seed}/."""
     return f"{spec.method}_{spec.env}_seed{spec.seed}"
 
 
@@ -77,18 +51,18 @@ def classify_run_status(
 ) -> str:
     """Classify one run dir: missing | diverged | complete | partial."""
     if not run_dir.is_dir():
-        return "missing"  # subdir doesn't exist
+        return "missing"
     if not (run_dir / "manifest.json").is_file():
-        return "missing"  # directory exists but no manifest
+        return "missing"
     try:
         manifest = manifest_reader(run_dir)
     except SweepError:
         raise SweepError(f"failed to scan run {dir_name}") from None
     if manifest.get("diverged", False) is True:
-        return "diverged"  # takes precedence over complete
+        return "diverged"
     if manifest.get("complete", False) is True:
         return "complete"
-    return "partial"  # manifest exists but not complete
+    return "partial"
 
 
 def print_session_summary(
@@ -126,7 +100,7 @@ def scan_runs(
     pending: list[RunSpec] = []
     skipped: list[RunSpec] = []
     diverged: list[RunSpec] = []
-    index_map = {spec: i for i, spec in enumerate(matrix)}  # tiebreaker
+    index_map = {spec: i for i, spec in enumerate(matrix)}
     for spec in matrix:
         run_dir = base / dir_name_fn(spec)
         status = classify_run_status(run_dir, dir_name_fn(spec), manifest_reader)
@@ -136,14 +110,8 @@ def scan_runs(
             skipped.append(spec)
         else:
             diverged.append(spec)
-    # Deterministic ordering: sort_key(spec) then matrix index tiebreaker
     pending.sort(key=lambda s: sort_key(s) + (index_map.get(s, 0),))
     return ScanResult(pending=pending, skipped=skipped, diverged=diverged)
-
-
-# ---------------------------------------------------------------------------
-# Internal: flush_pending_runs
-# ---------------------------------------------------------------------------
 
 
 def flush_pending_runs(
@@ -153,14 +121,7 @@ def flush_pending_runs(
     session_start_time: float,
     dir_name_fn: Callable[[RunSpec], str] = format_run_directory_name,
 ) -> tuple[list[dict[str, Any]], list[str]]:
-    """Execute pending runs sequentially; record failures, always summarize.
-
-    A failing run never aborts the matrix, but it is recorded by directory
-    name and printed in a FAILED block — never silently skipped.
-
-    Returns:
-        (results, failed): result dicts plus failed run directory names.
-    """
+    """Execute pending runs sequentially; failures are recorded, never silent."""
     base = Path(base_dir)
     results: list[dict[str, Any]] = []
     failed: list[str] = []
@@ -173,8 +134,6 @@ def flush_pending_runs(
                 results.append(result)
                 completed_count += 1
             except Exception as e:
-                # Record and continue; the FAILED block below plus the
-                # non-zero matrix exit code make failures unmissable.
                 failed.append(name)
                 print(f"ERROR in run {name}: {e}")
                 continue
@@ -207,11 +166,6 @@ def register_atexit_summary(pending_count: int, session_start: float) -> None:
     atexit.register(print_atexit_summary)
 
 
-# ---------------------------------------------------------------------------
-# Public API: run_pending (main entry point)
-# ---------------------------------------------------------------------------
-
-
 def run_pending(
     matrix: tuple[RunSpec, ...],
     base_dir: str | Path,
@@ -219,29 +173,16 @@ def run_pending(
     scan_fn: Callable[[tuple[RunSpec, ...], str | Path], ScanResult] = scan_runs,
     dir_name_fn: Callable[[RunSpec], str] = format_run_directory_name,
 ) -> dict[str, Any]:
-    """Main entry point: scan, report, execute, and register atexit handler.
-
-    Args:
-        matrix: Tuple of RunSpec from config.RUN_MATRIX.
-        base_dir: Parent directory containing per-run subdirs.
-        run_fn: Function to execute each run: run_fn(spec, base_dir) -> result dict.
-        scan_fn: Scan function used to classify runs (defaults to scan_runs).
-        dir_name_fn: Maps a RunSpec to its per-run subdir name (for error logs).
-
-    Returns:
-        Dict with keys: completed, skipped, diverged, failed, results.
-    """
+    """Scan, report, execute pending runs, register atexit handler."""
     base = Path(base_dir)
     session_start = time.time()
 
-    # Scan
     scan_result = scan_fn(matrix, base)
 
     announce_scan_results(scan_result)
 
     register_atexit_summary(len(scan_result.pending), session_start)
 
-    # Execute pending runs
     results, failed = flush_pending_runs(
         scan_result.pending, base, run_fn, session_start, dir_name_fn
     )

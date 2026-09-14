@@ -1,15 +1,4 @@
-"""SJFPO evaluator — deterministic rollouts with temporal metrics.
-
-Plan task 10. Runs deterministic (zero-noise) rollouts and writes
-``eval_history.csv`` per run directory. Adapters convert method-specific
-policy interfaces to a uniform ``callable(obs) -> action`` signature.
-
-Tensor / array conventions:
-    H: horizon / chunk length (env-dependent for MuJoCo)
-    Da: action dimension (env-dependent)
-    B: batch (unused here; rollouts are single-env sequential)
-    CSV schema: [episode, return, length]
-"""
+"""SJFPO evaluator — deterministic rollouts, ``eval_history.csv`` [episode, return, length]."""
 
 from __future__ import annotations
 
@@ -20,29 +9,22 @@ from typing import Any
 
 import numpy as np
 
-from sjfpo.dct_utils import dct, idct
-
 
 def write_eval_csv(results: list[dict[str, Any]], out_dir: str | Path) -> None:
     """Write ``eval_history.csv`` with columns ``[episode, return, length]``."""
     out_path = Path(out_dir)
     out_path.mkdir(parents=True, exist_ok=True)
-    csv_path = out_path / "eval_history.csv"  # [episode, return, length]
+    csv_path = out_path / "eval_history.csv"
     with open(csv_path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=["episode", "return", "length"])
-        writer.writeheader()  # header
-        writer.writerows(results)  # rows
+        writer.writeheader()
+        writer.writerows(results)
 
 
 def check_divergence(
     mean_return: float, baseline: float, consecutive: int
 ) -> tuple[int, bool]:
-    """Single divergence guard: count sub-10% evals; diverged after 3 straight.
-
-    Non-positive baselines never diverge (baseline > 0 guard).
-    Shared by the SJFPO loop (runner) and the skrl loops (baselines); callers
-    own state plumbing and logging, this owns only the threshold + count.
-    """
+    """Count sub-10% evals; diverged after 3 straight (never on baseline <= 0)."""
     if baseline > 0 and mean_return < 0.10 * baseline:
         consecutive += 1
     else:
@@ -73,25 +55,7 @@ def compute_random_baseline(env: Any, seed: int, n_obs_steps: int) -> float:
 
 
 class Evaluator:
-    """Unified deterministic evaluator for flat-observation (MuJoCo) envs.
-
-    Enforces flat ``Box`` observation contract.
-
-    Attributes:
-        env: Gymnasium env with flat ``observation_space``.
-        eval_seed: RNG seed for deterministic rollout seeding.
-        max_episodes: Episode cap per ``evaluate`` call.
-        max_steps: Optional total-step cap across episodes.
-
-    Args:
-        env: Gymnasium environment (or ``None`` for unit tests).
-        eval_seed: Seed for ``RandomState`` used to seed ``env.reset(seed=)``.
-        max_episodes: Number of deterministic rollouts.
-        max_steps: Optional total step budget.
-
-    Raises:
-        AssertionError: If ``env.observation_space`` is a ``gym.spaces.Dict``.
-    """
+    """Deterministic evaluator for flat-observation (MuJoCo) envs."""
 
     def __init__(
         self,
@@ -122,17 +86,17 @@ class Evaluator:
         step_budget: int | None,
     ) -> tuple[dict[str, Any], int]:
         """Roll one deterministic episode; return (result, steps taken)."""
-        obs, _ = self.env.reset(seed=seed)  # [obs_dim] or dict
+        obs, _ = self.env.reset(seed=seed)
         if hasattr(policy, "reset"):
             policy.reset()
-        ep_return = 0.0  # scalar
-        ep_length = 0  # scalar
-        steps_taken = 0  # scalar
+        ep_return = 0.0
+        ep_length = 0
+        steps_taken = 0
         done = False
         while not done:
-            action = policy(obs)  # [act_dim]
-            obs, reward, terminated, truncated, info = self.env.step(action)  # step
-            ep_return += float(reward)  # scalar
+            action = policy(obs)
+            obs, reward, terminated, truncated, info = self.env.step(action)
+            ep_return += float(reward)
             ep_length += 1
             steps_taken += 1
             done = terminated or truncated
@@ -151,10 +115,10 @@ class Evaluator:
         out_dir: str | Path | None = None,
     ) -> list[dict[str, Any]]:
         """Run deterministic rollouts, optionally writing ``eval_history.csv``."""
-        rng = np.random.RandomState(self.eval_seed)  # deterministic
+        rng = np.random.RandomState(self.eval_seed)
         results: list[dict[str, Any]] = []
-        total_steps = 0  # scalar
-        for ep in range(self.max_episodes):  # [0, max_episodes)
+        total_steps = 0
+        for ep in range(self.max_episodes):
             if self.max_steps is not None and total_steps >= self.max_steps:
                 break
             seed = int(rng.randint(0, 2**31))

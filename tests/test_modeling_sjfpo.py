@@ -111,7 +111,7 @@ def test_compute_target_velocity_broadcast():
     eps = torch.randn(2, 3, 5, 2)
     v_star = SJFPOPolicy.compute_target_velocity(a, eps)
     assert v_star.shape == (2, 3, 5, 2)
-    assert torch.equal(v_star[0, 1], eps[0, 1] - a[0])
+    assert torch.equal(v_star[0, 1], a[0] - eps[0, 1])
 
 
 def test_compute_predicted_velocity_old_vs_live():

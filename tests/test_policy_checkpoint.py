@@ -114,3 +114,37 @@ def test_save_rejects_non_sjfpo_policy(tmp_path):
         save_policy_checkpoint(
             tmp_path, policy=torch.nn.Linear(2, 2), optimizer=opt, global_step=0
         )
+
+
+def test_compiled_policy_saves_eager_keys_and_loads_cross_mode(tmp_path):
+    """Checkpoints hold the real inner model: no _orig_mod keys on disk, and
+    a compile-wrapped saver reloads exactly into an eager policy."""
+    from safetensors.torch import load_file  # noqa: E402
+
+    from sjfpo.utils import maybe_compile  # noqa: E402
+
+    torch.manual_seed(3)
+    policy = make_policy()
+    policy.actor = maybe_compile(policy.actor)
+    policy.old_actor = maybe_compile(policy.old_actor)
+    policy.critic = maybe_compile(policy.critic)
+    assert hasattr(policy.actor, "_orig_mod")
+    opt = torch.optim.AdamW(policy.get_optim_params()["params"])
+    d = tmp_path / "ckpt"
+    save_policy_checkpoint(d, policy=policy, optimizer=opt, global_step=5)
+    # Wrappers restored after save: training continues compiled.
+    assert hasattr(policy.actor, "_orig_mod")
+
+    keys = load_file(d / "model.safetensors")
+    assert keys, "empty safetensors"
+    assert all(not k.startswith("_orig_mod.") for k in keys), "wrapper leaked to disk"
+    assert any(k.startswith("actor.") for k in keys)
+
+    loaded, _, _ = load_policy_checkpoint(d)
+    assert not hasattr(loaded.actor, "_orig_mod")  # from_pretrained builds eager
+    for (kn, vn), (kl, vl) in zip(
+        sorted(policy.actor._orig_mod.state_dict().items()),
+        sorted(loaded.actor.state_dict().items()),
+    ):
+        assert kn == kl
+        assert torch.equal(vn.cpu(), vl.cpu())

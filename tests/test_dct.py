@@ -1,7 +1,4 @@
-"""Unit tests for src/sjfpo/dct_utils.py (plan task 3).
-
-TDD: written BEFORE the implementation exists — the first pytest run must
-fail RED on the missing module, then go GREEN once dct_utils.py lands.
+"""Unit tests for src/sjfpo/dct_utils.py.
 
 The whole FPO++ flow pipeline operates in ORTHONORMAL DCT-II coefficient
 space of the scaled action chunk (plan Scope §Flow space, BINDING). An
@@ -192,19 +189,19 @@ def test_discounted_chunk_reward_batched_shape():
     assert abs(out[0].item() - manual_first) < 1e-5
 
 
-def test_mask_unexecuted_tail_full_length_is_roundtrip():
-    """All-ones mask (L == H) recovers the signal up to round-off."""
+def test_mask_unexecuted_tail_full_length_is_identity():
+    """All-ones mask (L == H) returns the real-space input unchanged."""
     torch.manual_seed(0)
     x = torch.randn(4, 16, 3)
-    out = mask_unexecuted_tail(dct(x, dim=1), [16, 16, 16, 16], dim=1)
-    assert torch.allclose(out, x, atol=1e-5)
+    out = mask_unexecuted_tail(x, [16, 16, 16, 16], dim=1)
+    assert torch.equal(out, x)
 
 
 def test_mask_unexecuted_tail_zeroes_tail_rows():
     """Rows past each row's executed length are exactly zero; kept rows match."""
     torch.manual_seed(1)
     x = torch.randn(2, 16, 3)
-    out = mask_unexecuted_tail(dct(x, dim=1), [8, 16], dim=1)
+    out = mask_unexecuted_tail(x, [8, 16], dim=1)
     assert torch.equal(out[0, 8:], torch.zeros(8, 3))
     assert torch.allclose(out[0, :8], x[0, :8], atol=1e-5)
     assert torch.allclose(out[1], x[1], atol=1e-5)

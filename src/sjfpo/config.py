@@ -1,23 +1,8 @@
-"""Central configuration registry for the SJFPO vs PPO/SAC benchmark.
+"""Benchmark config registry: PPO/SAC hyperparameters + run matrix.
 
-Holds every hyperparameter named in plan Scope §Must-have plus the run matrix.
-All dataclasses are frozen with immutable (tuple) defaults; RUN_MATRIX is a
-tuple of frozen RunSpec instances built by an explicit loop over
-methods x envs x seeds.
-
-Module-level mode switches are read from environment variables ONCE at import
-time.
-
-Tensor conventions (used in shape comments across the codebase):
-    B: batch size
-    T: state window length (default 16)
-    H: action-chunk horizon (default 8)
-    K: low-K spectral tokens (default 5)
-    D: fused latent dimension hidden_size (default 128)
-    Da: action dimension (env-dependent)
-    Ds: state dimension (default D = 128)
-
-All tensors are fp32. Run-matrix construction is MuJoCo-only (flat Box).
+Dataclasses are frozen with tuple defaults; RUN_MATRIX is a tuple of frozen
+RunSpec built over methods × envs × seeds. Mode switches read env vars once
+at import. MuJoCo-only (flat Box).
 """
 
 from __future__ import annotations
@@ -26,9 +11,7 @@ import os
 from collections.abc import Iterable
 from dataclasses import dataclass
 
-# ---------------------------------------------------------------------------
 # Mode switches (plain module-level constants; read env at import time ONLY)
-# ---------------------------------------------------------------------------
 
 IS_KAGGLE = os.environ.get("KAGGLE_KERNEL_RUN_TYPE") is not None
 TINY_MATRIX = os.environ.get("SJFPO_TINY_MATRIX") == "1"
@@ -36,9 +19,7 @@ RESUME_ONLY = os.environ.get("SJFPO_RESUME_ONLY") is not None
 legacy_mujoco_env = os.environ.get("SJFPO_LEGACY_MUJOCO")
 LEGACY_MUJOCO = legacy_mujoco_env is None or legacy_mujoco_env == "1"
 
-# ---------------------------------------------------------------------------
 # Run-matrix axes
-# ---------------------------------------------------------------------------
 
 METHODS = ("sjfpo", "ppo", "sac")
 ENVS = ("HalfCheetah-v5", "Walker2d-v5", "Hopper-v5")
@@ -49,28 +30,12 @@ EVAL_INTERVAL = 50_000
 CKPT_INTERVAL = 25_000
 
 
-# ---------------------------------------------------------------------------
 # Method hyperparameters (Scope §Must-have, verbatim values)
-# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
 class PPOConfig:
-    """skrl PPO baseline (skrl 2.1.0 PPO_CFG keys).
-
-    Attributes:
-        rollouts: Rollout length. Default 2048.
-        learning_epochs: Learning epochs. Default 10.
-        mini_batches: Mini-batches. Default 8.
-        lr: Learning rate. Default 3e-4.
-        kl_threshold: KLAdaptiveLR threshold. Default 0.01.
-        grad_norm_clip: Gradient norm clip. Default 1.0.
-        discount: Discount factor. Default 0.99.
-        gae_lambda: GAE lambda. Default 0.95.
-        ratio_clip: PPO clip ratio. Default 0.2.
-        value_loss_scale: Value loss scale. Default 1.0.
-        hidden: Hidden layer sizes. Default (256, 256, 256).
-    """
+    """skrl 2.1.0 PPO baseline keys."""
 
     rollouts: int = 2048
     learning_epochs: int = 10
@@ -87,18 +52,7 @@ class PPOConfig:
 
 @dataclass(frozen=True)
 class SACConfig:
-    """skrl SAC baseline (skrl 2.1.0 SAC_CFG keys).
-
-    Attributes:
-        lr: Learning rate. Default 3e-4.
-        batch_size: Batch size. Default 256.
-        memory_size: Replay buffer size. Default 300_000.
-        gradient_steps: Gradient steps per update. Default 1.
-        polyak: Polyak averaging factor. Default 0.005.
-        discount: Discount factor. Default 0.99.
-        initial_random_steps: Initial random steps. Default 5000.
-        hidden: Hidden layer sizes. Default (256, 256, 256).
-    """
+    """skrl 2.1.0 SAC baseline keys."""
 
     lr: float = 3e-4
     batch_size: int = 256
@@ -114,23 +68,12 @@ PPO_CFG = PPOConfig()
 SAC_CFG = SACConfig()
 
 
-# ---------------------------------------------------------------------------
 # Run matrix
-# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
 class RunSpec:
-    """Single run specification.
-
-    Attributes:
-        method: Method name ("sjfpo", "ppo" or "sac").
-        env: Environment name.
-        seed: Random seed.
-        total_steps: Total training steps.
-        eval_interval: Evaluation interval.
-        ckpt_interval: Checkpoint interval.
-    """
+    """Single run: method × env × seed + budgets."""
 
     method: str
     env: str
@@ -141,11 +84,7 @@ class RunSpec:
 
 
 def build_run_matrix() -> tuple[RunSpec, ...]:
-    """Build legacy MuJoCo run matrix (45 runs: 3 methods × 3 envs × 5 seeds).
-
-    Returns:
-        Tuple of RunSpec for legacy MuJoCo experiments.
-    """
+    """Legacy MuJoCo matrix (45 runs: 3 methods × 3 envs × 5 seeds)."""
     specs: list[RunSpec] = []
     for method in METHODS:
         for env in ENVS:
@@ -205,20 +144,8 @@ if TINY_MATRIX:
         )
     RUN_MATRIX = tuple(tiny)  # 3 runs
 
-    # ---------------------------------------------------------------------------
-    # Validation helpers (plan task 2) — raise, never print
-    # ---------------------------------------------------------------------------
-
-
 def validate_run_matrix(specs: Iterable[RunSpec]) -> None:
-    """Raise AssertionError on any duplicate (method, env, seed) tuple.
-
-    Args:
-        specs: Iterable of RunSpec to validate.
-
-    Raises:
-        AssertionError: If duplicate (method, env, seed) found.
-    """
+    """Raise AssertionError on any duplicate (method, env, seed)."""
     seen: set[tuple[str, str, int]] = set()
     for spec in specs:
         key = (spec.method, spec.env, spec.seed)
@@ -227,40 +154,19 @@ def validate_run_matrix(specs: Iterable[RunSpec]) -> None:
 
 
 def parse_version_tuple(version: str) -> tuple[int, ...]:
-    """Parse version string to tuple of ints for comparison.
-
-    Args:
-        version: Version string like "1.2.3".
-
-    Returns:
-        Tuple of ints (major, minor, patch, ...).
-    """
+    """Version string -> (major, minor, patch, ...) for comparison."""
     parts: list[int] = []
     for part in version.split("."):
         digits = "".join(ch for ch in part if ch.isdigit())
         parts.append(int(digits) if digits else 0)
     return tuple(parts)
 
-    # retained: test-only public API — exercised directly by tests/test_config.py
-    # (dependency-pin + precision-flag tests); not called by the src train path.
-    # Keep per fn-consolidation D1.
-
 
 def assert_runtime(allow_fp16: bool = False) -> None:
     """Fail fast on dependency pins and unsupported precision flags.
 
-    Raises RuntimeError when the installed gymnasium has major.minor < 1.0,
-    when skrl is not exactly 2.1.0, or when full half/bfloat STORAGE is
-    requested. bf16 *autocast* (fp32 storage, bf16 matmuls via
-    ``SJFPO_DTYPE=bf16``) is allowed and needs no flag. Versions are
-    resolved through importlib.metadata.version(),
-    mirroring scripts/verify_deps.sh.
-
-    Args:
-        allow_fp16: If True, raises error (fp16/bf16 storage unsupported).
-
-    Raises:
-        RuntimeError: If dependency versions don't match or fp16 requested.
+    bf16 *autocast* (fp32 storage, bf16 matmuls) is allowed and needs no
+    flag; full half/bfloat STORAGE raises.
     """
     import importlib.metadata
 

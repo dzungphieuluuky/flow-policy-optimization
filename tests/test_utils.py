@@ -101,3 +101,24 @@ class TestBf16AutoDetect:
         avail = is_bf16_available()
         assert isinstance(avail, bool)
         assert resolve_compute_dtype() == (torch.bfloat16 if avail else torch.float32)
+
+
+class TestMaybeCompile:
+    def test_opt_out_returns_same_object(self, monkeypatch):
+        import torch
+        from sjfpo.utils import maybe_compile
+
+        monkeypatch.setenv("SJFPO_COMPILE", "0")
+        m = torch.nn.Linear(4, 4)
+        assert maybe_compile(m) is m
+
+    def test_default_wraps_without_running(self, monkeypatch):
+        import torch
+        from sjfpo.utils import maybe_compile
+
+        monkeypatch.delenv("SJFPO_COMPILE", raising=False)
+        m = torch.nn.Linear(4, 4)
+        out = maybe_compile(m)
+        assert out is not m  # lazy wrapper; no graph compiled until first call
+        stripped = {k.removeprefix("_orig_mod.") for k in out.state_dict()}
+        assert stripped == set(m.state_dict())

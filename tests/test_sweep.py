@@ -1,7 +1,4 @@
-"""Tests for src/sjfpo/sweep.py (plan task 14).
-
-TDD: written BEFORE the implementation exists — the first pytest run must
-fail RED on the missing module, then go GREEN once sweep.py lands.
+"""Tests for src/sjfpo/sweep.py.
 
 Contract under test:
 * ScanResult dataclass with pending/skipped/diverged lists
@@ -24,11 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from sjfpo.config import RunSpec, RUN_MATRIX  # noqa: E402
 
-
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
-
 
 def make_run_spec(method: str, env: str, seed: int) -> RunSpec:
     """Create a RunSpec matching the config defaults."""
@@ -52,13 +45,9 @@ def formatRunDirectoryName(spec: RunSpec) -> str:
     """Generate the per-run subdir name: {method}_{env}_seed{seed}/"""
     return f"{spec.method}_{spec.env}_seed{spec.seed}"
 
-    # ---------------------------------------------------------------------------
     # Tests
-    # ---------------------------------------------------------------------------
-
 
 class TestScanResult:
-    """Test the ScanResult dataclass."""
 
     def test_scan_result_creation(self):
         from sjfpo.sweep import ScanResult
@@ -82,7 +71,6 @@ class TestScanResult:
 
 
 class TestScanRuns:
-    """Test the scan_runs function."""
 
     def test_scans_missing_runs(self, tmp_path):
         """All runs missing -> all pending, none skipped/diverged."""
@@ -238,7 +226,6 @@ class TestScanRuns:
 
 
 class TestFlushPending:
-    """Test the flush_pending_runs internal function."""
 
     def test_run_pending_executes_in_order(self, tmp_path):
         """Mock run_fn records call order; verify deterministic order."""
@@ -342,7 +329,6 @@ class TestFlushPending:
 
 
 class TestRunPending:
-    """Test the run_pending main entry point."""
 
     def test_run_pending_scan_summary_printed(self, tmp_path, capsys):
         """Verify scan summary is printed: X skipped, Y pending, Z diverged."""
@@ -441,7 +427,6 @@ class TestRunPending:
 
 
 class TestSweepError:
-    """Test the SweepError exception."""
 
     def test_sweep_error_is_exception(self):
         from sjfpo.sweep import SweepError

@@ -1,8 +1,4 @@
-"""v4: Transition dict (LeRobot keys) + horizon split + next-state loss.
-
-TDD: written BEFORE the implementation exists — this file must fail RED
-(missing Transition API, H=8, no n_action_steps, randn next-state target), then go
-GREEN as W2-W4 land. New vocabulary under test:
+"""Transition dict (LeRobot keys) + horizon split + next-state loss.
 
 - Transition: dict with LeRobot keys observation.state / action /
   next.action / next.observation.state / next.reward / next.done / next.truncated
@@ -41,11 +37,7 @@ EXPECTED_KEYS = {
     "clip_count",
 }
 
-
-# ---------------------------------------------------------------------------
 # Config v4 defaults + guard
-# ---------------------------------------------------------------------------
-
 
 class TestConfigV4:
     def test_horizon_split_defaults(self):
@@ -64,10 +56,7 @@ class TestConfigV4:
         with pytest.raises(ValueError, match="n_action_steps"):
             collect_chunks(env, policy, 40, low, high, n_action_steps=0)
 
-            # ---------------------------------------------------------------------------
             # Collector: Transition dicts with LeRobot keys
-            # ---------------------------------------------------------------------------
-
 
 class ScriptedEnv(gym.Env):
     """Deterministic env: obs[t] = full(marker=t), optional terminate_at."""
@@ -179,10 +168,7 @@ class TestCollectorV4:
             assert t["action"].shape == (16, ACT_DIM)
             assert int(t["n_action_steps"]) < 8
 
-            # ---------------------------------------------------------------------------
             # Trainer: DiT actor (actions only) + transformer critic, no aux head
-            # ---------------------------------------------------------------------------
-
 
 def make_policy_v4(**overrides):
     from lerobot.configs.types import FeatureType, PolicyFeature

@@ -1,7 +1,4 @@
-"""Tests for src/sjfpo/checkpointing.py (plan task 9).
-
-TDD: written BEFORE the implementation exists — the first pytest run must
-fail RED on the missing module, then go GREEN once checkpointing.py lands.
+"""Tests for src/sjfpo/checkpointing.py.
 
 Contract under test (generic; the runner consumes this exact API with the
 policy bundle):

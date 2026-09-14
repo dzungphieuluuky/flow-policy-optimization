@@ -1,10 +1,7 @@
-"""wandb logging helper — enabled by default.
+"""wandb logging — sole wandb importer, enabled by default.
 
-Only file that imports wandb. wandb is a REQUIRED dependency (module-level
-import: a missing package is a hard ImportError, never a silent no-op). The
-ONLY off switch is ``SJFPO_DISABLE_WANDB=1``. When enabled, ``wandb.init`` runs
-unconditionally — if it raises (missing key, no network) the exception
-propagates and the run FAILS FAST.
+REQUIRED dependency (missing package = hard ImportError). Only off switch:
+``SJFPO_DISABLE_WANDB=1``. Failed init fails fast, never degrades silently.
 """
 
 from __future__ import annotations
@@ -29,25 +26,7 @@ def init_wandb_run_for_method(
     total_steps: int,
     cfg_dict: dict,
 ) -> bool:
-    """Init a run in the per-algo project.
-
-    Uses the default wandb step (``step=global_step``) as the x-axis so all
-    charts render as line graphs, matching wandb system auto-logging.
-
-    Args:
-        method: algo name — also the wandb project (``"sjfpo"/"ppo"/"sac"``).
-        env_name: MuJoCo env id.
-        seed: run seed (stored in config; the run name is wandb-generated).
-        total_steps: training budget (<=10000 → job_type "smoke").
-        cfg_dict: base config dict.
-
-    Returns:
-        True when enabled, False when disabled.
-
-    Raises:
-        Exception: any ``wandb.init`` error propagates — a
-            failed init FAILS FAST, never degrades silently.
-    """
+    """Init a run in the per-algo project (``method``); False when disabled."""
     if wandb_disabled():
         return False
     wandb.init(
@@ -81,12 +60,7 @@ def log_eval_summary(
     r_rand: float | None = None,
     consecutive_below: int | None = None,
 ) -> None:
-    """Log all eval metrics plus per-episode details.
-
-    Single shared home for the runner and baselines eval-logging payload
-    (previously duplicated per loop); one commit per step so eval/* renders
-    as line graphs. No-op when disabled.
-    """
+    """Eval metrics + per-episode table in one commit (shared runner/baselines home)."""
     if wandb_disabled():
         return
     returns = [r["return"] for r in eval_results]

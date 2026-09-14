@@ -1,16 +1,7 @@
-"""skrl PPO/SAC baselines (plan tasks 11-12).
+"""skrl PPO/SAC baselines sharing Evaluator and checkpointing.
 
-Wraps skrl 2.1.0 PPO/SAC into ``*_train_run`` functions sharing ``Evaluator`` and checkpointing.
-(SJFPO trains through ``SJFPOPolicy`` now; the custom runner is gone.)
-Frame-stacking is identical (n_obs_steps=16 → flat ``[obs_dim*16]``).
-
-Tensor conventions:
-    obs_dim: flat per-step obs (MuJoCo)
-    act_dim: action dim (env-dependent)
-    n_obs_steps 16 → stacked obs ``[obs_dim*16]``, wrapped ``[N=1, obs_dim*16]`` in act()
-    chunk_size 8 → action chunk ``[8, act_dim]`` DCT ``[8, act_dim]`` → IDCT
-
-All fp32, no autocast/bf16/fp16. Provenance table is source-of-truth for hyperparameters.
+Frame-stacking matches SJFPO (n_obs_steps=16 → flat [obs_dim*16]). No
+spectral/flow code here.
 """
 
 from __future__ import annotations
@@ -38,9 +29,7 @@ from sjfpo.wandb_logging import (
     finish_run,
 )
 
-# ---------------------------------------------------------------------------
 # skrl imports (lazy to allow partial import when skrl is unavailable)
-# ---------------------------------------------------------------------------
 
 skrl_imported = False
 PPO_CFG_cls = None
@@ -58,12 +47,8 @@ SACPolicy = None
 SACCritic = None
 
 
-# ---------------------------------------------------------------------------
-# Provenance table  (method, key, label) triples
-# label: "default" = skrl default untouched; "paper" = from FPO++ paper;
-#        "adaptation" = changed from skrl default for benchmark fairness
-# ---------------------------------------------------------------------------
-
+# Provenance: "default" = skrl default; "paper" = FPO++ paper;
+# "adaptation" = changed for benchmark fairness.
 PROVENANCE_TABLE: list[tuple[str, str, str, str]] = [
     # (method, key, value_source, note)
     ("PPO", "rollouts", "2048", "default"),
@@ -128,8 +113,6 @@ def create_gaussian_policy_class(GM, Model):
     """Shared Gaussian actor: MLP → mean + learnable log_std (PPO and SAC)."""
 
     class GaussianPolicyImpl(GM, Model):
-        """Shared Gaussian actor: MLP → mean + learnable log_std (PPO and SAC)."""
-
         def __init__(self, obs_dim: int, act_dim: int, hidden: tuple[int, ...]):
             Model.__init__(
                 self,
@@ -150,7 +133,6 @@ def create_gaussian_policy_class(GM, Model):
 
         def compute(self, inputs: dict, role: str = "policy"):
             return self.net(inputs["observations"]), {"log_std": self.log_std_parameter}
-
     return GaussianPolicyImpl
 
 
@@ -158,8 +140,6 @@ def create_ppo_value_class(DM, Model):
     """Deterministic value function for PPO: MLP → scalar."""
 
     class PpoValueImpl(DM, Model):
-        """Deterministic value function for PPO: MLP → scalar."""
-
         def __init__(self, obs_dim: int, hidden: tuple[int, ...]):
             Model.__init__(
                 self,
@@ -179,8 +159,6 @@ def create_sac_critic_class(DM, Model):
     """Q-critic for SAC: MLP over [obs; action] → scalar."""
 
     class SacCriticImpl(DM, Model):  # type: ignore[name-defined]
-        """Q-critic for SAC: MLP over [obs; action] → scalar."""
-
         def __init__(self, obs_dim: int, act_dim: int, hidden: tuple[int, ...]):
             Model.__init__(
                 self,
@@ -194,7 +172,7 @@ def create_sac_critic_class(DM, Model):
         def compute(self, inputs: dict, role: str = "critic"):
             x = einx.id(
                 "b o, b a -> b (o + a)", inputs["observations"], inputs["taken_actions"]
-            )  # [B, obs+act]
+            )
             return self.net(x), {}
 
     return SacCriticImpl
@@ -227,7 +205,7 @@ def import_skrl_dependencies():
 def seed_and_wrap_env(
     env: Any, seed: int, n_obs_steps: int
 ) -> tuple[Any, Any, int, int]:
-    """Seed torch/numpy and wrap env with frame stacking + skrl wrapper."""
+    """Seed torch/numpy; wrap with frame stacking + skrl wrapper."""
     torch.manual_seed(seed)
     np.random.seed(seed)
     wrapped_env = FrameStackWrapper(env, n_obs_steps=n_obs_steps)
@@ -238,7 +216,7 @@ def seed_and_wrap_env(
 
 
 def mean_action_eval_policy(agent: Any) -> Any:
-    """Deterministic mean-action eval policy closure for a skrl agent."""
+    """Deterministic mean-action eval closure for a skrl agent."""
 
     def eval_policy(obs):
         obs_t = einx.id(
@@ -252,17 +230,10 @@ def mean_action_eval_policy(agent: Any) -> Any:
 
     return eval_policy
 
-    # ---------------------------------------------------------------------------
     # Frame-stack wrapper (identical to SJFPO's n_obs_steps treatment)
-    # ---------------------------------------------------------------------------
-
 
 class FrameStackWrapper(gym.ObservationWrapper):
-    """Stacks the last ``n_obs_steps`` observations along a new axis.
-
-    The resulting observation is a flat vector of shape
-    ``(obs_dim * n_obs_steps,)`` so that skrl's MLP sees the full history.
-    """
+    """Stack the last n_obs_steps obs into one flat vector for skrl MLPs."""
 
     def __init__(self, env: gym.Env, n_obs_steps: int = 16):
         super().__init__(env)
@@ -294,10 +265,7 @@ class FrameStackWrapper(gym.ObservationWrapper):
     def get_current_observation(self) -> np.ndarray:
         return np.concatenate(list(self.frames), axis=0).astype(np.float32)
 
-        # ---------------------------------------------------------------------------
         # Generic training loop (shared by PPO and SAC)
-        # ---------------------------------------------------------------------------
-
 
 @dataclasses.dataclass
 class BaselineLoopState:
@@ -354,7 +322,7 @@ def resolve_eval_policy(agent, eval_policy_fn):
 
 
 def query_agent_actions(agent, observations, states, global_step, total_steps):
-    """Run agent.act under inference_mode; coerce the observation to a tensor."""
+    """agent.act under inference_mode (observation coerced to tensor)."""
     with torch.inference_mode():
         actions, outputs = agent.act(
             observations
@@ -625,10 +593,7 @@ def baseline_train_loop(
             finish_run(exit_code=1 if state.diverged else 0)
     return finalize_baseline_run(env, agent, out_dir, method_name, seed, state, fps)
 
-    # ---------------------------------------------------------------------------
     # PPO train_run
-    # ---------------------------------------------------------------------------
-
 
 def build_ppo_skrl_config(cfg):
     """Build the skrl PPO_CFG from our PPOConfig (provenance in PROVENANCE_TABLE)."""
@@ -747,10 +712,7 @@ def ppo_train_run(
         cfg,
     )
 
-    # ---------------------------------------------------------------------------
     # SAC train_run
-    # ---------------------------------------------------------------------------
-
 
 def build_sac_skrl_config(cfg):
     """Build the skrl SAC_CFG from our SACConfig (provenance in PROVENANCE_TABLE)."""

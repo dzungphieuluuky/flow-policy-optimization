@@ -1,7 +1,4 @@
-"""Tests for src/sjfpo/analysis.py (plan task 15).
-
-Written FIRST (TDD) — all tests must pass after implementation.
-"""
+"""Tests for src/sjfpo/analysis.py."""
 
 import sys
 from pathlib import Path
@@ -25,11 +22,7 @@ from sjfpo.analysis import (
     AnalysisError,
 )
 
-
-# ---------------------------------------------------------------------------
 # 1. test_bootstrap_ci_contains_median
-# ---------------------------------------------------------------------------
-
 
 def test_bootstrap_ci_contains_median():
     """Bootstrap CI should contain the sample median."""
@@ -41,11 +34,7 @@ def test_bootstrap_ci_contains_median():
         f"CI [{ci_low:.2f}, {ci_high:.2f}] does not contain median {sample_median:.2f}"
     )
 
-
-# ---------------------------------------------------------------------------
 # 2. test_bootstrap_ci_width_decreases_with_n
-# ---------------------------------------------------------------------------
-
 
 def test_bootstrap_ci_width_decreases_with_n():
     """CI width for n=100 should be smaller than n=10."""
@@ -63,11 +52,7 @@ def test_bootstrap_ci_width_decreases_with_n():
         f"CI width with n=100 ({width_100:.2f}) should be smaller than n=10 ({width_10:.2f})"
     )
 
-
-# ---------------------------------------------------------------------------
 # 3. test_iqm_computation
-# ---------------------------------------------------------------------------
-
 
 def test_iqm_computation():
     """Manual test: values = [1,2,3,4,5,6,7,8] → IQM = mean([3,4,5,6]) = 4.5."""
@@ -75,11 +60,7 @@ def test_iqm_computation():
     iqm = compute_iqm(values)
     assert iqm == pytest.approx(4.5), f"Expected 4.5, got {iqm}"
 
-
-# ---------------------------------------------------------------------------
 # 4. test_iqm_few_values
-# ---------------------------------------------------------------------------
-
 
 def test_iqm_few_values():
     """values = [1,2,3] → IQM = mean([1,2,3]) = 2.0 (can't trim < 4 values)."""
@@ -87,11 +68,7 @@ def test_iqm_few_values():
     iqm = compute_iqm(values)
     assert iqm == pytest.approx(2.0), f"Expected 2.0, got {iqm}"
 
-
-# ---------------------------------------------------------------------------
 # 5. test_superiority_true
-# ---------------------------------------------------------------------------
-
 
 def test_superiority_true():
     """ci_low=0.5, ci_high=2.0 → is_superior=True (CI entirely above 0)."""
@@ -99,11 +76,7 @@ def test_superiority_true():
     assert is_superior(0.1, 1.0) is True  # small positive CI
     assert is_superior(-2.0, -0.5) is False  # negative CI = not superior
 
-
-# ---------------------------------------------------------------------------
 # 6. test_superiority_false_overlapping
-# ---------------------------------------------------------------------------
-
 
 def test_superiority_false_overlapping():
     """ci_low=-0.5, ci_high=2.0 → is_superior=False (CI crosses 0)."""
@@ -111,11 +84,7 @@ def test_superiority_false_overlapping():
     assert is_superior(-2.0, 0.5) is False
     assert is_superior(0.0, 2.0) is False  # boundary case
 
-
-# ---------------------------------------------------------------------------
 # 7. test_planted_effect_detection
-# ---------------------------------------------------------------------------
-
 
 def test_planted_effect_detection():
     """Use synthetic_curves generator with rng seed 7.
@@ -163,11 +132,7 @@ def test_planted_effect_detection():
         f"Expected {{'strong': True, 'weak': False, 'tie': False}}, got {superior}"
     )
 
-
-# ---------------------------------------------------------------------------
 # 8. test_per_env_png_created
-# ---------------------------------------------------------------------------
-
 
 def test_per_env_png_created(tmp_path):
     """Generate curves, plot them, assert PNG exists with size > 10KB."""
@@ -190,11 +155,7 @@ def test_per_env_png_created(tmp_path):
         f"PNG too small: {png_path.stat().st_size} bytes"
     )
 
-
-# ---------------------------------------------------------------------------
 # 9. test_summary_csv_schema
-# ---------------------------------------------------------------------------
-
 
 def test_summary_csv_schema(tmp_path):
     """CSV carries real per-cell stats with exact columns and diverged status."""
@@ -228,11 +189,7 @@ def test_summary_csv_schema(tmp_path):
         "sjfpo,Hopper-v5,100.0,90.0,110.0,complete",
     ]
 
-
-# ---------------------------------------------------------------------------
 # 10. test_empty_history_raises
-# ---------------------------------------------------------------------------
-
 
 def test_empty_history_raises(tmp_path):
     """Call analyze_results on empty dir → AnalysisError('no eval histories') raised."""
@@ -252,11 +209,7 @@ def test_empty_history_raises(tmp_path):
     with pytest.raises(AnalysisError, match="no eval histories"):
         analyze_results(matrix, tmp_path, tmp_path / "output", eval_interval=500)
 
-
-# ---------------------------------------------------------------------------
 # 11. test_diverged_excluded_and_reported
-# ---------------------------------------------------------------------------
-
 
 def test_diverged_excluded_and_reported(tmp_path):
     """Create mock run with diverged manifest → excluded from analysis, listed in report."""
@@ -298,11 +251,7 @@ def test_diverged_excluded_and_reported(tmp_path):
     assert "sjfpo_TestEnv_0" in report.excluded_diverged
     assert report.superiority.get("sjfpo") is False  # excluded methods not superior
 
-
-# ---------------------------------------------------------------------------
 # Additional helper tests
-# ---------------------------------------------------------------------------
-
 
 def test_normalize_cross_env():
     """Test cross-environment normalization."""
