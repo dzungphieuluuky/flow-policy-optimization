@@ -15,6 +15,7 @@ from typing import Any
 import numpy as np
 import torch
 from lerobot.configs.types import FeatureType, PolicyFeature
+from lerobot.processor.converters import from_tensor_to_numpy
 
 from sjfpo.checkpointing import save_policy_checkpoint
 from sjfpo.configuration_sjfpo import SJFPOConfig
@@ -40,7 +41,7 @@ class _EvalPolicy:
 
     def __call__(self, obs: np.ndarray) -> np.ndarray:
         action = self.policy.select_action({"observation.state": obs})
-        return action.detach().cpu().numpy()
+        return from_tensor_to_numpy(action)
 
 
 def build_policy(

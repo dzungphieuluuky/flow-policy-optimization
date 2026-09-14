@@ -17,6 +17,7 @@ import numpy as np
 import torch
 
 from lerobot.policies import PreTrainedPolicy
+from lerobot.processor.converters import from_tensor_to_numpy, to_tensor
 from lerobot.utils.constants import ACTION, DONE, OBS_STATE, REWARD, TRUNCATED
 
 from sjfpo.configuration_sjfpo import SJFPOConfig
@@ -118,7 +119,7 @@ class SJFPOPolicy(PreTrainedPolicy):
 
     def _window_from_batch(self, states: torch.Tensor) -> torch.Tensor:
         """Coerce [B, T, obs] / [B, obs] / [T, obs] to a [B, T, obs] window."""
-        states = torch.as_tensor(states, dtype=torch.float32)
+        states = to_tensor(states, dtype=torch.float32)
         if states.dim() == 3:
             return states
         if states.dim() == 2:
@@ -162,7 +163,7 @@ class SJFPOPolicy(PreTrainedPolicy):
 
     def select_action(self, batch: dict[str, torch.Tensor], **kwargs) -> torch.Tensor:
         """One action per call: replan a chunk, drain its executed prefix open-loop."""
-        obs = torch.as_tensor(batch[OBS_STATE], dtype=torch.float32)
+        obs = to_tensor(batch[OBS_STATE], dtype=torch.float32)
         if obs.dim() == 1:
             if not self._frame_buffer:
                 for _ in range(self.config.n_obs_steps):
@@ -217,10 +218,10 @@ class SJFPOPolicy(PreTrainedPolicy):
             n_obs_steps=cfg.n_obs_steps,
             n_action_steps=cfg.horizon,
         )
-        lengths = torch.tensor(
+        lengths = to_tensor(
             [int(c["n_action_steps"]) for c in chunks], dtype=torch.long
         )  # [N] CPU; compiled critic takes the device copy below
-        next_lengths = torch.tensor(
+        next_lengths = to_tensor(
             bootstrap_action_lengths(chunks, cfg.horizon), dtype=torch.long
         )  # [N] CPU
         with torch.inference_mode():
@@ -243,29 +244,29 @@ class SJFPOPolicy(PreTrainedPolicy):
                 v_next_all = self.critic(
                     next_states_n, a_next_exec, next_lengths.to(device)
                 ).float()
-            terminated = torch.tensor([bool(c[DONE]) for c in chunks], device=device)
+            terminated = to_tensor([bool(c[DONE]) for c in chunks], dtype=torch.bool, device=device)
             next_values = torch.where(terminated, 0.0, v_next_all)
-        all_rewards = [r for c in chunks for r in c[REWARD].tolist()]
+        all_rewards = np.concatenate([from_tensor_to_numpy(c[REWARD]) for c in chunks])
         advantages, returns = compute_advantages(
             all_rewards,
-            values.cpu().numpy(),
-            next_values.cpu().numpy(),
-            lengths.numpy(),
+            from_tensor_to_numpy(values),
+            from_tensor_to_numpy(next_values),
+            from_tensor_to_numpy(lengths),
             np.array([bool(c[DONE]) for c in chunks]),
             gamma=cfg.gamma,
             lam=cfg.gae_lambda,
             normalize=False,
             truncated=np.array([bool(c[TRUNCATED]) for c in chunks]),
         )
-        is_pad = torch.arange(cfg.horizon).unsqueeze(0) >= torch.tensor(
-            lengths
+        is_pad = torch.arange(cfg.horizon).unsqueeze(0) >= to_tensor(
+            lengths, dtype=torch.long
         ).unsqueeze(1)
         return {
             OBS_STATE: torch.stack([c[OBS_STATE] for c in chunks]).to(device),
             ACTION: torch.stack([c["action"] for c in chunks]).to(device),
             "action_is_pad": is_pad.to(device),
-            "advantages": torch.tensor(advantages, dtype=torch.float32, device=device),
-            "returns": torch.tensor(returns, dtype=torch.float32, device=device),
+            "advantages": to_tensor(advantages, dtype=torch.float32, device=device),
+            "returns": to_tensor(returns, dtype=torch.float32, device=device),
             "values": values.detach().to(device),
         }
 
@@ -274,10 +275,10 @@ class SJFPOPolicy(PreTrainedPolicy):
     ) -> tuple[torch.Tensor, dict | None]:
         """Training loss from a generate_rollout batch (advantages/returns precomputed)."""
         cfg = self.config
-        states = torch.as_tensor(batch[OBS_STATE], dtype=torch.float32)
-        actions = torch.as_tensor(batch[ACTION], dtype=torch.float32)
-        advantages = torch.as_tensor(batch["advantages"], dtype=torch.float32)
-        returns = torch.as_tensor(batch["returns"], dtype=torch.float32)  # [B]
+        states = to_tensor(batch[OBS_STATE], dtype=torch.float32)
+        actions = to_tensor(batch[ACTION], dtype=torch.float32)
+        advantages = to_tensor(batch["advantages"], dtype=torch.float32)
+        returns = to_tensor(batch["returns"], dtype=torch.float32)  # [B]
         if states.shape[-2] != cfg.n_obs_steps:
             raise ValueError(
                 f"state length {states.shape[-2]} != n_obs_steps {cfg.n_obs_steps}"
@@ -301,7 +302,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             )  # [B] all executed
             a_exec = actions
         else:
-            is_pad = torch.as_tensor(is_pad, dtype=torch.bool, device=actions.device)
+            is_pad = to_tensor(is_pad, dtype=torch.bool, device=actions.device)
             lengths = (~is_pad).sum(dim=1)  # [B] executed steps
             a_exec = actions * (~is_pad).to(actions.dtype).unsqueeze(-1)
         n_coeffs = max(1, round(cfg.top_p_spectral_tokens * cfg.horizon))
@@ -356,8 +357,8 @@ class SJFPOPolicy(PreTrainedPolicy):
         returns_d = returns.to(v_pred.device)
         se = (v_pred - returns_d).pow(2)
         if "values" in batch:  # PPO-style clipped value loss against v_old
-            old_values = torch.as_tensor(batch["values"], dtype=torch.float32).to(
-                v_pred.device
+            old_values = to_tensor(
+                batch["values"], dtype=torch.float32, device=v_pred.device
             )
             v_clipped = old_values + (v_pred - old_values).clamp(
                 -cfg.clip_range_vf, cfg.clip_range_vf

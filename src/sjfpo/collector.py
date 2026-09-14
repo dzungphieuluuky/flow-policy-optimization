@@ -24,6 +24,7 @@ from typing import TypedDict
 import numpy as np
 import torch
 
+from lerobot.processor.converters import to_tensor
 from lerobot.utils.constants import DONE, OBS_STATE, REWARD, TRUNCATED
 from sjfpo.configuration_sjfpo import SJFPOConfig
 
@@ -68,7 +69,7 @@ def as_float_tensor(x: object) -> torch.Tensor:
     """Numpy/torch input -> detached fp32 tensor, shape preserved."""
     if isinstance(x, torch.Tensor):
         return x.detach().to(torch.float32)  # [...] -> [...] fp32 detached
-    return torch.as_tensor(np.asarray(x, dtype=np.float32))  # [...] -> [...] fp32
+    return to_tensor(np.asarray(x, dtype=np.float32))  # [...] -> [...] fp32
 
 
 def scale_and_clip_chunk(
@@ -170,11 +171,11 @@ def finalize_transition(
         "action": scaled,
         "next.action": next_action,
         "next.observation.state": next_state,
-        REWARD: torch.tensor(rewards, dtype=torch.float32),
-        DONE: torch.tensor(done_kind == "terminated"),
-        TRUNCATED: torch.tensor(done_kind == "truncated"),
-        "n_action_steps": torch.tensor(n_executed, dtype=torch.int64),
-        "clip_count": torch.tensor(clip_count, dtype=torch.int64),
+        REWARD: to_tensor(rewards, dtype=torch.float32),
+        DONE: to_tensor(done_kind == "terminated", dtype=torch.bool),
+        TRUNCATED: to_tensor(done_kind == "truncated", dtype=torch.bool),
+        "n_action_steps": to_tensor(n_executed, dtype=torch.int64),
+        "clip_count": to_tensor(clip_count, dtype=torch.int64),
     }
 
 
