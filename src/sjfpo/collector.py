@@ -24,6 +24,7 @@ from typing import TypedDict
 import numpy as np
 import torch
 
+from lerobot.utils.constants import DONE, OBS_STATE, REWARD, TRUNCATED
 from sjfpo.configuration_sjfpo import SJFPOConfig
 
 _DEFAULTS = SJFPOConfig()  # bare policy config: single source for defaults
@@ -40,7 +41,7 @@ def bootstrap_action_lengths(chunks, chunk_size: int) -> list[int]:
     n = len(chunks)
     out: list[int] = []
     for i, c in enumerate(chunks):
-        if not bool(c["next.done"]) and not bool(c["next.truncated"]) and i + 1 < n:
+        if not bool(c[DONE]) and not bool(c[TRUNCATED]) and i + 1 < n:
             out.append(int(chunks[i + 1]["n_action_steps"]))
         else:
             out.append(chunk_size)
@@ -165,13 +166,13 @@ def finalize_transition(
     if next_action is None:
         next_action = torch.zeros_like(scaled)  # placeholder; filled by chaining
     return {
-        "observation.state": state,
+        OBS_STATE: state,
         "action": scaled,
         "next.action": next_action,
         "next.observation.state": next_state,
-        "next.reward": torch.tensor(rewards, dtype=torch.float32),
-        "next.done": torch.tensor(done_kind == "terminated"),
-        "next.truncated": torch.tensor(done_kind == "truncated"),
+        REWARD: torch.tensor(rewards, dtype=torch.float32),
+        DONE: torch.tensor(done_kind == "terminated"),
+        TRUNCATED: torch.tensor(done_kind == "truncated"),
         "n_action_steps": torch.tensor(n_executed, dtype=torch.int64),
         "clip_count": torch.tensor(clip_count, dtype=torch.int64),
     }

@@ -17,7 +17,7 @@ import numpy as np
 import torch
 
 from lerobot.policies import PreTrainedPolicy
-from lerobot.utils.constants import ACTION, OBS_STATE
+from lerobot.utils.constants import ACTION, DONE, OBS_STATE, REWARD, TRUNCATED
 
 from sjfpo.configuration_sjfpo import SJFPOConfig
 from sjfpo.collector import bootstrap_action_lengths, collect_chunks
@@ -222,7 +222,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             bootstrap_action_lengths(chunks, cfg.horizon), dtype=torch.long
         )  # [N] CPU
         with torch.inference_mode():
-            states = torch.stack([c["observation.state"] for c in chunks]).to(device)
+            states = torch.stack([c[OBS_STATE] for c in chunks]).to(device)
             next_states = torch.stack([c["next.observation.state"] for c in chunks]).to(device)
             states_n = self.obs_normalizer(states)
             next_states_n = self.obs_normalizer(next_states)
@@ -237,23 +237,23 @@ class SJFPOPolicy(PreTrainedPolicy):
             with autocast_context(device):
                 values = self.critic(states_n, a_exec, lengths.to(device)).float()
                 v_next_all = self.critic(next_states_n, a_next_exec, next_lengths.to(device)).float()
-            terminated = torch.tensor([bool(c["next.done"]) for c in chunks], device=device)
+            terminated = torch.tensor([bool(c[DONE]) for c in chunks], device=device)
             next_values = torch.where(terminated, 0.0, v_next_all)
-        all_rewards = [r for c in chunks for r in c["next.reward"].tolist()]
+        all_rewards = [r for c in chunks for r in c[REWARD].tolist()]
         advantages, returns = compute_advantages(
             all_rewards,
             values.cpu().numpy(),
             next_values.cpu().numpy(),
             lengths.numpy(),
-            np.array([bool(c["next.done"]) for c in chunks]),
+            np.array([bool(c[DONE]) for c in chunks]),
             gamma=cfg.gamma,
             lam=cfg.gae_lambda,
             normalize=False,
-            truncated=np.array([bool(c["next.truncated"]) for c in chunks]),
+            truncated=np.array([bool(c[TRUNCATED]) for c in chunks]),
         )
         is_pad = torch.arange(cfg.horizon).unsqueeze(0) >= torch.tensor(lengths).unsqueeze(1)
         return {
-            OBS_STATE: torch.stack([c["observation.state"] for c in chunks]).to(device),
+            OBS_STATE: torch.stack([c[OBS_STATE] for c in chunks]).to(device),
             ACTION: torch.stack([c["action"] for c in chunks]).to(device),
             "action_is_pad": is_pad.to(device),
             "advantages": torch.tensor(advantages, dtype=torch.float32, device=device),

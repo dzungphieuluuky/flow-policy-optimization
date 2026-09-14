@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import numpy as np
 
-__all__ = ["compute_advantages"]
+__all__ = ["compute_advantages", "compute_returns", "normalize_advantages"]
 
 
 def as_chunk_arrays(rewards, values, next_values, n_action_steps, terminated):
@@ -56,47 +56,15 @@ def validate_chunk_stream(rewards, values, next_values, n_action_steps, terminat
         )
 
 
-def discount_chunk_rewards(rewards, n_action_steps, gamma, n):
-    """R_k = Σᵢ γⁱ·r_{k,i} over executed steps only."""
-    offsets = np.concatenate(([0], np.cumsum(n_action_steps)))
-    r_chunk = np.empty(n, dtype=np.float64)
-    for k in range(n):
-        steps = rewards[offsets[k] : offsets[k + 1]]
-        discounts = gamma ** np.arange(steps.shape[0], dtype=np.float64)
-        r_chunk[k] = float(np.dot(discounts, steps))
-    return r_chunk
+def compute_returns(advantages, values):
+    """G = A + V from raw (unnormalized) advantages."""
+    return np.asarray(advantages, dtype=np.float64) + np.asarray(values, dtype=np.float64)
 
 
-def backward_lambda_pass(
-    r_chunk, values, next_values, n_action_steps, terminated, truncated, gamma, lam, n
-):
-    """Backward GAE recursion; terminated cuts all, truncated cuts recursion only."""
-    advantages = np.empty(n, dtype=np.float64)
-    next_advantage = 0.0
-    for k in range(n - 1, -1, -1):
-        length = int(n_action_steps[k])
-        if terminated[k]:
-            delta = r_chunk[k] - values[k]
-            continuation = 0.0
-        elif truncated[k]:
-            # Timeout: bootstrap pre-reset V, but the post-reset A_{k+1}
-            # belongs to a fresh episode — cut it from the recursion.
-            delta = r_chunk[k] + (gamma**length) * next_values[k] - values[k]
-            continuation = 0.0
-        else:
-            delta = r_chunk[k] + (gamma**length) * next_values[k] - values[k]
-            continuation = (gamma * lam) ** length
-        advantages[k] = delta + continuation * next_advantage
-        next_advantage = advantages[k]
-    return advantages
-
-
-def finalize_gae_outputs(advantages, values, normalize):
-    """Form returns from raw advantages; optionally standardize the advantages."""
-    returns = advantages + values
-    if normalize:
-        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
-    return advantages, returns
+def normalize_advantages(advantages):
+    """Standardize advantages to zero mean / unit variance."""
+    advantages = np.asarray(advantages, dtype=np.float64)
+    return (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
 
 def compute_advantages(
@@ -125,8 +93,28 @@ def compute_advantages(
         truncated = np.asarray(truncated, dtype=bool)
     validate_chunk_stream(rewards, values, next_values, n_action_steps, terminated, truncated, n)
 
-    r_chunk = discount_chunk_rewards(rewards, n_action_steps, gamma, n)
-    advantages = backward_lambda_pass(
-        r_chunk, values, next_values, n_action_steps, terminated, truncated, gamma, lam, n
-    )
-    return finalize_gae_outputs(advantages, values, normalize)
+    # R_k = Σᵢ γⁱ·r_{k,i} over executed steps only.
+    offsets = np.concatenate(([0], np.cumsum(n_action_steps)))
+    r_chunk = np.empty(n, dtype=np.float64)
+    for k in range(n):
+        steps = rewards[offsets[k] : offsets[k + 1]]
+        r_chunk[k] = float(np.dot(gamma ** np.arange(steps.shape[0], dtype=np.float64), steps))
+
+    # Backward pass: terminated cuts all, truncated cuts recursion only
+    # (timeout bootstraps pre-reset V, but post-reset A_{k+1} is a fresh episode).
+    advantages = np.empty(n, dtype=np.float64)
+    next_advantage = 0.0
+    for k in range(n - 1, -1, -1):
+        length = int(n_action_steps[k])
+        if terminated[k]:
+            delta, continuation = r_chunk[k] - values[k], 0.0
+        else:
+            delta = r_chunk[k] + (gamma**length) * next_values[k] - values[k]
+            continuation = 0.0 if truncated[k] else (gamma * lam) ** length
+        advantages[k] = delta + continuation * next_advantage
+        next_advantage = advantages[k]
+
+    returns = compute_returns(advantages, values)
+    if normalize:
+        advantages = normalize_advantages(advantages)
+    return advantages, returns

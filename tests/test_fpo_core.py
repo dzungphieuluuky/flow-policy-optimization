@@ -419,6 +419,11 @@ def test_sample_timesteps_modes_and_contract():
     assert u.mean().item() == pytest.approx(0.5 * (TAU_LO + TAU_HI), abs=0.03)
     g = fpo_core.sample_timesteps(4096, mode="normal")
     assert g.std().item() < u.std().item(), "normal should concentrate mid-window"
+    b = fpo_core.sample_timesteps(4096, (TAU_LO, TAU_HI), mode="beta", alpha=1.5, beta=1.0)
+    assert b.shape == (4096,) and b.dtype == torch.float32
+    assert bool(((b >= TAU_LO) & (b <= TAU_HI)).all()), "beta scaled to [lo, hi]"
+    with pytest.raises(ValueError, match="alpha"):
+        fpo_core.sample_timesteps(4, mode="beta")
     with pytest.raises(ValueError, match="mode"):
         fpo_core.sample_timesteps(4, mode="logit-normal")
 

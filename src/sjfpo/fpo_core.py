@@ -29,11 +29,13 @@ from sjfpo.configuration_sjfpo import SJFPOConfig
 _DEFAULTS = SJFPOConfig()
 
 
-def sample_timesteps(num_samples: int, tau_range=None, device=None, mode="uniform"):
+def sample_timesteps(num_samples: int, tau_range=None, device=None, mode="uniform", *, alpha=None, beta=None):
     """Flow times τ for the shared MC draw: [num_samples] in [lo, hi].
 
     ``mode``: "uniform" = U[lo, hi] (default); "normal" = N(mid, range/4)
-    clamped, oversampling mid-times where the field curves most.
+    clamped, oversampling mid-times where the field curves most;
+    "beta" = lerobot openpi Beta(alpha, beta) scaled to [lo, hi]
+    (needs alpha=/beta= kwargs).
     """
     lo, hi = _DEFAULTS.tau_range if tau_range is None else tau_range
     if mode == "uniform":
@@ -42,7 +44,15 @@ def sample_timesteps(num_samples: int, tau_range=None, device=None, mode="unifor
         mid = 0.5 * (lo + hi)
         std = 0.25 * (hi - lo)
         return (torch.randn(num_samples, device=device) * std + mid).clamp(lo, hi)
-    raise ValueError(f"mode={mode!r} unknown; expected 'uniform' or 'normal'")
+    if mode == "beta":
+        if alpha is None or beta is None:
+            raise ValueError("mode='beta' needs alpha= and beta= kwargs")
+        from lerobot.policies.common.flow_matching import sample_time_beta
+
+        return sample_time_beta(
+            num_samples, device, alpha=alpha, beta=beta, scale=hi - lo, offset=lo
+        )
+    raise ValueError(f"mode={mode!r} unknown; expected 'uniform', 'normal' or 'beta'")
 
 
 def sample_noise(shape, device=None, mode="normal"):
