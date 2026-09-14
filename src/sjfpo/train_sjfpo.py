@@ -103,6 +103,7 @@ def train_sjfpo_run(
         policy.get_optim_params()["params"],
         lr=cfg.optimizer_lr,
         weight_decay=cfg.optimizer_weight_decay,
+        foreach=True,  # one fused kernel per step instead of per-tensor launches
     )
     evaluator = Evaluator(env, eval_seed=10000 + seed, max_episodes=12)
     eval_policy = _EvalPolicy(policy)

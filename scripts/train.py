@@ -29,6 +29,8 @@ try:
 except ImportError:  # graceful degrade when tqdm is not installed
     tqdm = None  # type: ignore[assignment]
 
+import torch  # noqa: E402
+
     # Ensure src/ is importable
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -397,6 +399,9 @@ def run_single_mode(
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Tensor-core fp32 matmuls (TF32) for leftover fp32 GEMMs; autocast still
+    # handles bf16. Precision impact is far below the numeric gates.
+    torch.set_float32_matmul_precision("high")
     args = parse_args(argv)
     rejection = validate_arg_combinations(args, argv)
     if rejection is not None:

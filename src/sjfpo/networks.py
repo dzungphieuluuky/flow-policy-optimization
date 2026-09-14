@@ -233,7 +233,7 @@ class RunningMeanStd(nn.Module):
         """Normalize with frozen stats; identity until the first update."""
         if int(self.count) == 0:
             return x
-        norm = (x - self.mean.to(x.device)) / torch.sqrt(
+        norm = (x - self.mean.to(x.device)) * torch.rsqrt(
             self.var.to(x.device) + self.eps
         )
         return norm.clamp(-self.clip, self.clip)

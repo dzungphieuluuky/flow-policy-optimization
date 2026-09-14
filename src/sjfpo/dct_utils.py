@@ -32,7 +32,7 @@ def dct_basis_matrix(n: int) -> torch.Tensor:
         m = math.sqrt(2.0 / n) * torch.cos(
             math.pi * (2.0 * t + 1.0) * k / (2.0 * n)
         )
-        m[0].mul_(1.0 / math.sqrt(2.0))
+        m[0].mul_(torch.rsqrt(torch.tensor(2.0)))
         BASIS_CACHE[n] = m
     return m
 
