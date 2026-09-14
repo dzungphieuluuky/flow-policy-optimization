@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import math
 import os
 import sys
@@ -38,12 +39,61 @@ def is_bf16_available() -> bool:
 
 
 def resolve_compute_dtype() -> torch.dtype:
-    """Compute dtype: bf16 when the GPU supports it, else fp32.
+    """Compute dtype for autocast matmuls (storage stays fp32).
 
-    Params and storage stay fp32; autocast casts matmuls on the fly
-    (bf16 needs no loss scaler, unlike fp16).
+    ``SJFPO_DTYPE`` overrides: ``bf16`` forces bf16 (falls back to fp32
+    without bf16-capable CUDA), ``fp32`` forces fp32, ``auto`` (default)
+    picks bf16 when the GPU supports it, else fp32.
+
+    Params, buffers, DCT bases, GAE, and losses stay fp32/fp64; autocast
+    only casts compute-heavy matmuls on the fly (bf16 needs no loss
+    scaler, unlike fp16). Full-bf16 storage is intentionally unsupported:
+    DCT roundtrip (<1e-5) and ratio math need fp32 precision.
     """
+    want = os.environ.get("SJFPO_DTYPE", "auto").lower()
+    if want == "fp32":
+        return torch.float32
+    if want == "bf16":
+        return torch.bfloat16 if is_bf16_available() else torch.float32
     return torch.bfloat16 if is_bf16_available() else torch.float32
+
+
+def autocast_context(device=None):
+    """No-op on CPU/fp32; CUDA bf16 autocast when enabled and supported.
+
+    Args:
+        device: torch device (or tensor-derived). Only ``cuda`` devices
+            autocast; CPU stays fp32 (bf16 CPU kernels are slow and the
+            numeric gates assume fp32).
+    """
+    if resolve_compute_dtype() != torch.bfloat16:
+        return contextlib.nullcontext()
+    try:
+        dev_type = device.type if isinstance(device, torch.device) else None
+    except Exception:
+        dev_type = None
+    if dev_type is None:
+        dev_type = "cuda" if torch.cuda.is_available() else "cpu"
+    if dev_type != "cuda" or not is_bf16_available():
+        return contextlib.nullcontext()
+    return torch.autocast(device_type="cuda", dtype=torch.bfloat16)
+
+
+def maybe_compile(module: torch.nn.Module) -> torch.nn.Module:
+    """Compile an nn.Module with inductor before training (off by default).
+
+    Opt-in via ``SJFPO_COMPILE=1``. Off by default because inductor needs a
+    full CUDA toolkit at first call (this repo's machines are often
+    driver-only, where it fails) and CPU dynamo overhead would slow the
+    test suite. Default inductor mode: static-shape cudagraphs
+    (``reduce-overhead``) would waste the 8GB budget and break on variable
+    batch shapes, so the default dynamic-shape mode is used.
+    Storage/dtype semantics unchanged: state_dict keys and params are
+    preserved through the wrapper.
+    """
+    if os.environ.get("SJFPO_COMPILE", "0") != "1":
+        return module
+    return torch.compile(module)
 
 
 def detect_runtime_env() -> str:

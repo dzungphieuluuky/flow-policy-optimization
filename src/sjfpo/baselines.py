@@ -30,7 +30,7 @@ import torch.nn as nn
 
 from sjfpo.config import PPOConfig, SACConfig
 from sjfpo.evaluator import Evaluator, check_divergence, compute_random_baseline
-from sjfpo.utils import resolve_device
+from sjfpo.utils import maybe_compile, resolve_device
 from sjfpo.wandb_logging import (
     init_wandb_run_for_method,
     log_eval_summary,
@@ -725,8 +725,8 @@ def ppo_train_run(
     out_dir = Path(out_dir)
     device = str(resolve_device())
     wrapped_env, skrl_env, obs_dim, act_dim = seed_and_wrap_env(env, seed, n_obs_steps)
-    policy = PPOPolicy(obs_dim, act_dim, cfg.hidden)
-    value = PPOValue(obs_dim, cfg.hidden)
+    policy = maybe_compile(PPOPolicy(obs_dim, act_dim, cfg.hidden))
+    value = maybe_compile(PPOValue(obs_dim, cfg.hidden))
     memory = RandomMemory_cls(memory_size=cfg.rollouts, num_envs=1, device=device)
     ppo_cfg = build_ppo_skrl_config(cfg)
     agent = build_ppo_agent(policy, value, memory, skrl_env, ppo_cfg, device)
@@ -826,11 +826,11 @@ def sac_train_run(
     out_dir = Path(out_dir)
     device = str(resolve_device())
     wrapped_env, skrl_env, obs_dim, act_dim = seed_and_wrap_env(env, seed, n_obs_steps)
-    policy = SACPolicy(obs_dim, act_dim, cfg.hidden)
-    critic_1 = SACCritic(obs_dim, act_dim, cfg.hidden)
-    critic_2 = SACCritic(obs_dim, act_dim, cfg.hidden)
-    target_critic_1 = SACCritic(obs_dim, act_dim, cfg.hidden)
-    target_critic_2 = SACCritic(obs_dim, act_dim, cfg.hidden)
+    policy = maybe_compile(SACPolicy(obs_dim, act_dim, cfg.hidden))
+    critic_1 = maybe_compile(SACCritic(obs_dim, act_dim, cfg.hidden))
+    critic_2 = maybe_compile(SACCritic(obs_dim, act_dim, cfg.hidden))
+    target_critic_1 = maybe_compile(SACCritic(obs_dim, act_dim, cfg.hidden))
+    target_critic_2 = maybe_compile(SACCritic(obs_dim, act_dim, cfg.hidden))
     memory = RandomMemory_cls(memory_size=cfg.memory_size, num_envs=1, device=device)
     sac_cfg = build_sac_skrl_config(cfg)
     agent = build_sac_agent(

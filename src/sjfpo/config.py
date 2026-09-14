@@ -250,12 +250,14 @@ def assert_runtime(allow_fp16: bool = False) -> None:
     """Fail fast on dependency pins and unsupported precision flags.
 
     Raises RuntimeError when the installed gymnasium has major.minor < 1.0,
-    when skrl is not exactly 2.1.0, or when half/bfloat precision training is
-    requested. Versions are resolved through importlib.metadata.version(),
+    when skrl is not exactly 2.1.0, or when full half/bfloat STORAGE is
+    requested. bf16 *autocast* (fp32 storage, bf16 matmuls via
+    ``SJFPO_DTYPE=bf16``) is allowed and needs no flag. Versions are
+    resolved through importlib.metadata.version(),
     mirroring scripts/verify_deps.sh.
 
     Args:
-        allow_fp16: If True, raises error (fp16/bf16 unsupported).
+        allow_fp16: If True, raises error (fp16/bf16 storage unsupported).
 
     Raises:
         RuntimeError: If dependency versions don't match or fp16 requested.
@@ -275,8 +277,9 @@ def assert_runtime(allow_fp16: bool = False) -> None:
 
     if allow_fp16:
         raise RuntimeError(
-            "fp16/bf16 training requested but unsupported: flow-matching "
-            "Euler rollouts and CFM losses require fp32"
+            "fp16/bf16 storage requested but unsupported: flow-matching "
+            "Euler rollouts and CFM losses require fp32 storage; use "
+            "SJFPO_DTYPE=bf16 for bf16 autocast (fp32 params, bf16 matmuls)"
         )
 
 

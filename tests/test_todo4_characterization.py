@@ -21,9 +21,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 class TestChunkGaeGolden:
     def test_single_chunk_hand_computed(self):
-        from sjfpo.gae import chunk_gae
+        from sjfpo.gae import compute_advantages
 
-        advantage, ret = chunk_gae(
+        advantage, ret = compute_advantages(
             [1.0, 1.0],
             [0.5],
             [0.0],
@@ -37,9 +37,9 @@ class TestChunkGaeGolden:
         assert ret == pytest.approx([1.99], abs=1e-9)
 
     def test_two_chunk_recursion_hand_computed(self):
-        from sjfpo.gae import chunk_gae
+        from sjfpo.gae import compute_advantages
 
-        advantage, ret = chunk_gae(
+        advantage, ret = compute_advantages(
             [1.0, 2.0],
             [0.0, 0.0],
             [0.0, 0.0],
@@ -53,9 +53,9 @@ class TestChunkGaeGolden:
         assert ret == pytest.approx([2.881, 2.0], abs=1e-9)
 
     def test_terminated_cuts_bootstrap(self):
-        from sjfpo.gae import chunk_gae
+        from sjfpo.gae import compute_advantages
 
-        advantage, _ = chunk_gae(
+        advantage, _ = compute_advantages(
             [1.0],
             [0.5],
             [9.0],
@@ -68,9 +68,9 @@ class TestChunkGaeGolden:
         assert advantage == pytest.approx([0.5], abs=1e-9)
 
     def test_normalize_zero_mean(self):
-        from sjfpo.gae import chunk_gae
+        from sjfpo.gae import compute_advantages
 
-        advantage, _ = chunk_gae(
+        advantage, _ = compute_advantages(
             [1.0, 2.0, 3.0],
             [0.0, 0.0, 0.0],
             [0.0, 0.0, 0.0],

@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import numpy as np
 
-__all__ = ["chunk_gae"]
+__all__ = ["compute_advantages"]
 
 
 def as_chunk_arrays(rewards, values, next_values, n_action_steps, terminated):
@@ -117,7 +117,7 @@ def finalize_gae_outputs(advantages, values, normalize):
     return advantages, returns
 
 
-def chunk_gae(
+def compute_advantages(
     rewards,
     values,
     next_values,
@@ -158,7 +158,27 @@ def chunk_gae(
         truncated = np.zeros(n, dtype=bool)  # [N]
     else:
         truncated = np.asarray(truncated, dtype=bool)  # [N]
-    validate_chunk_stream(rewards, values, next_values, n_action_steps, terminated, truncated, n)
+        """Raise ValueError on shape/count mismatches in the chunk stream."""
+    if (
+        next_values.shape != (n,)
+        or n_action_steps.shape != (n,)
+        or terminated.shape != (n,)
+        or truncated.shape != (n,)
+    ):
+        raise ValueError(
+            f"shape mismatch: values {values.shape}, next_values {next_values.shape}, "
+            f"n_action_steps {n_action_steps.shape}, terminated {terminated.shape}, "
+            f"truncated {truncated.shape}"
+        )
+    if n_action_steps.ndim != 1 or n == 0:
+        raise ValueError("need a non-empty 1-D stream of chunks")
+    if (n_action_steps <= 0).any():
+        raise ValueError("every chunk must have >= 1 executed step")
+    if int(n_action_steps.sum()) != rewards.shape[0]:
+        raise ValueError(
+            f"rewards has {rewards.shape[0]} steps but sum(n_action_steps)={int(n_action_steps.sum())}"
+        )
+
     r_chunk = discount_chunk_rewards(rewards, n_action_steps, gamma, n)
     advantages = backward_lambda_pass(
         r_chunk, values, next_values, n_action_steps, terminated, truncated, gamma, lam, n

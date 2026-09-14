@@ -68,7 +68,7 @@ from sjfpo.configuration_sjfpo import SJFPOConfig
 _DEFAULTS = SJFPOConfig()
 
 
-def pair_tensor(a: torch.Tensor, eps: torch.Tensor, tau):
+def run_mc_simulation(a: torch.Tensor, eps: torch.Tensor, tau):
     """Broadcast (a, eps, tau) onto the shared [B*num_mc_samples] MC axis.
 
     Args:

@@ -22,6 +22,6 @@ eval:
   ckpt_interval: 25000
   max_episodes: 12
 output:
-  out_dir: .omo/evidence/train
+  out_dir: outputs/
 # wandb: enabled by default; SJFPO_DISABLE_WANDB=1 is the only off switch (project = algo name at runtime).
 # Never log secrets. See src/sjfpo/wandb_logging.py.

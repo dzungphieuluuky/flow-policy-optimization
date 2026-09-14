@@ -36,10 +36,11 @@ from sjfpo.fpo_core import (
     compute_aspo_surrogate,
     compute_cfm_loss,
     compute_policy_ratio,
-    pair_tensor,
+    run_mc_simulation,
     sample,
 )
-from sjfpo.gae import chunk_gae
+from sjfpo.gae import compute_advantages
+from sjfpo.utils import autocast_context
 from sjfpo.networks import (
     Critic,
     RunningMeanStd,
@@ -172,11 +173,13 @@ class SJFPOPolicy(PreTrainedPolicy):
         noise = kwargs.get("noise", False)
         cfg = self.config
         states = self._window_from_batch(batch[OBS_STATE])  # [B, T, obs]
+        # Eval/select_action builds windows on CPU; run where the weights live.
+        states = states.to(next(self.actor.parameters()).device)
         if self.obs_normalizer is not None:
             states = self.obs_normalizer(states)
         n_coeffs = max(1, round(cfg.top_p_spectral_tokens * cfg.horizon))
         act_dim = int(self.config.action_feature.shape[0])
-        with torch.inference_mode():
+        with torch.inference_mode(), autocast_context(states.device):
             condition = self.spectral(states)  # [B, K, obs] raw DCT bins
             shape = (states.shape[0], n_coeffs, act_dim)
             eps = None if noise else torch.zeros(*shape, device=states.device)
@@ -189,7 +192,8 @@ class SJFPOPolicy(PreTrainedPolicy):
                 eps=eps,
                 device=states.device,
                 state=states,
-            )  # [B, Ka, Da]
+            )  # [B, Ka, Da] bf16 matmuls inside, fp32 I/O
+            x0 = x0.float()  # autocast may return bf16; DCT/env need fp32
         x0 = torch.nn.functional.pad(x0, (0, 0, 0, cfg.horizon - n_coeffs))
         raw = idct(x0, dim=1)
         return raw.clamp(-1.0, 1.0)  # [B, H, Da] scaled actions
@@ -287,12 +291,13 @@ class SJFPOPolicy(PreTrainedPolicy):
                 next_lengths,
                 dim=1,
             )
-            values = self.critic(states_n, a_exec, lengths)  # [N]
-            v_next_all = self.critic(next_states_n, a_next_exec, next_lengths)  # [N]
+            with autocast_context(device):
+                values = self.critic(states_n, a_exec, lengths).float()  # [N]
+                v_next_all = self.critic(next_states_n, a_next_exec, next_lengths).float()  # [N]
             terminated = torch.tensor([bool(c["next.done"]) for c in chunks], device=device)
             next_values = torch.where(terminated, 0.0, v_next_all)
         all_rewards = [r for c in chunks for r in c["next.reward"].tolist()]
-        advantages, returns = chunk_gae(
+        advantages, returns = compute_advantages(
             all_rewards,
             values.cpu().numpy(),
             next_values.cpu().numpy(),
@@ -369,7 +374,7 @@ class SJFPOPolicy(PreTrainedPolicy):
 
         # --- Shared MC interpolation: flats serving both likelihoods (same draw,
         # or rho is pure MC noise).
-        tau_bn, eps_flat, a_rep, flow_shape, num_mc = pair_tensor(
+        tau_bn, eps_flat, a_rep, flow_shape, num_mc = run_mc_simulation(
             action_coeffs, eps, tau
         )
         x_t_flat = (
@@ -384,13 +389,15 @@ class SJFPOPolicy(PreTrainedPolicy):
         tau_flat = einx.id("m -> n m", tau, n=n).reshape(n * num_mc)
 
         # --- Velocity predictions: frozen snapshot (l_old) vs live weights.
-        with torch.inference_mode():
+        # bf16 autocast on matmuls only; DCT/CFM/ratio math stays fp32.
+        with torch.inference_mode(), autocast_context(states.device):
             v_old = self.compute_predicted_velocity(
                 x_t_flat, tau_flat, cond_flat, state_flat, old=True
-            )
-        v_new = self.compute_predicted_velocity(
-            x_t_flat, tau_flat, cond_flat, state_flat
-        )
+            ).float()
+        with autocast_context(states.device):
+            v_new = self.compute_predicted_velocity(
+                x_t_flat, tau_flat, cond_flat, state_flat
+            ).float()
 
         # --- Per-sample errors: target velocities + clamped flow-space means.
         v_star = self.compute_target_velocity(action_coeffs, eps)  # [N, m, *flow_shape]
@@ -404,7 +411,8 @@ class SJFPOPolicy(PreTrainedPolicy):
         rho = compute_policy_ratio(l_old, l_new, advantage=advantages.unsqueeze(1))
         psi = compute_aspo_surrogate(rho, advantages.unsqueeze(1), cfg.clip_range)
         policy_per_chunk = -psi.mean(dim=1)  # [N]
-        v_pred = self.critic(states, a_exec, lengths)  # [N] values
+        with autocast_context(states.device):
+            v_pred = self.critic(states, a_exec, lengths).float()  # [N] values
         returns_d = returns.to(v_pred.device)
         se = (v_pred - returns_d).pow(2)  # [N]
         if "values" in batch:  # v_old at collection: PPO-style clipped value loss

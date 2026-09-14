@@ -22,7 +22,7 @@ test_fpo_core.py (9)         ASPO/CFM (imports euler_sample, SJFOPolicyModel)
 test_collector.py (9)        collect_chunks incl. NEVER-hardcode-horizon guards (fake_env)
 test_pipeline_cpu.py (7)     end-to-end invariants: CSV + 45 + wandb
 test_baselines.py (7)        skrl PPO/SAC drivers + tiny smokes
-test_gae.py (6)              chunk_gae vs zero-shared-code brute-force oracle
+test_gae.py (6)              compute_advantages vs zero-shared-code brute-force oracle
 test_configuration_sjfpo.py (6) LeRobot SJFPOConfig registry/parity/validation
 test_checkpoint.py (5)       atomic ckpt (uses test-local resume_worker helpers)
 test_config_yaml_parity.py (1) YAML keys ⊆ dataclass fields (deslop gate)

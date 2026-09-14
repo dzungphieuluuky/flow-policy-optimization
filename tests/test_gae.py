@@ -39,7 +39,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from sjfpo.gae import chunk_gae  # noqa: E402
+from sjfpo.gae import compute_advantages  # noqa: E402
 
 GAMMA = 0.99
 LAM = 0.95
@@ -111,7 +111,7 @@ def test_bruteforce_mc_equality_random_stream():
     """Chunk-GAE output == explicitly-unrolled return computation (<1e-6)."""
     rewards, values, final_value, n_action_steps, terminated = random_stream(seed=7)
 
-    advantage, ret = chunk_gae(
+    advantage, ret = compute_advantages(
         rewards,
         values,
         final_value,
@@ -149,7 +149,7 @@ def test_mid_chunk_death_semantics():
     lens = [8, 3]
     terminated = [False, True]
 
-    advantage, ret = chunk_gae(
+    advantage, ret = compute_advantages(
         r, values, final_value, lens, terminated, gamma=gamma, lam=lam, normalize=False
     )
 
@@ -182,7 +182,7 @@ def test_discount_compounding_gamma_once_per_chunk():
 
     # Fixed-length variant: both chunks len 8, none terminated -> the last
     # chunk bootstraps the stream-end value.
-    advantage, _ = chunk_gae(
+    advantage, _ = compute_advantages(
         r,
         values,
         final_value,
@@ -201,7 +201,7 @@ def test_discount_compounding_gamma_once_per_chunk():
     # Variable-length variant: first chunk executes only 5 steps ->
     # multipliers become gamma^5 / (gamma*lam)^5 for THAT transition.
     r5 = rng.normal(0.0, 1.0, size=13)
-    adv5, _ = chunk_gae(
+    adv5, _ = compute_advantages(
         r5,
         values,
         final_value,
@@ -221,7 +221,7 @@ def test_discount_compounding_gamma_once_per_chunk():
     # R_k really is gamma^i-discounted internally: with V_0 = bootstrap = 0,
     # A_0 == R_0 and must DIFFER from the undiscounted reward sum.
     zeros_v = np.zeros(1)
-    adv_disc, _ = chunk_gae(
+    adv_disc, _ = compute_advantages(
         np.array([1.0, 1.0, 1.0, 1.0]),
         zeros_v,
         0.0,
@@ -265,7 +265,7 @@ def test_truncated_bootstraps_terminated_does_not():
     lens = [8, 8]
 
     # --- second chunk TERMINATES: no stream-end bootstrap, recursion cut ---
-    adv_term, _ = chunk_gae(r, values, big_final, lens, [False, True], **common)
+    adv_term, _ = compute_advantages(r, values, big_final, lens, [False, True], **common)
     r0 = sum(gamma**i * ri for i, ri in enumerate(r[:8]))
     r1 = sum(gamma**i * ri for i, ri in enumerate(r[8:16]))
     # chunk 1 terminated: A_1 = R_1 - V_1 despite final_value = 1e6
@@ -279,7 +279,7 @@ def test_truncated_bootstraps_terminated_does_not():
     )
 
     # --- same numbers, second chunk TRUNCATED instead: bootstrap flows ---
-    adv_trunc, _ = chunk_gae(r, values, big_final, lens, [False, False], **common)
+    adv_trunc, _ = compute_advantages(r, values, big_final, lens, [False, False], **common)
     a1_trunc = r1 + gamma**8 * big_final - values[1]
     np.testing.assert_allclose(adv_trunc[1], a1_trunc, atol=1e-6)
     assert abs(adv_trunc[1] - adv_term[1]) > 1.0, "truncated chunk did not bootstrap"
@@ -292,7 +292,7 @@ def test_advantages_centered_afterward():
     returns are unaffected by normalization."""
     rewards, values, final_value, n_action_steps, terminated = random_stream(seed=3)
 
-    adv_c, ret_c = chunk_gae(
+    adv_c, ret_c = compute_advantages(
         rewards,
         values,
         final_value,
@@ -305,7 +305,7 @@ def test_advantages_centered_afterward():
     assert abs(float(np.mean(adv_c))) < 1e-9
     assert abs(float(np.std(adv_c)) - 1.0) < 1e-6
 
-    adv_r, ret_r = chunk_gae(
+    adv_r, ret_r = compute_advantages(
         rewards,
         values,
         final_value,
@@ -326,8 +326,8 @@ def test_advantages_centered_afterward():
 def test_input_validation():
     """Basic contract checks: mismatched lengths / bad chunk lens raise."""
     with pytest.raises(ValueError):
-        chunk_gae(np.zeros(10), np.zeros(2), 0.0, [8, 8], [False, False])
+        compute_advantages(np.zeros(10), np.zeros(2), 0.0, [8, 8], [False, False])
     with pytest.raises(ValueError):
-        chunk_gae(np.zeros(16), np.zeros(2), 0.0, [8, 0], [False, False])
+        compute_advantages(np.zeros(16), np.zeros(2), 0.0, [8, 0], [False, False])
     with pytest.raises(ValueError):
-        chunk_gae(np.zeros(16), np.zeros(2), 0.0, [8, 8], [False, True, False])
+        compute_advantages(np.zeros(16), np.zeros(2), 0.0, [8, 8], [False, True, False])

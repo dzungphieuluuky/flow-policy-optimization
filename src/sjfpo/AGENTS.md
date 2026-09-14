@@ -26,7 +26,7 @@ utils.py           23L — shared pure helpers (safe_float_value), no sjfpo impo
 - `collector.py:51` `Transition`: 9 LeRobot keys (`observation.state [T,Do]`, `action [H,Da]` DCT, `next.action [H,Da]` chained/behavior proposal, `next.*`, `n_action_steps` i64, `clip_count` i64); `next.reward` is variable-length `[L_k]`
 - `modeling_sjfpo.py:forward`: stack (guards H/T) → spectral `condition [N,K,obs]` (raw bins) → policy ℓ/ρ/ψ `[N,m]` → critic `V(s,a)` → clip → loss (stepped by the training loop)
 - `networks.py:SpectralEncoder`: DCT-II raw obs `[B,T,obs]` over time → keep K lowest bins (round(top_p*T)) → `[B,K,obs]` raw tokens (parameter-free; rFFT reserved for observation.image)
-- `gae.py:chunk_gae`: per-chunk `R_k`, `δ_k`, backward `(γλ)^L`; terminated cuts recursion, truncated bootstraps δ from last next-frame but cuts recursion
+- `gae.py:compute_advantages`: per-chunk `R_k`, `δ_k`, backward `(γλ)^L`; terminated cuts recursion, truncated bootstraps δ from last next-frame but cuts recursion
 - `runner.py:build_training_components`: policy/critic/spectral (each model owns its state encoder, no target nets, no aux head); `compute_chunk_values` V(s,a) via Critic, bootstraps truncated only
 - trainer sums `policy + vf_coef·value` inline (no helper); `sweep.py:ScanResult(pending,skipped,diverged)` deterministic sort (method,env,seed)
 

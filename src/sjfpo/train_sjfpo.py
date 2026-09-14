@@ -29,7 +29,7 @@ from sjfpo.checkpointing import save_policy_checkpoint
 from sjfpo.configuration_sjfpo import SJFPOConfig
 from sjfpo.evaluator import Evaluator, check_divergence
 from sjfpo.modeling_sjfpo import SJFPOPolicy
-from sjfpo.utils import resolve_device
+from sjfpo.utils import maybe_compile, resolve_device
 from sjfpo.wandb_logging import (
     finish_run,
     init_wandb_run_for_method,
@@ -65,7 +65,14 @@ def build_policy(
         output_features={"action": PolicyFeature(FeatureType.ACTION, (act_dim,))},
         n_action_steps=max(1, round(cfg.executed_vs_predicted_ratio * cfg.horizon)),
     )
-    return SJFPOPolicy(policy_cfg).to(device)
+    policy = SJFPOPolicy(policy_cfg).to(device)
+    # All parametric modules (spectral is parameter-free, normalizer is
+    # buffers-only). snapshot_behavior_policy deep-copies the compiled actor,
+    # so l_old stays compiled too; state_dict keys are preserved.
+    policy.actor = maybe_compile(policy.actor)
+    policy.old_actor = maybe_compile(policy.old_actor)
+    policy.critic = maybe_compile(policy.critic)
+    return policy
 
 
 def random_baseline(evaluator: Evaluator, env: Any, seed: int) -> float:
