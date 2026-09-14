@@ -39,6 +39,7 @@ EXPECTED_KEYS = {
 
 # Config v4 defaults + guard
 
+
 class TestConfigV4:
     def test_horizon_split_defaults(self):
         from sjfpo.configuration_sjfpo import SJFPOConfig
@@ -57,6 +58,7 @@ class TestConfigV4:
             collect_chunks(env, policy, 40, low, high, n_action_steps=0)
 
             # Collector: Transition dicts with LeRobot keys
+
 
 class ScriptedEnv(gym.Env):
     """Deterministic env: obs[t] = full(marker=t), optional terminate_at."""
@@ -169,6 +171,7 @@ class TestCollectorV4:
             assert int(t["n_action_steps"]) < 8
 
             # Trainer: DiT actor (actions only) + transformer critic, no aux head
+
 
 def make_policy_v4(**overrides):
     from lerobot.configs.types import FeatureType, PolicyFeature

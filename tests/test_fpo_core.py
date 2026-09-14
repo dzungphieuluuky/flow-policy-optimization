@@ -65,6 +65,7 @@ def draw_tau(shape, generator) -> torch.Tensor:
     # (a) Reference-equivalence gate: integrated velocity field reproduces the
     #     data distribution moments (<5% relative error on mean AND variance).
 
+
 def test_toy_gaussian_reference_gate(capsys):
     torch.manual_seed(0)  # pins network init (plan requirement)
     net = VelocityMLP(in_dim=1, out_dim=1)
@@ -106,6 +107,7 @@ def test_toy_gaussian_reference_gate(capsys):
 
     # (b) Fitted check: per-point CFM loss under the correctly-trained net is
     #     lower than under a net trained with row-shuffled noise targets.
+
 
 def test_fitted_loss_below_shuffled_targets():
     torch.manual_seed(11)
@@ -171,6 +173,7 @@ def test_fitted_loss_below_shuffled_targets():
     # (c) Per-sample ratios: shape [chunks, num_mc_samples=16]; ONE perturbed update keeps
     #     log-ratios non-degenerate (Var > 0) and centered (|mean| < 0.5).
 
+
 def test_ratio_shape_and_degeneracy_guard():
     torch.manual_seed(21)
     net_old = VelocityMLP(in_dim=8 * 3)
@@ -224,19 +227,28 @@ def test_ratio_shape_and_degeneracy_guard():
 
     # (d) ASPO piecewise trust region against hand-computed values (tol 1e-3).
 
+
 def test_aspo_surrogate_hand_computed():
     lo, hi = _DEFAULTS.epsilon_low, _DEFAULTS.epsilon_high  # 0.2 / 0.28
     # Positive advantage inside both bounds: PPO-clip branch is the identity.
-    psi_ppo = fpo_core.compute_aspo_surrogate(torch.tensor(1.04), torch.tensor(1.0), lo, hi)
+    psi_ppo = fpo_core.compute_aspo_surrogate(
+        torch.tensor(1.04), torch.tensor(1.0), lo, hi
+    )
     assert psi_ppo.item() == pytest.approx(1.04, abs=1e-3)
     # Above the upper bound: clipped to 1 + eps_high.
-    psi_hi = fpo_core.compute_aspo_surrogate(torch.tensor(1.3), torch.tensor(1.0), lo, hi)
+    psi_hi = fpo_core.compute_aspo_surrogate(
+        torch.tensor(1.3), torch.tensor(1.0), lo, hi
+    )
     assert psi_hi.item() == pytest.approx(1.0 + hi, abs=1e-3)
     # Below the lower bound: min picks the unclipped (smaller) value.
-    psi_lo = fpo_core.compute_aspo_surrogate(torch.tensor(0.7), torch.tensor(1.0), lo, hi)
+    psi_lo = fpo_core.compute_aspo_surrogate(
+        torch.tensor(0.7), torch.tensor(1.0), lo, hi
+    )
     assert psi_lo.item() == pytest.approx(0.7, abs=1e-3)
     # Negative advantage: SPO branch  rho*A - (|A|/(2*eps_low))*(rho-1)^2.
-    psi_spo = fpo_core.compute_aspo_surrogate(torch.tensor(1.04), torch.tensor(-1.0), lo, hi)
+    psi_spo = fpo_core.compute_aspo_surrogate(
+        torch.tensor(1.04), torch.tensor(-1.0), lo, hi
+    )
     expected = -1.04 - (1.0 / (2 * lo)) * 0.04**2  # = -1.044
     assert psi_spo.item() == pytest.approx(expected, abs=1e-3)
     # Mixed batch routes each element through its own branch.
@@ -248,13 +260,12 @@ def test_aspo_surrogate_hand_computed():
 
     # (e) STE log-ratio clamp: Delta_l = 50 -> value exp(10), gradient flows.
 
+
 def test_ste_clamp_value_and_gradient():
     l_old = torch.tensor([60.0])
     l_new = torch.tensor([10.0], requires_grad=True)  # Delta_l = 50 > cap 10
     rho = fpo_core.compute_policy_ratio(l_old, l_new, torch.zeros_like(l_old))
-    assert rho.item() == pytest.approx(
-        math.exp(_DEFAULTS.log_ratio_cap), rel=1e-6
-    )
+    assert rho.item() == pytest.approx(math.exp(_DEFAULTS.log_ratio_cap), rel=1e-6)
     rho.backward()
     assert l_new.grad is not None
     assert l_new.grad.abs().item() > 0.0, "straight-through clamp blocked gradients"
@@ -263,6 +274,7 @@ def test_ste_clamp_value_and_gradient():
     )
 
     # (f) Negative-advantage clamp: l_new - l_old effectively capped at +20.
+
 
 def test_neg_advantage_clamp_caps_delta():
     l_old = torch.zeros(1)
@@ -274,6 +286,7 @@ def test_neg_advantage_clamp_caps_delta():
 
     # (g) Finite-difference gradient check of the policy loss w.r.t. one
     #     velocity-net weight (rel. error < 5%).
+
 
 def test_policy_loss_fd_gradient():
     torch.manual_seed(31)
@@ -323,6 +336,7 @@ def test_policy_loss_fd_gradient():
     # (h) Euler sampler: ascending linspace(0, 1, steps+1) grid, update
     #     x <- x + dt * v_hat, zero-sampling deterministic given weights.
 
+
 def test_euler_sampler_grid_update_and_zero_noise():
     torch.manual_seed(41)
     net = VelocityMLP(1, 1)
@@ -360,6 +374,7 @@ def test_euler_sampler_grid_update_and_zero_noise():
     # (i) SPACE-CONSISTENCY gate: sample action chunks in DCT coefficient space,
     #     map back via IDCT, clip to bounds; DCT(IDCT(x)) == x roundtrip < 1e-5.
 
+
 def test_space_consistency_dct_pipeline():
     torch.manual_seed(51)
     policy = SJFOPolicyModel(action_dim=3, obs_dim=4)
@@ -392,6 +407,7 @@ def test_space_consistency_dct_pipeline():
     # (j) compute_cfm_loss reduce_mode: "scalar" vs "sample" shapes +
     #     validation (unified flow_loglik lives behind reduce_mode="sample").
 
+
 def test_compute_cfm_loss_reduce_mode_contract():
     torch.manual_seed(61)
     v_hat = torch.randn(2, 4, 3)
@@ -419,7 +435,9 @@ def test_sample_timesteps_modes_and_contract():
     assert u.mean().item() == pytest.approx(0.5 * (TAU_LO + TAU_HI), abs=0.03)
     g = fpo_core.sample_timesteps(4096, mode="normal")
     assert g.std().item() < u.std().item(), "normal should concentrate mid-window"
-    b = fpo_core.sample_timesteps(4096, (TAU_LO, TAU_HI), mode="beta", alpha=1.5, beta=1.0)
+    b = fpo_core.sample_timesteps(
+        4096, (TAU_LO, TAU_HI), mode="beta", alpha=1.5, beta=1.0
+    )
     assert b.shape == (4096,) and b.dtype == torch.float32
     assert bool(((b >= TAU_LO) & (b <= TAU_HI)).all()), "beta scaled to [lo, hi]"
     with pytest.raises(ValueError, match="alpha"):

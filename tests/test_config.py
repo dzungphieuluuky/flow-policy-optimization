@@ -59,6 +59,7 @@ def fake_version(monkeypatch: pytest.MonkeyPatch, overrides: dict[str, str]) -> 
 
     # 1. Run matrix shape / uniqueness / seeds
 
+
 def test_run_matrix_45_unique_tuples_and_seeds():
     assert len(config.RUN_MATRIX) == 45
     keys = [(s.method, s.env, s.seed) for s in config.RUN_MATRIX]
@@ -89,6 +90,7 @@ def test_lookup_env_dims_unknown_raises():
 def test_known_envs_extends_matrix_envs():
     assert set(config.ENVS) <= set(config.KNOWN_ENVS)
     assert len(config.RUN_MATRIX) == 45  # prototypes stay out of the default matrix
+
 
 def test_every_config_field_non_null():
     for instance in (SJFPOConfig(), config.PPO_CFG, config.SAC_CFG):
@@ -164,6 +166,7 @@ def test_sac_config_documented_ranges():
 
     # 3. assert_runtime(): dependency pins + precision flag
 
+
 def test_assert_runtime_passes_on_pinned_env():
     config.assert_runtime()
     config.assert_runtime(allow_fp16=False)
@@ -186,6 +189,7 @@ def test_assert_runtime_rejects_fp16_request():
         config.assert_runtime(allow_fp16=True)
 
         # 4. Env-var semantics via importlib.reload under monkeypatch
+
 
 def test_tiny_matrix_env_var_swaps_run_matrix(monkeypatch):
     m = reload_with_env(monkeypatch, SJFPO_TINY_MATRIX="1")
@@ -210,6 +214,7 @@ def test_is_kaggle_true_for_any_value(monkeypatch):
     assert m.IS_KAGGLE is False
 
     # 5. validate_run_matrix(): duplicate-seed injection raises AssertionError
+
 
 def test_validate_run_matrix_accepts_current_matrix():
     config.validate_run_matrix(config.RUN_MATRIX)

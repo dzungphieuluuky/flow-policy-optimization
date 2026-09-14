@@ -44,6 +44,7 @@ LAM = 0.95
 # Brute-force oracle: forward-unrolled lambda-return over decision epochs.
 # Shares ZERO code with the implementation (which recurses backwards).
 
+
 def oracle_returns(
     per_step_rewards, values, final_value, n_action_steps, terminated, gamma, lam
 ):
@@ -260,7 +261,9 @@ def test_truncated_bootstraps_terminated_does_not():
     lens = [8, 8]
 
     # --- second chunk TERMINATES: no stream-end bootstrap, recursion cut ---
-    adv_term, _ = compute_advantages(r, values, big_final, lens, [False, True], **common)
+    adv_term, _ = compute_advantages(
+        r, values, big_final, lens, [False, True], **common
+    )
     r0 = sum(gamma**i * ri for i, ri in enumerate(r[:8]))
     r1 = sum(gamma**i * ri for i, ri in enumerate(r[8:16]))
     # chunk 1 terminated: A_1 = R_1 - V_1 despite final_value = 1e6
@@ -274,7 +277,9 @@ def test_truncated_bootstraps_terminated_does_not():
     )
 
     # --- same numbers, second chunk TRUNCATED instead: bootstrap flows ---
-    adv_trunc, _ = compute_advantages(r, values, big_final, lens, [False, False], **common)
+    adv_trunc, _ = compute_advantages(
+        r, values, big_final, lens, [False, False], **common
+    )
     a1_trunc = r1 + gamma**8 * big_final - values[1]
     np.testing.assert_allclose(adv_trunc[1], a1_trunc, atol=1e-6)
     assert abs(adv_trunc[1] - adv_term[1]) > 1.0, "truncated chunk did not bootstrap"

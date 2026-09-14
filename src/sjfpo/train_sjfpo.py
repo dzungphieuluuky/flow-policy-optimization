@@ -194,7 +194,10 @@ def train_sjfpo_run(
             if global_step % ckpt_interval < cfg.horizon or global_step >= total_steps:
                 ckpt_dir = out_dir / f"checkpoint_{global_step}"
                 save_policy_checkpoint(
-                    ckpt_dir, policy=policy, optimizer=optimizer, global_step=global_step
+                    ckpt_dir,
+                    policy=policy,
+                    optimizer=optimizer,
+                    global_step=global_step,
                 )
                 artifacts.append(str(ckpt_dir / "model.safetensors"))
         elapsed = time.time() - t_start

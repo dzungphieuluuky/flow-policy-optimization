@@ -36,6 +36,7 @@ def make_nets():
 
     # StateEncoder
 
+
 def test_state_encoder_shape_dtype_finite():
     nets = make_nets()
     torch.manual_seed(0)
@@ -58,6 +59,7 @@ def test_state_encoder_gradient_flows():
     assert all(g is not None and torch.isfinite(g).all() for g in grads)
 
     # RunningMeanStd — running obs stats, checkpointed with the models
+
 
 def test_running_stats_identity_until_first_update():
     nets = make_nets()
@@ -100,6 +102,7 @@ def test_running_stats_rejects_nonpositive_dim():
     # The optional `projection` arg pins the random projection matrix for
     # deterministic reference tests and reproducible experiments; when None the
     # projections are resampled (unit-norm columns) on every call.
+
 
 def fixed_projection(d, m, seed):
     """Deterministic unit-norm-column projection matrix of shape [d, m]."""
@@ -177,6 +180,7 @@ def test_sigreg_gradients_flow():
     assert z.grad is not None and torch.isfinite(z.grad).all()
 
     # SpectralEncoder — raw DCT low-K bins, batch invariance, determinism
+
 
 def make_pinned_spectral(nets):
     """Two fresh constructions under manual_seed(0); bitwise-equal weights."""
@@ -258,6 +262,7 @@ def test_spectral_encoder_nan_propagates_detectably():
 
     # timestep embedding + flow heads
 
+
 def test_get_timestep_embedding_sin_cos_values():
     nets = make_nets()
     emb = nets.get_timestep_embedding(0.5, dim=8)
@@ -310,13 +315,16 @@ def test_policy_flow_head_cond_from_spectral():
 
     # DiT blocks (adaLN-Zero identity init + finite time embeddings)
 
+
 def test_dit_block_identity_at_init():
     nets = make_nets()
     torch.manual_seed(19)
     block = nets.DiTBlock(128, 4, 4.0)
     x = torch.randn(2, 8, 128)
     c = torch.randn(2, 128)
-    assert torch.allclose(block(x, c), x, atol=1e-5), "adaLN-Zero must start as identity"
+    assert torch.allclose(block(x, c), x, atol=1e-5), (
+        "adaLN-Zero must start as identity"
+    )
 
 
 def test_get_timestep_embedding_finite_256():
@@ -350,6 +358,7 @@ def test_cross_attention_block_shape():
     assert torch.isfinite(y).all()
 
     # Critic
+
 
 def test_value_critic_shape():
     nets = make_nets()
@@ -400,6 +409,7 @@ def test_value_critic_action_order_sensitive():
 
     # global hygiene: fp32-only, no BatchNorm / Dropout
 
+
 def test_no_batchnorm_no_dropout_fp32_everywhere():
     nets = make_nets()
     torch.manual_seed(17)
@@ -447,7 +457,9 @@ def test_action_encoder_matches_state_encoder():
     torch.manual_seed(20)
     enc = nets.ActionEncoder(act_dim=6)
     ref = nets.StateEncoder(obs_dim=6)
-    assert [n for n, _ in enc.named_parameters()] == [n for n, _ in ref.named_parameters()]
+    assert [n for n, _ in enc.named_parameters()] == [
+        n for n, _ in ref.named_parameters()
+    ]
     ref.load_state_dict(enc.state_dict())
     x = torch.randn(3, STATE_T, 6)
     assert torch.equal(enc(x), ref(x))

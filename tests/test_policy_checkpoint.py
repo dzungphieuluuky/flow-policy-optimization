@@ -53,7 +53,12 @@ def test_save_writes_hub_files_plus_training_state(tmp_path):
     d = tmp_path / "ckpt"
     save_policy_checkpoint(d, policy=policy, optimizer=opt, global_step=123)
     names = {p.name for p in d.iterdir()}
-    assert {"config.json", "model.safetensors", "optimizer.pt", "counters.json"} <= names
+    assert {
+        "config.json",
+        "model.safetensors",
+        "optimizer.pt",
+        "counters.json",
+    } <= names
     saved = json.loads((d / "config.json").read_text())
     assert saved["type"] == "sjfpo"
     assert saved["horizon"] == 16
@@ -81,9 +86,7 @@ def test_roundtrip_restores_weights_optimizer_and_counters(tmp_path):
     assert counters == {"global_step": 123, "step_count": 7}
     assert loaded.step_count == 7
     assert loaded.config.horizon == 16 and loaded.config.type == "sjfpo"
-    for (n1, p1), (n2, p2) in zip(
-        policy.named_parameters(), loaded.named_parameters()
-    ):
+    for (n1, p1), (n2, p2) in zip(policy.named_parameters(), loaded.named_parameters()):
         assert n1 == n2
         assert torch.equal(p1, p2), n1
     live_state, loaded_state = opt.state_dict(), loaded_opt.state_dict()

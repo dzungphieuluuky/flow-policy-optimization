@@ -140,8 +140,7 @@ class TestSelectActionCharacterization:
         # fresh policy with same init weights would differ; instead pin determinism:
         policy.reset()
         again = [
-            policy.select_action({"observation.state": obs})
-            for _ in range(n_execute)
+            policy.select_action({"observation.state": obs}) for _ in range(n_execute)
         ]
         assert all(torch.equal(a, b) for a, b in zip(seq, again))
 

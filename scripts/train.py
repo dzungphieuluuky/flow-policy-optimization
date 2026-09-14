@@ -32,7 +32,7 @@ except ImportError:  # graceful degrade when tqdm is not installed
 
 import torch  # noqa: E402
 
-    # Ensure src/ is importable
+# Ensure src/ is importable
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from sjfpo.config import (  # noqa: E402

@@ -23,6 +23,7 @@ from sjfpo.config import RunSpec, RUN_MATRIX  # noqa: E402
 
 # Helpers
 
+
 def make_run_spec(method: str, env: str, seed: int) -> RunSpec:
     """Create a RunSpec matching the config defaults."""
     return RunSpec(
@@ -47,8 +48,8 @@ def formatRunDirectoryName(spec: RunSpec) -> str:
 
     # Tests
 
-class TestScanResult:
 
+class TestScanResult:
     def test_scan_result_creation(self):
         from sjfpo.sweep import ScanResult
 
@@ -71,7 +72,6 @@ class TestScanResult:
 
 
 class TestScanRuns:
-
     def test_scans_missing_runs(self, tmp_path):
         """All runs missing -> all pending, none skipped/diverged."""
         from sjfpo.sweep import scan_runs
@@ -226,7 +226,6 @@ class TestScanRuns:
 
 
 class TestFlushPending:
-
     def test_run_pending_executes_in_order(self, tmp_path):
         """Mock run_fn records call order; verify deterministic order."""
         from sjfpo.sweep import flush_pending_runs
@@ -329,7 +328,6 @@ class TestFlushPending:
 
 
 class TestRunPending:
-
     def test_run_pending_scan_summary_printed(self, tmp_path, capsys):
         """Verify scan summary is printed: X skipped, Y pending, Z diverged."""
         from sjfpo.sweep import run_pending
@@ -427,7 +425,6 @@ class TestRunPending:
 
 
 class TestSweepError:
-
     def test_sweep_error_is_exception(self):
         from sjfpo.sweep import SweepError
 

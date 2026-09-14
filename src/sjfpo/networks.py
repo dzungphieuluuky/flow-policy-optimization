@@ -455,9 +455,7 @@ class DiTBlock(nn.Module):
         h = modulate(self.norm1(x), shift_msa, scale_msa)
         attn, _ = self.attn(h, h, h)
         x = x + gate_msa * attn
-        return x + gate_mlp * self.mlp(
-            modulate(self.norm2(x), shift_mlp, scale_mlp)
-        )
+        return x + gate_mlp * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
 
 
 class CrossAttentionBlock(nn.Module):
@@ -618,7 +616,10 @@ class Critic(nn.Module):
                 )
             n_real = real_action_lengths.to(h.device)  # [B]
             exec_mask = (
-                (torch.arange(h.shape[1], device=h.device).unsqueeze(0) < n_real.unsqueeze(1))
+                (
+                    torch.arange(h.shape[1], device=h.device).unsqueeze(0)
+                    < n_real.unsqueeze(1)
+                )
                 .to(h.dtype)
                 .unsqueeze(-1)
             )  # 1 = executed row

@@ -18,6 +18,7 @@ from sjfpo.config import PPOConfig, SACConfig
 
 # Config tests
 
+
 class TestPPOConfig:
     """Verify PPOConfig fields match skrl 2.1.0 PPO_CFG dataclass defaults."""
 
@@ -129,7 +130,9 @@ class TestProvenanceTable:
                 f"Missing provenance: ({method}, {key}, {value}, {source})"
             )
 
+
 # Tiny smoke tests (require skrl + gymnasium but NOT mujoco)
+
 
 class TestPPOTinySmoke:
     """PPO on FakeGymEnv should complete and produce result dict."""

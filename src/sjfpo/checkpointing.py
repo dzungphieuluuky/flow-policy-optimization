@@ -93,8 +93,8 @@ def load_policy_checkpoint(
 ):
     """Load a checkpoint from :func:`save_policy_checkpoint`.
 
-    Rebuilds components from ``config.json`` (no caller dims); policy left in
-eval mode. Raises ResumeError on missing/unreadable files.
+        Rebuilds components from ``config.json`` (no caller dims); policy left in
+    eval mode. Raises ResumeError on missing/unreadable files.
     """
     from sjfpo.modeling_sjfpo import SJFPOPolicy  # lazy: keeps this module import-light
 
@@ -113,7 +113,9 @@ eval mode. Raises ResumeError on missing/unreadable files.
         policy.get_optim_params()["params"]
     )
     try:
-        opt_state = torch.load(d / OPTIMIZER_FILE, map_location="cpu", weights_only=True)
+        opt_state = torch.load(
+            d / OPTIMIZER_FILE, map_location="cpu", weights_only=True
+        )
     except Exception as e:
         raise ResumeError(f"failed to unpickle {d / OPTIMIZER_FILE}: {e}") from e
     optimizer.load_state_dict(opt_state)
@@ -122,4 +124,8 @@ eval mode. Raises ResumeError on missing/unreadable files.
         policy.step_count = int(counters["step_count"])
     except (json.JSONDecodeError, KeyError, TypeError, ValueError) as e:
         raise ResumeError(f"corrupt counters in {d}: {e}") from e
-    return policy, optimizer, {"global_step": int(counters["global_step"]), "step_count": policy.step_count}
+    return (
+        policy,
+        optimizer,
+        {"global_step": int(counters["global_step"]), "step_count": policy.step_count},
+    )

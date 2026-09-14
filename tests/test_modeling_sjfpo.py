@@ -59,9 +59,7 @@ def test_name_and_config_class_and_modules():
     ):
         assert isinstance(m, torch.nn.Module)
     # Snapshot matches live weights at init (unit ratios).
-    for p_old, p_live in zip(
-        policy.old_actor.parameters(), policy.actor.parameters()
-    ):
+    for p_old, p_live in zip(policy.old_actor.parameters(), policy.actor.parameters()):
         assert torch.equal(p_old, p_live)
 
 
@@ -137,9 +135,7 @@ def test_snapshot_refresh_tracks_live_weights():
     with torch.no_grad():
         next(policy.actor.parameters()).add_(1.0)
     policy.snapshot_behavior_policy()
-    for p_old, p_live in zip(
-        policy.old_actor.parameters(), policy.actor.parameters()
-    ):
+    for p_old, p_live in zip(policy.old_actor.parameters(), policy.actor.parameters()):
         assert torch.equal(p_old, p_live)
 
 
@@ -211,9 +207,9 @@ def test_critic_encoder_receives_grads():
     policy.zero_grad()
     loss.backward()
     grads = [p.grad for p in policy.critic.state_encoder.parameters()]
-    assert all(
-        g is not None and g.abs().sum() > 0 for g in grads
-    ), "critic state encoder missing grads"
+    assert all(g is not None and g.abs().sum() > 0 for g in grads), (
+        "critic state encoder missing grads"
+    )
 
 
 def test_generate_rollout_returns_forward_ready_batch():

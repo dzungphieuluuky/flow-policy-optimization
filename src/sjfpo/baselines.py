@@ -133,6 +133,7 @@ def create_gaussian_policy_class(GM, Model):
 
         def compute(self, inputs: dict, role: str = "policy"):
             return self.net(inputs["observations"]), {"log_std": self.log_std_parameter}
+
     return GaussianPolicyImpl
 
 
@@ -232,6 +233,7 @@ def mean_action_eval_policy(agent: Any) -> Any:
 
     # Frame-stack wrapper (identical to SJFPO's n_obs_steps treatment)
 
+
 class FrameStackWrapper(gym.ObservationWrapper):
     """Stack the last n_obs_steps obs into one flat vector for skrl MLPs."""
 
@@ -266,6 +268,7 @@ class FrameStackWrapper(gym.ObservationWrapper):
         return np.concatenate(list(self.frames), axis=0).astype(np.float32)
 
         # Generic training loop (shared by PPO and SAC)
+
 
 @dataclasses.dataclass
 class BaselineLoopState:
@@ -595,6 +598,7 @@ def baseline_train_loop(
 
     # PPO train_run
 
+
 def build_ppo_skrl_config(cfg):
     """Build the skrl PPO_CFG from our PPOConfig (provenance in PROVENANCE_TABLE)."""
     return PPO_CFG_cls(
@@ -713,6 +717,7 @@ def ppo_train_run(
     )
 
     # SAC train_run
+
 
 def build_sac_skrl_config(cfg):
     """Build the skrl SAC_CFG from our SACConfig (provenance in PROVENANCE_TABLE)."""

@@ -29,9 +29,7 @@ def dct_basis_matrix(n: int) -> torch.Tensor:
     if m is None:
         k = einx.id("n -> n 1", torch.arange(n, dtype=torch.float32))
         t = einx.id("n -> 1 n", torch.arange(n, dtype=torch.float32))
-        m = math.sqrt(2.0 / n) * torch.cos(
-            math.pi * (2.0 * t + 1.0) * k / (2.0 * n)
-        )
+        m = math.sqrt(2.0 / n) * torch.cos(math.pi * (2.0 * t + 1.0) * k / (2.0 * n))
         m[0].mul_(torch.rsqrt(torch.tensor(2.0)))
         BASIS_CACHE[n] = m
     return m
@@ -61,9 +59,7 @@ def idct(x: torch.Tensor, dim: int = -1) -> torch.Tensor:
     return apply_matrix_along_dim(x, dim, dct_basis_matrix(x.shape[dim % x.dim()]))
 
 
-def mask_unexecuted_tail(
-    actions: torch.Tensor, lengths, dim: int = 1
-) -> torch.Tensor:
+def mask_unexecuted_tail(actions: torch.Tensor, lengths, dim: int = 1) -> torch.Tensor:
     """Zero-pad unexecuted tail rows of a real-space chunk; return same space.
 
     Stored chunks are real-space with time == horizon, so masking is a plain
@@ -81,7 +77,5 @@ def mask_unexecuted_tail(
 def discounted_chunk_reward(rewards: torch.Tensor, gamma: float) -> torch.Tensor:
     """Σ_t γ^t·r_t along the last axis (batch dims preserved)."""
     n = rewards.shape[-1]
-    weights = gamma ** torch.arange(
-        n, dtype=rewards.dtype, device=rewards.device
-    )
+    weights = gamma ** torch.arange(n, dtype=rewards.dtype, device=rewards.device)
     return (rewards * weights).sum(dim=-1)

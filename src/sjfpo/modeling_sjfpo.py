@@ -61,7 +61,8 @@ class SJFPOPolicy(PreTrainedPolicy):
         obs_dim = int(config.robot_state_feature.shape[0])
         act_dim = int(config.action_feature.shape[0])
         self.actor = SJFOPolicyModel(
-            act_dim, obs_dim,
+            act_dim,
+            obs_dim,
             hidden_size=config.hidden_dim,
             spectral_pool=config.spectral_pool,
         )
@@ -112,8 +113,7 @@ class SJFPOPolicy(PreTrainedPolicy):
     def get_optim_params(self) -> dict:
         """Live weights only (spectral is parameter-free, snapshot never trains)."""
         return {
-            "params": list(self.actor.parameters())
-            + list(self.critic.parameters())
+            "params": list(self.actor.parameters()) + list(self.critic.parameters())
         }
 
     def _window_from_batch(self, states: torch.Tensor) -> torch.Tensor:
@@ -129,7 +129,9 @@ class SJFPOPolicy(PreTrainedPolicy):
             f"observation.state must be [B, T, obs], [T, obs] or [B, obs]; got {tuple(states.shape)}"
         )
 
-    def predict_action_chunk(self, batch: dict[str, torch.Tensor], **kwargs) -> torch.Tensor:
+    def predict_action_chunk(
+        self, batch: dict[str, torch.Tensor], **kwargs
+    ) -> torch.Tensor:
         """Full action chunk [B, H, action_dim]; ``noise=True`` samples, else zeros."""
         noise = kwargs.get("noise", False)
         cfg = self.config
@@ -223,7 +225,9 @@ class SJFPOPolicy(PreTrainedPolicy):
         )  # [N] CPU
         with torch.inference_mode():
             states = torch.stack([c[OBS_STATE] for c in chunks]).to(device)
-            next_states = torch.stack([c["next.observation.state"] for c in chunks]).to(device)
+            next_states = torch.stack([c["next.observation.state"] for c in chunks]).to(
+                device
+            )
             states_n = self.obs_normalizer(states)
             next_states_n = self.obs_normalizer(next_states)
             a_exec = mask_unexecuted_tail(
@@ -236,7 +240,9 @@ class SJFPOPolicy(PreTrainedPolicy):
             )
             with autocast_context(device):
                 values = self.critic(states_n, a_exec, lengths.to(device)).float()
-                v_next_all = self.critic(next_states_n, a_next_exec, next_lengths.to(device)).float()
+                v_next_all = self.critic(
+                    next_states_n, a_next_exec, next_lengths.to(device)
+                ).float()
             terminated = torch.tensor([bool(c[DONE]) for c in chunks], device=device)
             next_values = torch.where(terminated, 0.0, v_next_all)
         all_rewards = [r for c in chunks for r in c[REWARD].tolist()]
@@ -251,7 +257,9 @@ class SJFPOPolicy(PreTrainedPolicy):
             normalize=False,
             truncated=np.array([bool(c[TRUNCATED]) for c in chunks]),
         )
-        is_pad = torch.arange(cfg.horizon).unsqueeze(0) >= torch.tensor(lengths).unsqueeze(1)
+        is_pad = torch.arange(cfg.horizon).unsqueeze(0) >= torch.tensor(
+            lengths
+        ).unsqueeze(1)
         return {
             OBS_STATE: torch.stack([c[OBS_STATE] for c in chunks]).to(device),
             ACTION: torch.stack([c["action"] for c in chunks]).to(device),
@@ -279,13 +287,17 @@ class SJFPOPolicy(PreTrainedPolicy):
                 f"action horizon {actions.shape[-2]} != horizon {cfg.horizon}"
             )
         if self.training:
-            self.obs_normalizer.update(states)  # train batches only; rollout/eval frozen
+            self.obs_normalizer.update(
+                states
+            )  # train batches only; rollout/eval frozen
         states = self.obs_normalizer(states)
         is_pad = batch.get("action_is_pad")
         if is_pad is None:
             lengths = torch.full(
-                (actions.shape[0],), actions.shape[1],
-                dtype=torch.long, device=actions.device,
+                (actions.shape[0],),
+                actions.shape[1],
+                dtype=torch.long,
+                device=actions.device,
             )  # [B] all executed
             a_exec = actions
         else:

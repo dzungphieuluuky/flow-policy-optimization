@@ -33,7 +33,9 @@ def as_chunk_arrays(rewards, values, next_values, n_action_steps, terminated):
     return rewards, values, nv, n_action_steps, terminated, n
 
 
-def validate_chunk_stream(rewards, values, next_values, n_action_steps, terminated, truncated, n):
+def validate_chunk_stream(
+    rewards, values, next_values, n_action_steps, terminated, truncated, n
+):
     """Raise ValueError on shape/count mismatches in the chunk stream."""
     if (
         next_values.shape != (n,)
@@ -58,7 +60,9 @@ def validate_chunk_stream(rewards, values, next_values, n_action_steps, terminat
 
 def compute_returns(advantages, values):
     """G = A + V from raw (unnormalized) advantages."""
-    return np.asarray(advantages, dtype=np.float64) + np.asarray(values, dtype=np.float64)
+    return np.asarray(advantages, dtype=np.float64) + np.asarray(
+        values, dtype=np.float64
+    )
 
 
 def normalize_advantages(advantages):
@@ -91,14 +95,18 @@ def compute_advantages(
         truncated = np.zeros(n, dtype=bool)
     else:
         truncated = np.asarray(truncated, dtype=bool)
-    validate_chunk_stream(rewards, values, next_values, n_action_steps, terminated, truncated, n)
+    validate_chunk_stream(
+        rewards, values, next_values, n_action_steps, terminated, truncated, n
+    )
 
     # R_k = Σᵢ γⁱ·r_{k,i} over executed steps only.
     offsets = np.concatenate(([0], np.cumsum(n_action_steps)))
     r_chunk = np.empty(n, dtype=np.float64)
     for k in range(n):
         steps = rewards[offsets[k] : offsets[k + 1]]
-        r_chunk[k] = float(np.dot(gamma ** np.arange(steps.shape[0], dtype=np.float64), steps))
+        r_chunk[k] = float(
+            np.dot(gamma ** np.arange(steps.shape[0], dtype=np.float64), steps)
+        )
 
     # Backward pass: terminated cuts all, truncated cuts recursion only
     # (timeout bootstraps pre-reset V, but post-reset A_{k+1} is a fresh episode).

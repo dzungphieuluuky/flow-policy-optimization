@@ -93,9 +93,7 @@ class TestTrainerGolden:
             input_features={
                 "observation.state": PolicyFeature(FeatureType.STATE, (obs_dim,))
             },
-            output_features={
-                "action": PolicyFeature(FeatureType.ACTION, (act_dim,))
-            },
+            output_features={"action": PolicyFeature(FeatureType.ACTION, (act_dim,))},
         )
         return SJFPOPolicy(cfg), cfg, obs_dim, act_dim
 
@@ -151,7 +149,9 @@ class TestTrainerGolden:
         x_t = torch.randn(4 * cfg.num_mc_samples, n_coeffs, act_dim).to(device)
         tau = torch.rand(4 * cfg.num_mc_samples, device=device)
         condition = torch.randn(4 * cfg.num_mc_samples, 5, obs_dim).to(device)
-        states = torch.randn(4 * cfg.num_mc_samples, cfg.n_obs_steps, obs_dim).to(device)
+        states = torch.randn(4 * cfg.num_mc_samples, cfg.n_obs_steps, obs_dim).to(
+            device
+        )
         v = policy.compute_predicted_velocity(x_t, tau, condition, states)
         assert v.shape == (4 * cfg.num_mc_samples, n_coeffs, act_dim)
         assert torch.isfinite(v).all()

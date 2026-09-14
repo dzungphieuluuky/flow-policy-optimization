@@ -94,8 +94,6 @@ class TestPolicyDevice:
                 output_features={"action": PolicyFeature(FeatureType.ACTION, (2,))},
             )
         )
-        out = policy.predict_action_chunk(
-            {"observation.state": torch.randn(1, 16, 4)}
-        )
+        out = policy.predict_action_chunk({"observation.state": torch.randn(1, 16, 4)})
         assert out.device == torch.device("cpu")
         assert out.shape == (1, 16, 2)

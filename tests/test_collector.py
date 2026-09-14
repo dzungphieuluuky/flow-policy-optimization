@@ -130,6 +130,7 @@ def is_continue(t: Transition) -> bool:
 
     # (a) chunk counts + open-loop replan cadence (every N_STEPS)
 
+
 def test_a_exact_chunk_count_and_replan_every_n_steps():
     env = FakeEnv()
     policy = FakePolicy(torch.zeros(HORIZON, ACT_DIM))
@@ -169,6 +170,7 @@ def test_a_exact_chunk_count_and_replan_every_n_steps():
 
     # (b) mid-chunk termination: discard rest, no bootstrap, full-H anchor kept
 
+
 def test_b_mid_chunk_termination_discards_remaining_and_forbids_bootstrap():
     # Global steps 9,10,11 are actions 1..3 of chunk index 1; termination
     # fires ON step 11 => n=3, remaining proposed actions discarded.
@@ -206,6 +208,7 @@ def test_b_mid_chunk_termination_discards_remaining_and_forbids_bootstrap():
     assert is_continue(records[3]) and int(records[3]["n_action_steps"]) == 5
 
     # (c) truncation (TimeLimit semantics): boundary + mid-chunk, bootstrap-eligible
+
 
 def test_c_truncation_at_chunk_boundary_is_bootstrap_eligible():
     env = FakeEnv(truncate_at=8)  # TimeLimit fires exactly on the last executed action
@@ -253,6 +256,7 @@ def test_c_truncation_mid_chunk_also_bootstraps():
 
     # (d) frame buffer: warmup replication + sliding windows
 
+
 def test_d_warmup_replicates_first_obs_n_obs_steps_times_then_slides():
     env = FakeEnv()
     policy = FakePolicy(torch.zeros(HORIZON, ACT_DIM))
@@ -292,6 +296,7 @@ def test_d_warmup_replicates_first_obs_n_obs_steps_times_then_slides():
 
     # (e) stored per-chunk fields: state, real SCALED FULL proposal, rewards,
     #     done flags, clip count
+
 
 def test_e_stores_state_rewards_done_and_real_scaled_chunk():
     # Bounds [-2, 2]; constant proposal 1.0 is IN bounds and scales to 0.5.
@@ -351,6 +356,7 @@ def test_e_clip_count_counts_out_of_bound_elements_and_executes_clipped():
     assert torch.equal(rec["action"][:, 2], torch.full((HORIZON,), 0.25))
 
     # QA failure scenario: env raising mid-chunk propagates AFTER flush attempt
+
 
 def test_env_exception_propagates_after_checkpoint_flush_attempt():
     env = FakeEnv(raise_at_step=5)

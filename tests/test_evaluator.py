@@ -30,6 +30,7 @@ from sjfpo.evaluator import Evaluator
 
 # Fake environment
 
+
 class FakeEnv:
     """Minimal fake MuJoCo-like env for evaluator tests."""
 
@@ -58,6 +59,7 @@ class FakeEnv:
         return obs, reward, terminated, truncated, {}
 
         # Policy adapters
+
 
 def callable_policy(obs: np.ndarray) -> np.ndarray:
     """Simple callable returning random actions."""
@@ -91,9 +93,7 @@ class SJFPOPolicyAdapter:
         with torch.no_grad():
             condition = self.spectral(state)
             # Policy model (zero noise via eps=zeros for deterministic eval)
-            n_coeffs = max(
-                1, round(self.cfg.top_p_spectral_tokens * self.cfg.horizon)
-            )
+            n_coeffs = max(1, round(self.cfg.top_p_spectral_tokens * self.cfg.horizon))
             chunk = sample(
                 self.policy_head,
                 (1, n_coeffs, self.action_dim),
@@ -137,6 +137,7 @@ class SACPolicyAdapter:
         return np.ones(self.action_dim, dtype=np.float32) * 0.5
 
         # (a) drives fake policies of all three kinds
+
 
 class TestPolicyKinds:
     def test_callable_policy(self):
@@ -194,6 +195,7 @@ class TestPolicyKinds:
 
                 # (b) determinism: same weights+eval_seed twice → identical episode returns
 
+
 class TestDeterminism:
     def test_same_seed_same_returns(self):
         env1 = FakeEnv()
@@ -227,6 +229,7 @@ class TestDeterminism:
 
         # (c) acting batch B=1 works out of the box (no calibration)
 
+
 class TestBatchSizeOne:
     def test_b1_no_calibration_needed(self):
         cfg = SJFPOConfig()
@@ -244,6 +247,7 @@ class TestBatchSizeOne:
             assert math.isfinite(r["return"])
 
             # (d) 12-episode default + max-steps cap respected
+
 
 class TestEpisodeAndStepLimits:
     def test_max_episodes_respected(self):

@@ -156,6 +156,7 @@ if TINY_MATRIX:
         )
     RUN_MATRIX = tuple(tiny)  # 3 runs
 
+
 def validate_run_matrix(specs: Iterable[RunSpec]) -> None:
     """Raise AssertionError on any duplicate (method, env, seed)."""
     seen: set[tuple[str, str, int]] = set()

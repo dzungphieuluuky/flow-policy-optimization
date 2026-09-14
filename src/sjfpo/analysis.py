@@ -22,7 +22,9 @@ class AnalysisError(Exception):
 
     pass
 
+
 # Bootstrap confidence intervals
+
 
 def bootstrap_ci(
     data: np.ndarray,
@@ -50,7 +52,9 @@ def bootstrap_ci(
 
     return float(mean), float(ci_low), float(ci_high)
 
+
 # Interquartile Mean (IQM)
+
 
 def compute_iqm(returns_per_seed: list[float]) -> float:
     """Mean after trimming top/bottom 25%; plain mean when n < 4."""
@@ -72,13 +76,17 @@ def compute_iqm(returns_per_seed: list[float]) -> float:
     trimmed = sorted_arr[trim_count : n - trim_count]
     return float(np.mean(trimmed))
 
+
 # Superiority testing
+
 
 def is_superior(ci_low: float, ci_high: float) -> bool:
     """True iff the CI of the difference excludes 0 on the positive side."""
     return ci_low > 0
 
+
 # Cross-environment normalization
+
 
 def normalize_cross_env(
     results_by_env: dict[str, dict[str, list[float]]],
@@ -107,7 +115,9 @@ def normalize_cross_env(
 
     return normalized
 
+
 # Load evaluation histories
+
 
 def load_eval_histories(run_dir: Path, *, eval_interval: int) -> list[dict[str, Any]]:
     """Scan run dirs for eval_history.csv files.
@@ -156,6 +166,7 @@ def load_eval_histories(run_dir: Path, *, eval_interval: int) -> list[dict[str, 
 
     return histories
 
+
 @dataclass(frozen=True)
 class AnalysisReport:
     """MuJoCo analysis results."""
@@ -169,7 +180,9 @@ class AnalysisReport:
         default_factory=dict  # (method, env) -> (iqm, ci_low, ci_high)
     )
 
+
 # Plotting functions
+
 
 def plot_per_env_curves(
     env_name: str,
@@ -292,7 +305,9 @@ def plot_aggregate(
 
     return png_path
 
+
 # CSV export
+
 
 def write_summary_csv(report: AnalysisReport, output_dir: Path) -> None:
     """Summary CSV (method,env,iqm,ci_low,ci_high,status) from report cells."""
@@ -312,7 +327,9 @@ def write_summary_csv(report: AnalysisReport, output_dir: Path) -> None:
                 status = "diverged"
             writer.writerow([method, env, iqm, ci_low, ci_high, status])
 
+
 # Main analysis entry point
+
 
 def analyze_results(
     matrix: tuple[RunSpec, ...],

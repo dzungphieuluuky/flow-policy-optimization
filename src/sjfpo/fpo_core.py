@@ -29,7 +29,15 @@ from sjfpo.configuration_sjfpo import SJFPOConfig
 _DEFAULTS = SJFPOConfig()
 
 
-def sample_timesteps(num_samples: int, tau_range=None, device=None, mode="uniform", *, alpha=None, beta=None):
+def sample_timesteps(
+    num_samples: int,
+    tau_range=None,
+    device=None,
+    mode="uniform",
+    *,
+    alpha=None,
+    beta=None,
+):
     """Flow times τ for the shared MC draw: [num_samples] in [lo, hi].
 
     ``mode``: "uniform" = U[lo, hi] (default); "normal" = N(mid, range/4)
@@ -79,9 +87,7 @@ def run_mc_simulation(a: torch.Tensor, eps: torch.Tensor, tau):
     b, num_mc = eps.shape[0], eps.shape[1]
     flow_shape = tuple(a.shape[1:])
     if tuple(eps.shape) != (b, num_mc, *flow_shape):
-        raise ValueError(
-            f"eps shape {tuple(eps.shape)} != {(b, num_mc, *flow_shape)}"
-        )
+        raise ValueError(f"eps shape {tuple(eps.shape)} != {(b, num_mc, *flow_shape)}")
     t = torch.as_tensor(tau, dtype=torch.float32)
     if t.dim() == 0:
         t = einx.id(" -> b m", t, b=b, m=num_mc)
@@ -156,10 +162,7 @@ def compute_aspo_surrogate(
         rho * advantage,
         torch.clamp(rho, 1.0 - epsilon_low, 1.0 + epsilon_high) * advantage,
     )
-    neg = (
-        rho * advantage
-        - (advantage.abs() / (2.0 * epsilon_low)) * (rho - 1.0) ** 2
-    )
+    neg = rho * advantage - (advantage.abs() / (2.0 * epsilon_low)) * (rho - 1.0) ** 2
     return torch.where(advantage >= 0, pos, neg)
 
 
@@ -200,9 +203,7 @@ def compute_policy_loss(
 
     Per-sample ratios enter the mean directly — never an exp-of-mean estimator.
     """
-    rho = compute_policy_ratio(
-        l_old, l_new, advantage, cfm_clamp=cfm_clamp, cap=cap
-    )
+    rho = compute_policy_ratio(l_old, l_new, advantage, cfm_clamp=cfm_clamp, cap=cap)
     return compute_aspo_surrogate(rho, advantage, epsilon_low, epsilon_high).mean()
 
     # %%
