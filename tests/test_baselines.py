@@ -157,7 +157,7 @@ class TestPPOTinySmoke:
             cfg=cfg,
             seed=0,
             total_steps=200,
-            eval_interval=200,
+            eval_steps=200,
             ckpt_interval=200,
         )
 
@@ -195,7 +195,7 @@ class TestSACTinySmoke:
             cfg=cfg,
             seed=0,
             total_steps=200,
-            eval_interval=200,
+            eval_steps=200,
             ckpt_interval=200,
         )
 

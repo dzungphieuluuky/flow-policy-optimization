@@ -38,7 +38,7 @@ def test_baselines_write_3col_csv(tmp_path, monkeypatch):
         cfg=cfg,
         seed=0,
         total_steps=200,
-        eval_interval=200,
+        eval_steps=200,
         ckpt_interval=200,
     )
     # result dict keys per T4
@@ -73,7 +73,7 @@ def test_sjfpo_train_run_writes_3col_csv(tmp_path):
         cfg=cfg,
         seed=0,
         total_steps=200,
-        eval_interval=100,
+        eval_steps=100,
         ckpt_interval=100,
         obs_dim=4,
         act_dim=2,

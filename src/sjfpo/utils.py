@@ -8,7 +8,9 @@ import os
 import sys
 from pathlib import Path
 
+import numpy as np
 import torch
+from lerobot.processor.converters import from_tensor_to_numpy, to_tensor
 
 
 def resolve_device() -> torch.device:
@@ -120,3 +122,17 @@ def safe_float_value(x: torch.Tensor | float) -> float:
     else:
         v = float(x)
     return v if math.isfinite(v) else float("nan")
+
+
+def to_numpy_1d(x: torch.Tensor | np.ndarray | float) -> np.ndarray:
+    """to numpy with atleast_1d: singletons stay [1], never 0-d/scalar."""
+    return np.atleast_1d(from_tensor_to_numpy(x))
+
+
+def to_tensor_1d(
+    x: torch.Tensor | np.ndarray | float,
+    dtype: torch.dtype | None = torch.float32,
+    device: torch.device | str | None = None,
+) -> torch.Tensor:
+    """to tensor with atleast_1d: singletons stay [1], never 0-d."""
+    return torch.atleast_1d(to_tensor(x, dtype=dtype, device=device))

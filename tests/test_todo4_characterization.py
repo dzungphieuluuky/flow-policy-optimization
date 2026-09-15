@@ -104,13 +104,13 @@ class TestTrainerGolden:
             chunks.append(
                 {
                     "observation.state": torch.randn(cfg.n_obs_steps, obs_dim),
-                    "action": torch.randn(cfg.horizon, act_dim) * 0.5,
-                    "next.action": torch.randn(cfg.horizon, act_dim) * 0.5,
+                    "action": torch.randn(cfg.action_horizon, act_dim) * 0.5,
+                    "next.action": torch.randn(cfg.action_horizon, act_dim) * 0.5,
                     "next.observation.state": torch.randn(cfg.n_obs_steps, obs_dim),
                     "next.reward": torch.rand(8),
                     "next.done": torch.tensor(False),
                     "next.truncated": torch.tensor(False),
-                    "n_action_steps": torch.tensor(8),
+                    "executed_n_action_steps": torch.tensor(8),
                     "clip_count": torch.tensor(0),
                 }
             )
@@ -120,7 +120,7 @@ class TestTrainerGolden:
         return chunks, meta
 
     def batch(self, chunks, meta, n):
-        lengths = [int(c["n_action_steps"]) for c in chunks]
+        lengths = [int(c["executed_n_action_steps"]) for c in chunks]
         h = chunks[0]["action"].shape[0]
         return {
             "observation.state": torch.stack([c["observation.state"] for c in chunks]),
@@ -145,15 +145,15 @@ class TestTrainerGolden:
         policy, cfg, obs_dim, act_dim = self.policy()
         device = next(policy.parameters()).device
         torch.manual_seed(1)
-        n_coeffs = max(1, round(cfg.top_p_spectral_tokens * cfg.horizon))
-        x_t = torch.randn(4 * cfg.num_mc_samples, n_coeffs, act_dim).to(device)
+        top_k_spectral_action_tokens = max(1, round(cfg.top_p_spectral_tokens * cfg.action_horizon))
+        x_t = torch.randn(4 * cfg.num_mc_samples, top_k_spectral_action_tokens, act_dim).to(device)
         tau = torch.rand(4 * cfg.num_mc_samples, device=device)
         condition = torch.randn(4 * cfg.num_mc_samples, 5, obs_dim).to(device)
         states = torch.randn(4 * cfg.num_mc_samples, cfg.n_obs_steps, obs_dim).to(
             device
         )
         v = policy.compute_predicted_velocity(x_t, tau, condition, states)
-        assert v.shape == (4 * cfg.num_mc_samples, n_coeffs, act_dim)
+        assert v.shape == (4 * cfg.num_mc_samples, top_k_spectral_action_tokens, act_dim)
         assert torch.isfinite(v).all()
 
 

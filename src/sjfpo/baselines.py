@@ -492,7 +492,7 @@ def run_baseline_iteration(
     method_name,
     seed,
     divergence_baseline,
-    eval_interval,
+    eval_steps,
     ckpt_interval,
     total_steps,
     observations,
@@ -525,7 +525,7 @@ def run_baseline_iteration(
     else:
         observations = next_obs
         states = next_states
-    if state.global_step % eval_interval == 0 or state.global_step >= total_steps:
+    if state.global_step % eval_steps == 0 or state.global_step >= total_steps:
         mean_return = run_baseline_eval(
             agent, evaluator, eval_policy_fn, out_dir, state, divergence_baseline
         )
@@ -546,7 +546,7 @@ def baseline_train_loop(
     out_dir,
     seed,
     total_steps,
-    eval_interval,
+    eval_steps,
     ckpt_interval,
     method_name,
     eval_policy_fn,
@@ -576,7 +576,7 @@ def baseline_train_loop(
                 method_name,
                 seed,
                 divergence_baseline,
-                eval_interval,
+                eval_steps,
                 ckpt_interval,
                 total_steps,
                 observations,
@@ -649,7 +649,7 @@ def launch_baseline_loop(
     out_dir,
     seed,
     total_steps,
-    eval_interval,
+    eval_steps,
     ckpt_interval,
     method_name,
     eval_policy,
@@ -664,7 +664,7 @@ def launch_baseline_loop(
         out_dir=out_dir,
         seed=seed,
         total_steps=total_steps,
-        eval_interval=eval_interval,
+        eval_steps=eval_steps,
         ckpt_interval=ckpt_interval,
         method_name=method_name,
         eval_policy_fn=eval_policy,
@@ -680,7 +680,7 @@ def ppo_train_run(
     *,
     seed: int = 0,
     total_steps: int = 2000,
-    eval_interval: int = 1000,
+    eval_steps: int = 1000,
     ckpt_interval: int = 1000,
     n_obs_steps: int = 16,
 ) -> dict[str, Any]:
@@ -708,7 +708,7 @@ def ppo_train_run(
         out_dir,
         seed,
         total_steps,
-        eval_interval,
+        eval_steps,
         ckpt_interval,
         "ppo",
         eval_policy,
@@ -779,7 +779,7 @@ def sac_train_run(
     *,
     seed: int = 0,
     total_steps: int = 2000,
-    eval_interval: int = 1000,
+    eval_steps: int = 1000,
     ckpt_interval: int = 1000,
     n_obs_steps: int = 16,
 ) -> dict[str, Any]:
@@ -820,7 +820,7 @@ def sac_train_run(
         out_dir,
         seed,
         total_steps,
-        eval_interval,
+        eval_steps,
         ckpt_interval,
         "sac",
         eval_policy,

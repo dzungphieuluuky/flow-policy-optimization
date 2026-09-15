@@ -220,13 +220,13 @@ def test_empty_history_raises(tmp_path):
             env="TestEnv",
             seed=0,
             total_steps=1000,
-            eval_interval=500,
+            eval_steps=500,
             ckpt_interval=500,
         ),
     )
 
     with pytest.raises(AnalysisError, match="no eval histories"):
-        analyze_results(matrix, tmp_path, tmp_path / "output", eval_interval=500)
+        analyze_results(matrix, tmp_path, tmp_path / "output", eval_steps=500)
 
 
 # 11. test_diverged_excluded_and_reported
@@ -262,12 +262,12 @@ def test_diverged_excluded_and_reported(tmp_path):
             env="TestEnv",
             seed=0,
             total_steps=1000,
-            eval_interval=500,
+            eval_steps=500,
             ckpt_interval=500,
         ),
     )
 
-    report = analyze_results(matrix, tmp_path, tmp_path / "output", eval_interval=500)
+    report = analyze_results(matrix, tmp_path, tmp_path / "output", eval_steps=500)
 
     assert "sjfpo_TestEnv_0" in report.excluded_diverged
     assert report.superiority.get("sjfpo") is False  # excluded methods not superior
@@ -317,7 +317,7 @@ def test_load_eval_histories(tmp_path):
         writer.writeheader()
         writer.writerow({"episode": 0, "return": 80.0, "length": 100})
 
-    histories = load_eval_histories(tmp_path, eval_interval=500)
+    histories = load_eval_histories(tmp_path, eval_steps=500)
 
     assert len(histories) == 3
     methods = {h["method"] for h in histories}
@@ -336,4 +336,4 @@ def test_load_eval_histories_missing_column_raises(tmp_path):
     run.mkdir(parents=True)
     (run / "eval_history.csv").write_text("foo,bar\n1,2\n", encoding="utf-8")
     with pytest.raises(AnalysisError, match="missing columns"):
-        load_eval_histories(tmp_path, eval_interval=500)
+        load_eval_histories(tmp_path, eval_steps=500)

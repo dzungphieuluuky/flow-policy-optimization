@@ -22,7 +22,7 @@ these. Check the DCT→low-K→Linear order in
 
 Smokes write under `--out-dir` (default `.omo/evidence/train`). If you changed
 `--out-dir` or matrix filters mid-run, clear the old dir or re-run with the
-intended flags. `eval_history.csv` appears only after the first eval interval.
+intended flags. `eval_history.csv` appears only after the first eval steps.
 
 **SJFPO runs** exit non-zero
 

@@ -24,7 +24,7 @@ STATE_T = _DEFAULTS.n_obs_steps  # 16
 ZD = _DEFAULTS.hidden_dim  # 128
 OBS = 11  # raw obs dim feeding SpectralEncoder (env-like)
 KS = max(1, round(_DEFAULTS.top_p_spectral_tokens * STATE_T))  # 5
-CHUNK = _DEFAULTS.horizon  # 16
+CHUNK = _DEFAULTS.action_horizon  # 16
 
 # Networks import lazily so a missing module reports one clean collection error.
 

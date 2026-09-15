@@ -38,7 +38,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from sjfpo.config import (  # noqa: E402
     CKPT_INTERVAL,
     ENVS,
-    EVAL_INTERVAL,
+    EVAL_STEPS,
     KNOWN_ENVS,
     METHODS,
     SEEDS,
@@ -111,7 +111,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Tiny 3-run override (only with --matrix, warns over filters)",
     )
     parser.add_argument("--total-steps", type=int, default=None, help="Total env steps")
-    parser.add_argument("--eval-interval", type=int, default=None, help="Eval interval")
+    parser.add_argument("--eval-steps", type=int, default=None, help="Eval steps")
     parser.add_argument(
         "--ckpt-interval", type=int, default=None, help="Checkpoint interval"
     )
@@ -178,7 +178,7 @@ def run_single(
     out_dir: Path,
     cfg,
     total_steps: int,
-    eval_interval: int,
+    eval_steps: int,
     ckpt_interval: int,
     obs_dim: int | None,
     act_dim: int | None,
@@ -227,7 +227,7 @@ def run_single(
             cfg=cfg,
             seed=seed,
             total_steps=total_steps,
-            eval_interval=eval_interval,
+            eval_steps=eval_steps,
             ckpt_interval=ckpt_interval,
             **extra,
         )
@@ -276,19 +276,19 @@ def resolve_matrix_settings(
             )
         os.environ["SJFPO_TINY_MATRIX"] = "1"
         methods, envs, seeds = list(METHODS), ["Hopper-v5"], [0]
-        total, eval_i, ckpt_i = TINY_STEPS, TINY_INTERVAL, TINY_INTERVAL
+        total, eval_s, ckpt_i = TINY_STEPS, TINY_INTERVAL, TINY_INTERVAL
     else:
         methods = args.methods or list(METHODS)
         envs = args.envs or list(ENVS)
         seeds = args.seeds if args.seeds is not None else list(SEEDS)
         total = args.total_steps or int(yaml_dict.get("total_steps", TOTAL_STEPS))
-        eval_i = args.eval_interval or int(
-            yaml_dict.get("eval_interval", EVAL_INTERVAL)
+        eval_s = args.eval_steps or int(
+            yaml_dict.get("eval_steps", EVAL_STEPS)
         )
         ckpt_i = args.ckpt_interval or int(
             yaml_dict.get("ckpt_interval", CKPT_INTERVAL)
         )
-    return methods, envs, seeds, total, eval_i, ckpt_i
+    return methods, envs, seeds, total, eval_s, ckpt_i
 
 
 def start_matrix_progress(matrix, out_base: Path, no_progress: bool):
@@ -315,10 +315,10 @@ def run_matrix_mode(
     out_base: Path,
 ) -> int:
     """Execute the --matrix sweep; return the process exit code."""
-    methods, envs, seeds, total, eval_i, ckpt_i = resolve_matrix_settings(
+    methods, envs, seeds, total, eval_s, ckpt_i = resolve_matrix_settings(
         args, argv, yaml_dict
     )
-    matrix = build_filtered_matrix(methods, envs, seeds, total, eval_i, ckpt_i)
+    matrix = build_filtered_matrix(methods, envs, seeds, total, eval_s, ckpt_i)
     pbar = start_matrix_progress(matrix, out_base, args.no_progress)
     from sjfpo.sweep import format_run_directory_name, run_pending
 
@@ -333,7 +333,7 @@ def run_matrix_mode(
                 run_dir,
                 cfg,
                 spec.total_steps,
-                spec.eval_interval,
+                spec.eval_steps,
                 spec.ckpt_interval,
                 args.obs_dim,
                 args.act_dim,
@@ -367,7 +367,7 @@ def run_single_mode(
 ) -> int:
     """Execute one single-run training; return the process exit code."""
     total = args.total_steps or int(yaml_dict.get("total_steps", 2000))
-    eval_i = args.eval_interval or int(yaml_dict.get("eval_interval", min(1000, total)))
+    eval_s = args.eval_steps or int(yaml_dict.get("eval_steps", min(1000, total)))
     ckpt_i = args.ckpt_interval or int(yaml_dict.get("ckpt_interval", min(1000, total)))
     cfg = build_cfg(args.method, yaml_dict)
     try:
@@ -378,7 +378,7 @@ def run_single_mode(
             out_base / args.method,
             cfg,
             total,
-            eval_i,
+            eval_s,
             ckpt_i,
             args.obs_dim,
             args.act_dim,

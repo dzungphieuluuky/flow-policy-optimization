@@ -17,11 +17,11 @@ import numpy as np
 __all__ = ["compute_advantages", "compute_returns", "normalize_advantages"]
 
 
-def as_chunk_arrays(rewards, values, next_values, n_action_steps, terminated):
+def as_chunk_arrays(rewards, values, next_values, executed_n_action_steps, terminated):
     """Coerce inputs to arrays; expand a scalar stream-end bootstrap."""
     rewards = np.asarray(rewards, dtype=np.float64)
     values = np.asarray(values, dtype=np.float64)
-    n_action_steps = np.asarray(n_action_steps, dtype=np.int64)
+    executed_n_action_steps = np.asarray(executed_n_action_steps, dtype=np.int64)
     terminated = np.asarray(terminated, dtype=bool)
     nv = np.asarray(next_values, dtype=np.float64)
     n = values.shape[0]
@@ -30,31 +30,31 @@ def as_chunk_arrays(rewards, values, next_values, n_action_steps, terminated):
             nv = np.concatenate([values[1:], nv.reshape(1)])
         else:
             nv = nv.reshape(1)
-    return rewards, values, nv, n_action_steps, terminated, n
+    return rewards, values, nv, executed_n_action_steps, terminated, n
 
 
 def validate_chunk_stream(
-    rewards, values, next_values, n_action_steps, terminated, truncated, n
+    rewards, values, next_values, executed_n_action_steps, terminated, truncated, n
 ):
     """Raise ValueError on shape/count mismatches in the chunk stream."""
     if (
         next_values.shape != (n,)
-        or n_action_steps.shape != (n,)
+        or executed_n_action_steps.shape != (n,)
         or terminated.shape != (n,)
         or truncated.shape != (n,)
     ):
         raise ValueError(
             f"shape mismatch: values {values.shape}, next_values {next_values.shape}, "
-            f"n_action_steps {n_action_steps.shape}, terminated {terminated.shape}, "
+            f"executed_n_action_steps {executed_n_action_steps.shape}, terminated {terminated.shape}, "
             f"truncated {truncated.shape}"
         )
-    if n_action_steps.ndim != 1 or n == 0:
+    if executed_n_action_steps.ndim != 1 or n == 0:
         raise ValueError("need a non-empty 1-D stream of chunks")
-    if (n_action_steps <= 0).any():
+    if (executed_n_action_steps <= 0).any():
         raise ValueError("every chunk must have >= 1 executed step")
-    if int(n_action_steps.sum()) != rewards.shape[0]:
+    if int(executed_n_action_steps.sum()) != rewards.shape[0]:
         raise ValueError(
-            f"rewards has {rewards.shape[0]} steps but sum(n_action_steps)={int(n_action_steps.sum())}"
+            f"rewards has {rewards.shape[0]} steps but sum(executed_n_action_steps)={int(executed_n_action_steps.sum())}"
         )
 
 
@@ -75,7 +75,7 @@ def compute_advantages(
     rewards,
     values,
     next_values,
-    n_action_steps,
+    executed_n_action_steps,
     terminated,
     gamma: float = 0.99,
     lam: float = 0.95,
@@ -85,22 +85,22 @@ def compute_advantages(
     """Semi-MDP chunk-level GAE: (advantages [N], returns [N]) float64.
 
     next_values [N] is the bootstrap candidate (0 for terminated chunks).
-    n_action_steps [N] holds EXECUTED steps per chunk. truncated [N] (or
+    executed_n_action_steps [N] holds EXECUTED steps per chunk. truncated [N] (or
     None) marks TimeLimit hits. Returns = raw advantages + V.
     """
-    rewards, values, next_values, n_action_steps, terminated, n = as_chunk_arrays(
-        rewards, values, next_values, n_action_steps, terminated
+    rewards, values, next_values, executed_n_action_steps, terminated, n = as_chunk_arrays(
+        rewards, values, next_values, executed_n_action_steps, terminated
     )
     if truncated is None:
         truncated = np.zeros(n, dtype=bool)
     else:
         truncated = np.asarray(truncated, dtype=bool)
     validate_chunk_stream(
-        rewards, values, next_values, n_action_steps, terminated, truncated, n
+        rewards, values, next_values, executed_n_action_steps, terminated, truncated, n
     )
 
     # R_k = Σᵢ γⁱ·r_{k,i} over executed steps only.
-    offsets = np.concatenate(([0], np.cumsum(n_action_steps)))
+    offsets = np.concatenate(([0], np.cumsum(executed_n_action_steps)))
     r_chunk = np.empty(n, dtype=np.float64)
     for k in range(n):
         steps = rewards[offsets[k] : offsets[k + 1]]
@@ -113,7 +113,7 @@ def compute_advantages(
     advantages = np.empty(n, dtype=np.float64)
     next_advantage = 0.0
     for k in range(n - 1, -1, -1):
-        length = int(n_action_steps[k])
+        length = int(executed_n_action_steps[k])
         if terminated[k]:
             delta, continuation = r_chunk[k] - values[k], 0.0
         else:

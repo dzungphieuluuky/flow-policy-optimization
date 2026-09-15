@@ -20,8 +20,8 @@ def test_registered_as_sjfpo_choice():
 
 def test_canonical_defaults():
     cfg = SJFPOConfig()
-    assert (cfg.n_obs_steps, cfg.horizon, cfg.hidden_dim) == (16, 16, 128)
-    assert cfg.n_action_steps == round(cfg.executed_vs_predicted_ratio * cfg.horizon)
+    assert (cfg.n_obs_steps, cfg.action_horizon, cfg.hidden_dim) == (16, 16, 128)
+    assert cfg.n_action_steps == round(cfg.executed_vs_predicted_ratio * cfg.action_horizon)
     assert (cfg.optimizer_lr, cfg.optimizer_weight_decay) == (1e-4, 1e-4)
     assert cfg.grad_clip_norm == 1.0
     assert cfg.num_epochs == 10

@@ -163,7 +163,7 @@ class TestSweepCharacterization:
             env="Hopper-v5",
             seed=0,
             total_steps=100,
-            eval_interval=10,
+            eval_steps=10,
             ckpt_interval=10,
         )
         (tmp_path / "sjfpo_Hopper-v5_seed0").mkdir(parents=True)
@@ -181,7 +181,7 @@ class TestSweepCharacterization:
             env="Hopper-v5",
             seed=0,
             total_steps=100,
-            eval_interval=10,
+            eval_steps=10,
             ckpt_interval=10,
         )
 
@@ -218,7 +218,7 @@ class TestCollectorHelperCharacterization:
             "next.reward": torch.tensor([1.0]),
             "next.done": torch.tensor(False),
             "next.truncated": torch.tensor(False),
-            "n_action_steps": torch.tensor(1),
+            "executed_n_action_steps": torch.tensor(1),
             "clip_count": torch.tensor(0),
         }
         assert bool(continued["next.truncated"]) is False

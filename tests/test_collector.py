@@ -8,14 +8,14 @@ Boundary semantics under test (plan Scope §Chunk-level semi-MDP GAE):
     neither                -> chunk continues to completion, both flags False
 
 Transitions are plain dicts with LeRobot keys (observation.state / action /
-next.*). The policy proposes HORIZON actions but only N_STEPS are executed
+next.*). The policy proposes ACTION_HORIZON actions but only N_STEPS are executed
 (receding horizon); the stored action anchor is always the real-space SCALED
-FULL proposed chunk, shape [HORIZON, ACT_DIM] (one row per predicted step;
+FULL proposed chunk, shape [ACTION_HORIZON, ACT_DIM] (one row per predicted step;
 DCT happens downstream in forward).
 
 The fake env is scripted gymnasium-v5 style: step() returns the 5-tuple
 (obs, reward, terminated, truncated, info) and termination/truncation can
-be planted at exact global step offsets. STATE_T / HORIZON / N_STEPS are
+be planted at exact global step offsets. STATE_T / ACTION_HORIZON / N_STEPS are
 imported from sjfpo.config — never hardcoded here.
 """
 
@@ -37,7 +37,7 @@ from sjfpo.configuration_sjfpo import SJFPOConfig  # noqa: E402
 _DEFAULTS = SJFPOConfig()
 
 STATE_T = _DEFAULTS.n_obs_steps  # imported constant — NEVER hardcode 16
-HORIZON = _DEFAULTS.horizon  # imported constant — NEVER hardcode 16
+ACTION_HORIZON = _DEFAULTS.action_horizon  # imported constant — NEVER hardcode 16
 N_STEPS = 8  # local: executed steps are caller-passed, no config default
 
 OBS_DIM = 4
@@ -106,7 +106,7 @@ class FakePolicy:
     """Records conditioning states; returns a fixed full-horizon proposal."""
 
     def __init__(self, chunk: torch.Tensor) -> None:
-        assert chunk.shape[0] == HORIZON, "policy must propose exactly H actions"
+        assert chunk.shape[0] == ACTION_HORIZON, "policy must propose exactly H actions"
         self.chunk = chunk
         self.states: list[torch.Tensor] = []
 
@@ -133,7 +133,7 @@ def is_continue(t: Transition) -> bool:
 
 def test_a_exact_chunk_count_and_replan_every_n_steps():
     env = FakeEnv()
-    policy = FakePolicy(torch.zeros(HORIZON, ACT_DIM))
+    policy = FakePolicy(torch.zeros(ACTION_HORIZON, ACT_DIM))
 
     records = collect_chunks(
         env,
@@ -148,14 +148,14 @@ def test_a_exact_chunk_count_and_replan_every_n_steps():
     # 3 replans + 1 stream-end tail proposal (bootstrap next.action, no execution).
     assert len(policy.states) == 4, "3 replans + 1 tail next-action proposal"
     assert len(env.applied_actions) == 20
-    assert [int(r["n_action_steps"]) for r in records] == [8, 8, 4]  # ceil budget split
+    assert [int(r["executed_n_action_steps"]) for r in records] == [8, 8, 4]  # ceil budget split
     assert all(is_continue(r) for r in records)
-    assert all(r["action"].shape == (HORIZON, ACT_DIM) for r in records)
+    assert all(r["action"].shape == (ACTION_HORIZON, ACT_DIM) for r in records)
     assert all(torch.isfinite(r["next.action"]).all() for r in records)
 
     # Exact multiple: 24 steps -> 3 full chunks.
     env24 = FakeEnv()
-    pol24 = FakePolicy(torch.zeros(HORIZON, ACT_DIM))
+    pol24 = FakePolicy(torch.zeros(ACTION_HORIZON, ACT_DIM))
     recs24 = collect_chunks(
         env24,
         pol24,
@@ -165,7 +165,7 @@ def test_a_exact_chunk_count_and_replan_every_n_steps():
         n_action_steps=N_STEPS,
     )
     assert len(recs24) == math.ceil(24 / N_STEPS) == 3
-    assert [int(r["n_action_steps"]) for r in recs24] == [8, 8, 8]
+    assert [int(r["executed_n_action_steps"]) for r in recs24] == [8, 8, 8]
     assert len(pol24.states) == 4  # 3 replans + 1 tail proposal
 
     # (b) mid-chunk termination: discard rest, no bootstrap, full-H anchor kept
@@ -175,7 +175,7 @@ def test_b_mid_chunk_termination_discards_remaining_and_forbids_bootstrap():
     # Global steps 9,10,11 are actions 1..3 of chunk index 1; termination
     # fires ON step 11 => n=3, remaining proposed actions discarded.
     env = FakeEnv(terminate_at=11)
-    policy = FakePolicy(torch.zeros(HORIZON, ACT_DIM))
+    policy = FakePolicy(torch.zeros(ACTION_HORIZON, ACT_DIM))
 
     records = collect_chunks(
         env,
@@ -186,16 +186,16 @@ def test_b_mid_chunk_termination_discards_remaining_and_forbids_bootstrap():
         n_action_steps=N_STEPS,
     )
 
-    assert [int(r["n_action_steps"]) for r in records] == [8, 3, 8, 5]
-    assert sum(int(r["n_action_steps"]) for r in records) == 24
+    assert [int(r["executed_n_action_steps"]) for r in records] == [8, 3, 8, 5]
+    assert sum(int(r["executed_n_action_steps"]) for r in records) == 24
     assert len(env.applied_actions) == 24, "collection must continue after reset"
 
     dead = records[1]
     assert bool(dead["next.done"]) is True
     assert bool(dead["next.truncated"]) is False, "V-bootstrap FORBIDDEN on termination"
-    assert int(dead["n_action_steps"]) == 3
+    assert int(dead["executed_n_action_steps"]) == 3
     assert dead["next.reward"].tolist() == [9.0, 10.0, 11.0]
-    assert dead["action"].shape == (HORIZON, ACT_DIM)  # full-H anchor kept
+    assert dead["action"].shape == (ACTION_HORIZON, ACT_DIM)  # full-H anchor kept
 
     # Exactly 3 actions were applied inside the dying chunk — the remaining
     # proposed actions were NOT executed.
@@ -204,15 +204,15 @@ def test_b_mid_chunk_termination_discards_remaining_and_forbids_bootstrap():
     assert int(dead["clip_count"]) == 0
 
     # Post-reset chunks are clean 'continue' chunks.
-    assert is_continue(records[2]) and int(records[2]["n_action_steps"]) == 8
-    assert is_continue(records[3]) and int(records[3]["n_action_steps"]) == 5
+    assert is_continue(records[2]) and int(records[2]["executed_n_action_steps"]) == 8
+    assert is_continue(records[3]) and int(records[3]["executed_n_action_steps"]) == 5
 
     # (c) truncation (TimeLimit semantics): boundary + mid-chunk, bootstrap-eligible
 
 
 def test_c_truncation_at_chunk_boundary_is_bootstrap_eligible():
     env = FakeEnv(truncate_at=8)  # TimeLimit fires exactly on the last executed action
-    policy = FakePolicy(torch.zeros(HORIZON, ACT_DIM))
+    policy = FakePolicy(torch.zeros(ACTION_HORIZON, ACT_DIM))
 
     records = collect_chunks(
         env,
@@ -227,15 +227,15 @@ def test_c_truncation_at_chunk_boundary_is_bootstrap_eligible():
     cut = records[0]
     assert bool(cut["next.done"]) is False
     assert bool(cut["next.truncated"]) is True, "truncation must be bootstrap-eligible"
-    assert int(cut["n_action_steps"]) == N_STEPS
-    assert cut["action"].shape == (HORIZON, ACT_DIM)
+    assert int(cut["executed_n_action_steps"]) == N_STEPS
+    assert cut["action"].shape == (ACTION_HORIZON, ACT_DIM)
     assert is_continue(records[1])
 
 
 def test_c_truncation_mid_chunk_also_bootstraps():
     # Steps 9,10 are actions 1..2 of chunk 1; truncation fires ON step 10.
     env = FakeEnv(truncate_at=10)
-    policy = FakePolicy(torch.zeros(HORIZON, ACT_DIM))
+    policy = FakePolicy(torch.zeros(ACTION_HORIZON, ACT_DIM))
 
     records = collect_chunks(
         env,
@@ -246,12 +246,12 @@ def test_c_truncation_mid_chunk_also_bootstraps():
         n_action_steps=N_STEPS,
     )
 
-    assert [int(r["n_action_steps"]) for r in records] == [8, 2, 6]
+    assert [int(r["executed_n_action_steps"]) for r in records] == [8, 2, 6]
     cut = records[1]
     assert bool(cut["next.done"]) is False
-    assert int(cut["n_action_steps"]) == 2
+    assert int(cut["executed_n_action_steps"]) == 2
     assert bool(cut["next.truncated"]) is True
-    assert cut["action"].shape == (HORIZON, ACT_DIM)
+    assert cut["action"].shape == (ACTION_HORIZON, ACT_DIM)
     assert len(env.applied_actions) == 16
 
     # (d) frame buffer: warmup replication + sliding windows
@@ -259,7 +259,7 @@ def test_c_truncation_mid_chunk_also_bootstraps():
 
 def test_d_warmup_replicates_first_obs_n_obs_steps_times_then_slides():
     env = FakeEnv()
-    policy = FakePolicy(torch.zeros(HORIZON, ACT_DIM))
+    policy = FakePolicy(torch.zeros(ACTION_HORIZON, ACT_DIM))
     total_steps = 20  # 3 replans
 
     records = collect_chunks(
@@ -287,7 +287,7 @@ def test_d_warmup_replicates_first_obs_n_obs_steps_times_then_slides():
         assert torch.allclose(policy.states[j], expected), (
             f"state mismatch at chunk {j}"
         )
-        for _ in range(int(record["n_action_steps"])):
+        for _ in range(int(record["executed_n_action_steps"])):
             window_markers.append(env.obs_markers[ptr])
             ptr += 1
             executed += 1
@@ -301,13 +301,13 @@ def test_d_warmup_replicates_first_obs_n_obs_steps_times_then_slides():
 def test_e_stores_state_rewards_done_and_real_scaled_chunk():
     # Bounds [-2, 2]; constant proposal 1.0 is IN bounds and scales to 0.5.
     env = FakeEnv()
-    chunk = torch.full((HORIZON, ACT_DIM), 1.0)
+    chunk = torch.full((ACTION_HORIZON, ACT_DIM), 1.0)
     policy = FakePolicy(chunk)
 
     records = collect_chunks(
         env,
         policy,
-        total_steps=HORIZON,
+        total_steps=ACTION_HORIZON,
         action_low=-2.0,
         action_high=2.0,
         n_action_steps=N_STEPS,
@@ -322,28 +322,28 @@ def test_e_stores_state_rewards_done_and_real_scaled_chunk():
     assert rec["next.reward"].tolist() == [float(i) for i in range(1, N_STEPS + 1)]
 
     # Stored action is the real SCALED FULL proposal: scaled(1.0; [-2,2]) = 0.5.
-    expected = torch.full((HORIZON, ACT_DIM), 0.5)
+    expected = torch.full((ACTION_HORIZON, ACT_DIM), 0.5)
     assert torch.equal(rec["action"], expected)
 
 
 def test_e_clip_count_counts_out_of_bound_elements_and_executes_clipped():
     env = FakeEnv()
-    # Col 0 exceeds high, col 1 exceeds low, col 2 in bounds -> 2*HORIZON clipped
+    # Col 0 exceeds high, col 1 exceeds low, col 2 in bounds -> 2*ACTION_HORIZON clipped
     # elements over the proposal; clipping must be COUNTED, not silent.
-    chunk = torch.tensor([[3.0, -5.0, 0.5]] * HORIZON)
+    chunk = torch.tensor([[3.0, -5.0, 0.5]] * ACTION_HORIZON)
     policy = FakePolicy(chunk)
 
     records = collect_chunks(
         env,
         policy,
-        total_steps=HORIZON,
+        total_steps=ACTION_HORIZON,
         action_low=-2.0,
         action_high=2.0,
         n_action_steps=N_STEPS,
     )
 
     rec = records[0]
-    assert int(rec["clip_count"]) == 2 * HORIZON
+    assert int(rec["clip_count"]) == 2 * ACTION_HORIZON
     # Executed actions were clipped into bounds before reaching the env.
     applied = np.stack(env.applied_actions)
     assert np.all(applied[:, 0] <= 2.0) and np.allclose(applied[:, 0], 2.0)
@@ -351,16 +351,16 @@ def test_e_clip_count_counts_out_of_bound_elements_and_executes_clipped():
     assert np.allclose(applied[:, 2], 0.5)
     # Stored action is the real SCALED CLIPPED proposal: col0 -> +1.0, col1 -> -1.0,
     # col2 raw 0.5 scales to 0.25 on [-2, 2].
-    assert torch.equal(rec["action"][:, 0], torch.full((HORIZON,), 1.0))
-    assert torch.equal(rec["action"][:, 1], torch.full((HORIZON,), -1.0))
-    assert torch.equal(rec["action"][:, 2], torch.full((HORIZON,), 0.25))
+    assert torch.equal(rec["action"][:, 0], torch.full((ACTION_HORIZON,), 1.0))
+    assert torch.equal(rec["action"][:, 1], torch.full((ACTION_HORIZON,), -1.0))
+    assert torch.equal(rec["action"][:, 2], torch.full((ACTION_HORIZON,), 0.25))
 
     # QA failure scenario: env raising mid-chunk propagates AFTER flush attempt
 
 
 def test_env_exception_propagates_after_checkpoint_flush_attempt():
     env = FakeEnv(raise_at_step=5)
-    policy = FakePolicy(torch.zeros(HORIZON, ACT_DIM))
+    policy = FakePolicy(torch.zeros(ACTION_HORIZON, ACT_DIM))
     hook_calls: list[int] = []
 
     def failing_flush() -> None:
@@ -385,7 +385,7 @@ def test_env_exception_propagates_after_checkpoint_flush_attempt():
 
 def test_zero_steps_collects_nothing():
     env = FakeEnv()
-    policy = FakePolicy(torch.zeros(HORIZON, ACT_DIM))
+    policy = FakePolicy(torch.zeros(ACTION_HORIZON, ACT_DIM))
     records = collect_chunks(
         env,
         policy,
@@ -410,7 +410,7 @@ def test_bootstrap_action_lengths_rule():
         return {
             "next.done": torch.tensor(done),
             "next.truncated": torch.tensor(truncated),
-            "n_action_steps": torch.tensor(n),
+            "executed_n_action_steps": torch.tensor(n),
         }
 
     chunks = [

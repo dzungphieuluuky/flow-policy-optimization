@@ -1,4 +1,4 @@
-"""Transition dict (LeRobot keys) + horizon split + next-state loss.
+"""Transition dict (LeRobot keys) + action_horizon split + next-state loss.
 
 - Transition: dict with LeRobot keys observation.state / action /
   next.action / next.observation.state / next.reward / next.done / next.truncated
@@ -33,7 +33,7 @@ EXPECTED_KEYS = {
     "next.reward",
     "next.done",
     "next.truncated",
-    "n_action_steps",
+    "executed_n_action_steps",
     "clip_count",
 }
 
@@ -41,11 +41,11 @@ EXPECTED_KEYS = {
 
 
 class TestConfigV4:
-    def test_horizon_split_defaults(self):
+    def test_action_horizon_split_defaults(self):
         from sjfpo.configuration_sjfpo import SJFPOConfig
 
         cfg = SJFPOConfig()
-        assert cfg.horizon == 16, "H must be 16 (predict)"
+        assert cfg.action_horizon == 16, "H must be 16 (predict)"
         assert cfg.n_obs_steps == 16, "T must be 16"
         assert not hasattr(cfg, "context_len"), "context_len must be gone"
 
@@ -119,7 +119,7 @@ class TestCollectorV4:
             assert t["action"].dtype == torch.float32
             assert t["next.done"].dtype == torch.bool
             assert t["next.truncated"].dtype == torch.bool
-            assert int(t["n_action_steps"]) == len(t["next.reward"])
+            assert int(t["executed_n_action_steps"]) == len(t["next.reward"])
 
     def test_next_action_chains_to_next_proposal(self):
         """continue chunk[k].next.action == chunk[k+1].action."""
@@ -146,7 +146,7 @@ class TestCollectorV4:
         chunks = collect()
         first = chunks[0]
         assert first["next.done"] == torch.tensor(False)
-        assert int(first["n_action_steps"]) == 8
+        assert int(first["executed_n_action_steps"]) == 8
         assert len(first["next.reward"]) == 8
 
     def test_next_state_continuity(self):
@@ -168,7 +168,7 @@ class TestCollectorV4:
         assert len(term) >= 1, "at least one terminated chunk expected"
         for t in term:
             assert t["action"].shape == (16, ACT_DIM)
-            assert int(t["n_action_steps"]) < 8
+            assert int(t["executed_n_action_steps"]) < 8
 
             # Trainer: DiT actor (actions only) + transformer critic, no aux head
 
@@ -201,7 +201,7 @@ def make_transitions(n: int = 32):
                 "next.reward": torch.randn(8) * 0.1,
                 "next.done": torch.tensor(False),
                 "next.truncated": torch.tensor(False),
-                "n_action_steps": torch.tensor(8),
+                "executed_n_action_steps": torch.tensor(8),
                 "clip_count": torch.tensor(0),
             }
         )
@@ -209,7 +209,7 @@ def make_transitions(n: int = 32):
 
 
 def make_forward_batch(chunks, n: int):
-    lengths = [int(c["n_action_steps"]) for c in chunks]
+    lengths = [int(c["executed_n_action_steps"]) for c in chunks]
     h = chunks[0]["action"].shape[0]
     return {
         "observation.state": torch.stack([c["observation.state"] for c in chunks]),

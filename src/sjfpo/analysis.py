@@ -119,11 +119,11 @@ def normalize_cross_env(
 # Load evaluation histories
 
 
-def load_eval_histories(run_dir: Path, *, eval_interval: int) -> list[dict[str, Any]]:
+def load_eval_histories(run_dir: Path, *, eval_steps: int) -> list[dict[str, Any]]:
     """Scan run dirs for eval_history.csv files.
 
     Returns [{method, env, seed, global_step, return}]; global_step is
-    episode_index * eval_interval (the CSV has no step column).
+    episode_index * eval_steps (the CSV has no step column).
     Malformed rows/headers raise loudly, never default to zero.
     """
     histories = []
@@ -159,7 +159,7 @@ def load_eval_histories(run_dir: Path, *, eval_interval: int) -> list[dict[str, 
                         "method": method,
                         "env": env,
                         "seed": seed,
-                        "global_step": int(row["episode"]) * eval_interval,
+                        "global_step": int(row["episode"]) * eval_steps,
                         "return": float(row["return"]),
                     }
                 )
@@ -336,12 +336,12 @@ def analyze_results(
     base_dir: Path,
     output_dir: Path,
     *,
-    eval_interval: int,
+    eval_steps: int,
 ) -> AnalysisReport:
     """Run the full analysis: histories → curves → aggregate → plots → CSV."""
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    histories = load_eval_histories(base_dir, eval_interval=eval_interval)
+    histories = load_eval_histories(base_dir, eval_steps=eval_steps)
 
     if not histories:
         raise AnalysisError("no eval histories")

@@ -92,6 +92,21 @@ def log_eval_summary(
     log_metrics(data, step=global_step)
 
 
+def log_eval_video(frames: list, global_step: int, *, fps: int = 30) -> None:
+    """One eval episode as wandb.Video; no-op when disabled/empty/unrenderable."""
+    if wandb_disabled() or not frames:
+        return
+    try:
+        import numpy as _np
+
+        video = _np.stack([_np.asarray(f, dtype=_np.uint8) for f in frames])
+        if video.ndim != 4:
+            return
+        log_metrics({"eval/video": wandb.Video(video, fps=fps, format="mp4")}, step=global_step)
+    except Exception:
+        pass
+
+
 def finish_run(exit_code: int = 0) -> None:
     """Finish the run; no-op when disabled."""
     if wandb_disabled():

@@ -18,10 +18,12 @@
 # %%
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import Any
+
 import einx
 import math
 import torch
-from torch import nn
 from sjfpo.configuration_sjfpo import SJFPOConfig
 
 
@@ -209,11 +211,11 @@ def compute_policy_loss(
     # %%
 
 
-def sample(
-    net: nn.Module,
+def sample_action(
+    predict_velocity: Callable[[torch.Tensor, torch.Tensor, Any, Any], torch.Tensor],
     shape,
     condition,
-    steps: int,
+    num_inference_steps: int,
     eps: torch.Tensor | None = None,
     generator: torch.Generator | None = None,
     device=None,
@@ -222,20 +224,24 @@ def sample(
 ) -> torch.Tensor:
     """Sample the learned flow from t=0 (noise) to t=1 (data).
 
+    ``predict_velocity`` maps (x, t, condition, state) -> v̂ (e.g. an
+    SJFPOPolicy.compute_predicted_velocity bound method); the loop only
+    integrates (Euler or other modes) and never touches network weights.
+
     Euler: ``x ← x + δ·v̂`` on the ascending linspace(0, 1, steps+1) grid,
     δ = 1/steps at the left-endpoint t. ``eps=None`` draws N(0, I);
     explicit ``eps`` (e.g. zeros) bypasses randomness. Inference-only.
     """
     if mode != "euler":
         raise ValueError(f"mode={mode!r} unknown; expected 'euler'")
-    grid = torch.linspace(0.0, 1.0, steps + 1)
+    grid = torch.linspace(0.0, 1.0, num_inference_steps + 1)
     if eps is None:
         eps = torch.randn(*shape, generator=generator)
         if device is not None:
             eps = eps.to(device)
     x = eps
     with torch.inference_mode():
-        for i in range(steps):
-            v_hat = net(x, grid[i], condition, state)
+        for i in range(num_inference_steps):
+            v_hat = predict_velocity(x, grid[i], condition, state)
             x = x + (grid[i + 1] - grid[i]) * v_hat
     return x

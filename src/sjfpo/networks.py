@@ -3,7 +3,7 @@
 SwiGLU activations everywhere; no BatchNorm / Dropout / batch-stat norms.
 CELLORDER: 5
 
-Tensor conventions: B batch, N chunk batch, T obs window, H action horizon,
+Tensor conventions: B batch, N chunk batch, T obs window, H action_horizon,
 K spectral tokens, D hidden dim, action_dim env action dim. Params are fp32;
 compute may autocast matmuls (see utils.autocast_context).
 """
@@ -21,7 +21,6 @@ from sjfpo.dct_utils import dct
 
 # Single source for constructor defaults (see SJFPOConfig).
 _DEFAULTS = SJFPOConfig()
-_LEGACY_NAMES = {"hidden_size": "hidden_dim"}
 
 
 class SwiGLU(nn.Module):
@@ -48,12 +47,8 @@ class SwiGLU(nn.Module):
 
 
 def resolve_config_value(name: str, override):
-    """Policy default for ``name`` unless ``override`` is not None.
-
-    One legacy alias: ``hidden_size`` reads ``hidden_dim``.
-    """
-    key = _LEGACY_NAMES.get(name, name)
-    return override if override is not None else getattr(_DEFAULTS, key)
+    """Policy default for ``name`` unless ``override`` is not None."""
+    return override if override is not None else getattr(_DEFAULTS, name)
 
     # %% [markdown]
     # ## Sinusoidal timestep embedding (diffusers-style 10000-ladder)
@@ -83,13 +78,13 @@ class PositionalEncoding(nn.Module):
 
     # %% [markdown]
     # ## StateEncoder — frame projection -> two pre-norm residual blocks
-    # (attention + SwiGLU, norm before every sublayer) -> Z[B, T, hidden_size].
+    # (attention + SwiGLU, norm before every sublayer) -> Z[B, T, hidden_dim].
 
     # %%
 
 
 class StateEncoder(nn.Module):
-    """Frame projection + two pre-norm residual blocks -> Z[B, T, hidden_size].
+    """Frame projection + two pre-norm residual blocks -> Z[B, T, hidden_dim].
 
     Split residuals (attention and SwiGLU each under their own residual,
     RMSNorm before every sublayer). Position codes enter before the blocks
@@ -100,25 +95,25 @@ class StateEncoder(nn.Module):
         self,
         obs_dim: int,
         n_obs_steps: int | None = None,
-        hidden_size: int | None = None,
+        hidden_dim: int | None = None,
         n_heads: int = 4,
     ):
         super().__init__()
         n_obs_steps = resolve_config_value("n_obs_steps", n_obs_steps)
-        hidden_size = resolve_config_value("hidden_size", hidden_size)
-        self.frame_proj = nn.Linear(obs_dim, hidden_size)
+        hidden_dim = resolve_config_value("hidden_dim", hidden_dim)
+        self.frame_proj = nn.Linear(obs_dim, hidden_dim)
         self.pos_encoding = PositionalEncoding()
-        self.norm1 = nn.RMSNorm(hidden_size, eps=1e-6)
-        self.attn1 = nn.MultiheadAttention(hidden_size, n_heads, batch_first=True)
-        self.norm2 = nn.RMSNorm(hidden_size, eps=1e-6)
-        self.swiglu1 = SwiGLU(hidden_size, hidden_size, hidden_size)
-        self.norm3 = nn.RMSNorm(hidden_size, eps=1e-6)
-        self.attn2 = nn.MultiheadAttention(hidden_size, n_heads, batch_first=True)
-        self.norm4 = nn.RMSNorm(hidden_size, eps=1e-6)
-        self.swiglu2 = SwiGLU(hidden_size, hidden_size, hidden_size)
+        self.norm1 = nn.RMSNorm(hidden_dim, eps=1e-6)
+        self.attn1 = nn.MultiheadAttention(hidden_dim, n_heads, batch_first=True)
+        self.norm2 = nn.RMSNorm(hidden_dim, eps=1e-6)
+        self.swiglu1 = SwiGLU(hidden_dim, hidden_dim, hidden_dim)
+        self.norm3 = nn.RMSNorm(hidden_dim, eps=1e-6)
+        self.attn2 = nn.MultiheadAttention(hidden_dim, n_heads, batch_first=True)
+        self.norm4 = nn.RMSNorm(hidden_dim, eps=1e-6)
+        self.swiglu2 = SwiGLU(hidden_dim, hidden_dim, hidden_dim)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """[B, T, obs_dim] -> [B, T, hidden_size]."""
+        """[B, T, obs_dim] -> [B, T, hidden_dim]."""
         h = self.frame_proj(x)
         h = self.pos_encoding(h)
         n = self.norm1(h)
@@ -135,7 +130,7 @@ class StateEncoder(nn.Module):
 class ActionEncoder(nn.Module):
     """Deliberate duplicate of StateEncoder (not a subclass).
 
-    THE ONLY DIFFERENCE is the key-padding mask: ``real_action_lengths``
+    THE ONLY DIFFERENCE is the key-padding mask: ``executed_n_action_steps``
     marks executed rows so padded tails cannot influence real actions as
     attention keys. Locked by the parity test via ``load_state_dict``.
     """
@@ -144,36 +139,36 @@ class ActionEncoder(nn.Module):
         self,
         act_dim: int,
         n_obs_steps: int | None = None,
-        hidden_size: int | None = None,
+        hidden_dim: int | None = None,
         n_heads: int = 4,
     ):
         super().__init__()
         n_obs_steps = resolve_config_value("n_obs_steps", n_obs_steps)
-        hidden_size = resolve_config_value("hidden_size", hidden_size)
-        self.frame_proj = nn.Linear(act_dim, hidden_size)
+        hidden_dim = resolve_config_value("hidden_dim", hidden_dim)
+        self.frame_proj = nn.Linear(act_dim, hidden_dim)
         self.pos_encoding = PositionalEncoding()
-        self.norm1 = nn.RMSNorm(hidden_size, eps=1e-6)
-        self.attn1 = nn.MultiheadAttention(hidden_size, n_heads, batch_first=True)
-        self.norm2 = nn.RMSNorm(hidden_size, eps=1e-6)
-        self.swiglu1 = SwiGLU(hidden_size, hidden_size, hidden_size)
-        self.norm3 = nn.RMSNorm(hidden_size, eps=1e-6)
-        self.attn2 = nn.MultiheadAttention(hidden_size, n_heads, batch_first=True)
-        self.norm4 = nn.RMSNorm(hidden_size, eps=1e-6)
-        self.swiglu2 = SwiGLU(hidden_size, hidden_size, hidden_size)
+        self.norm1 = nn.RMSNorm(hidden_dim, eps=1e-6)
+        self.attn1 = nn.MultiheadAttention(hidden_dim, n_heads, batch_first=True)
+        self.norm2 = nn.RMSNorm(hidden_dim, eps=1e-6)
+        self.swiglu1 = SwiGLU(hidden_dim, hidden_dim, hidden_dim)
+        self.norm3 = nn.RMSNorm(hidden_dim, eps=1e-6)
+        self.attn2 = nn.MultiheadAttention(hidden_dim, n_heads, batch_first=True)
+        self.norm4 = nn.RMSNorm(hidden_dim, eps=1e-6)
+        self.swiglu2 = SwiGLU(hidden_dim, hidden_dim, hidden_dim)
 
-    def forward(self, x: torch.Tensor, real_action_lengths=None) -> torch.Tensor:
-        """[B, H, action_dim] -> [B, H, hidden_size]; tails masked as keys when given."""
+    def forward(self, x: torch.Tensor, executed_n_action_steps=None) -> torch.Tensor:
+        """[B, H, action_dim] -> [B, H, hidden_dim]; tails masked as keys when given."""
         h = self.frame_proj(x)
         h = self.pos_encoding(h)
         key_mask = None
-        if real_action_lengths is not None:
-            if not isinstance(real_action_lengths, torch.Tensor):
+        if executed_n_action_steps is not None:
+            if not isinstance(executed_n_action_steps, torch.Tensor):
                 # Eager callers may pass python lists; dynamo cannot trace
                 # list() unbinds, so coerce before the math below.
-                real_action_lengths = torch.as_tensor(
-                    list(real_action_lengths), device=h.device
+                executed_n_action_steps = torch.as_tensor(
+                    list(executed_n_action_steps), device=h.device
                 )
-            n_real = real_action_lengths.to(h.device)  # [B]
+            n_real = executed_n_action_steps.to(h.device)  # [B]
             step = torch.arange(h.shape[1], device=h.device).unsqueeze(0)
             key_mask = step >= n_real.unsqueeze(1)  # True = pad, ignore as key
         n = self.norm1(h)
@@ -371,21 +366,21 @@ class SpectralAttentionPool(nn.Module):
     def __init__(
         self,
         obs_dim: int,
-        hidden_size: int | None = None,
+        hidden_dim: int | None = None,
         time_dim: int | None = None,
         n_heads: int | None = None,
     ):
         super().__init__()
         if obs_dim <= 0:
             raise ValueError(f"obs_dim={obs_dim} must be positive")
-        hidden_size = int(resolve_config_value("hidden_size", hidden_size))
+        hidden_dim = int(resolve_config_value("hidden_dim", hidden_dim))
         time_dim = int(resolve_config_value("dit_time_dim", time_dim))
         n_heads = int(resolve_config_value("dit_heads", n_heads))
-        self.key_proj = nn.Linear(obs_dim, hidden_size)
-        self.query_proj = nn.Linear(time_dim, hidden_size)
-        self.norm_q = nn.RMSNorm(hidden_size)
-        self.norm_kv = nn.RMSNorm(hidden_size)
-        self.attn = nn.MultiheadAttention(hidden_size, n_heads, batch_first=True)
+        self.key_proj = nn.Linear(obs_dim, hidden_dim)
+        self.query_proj = nn.Linear(time_dim, hidden_dim)
+        self.norm_q = nn.RMSNorm(hidden_dim)
+        self.norm_kv = nn.RMSNorm(hidden_dim)
+        self.attn = nn.MultiheadAttention(hidden_dim, n_heads, batch_first=True)
 
     def forward(
         self, condition: torch.Tensor, temb: torch.Tensor
@@ -436,14 +431,14 @@ class DiTBlock(nn.Module):
     Zero-initialized modulation makes each block start as the identity.
     """
 
-    def __init__(self, hidden_size: int, n_heads: int, mlp_ratio: float):
+    def __init__(self, hidden_dim: int, n_heads: int, mlp_ratio: float):
         super().__init__()
-        self.norm1 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
-        self.attn = nn.MultiheadAttention(hidden_size, n_heads, batch_first=True)
-        self.norm2 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
-        mlp_hidden = int(hidden_size * mlp_ratio)
-        self.mlp = SwiGLU(hidden_size, mlp_hidden, hidden_size)
-        self.adaLN = SwiGLU(hidden_size, hidden_size, 6 * hidden_size)
+        self.norm1 = nn.LayerNorm(hidden_dim, elementwise_affine=False, eps=1e-6)
+        self.attn = nn.MultiheadAttention(hidden_dim, n_heads, batch_first=True)
+        self.norm2 = nn.LayerNorm(hidden_dim, elementwise_affine=False, eps=1e-6)
+        mlp_hidden = int(hidden_dim * mlp_ratio)
+        self.mlp = SwiGLU(hidden_dim, mlp_hidden, hidden_dim)
+        self.adaLN = SwiGLU(hidden_dim, hidden_dim, 6 * hidden_dim)
         nn.init.constant_(self.adaLN.down.weight, 0.0)
         nn.init.constant_(self.adaLN.down.bias, 0.0)
 
@@ -461,14 +456,14 @@ class DiTBlock(nn.Module):
 class CrossAttentionBlock(nn.Module):
     """Pre-norm cross-attention fusion: x <- x + Attn(norm(x), norm(kv)) + MLP."""
 
-    def __init__(self, hidden_size: int, n_heads: int, mlp_ratio: float = 4.0):
+    def __init__(self, hidden_dim: int, n_heads: int, mlp_ratio: float = 4.0):
         super().__init__()
-        self.norm_q = nn.RMSNorm(hidden_size)
-        self.norm_kv = nn.RMSNorm(hidden_size)
-        self.attn = nn.MultiheadAttention(hidden_size, n_heads, batch_first=True)
-        self.norm_mlp = nn.RMSNorm(hidden_size)
-        mlp_hidden = int(hidden_size * mlp_ratio)
-        self.mlp = SwiGLU(hidden_size, mlp_hidden, hidden_size)
+        self.norm_q = nn.RMSNorm(hidden_dim)
+        self.norm_kv = nn.RMSNorm(hidden_dim)
+        self.attn = nn.MultiheadAttention(hidden_dim, n_heads, batch_first=True)
+        self.norm_mlp = nn.RMSNorm(hidden_dim)
+        mlp_hidden = int(hidden_dim * mlp_ratio)
+        self.mlp = SwiGLU(hidden_dim, mlp_hidden, hidden_dim)
 
     def forward(self, x: torch.Tensor, kv: torch.Tensor) -> torch.Tensor:
         """([B, Hq, D], [B, Hkv, D]) -> [B, Hq, D]."""
@@ -488,7 +483,7 @@ class SJFOPolicyModel(nn.Module):
         self,
         action_dim: int,
         obs_dim: int,
-        hidden_size: int | None = None,
+        hidden_dim: int | None = None,
         dit_depth: int | None = None,
         dit_heads: int | None = None,
         dit_mlp_ratio: float | None = None,
@@ -498,7 +493,7 @@ class SJFOPolicyModel(nn.Module):
         super().__init__()
         if obs_dim <= 0:
             raise ValueError(f"obs_dim={obs_dim} must be positive")
-        hidden_size = int(resolve_config_value("hidden_size", hidden_size))
+        hidden_dim = int(resolve_config_value("hidden_dim", hidden_dim))
         dit_depth = int(resolve_config_value("dit_depth", dit_depth))
         dit_heads = int(resolve_config_value("dit_heads", dit_heads))
         dit_mlp_ratio = float(resolve_config_value("dit_mlp_ratio", dit_mlp_ratio))
@@ -512,14 +507,14 @@ class SJFOPolicyModel(nn.Module):
         self.spectral_pool_mode = spectral_pool
         self.last_pool_weights: torch.Tensor | None = None
         self.time_dim = dit_time_dim
-        self.in_proj = nn.Linear(action_dim, hidden_size)
-        self.state_encoder = StateEncoder(obs_dim, hidden_size=hidden_size)
-        self.time_mlp = SwiGLU(dit_time_dim, 4 * hidden_size, hidden_size)
-        self.cond_proj = nn.Linear(obs_dim, hidden_size)
+        self.in_proj = nn.Linear(action_dim, hidden_dim)
+        self.state_encoder = StateEncoder(obs_dim, hidden_dim=hidden_dim)
+        self.time_mlp = SwiGLU(dit_time_dim, 4 * hidden_dim, hidden_dim)
+        self.cond_proj = nn.Linear(obs_dim, hidden_dim)
         self.spectral_pool_module = (
             SpectralAttentionPool(
                 obs_dim,
-                hidden_size=hidden_size,
+                hidden_dim=hidden_dim,
                 time_dim=dit_time_dim,
                 n_heads=dit_heads,
             )
@@ -527,10 +522,10 @@ class SJFOPolicyModel(nn.Module):
             else None
         )
         self.blocks = nn.ModuleList(
-            DiTBlock(hidden_size, dit_heads, dit_mlp_ratio) for _ in range(dit_depth)
+            DiTBlock(hidden_dim, dit_heads, dit_mlp_ratio) for _ in range(dit_depth)
         )
-        self.norm_out = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
-        self.out = nn.Linear(hidden_size, action_dim)
+        self.norm_out = nn.LayerNorm(hidden_dim, elementwise_affine=False, eps=1e-6)
+        self.out = nn.Linear(hidden_dim, action_dim)
         # Zero final layer: an untrained policy predicts ~zero velocity.
         nn.init.constant_(self.out.weight, 0.0)
         nn.init.constant_(self.out.bias, 0.0)
@@ -575,7 +570,7 @@ class Critic(nn.Module):
         self,
         obs_dim: int,
         act_dim: int,
-        hidden_size: int | None = None,
+        hidden_dim: int | None = None,
         n_obs_steps: int | None = None,
         num_attn_blocks: int = 1,
         n_heads: int = 4,
@@ -586,35 +581,35 @@ class Critic(nn.Module):
             raise ValueError(f"obs_dim={obs_dim} must be positive")
         if act_dim <= 0:
             raise ValueError(f"act_dim={act_dim} must be positive (env action dim)")
-        hidden_size = resolve_config_value("hidden_size", hidden_size)
+        hidden_dim = resolve_config_value("hidden_dim", hidden_dim)
         self.state_encoder = StateEncoder(
-            obs_dim, n_obs_steps=n_obs_steps, hidden_size=hidden_size
+            obs_dim, n_obs_steps=n_obs_steps, hidden_dim=hidden_dim
         )
         self.action_encoder = ActionEncoder(
-            act_dim, n_obs_steps=n_obs_steps, hidden_size=hidden_size
+            act_dim, n_obs_steps=n_obs_steps, hidden_dim=hidden_dim
         )
         self.blocks = nn.ModuleList(
-            CrossAttentionBlock(hidden_size, n_heads, mlp_ratio)
+            CrossAttentionBlock(hidden_dim, n_heads, mlp_ratio)
             for _ in range(num_attn_blocks)
         )
-        self.out = nn.Linear(hidden_size, 1)
+        self.out = nn.Linear(hidden_dim, 1)
 
     def forward(
-        self, states: torch.Tensor, a: torch.Tensor, real_action_lengths=None
+        self, states: torch.Tensor, a: torch.Tensor, executed_n_action_steps=None
     ) -> torch.Tensor:
         """([B, T, obs_dim], [B, H, action_dim]) -> V[B]; tails dropped when given."""
         z = self.state_encoder(states)
-        h = self.action_encoder(a, real_action_lengths)
+        h = self.action_encoder(a, executed_n_action_steps)
         for block in self.blocks:
             h = block(h, z)
-        if real_action_lengths is None:
+        if executed_n_action_steps is None:
             pooled = h.mean(dim=1)
         else:
-            if not isinstance(real_action_lengths, torch.Tensor):
-                real_action_lengths = torch.as_tensor(
-                    list(real_action_lengths), device=h.device
+            if not isinstance(executed_n_action_steps, torch.Tensor):
+                executed_n_action_steps = torch.as_tensor(
+                    list(executed_n_action_steps), device=h.device
                 )
-            n_real = real_action_lengths.to(h.device)  # [B]
+            n_real = executed_n_action_steps.to(h.device)  # [B]
             exec_mask = (
                 (
                     torch.arange(h.shape[1], device=h.device).unsqueeze(0)

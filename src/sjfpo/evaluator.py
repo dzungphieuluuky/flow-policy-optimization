@@ -21,6 +21,32 @@ def write_eval_csv(results: list[dict[str, Any]], out_dir: str | Path) -> None:
         writer.writerows(results)
 
 
+def render_episode_frames(
+    env_id: str,
+    policy: Callable[[np.ndarray], np.ndarray],
+    seed: int = 0,
+    max_steps: int = 1000,
+) -> list[np.ndarray]:
+    """One deterministic episode frames [T,H,W,C] uint8 via rgb_array."""
+    import gymnasium as gym
+
+    env = gym.make(env_id, render_mode="rgb_array")
+    try:
+        obs, _ = env.reset(seed=seed)
+        if hasattr(policy, "reset"):
+            policy.reset()
+        frames: list[np.ndarray] = []
+        for _ in range(max_steps):
+            action = policy(obs)
+            obs, _, terminated, truncated, _ = env.step(action)
+            frames.append(np.asarray(env.render(), dtype=np.uint8))
+            if terminated or truncated:
+                break
+        return frames
+    finally:
+        env.close()
+
+
 def check_divergence(
     mean_return: float, baseline: float, consecutive: int
 ) -> tuple[int, bool]:

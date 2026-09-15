@@ -25,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from sjfpo.configuration_sjfpo import SJFPOConfig
 from sjfpo.networks import SpectralEncoder
 from sjfpo.networks import SJFOPolicyModel
-from sjfpo.fpo_core import sample
+from sjfpo.fpo_core import sample_action
 from sjfpo.evaluator import Evaluator
 
 # Fake environment
@@ -93,17 +93,17 @@ class SJFPOPolicyAdapter:
         with torch.no_grad():
             condition = self.spectral(state)
             # Policy model (zero noise via eps=zeros for deterministic eval)
-            n_coeffs = max(1, round(self.cfg.top_p_spectral_tokens * self.cfg.horizon))
-            chunk = sample(
-                self.policy_head,
-                (1, n_coeffs, self.action_dim),
+            top_k_spectral_action_tokens = max(1, round(self.cfg.top_p_spectral_tokens * self.cfg.action_horizon))
+            chunk = sample_action(
+                lambda x, t, c, s: self.policy_head(x, t, c, s),
+                (1, top_k_spectral_action_tokens, self.action_dim),
                 condition,
-                steps=self.cfg.euler_eval,
-                eps=torch.zeros(1, n_coeffs, self.action_dim),
+                num_inference_steps=self.cfg.euler_eval,
+                eps=torch.zeros(1, top_k_spectral_action_tokens, self.action_dim),
                 state=state,
             )  # [1, Ka, action_dim]
             chunk = torch.nn.functional.pad(
-                chunk, (0, 0, 0, self.cfg.horizon - n_coeffs)
+                chunk, (0, 0, 0, self.cfg.action_horizon - top_k_spectral_action_tokens)
             )
         return chunk.squeeze(0).cpu().numpy()
 
@@ -167,7 +167,7 @@ class TestPolicyKinds:
 
     def test_sjfpo_zero_noise(self):
         cfg = SJFPOConfig()
-        policy_head = SJFOPolicyModel(4, 17, hidden_size=cfg.hidden_dim)
+        policy_head = SJFOPolicyModel(4, 17, hidden_dim=cfg.hidden_dim)
         spectral = SpectralEncoder(17, n_obs_steps=cfg.n_obs_steps)
 
         env = FakeEnv(obs_dim=17, action_dim=4)
@@ -233,7 +233,7 @@ class TestDeterminism:
 class TestBatchSizeOne:
     def test_b1_no_calibration_needed(self):
         cfg = SJFPOConfig()
-        policy_head = SJFOPolicyModel(4, 17, hidden_size=cfg.hidden_dim)
+        policy_head = SJFOPolicyModel(4, 17, hidden_dim=cfg.hidden_dim)
         spectral = SpectralEncoder(17, n_obs_steps=cfg.n_obs_steps)
 
         env = FakeEnv(obs_dim=17, action_dim=4)

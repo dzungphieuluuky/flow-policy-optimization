@@ -11,7 +11,7 @@ verify_deps.sh      venv bootstrap + inline version asserts (STALE vs pyproject 
 ```
 
 ## Where to Look
-- `train.py:build_cfg` — YAML→dataclass coercion; only dataclass fields pass (`total-steps`/`eval-interval`/`ckpt-interval`/`obs-dim`/`act-dim` are runner scalars, NOT config fields)
+- `train.py:build_cfg` — YAML→dataclass coercion; only dataclass fields pass (`total-steps`/`eval-steps`/`ckpt-interval`/`obs-dim`/`act-dim` are runner scalars, NOT config fields)
 - `train.py:run_matrix_mode` → `sweep.run_pending` (reentrant: scans FS for done runs, dispatches pending sequentially)
 - `build_notebook.py:CLONE_CELL` — getpass/GITHUB_TOKEN → `!git clone` (skipped if present) → `%cd`; notebooks never inline `src/`
 

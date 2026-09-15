@@ -38,7 +38,7 @@ ENV_REGISTRY_PATH = Path(__file__).resolve().parents[2] / "configs" / "envs.yaml
 SEEDS = (0, 1, 2, 3, 4)
 
 TOTAL_STEPS = 1_000_000
-EVAL_INTERVAL = 50_000
+EVAL_STEPS = 50_000
 CKPT_INTERVAL = 25_000
 
 
@@ -91,7 +91,7 @@ class RunSpec:
     env: str
     seed: int
     total_steps: int
-    eval_interval: int
+    eval_steps: int
     ckpt_interval: int
 
 
@@ -107,7 +107,7 @@ def build_run_matrix() -> tuple[RunSpec, ...]:
                         env=env,
                         seed=seed,
                         total_steps=TOTAL_STEPS,
-                        eval_interval=EVAL_INTERVAL,
+                        eval_steps=EVAL_STEPS,
                         ckpt_interval=CKPT_INTERVAL,
                     )
                 )
@@ -122,7 +122,7 @@ def build_filtered_matrix(
     envs: Iterable[str],
     seeds: Iterable[int],
     total_steps: int,
-    eval_interval: int,
+    eval_steps: int,
     ckpt_interval: int,
 ) -> tuple[RunSpec, ...]:
     """Cartesian matrix in RUN_MATRIX order (method x env x seed) for CLI filters."""
@@ -132,7 +132,7 @@ def build_filtered_matrix(
             env=e,
             seed=s,
             total_steps=total_steps,
-            eval_interval=eval_interval,
+            eval_steps=eval_steps,
             ckpt_interval=ckpt_interval,
         )
         for m in [x for x in METHODS if x in methods]
@@ -150,7 +150,7 @@ if TINY_MATRIX:
                 env="Hopper-v5",
                 seed=0,
                 total_steps=20_000,
-                eval_interval=10_000,
+                eval_steps=10_000,
                 ckpt_interval=10_000,
             )
         )

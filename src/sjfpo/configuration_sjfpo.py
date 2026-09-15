@@ -1,11 +1,11 @@
 """Single home for every SJFPO hyperparameter (LeRobot PreTrainedConfig).
 
 Runs serialize/resume through HubMixin + draccus (``type = "sjfpo"``).
-Legacy names (``config.py::SJFPOConfig``): horizon/chunk_size,
-hidden_dim/hidden_size, optimizer_lr/lr, optimizer_weight_decay/wd,
-grad_clip_norm/grad_clip. ``n_action_steps`` is the executed inference prefix
-(``round(executed_vs_predicted_ratio * horizon)``); training executes the
-full horizon open-loop.
+Legacy names (``config.py::SJFPOConfig``): horizon/chunk_size (now action_horizon),
+optimizer_lr/lr, optimizer_weight_decay/wd,
+grad_clip_norm/grad_clip. ``n_action_steps`` is the intended inference prefix
+(``round(executed_vs_predicted_ratio * action_horizon)``); training executes the
+full action_horizon open-loop.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ class SJFPOConfig(PreTrainedConfig):
     """SJFPO hyperparameters (see field names; all self-explanatory)."""
 
     n_obs_steps: int = 16
-    horizon: int = 16
+    action_horizon: int = 16
     n_action_steps: int = 8
     hidden_dim: int = 128
 
@@ -31,6 +31,7 @@ class SJFPOConfig(PreTrainedConfig):
     euler_eval: int = 16
     chunks_per_update: int = 128
     num_epochs: int = 10
+    num_minibatches: int = 8
 
     gamma: float = 0.99
     gae_lambda: float = 0.95
@@ -55,13 +56,14 @@ class SJFPOConfig(PreTrainedConfig):
 
     optimizer_lr: float = 1e-4
     optimizer_weight_decay: float = 1e-4
+    optimizer_8bit: bool = False
 
     def __post_init__(self):
         super().__post_init__()
-        if not 0 < self.n_action_steps <= self.horizon:
+        if not 0 < self.n_action_steps <= self.action_horizon:
             raise ValueError(
                 f"n_action_steps={self.n_action_steps} must satisfy "
-                f"0 < n <= horizon={self.horizon}"
+                f"0 < n <= action_horizon={self.action_horizon}"
             )
         r = self.executed_vs_predicted_ratio
         if not 0.0 < r <= 1.0:
@@ -105,7 +107,7 @@ class SJFPOConfig(PreTrainedConfig):
     @property
     def action_delta_indices(self) -> list[int]:
         """Action-chunk offsets the dataset loader returns."""
-        return list(range(self.horizon))
+        return list(range(self.action_horizon))
 
     @property
     def reward_delta_indices(self) -> None:

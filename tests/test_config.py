@@ -132,7 +132,7 @@ def test_sjfpo_config_documented_ranges():
     assert c.dit_time_dim >= 8
     assert c.grad_clip_norm > 0
     assert c.n_obs_steps == 16
-    assert c.horizon == 16
+    assert c.action_horizon == 16
     assert c.executed_vs_predicted_ratio == 0.5
     assert c.top_p_spectral_tokens == 0.3
     assert c.hidden_dim > 0
@@ -199,7 +199,7 @@ def test_tiny_matrix_env_var_swaps_run_matrix(monkeypatch):
         assert spec.env == "Hopper-v5"
         assert spec.seed == 0
         assert spec.total_steps == 20_000
-        assert spec.eval_interval == 10_000
+        assert spec.eval_steps == 10_000
         assert spec.ckpt_interval == 10_000
     m_default = reload_with_env(monkeypatch)
     assert m_default.TINY_MATRIX is False

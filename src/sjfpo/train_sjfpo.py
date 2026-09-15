@@ -15,17 +15,17 @@ from typing import Any
 import numpy as np
 import torch
 from lerobot.configs.types import FeatureType, PolicyFeature
-from lerobot.processor.converters import from_tensor_to_numpy
 
 from sjfpo.checkpointing import save_policy_checkpoint
 from sjfpo.configuration_sjfpo import SJFPOConfig
-from sjfpo.evaluator import Evaluator, check_divergence
+from sjfpo.evaluator import Evaluator, check_divergence, render_episode_frames
 from sjfpo.modeling_sjfpo import SJFPOPolicy
-from sjfpo.utils import maybe_compile, resolve_device
+from sjfpo.utils import maybe_compile, resolve_device, to_numpy_1d
 from sjfpo.wandb_logging import (
     finish_run,
     init_wandb_run_for_method,
     log_eval_summary,
+    log_eval_video,
     log_metrics,
 )
 
@@ -41,11 +41,13 @@ class _EvalPolicy:
 
     def __call__(self, obs: np.ndarray) -> np.ndarray:
         action = self.policy.select_action({"observation.state": obs})
-        return from_tensor_to_numpy(action)
+        return to_numpy_1d(action)  # atleast_1d: 1-D envs must stay [1], not scalar
 
 
 def build_policy(
-    obs_dim: int, act_dim: int, cfg: SJFPOConfig, device=None
+    obs_dim: int, act_dim: int, cfg: SJFPOConfig, device=None,
+    action_low: np.ndarray | None = None,
+    action_high: np.ndarray | None = None,
 ) -> SJFPOPolicy:
     """Attach runtime observation/action features, then build the policy."""
     device = torch.device(device) if device is not None else resolve_device()
@@ -55,7 +57,7 @@ def build_policy(
             "observation.state": PolicyFeature(FeatureType.STATE, (obs_dim,))
         },
         output_features={"action": PolicyFeature(FeatureType.ACTION, (act_dim,))},
-        n_action_steps=max(1, round(cfg.executed_vs_predicted_ratio * cfg.horizon)),
+        n_action_steps=max(1, round(cfg.executed_vs_predicted_ratio * cfg.action_horizon)),
     )
     policy = SJFPOPolicy(policy_cfg).to(device)
     # Spectral is parameter-free, normalizer is buffers-only; the snapshot
@@ -63,7 +65,32 @@ def build_policy(
     policy.actor = maybe_compile(policy.actor)
     policy.old_actor = maybe_compile(policy.old_actor)
     policy.critic = maybe_compile(policy.critic)
+    if action_low is not None and action_high is not None:
+        policy.set_action_bounds(action_low, action_high)
     return policy
+
+
+def build_optimizer(policy: SJFPOPolicy, cfg: SJFPOConfig):
+    """Lerobot preset AdamW; bitsandbytes 8-bit AdamW when opted in."""
+    params = policy.get_optim_params()["params"]
+    if cfg.optimizer_8bit:
+        try:
+            import bitsandbytes as bnb
+        except ImportError as e:
+            raise RuntimeError(
+                "optimizer_8bit=True needs bitsandbytes (pip install bitsandbytes)"
+            ) from e
+        return bnb.optim.AdamW8bit(
+            params, lr=cfg.optimizer_lr, weight_decay=cfg.optimizer_weight_decay
+        )
+    return cfg.get_optimizer_preset().build(params)
+
+
+def sample_minibatch(
+    batch: dict[str, torch.Tensor], indices: torch.Tensor
+) -> dict[str, torch.Tensor]:
+    """Slice dim-0 rows; every batch value is a [B, ...] tensor."""
+    return {k: v[indices] for k, v in batch.items()}
 
 
 def random_baseline(evaluator: Evaluator, env: Any, seed: int) -> float:
@@ -80,7 +107,7 @@ def train_sjfpo_run(
     *,
     seed: int = 0,
     total_steps: int = 2000,
-    eval_interval: int = 1000,
+    eval_steps: int = 1000,
     ckpt_interval: int = 1000,
     obs_dim: int | None = None,
     act_dim: int | None = None,
@@ -98,14 +125,13 @@ def train_sjfpo_run(
     torch.manual_seed(seed)
     np.random.seed(seed)
     device = resolve_device()
-    policy = build_policy(obs_dim, act_dim, cfg, device=device)
+    # Real env bounds (not ±1): InvertedPendulum ±3, Pusher ±2, Humanoid ±0.4.
+    action_low = np.atleast_1d(np.asarray(env.action_space.low, dtype=np.float32))
+    action_high = np.atleast_1d(np.asarray(env.action_space.high, dtype=np.float32))
+    policy = build_policy(obs_dim, act_dim, cfg, device=device,
+                           action_low=action_low, action_high=action_high)
     print(policy, file=sys.stderr)
-    optimizer = torch.optim.AdamW(
-        policy.get_optim_params()["params"],
-        lr=cfg.optimizer_lr,
-        weight_decay=cfg.optimizer_weight_decay,
-        foreach=True,  # one fused kernel per step instead of per-tensor launches
-    )
+    optimizer = build_optimizer(policy, cfg)
     evaluator = Evaluator(env, eval_seed=10000 + seed, max_episodes=12)
     eval_policy = _EvalPolicy(policy)
     r_rand = random_baseline(evaluator, env, seed)
@@ -127,16 +153,23 @@ def train_sjfpo_run(
     try:
         while global_step < total_steps:
             steps_to_go = total_steps - global_step
-            collect_steps = min(cfg.chunks_per_update * cfg.horizon, steps_to_go)
-            batch = policy.generate_rollout(env, collect_steps)
+            collect_steps = min(cfg.chunks_per_update * cfg.action_horizon, steps_to_go)
+            batch = policy.generate_rollout(env, collect_steps,
+                                              action_low=action_low, action_high=action_high)
             global_step += int((~batch["action_is_pad"]).sum())
             policy.train()
             infos = []
+            # PPO-style: fixed epochs, each epoch sweeps shuffled minibatches
+            # (not the whole buffer per update).
+            n_chunks = batch["advantages"].shape[0]
+            n_mb = max(1, min(cfg.num_minibatches, n_chunks))
             for _ in range(cfg.num_epochs):
-                # Rolling one-step delay: compare live weights to the previous
-                # step's snapshot, refresh the snapshot pre-step (post-step
-                # would compare weights to themselves: ratio 0).
-                loss, epoch_info = policy(batch)
+                for mb_idx in torch.randperm(n_chunks).split(max(1, n_chunks // n_mb)):
+                    mb_idx = mb_idx.to(batch["advantages"].device)
+                    # Rolling one-step delay: compare live weights to the previous
+                    # step's snapshot, refresh the snapshot pre-step (post-step
+                    # would compare weights to themselves: ratio 0).
+                    loss, epoch_info = policy(sample_minibatch(batch, mb_idx))
                 optimizer.zero_grad()
                 loss.backward()
                 all_params = [
@@ -162,7 +195,7 @@ def train_sjfpo_run(
                     }
                 )
                 log_metrics(data, step=global_step)
-            if global_step % eval_interval < cfg.horizon or global_step >= total_steps:
+            if global_step % eval_steps < cfg.action_horizon or global_step >= total_steps:
                 eval_results = evaluator.evaluate(eval_policy, out_dir=out_dir)
                 mean_return = float(np.mean([r["return"] for r in eval_results]))
                 all_eval_returns.append(mean_return)
@@ -177,6 +210,11 @@ def train_sjfpo_run(
                         r_rand=r_rand,
                         consecutive_below=consecutive_below,
                     )
+                    try:
+                        frames = render_episode_frames(env_name, eval_policy, seed=10000 + seed)
+                        log_eval_video(frames, global_step)
+                    except Exception:
+                        pass  # headless/GL failures must never break training
                 consecutive_below, diverged_now = check_divergence(
                     mean_return, r_rand, consecutive_below
                 )
@@ -192,7 +230,7 @@ def train_sjfpo_run(
                         f"< 0.10*R_rand={0.10 * r_rand:.2f}"
                     )
                     break
-            if global_step % ckpt_interval < cfg.horizon or global_step >= total_steps:
+            if global_step % ckpt_interval < cfg.action_horizon or global_step >= total_steps:
                 ckpt_dir = out_dir / f"checkpoint_{global_step}"
                 save_policy_checkpoint(
                     ckpt_dir,

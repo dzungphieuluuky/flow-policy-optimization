@@ -19,7 +19,7 @@ Source of truth: `src/sjfpo/config.py`. YAML mirrors in `configs/`
 | Tiny (`SJFPO_TINY_MATRIX=1`) | 3 runs, short budgets | Hopper-v5 × seed 0. |
 
 `METHODS = (sjfpo, ppo, sac)`, `ENVS = (HalfCheetah-v5, Walker2d-v5, Hopper-v5)`,
-`SEEDS = (0..4)`; `TOTAL_STEPS = 1M`, `EVAL_INTERVAL = 50k`, `CKPT_INTERVAL = 25k`.
+`SEEDS = (0..4)`; `TOTAL_STEPS = 1M`, `EVAL_STEPS = 50k`, `CKPT_INTERVAL = 25k`.
 `scripts/train.py --matrix` builds the same cartesian product via
 `config.build_filtered_matrix` (`--methods/--envs/--seeds` filter it).
 

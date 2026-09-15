@@ -43,7 +43,7 @@ def bootstrap_action_lengths(chunks, chunk_size: int) -> list[int]:
     out: list[int] = []
     for i, c in enumerate(chunks):
         if not bool(c[DONE]) and not bool(c[TRUNCATED]) and i + 1 < n:
-            out.append(int(chunks[i + 1]["n_action_steps"]))
+            out.append(int(chunks[i + 1]["executed_n_action_steps"]))
         else:
             out.append(chunk_size)
     return out
@@ -59,7 +59,7 @@ Transition = TypedDict(
         "next.reward": torch.Tensor,  # [n_executed] per executed step
         "next.done": torch.Tensor,  # bool scalar, terminated only
         "next.truncated": torch.Tensor,  # bool scalar, bootstrap-eligible
-        "n_action_steps": torch.Tensor,  # int64 scalar, actually executed steps
+        "executed_n_action_steps": torch.Tensor,  # int64 scalar, actually executed steps
         "clip_count": torch.Tensor,  # int64 scalar, clipped proposal elements
     },
 )
@@ -174,7 +174,7 @@ def finalize_transition(
         REWARD: to_tensor(rewards, dtype=torch.float32),
         DONE: to_tensor(done_kind == "terminated", dtype=torch.bool),
         TRUNCATED: to_tensor(done_kind == "truncated", dtype=torch.bool),
-        "n_action_steps": to_tensor(n_executed, dtype=torch.int64),
+        "executed_n_action_steps": to_tensor(n_executed, dtype=torch.int64),
         "clip_count": to_tensor(clip_count, dtype=torch.int64),
     }
 
@@ -241,7 +241,7 @@ def collect_chunks(
     """Roll out ``env`` with open-loop chunk execution for ``total_steps``."""
     low = as_float_tensor(action_low)
     high = as_float_tensor(action_high)
-    chunk_size = _DEFAULTS.horizon
+    chunk_size = _DEFAULTS.action_horizon
     if not 1 <= n_action_steps <= chunk_size:
         raise ValueError(
             f"n_action_steps={n_action_steps} must satisfy "
@@ -270,7 +270,7 @@ def collect_chunks(
             if prev is not None and prev_done == "continue":
                 # The next proposal IS the bootstrap action of the previous chunk.
                 prev["next.action"] = record["action"].clone()
-            executed_total += int(record["n_action_steps"])
+            executed_total += int(record["executed_n_action_steps"])
             records.append(record)
             prev, prev_done = record, done_kind
             if done_kind != "continue":

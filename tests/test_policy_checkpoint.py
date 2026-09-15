@@ -61,7 +61,7 @@ def test_save_writes_hub_files_plus_training_state(tmp_path):
     } <= names
     saved = json.loads((d / "config.json").read_text())
     assert saved["type"] == "sjfpo"
-    assert saved["horizon"] == 16
+    assert saved["action_horizon"] == 16
     assert json.loads((d / "counters.json").read_text()) == {
         "global_step": 123,
         "step_count": 0,
@@ -85,7 +85,7 @@ def test_roundtrip_restores_weights_optimizer_and_counters(tmp_path):
     loaded, loaded_opt, counters = load_policy_checkpoint(d)
     assert counters == {"global_step": 123, "step_count": 7}
     assert loaded.step_count == 7
-    assert loaded.config.horizon == 16 and loaded.config.type == "sjfpo"
+    assert loaded.config.action_horizon == 16 and loaded.config.type == "sjfpo"
     for (n1, p1), (n2, p2) in zip(policy.named_parameters(), loaded.named_parameters()):
         assert n1 == n2
         assert torch.equal(p1, p2), n1

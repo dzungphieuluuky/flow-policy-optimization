@@ -15,7 +15,7 @@ import torch
 __all__ = [
     "dct",
     "idct",
-    "mask_unexecuted_tail",
+    "mask_actions",
     "discounted_chunk_reward",
 ]
 
@@ -59,14 +59,14 @@ def idct(x: torch.Tensor, dim: int = -1) -> torch.Tensor:
     return apply_matrix_along_dim(x, dim, dct_basis_matrix(x.shape[dim % x.dim()]))
 
 
-def mask_unexecuted_tail(actions: torch.Tensor, lengths, dim: int = 1) -> torch.Tensor:
+def mask_actions(actions: torch.Tensor, executed_n_action_steps, dim: int = 1) -> torch.Tensor:
     """Zero-pad unexecuted tail rows of a real-space chunk; return same space.
 
-    Stored chunks are real-space with time == horizon, so masking is a plain
-    row multiply. Lengths [N] (1 <= L <= H) along ``dim`` (default 1).
+    Stored chunks are real-space with time == action_horizon, so masking is a plain
+    row multiply. Executed counts [N] (1 <= L <= H) along ``dim`` (default 1).
     """
     h = actions.shape[dim % actions.dim()]
-    lens = torch.as_tensor(list(lengths), device=actions.device)
+    lens = torch.as_tensor(list(executed_n_action_steps), device=actions.device)
     row = torch.arange(h, device=actions.device).unsqueeze(0)
     mask = (row < lens.unsqueeze(1)).to(actions.dtype).unsqueeze(-1)
     return actions * mask

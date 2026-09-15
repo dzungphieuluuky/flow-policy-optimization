@@ -90,11 +90,11 @@ def test_toy_gaussian_reference_gate(capsys):
     with torch.no_grad():
         # 256 steps: coarse Euler (64) contracts variance by ~6% through any
         # imperfect field, which would confound this field-correctness gate.
-        samples = fpo_core.sample(
-            net,
+        samples = fpo_core.sample_action(
+            lambda x, t, c, s: net(x, t, c, s),
             (4000, 1),
             condition=None,
-            steps=256,
+            num_inference_steps=256,
             generator=torch.Generator().manual_seed(7),
         )
     mean_hat = samples.mean().item()
@@ -347,8 +347,8 @@ def test_euler_sampler_grid_update_and_zero_noise():
             seen_ts.append(float(t))
             return net(x_t, t, condition, state)
 
-    out = fpo_core.sample(
-        Probe(), (5, 1), None, steps=64, generator=torch.Generator().manual_seed(42)
+    out = fpo_core.sample_action(
+        Probe(), (5, 1), None, num_inference_steps=64, generator=torch.Generator().manual_seed(42)
     )
 
     grid = torch.linspace(0.0, 1.0, 65)  # 65 nodes -> 64 ascending intervals
@@ -367,8 +367,8 @@ def test_euler_sampler_grid_update_and_zero_noise():
     assert torch.allclose(out, x, atol=1e-6), "sampler deviates from x <- x + dt*v_hat"
 
     # Zero-sampling path (eps = 0) is deterministic given the weights.
-    z1 = fpo_core.sample(net, (5, 1), None, steps=16, eps=torch.zeros(5, 1))
-    z2 = fpo_core.sample(net, (5, 1), None, steps=16, eps=torch.zeros(5, 1))
+    z1 = fpo_core.sample_action(net, (5, 1), None, num_inference_steps=16, eps=torch.zeros(5, 1))
+    z2 = fpo_core.sample_action(net, (5, 1), None, num_inference_steps=16, eps=torch.zeros(5, 1))
     assert torch.equal(z1, z2)
 
     # (i) SPACE-CONSISTENCY gate: sample action chunks in DCT coefficient space,
@@ -381,11 +381,11 @@ def test_space_consistency_dct_pipeline():
     k = max(1, round(_DEFAULTS.top_p_spectral_tokens * 16))
     condition = torch.zeros(4, k, 4)
     with torch.no_grad():
-        coeffs = fpo_core.sample(
+        coeffs = fpo_core.sample_action(
             policy,
             (4, 8, 3),
             condition,
-            steps=16,
+            num_inference_steps=16,
             generator=torch.Generator().manual_seed(52),
             state=torch.zeros(4, _DEFAULTS.n_obs_steps, 4),
         )

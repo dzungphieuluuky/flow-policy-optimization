@@ -117,7 +117,7 @@ SMOKE_CELL = """\
 
 FULL_TRAIN_CELL = """\
 # Full run: 1M steps with the matrix budgets (50k eval / 25k ckpt).
-!PYTHONPATH=src python scripts/train.py --method sjfpo --env Hopper-v5 --seed 0 --total-steps 1000000 --eval-interval 50000 --ckpt-interval 25000
+!PYTHONPATH=src python scripts/train.py --method sjfpo --env Hopper-v5 --seed 0 --total-steps 1000000 --eval-steps 50000 --ckpt-interval 25000
 """
 
 MATRIX_CELL = """\

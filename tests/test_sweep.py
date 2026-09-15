@@ -31,7 +31,7 @@ def make_run_spec(method: str, env: str, seed: int) -> RunSpec:
         env=env,
         seed=seed,
         total_steps=1_000_000,
-        eval_interval=50_000,
+        eval_steps=50_000,
         ckpt_interval=25_000,
     )
 
