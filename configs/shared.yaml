@@ -7,7 +7,7 @@ run_matrix:
   seeds: [0, 1, 2, 3, 4]
   total_steps: 1000000
   eval_steps: 50000
-  ckpt_interval: 25000
+  save_steps: 25000
 tiny:
   env: Hopper-v5
   seed: 0
@@ -16,10 +16,10 @@ tiny:
     ppo: 20000
     sac: 20000
   eval_steps: 10000
-  ckpt_interval: 10000
+  save_steps: 10000
 eval:
   eval_steps: 50000
-  ckpt_interval: 25000
+  save_steps: 25000
   max_episodes: 12
 output:
   out_dir: outputs/

@@ -31,7 +31,7 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from sjfpo.collector import Transition, collect_chunks  # noqa: E402, F401
+from sjfpo.collector import Transition, collect_chunks, scale_and_clip_chunk  # noqa: E402, F401
 from sjfpo.configuration_sjfpo import SJFPOConfig  # noqa: E402
 
 _DEFAULTS = SJFPOConfig()

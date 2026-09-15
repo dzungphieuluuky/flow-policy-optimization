@@ -65,3 +65,19 @@ def test_validate_features_needs_state_and_action():
         output_features={"action": PolicyFeature(FeatureType.ACTION, (4,))},
     )
     cfg.validate_features()
+
+
+def test_post_init_rejects_bad_optimizer_kl_ema():
+    with pytest.raises(ValueError, match="optimizer_lr_critic"):
+        SJFPOConfig(optimizer_lr_critic=0.0)
+    with pytest.raises(ValueError, match="ema_decay"):
+        SJFPOConfig(ema_decay=1.0)
+    with pytest.raises(ValueError, match="kl_coef"):
+        SJFPOConfig(kl_coef=-0.1)
+
+
+def test_post_init_rejects_bad_timestep_range():
+    with pytest.raises(ValueError, match="min_timestep"):
+        SJFPOConfig(min_timestep=0.5, max_timestep=0.1)
+    with pytest.raises(ValueError, match="min_timestep"):
+        SJFPOConfig(min_timestep=0.0)

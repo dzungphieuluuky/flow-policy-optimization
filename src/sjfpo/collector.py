@@ -66,16 +66,16 @@ Transition = TypedDict(
 
 
 def as_float_tensor(x: object) -> torch.Tensor:
-    """Numpy/torch input -> detached fp32 tensor, shape preserved."""
     if isinstance(x, torch.Tensor):
-        return x.detach().to(torch.float32)  # [...] -> [...] fp32 detached
-    return to_tensor(np.asarray(x, dtype=np.float32))  # [...] -> [...] fp32
+        return x.detach().to(torch.float32)
+    return to_tensor(np.asarray(x, dtype=np.float32))
 
 
 def scale_and_clip_chunk(
     proposed: torch.Tensor, low: torch.Tensor, high: torch.Tensor
 ) -> tuple[torch.Tensor, torch.Tensor, int]:
-    """Clip to bounds; return (executed, scaled-to-[-1,1], clip_count)."""
+    if bool(((high - low) <= 0).any()):
+        raise ValueError("action bounds must satisfy high > low in every dim")
     clip_count = int(((proposed < low) | (proposed > high)).sum())
     executed = torch.clamp(proposed, min=low, max=high)
     scaled = 2.0 * (executed - low) / (high - low) - 1.0
@@ -85,12 +85,10 @@ def scale_and_clip_chunk(
 def build_warmup_window(
     first_obs: torch.Tensor, n_obs_steps: int
 ) -> deque[torch.Tensor]:
-    """First obs replicated exactly n_obs_steps times."""
     return deque((first_obs.clone() for _ in range(n_obs_steps)), maxlen=n_obs_steps)
 
 
 def reset_chunk_window(env, n_obs_steps: int) -> deque[torch.Tensor]:
-    """Reset the env and rebuild the warmup window from the fresh obs."""
     obs, _ = env.reset()
     new_obs = as_float_tensor(obs)
     return deque((new_obs.clone() for _ in range(n_obs_steps)), maxlen=n_obs_steps)
@@ -104,12 +102,11 @@ def execute_open_loop_steps(
     total_steps: int,
     n_action_steps: int,
 ) -> tuple[list[float], str]:
-    """Execute the first n proposed actions open-loop; return (rewards, done_kind)."""
     rewards: list[float] = []
     done_kind = "continue"
     for i in range(n_action_steps):
         if executed_total >= total_steps:
-            break  # step budget exhausted mid-chunk
+            break
         obs, reward, terminated, truncated, info = env.step(executed[i].numpy())
         executed_total += 1
         rewards.append(float(reward))
@@ -130,7 +127,6 @@ def propose_action_chunk(
     high: torch.Tensor,
     chunk_size: int,
 ) -> torch.Tensor:
-    """Propose without executing; return the real scaled chunk (boundary next-actions)."""
     proposed = as_float_tensor(policy(state))
     executed, scaled, clip_count = scale_and_clip_chunk(proposed, low, high)
     if scaled.shape[0] != chunk_size:
@@ -152,7 +148,6 @@ def finalize_transition(
     n_action_steps: int,
     next_action: torch.Tensor | None = None,
 ) -> Transition:
-    """Pack executed-chunk fields into a Transition dict (LeRobot keys)."""
     if scaled.shape[0] != chunk_size:
         raise ValueError(
             f"proposed chunk has {scaled.shape[0]} rows, "
@@ -190,7 +185,6 @@ def propose_and_execute_chunk(
     chunk_size: int,
     n_action_steps: int,
 ) -> tuple[Transition, str]:
-    """Propose one chunk and execute its first n actions; return (transition, done)."""
     state = torch.stack(tuple(window), dim=0)
     proposed = as_float_tensor(policy(state))
     executed, scaled, clip_count = scale_and_clip_chunk(proposed, low, high)
@@ -219,7 +213,6 @@ def propose_and_execute_chunk(
 def flush_on_collection_error(
     on_error_flush: Callable[[], None] | None,
 ) -> None:
-    """Attempt the error-flush hook once; hook failures never mask the error."""
     if on_error_flush is not None:
         try:
             on_error_flush()
@@ -238,7 +231,6 @@ def collect_chunks(
     n_action_steps: int,  # required: no config default; training passes chunk_size
     on_error_flush: Callable[[], None] | None = None,
 ) -> list[Transition]:
-    """Roll out ``env`` with open-loop chunk execution for ``total_steps``."""
     low = as_float_tensor(action_low)
     high = as_float_tensor(action_high)
     chunk_size = _DEFAULTS.action_horizon
@@ -250,7 +242,7 @@ def collect_chunks(
     try:
         obs, _ = env.reset()
         first_obs = as_float_tensor(obs)
-        window = build_warmup_window(first_obs, n_obs_steps)  # warmup replication
+        window = build_warmup_window(first_obs, n_obs_steps)
         records: list[Transition] = []
         executed_total = 0
         prev: Transition | None = None

@@ -221,7 +221,7 @@ def test_empty_history_raises(tmp_path):
             seed=0,
             total_steps=1000,
             eval_steps=500,
-            ckpt_interval=500,
+            save_steps=500,
         ),
     )
 
@@ -263,7 +263,7 @@ def test_diverged_excluded_and_reported(tmp_path):
             seed=0,
             total_steps=1000,
             eval_steps=500,
-            ckpt_interval=500,
+            save_steps=500,
         ),
     )
 

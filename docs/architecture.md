@@ -5,7 +5,7 @@
 ```
 Observation (per step):  flat Box [obs_dim] (env-dependent; Hopper-v5: 11)
 State window:            stacked frames [B,T,obs_dim] via deque (T=16)
-Action chunk:            [B,H,act_dim] predicted (H=16); training executes all 16
+Action chunk:            [B,H,action_dim] predicted (H=16); training executes all 16
                        open-loop, eval executes the ratio*H prefix (default 8)
 ```
 

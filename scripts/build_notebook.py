@@ -112,17 +112,18 @@ else:
 
 SMOKE_CELL = """\
 # Smoke: 2k steps, single SJFPO run on Hopper (eval + checkpoints included).
-!PYTHONPATH=src python scripts/train.py --method sjfpo --env Hopper-v5 --seed 0 --total-steps 2000
+!PYTHONPATH=src python scripts/train.py --method sjfpo --env Hopper-v5 --seed 0 --total_steps 2000
 """
 
 FULL_TRAIN_CELL = """\
 # Full run: 1M steps with the matrix budgets (50k eval / 25k ckpt).
-!PYTHONPATH=src python scripts/train.py --method sjfpo --env Hopper-v5 --seed 0 --total-steps 1000000 --eval-steps 50000 --ckpt-interval 25000
+!PYTHONPATH=src python scripts/train.py --method sjfpo --env Hopper-v5 --seed 0 --total_steps 1000000 --eval_steps 50000 --save_steps 25000
 """
 
 MATRIX_CELL = """\
-# Comparison matrix: all methods x Hopper-v5 x seed 0 (extend --envs/--seeds for full).
-!PYTHONPATH=src python scripts/train.py --matrix --methods sjfpo ppo sac --envs Hopper-v5 --seeds 0
+# Comparison matrix: all methods x Hopper-v5 x seed 0 (extend ENVS/SEEDS for full).
+# Each sweep row calls: PYTHONPATH=src python scripts/train.py --method <m> --env <e> --seed <s>
+!METHODS="sjfpo ppo sac" ENVS="Hopper-v5" SEEDS="0" bash scripts/sweep.sh
 """
 
 RESULTS_CELL = """\

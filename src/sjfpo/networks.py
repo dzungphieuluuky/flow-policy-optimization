@@ -1,14 +1,11 @@
 """Networks: state encoders, spectral tokens, flow heads, critic.
 
 SwiGLU activations everywhere; no BatchNorm / Dropout / batch-stat norms.
-CELLORDER: 5
 
 Tensor conventions: B batch, N chunk batch, T obs window, H action_horizon,
 K spectral tokens, D hidden dim, action_dim env action dim. Params are fp32;
 compute may autocast matmuls (see utils.autocast_context).
 """
-
-# %%
 from __future__ import annotations
 
 import math
@@ -28,11 +25,6 @@ class SwiGLU(nn.Module):
 
     Drop-in for ``Sequential(Linear(in_dim, hidden_dim), SiLU,
     Linear(hidden_dim, out_dim))`` with the same (in, hidden, out) widths.
-
-    Args:
-        in_dim: Input dimension.
-        hidden_dim: Gated intermediate dimension.
-        out_dim: Output dimension.
     """
 
     def __init__(self, in_dim: int, hidden_dim: int, out_dim: int):
@@ -50,38 +42,21 @@ def resolve_config_value(name: str, override):
     """Policy default for ``name`` unless ``override`` is not None."""
     return override if override is not None else getattr(_DEFAULTS, name)
 
-    # %% [markdown]
-    # ## Sinusoidal timestep embedding (diffusers-style 10000-ladder)
-    #
-    # First half sin, second half cos; finite in fp32 at any width.
-
-    # %%
-
-
 class PositionalEncoding(nn.Module):
     """Fixed sinusoidal position codes (stateless: nothing in state_dict)."""
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Add position codes: [..., T, D] -> [..., T, D]."""
         t, dim = x.shape[-2], x.shape[-1]
-        pos = torch.arange(t, dtype=torch.float32, device=x.device).unsqueeze(
-            1
-        )  # [T, 1]
+        pos = torch.arange(t, dtype=torch.float32, device=x.device).unsqueeze(1)
         half = dim // 2
         freqs = torch.exp(
             torch.arange(half, dtype=torch.float32, device=x.device)
             * -(math.log(10000.0) / max(half - 1, 1))
-        )  # [half]
-        ang = pos * freqs  # [T, half]
-        pe = torch.cat([ang.sin(), ang.cos()], dim=-1)  # [T, 2*half]
-        return x + pe[:, :dim]  # [..., T, dim]
-
-    # %% [markdown]
-    # ## StateEncoder — frame projection -> two pre-norm residual blocks
-    # (attention + SwiGLU, norm before every sublayer) -> Z[B, T, hidden_dim].
-
-    # %%
-
+        )
+        ang = pos * freqs
+        pe = torch.cat([ang.sin(), ang.cos()], dim=-1)
+        return x + pe[:, :dim]
 
 class StateEncoder(nn.Module):
     """Frame projection + two pre-norm residual blocks -> Z[B, T, hidden_dim].
@@ -137,7 +112,7 @@ class ActionEncoder(nn.Module):
 
     def __init__(
         self,
-        act_dim: int,
+        action_dim: int,
         n_obs_steps: int | None = None,
         hidden_dim: int | None = None,
         n_heads: int = 4,
@@ -145,7 +120,7 @@ class ActionEncoder(nn.Module):
         super().__init__()
         n_obs_steps = resolve_config_value("n_obs_steps", n_obs_steps)
         hidden_dim = resolve_config_value("hidden_dim", hidden_dim)
-        self.frame_proj = nn.Linear(act_dim, hidden_dim)
+        self.frame_proj = nn.Linear(action_dim, hidden_dim)
         self.pos_encoding = PositionalEncoding()
         self.norm1 = nn.RMSNorm(hidden_dim, eps=1e-6)
         self.attn1 = nn.MultiheadAttention(hidden_dim, n_heads, batch_first=True)
@@ -168,7 +143,7 @@ class ActionEncoder(nn.Module):
                 executed_n_action_steps = torch.as_tensor(
                     list(executed_n_action_steps), device=h.device
                 )
-            n_real = executed_n_action_steps.to(h.device)  # [B]
+            n_real = executed_n_action_steps.to(h.device)
             step = torch.arange(h.shape[1], device=h.device).unsqueeze(0)
             key_mask = step >= n_real.unsqueeze(1)  # True = pad, ignore as key
         n = self.norm1(h)
@@ -180,16 +155,6 @@ class ActionEncoder(nn.Module):
         h = h + attn
         h = h + self.swiglu2(self.norm4(h))
         return h
-
-        # %% [markdown]
-        # ## RunningMeanStd — per-dim running obs stats (SB3 VecNormalize-style)
-        #
-        # Buffers ride the module state_dict, so checkpointing stores them
-        # alongside the model parameters. update() folds a batch in with
-        # parallel Welford; forward() normalizes frozen (call update explicitly).
-
-        # %%
-
 
 class RunningMeanStd(nn.Module):
     """Per-dim running mean/variance over raw obs frames (buffers ride state_dict).
@@ -233,19 +198,6 @@ class RunningMeanStd(nn.Module):
         )
         return norm.clamp(-self.clip, self.clip)
 
-        # %% [markdown]
-        # ## SIGReg — Sketched Isotropic Gaussian Regularizer (Epps-Pulley, LeWorldModel)
-        #
-        # Penalizes the empirical characteristic function (CF) of resampled random 1-D
-        # projections of Z toward the N(0,1) target CF phi(t)=exp(-t^2/2), via
-        # trapezoidal quadrature on [0,3].  Replicates the official implementation from
-        # lucas-maes/le-wm (arXiv 2603.19312, Algorithm 1).
-        #
-        # Module-level quadrature nodes / weights for the default knots=17 (cached once).
-        #
-        #
-
-
 DEFAULT_KNOTS = 17
 t_cache: dict[int, tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = {}
 
@@ -267,12 +219,6 @@ def get_quadrature(knots: int, device: torch.device):
         phi = phi.to(device)
     return t, w_phi, phi
 
-    # %%
-    # retained: test-only public API — exercised directly by tests/test_networks.py
-    # and tests/test_einx_migration.py; not called by the src train path.
-    # Keep per fn-consolidation D1.
-
-
 def sigreg_loss(
     z: torch.Tensor,
     *,
@@ -280,21 +226,16 @@ def sigreg_loss(
     num_proj: int = 1024,
     projection: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Sketched Isotropic Gaussian Regularizer (Epps-Pulley CF test).
+    """Sketched Isotropic Gaussian Regularizer (Epps-Pulley CF test, arXiv 2603.19312).
 
     Penalizes the empirical CF of random 1-D projections of *z* toward the
-    Returns a single 0-dim scalar loss (differentiable).
-
-    Replicates the official LeWorldModel SIGReg (lucas-maes/le-wm).
+    N(0,1) target. Replicates the official LeWorldModel SIGReg (lucas-maes/le-wm).
 
     Args:
         z: [N, T, D] (T=1 holds vector latents).
         knots: Quadrature nodes on [0, 3].
         num_proj: Random projections (sketch columns).
         projection: Optional precomputed [D, num_proj] unit-norm matrix.
-
-    Returns:
-        0-dim scalar loss.
     """
     zp = z.permute(1, 0, 2)  # official le-wm (T, B=N, D) layout
     T_count, B, D = zp.shape
@@ -316,15 +257,6 @@ def sigreg_loss(
     statistic = (err @ w_phi) * B  # (T, M), trapezoid + N scaling
     return statistic.mean()
 
-    # %% [markdown]
-    # ## SpectralEncoder — raw DCT-II low-K tokens, no normalization
-    #
-    # Orthonormal DCT preserves energy (Parseval), so raw coefficients are
-    # the tokens; no projector, no frozen stats, no calibration, no drift guard.
-
-    # %%
-
-
 class SpectralEncoder(nn.Module):
     """Parameter-free DCT-II over the RAW obs window; keep K lowest bins.
 
@@ -343,9 +275,7 @@ class SpectralEncoder(nn.Module):
         if obs_dim <= 0:
             raise ValueError(f"obs_dim={obs_dim} must be positive")
         self.obs_dim = obs_dim
-        t = int(
-            resolve_config_value("n_obs_steps", n_obs_steps)
-        )  # DCT-II yields T bins
+        t = int(resolve_config_value("n_obs_steps", n_obs_steps))
         p = float(resolve_config_value("top_p_spectral_tokens", top_p_spectral_tokens))
         self.k = max(1, min(t, round(p * t)))
 
@@ -393,23 +323,9 @@ class SpectralAttentionPool(nn.Module):
         )
         return pooled.squeeze(1), weights.squeeze(1)
 
-        # %% [markdown]
-        # ## Flow heads — velocity prediction in orthonormal-DCT coefficient space
-        # %% [markdown]
-        # ## Flow policy — DiT velocity model over action-chunk DCT coefficients
-        #
-        # The actor predicts ONLY action velocities v(x_t, t, condition) in orthonormal-DCT
-        # space (no next-state prediction). DiT
-        # (Peebles & Xie) with adaLN-Zero: `dit_depth` pre-norm self-attention blocks
-        # over the noisy action tokens, conditioned by one vector (time-embed +
-        # pooled spectral tokens). Output velocity has the SAME shape as x_t.
-
-        # %%
-
-
 def modulate(x: torch.Tensor, shift: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
     """adaLN modulation: x * (1 + scale) + shift (shift/scale broadcast over tokens)."""
-    return x * (1.0 + scale) + shift  # [..., D]
+    return x * (1.0 + scale) + shift
 
 
 def get_timestep_embedding(t, dim: int = 256) -> torch.Tensor:
@@ -553,12 +469,6 @@ class SJFOPolicyModel(nn.Module):
             h = block(h, c)
         return self.out(self.norm_out(h[:, -x_t.shape[1] :, :]))
 
-        # %% [markdown]
-        # ## Critic — V(s, a): 2 cross-attention fusion blocks -> scalar V[B]
-
-        # %%
-
-
 class Critic(nn.Module):
     """State-action critic with owned encoders; V(s,a) keeps its TD target V(s',a').
 
@@ -569,7 +479,7 @@ class Critic(nn.Module):
     def __init__(
         self,
         obs_dim: int,
-        act_dim: int,
+        action_dim: int,
         hidden_dim: int | None = None,
         n_obs_steps: int | None = None,
         num_attn_blocks: int = 1,
@@ -579,14 +489,14 @@ class Critic(nn.Module):
         super().__init__()
         if obs_dim <= 0:
             raise ValueError(f"obs_dim={obs_dim} must be positive")
-        if act_dim <= 0:
-            raise ValueError(f"act_dim={act_dim} must be positive (env action dim)")
+        if action_dim <= 0:
+            raise ValueError(f"action_dim={action_dim} must be positive (env action dim)")
         hidden_dim = resolve_config_value("hidden_dim", hidden_dim)
         self.state_encoder = StateEncoder(
             obs_dim, n_obs_steps=n_obs_steps, hidden_dim=hidden_dim
         )
         self.action_encoder = ActionEncoder(
-            act_dim, n_obs_steps=n_obs_steps, hidden_dim=hidden_dim
+            action_dim, n_obs_steps=n_obs_steps, hidden_dim=hidden_dim
         )
         self.blocks = nn.ModuleList(
             CrossAttentionBlock(hidden_dim, n_heads, mlp_ratio)
@@ -609,7 +519,9 @@ class Critic(nn.Module):
                 executed_n_action_steps = torch.as_tensor(
                     list(executed_n_action_steps), device=h.device
                 )
-            n_real = executed_n_action_steps.to(h.device)  # [B]
+            n_real = executed_n_action_steps.to(h.device)
+            if bool((n_real <= 0).any()):
+                raise ValueError("every chunk must have >= 1 executed step")
             exec_mask = (
                 (
                     torch.arange(h.shape[1], device=h.device).unsqueeze(0)
@@ -617,6 +529,6 @@ class Critic(nn.Module):
                 )
                 .to(h.dtype)
                 .unsqueeze(-1)
-            )  # 1 = executed row
+            )
             pooled = (h * exec_mask).sum(dim=1) / exec_mask.sum(dim=1)
         return self.out(pooled).squeeze(-1)

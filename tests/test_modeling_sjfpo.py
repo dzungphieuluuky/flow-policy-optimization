@@ -89,19 +89,23 @@ def test_forward_finite_loss_and_native_dict():
     policy.train()
     loss, info = policy(make_batch(pad_tail=8))
     assert loss.dim() == 0 and torch.isfinite(loss)
-    assert set(info) == {"policy_loss", "value_loss", "mean_log_ratio"}
+    assert set(info) == {"policy_loss", "value_loss", "kl_loss", "mean_log_ratio"}
     assert all(isinstance(v, float) for v in info.values())
 
 
 def test_optim_params_exclude_snapshot():
     policy = SJFPOPolicy(make_config())
-    optim_ids = {id(p) for p in policy.get_optim_params()["params"]}
+    groups = policy.get_optim_params()["params"]
+    assert len(groups) == 2
+    optim_ids = {id(p) for g in groups for p in g["params"]}
     live_ids = {id(p) for p in policy.actor.parameters()} | {
         id(p) for p in policy.critic.parameters()
     }
     assert optim_ids == live_ids
     snap_ids = {id(p) for p in policy.old_actor.parameters()}
+    ema_ids = {id(p) for p in policy.ema_actor.parameters()}
     assert optim_ids.isdisjoint(snap_ids)
+    assert optim_ids.isdisjoint(ema_ids)
 
 
 def test_compute_target_velocity_broadcast():
@@ -147,7 +151,7 @@ def test_forward_reduction_none_returns_per_chunk_vector():
     assert torch.isfinite(loss_vec).all()
     loss_scalar, _ = policy(batch)
     assert loss_vec.mean().item() == pytest.approx(loss_scalar.item(), rel=1e-5)
-    assert set(info) == {"policy_loss", "value_loss", "mean_log_ratio"}
+    assert set(info) == {"policy_loss", "value_loss", "kl_loss", "mean_log_ratio"}
     with pytest.raises(ValueError, match="reduction"):
         policy(batch, reduction="sum")
 
@@ -215,7 +219,7 @@ def test_critic_encoder_receives_grads():
 def test_generate_rollout_returns_forward_ready_batch():
     torch.manual_seed(0)
     policy = SJFPOPolicy(make_config())
-    env = FakeGymEnv(obs_dim=OBS_DIM, act_dim=ACT_DIM, max_steps=20)
+    env = FakeGymEnv(obs_dim=OBS_DIM, action_dim=ACT_DIM, max_steps=20)
     batch = policy.generate_rollout(env, total_steps=32)
     n = batch["observation.state"].shape[0]
     assert n >= 1
@@ -229,7 +233,47 @@ def test_generate_rollout_returns_forward_ready_batch():
     policy.train()
     loss, info = policy(batch)
     assert torch.isfinite(loss)
-    assert set(info) == {"policy_loss", "value_loss", "mean_log_ratio"}
+    assert set(info) == {"policy_loss", "value_loss", "kl_loss", "mean_log_ratio"}
+
+
+def test_optim_params_actor_critic_groups():
+    policy = SJFPOPolicy(make_config(optimizer_lr_critic=3e-4))
+    groups = policy.get_optim_params()["params"]
+    assert len(groups) == 2
+    ema_ids = {id(p) for p in policy.ema_actor.parameters()}
+    for g in groups:
+        assert not any(id(p) in ema_ids for p in g["params"])
+    opt = policy.config.get_optimizer_preset().build(groups)
+    assert [g["lr"] for g in opt.param_groups] == [1e-4, 3e-4]
+
+
+def test_ema_anchor_zero_kl_at_init():
+    policy = SJFPOPolicy(make_config())
+    policy.train()
+    _, info = policy(make_batch())
+    assert info["kl_loss"] == 0.0  # deepcopy anchor, deterministic forward
+
+
+def test_update_ema_decay_zero_copies_live_weights():
+    policy = SJFPOPolicy(make_config(ema_decay=0.0))
+    with torch.no_grad():
+        for p in policy.actor.parameters():
+            p.add_(1.0)
+    policy.update_ema()
+    for p_ema, p in zip(policy.ema_actor.parameters(), policy.actor.parameters()):
+        assert torch.equal(p_ema, p)
+
+
+def test_kl_loss_positive_when_actor_drifts():
+    policy = SJFPOPolicy(make_config(ema_decay=0.5, kl_coef=1.0))
+    with torch.no_grad():
+        for p in policy.actor.parameters():
+            p.add_(0.01)
+    policy.update_ema()  # anchor halfway: orig+0.5 vs live orig+1
+    policy.train()
+    loss, info = policy(make_batch())
+    assert info["kl_loss"] > 0.0
+    assert torch.isfinite(loss)
 
 
 def test_save_pretrained_roundtrip(tmp_path):

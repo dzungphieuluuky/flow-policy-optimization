@@ -61,9 +61,9 @@ class SJFPOPolicy(PreTrainedPolicy):
         super().__init__(config, dataset_stats)
         config.validate_features()
         obs_dim = int(config.robot_state_feature.shape[0])
-        act_dim = int(config.action_feature.shape[0])
+        action_dim = int(config.action_feature.shape[0])
         self.actor = SJFOPolicyModel(
-            act_dim,
+            action_dim,
             obs_dim,
             hidden_dim=config.hidden_dim,
             spectral_pool=config.spectral_pool,
@@ -75,7 +75,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         )
         self.critic = Critic(
             obs_dim,
-            act_dim,
+            action_dim,
             hidden_dim=config.hidden_dim,
             n_obs_steps=config.n_obs_steps,
         )
@@ -83,11 +83,15 @@ class SJFPOPolicy(PreTrainedPolicy):
         # Real action bounds (env.action_space); predict/select return REAL
         # actions, training batches stay scaled [-1, 1]. Non-persistent so
         # old checkpoints load unchanged; build_policy sets them per run.
-        self.register_buffer("action_low", torch.full((act_dim,), -1.0), persistent=False)
-        self.register_buffer("action_high", torch.full((act_dim,), 1.0), persistent=False)
+        self.register_buffer("action_low", torch.full((action_dim,), -1.0), persistent=False)
+        self.register_buffer("action_high", torch.full((action_dim,), 1.0), persistent=False)
         # Frozen behavior snapshot (PPO π_old): unit ratios at init, refreshed
         # per collection round; rides state_dict but excluded from the optimizer.
         self.old_actor = copy.deepcopy(self.actor)
+        # Slow EMA anchor for the KL loss; inference-only (never compiled,
+        # never optimized), rides state_dict so checkpoints resume it.
+        self.ema_actor = copy.deepcopy(self.actor)
+        self.ema_actor.requires_grad_(False)
         self._frame_buffer: deque[torch.Tensor] = deque(maxlen=config.n_obs_steps)
         self._action_buffer: deque[torch.Tensor] = deque()
         self.step_count = 0
@@ -126,10 +130,24 @@ class SJFPOPolicy(PreTrainedPolicy):
         self.old_actor = copy.deepcopy(self.actor)
 
     def get_optim_params(self) -> dict:
-        """Live weights only (spectral is parameter-free, snapshot never trains)."""
+        """Actor/critic groups with distinct LRs (spectral/EMA never train)."""
         return {
-            "params": list(self.actor.parameters()) + list(self.critic.parameters())
+            "params": [
+                {"params": list(self.actor.parameters())},
+                {
+                    "params": list(self.critic.parameters()),
+                    "lr": self.config.optimizer_lr_critic,
+                },
+            ]
         }
+
+    @torch.no_grad()
+    def update_ema(self) -> None:
+        """Fold live weights into the EMA anchor (call after optimizer.step)."""
+        live = getattr(self.actor, "_orig_mod", self.actor)
+        decay = self.config.ema_decay
+        for p_ema, p in zip(self.ema_actor.parameters(), live.parameters()):
+            p_ema.mul_(decay).add_(p.detach(), alpha=1.0 - decay)
 
     def _window_from_batch(self, states: torch.Tensor) -> torch.Tensor:
         """Coerce [B, T, obs] / [B, obs] / [T, obs] to a [B, T, obs] window."""
@@ -154,12 +172,12 @@ class SJFPOPolicy(PreTrainedPolicy):
         states = states.to(next(self.actor.parameters()).device)
         states = self.preprocessor({OBS_STATE: states})[OBS_STATE]
         top_k_spectral_action_tokens = max(1, round(cfg.top_p_spectral_tokens * cfg.action_horizon))
-        act_dim = int(self.config.action_feature.shape[0])
+        action_dim = int(self.config.action_feature.shape[0])
         with torch.inference_mode(), autocast_context(states.device):
             condition = self.spectral(states)
-            shape = (states.shape[0], top_k_spectral_action_tokens, act_dim)
+            shape = (states.shape[0], top_k_spectral_action_tokens, action_dim)
             eps = None if noise else torch.zeros(*shape, device=states.device)
-            num_inference_steps = cfg.euler_train if noise else cfg.euler_eval
+            num_inference_steps = cfg.euler_train if noise else cfg.num_inference_steps
             x0 = sample_action(
                 self.compute_predicted_velocity,
                 shape,
@@ -172,7 +190,6 @@ class SJFPOPolicy(PreTrainedPolicy):
             x0 = x0.float()
         x0 = torch.nn.functional.pad(x0, (0, 0, 0, cfg.action_horizon - top_k_spectral_action_tokens))
         scaled = idct(x0, dim=1).clamp(-1.0, 1.0)
-        # Real env actions (identity unscale when bounds are ±1).
         return self.postprocessor({ACTION: scaled})[ACTION]
 
     def select_action(self, batch: dict[str, torch.Tensor], **kwargs) -> torch.Tensor:
@@ -254,7 +271,6 @@ class SJFPOPolicy(PreTrainedPolicy):
                 dim=1,
             )
             with autocast_context(device):
-                # Critic sees REAL actions in env range (batches store scaled).
                 values = self.critic(states_n, self.postprocessor({ACTION: a_exec})[ACTION], executed_n_action_steps.to(device)).float()
                 v_next_all = self.critic(
                     next_states_n, self.postprocessor({ACTION: a_next_exec})[ACTION], next_executed_n_action_steps.to(device)
@@ -324,7 +340,11 @@ class SJFPOPolicy(PreTrainedPolicy):
         spectral_action_tokens = dct(a_exec, dim=1)[:, :top_k_spectral_action_tokens, :]
         condition = self.spectral(states)
         n = states.shape[0]
-        tau = sample_timesteps(cfg.num_mc_samples, cfg.tau_range, device=states.device)
+        tau = sample_timesteps(
+            cfg.num_mc_samples,
+            (cfg.min_timestep, cfg.max_timestep),
+            device=states.device,
+        )
         eps = sample_noise(
             (n, cfg.num_mc_samples, top_k_spectral_action_tokens, actions.shape[-1]),
             device=states.device,
@@ -353,6 +373,10 @@ class SJFPOPolicy(PreTrainedPolicy):
             v_new = self.compute_predicted_velocity(
                 x_t_flat, tau_flat, cond_flat, state_flat
             ).float()
+        # Fixed-variance Gaussian KL(current || EMA) on velocities.
+        with torch.inference_mode(), autocast_context(states.device):
+            v_ema = self.ema_actor(x_t_flat, tau_flat, cond_flat, state_flat).float()
+        kl_loss = (v_new - v_ema).pow(2).mean()
 
         v_star = self.compute_target_velocity(spectral_action_tokens, eps)
         l_old = compute_cfm_loss(
@@ -368,7 +392,6 @@ class SJFPOPolicy(PreTrainedPolicy):
         )
         policy_per_chunk = -psi.mean(dim=1)
         with autocast_context(states.device):
-            # Critic sees REAL actions in env range (batches store scaled).
             v_pred = self.critic(states, self.postprocessor({ACTION: a_exec})[ACTION], executed_n_action_steps).float()
         returns_d = returns.to(v_pred.device)
         se = (v_pred - returns_d).pow(2)
@@ -385,9 +408,9 @@ class SJFPOPolicy(PreTrainedPolicy):
         if reduction == "mean":
             policy_loss = policy_per_chunk.mean()
             value_loss = value_per_chunk.mean()
-            loss = policy_loss + cfg.vf_coef * value_loss
+            loss = policy_loss + cfg.vf_coef * value_loss + cfg.kl_coef * kl_loss
         elif reduction == "none":
-            loss = policy_per_chunk + cfg.vf_coef * value_per_chunk
+            loss = policy_per_chunk + cfg.vf_coef * value_per_chunk + cfg.kl_coef * kl_loss
         else:
             raise ValueError(f"reduction={reduction!r} must be 'mean' or 'none'")
         if not bool(torch.isfinite(loss).all()):
@@ -400,5 +423,6 @@ class SJFPOPolicy(PreTrainedPolicy):
         return loss, {
             "policy_loss": float(policy_per_chunk.mean().detach()),
             "value_loss": float(value_per_chunk.mean().detach()),
+            "kl_loss": float(kl_loss.detach()),
             "mean_log_ratio": mean_log_ratio,
         }

@@ -143,7 +143,7 @@ class TestPPOTinySmoke:
         monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
         from sjfpo.baselines import ppo_train_run
 
-        env = FakeGymEnv(obs_dim=4, act_dim=2, max_steps=50)
+        env = FakeGymEnv(obs_dim=4, action_dim=2, max_steps=50)
         cfg = PPOConfig(
             rollouts=32,
             learning_epochs=2,
@@ -158,7 +158,7 @@ class TestPPOTinySmoke:
             seed=0,
             total_steps=200,
             eval_steps=200,
-            ckpt_interval=200,
+            save_steps=200,
         )
 
         assert result["method"] == "ppo"
@@ -181,7 +181,7 @@ class TestSACTinySmoke:
         monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
         from sjfpo.baselines import sac_train_run
 
-        env = FakeGymEnv(obs_dim=4, act_dim=2, max_steps=50)
+        env = FakeGymEnv(obs_dim=4, action_dim=2, max_steps=50)
         cfg = SACConfig(
             batch_size=32,
             memory_size=500,
@@ -196,7 +196,7 @@ class TestSACTinySmoke:
             seed=0,
             total_steps=200,
             eval_steps=200,
-            ckpt_interval=200,
+            save_steps=200,
         )
 
         assert result["method"] == "sac"

@@ -373,9 +373,9 @@ def test_value_critic_shape():
     assert torch.isfinite(v).all()
 
 
-def test_value_critic_requires_act_dim():
+def test_value_critic_requires_action_dim():
     nets = make_nets()
-    with pytest.raises(ValueError, match="act_dim"):
+    with pytest.raises(ValueError, match="action_dim"):
         nets.Critic(OBS, 0)
 
 
@@ -455,7 +455,7 @@ def test_action_encoder_matches_state_encoder():
     """ActionEncoder duplicates StateEncoder (same keys, same unmasked behavior)."""
     nets = make_nets()
     torch.manual_seed(20)
-    enc = nets.ActionEncoder(act_dim=6)
+    enc = nets.ActionEncoder(action_dim=6)
     ref = nets.StateEncoder(obs_dim=6)
     assert [n for n, _ in enc.named_parameters()] == [
         n for n, _ in ref.named_parameters()
@@ -477,6 +477,15 @@ def test_critic_value_ignores_padded_tails():
     v1 = critic(s, a, [8, 8])
     v2 = critic(s, garb, [8, 8])
     assert torch.allclose(v1, v2, atol=1e-6)
+
+
+def test_critic_rejects_zero_executed_steps():
+    nets = make_nets()
+    critic = nets.Critic(OBS, 3)
+    s = torch.randn(2, STATE_T, OBS)
+    a = torch.randn(2, CHUNK, 3)
+    with pytest.raises(ValueError, match=">= 1 executed step"):
+        critic(s, a, [0, 0])
 
 
 def test_positional_encoding_shape():

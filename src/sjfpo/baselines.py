@@ -21,7 +21,9 @@ import torch.nn as nn
 
 from sjfpo.config import PPOConfig, SACConfig
 from sjfpo.evaluator import Evaluator, check_divergence, compute_random_baseline
-from sjfpo.utils import maybe_compile, resolve_device
+from lerobot.utils.random_utils import set_seed
+
+from sjfpo.utils import maybe_compile, resolve_device, to_numpy_1d
 from sjfpo.wandb_logging import (
     init_wandb_run_for_method,
     log_eval_summary,
@@ -40,7 +42,6 @@ RandomMemory_cls = None
 wrap_env_fn = None
 RunningStandardScaler_cls = None
 
-# Model classes (created after import_skrl_dependencies runs)
 PPOPolicy = None
 PPOValue = None
 SACPolicy = None
@@ -84,7 +85,6 @@ def build_mlp_layer(
 
 
 def import_skrl_agent_classes():
-    """Import skrl agent/memory/wrapper/preprocessor symbols (single home)."""
     from skrl.agents.torch.ppo import PPO, PPO_CFG
     from skrl.agents.torch.sac import SAC, SAC_CFG
     from skrl.memories.torch import RandomMemory
@@ -103,7 +103,6 @@ def import_skrl_agent_classes():
 
 
 def import_skrl_model_mixins():
-    """Import skrl model mixin/base symbols for model-class creation."""
     from skrl.models.torch import GaussianMixin as GM, DeterministicMixin as DM, Model
 
     return GM, DM, Model
@@ -113,11 +112,11 @@ def create_gaussian_policy_class(GM, Model):
     """Shared Gaussian actor: MLP → mean + learnable log_std (PPO and SAC)."""
 
     class GaussianPolicyImpl(GM, Model):
-        def __init__(self, obs_dim: int, act_dim: int, hidden: tuple[int, ...]):
+        def __init__(self, obs_dim: int, action_dim: int, hidden: tuple[int, ...]):
             Model.__init__(
                 self,
                 observation_space=gym.spaces.Box(-1, 1, (obs_dim,)),
-                action_space=gym.spaces.Box(-1, 1, (act_dim,)),
+                action_space=gym.spaces.Box(-1, 1, (action_dim,)),
                 device=str(resolve_device()),
             )
             GM.__init__(
@@ -128,8 +127,8 @@ def create_gaussian_policy_class(GM, Model):
                 max_log_std=2,
                 reduction="sum",
             )
-            self.net = build_mlp_layer(obs_dim, hidden, act_dim)
-            self.log_std_parameter = nn.Parameter(torch.zeros(act_dim))
+            self.net = build_mlp_layer(obs_dim, hidden, action_dim)
+            self.log_std_parameter = nn.Parameter(torch.zeros(action_dim))
 
         def compute(self, inputs: dict, role: str = "policy"):
             return self.net(inputs["observations"]), {"log_std": self.log_std_parameter}
@@ -160,15 +159,15 @@ def create_sac_critic_class(DM, Model):
     """Q-critic for SAC: MLP over [obs; action] → scalar."""
 
     class SacCriticImpl(DM, Model):  # type: ignore[name-defined]
-        def __init__(self, obs_dim: int, act_dim: int, hidden: tuple[int, ...]):
+        def __init__(self, obs_dim: int, action_dim: int, hidden: tuple[int, ...]):
             Model.__init__(
                 self,
                 observation_space=gym.spaces.Box(-1, 1, (obs_dim,)),
-                action_space=gym.spaces.Box(-1, 1, (act_dim,)),
+                action_space=gym.spaces.Box(-1, 1, (action_dim,)),
                 device=str(resolve_device()),
             )
             DM.__init__(self, clip_actions=False)
-            self.net = build_mlp_layer(obs_dim + act_dim, hidden, 1)
+            self.net = build_mlp_layer(obs_dim + action_dim, hidden, 1)
 
         def compute(self, inputs: dict, role: str = "critic"):
             x = einx.id(
@@ -206,28 +205,23 @@ def import_skrl_dependencies():
 def seed_and_wrap_env(
     env: Any, seed: int, n_obs_steps: int
 ) -> tuple[Any, Any, int, int]:
-    """Seed torch/numpy; wrap with frame stacking + skrl wrapper."""
-    torch.manual_seed(seed)
-    np.random.seed(seed)
+    set_seed(seed)
     wrapped_env = FrameStackWrapper(env, n_obs_steps=n_obs_steps)
     skrl_env = wrap_env_fn(wrapped_env, wrapper="gymnasium", verbose=False)
     obs_dim = wrapped_env.observation_space.shape[0]
-    act_dim = wrapped_env.action_space.shape[0]
-    return wrapped_env, skrl_env, obs_dim, act_dim
+    action_dim = wrapped_env.action_space.shape[0]
+    return wrapped_env, skrl_env, obs_dim, action_dim
 
 
 def mean_action_eval_policy(agent: Any) -> Any:
-    """Deterministic mean-action eval closure for a skrl agent."""
 
     def eval_policy(obs):
-        obs_t = einx.id(
-            "d -> 1 d", torch.as_tensor(obs, dtype=torch.float32)
-        )  # [1, obs]
+        obs_t = einx.id("d -> 1 d", torch.as_tensor(obs, dtype=torch.float32))
         with torch.inference_mode():
             agent.enable_training_mode(False)
             actions, outputs = agent.act(obs_t, None, timestep=0, timesteps=1)
             agent.enable_training_mode(True)
-        return einx.id("1 a -> a", outputs.get("mean_actions", actions)).cpu().numpy()
+        return to_numpy_1d(einx.id("1 a -> a", outputs.get("mean_actions", actions)))
 
     return eval_policy
 
@@ -267,12 +261,9 @@ class FrameStackWrapper(gym.ObservationWrapper):
     def get_current_observation(self) -> np.ndarray:
         return np.concatenate(list(self.frames), axis=0).astype(np.float32)
 
-        # Generic training loop (shared by PPO and SAC)
-
 
 @dataclasses.dataclass
 class BaselineLoopState:
-    """Mutable counters for one baseline_train_loop run."""
 
     t_start: float
     global_step: int = 0
@@ -286,7 +277,6 @@ class BaselineLoopState:
 
 
 def init_baseline_run(env, eval_env, out_dir, method_name, seed, total_steps, cfg_dict):
-    """Create out_dir, evaluator, loop state, and the wandb run."""
     out_dir.mkdir(parents=True, exist_ok=True)
     evaluator = Evaluator(eval_env, eval_seed=10000 + seed, max_episodes=12)
     env_unwrapped = getattr(env, "unwrapped", env)
@@ -308,7 +298,6 @@ def init_baseline_run(env, eval_env, out_dir, method_name, seed, total_steps, cf
 
 
 def resolve_eval_policy(agent, eval_policy_fn):
-    """Fall back to raw agent.act when no eval policy is supplied."""
     if eval_policy_fn is not None:
         return eval_policy_fn
     return lambda obs: (
@@ -325,7 +314,6 @@ def resolve_eval_policy(agent, eval_policy_fn):
 
 
 def query_agent_actions(agent, observations, states, global_step, total_steps):
-    """agent.act under inference_mode (observation coerced to tensor)."""
     with torch.inference_mode():
         actions, outputs = agent.act(
             observations
@@ -339,7 +327,6 @@ def query_agent_actions(agent, observations, states, global_step, total_steps):
 
 
 def apply_env_step(env, actions):
-    """Step the skrl env; return raw obs/reward/flags plus next states."""
     next_obs, reward, terminated, truncated, info = env.step(
         actions.float()
         if torch.is_tensor(actions)
@@ -362,7 +349,6 @@ def record_agent_transition(
     global_step,
     total_steps,
 ):
-    """Coerce transition tensors; record and post-interaction with the agent."""
     next_obs_t = torch.as_tensor(next_obs, dtype=torch.float32)
     # skrl convention is [num_envs, 1]; [1] breaks in-place bootstrap math.
     reward_t = torch.as_tensor([[reward]], dtype=torch.float32)
@@ -394,7 +380,6 @@ def record_agent_transition(
 def run_baseline_eval(
     agent, evaluator, eval_policy_fn, out_dir, state, divergence_baseline=None
 ):
-    """Evaluate, track returns, log to wandb, and persist the eval CSV."""
     agent.enable_training_mode(False)
     eval_results = evaluator.evaluate(eval_policy_fn, out_dir=out_dir)
     agent.enable_training_mode(True)
@@ -415,7 +400,6 @@ def run_baseline_eval(
 
 
 def check_baseline_divergence(mean_return, divergence_baseline, state):
-    """Count sub-10% evals; flag diverged after 3 consecutive misses."""
     state.consecutive_below, diverged = check_divergence(
         mean_return, divergence_baseline, state.consecutive_below
     )
@@ -433,7 +417,6 @@ def check_baseline_divergence(mean_return, divergence_baseline, state):
 def write_baseline_checkpoint(
     agent, out_dir, method_name, global_step, seed, artifacts, complete=False
 ):
-    """Save the skrl agent plus a manifest; record the artifact path."""
     ckpt_dir = out_dir / (
         "checkpoint_final" if complete else f"checkpoint_{global_step}"
     )
@@ -448,7 +431,6 @@ def write_baseline_checkpoint(
 
 
 def finalize_baseline_run(env, agent, out_dir, method_name, seed, state, fps):
-    """Write the final checkpoint and assemble the SJFPO-shaped result dict."""
     write_baseline_checkpoint(
         agent,
         out_dir,
@@ -493,7 +475,7 @@ def run_baseline_iteration(
     seed,
     divergence_baseline,
     eval_steps,
-    ckpt_interval,
+    save_steps,
     total_steps,
     observations,
     states,
@@ -531,7 +513,7 @@ def run_baseline_iteration(
         )
         if check_baseline_divergence(mean_return, divergence_baseline, state):
             return observations, states, True
-    if state.global_step % ckpt_interval == 0 or state.global_step >= total_steps:
+    if state.global_step % save_steps == 0 or state.global_step >= total_steps:
         write_baseline_checkpoint(
             agent, out_dir, method_name, state.global_step, seed, state.artifacts
         )
@@ -547,7 +529,7 @@ def baseline_train_loop(
     seed,
     total_steps,
     eval_steps,
-    ckpt_interval,
+    save_steps,
     method_name,
     eval_policy_fn,
     divergence_baseline=1.0,
@@ -577,7 +559,7 @@ def baseline_train_loop(
                 seed,
                 divergence_baseline,
                 eval_steps,
-                ckpt_interval,
+                save_steps,
                 total_steps,
                 observations,
                 states,
@@ -595,8 +577,6 @@ def baseline_train_loop(
         if state.wandb_enabled:
             finish_run(exit_code=1 if state.diverged else 0)
     return finalize_baseline_run(env, agent, out_dir, method_name, seed, state, fps)
-
-    # PPO train_run
 
 
 def build_ppo_skrl_config(cfg):
@@ -630,7 +610,6 @@ def build_ppo_skrl_config(cfg):
 
 
 def build_ppo_agent(policy, value, memory, skrl_env, ppo_cfg, device):
-    """Assemble the skrl PPO agent from models, memory, and spaces."""
     return PPO_cls(
         models={"policy": policy, "value": value},
         memory=memory,
@@ -650,13 +629,12 @@ def launch_baseline_loop(
     seed,
     total_steps,
     eval_steps,
-    ckpt_interval,
+    save_steps,
     method_name,
     eval_policy,
     r_rand,
     cfg,
 ):
-    """Invoke baseline_train_loop with the standard run arguments."""
     return baseline_train_loop(
         skrl_env,
         agent,
@@ -665,7 +643,7 @@ def launch_baseline_loop(
         seed=seed,
         total_steps=total_steps,
         eval_steps=eval_steps,
-        ckpt_interval=ckpt_interval,
+        save_steps=save_steps,
         method_name=method_name,
         eval_policy_fn=eval_policy,
         divergence_baseline=r_rand,
@@ -681,7 +659,7 @@ def ppo_train_run(
     seed: int = 0,
     total_steps: int = 2000,
     eval_steps: int = 1000,
-    ckpt_interval: int = 1000,
+    save_steps: int = 1000,
     n_obs_steps: int = 16,
 ) -> dict[str, Any]:
     """Run a single PPO training run using skrl 2.1.0.
@@ -693,8 +671,8 @@ def ppo_train_run(
     cfg = cfg or PPOConfig()
     out_dir = Path(out_dir)
     device = str(resolve_device())
-    wrapped_env, skrl_env, obs_dim, act_dim = seed_and_wrap_env(env, seed, n_obs_steps)
-    policy = maybe_compile(PPOPolicy(obs_dim, act_dim, cfg.hidden))
+    wrapped_env, skrl_env, obs_dim, action_dim = seed_and_wrap_env(env, seed, n_obs_steps)
+    policy = maybe_compile(PPOPolicy(obs_dim, action_dim, cfg.hidden))
     value = maybe_compile(PPOValue(obs_dim, cfg.hidden))
     memory = RandomMemory_cls(memory_size=cfg.rollouts, num_envs=1, device=device)
     ppo_cfg = build_ppo_skrl_config(cfg)
@@ -709,14 +687,12 @@ def ppo_train_run(
         seed,
         total_steps,
         eval_steps,
-        ckpt_interval,
+        save_steps,
         "ppo",
         eval_policy,
         r_rand,
         cfg,
     )
-
-    # SAC train_run
 
 
 def build_sac_skrl_config(cfg):
@@ -754,7 +730,6 @@ def build_sac_agent(
     sac_cfg,
     device,
 ):
-    """Assemble the skrl SAC agent (policy + 2 critics + 2 target critics)."""
     return SAC_cls(
         models={
             "policy": policy,
@@ -780,7 +755,7 @@ def sac_train_run(
     seed: int = 0,
     total_steps: int = 2000,
     eval_steps: int = 1000,
-    ckpt_interval: int = 1000,
+    save_steps: int = 1000,
     n_obs_steps: int = 16,
 ) -> dict[str, Any]:
     """Run a single SAC training run using skrl 2.1.0.
@@ -792,12 +767,12 @@ def sac_train_run(
     cfg = cfg or SACConfig()
     out_dir = Path(out_dir)
     device = str(resolve_device())
-    wrapped_env, skrl_env, obs_dim, act_dim = seed_and_wrap_env(env, seed, n_obs_steps)
-    policy = maybe_compile(SACPolicy(obs_dim, act_dim, cfg.hidden))
-    critic_1 = maybe_compile(SACCritic(obs_dim, act_dim, cfg.hidden))
-    critic_2 = maybe_compile(SACCritic(obs_dim, act_dim, cfg.hidden))
-    target_critic_1 = maybe_compile(SACCritic(obs_dim, act_dim, cfg.hidden))
-    target_critic_2 = maybe_compile(SACCritic(obs_dim, act_dim, cfg.hidden))
+    wrapped_env, skrl_env, obs_dim, action_dim = seed_and_wrap_env(env, seed, n_obs_steps)
+    policy = maybe_compile(SACPolicy(obs_dim, action_dim, cfg.hidden))
+    critic_1 = maybe_compile(SACCritic(obs_dim, action_dim, cfg.hidden))
+    critic_2 = maybe_compile(SACCritic(obs_dim, action_dim, cfg.hidden))
+    target_critic_1 = maybe_compile(SACCritic(obs_dim, action_dim, cfg.hidden))
+    target_critic_2 = maybe_compile(SACCritic(obs_dim, action_dim, cfg.hidden))
     memory = RandomMemory_cls(memory_size=cfg.memory_size, num_envs=1, device=device)
     sac_cfg = build_sac_skrl_config(cfg)
     agent = build_sac_agent(
@@ -821,7 +796,7 @@ def sac_train_run(
         seed,
         total_steps,
         eval_steps,
-        ckpt_interval,
+        save_steps,
         "sac",
         eval_policy,
         r_rand,

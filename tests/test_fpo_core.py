@@ -26,7 +26,7 @@ from sjfpo.modeling_sjfpo import SJFPOPolicy  # noqa: E402 (velocity helpers und
 
 from sjfpo import fpo_core  # noqa: E402  (RED until implemented)
 
-TAU_LO, TAU_HI = _DEFAULTS.tau_range
+TAU_LO, TAU_HI = _DEFAULTS.min_timestep, _DEFAULTS.max_timestep
 
 
 class VelocityMLP(nn.Module):
@@ -59,7 +59,7 @@ class VelocityMLP(nn.Module):
 
 
 def draw_tau(shape, generator) -> torch.Tensor:
-    """tau ~ U[0.005, 0.995] (binding tau_range from config)."""
+    """tau ~ U[0.005, 0.995] (binding min/max_timestep from config)."""
     return TAU_LO + (TAU_HI - TAU_LO) * torch.rand(shape, generator=generator)
 
     # (a) Reference-equivalence gate: integrated velocity field reproduces the

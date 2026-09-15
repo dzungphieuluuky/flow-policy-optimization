@@ -123,7 +123,7 @@ def test_sjfpo_config_documented_ranges():
     assert 0 < c.epsilon_low <= c.epsilon_high < 1
     assert c.cfm_clamp > 0
     assert c.log_ratio_cap > 0
-    lo, hi = c.tau_range
+    lo, hi = c.min_timestep, c.max_timestep
     assert 0 < lo < hi < 1
     assert c.vf_coef >= 0
     assert c.dit_depth >= 1
@@ -200,7 +200,7 @@ def test_tiny_matrix_env_var_swaps_run_matrix(monkeypatch):
         assert spec.seed == 0
         assert spec.total_steps == 20_000
         assert spec.eval_steps == 10_000
-        assert spec.ckpt_interval == 10_000
+        assert spec.save_steps == 10_000
     m_default = reload_with_env(monkeypatch)
     assert m_default.TINY_MATRIX is False
     assert len(m_default.RUN_MATRIX) == 45

@@ -1,21 +1,4 @@
-# %% [markdown]
-# # FPO++ core math: CFM losses, per-sample ratios, ASPO trust region, Euler sampler
-#
-# BINDING conventions (arXiv 2602.02481 Eq.3-13):
-#   - interpolation ``x_t = (1−t)·ε + t·a``, t=0 noise, t=1 data;
-#     target velocity ``v* = a − ε``; τ ~ U[0.005, 0.995], 16 (τ, ε) pairs/chunk
-#   - CFM losses clamped ±cfm_clamp; iff Â<0, ``ℓ_new ← min(ℓ_new, ℓ_old + cfm_clamp)``
-#   - ratios ``ρ = exp(min(ℓ_old − ℓ_new, log_ratio_cap))`` straight-through-clamped
-#   - ASPO: Â≥0 → PPO-clip ``min(ρÂ, clip(ρ, 1−ε_low, 1+ε_high)Â)``;
-#     Â<0 → SPO ``ρÂ − (|Â|/(2ε_low))(ρ−1)²``; objective = MEAN of ψ (never exp-of-mean)
-#   - Euler t:0→1, ``x ← x + δ·v̂``.
-#
-# Shapes: B chunks, m MC draws, *flow_shape trailing flow coords;
-# ℓ/ρ/Â/ψ are [B, m], policy_loss is scalar.
-# CELLORDER: 6
-#
-
-# %%
+"""FPO++ core math: CFM losses, per-sample ratios, ASPO trust region, Euler sampler (arXiv 2602.02481 Eq.3-13)."""
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -47,7 +30,11 @@ def sample_timesteps(
     "beta" = lerobot openpi Beta(alpha, beta) scaled to [lo, hi]
     (needs alpha=/beta= kwargs).
     """
-    lo, hi = _DEFAULTS.tau_range if tau_range is None else tau_range
+    lo, hi = (
+        (_DEFAULTS.min_timestep, _DEFAULTS.max_timestep)
+        if tau_range is None
+        else tau_range
+    )
     if mode == "uniform":
         return torch.rand(num_samples, device=device) * (hi - lo) + lo
     if mode == "normal":
@@ -143,8 +130,6 @@ def compute_cfm_loss(
     clamp = _DEFAULTS.cfm_clamp if clamp is None else clamp
     return torch.clamp(per_sample, min=-clamp, max=clamp)
 
-    # %%
-
 
 def compute_aspo_surrogate(
     rho: torch.Tensor,
@@ -207,8 +192,6 @@ def compute_policy_loss(
     """
     rho = compute_policy_ratio(l_old, l_new, advantage, cfm_clamp=cfm_clamp, cap=cap)
     return compute_aspo_surrogate(rho, advantage, epsilon_low, epsilon_high).mean()
-
-    # %%
 
 
 def sample_action(

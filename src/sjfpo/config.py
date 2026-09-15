@@ -17,8 +17,6 @@ from pathlib import Path
 IS_KAGGLE = os.environ.get("KAGGLE_KERNEL_RUN_TYPE") is not None
 TINY_MATRIX = os.environ.get("SJFPO_TINY_MATRIX") == "1"
 
-# Run-matrix axes
-
 METHODS = ("sjfpo", "ppo", "sac")
 ENVS = ("HalfCheetah-v5", "Walker2d-v5", "Hopper-v5")
 PROTOTYPE_ENVS = (
@@ -39,7 +37,7 @@ SEEDS = (0, 1, 2, 3, 4)
 
 TOTAL_STEPS = 1_000_000
 EVAL_STEPS = 50_000
-CKPT_INTERVAL = 25_000
+SAVE_STEPS = 25_000
 
 
 # Method hyperparameters (Scope §Must-have, verbatim values)
@@ -80,19 +78,15 @@ PPO_CFG = PPOConfig()
 SAC_CFG = SACConfig()
 
 
-# Run matrix
-
-
 @dataclass(frozen=True)
 class RunSpec:
-    """Single run: method × env × seed + budgets."""
 
     method: str
     env: str
     seed: int
     total_steps: int
     eval_steps: int
-    ckpt_interval: int
+    save_steps: int
 
 
 def build_run_matrix() -> tuple[RunSpec, ...]:
@@ -108,7 +102,7 @@ def build_run_matrix() -> tuple[RunSpec, ...]:
                         seed=seed,
                         total_steps=TOTAL_STEPS,
                         eval_steps=EVAL_STEPS,
-                        ckpt_interval=CKPT_INTERVAL,
+                        save_steps=SAVE_STEPS,
                     )
                 )
     return tuple(specs)
@@ -123,9 +117,8 @@ def build_filtered_matrix(
     seeds: Iterable[int],
     total_steps: int,
     eval_steps: int,
-    ckpt_interval: int,
+    save_steps: int,
 ) -> tuple[RunSpec, ...]:
-    """Cartesian matrix in RUN_MATRIX order (method x env x seed) for CLI filters."""
     return tuple(
         RunSpec(
             method=m,
@@ -133,7 +126,7 @@ def build_filtered_matrix(
             seed=s,
             total_steps=total_steps,
             eval_steps=eval_steps,
-            ckpt_interval=ckpt_interval,
+            save_steps=save_steps,
         )
         for m in [x for x in METHODS if x in methods]
         for e in [x for x in KNOWN_ENVS if x in envs]
@@ -151,7 +144,7 @@ if TINY_MATRIX:
                 seed=0,
                 total_steps=20_000,
                 eval_steps=10_000,
-                ckpt_interval=10_000,
+                save_steps=10_000,
             )
         )
     RUN_MATRIX = tuple(tiny)  # 3 runs

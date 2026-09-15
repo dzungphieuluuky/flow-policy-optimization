@@ -18,7 +18,6 @@ __all__ = ["compute_advantages", "compute_returns", "normalize_advantages"]
 
 
 def as_chunk_arrays(rewards, values, next_values, executed_n_action_steps, terminated):
-    """Coerce inputs to arrays; expand a scalar stream-end bootstrap."""
     rewards = np.asarray(rewards, dtype=np.float64)
     values = np.asarray(values, dtype=np.float64)
     executed_n_action_steps = np.asarray(executed_n_action_steps, dtype=np.int64)
@@ -36,7 +35,6 @@ def as_chunk_arrays(rewards, values, next_values, executed_n_action_steps, termi
 def validate_chunk_stream(
     rewards, values, next_values, executed_n_action_steps, terminated, truncated, n
 ):
-    """Raise ValueError on shape/count mismatches in the chunk stream."""
     if (
         next_values.shape != (n,)
         or executed_n_action_steps.shape != (n,)
@@ -59,14 +57,12 @@ def validate_chunk_stream(
 
 
 def compute_returns(advantages, values):
-    """G = A + V from raw (unnormalized) advantages."""
     return np.asarray(advantages, dtype=np.float64) + np.asarray(
         values, dtype=np.float64
     )
 
 
 def normalize_advantages(advantages):
-    """Standardize advantages to zero mean / unit variance."""
     advantages = np.asarray(advantages, dtype=np.float64)
     return (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
@@ -99,7 +95,6 @@ def compute_advantages(
         rewards, values, next_values, executed_n_action_steps, terminated, truncated, n
     )
 
-    # R_k = Σᵢ γⁱ·r_{k,i} over executed steps only.
     offsets = np.concatenate(([0], np.cumsum(executed_n_action_steps)))
     r_chunk = np.empty(n, dtype=np.float64)
     for k in range(n):
@@ -108,8 +103,6 @@ def compute_advantages(
             np.dot(gamma ** np.arange(steps.shape[0], dtype=np.float64), steps)
         )
 
-    # Backward pass: terminated cuts all, truncated cuts recursion only
-    # (timeout bootstraps pre-reset V, but post-reset A_{k+1} is a fresh episode).
     advantages = np.empty(n, dtype=np.float64)
     next_advantage = 0.0
     for k in range(n - 1, -1, -1):

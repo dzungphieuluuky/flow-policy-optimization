@@ -15,6 +15,7 @@ from typing import Any
 import numpy as np
 import torch
 from lerobot.configs.types import FeatureType, PolicyFeature
+from lerobot.utils.random_utils import set_seed
 
 from sjfpo.checkpointing import save_policy_checkpoint
 from sjfpo.configuration_sjfpo import SJFPOConfig
@@ -45,7 +46,7 @@ class _EvalPolicy:
 
 
 def build_policy(
-    obs_dim: int, act_dim: int, cfg: SJFPOConfig, device=None,
+    obs_dim: int, action_dim: int, cfg: SJFPOConfig, device=None,
     action_low: np.ndarray | None = None,
     action_high: np.ndarray | None = None,
 ) -> SJFPOPolicy:
@@ -56,7 +57,7 @@ def build_policy(
         input_features={
             "observation.state": PolicyFeature(FeatureType.STATE, (obs_dim,))
         },
-        output_features={"action": PolicyFeature(FeatureType.ACTION, (act_dim,))},
+        output_features={"action": PolicyFeature(FeatureType.ACTION, (action_dim,))},
         n_action_steps=max(1, round(cfg.executed_vs_predicted_ratio * cfg.action_horizon)),
     )
     policy = SJFPOPolicy(policy_cfg).to(device)
@@ -108,9 +109,9 @@ def train_sjfpo_run(
     seed: int = 0,
     total_steps: int = 2000,
     eval_steps: int = 1000,
-    ckpt_interval: int = 1000,
+    save_steps: int = 1000,
     obs_dim: int | None = None,
-    act_dim: int | None = None,
+    action_dim: int | None = None,
 ) -> dict[str, Any]:
     """Run a single SJFPO training run, returning summary with artifacts."""
     cfg = cfg or SJFPOConfig()
@@ -119,16 +120,15 @@ def train_sjfpo_run(
     unwrapped = getattr(env, "unwrapped", env)
     spec = getattr(unwrapped, "spec", None)
     env_name = getattr(spec, "id", "unknown") if spec is not None else "unknown"
-    if obs_dim is None or act_dim is None:
+    if obs_dim is None or action_dim is None:
         obs_dim = int(np.prod(env.observation_space.shape))
-        act_dim = int(np.prod(env.action_space.shape))
-    torch.manual_seed(seed)
-    np.random.seed(seed)
+        action_dim = int(np.prod(env.action_space.shape))
+    set_seed(seed)
     device = resolve_device()
     # Real env bounds (not ±1): InvertedPendulum ±3, Pusher ±2, Humanoid ±0.4.
     action_low = np.atleast_1d(np.asarray(env.action_space.low, dtype=np.float32))
     action_high = np.atleast_1d(np.asarray(env.action_space.high, dtype=np.float32))
-    policy = build_policy(obs_dim, act_dim, cfg, device=device,
+    policy = build_policy(obs_dim, action_dim, cfg, device=device,
                            action_low=action_low, action_high=action_high)
     print(policy, file=sys.stderr)
     optimizer = build_optimizer(policy, cfg)
@@ -178,13 +178,16 @@ def train_sjfpo_run(
                 torch.nn.utils.clip_grad_norm_(all_params, cfg.grad_clip_norm)
                 policy.snapshot_behavior_policy()
                 optimizer.step()
+                policy.update_ema()
                 policy.step_count += 1
                 infos.append(epoch_info)
             info = {k: sum(d[k] for d in infos) / len(infos) for k in infos[0]}
             if wandb_enabled:
                 data = {f"train/{k}": v for k, v in info.items()}
                 data["train/total_loss"] = (
-                    info["policy_loss"] + cfg.vf_coef * info["value_loss"]
+                    info["policy_loss"]
+                    + cfg.vf_coef * info["value_loss"]
+                    + cfg.kl_coef * info["kl_loss"]
                 )
                 data.update(
                     {
@@ -230,7 +233,7 @@ def train_sjfpo_run(
                         f"< 0.10*R_rand={0.10 * r_rand:.2f}"
                     )
                     break
-            if global_step % ckpt_interval < cfg.action_horizon or global_step >= total_steps:
+            if global_step % save_steps < cfg.action_horizon or global_step >= total_steps:
                 ckpt_dir = out_dir / f"checkpoint_{global_step}"
                 save_policy_checkpoint(
                     ckpt_dir,

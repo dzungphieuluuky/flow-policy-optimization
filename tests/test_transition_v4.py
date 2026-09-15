@@ -65,13 +65,13 @@ class ScriptedEnv(gym.Env):
 
     metadata: dict = {}
 
-    def __init__(self, obs_dim=OBS_DIM, act_dim=ACT_DIM, terminate_at=None):
+    def __init__(self, obs_dim=OBS_DIM, action_dim=ACT_DIM, terminate_at=None):
         super().__init__()
         self.observation_space = gym.spaces.Box(
             low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
         )
         self.action_space = gym.spaces.Box(
-            low=-1.0, high=1.0, shape=(act_dim,), dtype=np.float32
+            low=-1.0, high=1.0, shape=(action_dim,), dtype=np.float32
         )
         self.t = 0
         self.terminate_at = terminate_at
@@ -228,7 +228,7 @@ class TestNoAuxHeadV4:
         assert not hasattr(policy, "aux_head"), "aux_head must be gone"
         _, info = policy(make_forward_batch(make_transitions(8), 8))
         assert "next_state_loss" not in info
-        assert set(info) == {"policy_loss", "value_loss", "mean_log_ratio"}
+        assert set(info) == {"policy_loss", "value_loss", "kl_loss", "mean_log_ratio"}
 
     def test_policy_head_in_optimizer_and_moves(self):
         policy = make_policy_v4()

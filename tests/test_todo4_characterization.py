@@ -87,25 +87,25 @@ class TestTrainerGolden:
         from sjfpo.configuration_sjfpo import SJFPOConfig
         from sjfpo.modeling_sjfpo import SJFPOPolicy
 
-        obs_dim, act_dim = 17, 4
+        obs_dim, action_dim = 17, 4
         cfg = SJFPOConfig(
             num_mc_samples=2,
             input_features={
                 "observation.state": PolicyFeature(FeatureType.STATE, (obs_dim,))
             },
-            output_features={"action": PolicyFeature(FeatureType.ACTION, (act_dim,))},
+            output_features={"action": PolicyFeature(FeatureType.ACTION, (action_dim,))},
         )
-        return SJFPOPolicy(cfg), cfg, obs_dim, act_dim
+        return SJFPOPolicy(cfg), cfg, obs_dim, action_dim
 
-    def chunks(self, cfg, obs_dim, act_dim, n=4):
+    def chunks(self, cfg, obs_dim, action_dim, n=4):
         torch.manual_seed(0)
         chunks = []
         for _ in range(n):
             chunks.append(
                 {
                     "observation.state": torch.randn(cfg.n_obs_steps, obs_dim),
-                    "action": torch.randn(cfg.action_horizon, act_dim) * 0.5,
-                    "next.action": torch.randn(cfg.action_horizon, act_dim) * 0.5,
+                    "action": torch.randn(cfg.action_horizon, action_dim) * 0.5,
+                    "next.action": torch.randn(cfg.action_horizon, action_dim) * 0.5,
                     "next.observation.state": torch.randn(cfg.n_obs_steps, obs_dim),
                     "next.reward": torch.rand(8),
                     "next.done": torch.tensor(False),
@@ -132,28 +132,28 @@ class TestTrainerGolden:
         }
 
     def test_assemble_update_keys_finite(self):
-        policy, cfg, obs_dim, act_dim = self.policy()
-        chunks, meta = self.chunks(cfg, obs_dim, act_dim)
+        policy, cfg, obs_dim, action_dim = self.policy()
+        chunks, meta = self.chunks(cfg, obs_dim, action_dim)
         loss, info = policy(self.batch(chunks, meta, 4))
-        assert set(info) == {"policy_loss", "value_loss", "mean_log_ratio"}
+        assert set(info) == {"policy_loss", "value_loss", "kl_loss", "mean_log_ratio"}
         for v in info.values():
             assert isinstance(v, float)
             assert np.isfinite(v)
         assert torch.isfinite(loss)
 
     def test_compute_log_likelihood_shape(self):
-        policy, cfg, obs_dim, act_dim = self.policy()
+        policy, cfg, obs_dim, action_dim = self.policy()
         device = next(policy.parameters()).device
         torch.manual_seed(1)
         top_k_spectral_action_tokens = max(1, round(cfg.top_p_spectral_tokens * cfg.action_horizon))
-        x_t = torch.randn(4 * cfg.num_mc_samples, top_k_spectral_action_tokens, act_dim).to(device)
+        x_t = torch.randn(4 * cfg.num_mc_samples, top_k_spectral_action_tokens, action_dim).to(device)
         tau = torch.rand(4 * cfg.num_mc_samples, device=device)
         condition = torch.randn(4 * cfg.num_mc_samples, 5, obs_dim).to(device)
         states = torch.randn(4 * cfg.num_mc_samples, cfg.n_obs_steps, obs_dim).to(
             device
         )
         v = policy.compute_predicted_velocity(x_t, tau, condition, states)
-        assert v.shape == (4 * cfg.num_mc_samples, top_k_spectral_action_tokens, act_dim)
+        assert v.shape == (4 * cfg.num_mc_samples, top_k_spectral_action_tokens, action_dim)
         assert torch.isfinite(v).all()
 
 
@@ -164,7 +164,7 @@ class TestBaselinesHelpersGolden:
         from sjfpo.baselines import FrameStackWrapper
         from tests.fixtures.fake_env import FakeGymEnv
 
-        env = FrameStackWrapper(FakeGymEnv(obs_dim=4, act_dim=2), n_obs_steps=16)
+        env = FrameStackWrapper(FakeGymEnv(obs_dim=4, action_dim=2), n_obs_steps=16)
         obs, _ = env.reset(seed=0)
         assert obs.shape == (4 * 16,)
         assert obs.dtype == np.float32
@@ -185,10 +185,10 @@ class TestBaselinesHelpersGolden:
         baselines.import_skrl_dependencies()
         from tests.fixtures.fake_env import FakeGymEnv
 
-        wrapped, skrl_env, obs_dim, act_dim = baselines.seed_and_wrap_env(
-            FakeGymEnv(obs_dim=4, act_dim=2), seed=0, n_obs_steps=16
+        wrapped, skrl_env, obs_dim, action_dim = baselines.seed_and_wrap_env(
+            FakeGymEnv(obs_dim=4, action_dim=2), seed=0, n_obs_steps=16
         )
         assert obs_dim == 4 * 16
-        assert act_dim == 2
+        assert action_dim == 2
         assert wrapped.observation_space.shape[0] == obs_dim
         wrapped.close()

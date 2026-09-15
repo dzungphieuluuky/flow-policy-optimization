@@ -23,16 +23,12 @@ class AnalysisError(Exception):
     pass
 
 
-# Bootstrap confidence intervals
-
-
 def bootstrap_ci(
     data: np.ndarray,
     n_boot: int = 2000,
     ci: float = 0.95,
     seed: int = 42,
 ) -> tuple[float, float, float]:
-    """Percentile bootstrap CI: (mean, ci_low, ci_high)."""
     if len(data) == 0:
         raise ValueError("data must not be empty")
 
@@ -53,11 +49,7 @@ def bootstrap_ci(
     return float(mean), float(ci_low), float(ci_high)
 
 
-# Interquartile Mean (IQM)
-
-
 def compute_iqm(returns_per_seed: list[float]) -> float:
-    """Mean after trimming top/bottom 25%; plain mean when n < 4."""
     if not returns_per_seed:
         raise ValueError("returns_per_seed must not be empty")
 
@@ -77,25 +69,16 @@ def compute_iqm(returns_per_seed: list[float]) -> float:
     return float(np.mean(trimmed))
 
 
-# Superiority testing
-
-
 def is_superior(ci_low: float, ci_high: float) -> bool:
-    """True iff the CI of the difference excludes 0 on the positive side."""
     return ci_low > 0
-
-
-# Cross-environment normalization
 
 
 def normalize_cross_env(
     results_by_env: dict[str, dict[str, list[float]]],
 ) -> dict[str, dict[str, list[float]]]:
-    """Divide each env's returns by its max final return across methods."""
     normalized = {}
 
     for env_name, methods in results_by_env.items():
-        # Find max final return across all methods for this env
         all_final_returns = []
         for method_returns in methods.values():
             if method_returns:
@@ -114,9 +97,6 @@ def normalize_cross_env(
             normalized[env_name][method] = [r / max_return for r in returns]
 
     return normalized
-
-
-# Load evaluation histories
 
 
 def load_eval_histories(run_dir: Path, *, eval_steps: int) -> list[dict[str, Any]]:
@@ -169,7 +149,6 @@ def load_eval_histories(run_dir: Path, *, eval_steps: int) -> list[dict[str, Any
 
 @dataclass(frozen=True)
 class AnalysisReport:
-    """MuJoCo analysis results."""
 
     per_env_curves: dict[str, Path]
     aggregate_png: Path
@@ -179,9 +158,6 @@ class AnalysisReport:
     summary_stats: dict[tuple[str, str], tuple[float, float, float]] = field(
         default_factory=dict  # (method, env) -> (iqm, ci_low, ci_high)
     )
-
-
-# Plotting functions
 
 
 def plot_per_env_curves(
@@ -306,9 +282,6 @@ def plot_aggregate(
     return png_path
 
 
-# CSV export
-
-
 def write_summary_csv(report: AnalysisReport, output_dir: Path) -> None:
     """Summary CSV (method,env,iqm,ci_low,ci_high,status) from report cells."""
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -326,9 +299,6 @@ def write_summary_csv(report: AnalysisReport, output_dir: Path) -> None:
             ):
                 status = "diverged"
             writer.writerow([method, env, iqm, ci_low, ci_high, status])
-
-
-# Main analysis entry point
 
 
 def analyze_results(
@@ -355,7 +325,6 @@ def analyze_results(
         grouped[key]["returns"].append(h["return"])
         grouped[key]["eval_points"].append(h["global_step"])
 
-    # Diverged runs (diverged.json) are excluded from curves.
     excluded_diverged = []
     for subdir in base_dir.iterdir():
         if not subdir.is_dir():
@@ -367,7 +336,6 @@ def analyze_results(
             if manifest.get("diverged", False):
                 excluded_diverged.append(subdir.name)
 
-    # Compute per-env curves
     per_env_curves = {}
     curves_by_env_method = defaultdict(lambda: defaultdict(list))
 
@@ -394,8 +362,6 @@ def analyze_results(
             png_path = plot_per_env_curves(env, curves_by_method, output_dir)
             per_env_curves[env] = png_path
 
-    # Compute aggregate comparison
-    # Collect final returns per method per env
     final_returns_by_env = defaultdict(lambda: defaultdict(list))
     for (method, env, seed), data in grouped.items():
         if f"{method}_{env}_{seed}" in excluded_diverged:
@@ -403,7 +369,6 @@ def analyze_results(
         if data["returns"]:
             final_returns_by_env[env][method].append(data["returns"][-1])
 
-    # Per-cell summary stats for the CSV (real IQM + bootstrap CI).
     summary_stats: dict[tuple[str, str], tuple[float, float, float]] = {}
     for env, methods in final_returns_by_env.items():
         for method, returns in methods.items():
@@ -412,13 +377,10 @@ def analyze_results(
             )
             summary_stats[(method, env)] = (compute_iqm(returns), ci_low, ci_high)
 
-    # Normalize cross-env
     normalized = normalize_cross_env(final_returns_by_env)
 
-    # Plot aggregate
     aggregate_png = plot_aggregate(normalized, output_dir)
 
-    # Compute superiority
     superiority = {}
     for method in ["sjfpo", "ppo", "sac"]:
         baseline_methods = [m for m in ["sjfpo", "ppo", "sac"] if m != method]

@@ -46,7 +46,8 @@ src/sjfpo/          # all production code (MuJoCo-only, fp32)
   wandb_logging.py  # sole wandb importer (REQUIRED); 5 fns, SJFPO_DISABLE_WANDB=1 off switch
   utils.py          # resolve_device, safe_float_value (no sjfpo imports)
 configs/            # sjfpo.yaml, ppo.yaml, sac.yaml, shared.yaml (mirror config.py)
-scripts/train.py    # unified CLI (single-run + --matrix)
+scripts/train.py    # draccus single-run CLI
+scripts/sweep.sh    # methods × envs × seeds sweep (calls train.py per run)
 scripts/build_notebook.py  # builds both minimal Colab .ipynb (never hand-edit notebooks)
 tests/              # 290 tests; test_pipeline_cpu.py invariants never touched
 docs/               # architecture, modules, config-flags, testing, wandb, troubleshooting
@@ -67,30 +68,29 @@ Hard pins: `gymnasium==1.3.0` (range `>=1.0,<1.3`), `skrl==2.1.0`, `einx==0.4.3`
 ## Usage
 
 ```bash
-# single run (defaults: total-steps 2000, eval/ckpt min(1000, total))
+# single run (defaults: total_steps 2000, eval/ckpt min(1000, total))
 PYTHONPATH=src .venv/bin/python scripts/train.py \
-  --method sjfpo --env Hopper-v5 --seed 0 --total-steps 2000
+  --method sjfpo --env Hopper-v5 --seed 0 --total_steps 2000
 
-# matrix sweep (RUN_MATRIX order: method × env × seed)
-PYTHONPATH=src .venv/bin/python scripts/train.py \
-  --matrix --methods sjfpo ppo --envs Hopper-v5 --seeds 0 1
+# sweep (method × env × seed, one train.py call per run)
+METHODS="sjfpo ppo" ENVS=Hopper-v5 SEEDS="0 1" bash scripts/sweep.sh
 
-# tiny smoke: 3 runs, Hopper-v5 seed 0, 20k steps (overrides filters)
-PYTHONPATH=src .venv/bin/python scripts/train.py --matrix --tiny
+# tiny smoke: 3 runs, Hopper-v5 seed 0, 20k steps
+bash scripts/sweep.sh --tiny
 ```
 
 
-Precedence: **CLI flags > `--config <file>.yaml` > dataclass defaults**. Singular `--method/--env/--seed` for single runs; plural `--methods/--envs/--seeds` only with `--matrix` (`--tiny` requires `--matrix`).
+Precedence: **CLI flags > `--config <file>.yaml` > dataclass defaults**. `train.py` takes singular `--method/--env/--seed` plus `--sjfpo.*`/`--ppo.*`/`--sac.*` hyperparameter flags (`hidden` tuples are YAML-only); sweep axes (`METHODS`/`ENVS`/`SEEDS`) live in `scripts/sweep.sh`.
 
 Exit codes: `0` success · `1` usage error · `2` runtime/divergence abort · `4` missing artifact.
 
-Env switches: `SJFPO_DEVICE=cuda|cpu|auto` · `SJFPO_DISABLE_WANDB=1` (only wandb off switch; wandb is a required import) · `SJFPO_TINY_MATRIX=1` (same as `--tiny`).
+Env switches: `SJFPO_DEVICE=cuda|cpu|auto` · `SJFPO_DISABLE_WANDB=1` (only wandb off switch; wandb is a required import).
 
 Key `SJFPOConfig` defaults: `num_mc_samples=16`, `euler_train=16`, `euler_eval=16`, `chunks_per_update=128`, `n_obs_steps=16`, `chunk_size=16`, `executed_vs_predicted_ratio=0.5`, `top_p_spectral_tokens=0.3`, `hidden_size=128`, `dit_depth=8`, `dit_heads=4`, `dit_mlp_ratio=4.0`, `dit_time_dim=256`, `lr=1e-4`, `wd=1e-4`, `clip_range=0.05`, `clip_range_vf=10.0`, `cfm_clamp=20`, `log_ratio_cap=10`, `vf_coef=0.1`, `grad_clip=1.0`, `gamma=0.99`, `gae_lambda=0.95`.
 
 ## Outputs
 
-`--out-dir` defaults to `.omo/evidence/train` (git-ignored). Single mode writes under `<out-dir>/<method>/`; matrix mode under `<out-dir>/<method>_<env>_seed<seed>/` (`sweep.format_run_directory_name`):
+`--out-dir` defaults to `.omo/evidence/train` (git-ignored). Each run writes under `<out-dir>/<method>_<env>_seed<seed>/` (same format as `sweep.format_run_directory_name`):
 
 - `eval_history.csv` — `episode,return,length`
 - `checkpoint_<step>/` + `checkpoint_final/` — `checkpoint.pt` + `manifest.json`

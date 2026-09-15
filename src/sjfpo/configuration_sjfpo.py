@@ -28,7 +28,8 @@ class SJFPOConfig(PreTrainedConfig):
 
     num_mc_samples: int = 16
     euler_train: int = 16
-    euler_eval: int = 16
+    num_inference_steps: int = 16
+    euler_eval: int | None = None  # Deprecated alias for num_inference_steps (old yamls/checkpoints).
     chunks_per_update: int = 128
     num_epochs: int = 10
     num_minibatches: int = 8
@@ -40,7 +41,8 @@ class SJFPOConfig(PreTrainedConfig):
     clip_range_vf: float = 10.0
     cfm_clamp: float = 20.0
     log_ratio_cap: float = 10.0
-    tau_range: tuple[float, float] = (0.005, 0.995)
+    min_timestep: float = 0.005
+    max_timestep: float = 0.995
 
     dit_depth: int = 8
     dit_heads: int = 4
@@ -48,6 +50,8 @@ class SJFPOConfig(PreTrainedConfig):
     dit_time_dim: int = 256
 
     vf_coef: float = 0.1
+    kl_coef: float = 0.01
+    ema_decay: float = 0.999
     grad_clip_norm: float = 1.0
 
     top_p_spectral_tokens: float = 0.3
@@ -55,11 +59,20 @@ class SJFPOConfig(PreTrainedConfig):
     executed_vs_predicted_ratio: float = 0.5
 
     optimizer_lr: float = 1e-4
+    optimizer_lr_critic: float = 1e-4
     optimizer_weight_decay: float = 1e-4
     optimizer_8bit: bool = False
 
     def __post_init__(self):
         super().__post_init__()
+        if self.euler_eval is not None:
+            # Legacy override wins once, then syncs so both stay consistent.
+            self.num_inference_steps = self.euler_eval
+        self.euler_eval = self.num_inference_steps
+        if self.euler_train < 1:
+            raise ValueError(f"euler_train={self.euler_train} must be >= 1")
+        if self.num_inference_steps < 1:
+            raise ValueError(f"num_inference_steps={self.num_inference_steps} must be >= 1")
         if not 0 < self.n_action_steps <= self.action_horizon:
             raise ValueError(
                 f"n_action_steps={self.n_action_steps} must satisfy "
@@ -76,10 +89,24 @@ class SJFPOConfig(PreTrainedConfig):
                 "require 0 < epsilon_low <= epsilon_high < 1, got "
                 f"({self.epsilon_low}, {self.epsilon_high})"
             )
+        if not 0.0 < self.min_timestep < self.max_timestep < 1.0:
+            raise ValueError(
+                "require 0 < min_timestep < max_timestep < 1, got "
+                f"({self.min_timestep}, {self.max_timestep})"
+            )
         if self.spectral_pool not in ("mean", "attention"):
             raise ValueError(
                 f"spectral_pool={self.spectral_pool!r} must be 'mean' or 'attention'"
             )
+        if self.optimizer_lr <= 0 or self.optimizer_lr_critic <= 0:
+            raise ValueError(
+                "require optimizer_lr > 0 and optimizer_lr_critic > 0, got "
+                f"({self.optimizer_lr}, {self.optimizer_lr_critic})"
+            )
+        if not 0.0 <= self.ema_decay < 1.0:
+            raise ValueError(f"ema_decay={self.ema_decay} must satisfy 0 <= d < 1")
+        if self.kl_coef < 0:
+            raise ValueError(f"kl_coef={self.kl_coef} must be >= 0")
 
     def validate_features(self) -> None:
         """Require observation.state + action features (base class skips this)."""

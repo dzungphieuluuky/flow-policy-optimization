@@ -19,7 +19,6 @@ __all__ = [
     "discounted_chunk_reward",
 ]
 
-# Precomputed orthonormal bases, keyed by size N (plain tensors, read-only).
 BASIS_CACHE: dict[int, torch.Tensor] = {}
 
 
@@ -42,20 +41,18 @@ def apply_matrix_along_dim(
     dim = dim % x.dim()
     if dim != x.dim() - 1:
         x = x.movedim(dim, -1)
-    out = x @ mat.to(x.device)  # [..., N] @ [N, N] -> [..., N]
+    out = x @ mat.to(x.device)
     if dim != out.dim() - 1:
         out = out.movedim(-1, dim)
     return out
 
 
 def dct(x: torch.Tensor, dim: int = -1) -> torch.Tensor:
-    """Orthonormal DCT-II of ``x`` along ``dim``."""
     return apply_matrix_along_dim(x, dim, dct_basis_matrix(x.shape[dim % x.dim()]).t())
 
 
 def idct(x: torch.Tensor, dim: int = -1) -> torch.Tensor:
     """Inverse (DCT-III) along ``dim``: matmul with M (M⁻¹ = Mᵀ)."""
-    return apply_matrix_along_dim(x, dim, dct_basis_matrix(x.shape[dim % x.dim()]))
     return apply_matrix_along_dim(x, dim, dct_basis_matrix(x.shape[dim % x.dim()]))
 
 
@@ -71,11 +68,8 @@ def mask_actions(actions: torch.Tensor, executed_n_action_steps, dim: int = 1) -
     mask = (row < lens.unsqueeze(1)).to(actions.dtype).unsqueeze(-1)
     return actions * mask
 
-    # retained: test-only seam (test_dct.py); not on the train path.
-
 
 def discounted_chunk_reward(rewards: torch.Tensor, gamma: float) -> torch.Tensor:
-    """Σ_t γ^t·r_t along the last axis (batch dims preserved)."""
     n = rewards.shape[-1]
     weights = gamma ** torch.arange(n, dtype=rewards.dtype, device=rewards.device)
     return (rewards * weights).sum(dim=-1)

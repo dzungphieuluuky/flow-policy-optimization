@@ -39,7 +39,7 @@ def test_baselines_write_3col_csv(tmp_path, monkeypatch):
         seed=0,
         total_steps=200,
         eval_steps=200,
-        ckpt_interval=200,
+        save_steps=200,
     )
     # result dict keys per T4
     assert result["method"] == "ppo"
@@ -74,9 +74,9 @@ def test_sjfpo_train_run_writes_3col_csv(tmp_path):
         seed=0,
         total_steps=200,
         eval_steps=100,
-        ckpt_interval=100,
+        save_steps=100,
         obs_dim=4,
-        act_dim=2,
+        action_dim=2,
     )
     assert result["method"] == "sjfpo"
     assert any(str(a).endswith("model.safetensors") for a in result["artifacts"])

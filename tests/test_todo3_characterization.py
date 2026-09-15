@@ -20,11 +20,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 class ScriptedEnv:
     """Minimal gymnasium-v5-style env with deterministic rewards."""
 
-    def __init__(self, obs_dim=4, act_dim=2, max_steps=10):
+    def __init__(self, obs_dim=4, action_dim=2, max_steps=10):
         self.observation_space = type("S", (), {"shape": (obs_dim,)})()
-        self.action_space = type("A", (), {"shape": (act_dim,)})()
+        self.action_space = type("A", (), {"shape": (action_dim,)})()
         self.obs_dim = obs_dim
-        self.act_dim = act_dim
+        self.action_dim = action_dim
         self.max_steps = max_steps
         self.step_count = 0
 
@@ -164,7 +164,7 @@ class TestSweepCharacterization:
             seed=0,
             total_steps=100,
             eval_steps=10,
-            ckpt_interval=10,
+            save_steps=10,
         )
         (tmp_path / "sjfpo_Hopper-v5_seed0").mkdir(parents=True)
         result = scan_runs((spec,), tmp_path)
@@ -182,7 +182,7 @@ class TestSweepCharacterization:
             seed=0,
             total_steps=100,
             eval_steps=10,
-            ckpt_interval=10,
+            save_steps=10,
         )
 
         def boom(spec, base):
