@@ -90,6 +90,12 @@ path; do not hand-roll numbers.
 
 ## Phase 5 — Manuscript (parallel with Phases 2-4)
 
+You are entering this generic research timeline at the experiments stage
+(weeks ~19-35): foundations, paper reading (FAFM/FreqPolicy/FAST surveyed),
+and question-scoping are done. Remaining generic phases map to this file:
+rigorous experiments = Phases 2-4, scientific writing = this phase,
+submission/review = Phase 7 plus the arXiv item below.
+
 Venue plan (sim-only, no hardware — fully acceptable at all of these):
 
 | Venue | Why it fits | Deadline (as of 2026-09-16) |
@@ -135,6 +141,12 @@ Framing per venue (same evidence, different lead):
       5. Limitations: MuJoCo locomotion only, no vision, no real robot.
 - [ ] Math appendix: CFM loss in DCT space, Parseval bookkeeping, ASPO
       piecewise derivation, chunk-GAE recursion with variable L_k.
+- [ ] Draft in figures-first order: figures/tables -> methods -> results
+      -> intro -> abstract. Do not write the intro first.
+- [ ] Post to arXiv after the internal red-team pass (before or with
+      submission, depending on venue anonymity rules: CoRL/NeurIPS review
+      is double-blind, so arXiv-after-decision if anonymity is a concern;
+      otherwise preprint early to timestamp).
 - [ ] Red-team the ASPO section with one colleague before submitting
       (most likely reviewer attack surface).
 
