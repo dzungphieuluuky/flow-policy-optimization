@@ -21,6 +21,7 @@ dit_depth: 4
 dit_heads: 4
 dit_mlp_ratio: 4.0
 dit_time_dim: 128
+timestep_scale: 1000.0
 vf_coef: 0.01
 kl_coef: 0.01
 ema_decay: 0.999
@@ -29,5 +30,5 @@ n_obs_steps: 16
 action_horizon: 16
 executed_vs_predicted_ratio: 0.5
 top_p_spectral_tokens: 1.0
-spectral_condition_mode: mean
+spectral_condition_mode: attention
 hidden_dim: 128

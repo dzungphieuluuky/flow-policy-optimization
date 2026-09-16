@@ -130,10 +130,24 @@ class SJFPOPolicy(PreTrainedPolicy):
         self.old_actor = copy.deepcopy(self.actor)
 
     def get_optim_params(self) -> dict:
-        """Actor/critic groups with distinct LRs (spectral/EMA never train)."""
+        """Actor (decay / no-decay) + critic groups (spectral/EMA never train).
+
+        Zero-init layers (adaLN regressors incl. adaLN_out, final out) skip
+        weight decay so decay never fights the identity-at-init design.
+        """
+        decay, no_decay = [], []
+        for name, p in self.actor.named_parameters():
+            # Strip the torch.compile wrapper prefix so compiled/eager group
+            # identically (else save/load optimizer states stop matching).
+            short = name.split("_orig_mod.")[-1]
+            if "adaLN" in short or short.startswith("out."):
+                no_decay.append(p)
+            else:
+                decay.append(p)
         return {
             "params": [
-                {"params": list(self.actor.parameters())},
+                {"params": decay},
+                {"params": no_decay, "weight_decay": 0.0},
                 {
                     "params": list(self.critic.parameters()),
                     "lr": self.config.optimizer_lr_critic,
@@ -318,7 +332,11 @@ class SJFPOPolicy(PreTrainedPolicy):
             (loss, info_dict) where ``loss`` is scalar if ``reduction="mean"``
             or per-chunk [B] if ``reduction="none"``. ``info_dict`` holds detached
             scalar summaries: ``policy_loss``, ``value_loss``, ``kl_loss``,
-            ``mean_log_ratio``.
+            ``mean_log_ratio``, plus diagnostics (auto-logged to wandb as
+            ``train/...``): ``flow_rho_mean/std``, ``flow_v_star_rms``, and
+            ``cond_*`` RMS norms (``temb``, ``pooled``, ``c``, per-block mean
+            ``gate_msa/mlp`` and ``1+scale``) — gates near 0 mean the spectrum
+            is unused (expected early under adaLN-Zero).
 
         Gradient behavior:
             - ``actor`` and ``critic`` receive gradients.
@@ -394,6 +412,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             v_new = self.compute_predicted_velocity(
                 x_t_flat, tau_flat, cond_flat, state_flat
             ).float()
+        cond_stats = dict(self.actor.last_cond_stats)  # live-actor diagnostics
         # Fixed-variance Gaussian KL(current || EMA) on velocities.
         with torch.inference_mode(), autocast_context(states.device):
             v_ema = self.ema_actor(x_t_flat, tau_flat, cond_flat, state_flat).float()
@@ -448,9 +467,16 @@ class SJFPOPolicy(PreTrainedPolicy):
             )
         with torch.inference_mode():
             mean_log_ratio = float((l_old - l_new).mean())
+            rho_mean = float(rho.detach().mean())
+            rho_std = float(rho.detach().std(unbiased=False))
+            v_star_rms = float(v_star.detach().pow(2).mean().sqrt())
         return loss, {
             "policy_loss": float(policy_per_chunk.mean().detach()),
             "value_loss": float(value_per_chunk.mean().detach()),
             "kl_loss": float(kl_loss.detach()),
             "mean_log_ratio": mean_log_ratio,
+            "flow_rho_mean": rho_mean,
+            "flow_rho_std": rho_std,
+            "flow_v_star_rms": v_star_rms,
+            **{f"cond_{k}": float(v.detach()) for k, v in cond_stats.items()},
         }

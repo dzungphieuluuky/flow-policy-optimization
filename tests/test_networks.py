@@ -29,6 +29,15 @@ CHUNK = _DEFAULTS.action_horizon  # 16
 # Networks import lazily so a missing module reports one clean collection error.
 
 
+def _inactive_branch_params(policy):
+    """Params of the pooling branch not taken (mutually exclusive modes)."""
+    if policy.spectral_condition_mode == "attention":
+        return {"cond_proj.weight", "cond_proj.bias"}
+    return {
+        n for n, _ in policy.named_parameters() if n.startswith("spectral_condition_module.")
+    }
+
+
 def make_nets():
     import sjfpo.networks as nets
 
@@ -265,7 +274,7 @@ def test_spectral_encoder_nan_propagates_detectably():
 
 def test_get_timestep_embedding_sin_cos_values():
     nets = make_nets()
-    emb = nets.get_timestep_embedding(0.5, dim=8)
+    emb = nets.get_timestep_embedding(0.5, dim=8, scale=1.0)
     assert emb.shape == (8,)
     freqs = [math.exp(-math.log(10000.0) * k / 3) for k in range(4)]
     expected = [math.sin(0.5 * f) for f in freqs] + [math.cos(0.5 * f) for f in freqs]
@@ -296,7 +305,9 @@ def test_policy_flow_head_tensor_t_and_grad():
     assert v.shape == (8, CHUNK, 3)
     v.sum().backward()
     assert all(
-        p.grad is not None and torch.isfinite(p.grad).all() for p in policy.parameters()
+        p.grad is not None and torch.isfinite(p.grad).all()
+        for n, p in policy.named_parameters()
+        if n not in _inactive_branch_params(policy)
     )
 
 
@@ -310,7 +321,9 @@ def test_policy_flow_head_cond_from_spectral():
     assert v.shape == (8, CHUNK, 7)
     v.sum().backward()
     assert all(
-        p.grad is not None and torch.isfinite(p.grad).all() for p in policy.parameters()
+        p.grad is not None and torch.isfinite(p.grad).all()
+        for n, p in policy.named_parameters()
+        if n not in _inactive_branch_params(policy)
     )
 
     # DiT blocks (adaLN-Zero identity init + finite time embeddings)
@@ -324,6 +337,15 @@ def test_dit_block_identity_at_init():
     c = torch.randn(2, 128)
     assert torch.allclose(block(x, c), x, atol=1e-5), (
         "adaLN-Zero must start as identity"
+    )
+
+
+def test_timestep_scale_resolves_flow_times():
+    nets = make_nets()
+    a = nets.get_timestep_embedding(0.20, dim=32)
+    b = nets.get_timestep_embedding(0.25, dim=32)
+    assert float((a - b).abs().max()) > 0.5, (
+        "default scale must separate nearby flow times (unscaled diff < 0.05)"
     )
 
 

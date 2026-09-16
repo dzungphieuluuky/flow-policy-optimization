@@ -19,6 +19,23 @@ from tests.fixtures.fake_env import FakeGymEnv  # noqa: E402
 
 OBS_DIM, ACT_DIM = 4, 2
 
+INFO_KEYS = {
+    "policy_loss",
+    "value_loss",
+    "kl_loss",
+    "mean_log_ratio",
+    "flow_rho_mean",
+    "flow_rho_std",
+    "flow_v_star_rms",
+    "cond_temb",
+    "cond_pooled",
+    "cond_c",
+    "cond_gate_msa",
+    "cond_gate_mlp",
+    "cond_scale_msa",
+    "cond_scale_mlp",
+}
+
 
 def make_config(**overrides) -> SJFPOConfig:
     base = dict(
@@ -89,14 +106,14 @@ def test_forward_finite_loss_and_native_dict():
     policy.train()
     loss, info = policy(make_batch(pad_tail=8))
     assert loss.dim() == 0 and torch.isfinite(loss)
-    assert set(info) == {"policy_loss", "value_loss", "kl_loss", "mean_log_ratio"}
+    assert set(info) == INFO_KEYS
     assert all(isinstance(v, float) for v in info.values())
 
 
 def test_optim_params_exclude_snapshot():
     policy = SJFPOPolicy(make_config())
     groups = policy.get_optim_params()["params"]
-    assert len(groups) == 2
+    assert len(groups) == 3  # actor decay / actor no-decay (zero-init) / critic
     optim_ids = {id(p) for g in groups for p in g["params"]}
     live_ids = {id(p) for p in policy.actor.parameters()} | {
         id(p) for p in policy.critic.parameters()
@@ -151,7 +168,7 @@ def test_forward_reduction_none_returns_per_chunk_vector():
     assert torch.isfinite(loss_vec).all()
     loss_scalar, _ = policy(batch)
     assert loss_vec.mean().item() == pytest.approx(loss_scalar.item(), rel=1e-5)
-    assert set(info) == {"policy_loss", "value_loss", "kl_loss", "mean_log_ratio"}
+    assert set(info) == INFO_KEYS
     with pytest.raises(ValueError, match="reduction"):
         policy(batch, reduction="sum")
 
@@ -233,18 +250,19 @@ def test_generate_rollout_returns_forward_ready_batch():
     policy.train()
     loss, info = policy(batch)
     assert torch.isfinite(loss)
-    assert set(info) == {"policy_loss", "value_loss", "kl_loss", "mean_log_ratio"}
+    assert set(info) == INFO_KEYS
 
 
 def test_optim_params_actor_critic_groups():
     policy = SJFPOPolicy(make_config(optimizer_lr_critic=3e-4))
     groups = policy.get_optim_params()["params"]
-    assert len(groups) == 2
+    assert len(groups) == 3
     ema_ids = {id(p) for p in policy.ema_actor.parameters()}
     for g in groups:
         assert not any(id(p) in ema_ids for p in g["params"])
     opt = policy.config.get_optimizer_preset().build(groups)
-    assert [g["lr"] for g in opt.param_groups] == [1e-4, 3e-4]
+    assert [g["lr"] for g in opt.param_groups] == [1e-4, 1e-4, 3e-4]
+    assert [g["weight_decay"] for g in opt.param_groups][1] == 0.0
 
 
 def test_ema_anchor_zero_kl_at_init():

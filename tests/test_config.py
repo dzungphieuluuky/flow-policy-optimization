@@ -113,6 +113,8 @@ def test_sjfpo_config_documented_ranges():
     c = SJFPOConfig()
     assert c.num_mc_samples >= 2
     assert c.num_euler_steps >= 1
+    assert c.timestep_scale > 0
+    assert c.spectral_condition_mode == "attention"
     assert c.num_inference_steps >= 1
     assert c.chunks_per_update >= 1
     assert c.num_epochs >= 1

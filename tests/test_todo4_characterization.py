@@ -135,7 +135,22 @@ class TestTrainerGolden:
         policy, cfg, obs_dim, action_dim = self.policy()
         chunks, meta = self.chunks(cfg, obs_dim, action_dim)
         loss, info = policy(self.batch(chunks, meta, 4))
-        assert set(info) == {"policy_loss", "value_loss", "kl_loss", "mean_log_ratio"}
+        assert set(info) == {
+            "policy_loss",
+            "value_loss",
+            "kl_loss",
+            "mean_log_ratio",
+            "flow_rho_mean",
+            "flow_rho_std",
+            "flow_v_star_rms",
+            "cond_temb",
+            "cond_pooled",
+            "cond_c",
+            "cond_gate_msa",
+            "cond_gate_mlp",
+            "cond_scale_msa",
+            "cond_scale_mlp",
+        }
         for v in info.values():
             assert isinstance(v, float)
             assert np.isfinite(v)

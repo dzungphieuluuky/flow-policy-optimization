@@ -228,7 +228,22 @@ class TestNoAuxHeadV4:
         assert not hasattr(policy, "aux_head"), "aux_head must be gone"
         _, info = policy(make_forward_batch(make_transitions(8), 8))
         assert "next_state_loss" not in info
-        assert set(info) == {"policy_loss", "value_loss", "kl_loss", "mean_log_ratio"}
+        assert set(info) == {
+            "policy_loss",
+            "value_loss",
+            "kl_loss",
+            "mean_log_ratio",
+            "flow_rho_mean",
+            "flow_rho_std",
+            "flow_v_star_rms",
+            "cond_temb",
+            "cond_pooled",
+            "cond_c",
+            "cond_gate_msa",
+            "cond_gate_mlp",
+            "cond_scale_msa",
+            "cond_scale_mlp",
+        }
 
     def test_policy_head_in_optimizer_and_moves(self):
         policy = make_policy_v4()

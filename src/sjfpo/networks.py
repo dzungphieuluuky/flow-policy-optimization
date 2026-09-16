@@ -56,6 +56,8 @@ class PositionalEncoding(nn.Module):
         )
         ang = pos * freqs
         pe = torch.cat([ang.sin(), ang.cos()], dim=-1)
+        if pe.shape[-1] < dim:  # odd dim: pad the missing column with zeros
+            pe = torch.nn.functional.pad(pe, (0, dim - pe.shape[-1]))
         return x + pe[:, :dim]
 
 class StateEncoder(nn.Module):
@@ -286,11 +288,14 @@ class SpectralEncoder(nn.Module):
 
 
 class SpectralAttentionPool(nn.Module):
-    """Order-aware pooling of raw DCT bins into one conditioning vector.
+    """Frequency-aware pooling of DCT bins into one conditioning vector.
 
-    Per-bin projection shared over K, query from the DiT timestep embedding.
-    Mean blending cannot tell DC from harmonics; attention keeps which-bin
-    information and exposes inspectable weights.
+    Bin tokens carry a sinusoidal frequency code (position = bin index, i.e.
+    frequency order) before the shared per-bin projection, so attention
+    weights index frequency rather than content alone. Without the code the
+    pooling would be permutation-invariant over bins (bare tokens + single
+    query cannot tell a spectrum from a permutation of it). Query comes from
+    the timestep embedding; weights stay inspectable via last_pool_weights.
     """
 
     def __init__(
@@ -307,6 +312,7 @@ class SpectralAttentionPool(nn.Module):
         time_dim = int(resolve_config_value("dit_time_dim", time_dim))
         n_heads = int(resolve_config_value("dit_heads", n_heads))
         self.key_proj = nn.Linear(obs_dim, hidden_dim)
+        self.bin_encoding = PositionalEncoding()  # bin index = frequency order
         self.query_proj = nn.Linear(time_dim, hidden_dim)
         self.norm_q = nn.RMSNorm(hidden_dim)
         self.norm_kv = nn.RMSNorm(hidden_dim)
@@ -316,7 +322,7 @@ class SpectralAttentionPool(nn.Module):
         self, condition: torch.Tensor, timesteps_embedding: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """([B, K, obs_dim], [B, time_dim]) -> (pooled [B, D], weights [B, K])."""
-        keys = self.key_proj(condition)
+        keys = self.key_proj(self.bin_encoding(condition))
         query = self.query_proj(timesteps_embedding).unsqueeze(1)
         pooled, weights = self.attn(
             self.norm_q(query), self.norm_kv(keys), self.norm_kv(keys)
@@ -328,9 +334,17 @@ def modulate(x: torch.Tensor, shift: torch.Tensor, scale: torch.Tensor) -> torch
     return x * (1.0 + scale) + shift
 
 
-def get_timestep_embedding(t, dim: int = 256) -> torch.Tensor:
-    """Sinusoidal embedding with inverse-frequency ladder (finite in fp32)."""
-    t = torch.as_tensor(t, dtype=torch.float32)
+def get_timestep_embedding(
+    t, dim: int = 256, scale: float | None = None
+) -> torch.Tensor:
+    """Sinusoidal embedding with inverse-frequency ladder (finite in fp32).
+
+    The ladder spans DDPM integer-step frequencies, so unit-interval flow
+    time is scaled up first (default ``timestep_scale``); unscaled, every
+    channel would sit at angle <= 1 and nearby times stay indistinguishable.
+    """
+    scale = float(resolve_config_value("timestep_scale", scale))
+    t = torch.as_tensor(t, dtype=torch.float32) * scale
     half = dim // 2
     freqs = torch.exp(
         torch.arange(half, dtype=torch.float32, device=t.device)
@@ -357,6 +371,7 @@ class DiTBlock(nn.Module):
         self.adaLN = SwiGLU(hidden_dim, hidden_dim, 6 * hidden_dim)
         nn.init.constant_(self.adaLN.down.weight, 0.0)
         nn.init.constant_(self.adaLN.down.bias, 0.0)
+        self.last_gate_norms: dict[str, torch.Tensor] | None = None  # detached RMS stash
 
     def forward(self, x: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
         """([B, H, D], [B, D]) -> [B, H, D]."""
@@ -366,7 +381,16 @@ class DiTBlock(nn.Module):
         h = modulate(self.norm1(x), shift_msa, scale_msa)
         attn, _ = self.attn(h, h, h)
         x = x + gate_msa * attn
-        return x + gate_mlp * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
+        out = x + gate_mlp * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
+        # Detached tensor stash (float() conversion happens in eager policy code,
+        # never inside this possibly-compiled region); mirrors last_pool_weights.
+        self.last_gate_norms = {
+            "gate_msa": gate_msa.detach().pow(2).mean().sqrt(),
+            "gate_mlp": gate_mlp.detach().pow(2).mean().sqrt(),
+            "scale_msa": (1.0 + scale_msa).detach().pow(2).mean().sqrt(),
+            "scale_mlp": (1.0 + scale_mlp).detach().pow(2).mean().sqrt(),
+        }
+        return out
 
 
 class CrossAttentionBlock(nn.Module):
@@ -441,16 +465,22 @@ class SJFOPolicyModel(nn.Module):
             DiTBlock(hidden_dim, dit_heads, dit_mlp_ratio) for _ in range(dit_depth)
         )
         self.norm_out = nn.LayerNorm(hidden_dim, elementwise_affine=False, eps=1e-6)
+        self.adaLN_out = nn.Linear(hidden_dim, 2 * hidden_dim)
+        nn.init.constant_(self.adaLN_out.weight, 0.0)
+        nn.init.constant_(self.adaLN_out.bias, 0.0)
         self.out = nn.Linear(hidden_dim, action_dim)
         # Zero final layer: an untrained policy predicts ~zero velocity.
         nn.init.constant_(self.out.weight, 0.0)
         nn.init.constant_(self.out.bias, 0.0)
+        self.bin_norm = nn.LayerNorm(obs_dim)  # tame heavy-tailed DCT bins pre-pool
+        self.last_cond_stats: dict[str, torch.Tensor] | None = None
 
     def forward(
         self, x_t: torch.Tensor, t, condition: torch.Tensor, state: torch.Tensor
     ) -> torch.Tensor:
         """Predict velocity: ([B, Ka, action_dim], t, [B, K, obs_dim], [B, T, obs_dim])
         -> [B, Ka, action_dim]. Ka = top-p low-frequency rows (<= H)."""
+        condition = self.bin_norm(condition)
         timesteps_embedding = get_timestep_embedding(t, dim=self.time_dim).to(
             device=x_t.device, dtype=x_t.dtype
         )
@@ -459,15 +489,30 @@ class SJFOPolicyModel(nn.Module):
         if self.spectral_condition_mode == "attention":
             pooled, weights = self.spectral_condition_module(condition, timesteps_embedding)
             self.last_pool_weights = weights.detach()
-            c = self.time_mlp(timesteps_embedding) + pooled
+            branch = pooled
         else:
             self.last_pool_weights = None
-            c = self.time_mlp(timesteps_embedding) + self.cond_proj(condition.mean(dim=1))
+            branch = self.cond_proj(condition.mean(dim=1))
+        c = self.time_mlp(timesteps_embedding) + branch
         s = self.state_encoder(state)
         h = torch.cat([s, self.in_proj(x_t)], dim=1)
         for block in self.blocks:
             h = block(h, c)
-        return self.out(self.norm_out(h[:, -x_t.shape[1] :, :]))
+        # RMS diagnostics stash (detached; float() conversion in eager caller).
+        self.last_cond_stats = {
+            "temb": timesteps_embedding.detach().pow(2).mean().sqrt(),
+            "pooled": branch.detach().pow(2).mean().sqrt(),
+            "c": c.detach().pow(2).mean().sqrt(),
+            **{
+                k: torch.stack(
+                    [b.last_gate_norms[k] for b in self.blocks]
+                ).mean()
+                for k in ("gate_msa", "gate_mlp", "scale_msa", "scale_mlp")
+            },
+        }
+        shift_out, scale_out = self.adaLN_out(c)[:, None, :].chunk(2, dim=-1)
+        h = h[:, -x_t.shape[1] :, :]
+        return self.out(modulate(self.norm_out(h), shift_out, scale_out))
 
 class Critic(nn.Module):
     """State-action critic with owned encoders; V(s,a) keeps its TD target V(s',a').

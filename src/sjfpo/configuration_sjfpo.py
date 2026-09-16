@@ -47,6 +47,9 @@ class SJFPOConfig(PreTrainedConfig):
     dit_heads: int = 4
     dit_mlp_ratio: float = 4.0
     dit_time_dim: int = 256
+    timestep_scale: float = 1000.0  # Flow time t in [0,1] is scaled by this before
+    # the DDPM sinusoidal ladder (designed for integer steps 0-1000); without it
+    # every channel sits at angle <= 1 and t is nearly unresolvable.
 
     vf_coef: float = 0.1
     kl_coef: float = 0.01
@@ -54,7 +57,8 @@ class SJFPOConfig(PreTrainedConfig):
     grad_clip_norm: float = 1.0
 
     top_p_spectral_tokens: float = 0.3
-    spectral_condition_mode: str = "mean"
+    spectral_condition_mode: str = "attention"  # attention carries bin order via
+    # frequency encoding; mean is permutation-invariant over bins by construction.
     executed_vs_predicted_ratio: float = 0.5
 
     optimizer_lr: float = 1e-4
@@ -89,6 +93,8 @@ class SJFPOConfig(PreTrainedConfig):
                 "require 0 < min_timestep < max_timestep < 1, got "
                 f"({self.min_timestep}, {self.max_timestep})"
             )
+        if self.timestep_scale <= 0:
+            raise ValueError(f"timestep_scale={self.timestep_scale} must be positive")
         if self.spectral_condition_mode not in ("mean", "attention"):
             raise ValueError(
                 f"spectral_condition_mode={self.spectral_condition_mode!r} must be 'mean' or 'attention'"
