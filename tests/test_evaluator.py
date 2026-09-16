@@ -98,7 +98,7 @@ class SJFPOPolicyAdapter:
                 lambda x, t, c, s: self.policy_head(x, t, c, s),
                 (1, top_k_spectral_action_tokens, self.action_dim),
                 condition,
-                num_inference_steps=self.cfg.euler_eval,
+                num_inference_steps=self.cfg.num_inference_steps,
                 eps=torch.zeros(1, top_k_spectral_action_tokens, self.action_dim),
                 state=state,
             )  # [1, Ka, action_dim]

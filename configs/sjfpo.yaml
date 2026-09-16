@@ -1,7 +1,7 @@
 # SJFPO defaults — mirrors src/sjfpo/configuration_sjfpo.py:SJFPOConfig.
 # fp32 storage (bf16 autocast matmuls on CUDA; torch.compile on, SJFPO_COMPILE=0 off).
 num_mc_samples: 16
-euler_train: 8
+num_euler_steps: 8
 num_inference_steps: 16
 chunks_per_update: 128
 num_epochs: 10
@@ -29,5 +29,5 @@ n_obs_steps: 16
 action_horizon: 16
 executed_vs_predicted_ratio: 0.5
 top_p_spectral_tokens: 1.0
-spectral_pool: mean
+spectral_condition_mode: mean
 hidden_dim: 128

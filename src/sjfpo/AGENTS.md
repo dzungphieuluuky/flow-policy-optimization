@@ -42,7 +42,7 @@ utils.py           23L — shared pure helpers (safe_float_value), no sjfpo impo
 
 ## Conventions
 - Tensor order `B,N,H,K,D,action_dim,Ds` — comment dimensions at each transform (Google docstrings + inline `[B,H,action_dim]`)
-- Live condition is `[N,K,obs]` raw bins; the DiT pools it into the adaLN vector (`spectral_pool="mean"`: `condition.mean(1)` via `cond_proj`; `"attention"`: `SpectralAttentionPool` query from time-embed, weights in `last_pool_weights`) AND reads raw states as `[T,obs]→state_embed` prefix tokens (action positions only read out)
+- Live condition is `[N,K,obs]` raw bins; the DiT pools it into the adaLN vector (`spectral_condition_mode="mean"`: `condition.mean(1)` via `cond_proj`; `"attention"`: `SpectralAttentionPool` query from time-embed, weights in `last_pool_weights`) AND reads raw states as `[T,obs]→state_embed` prefix tokens (action positions only read out)
 - Net activations are SwiGLU everywhere (gate/up/down linears; silu lives only inside SwiGLU)
 - `sigreg_loss` stays in `networks.py` as a test-only seam (not in the update path) — no Barlow heads
 - `polyak` survives ONLY at the skrl boundary (`SACConfig`, `build_sac_skrl_config`, `sac.yaml`); no EMA/target nets in the sjfpo path

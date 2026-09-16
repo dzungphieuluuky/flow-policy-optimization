@@ -27,9 +27,8 @@ class SJFPOConfig(PreTrainedConfig):
     hidden_dim: int = 128
 
     num_mc_samples: int = 16
-    euler_train: int = 16
+    num_euler_steps: int = 16
     num_inference_steps: int = 16
-    euler_eval: int | None = None  # Deprecated alias for num_inference_steps (old yamls/checkpoints).
     chunks_per_update: int = 128
     num_epochs: int = 10
     num_minibatches: int = 8
@@ -55,7 +54,7 @@ class SJFPOConfig(PreTrainedConfig):
     grad_clip_norm: float = 1.0
 
     top_p_spectral_tokens: float = 0.3
-    spectral_pool: str = "mean"
+    spectral_condition_mode: str = "mean"
     executed_vs_predicted_ratio: float = 0.5
 
     optimizer_lr: float = 1e-4
@@ -65,12 +64,8 @@ class SJFPOConfig(PreTrainedConfig):
 
     def __post_init__(self):
         super().__post_init__()
-        if self.euler_eval is not None:
-            # Legacy override wins once, then syncs so both stay consistent.
-            self.num_inference_steps = self.euler_eval
-        self.euler_eval = self.num_inference_steps
-        if self.euler_train < 1:
-            raise ValueError(f"euler_train={self.euler_train} must be >= 1")
+        if self.num_euler_steps < 1:
+            raise ValueError(f"num_euler_steps={self.num_euler_steps} must be >= 1")
         if self.num_inference_steps < 1:
             raise ValueError(f"num_inference_steps={self.num_inference_steps} must be >= 1")
         if not 0 < self.n_action_steps <= self.action_horizon:
@@ -94,9 +89,9 @@ class SJFPOConfig(PreTrainedConfig):
                 "require 0 < min_timestep < max_timestep < 1, got "
                 f"({self.min_timestep}, {self.max_timestep})"
             )
-        if self.spectral_pool not in ("mean", "attention"):
+        if self.spectral_condition_mode not in ("mean", "attention"):
             raise ValueError(
-                f"spectral_pool={self.spectral_pool!r} must be 'mean' or 'attention'"
+                f"spectral_condition_mode={self.spectral_condition_mode!r} must be 'mean' or 'attention'"
             )
         if self.optimizer_lr <= 0 or self.optimizer_lr_critic <= 0:
             raise ValueError(

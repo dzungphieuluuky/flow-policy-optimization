@@ -61,8 +61,8 @@ def test_sjfpo_train_run_writes_3col_csv(tmp_path):
     out = tmp_path / "sjfpo_3col"
     cfg = SJFPOConfig(
         num_mc_samples=2,
-        euler_train=4,
-        euler_eval=4,
+        num_euler_steps=4,
+        num_inference_steps=4,
         chunks_per_update=16,
         n_obs_steps=16,
         dit_depth=2,

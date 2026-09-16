@@ -313,11 +313,11 @@ class SpectralAttentionPool(nn.Module):
         self.attn = nn.MultiheadAttention(hidden_dim, n_heads, batch_first=True)
 
     def forward(
-        self, condition: torch.Tensor, temb: torch.Tensor
+        self, condition: torch.Tensor, timesteps_embedding: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """([B, K, obs_dim], [B, time_dim]) -> (pooled [B, D], weights [B, K])."""
         keys = self.key_proj(condition)
-        query = self.query_proj(temb).unsqueeze(1)
+        query = self.query_proj(timesteps_embedding).unsqueeze(1)
         pooled, weights = self.attn(
             self.norm_q(query), self.norm_kv(keys), self.norm_kv(keys)
         )
@@ -404,7 +404,7 @@ class SJFOPolicyModel(nn.Module):
         dit_heads: int | None = None,
         dit_mlp_ratio: float | None = None,
         dit_time_dim: int | None = None,
-        spectral_pool: str | None = None,
+        spectral_condition_mode: str | None = None,
     ):
         super().__init__()
         if obs_dim <= 0:
@@ -414,27 +414,27 @@ class SJFOPolicyModel(nn.Module):
         dit_heads = int(resolve_config_value("dit_heads", dit_heads))
         dit_mlp_ratio = float(resolve_config_value("dit_mlp_ratio", dit_mlp_ratio))
         dit_time_dim = int(resolve_config_value("dit_time_dim", dit_time_dim))
-        if spectral_pool is None:
-            spectral_pool = str(resolve_config_value("spectral_pool", spectral_pool))
-        if spectral_pool not in ("mean", "attention"):
+        if spectral_condition_mode is None:
+            spectral_condition_mode = str(resolve_config_value("spectral_condition_mode", None))
+        if spectral_condition_mode not in ("mean", "attention"):
             raise ValueError(
-                f"spectral_pool={spectral_pool!r} must be 'mean' or 'attention'"
+                f"spectral_condition_mode={spectral_condition_mode!r} must be 'mean' or 'attention'"
             )
-        self.spectral_pool_mode = spectral_pool
+        self.spectral_condition_mode = spectral_condition_mode
         self.last_pool_weights: torch.Tensor | None = None
         self.time_dim = dit_time_dim
         self.in_proj = nn.Linear(action_dim, hidden_dim)
         self.state_encoder = StateEncoder(obs_dim, hidden_dim=hidden_dim)
         self.time_mlp = SwiGLU(dit_time_dim, 4 * hidden_dim, hidden_dim)
         self.cond_proj = nn.Linear(obs_dim, hidden_dim)
-        self.spectral_pool_module = (
+        self.spectral_condition_module = (
             SpectralAttentionPool(
                 obs_dim,
                 hidden_dim=hidden_dim,
                 time_dim=dit_time_dim,
                 n_heads=dit_heads,
             )
-            if spectral_pool == "attention"
+            if spectral_condition_mode == "attention"
             else None
         )
         self.blocks = nn.ModuleList(
@@ -451,18 +451,18 @@ class SJFOPolicyModel(nn.Module):
     ) -> torch.Tensor:
         """Predict velocity: ([B, Ka, action_dim], t, [B, K, obs_dim], [B, T, obs_dim])
         -> [B, Ka, action_dim]. Ka = top-p low-frequency rows (<= H)."""
-        temb = get_timestep_embedding(t, dim=self.time_dim).to(
+        timesteps_embedding = get_timestep_embedding(t, dim=self.time_dim).to(
             device=x_t.device, dtype=x_t.dtype
         )
-        if temb.dim() == 1:
-            temb = temb.expand(x_t.shape[0], -1)
-        if self.spectral_pool_mode == "attention":
-            pooled, weights = self.spectral_pool_module(condition, temb)
+        if timesteps_embedding.dim() == 1:
+            timesteps_embedding = timesteps_embedding.expand(x_t.shape[0], -1)
+        if self.spectral_condition_mode == "attention":
+            pooled, weights = self.spectral_condition_module(condition, timesteps_embedding)
             self.last_pool_weights = weights.detach()
-            c = self.time_mlp(temb) + pooled
+            c = self.time_mlp(timesteps_embedding) + pooled
         else:
             self.last_pool_weights = None
-            c = self.time_mlp(temb) + self.cond_proj(condition.mean(dim=1))
+            c = self.time_mlp(timesteps_embedding) + self.cond_proj(condition.mean(dim=1))
         s = self.state_encoder(state)
         h = torch.cat([s, self.in_proj(x_t)], dim=1)
         for block in self.blocks:

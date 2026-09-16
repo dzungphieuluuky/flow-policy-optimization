@@ -66,7 +66,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             action_dim,
             obs_dim,
             hidden_dim=config.hidden_dim,
-            spectral_pool=config.spectral_pool,
+            spectral_condition_mode=config.spectral_condition_mode,
         )
         self.spectral = SpectralEncoder(
             obs_dim,
@@ -177,7 +177,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             condition = self.spectral(states)
             shape = (states.shape[0], top_k_spectral_action_tokens, action_dim)
             eps = None if noise else torch.zeros(*shape, device=states.device)
-            num_inference_steps = cfg.euler_train if noise else cfg.num_inference_steps
+            num_inference_steps = cfg.num_euler_steps if noise else cfg.num_inference_steps
             x0 = sample_action(
                 self.compute_predicted_velocity,
                 shape,
@@ -415,15 +415,22 @@ class SJFPOPolicy(PreTrainedPolicy):
         with autocast_context(states.device):
             v_pred = self.critic(states, self.postprocessor({ACTION: a_exec})[ACTION], executed_n_action_steps).float()
         returns_d = returns.to(v_pred.device)
-        se = (v_pred - returns_d).pow(2)
+        # Per-batch standardization: the critic learns normalized-return space so
+        # the value loss scale stays stable across reward scales. old_values use
+        # the same batch stats so the PPO-style clip stays in the same space.
+        returns_mean = returns_d.mean()
+        returns_std = returns_d.std(unbiased=False) + 1e-8
+        returns_norm = (returns_d - returns_mean) / returns_std
+        se = (v_pred - returns_norm).pow(2)
         if "values" in batch:  # PPO-style clipped value loss against v_old
             old_values = to_tensor(
                 batch["values"], dtype=torch.float32, device=v_pred.device
             )
-            v_clipped = old_values + (v_pred - old_values).clamp(
+            old_values_norm = (old_values - returns_mean) / returns_std
+            v_clipped = old_values_norm + (v_pred - old_values_norm).clamp(
                 -cfg.clip_range_vf, cfg.clip_range_vf
             )
-            value_per_chunk = torch.max(se, (v_clipped - returns_d).pow(2))
+            value_per_chunk = torch.max(se, (v_clipped - returns_norm).pow(2))
         else:
             value_per_chunk = se
         if reduction == "mean":

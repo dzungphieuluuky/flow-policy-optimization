@@ -112,8 +112,8 @@ def test_sjfpo_config_rejects_bad_top_p():
 def test_sjfpo_config_documented_ranges():
     c = SJFPOConfig()
     assert c.num_mc_samples >= 2
-    assert c.euler_train >= 1
-    assert c.euler_eval >= 1
+    assert c.num_euler_steps >= 1
+    assert c.num_inference_steps >= 1
     assert c.chunks_per_update >= 1
     assert c.num_epochs >= 1
     assert c.optimizer_lr > 0
