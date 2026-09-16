@@ -41,6 +41,16 @@ def resolve_compute_dtype() -> torch.dtype:
     return torch.bfloat16 if is_bf16_available() else torch.float32
 
 
+def resolve_mixed_precision() -> str:
+    """Accelerator mp mode: explicit ``ACCELERATE_MIXED_PRECISION`` wins (set
+    by ``accelerate launch --mixed_precision`` or ``accelerate config``);
+    otherwise bf16 when the hardware supports it, fp32 (``'no'``) fallback."""
+    explicit = os.environ.get("ACCELERATE_MIXED_PRECISION", "").strip().lower()
+    if explicit:
+        return explicit
+    return "bf16" if is_bf16_available() else "no"
+
+
 def autocast_context(device=None):
     """CUDA bf16 autocast when enabled and supported; else no-op."""
     if resolve_compute_dtype() != torch.bfloat16:

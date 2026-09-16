@@ -87,7 +87,10 @@ class SJFPOPolicy(PreTrainedPolicy):
         self.register_buffer("action_high", torch.full((action_dim,), 1.0), persistent=False)
         # Frozen behavior snapshot (PPO π_old): unit ratios at init, refreshed
         # per collection round; rides state_dict but excluded from the optimizer.
+        # Inference-only (requires_grad off): nothing ever backprops through
+        # it, and DDP treats grad-less requires_grad params as an error.
         self.old_actor = copy.deepcopy(self.actor)
+        self.old_actor.requires_grad_(False)
         # Slow EMA anchor for the KL loss; inference-only (never compiled,
         # never optimized), rides state_dict so checkpoints resume it.
         self.ema_actor = copy.deepcopy(self.actor)
@@ -128,6 +131,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         Call once per collection round, before any update on the new batch.
         """
         self.old_actor = copy.deepcopy(self.actor)
+        self.old_actor.requires_grad_(False)  # deepcopy inherits live grad flags
 
     def get_optim_params(self) -> dict:
         """Actor (decay / no-decay) + critic groups (spectral/EMA never train).
