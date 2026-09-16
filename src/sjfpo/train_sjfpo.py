@@ -190,6 +190,7 @@ def train_sjfpo_run(
             global_step += int((~batch["action_is_pad"]).sum())
             policy.train()
             infos = []
+            grad_norms = []  # pre-clip totals; clip_grad_norm_ returns the norm
             # PPO-style: fixed epochs, each epoch sweeps shuffled minibatches
             # (not the whole buffer per update).
             n_chunks = batch["advantages"].shape[0]
@@ -206,13 +207,17 @@ def train_sjfpo_run(
                     all_params = [
                         p for group in optimizer.param_groups for p in group["params"]
                     ]
-                    torch.nn.utils.clip_grad_norm_(all_params, cfg.grad_clip_norm)
+                    grad_norm = torch.nn.utils.clip_grad_norm_(
+                        all_params, cfg.grad_clip_norm
+                    )
+                    grad_norms.append(float(grad_norm))
                     optimizer.step()
                     policy.snapshot_behavior_policy()
                     policy.update_ema()
                     raw_policy.step_count += 1
                     infos.append(epoch_info)
             info = {k: sum(d[k] for d in infos) / len(infos) for k in infos[0]}
+            grad_norm_mean = sum(grad_norms) / len(grad_norms) if grad_norms else 0.0
             if accelerator.num_processes > 1:
                 # Mean update stats across ranks (collective: every rank calls).
                 keys = list(info)
@@ -221,8 +226,15 @@ def train_sjfpo_run(
                     reduction="mean",
                 )
                 info = dict(zip(keys, averaged.tolist()))
+                grad_norm_mean = float(
+                    accelerator.reduce(
+                        torch.tensor(grad_norm_mean, device=device),
+                        reduction="mean",
+                    )
+                )
             if wandb_enabled:
                 data = {f"train/{k}": v for k, v in info.items()}
+                data["train/grad_norm_preclip"] = grad_norm_mean
                 data["train/total_loss"] = (
                     info["policy_loss"]
                     + cfg.vf_coef * info["value_loss"]
@@ -255,9 +267,19 @@ def train_sjfpo_run(
                         consecutive_below=consecutive_below,
                     )
                     try:
-                        frames = render_episode_frames(env_name, eval_policy, seed=10000 + seed)
+                        frames, demo_return = render_episode_frames(
+                            env_name, eval_policy, seed=10000 + seed
+                        )
                         log_eval_video(frames, global_step)
+                        log_metrics(
+                            {
+                                "eval/demo_return": demo_return,
+                                "eval/video_ok": 1,
+                            },
+                            step=global_step,
+                        )
                     except Exception:
+                        log_metrics({"eval/video_ok": 0}, step=global_step)
                         pass  # headless/GL failures must never break training
                 consecutive_below, diverged_now = check_divergence(
                     mean_return, r_rand, consecutive_below

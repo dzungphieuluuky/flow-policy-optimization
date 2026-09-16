@@ -26,8 +26,8 @@ def render_episode_frames(
     policy: Callable[[np.ndarray], np.ndarray],
     seed: int = 0,
     max_steps: int = 1000,
-) -> list[np.ndarray]:
-    """One deterministic episode frames [T,H,W,C] uint8 via rgb_array."""
+) -> tuple[list[np.ndarray], float]:
+    """One deterministic episode frames [T,H,W,C] uint8 via rgb_array + return."""
     import gymnasium as gym
 
     env = gym.make(env_id, render_mode="rgb_array")
@@ -36,13 +36,15 @@ def render_episode_frames(
         if hasattr(policy, "reset"):
             policy.reset()
         frames: list[np.ndarray] = []
+        ret = 0.0
         for _ in range(max_steps):
             action = policy(obs)
-            obs, _, terminated, truncated, _ = env.step(action)
+            obs, reward, terminated, truncated, _ = env.step(action)
+            ret += float(reward)
             frames.append(np.asarray(env.render(), dtype=np.uint8))
             if terminated or truncated:
                 break
-        return frames
+        return frames, ret
     finally:
         env.close()
 
