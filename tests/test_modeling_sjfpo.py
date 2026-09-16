@@ -33,6 +33,7 @@ INFO_KEYS = {
     "flow_v_star_rms",
     "cond_temb",
     "cond_pooled",
+    "cond_z_state",
     "cond_c",
     "cond_gate_msa",
     "cond_gate_mlp",

@@ -42,8 +42,8 @@ utils.py           23L — shared pure helpers (safe_float_value), no sjfpo impo
 
 ## Conventions
 - Tensor order `B,N,H,K,D,action_dim,Ds` — comment dimensions at each transform (Google docstrings + inline `[B,H,action_dim]`)
-- Live condition is `[N,K,obs]` raw bins; the DiT pools it into the adaLN vector (`spectral_condition_mode="mean"`: `condition.mean(1)` via `cond_proj`; `"attention"`: `SpectralAttentionPool` query from time-embed, weights in `last_pool_weights`) AND reads raw states as `[T,obs]→state_embed` prefix tokens (action positions only read out)
-- Net activations are SwiGLU everywhere (gate/up/down linears; silu lives only inside SwiGLU)
+- Live condition is `[N,K,obs]` raw bins; pure-DiT conditioning through one adaLN vector `c = time + state + spectral` (`spectral_condition_mode="mean"`: `condition.mean(1)` via `cond_proj`; `"attention"`: `SpectralAttentionPool` query from time-embed, weights in `last_pool_weights`; state branch: `WindowEncoder` mean-pooled). The transformer sees action tokens only — no prefix tokens, no readout slice.
+- Block FFNs and window encoders use SwiGLU (gate/up/down linears); the conditioning path (`time_mlp`, block `adaLN`) uses SiLU MLPs (`CondMLP`) per DiT canon — the gate regression stays (near-)linear.
 - `sigreg_loss` stays in `networks.py` as a test-only seam (not in the update path) — no Barlow heads
 - `polyak` survives ONLY at the skrl boundary (`SACConfig`, `build_sac_skrl_config`, `sac.yaml`); no EMA/target nets in the sjfpo path
 - einx.id reshapes in collector/fpo_core/trainer (+dct_utils/baselines) must match torch at 1e-6 (`tests/test_einx_migration.py`); ground truth is current torch behavior
@@ -68,5 +68,5 @@ PYTHONPATH=src .venv/bin/python scripts/train.py --method sjfpo --env Hopper-v5 
 ```
 
 ## Notes
-- Three StateEncoders, each owned by its model (policy state encoder in SJFOPolicyModel, state + action encoders in Critic); ASPO grads land on the policy head (incl. state_embed + cond_proj)
+- One `WindowEncoder` class serves all time windows (policy state encoder, critic state + action encoders), each owned by its model; ASPO grads land on the policy head (incl. state branch + cond_proj)
 - `compute_chunk_values` bootstraps truncated chunks from the full next window + stored `next.action`

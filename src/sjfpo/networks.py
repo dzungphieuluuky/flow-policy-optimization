@@ -38,6 +38,24 @@ class SwiGLU(nn.Module):
         return self.down(nn.functional.silu(self.gate(x)) * self.up(x))
 
 
+class CondMLP(nn.Module):
+    """SiLU MLP for conditioning regression (DiT canon: SiLU then Linear).
+
+    Gating belongs in block FFNs, not in the gate-regression path; the
+    modulation readout stays (near-)linear. Final layer is zero-initialized
+    by callers that need identity-at-init (adaLN-Zero)."""
+
+    def __init__(self, in_dim: int, hidden_dim: int, out_dim: int):
+        super().__init__()
+        self.fc1 = nn.Linear(in_dim, hidden_dim)
+        self.act = nn.SiLU()
+        self.fc2 = nn.Linear(hidden_dim, out_dim)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """[..., in_dim] -> [..., out_dim]."""
+        return self.fc2(self.act(self.fc1(x)))
+
+
 def resolve_config_value(name: str, override):
     """Policy default for ``name`` unless ``override`` is not None."""
     return override if override is not None else getattr(_DEFAULTS, name)
@@ -60,81 +78,42 @@ class PositionalEncoding(nn.Module):
             pe = torch.nn.functional.pad(pe, (0, dim - pe.shape[-1]))
         return x + pe[:, :dim]
 
-class StateEncoder(nn.Module):
-    """Frame projection + two pre-norm residual blocks -> Z[B, T, hidden_dim].
+class WindowEncoder(nn.Module):
+    """Two pre-norm residual blocks over a time window -> Z[B, L, hidden_dim].
 
-    Split residuals (attention and SwiGLU each under their own residual,
-    RMSNorm before every sublayer). Position codes enter before the blocks
-    because attention is permutation-invariant.
+    Single class for state windows and action chunks: the only difference is
+    the optional key mask (``executed_n_action_steps``), which hides padded
+    tails as attention keys. Actor and critic each own their instances (no
+    RL weight sharing); call sites keep the ``state_encoder`` /
+    ``action_encoder`` attribute names, so old checkpoints still load.
     """
 
     def __init__(
         self,
-        obs_dim: int,
+        in_dim: int,
         n_obs_steps: int | None = None,
         hidden_dim: int | None = None,
         n_heads: int = 4,
+        mlp_ratio: float | None = None,
     ):
         super().__init__()
         n_obs_steps = resolve_config_value("n_obs_steps", n_obs_steps)
         hidden_dim = resolve_config_value("hidden_dim", hidden_dim)
-        self.frame_proj = nn.Linear(obs_dim, hidden_dim)
+        mlp_ratio = float(resolve_config_value("dit_mlp_ratio", mlp_ratio))
+        mlp_hidden = int(hidden_dim * mlp_ratio)
+        self.frame_proj = nn.Linear(in_dim, hidden_dim)
         self.pos_encoding = PositionalEncoding()
         self.norm1 = nn.RMSNorm(hidden_dim, eps=1e-6)
         self.attn1 = nn.MultiheadAttention(hidden_dim, n_heads, batch_first=True)
         self.norm2 = nn.RMSNorm(hidden_dim, eps=1e-6)
-        self.swiglu1 = SwiGLU(hidden_dim, hidden_dim, hidden_dim)
+        self.swiglu1 = SwiGLU(hidden_dim, mlp_hidden, hidden_dim)
         self.norm3 = nn.RMSNorm(hidden_dim, eps=1e-6)
         self.attn2 = nn.MultiheadAttention(hidden_dim, n_heads, batch_first=True)
         self.norm4 = nn.RMSNorm(hidden_dim, eps=1e-6)
-        self.swiglu2 = SwiGLU(hidden_dim, hidden_dim, hidden_dim)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """[B, T, obs_dim] -> [B, T, hidden_dim]."""
-        h = self.frame_proj(x)
-        h = self.pos_encoding(h)
-        n = self.norm1(h)
-        attn, _ = self.attn1(n, n, n)
-        h = h + attn
-        h = h + self.swiglu1(self.norm2(h))
-        n = self.norm3(h)
-        attn, _ = self.attn2(n, n, n)
-        h = h + attn
-        h = h + self.swiglu2(self.norm4(h))
-        return h
-
-
-class ActionEncoder(nn.Module):
-    """Deliberate duplicate of StateEncoder (not a subclass).
-
-    THE ONLY DIFFERENCE is the key-padding mask: ``executed_n_action_steps``
-    marks executed rows so padded tails cannot influence real actions as
-    attention keys. Locked by the parity test via ``load_state_dict``.
-    """
-
-    def __init__(
-        self,
-        action_dim: int,
-        n_obs_steps: int | None = None,
-        hidden_dim: int | None = None,
-        n_heads: int = 4,
-    ):
-        super().__init__()
-        n_obs_steps = resolve_config_value("n_obs_steps", n_obs_steps)
-        hidden_dim = resolve_config_value("hidden_dim", hidden_dim)
-        self.frame_proj = nn.Linear(action_dim, hidden_dim)
-        self.pos_encoding = PositionalEncoding()
-        self.norm1 = nn.RMSNorm(hidden_dim, eps=1e-6)
-        self.attn1 = nn.MultiheadAttention(hidden_dim, n_heads, batch_first=True)
-        self.norm2 = nn.RMSNorm(hidden_dim, eps=1e-6)
-        self.swiglu1 = SwiGLU(hidden_dim, hidden_dim, hidden_dim)
-        self.norm3 = nn.RMSNorm(hidden_dim, eps=1e-6)
-        self.attn2 = nn.MultiheadAttention(hidden_dim, n_heads, batch_first=True)
-        self.norm4 = nn.RMSNorm(hidden_dim, eps=1e-6)
-        self.swiglu2 = SwiGLU(hidden_dim, hidden_dim, hidden_dim)
+        self.swiglu2 = SwiGLU(hidden_dim, mlp_hidden, hidden_dim)
 
     def forward(self, x: torch.Tensor, executed_n_action_steps=None) -> torch.Tensor:
-        """[B, H, action_dim] -> [B, H, hidden_dim]; tails masked as keys when given."""
+        """[B, L, in_dim] -> [B, L, hidden_dim]; tails masked as keys when given."""
         h = self.frame_proj(x)
         h = self.pos_encoding(h)
         key_mask = None
@@ -368,9 +347,9 @@ class DiTBlock(nn.Module):
         self.norm2 = nn.LayerNorm(hidden_dim, elementwise_affine=False, eps=1e-6)
         mlp_hidden = int(hidden_dim * mlp_ratio)
         self.mlp = SwiGLU(hidden_dim, mlp_hidden, hidden_dim)
-        self.adaLN = SwiGLU(hidden_dim, hidden_dim, 6 * hidden_dim)
-        nn.init.constant_(self.adaLN.down.weight, 0.0)
-        nn.init.constant_(self.adaLN.down.bias, 0.0)
+        self.adaLN = CondMLP(hidden_dim, hidden_dim, 6 * hidden_dim)
+        nn.init.constant_(self.adaLN.fc2.weight, 0.0)
+        nn.init.constant_(self.adaLN.fc2.bias, 0.0)
         self.last_gate_norms: dict[str, torch.Tensor] | None = None  # detached RMS stash
 
     def forward(self, x: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
@@ -413,10 +392,12 @@ class CrossAttentionBlock(nn.Module):
 
 
 class SJFOPolicyModel(nn.Module):
-    """DiT velocity model over [state prefix; noisy action] tokens.
+    """DiT velocity model over noisy-action tokens, conditioned via adaLN.
 
-    Conditioning vector = time-embed + pooled spectral tokens (mean or
-    attention pool). Only action positions are read out as velocity.
+    Pure-DiT conditioning: a single vector ``c = time + state + spectral``
+    modulates every block (adaLN-Zero); the transformer never sees state
+    tokens, so there is exactly one observation path and no competing
+    in-context route. Only action positions exist, so no readout slice.
     """
 
     def __init__(
@@ -448,8 +429,8 @@ class SJFOPolicyModel(nn.Module):
         self.last_pool_weights: torch.Tensor | None = None
         self.time_dim = dit_time_dim
         self.in_proj = nn.Linear(action_dim, hidden_dim)
-        self.state_encoder = StateEncoder(obs_dim, hidden_dim=hidden_dim)
-        self.time_mlp = SwiGLU(dit_time_dim, 4 * hidden_dim, hidden_dim)
+        self.state_encoder = WindowEncoder(obs_dim, hidden_dim=hidden_dim)
+        self.time_mlp = CondMLP(dit_time_dim, 4 * hidden_dim, hidden_dim)
         self.cond_proj = nn.Linear(obs_dim, hidden_dim)
         self.spectral_condition_module = (
             SpectralAttentionPool(
@@ -493,15 +474,16 @@ class SJFOPolicyModel(nn.Module):
         else:
             self.last_pool_weights = None
             branch = self.cond_proj(condition.mean(dim=1))
-        c = self.time_mlp(timesteps_embedding) + branch
-        s = self.state_encoder(state)
-        h = torch.cat([s, self.in_proj(x_t)], dim=1)
+        z_state = self.state_encoder(state).mean(dim=1)
+        c = self.time_mlp(timesteps_embedding) + branch + z_state
+        h = self.in_proj(x_t)
         for block in self.blocks:
             h = block(h, c)
         # RMS diagnostics stash (detached; float() conversion in eager caller).
         self.last_cond_stats = {
             "temb": timesteps_embedding.detach().pow(2).mean().sqrt(),
             "pooled": branch.detach().pow(2).mean().sqrt(),
+            "z_state": z_state.detach().pow(2).mean().sqrt(),
             "c": c.detach().pow(2).mean().sqrt(),
             **{
                 k: torch.stack(
@@ -511,7 +493,6 @@ class SJFOPolicyModel(nn.Module):
             },
         }
         shift_out, scale_out = self.adaLN_out(c)[:, None, :].chunk(2, dim=-1)
-        h = h[:, -x_t.shape[1] :, :]
         return self.out(modulate(self.norm_out(h), shift_out, scale_out))
 
 class Critic(nn.Module):
@@ -537,10 +518,10 @@ class Critic(nn.Module):
         if action_dim <= 0:
             raise ValueError(f"action_dim={action_dim} must be positive (env action dim)")
         hidden_dim = resolve_config_value("hidden_dim", hidden_dim)
-        self.state_encoder = StateEncoder(
+        self.state_encoder = WindowEncoder(
             obs_dim, n_obs_steps=n_obs_steps, hidden_dim=hidden_dim
         )
-        self.action_encoder = ActionEncoder(
+        self.action_encoder = WindowEncoder(
             action_dim, n_obs_steps=n_obs_steps, hidden_dim=hidden_dim
         )
         self.blocks = nn.ModuleList(

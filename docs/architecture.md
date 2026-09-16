@@ -15,7 +15,8 @@ Action chunk:            [B,H,action_dim] predicted (H=16); training executes al
 flowchart LR
   O[O_t stacked obs] --> DCT["DCT-II dim=1 → [B,16,obs]\nretain K lowest bins → [B,K,obs]"]
   DCT --> TOK["tokens [B,K,obs] (raw bins, no projector)"]
-  TOK --> DIT["SJFOPolicyModel DiT-8 adaLN-Zero\n[state prefix; action tokens] + time/pooled condition"]
+  DCT --> TOK["tokens [B,K,obs] (raw bins, no projector)"]
+  TOK --> DIT["SJFOPolicyModel DiT-8 adaLN-Zero\naction tokens only; c = time + state + spectral"]
   O --> DIT
   DIT --> V["v̂ velocity [B,Ka,action_dim] (Ka=top_p·H rows)"]
   V --> PAD["zero-pad time → [B,H,action_dim] → IDCT → clamp"]

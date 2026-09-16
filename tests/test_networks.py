@@ -46,10 +46,10 @@ def make_nets():
     # StateEncoder
 
 
-def test_state_encoder_shape_dtype_finite():
+def test_window_encoder_shape_dtype_finite():
     nets = make_nets()
     torch.manual_seed(0)
-    encoder = nets.StateEncoder(obs_dim=11)
+    encoder = nets.WindowEncoder(in_dim=11)
     assert next(encoder.parameters()).dtype == torch.float32
     x = torch.randn(32, STATE_T, 11)
     z = encoder(x)
@@ -58,10 +58,10 @@ def test_state_encoder_shape_dtype_finite():
     assert torch.isfinite(z).all()
 
 
-def test_state_encoder_gradient_flows():
+def test_window_encoder_gradient_flows():
     nets = make_nets()
     torch.manual_seed(1)
-    encoder = nets.StateEncoder(obs_dim=5)
+    encoder = nets.WindowEncoder(in_dim=5)
     z = encoder(torch.randn(4, STATE_T, 5))
     z.sum().backward()
     grads = [p.grad for p in encoder.parameters()]
@@ -436,7 +436,7 @@ def test_no_batchnorm_no_dropout_fp32_everywhere():
     nets = make_nets()
     torch.manual_seed(17)
     modules = [
-        nets.StateEncoder(obs_dim=9),
+        nets.WindowEncoder(in_dim=9),
         nets.SpectralEncoder(obs_dim=9),
         nets.SJFOPolicyModel(action_dim=7, obs_dim=9),
         nets.Critic(9, 7),
@@ -463,28 +463,27 @@ def test_spectral_encoder_top_p_token_count():
     assert out.shape == (2, 8, OBS)  # round(0.5 * 16)
 
 
-def test_state_encoder_position_sensitive():
+def test_window_encoder_position_sensitive():
     """Identical frames still map to distinct latents per position (PE lock)."""
     nets = make_nets()
     torch.manual_seed(2)
-    encoder = nets.StateEncoder(obs_dim=6)
+    encoder = nets.WindowEncoder(in_dim=6)
     x = torch.ones(2, STATE_T, 6)  # no order info in the input itself
     z = encoder(x)
     assert not torch.allclose(z[:, 0, :], z[:, 1, :], atol=1e-6)
 
 
-def test_action_encoder_matches_state_encoder():
-    """ActionEncoder duplicates StateEncoder (same keys, same unmasked behavior)."""
+def test_window_encoder_mask_hides_tails():
+    """Garbage tails cannot move real rows: masked as attention keys."""
     nets = make_nets()
     torch.manual_seed(20)
-    enc = nets.ActionEncoder(action_dim=6)
-    ref = nets.StateEncoder(obs_dim=6)
-    assert [n for n, _ in enc.named_parameters()] == [
-        n for n, _ in ref.named_parameters()
-    ]
-    ref.load_state_dict(enc.state_dict())
-    x = torch.randn(3, STATE_T, 6)
-    assert torch.equal(enc(x), ref(x))
+    enc = nets.WindowEncoder(in_dim=6)
+    x = torch.randn(2, STATE_T, 6)
+    garb = x.clone()
+    garb[:, 8:, :] = 100.0
+    z1 = enc(x, [8, 8])
+    z2 = enc(garb, [8, 8])
+    assert torch.allclose(z1[:, :8, :], z2[:, :8, :], atol=1e-6)
 
 
 def test_critic_value_ignores_padded_tails():
@@ -526,7 +525,7 @@ def test_policy_reads_raw_state_prefix():
     # Wake the zero-init (adaLN gates + final out) so inputs matter.
     with torch.no_grad():
         for block in policy.blocks:
-            block.adaLN.down.weight.normal_(std=0.1)
+            block.adaLN.fc2.weight.normal_(std=0.1)
         policy.out.weight.normal_(std=0.1)
     x_t = torch.randn(4, CHUNK, 3)
     condition = torch.randn(4, KS, OBS)
