@@ -165,22 +165,22 @@ def train_sjfpo_run(
             n_mb = max(1, min(cfg.num_minibatches, n_chunks))
             for _ in range(cfg.num_epochs):
                 for mb_idx in torch.randperm(n_chunks).split(max(1, n_chunks // n_mb)):
+                    optimizer.zero_grad()
                     mb_idx = mb_idx.to(batch["advantages"].device)
                     # Rolling one-step delay: compare live weights to the previous
                     # step's snapshot, refresh the snapshot pre-step (post-step
                     # would compare weights to themselves: ratio 0).
                     loss, epoch_info = policy(sample_minibatch(batch, mb_idx))
-                optimizer.zero_grad()
-                loss.backward()
-                all_params = [
-                    p for group in optimizer.param_groups for p in group["params"]
-                ]
-                torch.nn.utils.clip_grad_norm_(all_params, cfg.grad_clip_norm)
-                policy.snapshot_behavior_policy()
-                optimizer.step()
-                policy.update_ema()
-                policy.step_count += 1
-                infos.append(epoch_info)
+                    loss.backward()
+                    all_params = [
+                        p for group in optimizer.param_groups for p in group["params"]
+                    ]
+                    torch.nn.utils.clip_grad_norm_(all_params, cfg.grad_clip_norm)
+                    optimizer.step()
+                    policy.snapshot_behavior_policy()
+                    policy.update_ema()
+                    policy.step_count += 1
+                    infos.append(epoch_info)
             info = {k: sum(d[k] for d in infos) / len(infos) for k in infos[0]}
             if wandb_enabled:
                 data = {f"train/{k}": v for k, v in info.items()}

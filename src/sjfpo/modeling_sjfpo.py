@@ -286,7 +286,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             np.array([bool(c[DONE]) for c in chunks]),
             gamma=cfg.gamma,
             lam=cfg.gae_lambda,
-            normalize=False,
+            normalize=True,
             truncated=np.array([bool(c[TRUNCATED]) for c in chunks]),
         )
         is_pad = torch.arange(cfg.action_horizon).unsqueeze(0) >= to_tensor(
@@ -304,7 +304,28 @@ class SJFPOPolicy(PreTrainedPolicy):
     def forward(
         self, batch: dict[str, torch.Tensor], reduction: str = "mean"
     ) -> tuple[torch.Tensor, dict | None]:
-        """Training loss from a generate_rollout batch (advantages/returns precomputed)."""
+        """Compute the combined training loss (ASPO policy + value + KL) from a rollout batch.
+
+        Inputs (batch dict from ``generate_rollout``):
+            observation.state: [B, T, obs_dim]
+            action:              [B, H, action_dim]
+            advantages:          [B]  (frozen GAE; never optimized)
+            returns:             [B]  (GAE targets for value loss)
+            values:              [B]  (optional; frozen v_old for clipped value loss)
+            action_is_pad:       [B, H] bool (optional; if missing, full horizon executed)
+
+        Outputs:
+            (loss, info_dict) where ``loss`` is scalar if ``reduction="mean"``
+            or per-chunk [B] if ``reduction="none"``. ``info_dict`` holds detached
+            scalar summaries: ``policy_loss``, ``value_loss``, ``kl_loss``,
+            ``mean_log_ratio``.
+
+        Gradient behavior:
+            - ``actor`` and ``critic`` receive gradients.
+            - ``old_actor`` (behavior snapshot) is frozen (``inference_mode``).
+            - ``ema_actor`` is frozen (``requires_grad_(False)``) — KL compares
+              ``v_new`` (live) to ``v_ema`` (EMA anchor) without EMA updates.
+        """
         cfg = self.config
         states = to_tensor(batch[OBS_STATE], dtype=torch.float32)
         actions = to_tensor(batch[ACTION], dtype=torch.float32)
