@@ -30,7 +30,7 @@ from sjfpo.configuration_sjfpo import SJFPOConfig
 
 _DEFAULTS = SJFPOConfig()  # bare policy config: single source for defaults
 
-__all__ = ["Transition", "collect_chunks", "bootstrap_action_lengths"]
+__all__ = ["Transition", "collect_chunks", "collect_chunks_vec", "bootstrap_action_lengths"]
 
 
 def bootstrap_action_lengths(chunks, chunk_size: int) -> list[int]:
@@ -218,6 +218,141 @@ def flush_on_collection_error(
             on_error_flush()
         except Exception:
             pass
+
+
+def collect_chunks_vec(
+    envs,
+    policy: Callable[[torch.Tensor], torch.Tensor],
+    total_steps: int,
+    action_low: float | np.ndarray,
+    action_high: float | np.ndarray,
+    *,
+    n_obs_steps: int = _DEFAULTS.n_obs_steps,
+    n_action_steps: int,  # required: no config default; training passes chunk_size
+    seed: int | None = None,
+    on_error_flush: Callable[[], None] | None = None,
+) -> list[Transition]:
+    """Vector twin of :func:`collect_chunks` (same records, same chaining).
+
+    ``envs`` is a ``gym.vector.VectorEnv`` (NextStep autoreset): each env runs
+    its own chunk loop (own window, prev-chain, budget), but proposals are one
+    batched policy call and stepping is one vector call. Per-env budget is
+    ``ceil(total_steps / num_envs)``, so the merged batch matches the
+    single-env size while collection scales ~linearly with env count.
+    ``policy`` takes ``[M, T, obs]`` and returns ``[M, H, action_dim]``.
+    """
+    n = int(envs.num_envs)
+    target = -(-total_steps // n)  # ceil: per-env executed-step budget
+    low = as_float_tensor(action_low)
+    high = as_float_tensor(action_high)
+    chunk_size = _DEFAULTS.action_horizon
+    if not 1 <= n_action_steps <= chunk_size:
+        raise ValueError(
+            f"n_action_steps={n_action_steps} must satisfy "
+            f"1 <= n <= chunk_size={chunk_size}"
+        )
+    if seed is None:
+        seed = int(torch.randint(0, 2**31, (1,)).item())
+    act_dim = int(np.asarray(envs.single_action_space.shape).prod())
+    try:
+        obs, _ = envs.reset(seed=[seed + i for i in range(n)])
+        windows = [
+            build_warmup_window(as_float_tensor(o), n_obs_steps) for o in obs
+        ]
+        cur: list = [None] * n  # (executed, scaled, clip_count, replan_state)
+        pos = [0] * n
+        rewards: list[list[float]] = [[] for _ in range(n)]
+        prev: list = [None] * n
+        prev_done = ["continue"] * n
+        executed_total = [0] * n
+        awaiting = [False] * n  # done last step: rebuild window from reset obs
+        records: list[Transition] = []
+        while any(e < target for e in executed_total):
+            need = [
+                i
+                for i in range(n)
+                if cur[i] is None
+                and not awaiting[i]
+                and executed_total[i] < target
+            ]
+            if need:
+                states = torch.stack(
+                    [torch.stack(tuple(windows[i]), dim=0) for i in need]
+                )
+                proposed = as_float_tensor(policy(states))
+                for k, i in enumerate(need):
+                    executed, scaled, clip_count = scale_and_clip_chunk(
+                        proposed[k], low, high
+                    )
+                    cur[i] = (executed, scaled, clip_count, states[k])
+                    pos[i] = 0
+                    rewards[i] = []
+            actions = np.zeros((n, act_dim), dtype=np.float32)
+            for i in range(n):
+                if cur[i] is not None:
+                    actions[i] = cur[i][0][pos[i]].numpy()
+            obs, rew, term, trunc, _ = envs.step(actions)
+            done = np.asarray(term, dtype=bool) | np.asarray(trunc, dtype=bool)
+            for i in range(n):
+                if awaiting[i]:
+                    # Gap step after done: this obs is the fresh reset obs.
+                    windows[i] = build_warmup_window(
+                        as_float_tensor(obs[i]), n_obs_steps
+                    )
+                    awaiting[i] = False
+                    continue
+                if cur[i] is None:
+                    continue  # over-budget env idling on dummy actions
+                rewards[i].append(float(rew[i]))
+                windows[i].append(as_float_tensor(obs[i]))
+                pos[i] += 1
+                if done[i] or pos[i] >= n_action_steps:
+                    executed, scaled, clip_count, replan = cur[i]
+                    n_exec = pos[i]
+                    if bool(term[i]):
+                        done_kind = "terminated"
+                    elif bool(trunc[i]):
+                        done_kind = "truncated"
+                    else:
+                        done_kind = "continue"
+                    next_state = torch.stack(tuple(windows[i]), dim=0)
+                    next_action = None
+                    if done_kind == "truncated":
+                        prop = as_float_tensor(policy(next_state.unsqueeze(0)))[0]
+                        _, next_action, _ = scale_and_clip_chunk(prop, low, high)
+                    record = finalize_transition(
+                        replan,
+                        next_state,
+                        scaled,
+                        rewards[i],
+                        done_kind,
+                        clip_count,
+                        chunk_size,
+                        n_action_steps,
+                        next_action,
+                    )
+                    if prev[i] is not None and prev_done[i] == "continue":
+                        prev[i]["next.action"] = record["action"].clone()
+                    executed_total[i] += n_exec
+                    records.append(record)
+                    prev[i], prev_done[i] = record, done_kind
+                    cur[i] = None
+                    if done[i]:
+                        awaiting[i] = True
+        tails = [i for i in range(n) if prev[i] is not None and prev_done[i] == "continue"]
+        if tails:
+            # Budget exhausted mid-episode: behavior proposals on live windows.
+            states = torch.stack(
+                [torch.stack(tuple(windows[i]), dim=0) for i in tails]
+            )
+            props = as_float_tensor(policy(states))  # [M, H, act]
+            for k, i in enumerate(tails):
+                _, scaled_tail, _ = scale_and_clip_chunk(props[k], low, high)
+                prev[i]["next.action"] = scaled_tail
+        return records
+    except Exception:
+        flush_on_collection_error(on_error_flush)
+        raise
 
 
 def collect_chunks(

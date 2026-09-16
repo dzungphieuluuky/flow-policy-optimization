@@ -21,7 +21,7 @@ from lerobot.processor.converters import to_tensor
 from lerobot.utils.constants import ACTION, DONE, OBS_STATE, REWARD, TRUNCATED
 
 from sjfpo.configuration_sjfpo import SJFPOConfig
-from sjfpo.collector import bootstrap_action_lengths, collect_chunks
+from sjfpo.collector import bootstrap_action_lengths, collect_chunks, collect_chunks_vec
 from sjfpo.dct_utils import dct, idct, mask_actions
 from sjfpo.fpo_core import (
     compute_aspo_surrogate,
@@ -258,15 +258,32 @@ class SJFPOPolicy(PreTrainedPolicy):
             )[0]
             return chunk.cpu()  # env stepping stays on CPU
 
-        chunks = collect_chunks(
-            env,
-            _propose,
-            total_steps,
-            action_low,
-            action_high,
-            n_obs_steps=cfg.n_obs_steps,
-            n_action_steps=cfg.action_horizon,
-        )
+        def _propose_batch(states: torch.Tensor) -> torch.Tensor:
+            chunk = self.predict_action_chunk(
+                {OBS_STATE: states.to(device)}, noise=noisy
+            )
+            return chunk.cpu()  # env stepping stays on CPU
+
+        if int(getattr(env, "num_envs", 1)) > 1:
+            chunks = collect_chunks_vec(
+                env,
+                _propose_batch,
+                total_steps,
+                action_low,
+                action_high,
+                n_obs_steps=cfg.n_obs_steps,
+                n_action_steps=cfg.action_horizon,
+            )
+        else:
+            chunks = collect_chunks(
+                env,
+                _propose,
+                total_steps,
+                action_low,
+                action_high,
+                n_obs_steps=cfg.n_obs_steps,
+                n_action_steps=cfg.action_horizon,
+            )
         executed_n_action_steps = to_tensor(
             [int(c["executed_n_action_steps"]) for c in chunks], dtype=torch.long
         )  # [N] CPU; compiled critic takes the device copy below

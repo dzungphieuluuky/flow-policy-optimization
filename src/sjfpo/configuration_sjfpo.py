@@ -32,6 +32,10 @@ class SJFPOConfig(PreTrainedConfig):
     chunks_per_update: int = 128
     num_epochs: int = 10
     num_minibatches: int = 8
+    num_envs: int = 8  # parallel rollout envs (AsyncVectorEnv); total env-steps
+    # per update stay constant, so wall-clock collection scales ~linearly.
+    # 8 fits a 16-core/32GB laptop (one MuJoCo proc is a few hundred MB); 1
+    # reproduces the legacy single-env loop exactly.
 
     gamma: float = 0.99
     gae_lambda: float = 0.95
@@ -108,6 +112,8 @@ class SJFPOConfig(PreTrainedConfig):
             raise ValueError(f"ema_decay={self.ema_decay} must satisfy 0 <= d < 1")
         if self.kl_coef < 0:
             raise ValueError(f"kl_coef={self.kl_coef} must be >= 0")
+        if self.num_envs < 1:
+            raise ValueError(f"num_envs={self.num_envs} must be >= 1")
 
     def validate_features(self) -> None:
         """Require observation.state + action features (base class skips this)."""

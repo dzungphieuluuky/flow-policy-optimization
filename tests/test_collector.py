@@ -421,3 +421,57 @@ def test_bootstrap_action_lengths_rule():
         chunk(False, False, 16),  # budget-cut tail → full
     ]
     assert bootstrap_action_lengths(chunks, 16) == [8, 5, 16, 16, 16]
+
+
+def _vec_records(seed=0, n_envs=2, total=64):
+    import gymnasium as gym
+
+    from tests.fixtures.fake_env import FakeGymEnv
+
+    torch.manual_seed(seed)
+    vec = gym.vector.SyncVectorEnv(
+        [lambda: FakeGymEnv(obs_dim=OBS_DIM, action_dim=ACT_DIM, max_steps=1000)]
+        * n_envs
+    )
+    try:
+        from sjfpo.collector import collect_chunks_vec
+
+        def policy(states):
+            return torch.randn(states.shape[0], ACTION_HORIZON, ACT_DIM)
+
+        return collect_chunks_vec(
+            vec,
+            policy,
+            total,
+            -np.ones(ACT_DIM),
+            np.ones(ACT_DIM),
+            n_obs_steps=STATE_T,
+            n_action_steps=ACTION_HORIZON,
+            seed=seed,
+        )
+    finally:
+        vec.close()
+
+
+def test_collect_chunks_vec_budget_and_shapes():
+    """N envs split ceil(total/N) steps each; records carry full Transition keys."""
+    records = _vec_records()
+    assert records, "vector collector must produce chunks"
+    total_exec = sum(int(r["executed_n_action_steps"]) for r in records)
+    assert total_exec >= 64
+    for r in records:
+        assert set(r) == set(Transition.__annotations__)
+        assert r["action"].shape == (ACTION_HORIZON, ACT_DIM)
+        assert r["observation.state"].shape == (STATE_T, OBS_DIM)
+        assert 1 <= int(r["executed_n_action_steps"]) <= ACTION_HORIZON
+        assert len(r["next.reward"]) == int(r["executed_n_action_steps"])
+
+
+def test_collect_chunks_vec_deterministic_under_seed():
+    """Same seed + same policy draws -> identical record streams."""
+    r1 = _vec_records(seed=7)
+    r2 = _vec_records(seed=7)
+    assert len(r1) == len(r2)
+    for a, b in zip(r1, r2):
+        assert torch.equal(a["action"], b["action"])
+        assert torch.equal(a["next.action"], b["next.action"])

@@ -41,8 +41,10 @@ Open question that blocks all writing: Phase-1 per-bin trust region.
 
 Target: 45 runs = 3 methods (sjfpo, ppo, sac) x 3 envs
 (HalfCheetah-v5, Walker2d-v5, Hopper-v5) x 5 seeds (0-4) x 1M steps.
-CPU cost is ~12h per sjfpo run: queue GPU time first (Kaggle Blackwell
-notes in `docs/kaggle-offline-blackwell.md` apply).
+ThinkPad (RTX PRO 1000 Blackwell 8GB, 16 cores): sjfpo collects with
+`num_envs=8` async MuJoCo procs by default (per-update env-steps unchanged,
+collection ~linear speedup); eval stays single-env. Override with
+`--sjfpo.num_envs N` (8 fits 32GB; 1 reproduces the legacy loop).
 
 - [ ] Launch: `METHODS="sjfpo ppo sac" ENVS="HalfCheetah-v5 Walker2d-v5 Hopper-v5" \
       SEEDS="0 1 2 3 4" bash scripts/sweep.sh` (out base

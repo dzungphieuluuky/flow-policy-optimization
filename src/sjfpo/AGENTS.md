@@ -34,7 +34,7 @@ utils.py           23L — shared pure helpers (device/dtype/compile), no sjfpo 
 | File | Export | Caller |
 |---|---|---|
 | `networks.py` | `WindowEncoder` `RunningMeanStd` `SpectralEncoder` `SJFOPolicyModel` `Critic` `DiTBlock` `CrossAttentionBlock` `CondMLP` | `modeling_sjfpo.py` (live) |
-| `collector.py` | `Transition` `collect_chunks` | `tests/test_transition_v4.py` |
+| `collector.py` | `Transition` `collect_chunks` (+`collect_chunks_vec` for `num_envs>1`) | `tests/test_transition_v4.py` |
 | `dct_utils.py` | `dct` `idct` `discounted_chunk_reward` | `collector.py` `fpo_core.py` (DCT) + `tests/test_dct.py` |
 | `utils.py` | `resolve_device` `is_bf16_available` `resolve_compute_dtype` `resolve_mixed_precision` `maybe_compile` | `baselines.py` |
 | `modeling_sjfpo.py` | `SJFPOPolicy` `SJFPOAborted` | `sweep.py` |
