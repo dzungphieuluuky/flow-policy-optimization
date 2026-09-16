@@ -470,6 +470,37 @@ class SJFPOPolicy(PreTrainedPolicy):
             rho_mean = float(rho.detach().mean())
             rho_std = float(rho.detach().std(unbiased=False))
             v_star_rms = float(v_star.detach().pow(2).mean().sqrt())
+            # Phase 0 per-bin trust diagnostics (read-only): same elementwise
+            # ratio math as the scalar path, unreduced over bins. The scalar
+            # loss above is untouched; these stats only answer "is rho flat
+            # in k?" ahead of any per-bin clipping experiment.
+            l_old_bin = compute_cfm_loss(
+                v_old.reshape(n, num_mc, *flow_shape), v_star, reduce_mode="bin"
+            )
+            l_new_bin = compute_cfm_loss(
+                v_new.reshape(n, num_mc, *flow_shape), v_star, reduce_mode="bin"
+            )
+            rho_bin = compute_policy_ratio(
+                l_old_bin, l_new_bin, advantage=advantages.view(n, 1, 1)
+            )
+            rho_bin_mean = rho_bin.mean(dim=(0, 1))  # [K] over batch, mc
+            n_bins = rho_bin_mean.numel()
+            split = max(1, n_bins // 2)
+            rho_bin_range = float(rho_bin_mean.max() - rho_bin_mean.min())
+            rho_bin_low = float(rho_bin_mean[:split].mean())
+            rho_bin_high = float(
+                rho_bin_mean[split:].mean()
+                if n_bins > 1
+                else rho_bin_mean.mean()
+            )
+            rho_bin_outside = float(
+                (
+                    (rho_bin < 1.0 - cfg.epsilon_low)
+                    | (rho_bin > 1.0 + cfg.epsilon_high)
+                )
+                .float()
+                .mean()
+            )
         return loss, {
             "policy_loss": float(policy_per_chunk.mean().detach()),
             "value_loss": float(value_per_chunk.mean().detach()),
@@ -477,6 +508,10 @@ class SJFPOPolicy(PreTrainedPolicy):
             "mean_log_ratio": mean_log_ratio,
             "flow_rho_mean": rho_mean,
             "flow_rho_std": rho_std,
+            "flow_rho_bin_range": rho_bin_range,
+            "flow_rho_bin_lowfreq": rho_bin_low,
+            "flow_rho_bin_highfreq": rho_bin_high,
+            "flow_rho_bin_outside_frac": rho_bin_outside,
             "flow_v_star_rms": v_star_rms,
             **{f"cond_{k}": float(v.detach()) for k, v in cond_stats.items()},
         }

@@ -425,6 +425,23 @@ def test_compute_cfm_loss_reduce_mode_contract():
         fpo_core.compute_cfm_loss(v_hat, v_star[..., :2])
 
 
+def test_compute_cfm_loss_bin_mode_parity():
+    """Phase 0: per-bin errors average back to the scalar path."""
+    torch.manual_seed(62)
+    # Small errors so the clamp never binds on either path.
+    v_hat = torch.randn(2, 4, 5, 3) * 0.1
+    v_star = torch.randn(2, 4, 5, 3) * 0.1
+    per_bin = fpo_core.compute_cfm_loss(v_hat, v_star, reduce_mode="bin")
+    assert per_bin.shape == (2, 4, 5)
+    per_sample = fpo_core.compute_cfm_loss(v_hat, v_star, reduce_mode="sample")
+    torch.testing.assert_close(per_bin.mean(dim=-1), per_sample)
+    # Clamp binds per-bin (same semantics as the sample path).
+    big = fpo_core.compute_cfm_loss(
+        torch.zeros(1, 1, 2, 2), torch.ones(1, 1, 2, 2) * 10.0, reduce_mode="bin"
+    )
+    assert bool((big <= fpo_core._DEFAULTS.cfm_clamp).all())
+
+
 def test_sample_timesteps_modes_and_contract():
     assert fpo_core.sample_timesteps(16).shape == (16,)
     for mode in ("uniform", "normal"):

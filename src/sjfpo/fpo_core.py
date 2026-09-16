@@ -111,7 +111,10 @@ def compute_cfm_loss(
 
     Pure reduction over precomputed velocities (interpolation/targets built
     by the caller). "scalar" = mean over everything; "sample" = mean over
-    flow coords → clamped per-sample ℓ for the ratio math.
+    flow coords → clamped per-sample ℓ for the ratio math; "bin" = mean over
+    action dims only → clamped per-bin ℓ [n, mc, K] for per-bin ratio
+    diagnostics (read-only in Phase 0; bin.mean(-1) reproduces "sample"
+    wherever the clamp does not bind).
     """
     if v_hat.shape != v_star.shape:
         raise ValueError(
@@ -120,15 +123,19 @@ def compute_cfm_loss(
     squared_errors = (v_hat - v_star).pow(2)
     if reduce_mode == "scalar":
         if clamp is not None:
-            raise ValueError("clamp applies to reduce_mode='sample' only")
+            raise ValueError("clamp applies to reduce_mode='sample'/'bin' only")
         return squared_errors.mean()
     elif reduce_mode == "sample":
-        per_sample = squared_errors.flatten(2).mean(dim=-1)
+        reduced = squared_errors.flatten(2).mean(dim=-1)
+    elif reduce_mode == "bin":
+        reduced = squared_errors.mean(dim=-1)
     else:
-        raise ValueError(f"reduce_mode={reduce_mode!r} must be 'scalar' or 'sample'")
+        raise ValueError(
+            f"reduce_mode={reduce_mode!r} must be 'scalar', 'sample', or 'bin'"
+        )
 
     clamp = _DEFAULTS.cfm_clamp if clamp is None else clamp
-    return torch.clamp(per_sample, min=-clamp, max=clamp)
+    return torch.clamp(reduced, min=-clamp, max=clamp)
 
 
 def compute_aspo_surrogate(
