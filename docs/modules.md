@@ -6,7 +6,7 @@ Use this as a jump table. Each row: what the file owns, the key symbols, and the
 
 | Module | Owns | Key symbols | Thread to follow |
 |---|---|---|---|
-| `config.py` | Flags, run matrices, budgets, PPO/SAC dataclasses | `PPOConfig / SACConfig`, `RUN_MATRIX` (45), `build_filtered_matrix` (SJFPO hyperparams live in `configuration_sjfpo.py::SJFPOConfig` only) | Change sweep size → `--methods/--envs/--seeds` or edit axes |
+| `config.py` | Flags, run matrices, budgets, PPO/SAC dataclasses | `PPOConfig / SACConfig`, `RUN_MATRIX` (45) (SJFPO hyperparams live in `configuration_sjfpo.py::SJFPOConfig` only) | Change sweep size → `METHODS/ENVS/SEEDS` env axes or edit axes |
 | `modeling_sjfpo.py` | SJFPO policy (FPO++ ASPO + value update) | `SJFPOPolicy.forward`, `SJFPOAborted` | `test_modeling_sjfpo.py` NaN + param count |
 | `networks.py` | Encoder + spectral + DiT flow | `StateEncoder`, `ActionEncoder` (same definition), `SpectralEncoder(raw obs→DCT→low-K bins, parameter-free)`, `SJFOPolicyModel` (DiT-8 adaLN-Zero), `Critic` (1 cross-attention block) V(s,a) | `test_networks.py` |
 | `dct_utils.py` | DCT orthonormal action chunks | `dct`, `idct`, `discounted_chunk_reward` | `test_dct.py` roundtrip `1e-5` |
@@ -17,7 +17,7 @@ Use this as a jump table. Each row: what the file owns, the key symbols, and the
 | `sweep.py` | Dispatch | `scan_runs`, `run_pending`, `flush_pending_runs`, `format_run_directory_name` | `test_sweep.py` order + resume |
 | `analysis.py` | Stats + plots | `analyze_results`, `bootstrap_ci` (`n_boot=2000`), `compute_iqm`, `is_superior`, `write_summary_csv` (stats: do not touch without plan amendment) | `test_analysis.py` |
 | `wandb_logging.py` | Default-on wandb gate (REQUIRED, hard import) | `wandb_disabled`, `init_wandb_run_for_method` (->bool), `log_metrics`, `log_eval_summary`, `finish_run` — 5 fns, SDK-direct (only file that imports wandb) | `test_wandb_logging.py` |
-| `utils.py` | Shared pure helpers | `safe_float_value` | imported by trainer |
+| `utils.py` | Shared pure helpers | `resolve_device`, `resolve_mixed_precision`, `maybe_compile` | device/dtype plumbing |
 
 ## `tests` — What Locks What (273 green)
 

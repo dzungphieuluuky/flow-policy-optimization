@@ -12,7 +12,7 @@
 │   ├── train.py                  # unified trainer: single-run + --matrix sweep (sjfpo/ppo/sac)
 │   └── verify_deps.sh            # pinned dep check
 ├── src/sjfpo/                     # production code (MuJoCo-only, flat Box, fp32, no autocast)
-│   ├── config.py                 # flags, RUN_MATRIX (45), PPO/SAC configs, build_filtered_matrix
+│   ├── config.py                 # flags, RUN_MATRIX (45), PPO/SAC configs
 │   ├── configuration_sjfpo.py      # SJFPO policy config (sole hyperparam source)
 │   ├── modeling_sjfpo.py         # SJFPOPolicy (ASPO + value update, owns all modules)
 │   ├── train_sjfpo.py            # online train entry used by scripts/train.py
@@ -25,7 +25,7 @@
 │   ├── sweep.py                  # scan_runs / run_pending / format_run_directory_name
 │   ├── analysis.py               # analyze_results (bootstrap 2000, IQM — stats locked)
 │   ├── wandb_logging.py          # hard REQUIRED wandb gate (only file importing wandb)
-│   ├── utils.py                  # safe_float_value
+│   ├── utils.py                  # device/dtype/compile helpers
 │   └── __init__.py
 ├── tests/                        # 273 green; test_pipeline_cpu.py (7 tests) never touched
 ├── spectral_joint_flow.ipynb     # 6 cells, clone + train (primary deliverable)

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import contextlib
-import math
 import os
 import sys
 from pathlib import Path
@@ -123,15 +122,6 @@ def default_smoke_dir(env: str | None = None) -> Path:
         drive = Path("/content/drive/MyDrive/spectral-joint-policy/smoke")
         return drive if Path("/content/drive").exists() else Path("/content/smoke")
     return Path(".omo/evidence/smoke")
-
-
-def safe_float_value(x: torch.Tensor | float) -> float:
-    """float(x), or nan when non-finite."""
-    if isinstance(x, torch.Tensor):
-        v = float(x.detach())
-    else:
-        v = float(x)
-    return v if math.isfinite(v) else float("nan")
 
 
 def to_numpy_1d(x: torch.Tensor | np.ndarray | float) -> np.ndarray:

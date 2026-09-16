@@ -24,15 +24,6 @@ class ResumeError(RuntimeError):
     """Unresumable checkpoint (missing/corrupt files)."""
 
 
-def unwrap_compiled(module: torch.nn.Module) -> torch.nn.Module:
-    """Return the eager module inside a torch.compile wrapper, else itself.
-
-    The wrapper shares the inner module's tensors, so state_dicts differ
-    only in the ``_orig_mod.`` key prefix — values are identical.
-    """
-    return getattr(module, "_orig_mod", module)
-
-
 @contextlib.contextmanager
 def unwrapped_policy(policy):
     """Temporarily expose a policy's eager submodules for checkpoint IO.

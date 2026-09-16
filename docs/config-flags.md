@@ -20,8 +20,8 @@ Source of truth: `src/sjfpo/config.py`. YAML mirrors in `configs/`
 
 `METHODS = (sjfpo, ppo, sac)`, `ENVS = (HalfCheetah-v5, Walker2d-v5, Hopper-v5)`,
 `SEEDS = (0..4)`; `TOTAL_STEPS = 1M`, `EVAL_STEPS = 50k`, `SAVE_STEPS = 25k`.
-`scripts/train.py --matrix` builds the same cartesian product via
-`config.build_filtered_matrix` (`--methods/--envs/--seeds` filter it).
+`scripts/sweep.sh --tiny` filters the same cartesian product via
+`METHODS/ENVS/SEEDS` env axes.
 
 ## Algorithm Dataclasses
 

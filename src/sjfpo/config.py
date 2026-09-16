@@ -111,29 +111,6 @@ def build_run_matrix() -> tuple[RunSpec, ...]:
 RUN_MATRIX = build_run_matrix()  # 45 runs
 
 
-def build_filtered_matrix(
-    methods: Iterable[str],
-    envs: Iterable[str],
-    seeds: Iterable[int],
-    total_steps: int,
-    eval_steps: int,
-    save_steps: int,
-) -> tuple[RunSpec, ...]:
-    return tuple(
-        RunSpec(
-            method=m,
-            env=e,
-            seed=s,
-            total_steps=total_steps,
-            eval_steps=eval_steps,
-            save_steps=save_steps,
-        )
-        for m in [x for x in METHODS if x in methods]
-        for e in [x for x in KNOWN_ENVS if x in envs]
-        for s in seeds
-    )
-
-
 if TINY_MATRIX:
     tiny: list[RunSpec] = []
     for method in METHODS:

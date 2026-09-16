@@ -19,7 +19,7 @@ evaluator.py      162L — Evaluator MuJoCo 3-col [episode,return,length]
 sweep.py          227L — scan_runs/run_pending state machine
 analysis.py       IQM+bootstrap 2000, notebook-invoked (train.py never imports it; risk boundary)
 wandb_logging.py  ~120L — sole wandb importer (REQUIRED, hard import): 5 fns SDK-direct (wandb_disabled, init_wandb_run_for_method->bool, log_metrics, log_eval_summary, finish_run; shared baselines)
-utils.py           23L — shared pure helpers (safe_float_value), no sjfpo imports
+utils.py           23L — shared pure helpers (device/dtype/compile), no sjfpo imports
 ```
 
 ## Where to Look
@@ -36,7 +36,7 @@ utils.py           23L — shared pure helpers (safe_float_value), no sjfpo impo
 | `networks.py` | `WindowEncoder` `RunningMeanStd` `SpectralEncoder` `SJFOPolicyModel` `Critic` `DiTBlock` `CrossAttentionBlock` `CondMLP` | `modeling_sjfpo.py` (live) |
 | `collector.py` | `Transition` `collect_chunks` | `tests/test_transition_v4.py` |
 | `dct_utils.py` | `dct` `idct` `discounted_chunk_reward` | `collector.py` `fpo_core.py` (DCT) + `tests/test_dct.py` |
-| `utils.py` | `safe_float_value` `resolve_device` `is_bf16_available` `resolve_compute_dtype` | `baselines.py` |
+| `utils.py` | `resolve_device` `is_bf16_available` `resolve_compute_dtype` `resolve_mixed_precision` `maybe_compile` | `baselines.py` |
 | `modeling_sjfpo.py` | `SJFPOPolicy` `SJFPOAborted` | `sweep.py` |
 | `wandb_logging.py` | `wandb_disabled` `init_wandb_run_for_method`->bool `log_metrics` `log_eval_summary` `finish_run` (5 fns SDK-direct) | `runner.py` `baselines.py` (REQUIRED import, SJFPO_DISABLE_WANDB=1 gate) |
 
