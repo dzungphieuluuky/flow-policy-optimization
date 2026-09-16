@@ -370,6 +370,9 @@ class SJFOPolicyModel(nn.Module):
         self.last_pool_weights: torch.Tensor | None = None
         self.time_dim = dit_time_dim
         self.in_proj = nn.Linear(action_dim, hidden_dim)
+        self.bin_encoding = PositionalEncoding()  # bin index = frequency order,
+        # mirroring SpectralAttentionPool: lets self-attention address bins by
+        # frequency ("the bin below me"), not by content magnitude alone.
         self.state_encoder = WindowEncoder(obs_dim, hidden_dim=hidden_dim)
         self.time_mlp = CondMLP(dit_time_dim, 4 * hidden_dim, hidden_dim)
         self.cond_proj = nn.Linear(obs_dim, hidden_dim)
@@ -417,7 +420,7 @@ class SJFOPolicyModel(nn.Module):
             branch = self.cond_proj(condition.mean(dim=1))
         z_state = self.state_encoder(state).mean(dim=1)
         c = self.time_mlp(timesteps_embedding) + branch + z_state
-        h = self.in_proj(x_t)
+        h = self.bin_encoding(self.in_proj(x_t))
         for block in self.blocks:
             h = block(h, c)
         # RMS diagnostics stash (detached; float() conversion in eager caller).

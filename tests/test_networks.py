@@ -429,6 +429,32 @@ def test_positional_encoding_shape():
     assert not torch.allclose(out[:, 0, :], out[:, 1, :])  # positions differ
 
 
+def test_policy_bin_order_sensitive():
+    """Identical bin values still map to distinct rows (frequency-slot lock).
+
+    Without bin codes, symmetric inputs give symmetric outputs and attention
+    can only mix bins by content magnitude; the encoding breaks the symmetry
+    so inter-bin relations are frequency-addressable."""
+    nets = make_nets()
+    torch.manual_seed(32)
+    policy = nets.SJFOPolicyModel(action_dim=3, obs_dim=OBS)
+    # Wake the zero-init (adaLN gates + final out) so inputs matter.
+    with torch.no_grad():
+        for block in policy.blocks:
+            block.adaLN.fc2.weight.normal_(std=0.1)
+        policy.out.weight.normal_(std=0.1)
+    ka = max(1, round(0.3 * CHUNK))  # 5
+    x_t = torch.ones(2, ka, 3)  # no freq info in the input itself
+    v = policy(
+        x_t,
+        0.5,
+        torch.randn(2, ka, OBS),
+        torch.randn(2, STATE_T, OBS),
+    )
+    assert v.shape == (2, ka, 3)
+    assert not torch.allclose(v[:, 0, :], v[:, 1, :], atol=1e-6)
+
+
 def test_policy_reads_raw_state_prefix():
     """DiT output changes with the raw state window (prefix-token lock)."""
     nets = make_nets()
