@@ -53,8 +53,12 @@ PPO's exact Gaussian densities — a different problem, hence different math.
 
 The observation window is DCT-II transformed over time and the `K` lowest raw
 bins become conditioning tokens (`SpectralEncoder`: no weights, no projector,
-no normalization). Pooling into the DiT conditioning vector is order-aware
-(`SpectralAttentionPool`, queried by the flow timestep) instead of a mean.
+no normalization). State, spectral, and time branches sum into a single adaLN
+vector `c = time + state + spectral` (pure-DiT: the transformer sees action
+tokens only, no prefix tokens). Spectral pooling into `c` is order-aware
+(`SpectralAttentionPool`, queried by the flow timestep) instead of a bare mean,
+and action-bin tokens carry matching frequency-slot codes, so inter-bin
+attention mixes by frequency address rather than content magnitude.
 Frequency-domain memory with near-zero parameters — no RNN, no longer
 Transformer context.
 

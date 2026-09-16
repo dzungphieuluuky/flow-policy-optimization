@@ -212,10 +212,7 @@ class SpectralAttentionPool(nn.Module):
 
     Bin tokens carry a sinusoidal frequency code (position = bin index, i.e.
     frequency order) before the shared per-bin projection, so attention
-    weights index frequency rather than content alone. Without the code the
-    pooling would be permutation-invariant over bins (bare tokens + single
-    query cannot tell a spectrum from a permutation of it). Query comes from
-    the timestep embedding; weights stay inspectable via last_pool_weights.
+    weights index frequency rather than content alone.
     """
 
     def __init__(
@@ -303,7 +300,7 @@ class DiTBlock(nn.Module):
         x = x + gate_msa * attn
         out = x + gate_mlp * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
         # Detached tensor stash (float() conversion happens in eager policy code,
-        # never inside this possibly-compiled region); mirrors last_pool_weights.
+        # never inside this possibly-compiled region).
         self.last_gate_norms = {
             "gate_msa": gate_msa.detach().pow(2).mean().sqrt(),
             "gate_mlp": gate_mlp.detach().pow(2).mean().sqrt(),
@@ -367,7 +364,6 @@ class SJFOPolicyModel(nn.Module):
                 f"spectral_condition_mode={spectral_condition_mode!r} must be 'mean' or 'attention'"
             )
         self.spectral_condition_mode = spectral_condition_mode
-        self.last_pool_weights: torch.Tensor | None = None
         self.time_dim = dit_time_dim
         self.in_proj = nn.Linear(action_dim, hidden_dim)
         self.bin_encoding = PositionalEncoding()  # bin index = frequency order,
@@ -412,11 +408,9 @@ class SJFOPolicyModel(nn.Module):
         if timesteps_embedding.dim() == 1:
             timesteps_embedding = timesteps_embedding.expand(x_t.shape[0], -1)
         if self.spectral_condition_mode == "attention":
-            pooled, weights = self.spectral_condition_module(condition, timesteps_embedding)
-            self.last_pool_weights = weights.detach()
+            pooled, _ = self.spectral_condition_module(condition, timesteps_embedding)
             branch = pooled
         else:
-            self.last_pool_weights = None
             branch = self.cond_proj(condition.mean(dim=1))
         z_state = self.state_encoder(state).mean(dim=1)
         c = self.time_mlp(timesteps_embedding) + branch + z_state

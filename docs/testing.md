@@ -9,15 +9,17 @@
 | Config | 45-run matrix asserts | `… -m pytest tests/test_config.py -q` |
 | Targeted | e.g. spectral, policy, baselines, sweep, wandb | `… -m pytest tests/test_networks.py tests/test_modeling_sjfpo.py -q` |
 
-Full suite tail is `273 passed`.
+Full suite tail is `299 passed`.
 
 ## Numeric Gates (TDD, not vacuous)
 
 - DCT roundtrip `‖x−IDCT(DCT(x))‖ < 1e-5`.
 - Spectral: DCT→low-K→Linear order, invariance `B=1` vs
   `B=32` `atol 1e-6`.
-- SIGReg (Epps-Pulley): Gaussian batch total <2.2, degenerate batch >95.0,
-  separation >95.0 (empirical, seeded).
+- WindowEncoder mask: garbage tails leave real rows bitwise unchanged
+  (`test_window_encoder_mask_hides_tails`).
+- Policy frequency slots: identical bin values give distinct rows
+  (`test_policy_bin_order_sensitive`); ablated encoding collapses them.
 - Flow: trainer 20-step `>1%` (anti-`stays finite` guard).
 - Evaluator: CSV header exactly `episode,return,length`; 12-episode default
   (`max_episodes=12`); byte-identical determinism under fixed seed.

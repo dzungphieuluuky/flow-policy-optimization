@@ -127,7 +127,7 @@ class TestSpectralEncoderEinx:
         assert torch.allclose(y_torch, y_einx, atol=1e-6)
 
 
-class TestViTSIGRegEinx:
+class TestEinxDotAndBroadcast:
     def test_reshape_b_flat(self):
         torch.manual_seed(0)
         z = torch.randn(2, 16, 128)
@@ -135,13 +135,13 @@ class TestViTSIGRegEinx:
             z.reshape(2, -1), einx.id("b n d -> b (n d)", z), atol=1e-6
         )
 
-    def test_dot_sigreg(self):
+    def test_dot_matmul(self):
         torch.manual_seed(0)
         flat = torch.randn(32, 128)
         W = torch.randn(128, 32)
         assert torch.allclose(flat @ W, einx.dot("n d, d p -> n p", flat, W), atol=1e-6)
 
-    def test_sigreg_broadcast(self):
+    def test_broadcast_multiply(self):
         torch.manual_seed(0)
         proj = torch.randn(32, 32)
         t_grid = torch.linspace(0, 3, 10)
