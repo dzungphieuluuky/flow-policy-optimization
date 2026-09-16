@@ -11,8 +11,8 @@ architecture.md      mermaid flow DCT spectral K5 → DCT action chunks → DiT 
 modules.md           jump table per src/sjfpo file
 getting-started.md   smoke commands (tiny matrix, train.py single-run, notebook)
 config-flags.md      env flags / TINY / matrix filters
-notebooks.md         build/run (6-cell clone notebooks, no source inlined)
-testing.md           suite size (273) + numeric gates
+notebooks.md         build/run (8-cell clone notebooks, no source inlined)
+testing.md           suite size (300) + numeric gates
 troubleshooting.md   sys.path, train.py exit codes, AnalysisError fallback
 wandb.md             default-on gate (SJFPO_DISABLE_WANDB=1) + metric namespaces
 kaggle-offline-blackwell.md Blackwell offline runbook (MEASURED GPU content — surgical edits only)

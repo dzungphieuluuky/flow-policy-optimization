@@ -6,12 +6,12 @@ Research code: correctness, clarity, reproducibility over infrastructure. See `A
 
 ## Method
 
-**SJFPO (live train path, actions-only):**
+**SJFPO (live train path, spectral-joint):**
 
-- Stack `T=16` obs frames → `StateEncoder` (per-frame MLP + self-attn) → `Z [N,T,D=128]`.
+- Stack `T=16` obs frames → `WindowEncoder` (frame proj + sinusoidal PE + 2× pre-norm attn/SwiGLU blocks) → mean-pooled state branch `Z [N,D=128]`.
 - DCT-II over the raw obs window (time axis) → keep `K` lowest low-frequency bins (`K = round(top_p*T)`, default 5) → raw bins = `SpectralEncoder` conditioning `[N,K,obs]`, no projector, no calibration, no encoder latent. (rFFT is reserved for `observation.image`; state and action use DCT.)
-- Action chunk `[N,H=16,action_dim]` stored real-space scaled to [-1,1] (one row per predicted step). Flow (DiT-8, adaLN-Zero, `SJFOPolicyModel`) DCTs it internally and predicts action velocities in DCT space.
-- Sample with `fpo_core.sample` (mode="euler", ascending `t: 0→1`, `x ← x + δ·v̂`); decode with `runner.decode_chunk_actions` (IDCT + single `clamp(-1,1)`). Training executes the full predicted chunk open-loop (`H=16`); inference/eval execute the `executed_vs_predicted_ratio=0.5` prefix (8 steps), then replan.
+- Action chunk `[N,H=16,action_dim]` stored real-space scaled to [-1,1] (one row per predicted step). Flow (DiT-8, adaLN-Zero, `SJFOPolicyModel`) DCTs it internally and predicts action velocities in DCT space over the `Ka` low-frequency rows.
+- Pure-DiT conditioning: a single adaLN vector `c = time + state + spectral`; the transformer sees action-bin tokens only (frequency-slot codes = bin index, so inter-bin attention is frequency-addressable). Sample with `fpo_core.sample` (mode="euler", ascending `t: 0→1`, `x ← x + δ·v̂`); decode with `predict_action_chunk` (pad → IDCT + single `clamp(-1,1)`). Training executes the full predicted chunk open-loop (`H=16`); inference/eval execute the `executed_vs_predicted_ratio=0.5` prefix (8 steps), then replan.
 - Update (`SJFPOPolicy.forward`): per-sample MC log-liks `[N,m=16]` → STE-capped ratios → ASPO surrogate (PPO-clip for `A≥0`, SPO penalty for `A<0`, mean-of-ψ) + `V(s,a)` critic on frozen GAE returns. One AdamW optimizer over the policy's live weights (spectral is parameter-free); global grad-clip; NaN aborts via `SJFPOAborted`.
 - Chunk rollout uses LeRobot-keyed `Transition` dicts; chunk-level semi-MDP GAE (`gae.compute_advantages`, numpy fp64, advantages standardized).
 
@@ -30,9 +30,9 @@ Single source of truth: every module under `src/sjfpo/` is on the live path. The
 
 ```
 src/sjfpo/          # all production code (MuJoCo-only, fp32)
-  config.py         # flags, PPO/SAC dataclasses, RUN_MATRIX, build_filtered_matrix
+  config.py         # flags, PPO/SAC dataclasses, RUN_MATRIX
   configuration_sjfpo.py  # sole SJFPO hyperparam source (LeRobot PreTrainedConfig)
-  networks.py       # policy/critic StateEncoders, SpectralEncoder, SJFOPolicyModel (DiT), Critic
+  networks.py       # WindowEncoder, SpectralEncoder, SJFOPolicyModel (pure-DiT), Critic
   fpo_core.py       # CFM losses, compute_policy_ratio (STE cap), compute_aspo_surrogate, compute_policy_loss, sample
   collector.py      # Transition dict (9 LeRobot keys), open-loop full-H chunks in training, next.action chaining
   gae.py            # chunk semi-MDP GAE (R_k intradiscounted, γ^L bootstrap, (γλ)^L recursion)
@@ -44,12 +44,12 @@ src/sjfpo/          # all production code (MuJoCo-only, fp32)
   sweep.py          # scan_runs / run_pending, format_run_directory_name
   analysis.py       # IQM + bootstrap (n_boot=2000), invoked from notebooks
   wandb_logging.py  # sole wandb importer (REQUIRED); 5 fns, SJFPO_DISABLE_WANDB=1 off switch
-  utils.py          # resolve_device, safe_float_value (no sjfpo imports)
+  utils.py          # resolve_device, mixed precision, compile helpers (no sjfpo imports)
 configs/            # sjfpo.yaml, ppo.yaml, sac.yaml, shared.yaml (mirror config.py)
 scripts/train.py    # draccus single-run CLI
 scripts/sweep.sh    # methods × envs × seeds sweep (calls train.py per run)
 scripts/build_notebook.py  # builds both minimal Colab .ipynb (never hand-edit notebooks)
-tests/              # 290 tests; test_pipeline_cpu.py invariants never touched
+tests/              # 300 tests; test_pipeline_cpu.py invariants never touched
 docs/               # architecture, modules, config-flags, testing, wandb, troubleshooting
 ```
 
@@ -86,20 +86,20 @@ Exit codes: `0` success · `1` usage error · `2` runtime/divergence abort · `4
 
 Env switches: `SJFPO_DEVICE=cuda|cpu|auto` · `SJFPO_DISABLE_WANDB=1` (only wandb off switch; wandb is a required import).
 
-Key `SJFPOConfig` defaults: `num_mc_samples=16`, `euler_train=16`, `euler_eval=16`, `chunks_per_update=128`, `n_obs_steps=16`, `chunk_size=16`, `executed_vs_predicted_ratio=0.5`, `top_p_spectral_tokens=0.3`, `hidden_size=128`, `dit_depth=8`, `dit_heads=4`, `dit_mlp_ratio=4.0`, `dit_time_dim=256`, `lr=1e-4`, `wd=1e-4`, `clip_range=0.05`, `clip_range_vf=10.0`, `cfm_clamp=20`, `log_ratio_cap=10`, `vf_coef=0.1`, `grad_clip=1.0`, `gamma=0.99`, `gae_lambda=0.95`.
+Key `SJFPOConfig` defaults: `num_mc_samples=16`, `euler_train=16`, `euler_eval=16`, `chunks_per_update=128`, `n_obs_steps=16`, `action_horizon=16`, `executed_vs_predicted_ratio=0.5`, `top_p_spectral_tokens=0.3`, `hidden_dim=128`, `dit_depth=8`, `dit_heads=4`, `dit_mlp_ratio=4.0`, `dit_time_dim=256`, `optimizer_lr=1e-4`, `optimizer_weight_decay=1e-4`, `clip_range=0.05`, `clip_range_vf=10.0`, `cfm_clamp=20`, `log_ratio_cap=10`, `vf_coef=0.1`, `grad_clip=1.0`, `gamma=0.99`, `gae_lambda=0.95`.
 
 ## Outputs
 
-`--out-dir` defaults to `.omo/evidence/train` (git-ignored). Each run writes under `<out-dir>/<method>_<env>_seed<seed>/` (same format as `sweep.format_run_directory_name`):
+`--out_dir` defaults to `.omo/evidence/train` (git-ignored). Each run writes under `<out_dir>/<method>_<env>_seed<seed>/` (same format as `sweep.format_run_directory_name`):
 
 - `eval_history.csv` — `episode,return,length`
-- `checkpoint_<step>/` + `checkpoint_final/` — `checkpoint.pt` + `manifest.json`
+- `checkpoint_<step>/` + `checkpoint_final/` — `model.safetensors` (+ `config.json`, `optimizer.pt`, `counters.json`)
 - wandb `train/*`, `eval/*`, `gae/*`, `timing/*` when enabled (one `log_metrics(data, step=global_step)` per update)
 
 ## Tests
 
 ```bash
-PYTHONPATH=src .venv/bin/python -m pytest -q                  # 290 tests
+PYTHONPATH=src .venv/bin/python -m pytest -q                  # 300 tests
 PYTHONPATH=src .venv/bin/python -m pytest tests/test_pipeline_cpu.py -v
 ```
 

@@ -31,17 +31,16 @@ pip install -r requirements-linux.txt  # includes wandb (or requirements-amd.txt
 
 ```bash
 # Online training (default)
-python scripts/train.py \
-  --method sjfpo --env Hopper-v5 --total-steps 5000 \
-  --out-dir runs/train
+PYTHONPATH=src python scripts/train.py \
+  --method sjfpo --env Hopper-v5 --seed 0 --total_steps 5000 \
+  --out_dir runs/train
 
 # Offline capture (wandb-native mode, still requires the package)
-WANDB_MODE=offline python scripts/train.py --matrix \
-  --methods sjfpo ppo sac --envs Hopper-v5 --seeds 0 --total-steps 500 \
-  --out-dir runs/smoke
+WANDB_MODE=offline METHODS="sjfpo ppo sac" ENVS="Hopper-v5" SEEDS="0" TOTAL_STEPS=500 \
+  bash scripts/sweep.sh --out-base runs/smoke
 
 # Disabled (the ONLY opt-out)
-SJFPO_DISABLE_WANDB=1 python scripts/train.py --method sjfpo --env Hopper-v5 ...
+SJFPO_DISABLE_WANDB=1 PYTHONPATH=src python scripts/train.py --method sjfpo --env Hopper-v5 --seed 0 ...
 ```
 
 ## Syncing Offline Runs
@@ -52,12 +51,11 @@ After an offline run, push artifacts to wandb cloud:
 wandb sync wandb/run-<id>/
 ```
 
-## API Surface (5 fns, SDK-direct)
+## API Surface (6 fns, SDK-direct)
 
 `src/sjfpo/wandb_logging.py` is the sole file that imports wandb (module-level
 REQUIRED import; absent package is a hard ImportError). 6 public
-functions (5 core + the shared eval-summary helper from fn-consolidation C4),
-all calling the wandb SDK directly (`wandb.init`/`log`/`finish`/
+functions, all calling the wandb SDK directly (`wandb.init`/`log`/`finish`/
 `Table`), no wrappers, no custom step metric:
 
 | Function | Signature | Behaviour |
@@ -65,8 +63,8 @@ all calling the wandb SDK directly (`wandb.init`/`log`/`finish`/
 | `wandb_disabled` | `() -> bool` | `True` only when `SJFPO_DISABLE_WANDB == "1"` |
 | `init_wandb_run_for_method` | `(*, method, env_name, seed, total_steps, cfg_dict) -> bool` | SDK-direct `wandb.init(project=method, group=f"{method}_{env_name}", name=None, tags=[method, "mujoco", "cpu-first"], job_type="smoke" if total_steps <= 10000 else "train", mode=$WANDB_MODE, reinit="finish_previous", force=True)` with no custom step metric (default `step=global_step` is the x-axis, so charts render as lines like system auto-logging); returns `True` when enabled, `False` when disabled; init errors propagate (fail-fast, no try/except) |
 | `log_metrics` | `(data, step) -> None` | Thin disabled-guard around `wandb.log(data, step=step)` |
-| `log_eval_details` | `(eval_results, all_eval_returns, global_step) -> None` | Per-episode `wandb.Table(columns=["episode", "return", "length"], data=[list(r) for r in rows])` (list-of-lists; tuple rows normalize identically per probe) + `reward_improvement_pct = (curr - prev) / max(abs(prev), 1e-8)` via `log_metrics` |
-| `log_eval_summary` | `(mean_return, eval_results, all_eval_returns, eval_count, global_step) -> None` | Shared runner/baselines eval payload (mean/length/max/std/count + Table + improvement in one commit); single home per fn-consolidation C4 |
+| `log_eval_summary` | `(mean_return, eval_results, all_eval_returns, eval_count, global_step) -> None` | Shared runner/baselines eval payload (mean/length/max/std/count + Table + improvement in one commit) |
+| `log_eval_video` | `(frames, global_step) -> None` | `wandb.Video` of one deterministic demo episode (best-effort; render failures never break training) |
 | `finish_run` | `(exit_code=0) -> None` | Thin disabled-guard around `wandb.finish(exit_code=exit_code)` |
 
 Callers (`baselines.py`) import at most 6 symbols and hold a
@@ -87,7 +85,7 @@ All metrics use `step=global_step` (default wandb x-axis, one commit per step).
 
 | Prefix | Keys |
 |---|---|
-| `train/*` | `policy_loss`, `value_loss`, `clip_fraction`, `mean_log_ratio`, `clamp_engagement`, `total_loss` |
+| `train/*` | `policy_loss`, `value_loss`, `kl_loss`, `total_loss`, `grad_norm_preclip`, `mean_log_ratio`, `flow_rho_mean/std`, `flow_rho_bin_range/lowfreq/highfreq/outside_frac`, `flow_v_star_rms`, `cond_temb/pooled/z_state/c`, `cond_gate_msa/mlp`, `cond_scale_msa/mlp` |
 | `gae/*` | `advantages_mean`, `advantages_std`, `returns_mean`, `values_mean` |
-| `eval/*` | `mean_return`, `min_return`, `max_return`, `std_return`, `mean_length`, `max_length`, `std_length`, `episode_count`, `random_baseline`, `consecutive_below`, `reward_improvement(+_pct)`, `episodes` Table, `diverged`, `diverge_step` |
+| `eval/*` | `mean_return`, `min_return`, `max_return`, `std_return`, `mean_length`, `max_length`, `std_length`, `episode_count`, `random_baseline`, `consecutive_below`, `reward_improvement(+_pct)`, `episodes` Table, `video`, `demo_return`, `video_ok`, `diverged`, `diverge_step` |
 | `timing/*` | `fps`, `elapsed_s` |

@@ -36,7 +36,7 @@ TITLE_COMPARISON = """\
 
 Run the SJFPO / PPO / SAC comparison matrix on MuJoCo from a clean Colab
 runtime. Same pattern as the spectral notebook: clone, install, then call
-`scripts/train.py --matrix` (eval runs inside training).
+`scripts/sweep.sh` with `METHODS/ENVS/SEEDS` axes (eval runs inside training).
 """
 
 SETUP_MD = """\
@@ -155,7 +155,7 @@ def new_notebook_shell():
     return nb
 
 
-def build_notebook(output_path: Path, spectral: bool = False):
+def build_notebook(spectral: bool = False):
     """Assemble the minimal clone/install/train notebook (no source inlined)."""
     nb = new_notebook_shell()
     cells = [
@@ -200,7 +200,7 @@ def write_notebook(out: Path, spectral: bool) -> None:
     """Build, validate, and write one notebook."""
     out = Path(out)
     print(f"Building notebook: {out} (spectral={spectral})")
-    nb = build_notebook(out, spectral=spectral)
+    nb = build_notebook(spectral=spectral)
     nbf.validate(nb)
     with open(out, "w", encoding="utf-8") as f:
         nbf.write(nb, f)

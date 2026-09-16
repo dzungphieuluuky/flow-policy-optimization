@@ -22,14 +22,14 @@
 4. **Attach it** to a new notebook (Add Input → mounts read-only under `/kaggle/input/<slug>/`),
    set **Internet OFF**.
 5. **First cell**: `!pip install --no-index --find-links=/kaggle/input/<slug>/… <packages>`.
-6. **Upload/run only `spectral_joint_flow.ipynb`** [STALE: now 6 cells — clone +
+6. **Upload/run only `spectral_joint_flow.ipynb`** [STALE: now 8 cells — clone +
    install + `!train.py` smoke/full commands, source stays in `src/`].
    Prepend the `MUJOCO_GL=osmesa` header below.
 7. **Write artifacts to `/kaggle/working`** (≤20 GB MEASURED); Save Version → Save & Run All.
 
 ## 1. What the notebook actually needs (verified by execution)
 
-`spectral_joint_flow.ipynb` = 6 cells [STALE: was 61 self-contained cells]: clone +
+`spectral_joint_flow.ipynb` = 8 cells [STALE: was 61 self-contained cells]: clone +
 install + `!train.py` smoke/full commands — **the repo itself must be reachable**
 (internet ON for `git clone`, or upload it as a dataset).
 

@@ -18,15 +18,15 @@ pip install -U pip
 # 0. From repo root
 cd spectral-joint-policy
 
-# 1. All tests (273 passed)
+# 1. All tests (300 passed)
 PYTHONPATH=src .venv/bin/python -m pytest -q
 
-# 2. MuJoCo single-run smoke (200 steps)
-PYTHONPATH=src .venv/bin/python scripts/train.py --method sjfpo --env Hopper-v5 --total-steps 200 --out-dir .omo/evidence/smoke
-# Artifacts: .omo/evidence/smoke/sjfpo/checkpoint_*/checkpoint.pt + eval_history.csv
+# 2. MuJoCo single-run smoke (2000 steps)
+PYTHONPATH=src .venv/bin/python scripts/train.py --method sjfpo --env Hopper-v5 --seed 0 --total_steps 2000 --out_dir .omo/evidence/smoke
+# Artifacts: .omo/evidence/smoke/sjfpo_Hopper-v5_seed0/checkpoint_*/model.safetensors + eval_history.csv
 
-# 3. Matrix smoke (explicit filters)
-PYTHONPATH=src .venv/bin/python scripts/train.py --matrix --methods sjfpo ppo sac --envs Hopper-v5 --seeds 0 --total-steps 200 --out-dir .omo/evidence/smoke
+# 3. Matrix smoke (sweep.sh axes)
+METHODS="sjfpo ppo sac" ENVS="Hopper-v5" SEEDS="0" TOTAL_STEPS=2000 bash scripts/sweep.sh --out-base .omo/evidence/smoke --python .venv/bin/python
 
 # 4. Notebooks (both, validated)
 python scripts/build_notebook.py

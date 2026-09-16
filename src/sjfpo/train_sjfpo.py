@@ -101,7 +101,7 @@ def sample_minibatch(
     return {k: v[indices] for k, v in batch.items()}
 
 
-def random_baseline(evaluator: Evaluator, env: Any, seed: int) -> float:
+def random_baseline(evaluator: Evaluator, env: Any) -> float:
     """Mean random-policy return for divergence gating (1.0 if empty/zero)."""
     results = evaluator.evaluate(lambda obs: env.action_space.sample(), out_dir=None)
     r_rand = float(np.mean([r["return"] for r in results])) if results else 1.0
@@ -165,7 +165,7 @@ def train_sjfpo_run(
         print(policy, file=sys.stderr)
     evaluator = Evaluator(env, eval_seed=10000 + seed, max_episodes=12)
     eval_policy = _EvalPolicy(policy)
-    r_rand = random_baseline(evaluator, env, seed) if is_main else 1.0
+    r_rand = random_baseline(evaluator, env) if is_main else 1.0
     wandb_enabled = is_main and init_wandb_run_for_method(
         method="sjfpo",
         env_name=env_name,

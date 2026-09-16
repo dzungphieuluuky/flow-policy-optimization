@@ -315,7 +315,7 @@ def resolve_eval_policy(agent, eval_policy_fn):
 
 def query_agent_actions(agent, observations, states, global_step, total_steps):
     with torch.inference_mode():
-        actions, outputs = agent.act(
+        actions, _ = agent.act(
             observations
             if torch.is_tensor(observations)
             else torch.as_tensor(observations, dtype=torch.float32),

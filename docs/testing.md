@@ -1,6 +1,6 @@
 # Testing
 
-## Suites (273 green, no skips)
+## Suites (300 green, no skips)
 
 | Suite | What it locks | Command |
 |---|---|---|
@@ -30,9 +30,9 @@ Full suite tail is `299 passed`.
 
 ```bash
 # MuJoCo single-run smoke (200 steps)
-PYTHONPATH=src .venv/bin/python scripts/train.py --method sjfpo --env Hopper-v5 --total-steps 200 --out-dir .omo/evidence/smoke
+PYTHONPATH=src .venv/bin/python scripts/train.py --method sjfpo --env Hopper-v5 --seed 0 --total_steps 2000 --out_dir .omo/evidence/smoke
 # Matrix smoke (explicit filters, 3 methods x Hopper x seed 0)
-PYTHONPATH=src .venv/bin/python scripts/train.py --matrix --methods sjfpo ppo sac --envs Hopper-v5 --seeds 0 --total-steps 200 --out-dir .omo/evidence/smoke
+METHODS="sjfpo ppo sac" ENVS="Hopper-v5" SEEDS="0" TOTAL_STEPS=2000 bash scripts/sweep.sh --out-base .omo/evidence/smoke --python .venv/bin/python
 ```
 
 ## Adding a Test

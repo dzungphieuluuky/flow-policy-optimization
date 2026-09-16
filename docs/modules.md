@@ -8,7 +8,7 @@ Use this as a jump table. Each row: what the file owns, the key symbols, and the
 |---|---|---|---|
 | `config.py` | Flags, run matrices, budgets, PPO/SAC dataclasses | `PPOConfig / SACConfig`, `RUN_MATRIX` (45) (SJFPO hyperparams live in `configuration_sjfpo.py::SJFPOConfig` only) | Change sweep size → `METHODS/ENVS/SEEDS` env axes or edit axes |
 | `modeling_sjfpo.py` | SJFPO policy (FPO++ ASPO + value update) | `SJFPOPolicy.forward`, `SJFPOAborted` | `test_modeling_sjfpo.py` NaN + param count |
-| `networks.py` | Encoder + spectral + DiT flow | `StateEncoder`, `ActionEncoder` (same definition), `SpectralEncoder(raw obs→DCT→low-K bins, parameter-free)`, `SJFOPolicyModel` (DiT-8 adaLN-Zero), `Critic` (1 cross-attention block) V(s,a) | `test_networks.py` |
+| `networks.py` | WindowEncoder + spectral + pure-DiT flow | `WindowEncoder` (shared class, owned instances), `SpectralEncoder` (raw obs→DCT→low-K bins, parameter-free), `SJFOPolicyModel` (DiT-8 adaLN-Zero, action tokens only, `c = time + state + spectral`), `CondMLP`, `Critic` (1 cross-attention block) V(s,a) | `test_networks.py` |
 | `dct_utils.py` | DCT orthonormal action chunks | `dct`, `idct`, `discounted_chunk_reward` | `test_dct.py` roundtrip `1e-5` |
 | `evaluator.py` | Metrics | `Evaluator` → 3-col CSV `[episode,return,length]` | `test_evaluator.py` schema + `test_pipeline_cpu.py` |
 | `baselines.py` | skrl PPO/SAC | `ppo_train_run` / `sac_train_run`, shared `GaussianPolicyImpl`, `seed_and_wrap_env`, `mean_action_eval_policy`, `baseline_train_loop`, `FrameStackWrapper` | `test_baselines.py` provenance |
@@ -19,9 +19,9 @@ Use this as a jump table. Each row: what the file owns, the key symbols, and the
 | `wandb_logging.py` | Default-on wandb gate (REQUIRED, hard import) | `wandb_disabled`, `init_wandb_run_for_method` (->bool), `log_metrics`, `log_eval_summary`, `finish_run` — 5 fns, SDK-direct (only file that imports wandb) | `test_wandb_logging.py` |
 | `utils.py` | Shared pure helpers | `resolve_device`, `resolve_mixed_precision`, `maybe_compile` | device/dtype plumbing |
 
-## `tests` — What Locks What (273 green)
+## `tests` — What Locks What (300 green)
 
-- `test_pipeline_cpu.py` (7 tests): 3-col CSV schema, RUN_MATRIX axes,
+- `test_pipeline_cpu.py` (5 tests): 3-col CSV schema, RUN_MATRIX axes,
   wandb gate. **Never touch.**
 - `test_config.py`: 45-run matrix asserts. `test_einx_migration.py` (27):
   migration scaffolding — quarantine only.
@@ -32,8 +32,8 @@ Use this as a jump table. Each row: what the file owns, the key symbols, and the
 
 | Path | Usage |
 |---|---|
-| `scripts/train.py` | `... --method sjfpo --env Hopper-v5 --total-steps 200` (single) or `--matrix --methods … --envs … --seeds …` (sweep) + `--tiny`. Exits 0/1/2/4. |
-| `scripts/build_notebook.py` | `python scripts/build_notebook.py` → both ipynbs (6 cells each, validated, no source inlined); `--spectral-only` / `--legacy-only`. Never hand-edit ipynbs. |
+| `scripts/train.py` | Single run: `... --method sjfpo --env Hopper-v5 --seed 0 --total_steps 2000` (underscores, draccus). Sweeps live in `scripts/sweep.sh` (`METHODS/ENVS/SEEDS` axes, `--tiny`). Exits 0/1/2/4. |
+| `scripts/build_notebook.py` | `python scripts/build_notebook.py` → both ipynbs (8 cells each, validated, no source inlined); `--spectral-only` / `--legacy-only`. Never hand-edit ipynbs. |
 | `scripts/verify_deps.sh` | Pinned dep check. |
 | `configs/{shared,sjfpo,ppo,sac}.yaml` | YAML defaults mirroring `config.py` dataclasses (pyyaml `safe_load` only). |
 
@@ -52,14 +52,14 @@ Per fn-consolidation N1. Function, parameter, and attribute names follow the
 HuggingFace convention (transformers / diffusers / accelerate):
 
 - Verb-led snake_case functions: `get_constant_schedule`, `compute_f1`
-  (transformers) — helpers here are verb-led too (`run_eval_and_record`,
-  `check_divergence`, `log_eval_summary`).
+  (transformers) — helpers here are verb-led too (`check_divergence`,
+  `log_eval_summary`).
 - CapWords classes with role suffixes: `BertModel` / `BertConfig`
   (transformers), `DDPMScheduler` (diffusers) — mirrored here
   (`SJFOPolicyModel`, `Critic`, `SJFPOPolicy`).
 - File mirrors class: `modeling_bert.py` → `BertModel`; here `sweep.py` →
   `SweepError` / `ScanResult`, `modeling_sjfpo.py` → `SJFPOPolicy` / `SJFPOAborted`.
-- UPPER_SNAKE constants: `CHECKPOINT_FILE`, `BASIS_CACHE`.
+- UPPER_SNAKE constants: `BASIS_CACHE`, `OPTIMIZER_FILE`, `COUNTERS_FILE`.
 - `_` prefix banned on this repo's public surface: a leading underscore marks
   private API, but every helper here is imported across modules or asserted by
   tests, so all defs are public (no `def _[a-z]` in `src/sjfpo` / `scripts`;

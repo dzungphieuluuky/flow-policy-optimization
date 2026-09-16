@@ -9,14 +9,14 @@
 ├── docs/                         # ← you are here
 ├── scripts/
 │   ├── build_notebook.py         # generates both minimal Colab ipynbs (clone + install + !train.py)
-│   ├── train.py                  # unified trainer: single-run + --matrix sweep (sjfpo/ppo/sac)
+│   ├── train.py                  # single-run CLI (sweeps live in sweep.sh)
 │   └── verify_deps.sh            # pinned dep check
-├── src/sjfpo/                     # production code (MuJoCo-only, flat Box, fp32, no autocast)
+├── src/sjfpo/                     # production code (MuJoCo-only, flat Box, fp32 storage + bf16 autocast)
 │   ├── config.py                 # flags, RUN_MATRIX (45), PPO/SAC configs
 │   ├── configuration_sjfpo.py      # SJFPO policy config (sole hyperparam source)
 │   ├── modeling_sjfpo.py         # SJFPOPolicy (ASPO + value update, owns all modules)
 │   ├── train_sjfpo.py            # online train entry used by scripts/train.py
-│   ├── networks.py               # StateEncoder x2 (model-owned), SpectralEncoder, DiT flow, Critic
+│   ├── networks.py               # WindowEncoder (owned instances), SpectralEncoder, pure-DiT flow, Critic
 │   ├── dct_utils.py              # orthonormal DCT-II/III action chunks
 │   ├── evaluator.py              # Evaluator → 3-col CSV [episode,return,length]
 │   ├── baselines.py              # skrl PPO/SAC (shared GaussianPolicyImpl + baseline_train_loop)
@@ -27,9 +27,9 @@
 │   ├── wandb_logging.py          # hard REQUIRED wandb gate (only file importing wandb)
 │   ├── utils.py                  # device/dtype/compile helpers
 │   └── __init__.py
-├── tests/                        # 273 green; test_pipeline_cpu.py (7 tests) never touched
-├── spectral_joint_flow.ipynb     # 6 cells, clone + train (primary deliverable)
-├── flow_matching_vs_ppo_sac.ipynb # 6 cells, matrix sweep + results
+├── tests/                        # 300 green; test_pipeline_cpu.py (5 tests) never touched
+├── spectral_joint_flow.ipynb     # 8 cells, clone + train (primary deliverable)
+├── flow_matching_vs_ppo_sac.ipynb # 8 cells, sweep.sh + results + results
 ├── requirements-linux.txt        # Linux pins (+ pyyaml for configs/)
 └── requirements-amd.txt          # AMD/ROCm pins
 ```
@@ -42,7 +42,7 @@
 | `src/sjfpo/networks.py` | Encoders + spectral + flow | Any shape/dtype or conditioning change |
 | `src/sjfpo/modeling_sjfpo.py` | `SJFPOPolicy` entry point | Adding an env |
 | `scripts/build_notebook.py` | Minimal Colab notebooks (clone/install/train cells) | Cell contents, repo slug |
-| `scripts/train.py` | Unified CLI (single / `--matrix` / `--tiny`) | CLI flags, dispatch |
+| `scripts/train.py` | Single-run CLI (underscores, draccus) | CLI flags, dispatch |
 
 ## Ignored / Generated
 

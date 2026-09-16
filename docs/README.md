@@ -2,7 +2,7 @@
 
 > **One-page map for `spectral-joint-policy`:** MuJoCo-only spectral flow
 > matching (SJFPO) + skrl PPO/SAC baselines, CUDA-default with CPU fallback, fp32-only.
-> Suite: `pytest -q` 273 passed.
+> Suite: `pytest -q` 300 passed.
 
 ## Start Here (30 seconds)
 
@@ -21,7 +21,7 @@
 
 ```
 stacked obs [T=16,obs_dim] ──► DCT-II(time) ──► K lowest bins (top_p=0.3 → 5) → tokens [5,obs] (raw, no projector)
-chunk actions [H=16,action_dim] (real, scaled) ──► DCT ──► DiT-8 velocity (condition = time + pooled tokens) ──► sample t:0→1 ──► IDCT
+chunk actions [H=16,action_dim] (real, scaled) ──► DCT ──► DiT-8 velocity over Ka low-freq rows (condition `c = time + state + spectral`) ──► sample t:0→1 ──► pad ──► IDCT
 stacked obs ──► Critic V(s,a, owns state encoder) ──► GAE-returns value target
 ```
 
@@ -41,16 +41,16 @@ stacked obs ──► Critic V(s,a, owns state encoder) ──► GAE-returns va
 ## Quick Commands (copy-paste)
 
 ```bash
-# 1. Full test suite (273 passed)
+# 1. Full test suite (300 passed)
 PYTHONPATH=src .venv/bin/python -m pytest -q
 
-# 2. MuJoCo single-run smoke (200 steps)
-PYTHONPATH=src .venv/bin/python scripts/train.py --method sjfpo --env Hopper-v5 --total-steps 200 --out-dir .omo/evidence/smoke
+# 2. MuJoCo single-run smoke (2000 steps)
+PYTHONPATH=src .venv/bin/python scripts/train.py --method sjfpo --env Hopper-v5 --seed 0 --total_steps 2000 --out_dir .omo/evidence/smoke
 
-# 3. Matrix smoke (explicit filters, proves no regression)
-PYTHONPATH=src .venv/bin/python scripts/train.py --matrix --methods sjfpo ppo sac --envs Hopper-v5 --seeds 0 --total-steps 200 --out-dir .omo/evidence/smoke
+# 3. Matrix smoke (sweep.sh axes, proves no regression)
+METHODS="sjfpo ppo sac" ENVS="Hopper-v5" SEEDS="0" TOTAL_STEPS=2000 bash scripts/sweep.sh --out-base .omo/evidence/smoke --python .venv/bin/python
 
 # 4. Build notebooks
-python scripts/build_notebook.py                          # builds both minimal ipynbs (6 cells each, no source)
+python scripts/build_notebook.py                          # builds both minimal ipynbs (8 cells each, no source)
 python scripts/build_notebook.py --spectral-only          # only spectral_joint_flow.ipynb
 ```

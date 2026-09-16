@@ -80,7 +80,7 @@ class TestBuilderIncludesUtils:
     def test_notebooks_inline_no_source(self):
         b = self.builder()
         for spectral in (True, False):
-            nb = b.build_notebook(None, spectral=spectral)
+            nb = b.build_notebook(spectral=spectral)
             code = "\n".join(c["source"] for c in nb.cells if c["cell_type"] == "code")
             assert "Register inlined" not in code
             assert "sys.modules['sjfpo" not in code
