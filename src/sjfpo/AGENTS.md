@@ -33,7 +33,7 @@ utils.py           23L — shared pure helpers (safe_float_value), no sjfpo impo
 ## Code Map
 | File | Export | Caller |
 |---|---|---|
-| `networks.py` | `StateEncoder` `RunningMeanStd` `SpectralEncoder` `SJFOPolicyModel` `Critic` `sigreg_loss` (test-only) `DiTBlock` `CrossAttentionBlock` | `modeling_sjfpo.py` (live) |
+| `networks.py` | `WindowEncoder` `RunningMeanStd` `SpectralEncoder` `SJFOPolicyModel` `Critic` `DiTBlock` `CrossAttentionBlock` `CondMLP` | `modeling_sjfpo.py` (live) |
 | `collector.py` | `Transition` `collect_chunks` | `tests/test_transition_v4.py` |
 | `dct_utils.py` | `dct` `idct` `discounted_chunk_reward` | `collector.py` `fpo_core.py` (DCT) + `tests/test_dct.py` |
 | `utils.py` | `safe_float_value` `resolve_device` `is_bf16_available` `resolve_compute_dtype` | `baselines.py` |
@@ -44,7 +44,7 @@ utils.py           23L — shared pure helpers (safe_float_value), no sjfpo impo
 - Tensor order `B,N,H,K,D,action_dim,Ds` — comment dimensions at each transform (Google docstrings + inline `[B,H,action_dim]`)
 - Live condition is `[N,K,obs]` raw bins; pure-DiT conditioning through one adaLN vector `c = time + state + spectral` (`spectral_condition_mode="mean"`: `condition.mean(1)` via `cond_proj`; `"attention"`: `SpectralAttentionPool` query from time-embed, weights in `last_pool_weights`; state branch: `WindowEncoder` mean-pooled). The transformer sees action tokens only — no prefix tokens, no readout slice.
 - Block FFNs and window encoders use SwiGLU (gate/up/down linears); the conditioning path (`time_mlp`, block `adaLN`) uses SiLU MLPs (`CondMLP`) per DiT canon — the gate regression stays (near-)linear.
-- `sigreg_loss` stays in `networks.py` as a test-only seam (not in the update path) — no Barlow heads
+- Spectral-only: no non-spectral regularizers (no Sobolev/SIGReg/Barlow heads) — smoothness comes from DCT truncation structure, not auxiliary losses
 - `polyak` survives ONLY at the skrl boundary (`SACConfig`, `build_sac_skrl_config`, `sac.yaml`); no EMA/target nets in the sjfpo path
 - einx.id reshapes in collector/fpo_core/trainer (+dct_utils/baselines) must match torch at 1e-6 (`tests/test_einx_migration.py`); ground truth is current torch behavior
 - CUDA-default with CPU fallback, fp32-only (no autocast/bf16/`torch.compile`): `SJFPO_DEVICE=cuda|cpu|auto` overrides; storage (transitions/checkpoints/CSV) stays on CPU, batches move to device per update; LSP absent here — `py_compile` + suite is the gate

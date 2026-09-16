@@ -179,65 +179,6 @@ class RunningMeanStd(nn.Module):
         )
         return norm.clamp(-self.clip, self.clip)
 
-DEFAULT_KNOTS = 17
-t_cache: dict[int, tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = {}
-
-
-def get_quadrature(knots: int, device: torch.device):
-    """Cached (nodes t, weights*phi, phi) for trapezoid on [0, 3]."""
-    if knots not in t_cache:
-        t = torch.linspace(0, 3, knots, dtype=torch.float32)
-        dt = 3.0 / (knots - 1)
-        w = torch.full((knots,), 2 * dt, dtype=torch.float32)
-        w[0] = dt
-        w[-1] = dt
-        phi = torch.exp(-t.square() / 2.0)
-        t_cache[knots] = (t, w * phi, phi)
-    t, w_phi, phi = t_cache[knots]
-    if t.device != device:
-        t = t.to(device)
-        w_phi = w_phi.to(device)
-        phi = phi.to(device)
-    return t, w_phi, phi
-
-def sigreg_loss(
-    z: torch.Tensor,
-    *,
-    knots: int = 17,
-    num_proj: int = 1024,
-    projection: torch.Tensor | None = None,
-) -> torch.Tensor:
-    """Sketched Isotropic Gaussian Regularizer (Epps-Pulley CF test, arXiv 2603.19312).
-
-    Penalizes the empirical CF of random 1-D projections of *z* toward the
-    N(0,1) target. Replicates the official LeWorldModel SIGReg (lucas-maes/le-wm).
-
-    Args:
-        z: [N, T, D] (T=1 holds vector latents).
-        knots: Quadrature nodes on [0, 3].
-        num_proj: Random projections (sketch columns).
-        projection: Optional precomputed [D, num_proj] unit-norm matrix.
-    """
-    zp = z.permute(1, 0, 2)  # official le-wm (T, B=N, D) layout
-    T_count, B, D = zp.shape
-
-    t, w_phi, phi = get_quadrature(knots, zp.device)
-
-    if projection is None:
-        A = torch.randn(D, num_proj, device=zp.device, dtype=zp.dtype)
-        A = A / A.norm(dim=0, keepdim=True)
-    else:
-        A = projection
-
-    x_t = (zp @ A).unsqueeze(-1) * t  # (T, B, M, K)
-
-    cos_mean = x_t.cos().mean(1)
-    sin_mean = x_t.sin().mean(1)
-    err = (cos_mean - phi).square() + sin_mean.square()
-
-    statistic = (err @ w_phi) * B  # (T, M), trapezoid + N scaling
-    return statistic.mean()
-
 class SpectralEncoder(nn.Module):
     """Parameter-free DCT-II over the RAW obs window; keep K lowest bins.
 

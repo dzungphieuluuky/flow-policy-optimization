@@ -62,12 +62,10 @@ These are the paper's differentiation vs. SOTA (FAFM, FreqPolicy, FAST):
       (time-domain action head). Tests the "joint" claim.
 - [ ] A2 — pooling: `spectral_condition_mode=attention` vs. `mean`.
 - [ ] A3 — bandwidth: `top_p_spectral_tokens` in {0.1, 0.3, 0.5}.
-- [ ] A4 — smoothness baseline: FAFM-style Sobolev velocity loss
-      (see `sigreg_loss` seam in `networks.py`) vs. structural truncation.
-- [ ] A5 — trust region: ASPO vs. plain PPO-clip (validates SHINY claim 3).
-- [ ] A6 (cheap, CPU): `n_action_steps` / `executed_vs_predicted_ratio`
+- [ ] A4 — trust region: ASPO vs. plain PPO-clip (validates SHINY claim 3).
+- [ ] A5 (cheap, CPU): `n_action_steps` / `executed_vs_predicted_ratio`
       sensitivity {0.25, 0.5, 1.0}.
-- [ ] A7 — evidence breadth (pick ONE): promote a prototype env from
+- [ ] A6 — evidence breadth (pick ONE): promote a prototype env from
       `KNOWN_ENVS` into the matrix. `Ant-v5` = same locomotion family, zero
       code change. `AdroitHandDoor-v1` = dexterous manipulation, bridges
       toward the manipulation SOTA (FAFM/FreqPolicy) and strengthens both
@@ -83,7 +81,7 @@ path; do not hand-roll numbers.
 - [ ] Learning curves: mean +- CI over seeds, all 3 envs.
 - [ ] Smoothness figure: mean |action_{t+1} - action_t| and/or retained
       high-frequency energy per method. The smoothness claim needs a number.
-- [ ] Ablation bar chart (A1-A5 on Hopper).
+- [ ] Ablation bar chart (A1-A4 on Hopper).
 - [ ] Optional: per-bin rho diagnostic plot if Phase-1(b) was taken.
 - [ ] Regenerate notebooks: `.venv/bin/python scripts/build_notebook.py`,
       verify figures reproduce from checked-in CSVs.
@@ -123,7 +121,8 @@ Framing per venue (same evidence, different lead):
   + locomotion results; ablations A1-A3 carry the contribution.
 - NeurIPS/ICML: method story. Lead with flow-matching policy gradients,
   ASPO trust region for estimated likelihoods, chunk semi-MDP GAE; MuJoCo
-  is the testbed. Ablations A1, A4, A5 are the most important figures —
+  is the testbed. Ablations A1 (joint placement) and A4 (ASPO trust region)
+  are the most important figures —
   without them "spectral smoothing" reads as incremental to an ML
   audience.
 
