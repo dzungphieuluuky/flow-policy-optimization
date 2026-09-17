@@ -22,6 +22,7 @@ OBS_DIM, ACT_DIM = 4, 2
 INFO_KEYS = {
     "policy_loss",
     "value_loss",
+    "explained_var",
     "mean_log_ratio",
     "flow_rho_mean",
     "flow_rho_std",
@@ -73,12 +74,13 @@ def test_name_and_config_class_and_modules():
     assert policy.config_class is SJFPOConfig
     for m in (
         policy.actor,
-        policy.spectral,
         policy.critic,
         policy.obs_normalizer,
         policy.old_actor,
     ):
         assert isinstance(m, torch.nn.Module)
+    # State spectral path is a stateless full-DCT fn (K-filter is action-only).
+    assert callable(policy.spectral)
     # Snapshot matches live weights at init (unit ratios).
     for p_old, p_live in zip(policy.old_actor.parameters(), policy.actor.parameters()):
         assert torch.equal(p_old, p_live)
@@ -258,14 +260,14 @@ def test_generate_rollout_returns_forward_ready_batch():
 
 
 def test_optim_params_actor_critic_groups():
-    policy = SJFPOPolicy(make_config(optimizer_lr_critic=3e-4))
+    policy = SJFPOPolicy(make_config())
     groups = policy.get_optim_params()["params"]
     assert len(groups) == 3
     ema_ids = {id(p) for p in policy.ema_actor.parameters()}
     for g in groups:
         assert not any(id(p) in ema_ids for p in g["params"])
     opt = policy.config.get_optimizer_preset().build(groups)
-    assert [g["lr"] for g in opt.param_groups] == [1e-4, 1e-4, 3e-4]
+    assert [g["lr"] for g in opt.param_groups] == [1e-4, 1e-4, 1e-4]  # single LR
     assert [g["weight_decay"] for g in opt.param_groups][1] == 0.0
 
 

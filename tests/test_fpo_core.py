@@ -21,7 +21,7 @@ from sjfpo.configuration_sjfpo import SJFPOConfig  # noqa: E402
 
 _DEFAULTS = SJFPOConfig()
 from sjfpo.dct_utils import dct, idct  # noqa: E402
-from sjfpo.networks import SJFPOFlowModel, get_timestep_embedding  # noqa: E402
+from sjfpo.networks import SJFPOFlowModel, TimestepEmbedder  # noqa: E402
 from sjfpo.modeling_sjfpo import SJFPOPolicy  # noqa: E402 (velocity helpers under test)
 
 from sjfpo import fpo_core  # noqa: E402  (RED until implemented)
@@ -51,7 +51,7 @@ class VelocityMLP(nn.Module):
         )
 
     def forward(self, x_t: torch.Tensor, t, condition, state) -> torch.Tensor:
-        temb = get_timestep_embedding(t, dim=8)
+        temb = TimestepEmbedder(time_dim=8)(t)
         if temb.shape[0] != x_t.shape[0]:
             temb = temb.expand(x_t.shape[0], -1)
         z = self.net(torch.cat([x_t.reshape(x_t.shape[0], -1), temb], dim=-1))

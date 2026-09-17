@@ -62,7 +62,7 @@ These are the paper's differentiation vs. SOTA (FAFM, FreqPolicy, FAST):
 - [ ] A1 — spectral placement: joint (default) vs. action-only
       (`top_p_spectral_tokens=1.0` equiv / bypass obs DCT) vs. state-only
       (time-domain action head). Tests the "joint" claim.
-- [ ] A2 — pooling: `spectral_condition_mode=attention` vs. `mean`.
+- [x] A2 — pooling: decided mean-only; attention pooler deleted.
 - [ ] A3 — bandwidth: `top_p_spectral_tokens` in {0.1, 0.3, 0.5}.
 - [ ] A4 — trust region: ASPO vs. plain PPO-clip (validates SHINY claim 3).
 - [ ] A5 (cheap, CPU): `n_action_steps` / `executed_vs_predicted_ratio`

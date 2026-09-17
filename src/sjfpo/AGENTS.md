@@ -42,7 +42,7 @@ utils.py           23L — shared pure helpers (device/dtype/compile), no sjfpo 
 
 ## Conventions
 - Tensor order `B,N,H,K,D,action_dim,Ds` — comment dimensions at each transform (Google docstrings + inline `[B,H,action_dim]`)
-- Live condition is `[N,K,obs]` raw bins; pure-DiT conditioning through one adaLN vector `c = time + state + spectral` (`spectral_condition_mode="mean"`: `condition.mean(1)` via `cond_proj`; `"attention"`: `SpectralAttentionPool` query from time-embed; state branch: `WindowEncoder` mean-pooled). The transformer sees action tokens only — no prefix tokens, no readout slice.
+- Live condition is `[N,T,obs]` full state DCT bins; pure-DiT conditioning through one adaLN vector `c = time + state + spectral` (`condition.mean(1)` via `cond_proj`; state branch: `WindowEncoder` mean-pooled). The transformer sees action tokens only — no prefix tokens, no readout slice.
 - Block FFNs and window encoders use SwiGLU (gate/up/down linears); the conditioning path (`time_mlp`, block `adaLN`) uses SiLU MLPs (`CondMLP`) per DiT canon — the gate regression stays (near-)linear.
 - Spectral-only: no non-spectral regularizers (no Sobolev/SIGReg/Barlow heads) — smoothness comes from DCT truncation structure, not auxiliary losses
 - `polyak` survives ONLY at the skrl boundary (`SACConfig`, `build_sac_skrl_config`, `sac.yaml`); no EMA/target nets in the sjfpo path

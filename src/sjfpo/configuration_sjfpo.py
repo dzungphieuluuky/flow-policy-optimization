@@ -38,7 +38,6 @@ class SJFPOConfig(PreTrainedConfig):
     gae_lambda: float = 0.95
     epsilon_low: float = 0.2
     epsilon_high: float = 0.28
-    clip_range_vf: float = 10.0
     cfm_clamp: float = 20.0
     log_ratio_cap: float = 10.0
     min_timestep: float = 0.005
@@ -58,12 +57,9 @@ class SJFPOConfig(PreTrainedConfig):
     grad_clip_norm: float = 1.0
 
     top_p_spectral_tokens: float = 0.3
-    spectral_condition_mode: str = "attention"  # attention carries bin order via
-    # frequency encoding; mean is permutation-invariant over bins by construction.
     executed_vs_predicted_ratio: float = 0.5
 
     optimizer_lr: float = 1e-4
-    optimizer_lr_critic: float = 1e-4
     optimizer_weight_decay: float = 1e-4
     optimizer_8bit: bool = False
 
@@ -96,14 +92,9 @@ class SJFPOConfig(PreTrainedConfig):
             )
         if self.timestep_scale <= 0:
             raise ValueError(f"timestep_scale={self.timestep_scale} must be positive")
-        if self.spectral_condition_mode not in ("mean", "attention"):
+        if self.optimizer_lr <= 0:
             raise ValueError(
-                f"spectral_condition_mode={self.spectral_condition_mode!r} must be 'mean' or 'attention'"
-            )
-        if self.optimizer_lr <= 0 or self.optimizer_lr_critic <= 0:
-            raise ValueError(
-                "require optimizer_lr > 0 and optimizer_lr_critic > 0, got "
-                f"({self.optimizer_lr}, {self.optimizer_lr_critic})"
+                f"require optimizer_lr > 0, got ({self.optimizer_lr})"
             )
         if not 0.0 <= self.ema_decay < 1.0:
             raise ValueError(f"ema_decay={self.ema_decay} must satisfy 0 <= d < 1")

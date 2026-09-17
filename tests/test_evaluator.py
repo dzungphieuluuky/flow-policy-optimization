@@ -23,8 +23,8 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from sjfpo.configuration_sjfpo import SJFPOConfig
-from sjfpo.networks import SpectralEncoder
 from sjfpo.networks import SJFPOFlowModel
+from sjfpo.utils import encode_dct  # full state bins; K-filter is action-only
 from sjfpo.fpo_core import sample_action
 from sjfpo.evaluator import Evaluator
 
@@ -168,7 +168,7 @@ class TestPolicyKinds:
     def test_sjfpo_zero_noise(self):
         cfg = SJFPOConfig()
         policy_head = SJFPOFlowModel(4, 17, hidden_dim=cfg.hidden_dim)
-        spectral = SpectralEncoder(17, n_obs_steps=cfg.n_obs_steps)
+        spectral = encode_dct
 
         env = FakeEnv(obs_dim=17, action_dim=4)
         adapter = SJFPOPolicyAdapter(policy_head, spectral, cfg)
@@ -234,7 +234,7 @@ class TestBatchSizeOne:
     def test_b1_no_calibration_needed(self):
         cfg = SJFPOConfig()
         policy_head = SJFPOFlowModel(4, 17, hidden_dim=cfg.hidden_dim)
-        spectral = SpectralEncoder(17, n_obs_steps=cfg.n_obs_steps)
+        spectral = encode_dct
 
         env = FakeEnv(obs_dim=17, action_dim=4)
         adapter = SJFPOPolicyAdapter(policy_head, spectral, cfg)

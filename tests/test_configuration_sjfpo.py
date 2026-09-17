@@ -68,8 +68,8 @@ def test_validate_features_needs_state_and_action():
 
 
 def test_post_init_rejects_bad_optimizer_kl_ema():
-    with pytest.raises(ValueError, match="optimizer_lr_critic"):
-        SJFPOConfig(optimizer_lr_critic=0.0)
+    with pytest.raises(ValueError, match="optimizer_lr"):
+        SJFPOConfig(optimizer_lr=0.0)
     with pytest.raises(ValueError, match="ema_decay"):
         SJFPOConfig(ema_decay=1.0)
     with pytest.raises(ValueError, match="kl_coef"):

@@ -21,8 +21,8 @@ from lerobot.processor.converters import to_tensor
 from lerobot.utils.constants import ACTION, DONE, OBS_STATE, REWARD, TRUNCATED
 
 from sjfpo.configuration_sjfpo import SJFPOConfig
-from sjfpo.collector import bootstrap_action_lengths, collect_chunks, collect_chunks_vec
-from sjfpo.dct_utils import dct, idct, mask_actions
+from sjfpo.collector import collect_chunks, collect_chunks_vec
+from sjfpo.dct_utils import dct, idct
 from sjfpo.fpo_core import (
     compute_aspo_surrogate,
     compute_cfm_loss,
@@ -33,12 +33,11 @@ from sjfpo.fpo_core import (
     sample_timesteps,
 )
 from sjfpo.gae import compute_advantages
-from sjfpo.utils import autocast_context, to_numpy_1d, to_tensor_1d
+from sjfpo.utils import autocast_context, encode_dct, filter_low_freq, to_numpy_1d, to_tensor_1d
 from sjfpo.networks import (
     Critic,
     RunningMeanStd,
     SJFPOFlowModel,
-    SpectralEncoder,
 )
 from sjfpo.processor_sjfpo import make_sjfpo_pre_post_processors
 
@@ -66,16 +65,12 @@ class SJFPOPolicy(PreTrainedPolicy):
             action_dim,
             obs_dim,
             hidden_dim=config.hidden_dim,
-            spectral_condition_mode=config.spectral_condition_mode,
         )
-        self.spectral = SpectralEncoder(
-            obs_dim,
-            top_p_spectral_tokens=config.top_p_spectral_tokens,
-            n_obs_steps=config.n_obs_steps,
-        )
+        # State conditioning: full DCT bins (no K-filter). The K-lowest
+        # filter applies to the action path only (see forward()).
+        self.spectral = encode_dct
         self.critic = Critic(
             obs_dim,
-            action_dim,
             hidden_dim=config.hidden_dim,
             n_obs_steps=config.n_obs_steps,
         )
@@ -134,10 +129,11 @@ class SJFPOPolicy(PreTrainedPolicy):
         self.old_actor.requires_grad_(False)  # deepcopy inherits live grad flags
 
     def get_optim_params(self) -> dict:
-        """Actor (decay / no-decay) + critic groups (spectral/EMA never train).
+        """Actor (decay / no-decay) + critic groups (EMA never trains).
 
-        Zero-init layers (adaLN regressors incl. adaLN_out, final out) skip
-        weight decay so decay never fights the identity-at-init design.
+        Single LR for actor and critic (PPO standard). Zero-init layers
+        (adaLN regressors incl. adaLN_out, final out) skip weight decay so
+        decay never fights the identity-at-init design.
         """
         decay, no_decay = [], []
         for name, p in self.actor.named_parameters():
@@ -152,10 +148,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             "params": [
                 {"params": decay},
                 {"params": no_decay, "weight_decay": 0.0},
-                {
-                    "params": list(self.critic.parameters()),
-                    "lr": self.config.optimizer_lr_critic,
-                },
+                {"params": list(self.critic.parameters())},
             ]
         }
 
@@ -192,7 +185,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         top_k_spectral_action_tokens = max(1, round(cfg.top_p_spectral_tokens * cfg.action_horizon))
         action_dim = int(self.config.action_feature.shape[0])
         with torch.inference_mode(), autocast_context(states.device):
-            condition = self.spectral(states)
+            condition = self.spectral(states)  # full state bins; Ka filter is action-only
             shape = (states.shape[0], top_k_spectral_action_tokens, action_dim)
             eps = None if noise else torch.zeros(*shape, device=states.device)
             num_inference_steps = cfg.num_euler_steps if noise else cfg.num_inference_steps
@@ -286,9 +279,6 @@ class SJFPOPolicy(PreTrainedPolicy):
             )
         executed_n_action_steps = to_tensor(
             [int(c["executed_n_action_steps"]) for c in chunks], dtype=torch.long
-        )  # [N] CPU; compiled critic takes the device copy below
-        next_executed_n_action_steps = to_tensor(
-            bootstrap_action_lengths(chunks, cfg.action_horizon), dtype=torch.long
         )  # [N] CPU
         with torch.inference_mode():
             states = torch.stack([c[OBS_STATE] for c in chunks]).to(device)
@@ -297,19 +287,9 @@ class SJFPOPolicy(PreTrainedPolicy):
             )
             states_n = self.preprocessor({OBS_STATE: states})[OBS_STATE]
             next_states_n = self.preprocessor({OBS_STATE: next_states})[OBS_STATE]
-            a_exec = mask_actions(
-                torch.stack([c["action"] for c in chunks]).to(device), executed_n_action_steps, dim=1
-            )
-            a_next_exec = mask_actions(
-                torch.stack([c["next.action"] for c in chunks]).to(device),
-                next_executed_n_action_steps,
-                dim=1,
-            )
             with autocast_context(device):
-                values = self.critic(states_n, self.postprocessor({ACTION: a_exec})[ACTION], executed_n_action_steps.to(device)).float()
-                v_next_all = self.critic(
-                    next_states_n, self.postprocessor({ACTION: a_next_exec})[ACTION], next_executed_n_action_steps.to(device)
-                ).float()
+                values = self.critic(states_n).float()
+                v_next_all = self.critic(next_states_n).float()
             terminated = to_tensor([bool(c[DONE]) for c in chunks], dtype=torch.bool, device=device)
             next_values = torch.where(terminated, 0.0, v_next_all)
         all_rewards = np.concatenate([to_numpy_1d(c[REWARD]) for c in chunks])
@@ -352,8 +332,8 @@ class SJFPOPolicy(PreTrainedPolicy):
         Outputs:
             (loss, info_dict) where ``loss`` is scalar if ``reduction="mean"``
             or per-chunk [B] if ``reduction="none"``. ``info_dict`` holds detached
-            scalar summaries: ``policy_loss``, ``value_loss`` (kl_loss removed),
-            ``mean_log_ratio``, plus diagnostics (auto-logged to wandb as
+            scalar summaries: ``policy_loss``, ``value_loss``,
+            ``explained_var``, ``mean_log_ratio``, plus diagnostics (auto-logged to wandb as
             ``train/...``): ``flow_rho_mean/std``, ``flow_v_star_rms``, and
             ``cond_*`` RMS norms (``temb``, ``pooled``, ``c``, per-block mean
             ``gate_msa/mlp`` and ``1+scale``) — gates near 0 mean the spectrum
@@ -362,8 +342,6 @@ class SJFPOPolicy(PreTrainedPolicy):
         Gradient behavior:
             - ``actor`` and ``critic`` receive gradients.
             - ``old_actor`` (behavior snapshot) is frozen (``inference_mode``).
-            - ``ema_actor`` is frozen (``requires_grad_(False)``) — KL compares
-              ``v_new`` (live) to ``v_ema`` (EMA anchor) without EMA updates.
         """
         cfg = self.config
         states = to_tensor(batch[OBS_STATE], dtype=torch.float32)
@@ -394,10 +372,10 @@ class SJFPOPolicy(PreTrainedPolicy):
             a_exec = actions
         else:
             is_pad = to_tensor(is_pad, dtype=torch.bool, device=actions.device)
-            executed_n_action_steps = (~is_pad).sum(dim=1)  # [B] executed steps
             a_exec = actions * (~is_pad).to(actions.dtype).unsqueeze(-1)
         top_k_spectral_action_tokens = max(1, round(cfg.top_p_spectral_tokens * cfg.action_horizon))
-        spectral_action_tokens = dct(a_exec, dim=1)[:, :top_k_spectral_action_tokens, :]
+        # K-lowest filter: action only. State keeps full DCT bins via self.spectral.
+        spectral_action_tokens = filter_low_freq(dct(a_exec, dim=1), top_k_spectral_action_tokens, dim=1)
         condition = self.spectral(states)
         n = states.shape[0]
         tau = sample_timesteps(
@@ -433,9 +411,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             v_new = self.compute_predicted_velocity(
                 x_t_flat, tau_flat, cond_flat, state_flat
             ).float()
-        cond_stats = dict(self.actor.last_cond_stats) 
-        # KL/EMA anchor removed from pipeline per instruction.
-        kl_loss = torch.tensor(0.0)
+        cond_stats = dict(self.actor.last_cond_stats)
         v_star = self.compute_target_velocity(spectral_action_tokens, eps)
         l_old = compute_cfm_loss(
             v_old.reshape(n, num_mc, *flow_shape), v_star, reduce_mode="sample"
@@ -450,26 +426,22 @@ class SJFPOPolicy(PreTrainedPolicy):
         )
         policy_per_chunk = -psi.mean(dim=1)
         with autocast_context(states.device):
-            v_pred = self.critic(states, self.postprocessor({ACTION: a_exec})[ACTION], executed_n_action_steps).float()
+            v_pred = self.critic(states).float()
+        # PPO standard: regress RAW returns (no per-batch whitening; the
+        # target must not depend on its minibatch). 0.5 factor + clip at the
+        # policy epsilon, exactly as CleanRL's clipped value loss.
         returns_d = returns.to(v_pred.device)
-        # Per-batch standardization: the critic learns normalized-return space so
-        # the value loss scale stays stable across reward scales. old_values use
-        # the same batch stats so the PPO-style clip stays in the same space.
-        returns_mean = returns_d.mean()
-        returns_std = returns_d.std(unbiased=False).clamp_min(1e-8)
-        returns_norm = (returns_d - returns_mean) / returns_std
-        se = (v_pred - returns_norm).pow(2)
-        if "values" in batch:  # PPO-style clipped value loss against v_old
+        se = (v_pred - returns_d).pow(2)
+        if "values" in batch:  # clipped value loss against rollout v_old
             old_values = to_tensor(
                 batch["values"], dtype=torch.float32, device=v_pred.device
             )
-            old_values_norm = (old_values - returns_mean) / returns_std
-            v_clipped = old_values_norm + (v_pred - old_values_norm).clamp(
-                -cfg.clip_range_vf, cfg.clip_range_vf
+            v_clipped = old_values + (v_pred - old_values).clamp(
+                -cfg.epsilon_low, cfg.epsilon_low
             )
-            value_per_chunk = torch.max(se, (v_clipped - returns_norm).pow(2))
+            value_per_chunk = 0.5 * torch.max(se, (v_clipped - returns_d).pow(2))
         else:
-            value_per_chunk = se
+            value_per_chunk = 0.5 * se
         if reduction == "mean":
             policy_loss = policy_per_chunk.mean()
             value_loss = value_per_chunk.mean()
@@ -488,6 +460,11 @@ class SJFPOPolicy(PreTrainedPolicy):
             rho_mean = float(rho.detach().mean())
             rho_std = float(rho.detach().std(unbiased=False))
             v_star_rms = float(v_star.detach().pow(2).mean().sqrt())
+            # PPO standard critic health: 1 - Var(G - V) / Var(G).
+            returns_var = returns_d.detach().var(unbiased=False).clamp_min(1e-8)
+            explained_var = float(
+                1.0 - (returns_d.detach() - v_pred.detach()).var(unbiased=False) / returns_var
+            )
             # Phase 0 per-bin trust diagnostics (read-only): same elementwise
             # ratio math as the scalar path, unreduced over bins. The scalar
             # loss above is untouched; these stats only answer "is rho flat
@@ -522,6 +499,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         return loss, {
             "policy_loss": float(policy_per_chunk.mean().detach()),
             "value_loss": float(value_per_chunk.mean().detach()),
+            "explained_var": explained_var,
             "mean_log_ratio": mean_log_ratio,
             "flow_rho_mean": rho_mean,
             "flow_rho_std": rho_std,
