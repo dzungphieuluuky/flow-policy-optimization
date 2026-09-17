@@ -197,7 +197,7 @@ def test_get_timestep_embedding_sin_cos_values():
 def test_policy_flow_head_shape_scalar_t():
     nets = make_nets()
     torch.manual_seed(11)
-    policy = nets.SJFOPolicyModel(action_dim=7, obs_dim=OBS)
+    policy = nets.SJFPOFlowModel(action_dim=7, obs_dim=OBS)
     assert next(policy.parameters()).dtype == torch.float32
     x_t = torch.randn(32, CHUNK, 7)  # DCT-coefficient space per Scope
     condition = torch.randn(32, KS, OBS)  # raw spectral tokens [B, K, obs]
@@ -209,7 +209,7 @@ def test_policy_flow_head_shape_scalar_t():
 def test_policy_flow_head_tensor_t_and_grad():
     nets = make_nets()
     torch.manual_seed(12)
-    policy = nets.SJFOPolicyModel(action_dim=3, obs_dim=OBS)
+    policy = nets.SJFPOFlowModel(action_dim=3, obs_dim=OBS)
     x_t = torch.randn(8, CHUNK, 3)
     t = torch.rand(8)
     condition = torch.randn(8, KS, OBS)  # raw spectral tokens [B, K, obs]
@@ -227,7 +227,7 @@ def test_policy_flow_head_cond_from_spectral():
     """Plan: condition from SpectralEncoder outputs [B, K, obs] raw bins."""
     nets = make_nets()
     torch.manual_seed(18)
-    policy = nets.SJFOPolicyModel(action_dim=7, obs_dim=OBS)
+    policy = nets.SJFPOFlowModel(action_dim=7, obs_dim=OBS)
     fft = torch.randn(8, KS, OBS)
     v = policy(torch.randn(8, CHUNK, 7), 0.5, fft, torch.randn(8, STATE_T, OBS))
     assert v.shape == (8, CHUNK, 7)
@@ -271,7 +271,7 @@ def test_get_timestep_embedding_finite_256():
 def test_policy_dit_zero_velocity_at_init():
     nets = make_nets()
     torch.manual_seed(20)
-    policy = nets.SJFOPolicyModel(action_dim=3, obs_dim=OBS)
+    policy = nets.SJFPOFlowModel(action_dim=3, obs_dim=OBS)
     v = policy(
         torch.randn(4, CHUNK, 3),
         0.5,
@@ -350,7 +350,7 @@ def test_no_batchnorm_no_dropout_fp32_everywhere():
     modules = [
         nets.WindowEncoder(in_dim=9),
         nets.SpectralEncoder(obs_dim=9),
-        nets.SJFOPolicyModel(action_dim=7, obs_dim=9),
+        nets.SJFPOFlowModel(action_dim=7, obs_dim=9),
         nets.Critic(9, 7),
     ]
     for mod in modules:
@@ -437,7 +437,7 @@ def test_policy_bin_order_sensitive():
     so inter-bin relations are frequency-addressable."""
     nets = make_nets()
     torch.manual_seed(32)
-    policy = nets.SJFOPolicyModel(action_dim=3, obs_dim=OBS)
+    policy = nets.SJFPOFlowModel(action_dim=3, obs_dim=OBS)
     # Wake the zero-init (adaLN gates + final out) so inputs matter.
     with torch.no_grad():
         for block in policy.blocks:
@@ -459,7 +459,7 @@ def test_policy_reads_raw_state_prefix():
     """DiT output changes with the raw state window (prefix-token lock)."""
     nets = make_nets()
     torch.manual_seed(30)
-    policy = nets.SJFOPolicyModel(action_dim=3, obs_dim=OBS)
+    policy = nets.SJFPOFlowModel(action_dim=3, obs_dim=OBS)
     # Wake the zero-init (adaLN gates + final out) so inputs matter.
     with torch.no_grad():
         for block in policy.blocks:
@@ -478,7 +478,7 @@ def test_policy_forward_truncated_coeff_space():
     """DiT denoises Ka=top-p rows; zero-pad restores full H (shape lock)."""
     nets = make_nets()
     torch.manual_seed(31)
-    policy = nets.SJFOPolicyModel(action_dim=3, obs_dim=OBS)
+    policy = nets.SJFPOFlowModel(action_dim=3, obs_dim=OBS)
     ka = max(1, round(0.3 * CHUNK))  # 5
     v = policy(
         torch.randn(4, ka, 3),

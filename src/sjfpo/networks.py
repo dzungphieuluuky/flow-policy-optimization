@@ -1,6 +1,4 @@
-"""Networks: state encoders, spectral tokens, flow heads, critic.
-
-SwiGLU activations everywhere; no BatchNorm / Dropout / batch-stat norms.
+"""Networks: window encoders (for robot state and action), spectral tokens, flow heads, critic.
 
 Tensor conventions: B batch, N chunk batch, T obs window, H action_horizon,
 K spectral tokens, D hidden dim, action_dim env action dim. Params are fp32;
@@ -69,14 +67,15 @@ class PositionalEncoding(nn.Module):
         pos = torch.arange(t, dtype=torch.float32, device=x.device).unsqueeze(1)
         half = dim // 2
         freqs = torch.exp(
-            torch.arange(half, dtype=torch.float32, device=x.device)
-            * -(math.log(10000.0) / max(half - 1, 1))
+            -math.log(10000.0)
+            * torch.arange(half, device=x.device, dtype=torch.float32)
+            / half
         )
         ang = pos * freqs
         pe = torch.cat([ang.sin(), ang.cos()], dim=-1)
         if pe.shape[-1] < dim:  # odd dim: pad the missing column with zeros
             pe = torch.nn.functional.pad(pe, (0, dim - pe.shape[-1]))
-        return x + pe[:, :dim]
+        return x + pe[:, :dim].to(dtype=x.dtype)
 
 class WindowEncoder(nn.Module):
     """Two pre-norm residual blocks over a time window -> Z[B, L, hidden_dim].
@@ -100,17 +99,16 @@ class WindowEncoder(nn.Module):
         n_obs_steps = resolve_config_value("n_obs_steps", n_obs_steps)
         hidden_dim = resolve_config_value("hidden_dim", hidden_dim)
         mlp_ratio = float(resolve_config_value("dit_mlp_ratio", mlp_ratio))
-        mlp_hidden = int(hidden_dim * mlp_ratio)
         self.frame_proj = nn.Linear(in_dim, hidden_dim)
         self.pos_encoding = PositionalEncoding()
         self.norm1 = nn.RMSNorm(hidden_dim, eps=1e-6)
         self.attn1 = nn.MultiheadAttention(hidden_dim, n_heads, batch_first=True)
         self.norm2 = nn.RMSNorm(hidden_dim, eps=1e-6)
-        self.swiglu1 = SwiGLU(hidden_dim, mlp_hidden, hidden_dim)
+        self.linear1 = nn.Linear(hidden_dim, hidden_dim)
         self.norm3 = nn.RMSNorm(hidden_dim, eps=1e-6)
         self.attn2 = nn.MultiheadAttention(hidden_dim, n_heads, batch_first=True)
         self.norm4 = nn.RMSNorm(hidden_dim, eps=1e-6)
-        self.swiglu2 = SwiGLU(hidden_dim, mlp_hidden, hidden_dim)
+        self.linear2 = nn.Linear(hidden_dim, hidden_dim)
 
     def forward(self, x: torch.Tensor, executed_n_action_steps=None) -> torch.Tensor:
         """[B, L, in_dim] -> [B, L, hidden_dim]; tails masked as keys when given."""
@@ -130,11 +128,11 @@ class WindowEncoder(nn.Module):
         n = self.norm1(h)
         attn, _ = self.attn1(n, n, n, key_padding_mask=key_mask)
         h = h + attn
-        h = h + self.swiglu1(self.norm2(h))
+        h = h + self.linear1(self.norm2(h))
         n = self.norm3(h)
         attn, _ = self.attn2(n, n, n, key_padding_mask=key_mask)
         h = h + attn
-        h = h + self.swiglu2(self.norm4(h))
+        h = h + self.linear2(self.norm4(h))
         return h
 
 class RunningMeanStd(nn.Module):
@@ -179,6 +177,8 @@ class RunningMeanStd(nn.Module):
         )
         return norm.clamp(-self.clip, self.clip)
 
+# thay thế cái class module này bằng 1 hàm đơn giản thôi, input gồm obs và mask là được, dct cho obs xong thì nhân trực tiếp với mask
+# để zero các token vượt quá top k. Chỉ áp dụng cho action, không áp dụng cho robot state
 class SpectralEncoder(nn.Module):
     """Parameter-free DCT-II over the RAW obs window; keep K lowest bins.
 
@@ -194,8 +194,6 @@ class SpectralEncoder(nn.Module):
         n_obs_steps: int | None = None,
     ):
         super().__init__()
-        if obs_dim <= 0:
-            raise ValueError(f"obs_dim={obs_dim} must be positive")
         self.obs_dim = obs_dim
         t = int(resolve_config_value("n_obs_steps", n_obs_steps))
         p = float(resolve_config_value("top_p_spectral_tokens", top_p_spectral_tokens))
@@ -223,8 +221,6 @@ class SpectralAttentionPool(nn.Module):
         n_heads: int | None = None,
     ):
         super().__init__()
-        if obs_dim <= 0:
-            raise ValueError(f"obs_dim={obs_dim} must be positive")
         hidden_dim = int(resolve_config_value("hidden_dim", hidden_dim))
         time_dim = int(resolve_config_value("dit_time_dim", time_dim))
         n_heads = int(resolve_config_value("dit_heads", n_heads))
@@ -241,8 +237,10 @@ class SpectralAttentionPool(nn.Module):
         """([B, K, obs_dim], [B, time_dim]) -> (pooled [B, D], weights [B, K])."""
         keys = self.key_proj(self.bin_encoding(condition))
         query = self.query_proj(timesteps_embedding).unsqueeze(1)
+        kv_norm = self.norm_kv(keys)
+        query_norm = self.norm_q(query)
         pooled, weights = self.attn(
-            self.norm_q(query), self.norm_kv(keys), self.norm_kv(keys)
+            query_norm, kv_norm, kv_norm
         )
         return pooled.squeeze(1), weights.squeeze(1)
 
@@ -251,24 +249,45 @@ def modulate(x: torch.Tensor, shift: torch.Tensor, scale: torch.Tensor) -> torch
     return x * (1.0 + scale) + shift
 
 
-def get_timestep_embedding(
-    t, dim: int = 256, scale: float | None = None
-) -> torch.Tensor:
-    """Sinusoidal embedding with inverse-frequency ladder (finite in fp32).
+class TimestepEmbedder(nn.Module):
+    def __init__(
+        self,
+        time_dim: int,
+        scale: float = None,
+    ):
+        super().__init__()
+        assert time_dim % 2 == 0
+        self.time_dim = time_dim
+        self.scale = scale
 
-    The ladder spans DDPM integer-step frequencies, so unit-interval flow
-    time is scaled up first (default ``timestep_scale``); unscaled, every
-    channel would sit at angle <= 1 and nearby times stay indistinguishable.
-    """
-    scale = float(resolve_config_value("timestep_scale", scale))
-    t = torch.as_tensor(t, dtype=torch.float32) * scale
-    half = dim // 2
-    freqs = torch.exp(
-        torch.arange(half, dtype=torch.float32, device=t.device)
-        * -(math.log(10000.0) / max(half - 1, 1))
-    )
-    ang = t.unsqueeze(-1) * freqs
-    return torch.cat([ang.sin(), ang.cos()], dim=-1)
+    def forward(self, t: torch.Tensor) -> torch.Tensor:
+        """Compute a sinusoidal embedding for continuous timestep values.
+
+        ``t`` is scaled by ``timestep_scale`` before applying the sinusoidal
+        frequency ladder. This is useful when ``t`` is normalized to [0, 1]
+        but the model was designed around DDPM-like timestep magnitudes.
+
+        Returns an embedding of shape ``t.shape + (dim,)``.
+        """
+        scale = float(resolve_config_value("timestep_scale", self.scale))
+        t = torch.as_tensor(t, dtype=torch.float32) * scale
+
+        half = self.time_dim // 2
+        freqs = torch.exp(
+            -math.log(10000.0)
+            * torch.arange(half, dtype=torch.float32, device=t.device)
+            / max(half - 1, 1)
+        )
+        angles = t.unsqueeze(-1) * freqs
+        emb = torch.cat([angles.sin(), angles.cos()], dim=-1)
+        if self.time_dim % 2:
+            emb = torch.nn.functional.pad(emb, (0, 1))
+        return emb
+
+
+def get_timestep_embedding(t, dim: int = 256, scale: float | None = None):
+    """Functional entry point sharing the flow model's timestep embedding."""
+    return TimestepEmbedder(time_dim=dim, scale=scale)(t)
 
 
 class DiTBlock(nn.Module):
@@ -280,11 +299,10 @@ class DiTBlock(nn.Module):
 
     def __init__(self, hidden_dim: int, n_heads: int, mlp_ratio: float):
         super().__init__()
-        self.norm1 = nn.LayerNorm(hidden_dim, elementwise_affine=False, eps=1e-6)
+        self.norm1 = nn.RMSNorm(hidden_dim)
         self.attn = nn.MultiheadAttention(hidden_dim, n_heads, batch_first=True)
-        self.norm2 = nn.LayerNorm(hidden_dim, elementwise_affine=False, eps=1e-6)
-        mlp_hidden = int(hidden_dim * mlp_ratio)
-        self.mlp = SwiGLU(hidden_dim, mlp_hidden, hidden_dim)
+        self.norm2 = nn.RMSNorm(hidden_dim)
+        self.mlp = nn.Linear(hidden_dim, hidden_dim)
         self.adaLN = CondMLP(hidden_dim, hidden_dim, 6 * hidden_dim)
         nn.init.constant_(self.adaLN.fc2.weight, 0.0)
         nn.init.constant_(self.adaLN.fc2.bias, 0.0)
@@ -299,8 +317,6 @@ class DiTBlock(nn.Module):
         attn, _ = self.attn(h, h, h)
         x = x + gate_msa * attn
         out = x + gate_mlp * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
-        # Detached tensor stash (float() conversion happens in eager policy code,
-        # never inside this possibly-compiled region).
         self.last_gate_norms = {
             "gate_msa": gate_msa.detach().pow(2).mean().sqrt(),
             "gate_mlp": gate_mlp.detach().pow(2).mean().sqrt(),
@@ -311,25 +327,52 @@ class DiTBlock(nn.Module):
 
 
 class CrossAttentionBlock(nn.Module):
-    """Pre-norm cross-attention fusion: x <- x + Attn(norm(x), norm(kv)) + MLP."""
+    """Pre-norm cross-attention fusion.
 
-    def __init__(self, hidden_dim: int, n_heads: int, mlp_ratio: float = 4.0):
+    x <- x + Attn(norm(x), norm(kv))
+         + MLP(norm(x))
+    """
+
+    def __init__(
+        self,
+        hidden_dim: int,
+        n_heads: int,
+        mlp_ratio: float = 4.0,
+    ):
         super().__init__()
+
         self.norm_q = nn.RMSNorm(hidden_dim)
         self.norm_kv = nn.RMSNorm(hidden_dim)
-        self.attn = nn.MultiheadAttention(hidden_dim, n_heads, batch_first=True)
+
+        self.attn = nn.MultiheadAttention(
+            embed_dim=hidden_dim,
+            num_heads=n_heads,
+            batch_first=True,
+        )
+
         self.norm_mlp = nn.RMSNorm(hidden_dim)
+
         mlp_hidden = int(hidden_dim * mlp_ratio)
-        self.mlp = SwiGLU(hidden_dim, mlp_hidden, hidden_dim)
+        self.mlp = SwiGLU(
+            hidden_dim,
+            mlp_hidden,
+            hidden_dim,
+        )
 
-    def forward(self, x: torch.Tensor, kv: torch.Tensor) -> torch.Tensor:
-        """([B, Hq, D], [B, Hkv, D]) -> [B, Hq, D]."""
-        attn, _ = self.attn(self.norm_q(x), self.norm_kv(kv), self.norm_kv(kv))
+    def forward(
+        self,
+        x: torch.Tensor,
+        kv: torch.Tensor,
+    ) -> torch.Tensor:
+        q = self.norm_q(x)
+        kv = self.norm_kv(kv)
+        attn, _ = self.attn(q, kv, kv, need_weights=False)
         x = x + attn
-        return x + self.mlp(self.norm_mlp(x))
+        x = x + self.mlp(self.norm_mlp(x))
+        return x
 
 
-class SJFOPolicyModel(nn.Module):
+class SJFPOFlowModel(nn.Module):
     """DiT velocity model over noisy-action tokens, conditioned via adaLN.
 
     Pure-DiT conditioning: a single vector ``c = time + state + spectral``
@@ -350,8 +393,6 @@ class SJFOPolicyModel(nn.Module):
         spectral_condition_mode: str | None = None,
     ):
         super().__init__()
-        if obs_dim <= 0:
-            raise ValueError(f"obs_dim={obs_dim} must be positive")
         hidden_dim = int(resolve_config_value("hidden_dim", hidden_dim))
         dit_depth = int(resolve_config_value("dit_depth", dit_depth))
         dit_heads = int(resolve_config_value("dit_heads", dit_heads))
@@ -365,10 +406,9 @@ class SJFOPolicyModel(nn.Module):
             )
         self.spectral_condition_mode = spectral_condition_mode
         self.time_dim = dit_time_dim
+        self.timestep_embedder = TimestepEmbedder(time_dim=self.time_dim)
         self.in_proj = nn.Linear(action_dim, hidden_dim)
-        self.bin_encoding = PositionalEncoding()  # bin index = frequency order,
-        # mirroring SpectralAttentionPool: lets self-attention address bins by
-        # frequency ("the bin below me"), not by content magnitude alone.
+        self.bin_encoding = PositionalEncoding()
         self.state_encoder = WindowEncoder(obs_dim, hidden_dim=hidden_dim)
         self.time_mlp = CondMLP(dit_time_dim, 4 * hidden_dim, hidden_dim)
         self.cond_proj = nn.Linear(obs_dim, hidden_dim)
@@ -385,7 +425,7 @@ class SJFOPolicyModel(nn.Module):
         self.blocks = nn.ModuleList(
             DiTBlock(hidden_dim, dit_heads, dit_mlp_ratio) for _ in range(dit_depth)
         )
-        self.norm_out = nn.LayerNorm(hidden_dim, elementwise_affine=False, eps=1e-6)
+        self.norm_out = nn.RMSNorm(hidden_dim)
         self.adaLN_out = nn.Linear(hidden_dim, 2 * hidden_dim)
         nn.init.constant_(self.adaLN_out.weight, 0.0)
         nn.init.constant_(self.adaLN_out.bias, 0.0)
@@ -393,7 +433,7 @@ class SJFOPolicyModel(nn.Module):
         # Zero final layer: an untrained policy predicts ~zero velocity.
         nn.init.constant_(self.out.weight, 0.0)
         nn.init.constant_(self.out.bias, 0.0)
-        self.bin_norm = nn.LayerNorm(obs_dim)  # tame heavy-tailed DCT bins pre-pool
+        self.bin_norm = nn.RMSNorm(obs_dim)
         self.last_cond_stats: dict[str, torch.Tensor] | None = None
 
     def forward(
@@ -402,7 +442,7 @@ class SJFOPolicyModel(nn.Module):
         """Predict velocity: ([B, Ka, action_dim], t, [B, K, obs_dim], [B, T, obs_dim])
         -> [B, Ka, action_dim]. Ka = top-p low-frequency rows (<= H)."""
         condition = self.bin_norm(condition)
-        timesteps_embedding = get_timestep_embedding(t, dim=self.time_dim).to(
+        timesteps_embedding = self.timestep_embedder(t).to(
             device=x_t.device, dtype=x_t.dtype
         )
         if timesteps_embedding.dim() == 1:
@@ -417,7 +457,6 @@ class SJFOPolicyModel(nn.Module):
         h = self.bin_encoding(self.in_proj(x_t))
         for block in self.blocks:
             h = block(h, c)
-        # RMS diagnostics stash (detached; float() conversion in eager caller).
         self.last_cond_stats = {
             "temb": timesteps_embedding.detach().pow(2).mean().sqrt(),
             "pooled": branch.detach().pow(2).mean().sqrt(),
@@ -452,9 +491,9 @@ class Critic(nn.Module):
     ):
         super().__init__()
         if obs_dim <= 0:
-            raise ValueError(f"obs_dim={obs_dim} must be positive")
+            raise ValueError("obs_dim must be positive")
         if action_dim <= 0:
-            raise ValueError(f"action_dim={action_dim} must be positive (env action dim)")
+            raise ValueError("action_dim must be positive")
         hidden_dim = resolve_config_value("hidden_dim", hidden_dim)
         self.state_encoder = WindowEncoder(
             obs_dim, n_obs_steps=n_obs_steps, hidden_dim=hidden_dim
@@ -469,30 +508,39 @@ class Critic(nn.Module):
         self.out = nn.Linear(hidden_dim, 1)
 
     def forward(
-        self, states: torch.Tensor, a: torch.Tensor, executed_n_action_steps=None
+        self,
+        states: torch.Tensor,
+        a: torch.Tensor,
+        executed_n_action_steps=None,
     ) -> torch.Tensor:
-        """([B, T, obs_dim], [B, H, action_dim]) -> V[B]; tails dropped when given."""
+        if executed_n_action_steps is None:
+            executed_n_action_steps = torch.full(
+                (a.shape[0],), a.shape[1], dtype=torch.long, device=a.device
+            )
+        else:
+            executed_n_action_steps = torch.as_tensor(
+                executed_n_action_steps, device=a.device
+            )
+        if bool((executed_n_action_steps <= 0).any()):
+            raise ValueError("every chunk must have >= 1 executed step")
         z = self.state_encoder(states)
         h = self.action_encoder(a, executed_n_action_steps)
+
         for block in self.blocks:
             h = block(h, z)
-        if executed_n_action_steps is None:
-            pooled = h.mean(dim=1)
-        else:
-            if not isinstance(executed_n_action_steps, torch.Tensor):
-                executed_n_action_steps = torch.as_tensor(
-                    list(executed_n_action_steps), device=h.device
-                )
-            n_real = executed_n_action_steps.to(h.device)
-            if bool((n_real <= 0).any()):
-                raise ValueError("every chunk must have >= 1 executed step")
-            exec_mask = (
-                (
-                    torch.arange(h.shape[1], device=h.device).unsqueeze(0)
-                    < n_real.unsqueeze(1)
-                )
-                .to(h.dtype)
-                .unsqueeze(-1)
-            )
-            pooled = (h * exec_mask).sum(dim=1) / exec_mask.sum(dim=1)
+
+        steps = torch.arange(
+            h.shape[1],
+            device=h.device,
+            dtype=executed_n_action_steps.dtype,
+        )
+
+        mask = (
+            steps[None, :] < executed_n_action_steps[:, None]
+        ).unsqueeze(-1)
+
+        mask = mask.to(h.dtype)
+
+        pooled = (h * mask).sum(dim=1) / mask.sum(dim=1).clamp_min(1.0)
+
         return self.out(pooled).squeeze(-1)

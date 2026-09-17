@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from sjfpo.configuration_sjfpo import SJFPOConfig
 from sjfpo.networks import SpectralEncoder
-from sjfpo.networks import SJFOPolicyModel
+from sjfpo.networks import SJFPOFlowModel
 from sjfpo.fpo_core import sample_action
 from sjfpo.evaluator import Evaluator
 
@@ -167,7 +167,7 @@ class TestPolicyKinds:
 
     def test_sjfpo_zero_noise(self):
         cfg = SJFPOConfig()
-        policy_head = SJFOPolicyModel(4, 17, hidden_dim=cfg.hidden_dim)
+        policy_head = SJFPOFlowModel(4, 17, hidden_dim=cfg.hidden_dim)
         spectral = SpectralEncoder(17, n_obs_steps=cfg.n_obs_steps)
 
         env = FakeEnv(obs_dim=17, action_dim=4)
@@ -233,7 +233,7 @@ class TestDeterminism:
 class TestBatchSizeOne:
     def test_b1_no_calibration_needed(self):
         cfg = SJFPOConfig()
-        policy_head = SJFOPolicyModel(4, 17, hidden_dim=cfg.hidden_dim)
+        policy_head = SJFPOFlowModel(4, 17, hidden_dim=cfg.hidden_dim)
         spectral = SpectralEncoder(17, n_obs_steps=cfg.n_obs_steps)
 
         env = FakeEnv(obs_dim=17, action_dim=4)

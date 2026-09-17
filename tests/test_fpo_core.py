@@ -21,7 +21,7 @@ from sjfpo.configuration_sjfpo import SJFPOConfig  # noqa: E402
 
 _DEFAULTS = SJFPOConfig()
 from sjfpo.dct_utils import dct, idct  # noqa: E402
-from sjfpo.networks import SJFOPolicyModel, get_timestep_embedding  # noqa: E402
+from sjfpo.networks import SJFPOFlowModel, get_timestep_embedding  # noqa: E402
 from sjfpo.modeling_sjfpo import SJFPOPolicy  # noqa: E402 (velocity helpers under test)
 
 from sjfpo import fpo_core  # noqa: E402  (RED until implemented)
@@ -377,7 +377,7 @@ def test_euler_sampler_grid_update_and_zero_noise():
 
 def test_space_consistency_dct_pipeline():
     torch.manual_seed(51)
-    policy = SJFOPolicyModel(action_dim=3, obs_dim=4)
+    policy = SJFPOFlowModel(action_dim=3, obs_dim=4)
     k = max(1, round(_DEFAULTS.top_p_spectral_tokens * 16))
     condition = torch.zeros(4, k, 4)
     with torch.no_grad():
