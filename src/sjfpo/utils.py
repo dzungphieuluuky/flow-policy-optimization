@@ -22,12 +22,7 @@ def resolve_device() -> torch.device:
     return torch.device("cpu")
 
 
-def is_bf16_available() -> bool:
-    """BF16 matmul support on the current CUDA device (False on CPU-only)."""
-    try:
-        return bool(torch.cuda.is_available() and torch.cuda.is_bf16_supported())
-    except Exception:
-        return False
+from accelerate.utils import is_bf16_available  # accelerate library detection
 
 
 def resolve_compute_dtype() -> torch.dtype:
@@ -79,6 +74,9 @@ def maybe_compile(module: torch.nn.Module) -> torch.nn.Module:
     """
     if os.environ.get("SJFPO_COMPILE", "1") == "0":
         return module
+    # Guarded scalar raises (e.g. Critic's executed-step check) stay in the
+    # compiled graph instead of forcing an eager fallback for the whole module.
+    torch._dynamo.config.capture_scalar_outputs = True
     return torch.compile(module)
 
 
