@@ -148,6 +148,14 @@ def train_sjfpo_run(
     # Real env bounds (not ±1): InvertedPendulum ±3, Pusher ±2, Humanoid ±0.4.
     action_low = np.atleast_1d(np.asarray(env.action_space.low, dtype=np.float32))
     action_high = np.atleast_1d(np.asarray(env.action_space.high, dtype=np.float32))
+    train_env = env
+    if cfg.num_envs > 1 and env_name != "unknown":
+        # Keep evaluation single-env; fixtures without a registered id stay local.
+        import gymnasium as gym
+
+        train_env = gym.vector.AsyncVectorEnv(
+            [lambda: gym.make(env_name) for _ in range(cfg.num_envs)]
+        )
     policy = build_policy(obs_dim, action_dim, cfg, device=device,
                            action_low=action_low, action_high=action_high)
     optimizer = build_optimizer(policy, cfg)
@@ -185,7 +193,7 @@ def train_sjfpo_run(
         while global_step < total_steps:
             steps_to_go = total_steps - global_step
             collect_steps = min(cfg.chunks_per_update * cfg.action_horizon, steps_to_go)
-            batch = policy.generate_rollout(env, collect_steps,
+            batch = policy.generate_rollout(train_env, collect_steps,
                                               action_low=action_low, action_high=action_high)
             global_step += int((~batch["action_is_pad"]).sum())
             policy.train()
@@ -320,6 +328,8 @@ def train_sjfpo_run(
                 {"timing/fps": fps, "timing/elapsed_s": elapsed}, step=global_step
             )
     finally:
+        if train_env is not env:
+            train_env.close()
         if wandb_enabled:
             finish_run(exit_code=1 if diverged else 0)
 

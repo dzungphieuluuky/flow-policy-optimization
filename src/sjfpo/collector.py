@@ -266,7 +266,7 @@ def collect_chunks_vec(
         prev_done = ["continue"] * n
         executed_total = [0] * n
         awaiting = [False] * n  # done last step: rebuild window from reset obs
-        records: list[Transition] = []
+        records: list[list[Transition]] = [[] for _ in range(n)]
         while any(e < target for e in executed_total):
             need = [
                 i
@@ -334,7 +334,7 @@ def collect_chunks_vec(
                     if prev[i] is not None and prev_done[i] == "continue":
                         prev[i]["next.action"] = record["action"].clone()
                     executed_total[i] += n_exec
-                    records.append(record)
+                    records[i].append(record)
                     prev[i], prev_done[i] = record, done_kind
                     cur[i] = None
                     if done[i]:
@@ -349,7 +349,9 @@ def collect_chunks_vec(
             for k, i in enumerate(tails):
                 _, scaled_tail, _ = scale_and_clip_chunk(props[k], low, high)
                 prev[i]["next.action"] = scaled_tail
-        return records
+                # Bootstrap the budget cut, but never recurse into another env's GAE.
+                prev[i][TRUNCATED] = torch.tensor(True)
+        return [record for trajectory in records for record in trajectory]
     except Exception:
         flush_on_collection_error(on_error_flush)
         raise

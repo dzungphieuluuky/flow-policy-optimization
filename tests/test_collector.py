@@ -467,6 +467,17 @@ def test_collect_chunks_vec_budget_and_shapes():
         assert len(r["next.reward"]) == int(r["executed_n_action_steps"])
 
 
+def test_collect_chunks_vec_keeps_trajectories_separate_for_gae():
+    records = _vec_records(total=64)
+    assert [bool(r["next.truncated"]) for r in records] == [False, True, False, True]
+    for start in (0, 2):
+        assert torch.equal(
+            records[start]["next.observation.state"],
+            records[start + 1]["observation.state"],
+        )
+        assert torch.equal(records[start]["next.action"], records[start + 1]["action"])
+
+
 def test_collect_chunks_vec_deterministic_under_seed():
     """Same seed + same policy draws -> identical record streams."""
     r1 = _vec_records(seed=7)
