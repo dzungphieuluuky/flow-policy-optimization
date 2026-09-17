@@ -68,7 +68,6 @@ def build_policy(
         n_action_steps=max(1, round(cfg.executed_vs_predicted_ratio * cfg.action_horizon)),
     )
     policy = SJFPOPolicy(policy_cfg).to(device)
-    policy = policy.to(dtype=torch.bfloat16)
     # Spectral is parameter-free, normalizer is buffers-only; the snapshot
     # deep-copies the compiled actor so l_old stays compiled too.
     policy.actor = maybe_compile(policy.actor)

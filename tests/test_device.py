@@ -35,6 +35,23 @@ class TestResolveDevice:
         assert resolve_device() == torch.device("cpu")
 
 
+def test_build_policy_cpu_fp32_inference(monkeypatch):
+    from sjfpo.configuration_sjfpo import SJFPOConfig
+    from sjfpo.networks import SJFPOFlowModel
+    from sjfpo.train_sjfpo import build_policy
+
+    monkeypatch.setenv("SJFPO_COMPILE", "0")
+    policy = build_policy(4, 2, SJFPOConfig(), device="cpu")
+    assert isinstance(policy.actor, SJFPOFlowModel)
+    assert all(p.dtype == torch.float32 for p in policy.parameters())
+    assert policy.obs_normalizer.mean.dtype == torch.float32
+    actions = policy.predict_action_chunk(
+        {"observation.state": torch.randn(1, 16, 4)}
+    )
+    assert actions.shape == (1, 16, 2)
+    assert torch.isfinite(actions).all()
+
+
 class TestPolicyDevice:
     def policy(self, **kw):
         from lerobot.configs.types import FeatureType, PolicyFeature
