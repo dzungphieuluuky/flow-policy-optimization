@@ -49,26 +49,22 @@ region itself is asymmetric and piecewise (`fpo_core.compute_aspo_surrogate`):
 This is a trust region designed for *noisy estimated* likelihoods rather than
 PPO's exact Gaussian densities — a different problem, hence different math.
 
-## 4. Parameter-free spectral state conditioning
+## 4. Fused spectral state conditioning
 
-The observation window is DCT-II transformed over time and the `K` lowest raw
-bins become conditioning tokens (`SpectralEncoder`: no weights, no projector,
-no normalization). State, spectral, and time branches sum into a single adaLN
-vector `c = time + state + spectral` (pure-DiT: the transformer sees action
-tokens only, no prefix tokens). Spectral pooling into `c` is order-aware
-(`SpectralAttentionPool`, queried by the flow timestep) instead of a bare mean,
-and action-bin tokens carry matching frequency-slot codes, so inter-bin
-attention mixes by frequency address rather than content magnitude.
-Frequency-domain memory with near-zero parameters — no RNN, no longer
+The observation window and its DCT-II bins over time fuse externally in
+`StateConditioner`: state tokens query spectral bins (Flamingo-style
+cross-attn, residual, mean-pool) into one `[B,D]` vector. The flow head only
+sees `(x_t, t, condition)`; state, spectral, and time sum into a single adaLN
+vector `c = time + condition` (pure-DiT: the transformer sees action tokens
+only, no prefix tokens). Bin order rides sinusoidal codes, so attention
+weights index frequency. Frequency-domain memory with no RNN, no longer
 Transformer context.
 
-## 5. Chained `next.action` SARSA bootstrapping
+## 5. Chained `next.action` bootstrapping
 
 Every `Transition` carries the chunk proposed at the *next* replan, so the
-`V(s,a)` critic bootstraps `V(s′,a′)` from behavior proposals, SARSA-style at
-chunk scale (`bootstrap_action_lengths` masks to the next chunk's executed
-length; truncated/tail proposals stay full). It reuses computation the
-rollout already did — no extra policy queries for targets.
+`V(s)` critic bootstraps `V(s′)` on the stored next window. It reuses
+computation the rollout already did — no extra policy queries for targets.
 
 ## Borrowed machinery (not claimed as new)
 

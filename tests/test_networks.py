@@ -1,8 +1,8 @@
 """Unit tests for src/sjfpo/networks.py.
 
 Conventions under test: fp32 params; SwiGLU; no BatchNorm/Dropout;
-state spectral path needs no calibration (full DCT bins, no batch stats);
-flow heads predict velocity in DCT space with sinusoidal time embedding.
+StateConditioner fuses raw states + DCT bins with no calibration;
+flow heads take a pre-fused [B, D] vector with sinusoidal time embedding.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ _DEFAULTS = SJFPOConfig()
 
 STATE_T = _DEFAULTS.n_obs_steps  # 16
 ZD = _DEFAULTS.hidden_dim  # 128
-OBS = 11  # raw obs dim feeding the state spectral path (env-like)
+OBS = 11  # raw obs dim feeding the conditioner (env-like)
 CHUNK = _DEFAULTS.action_horizon  # 16
 
 # Networks import lazily so a missing module reports one clean collection error.
@@ -90,8 +90,8 @@ def test_running_stats_rejects_nonpositive_dim():
     with pytest.raises(ValueError):
         nets.RunningMeanStd(0)
 
-    # Spectral conditioning — state keeps full DCT bins; the K-lowest
-    # filter applies to the action path only (utils.filter_low_freq).
+    # Spectral utils — full DCT for the conditioner; K-lowest filter is
+    # action-only (utils.filter_low_freq).
 
 
 def pinned_input():
@@ -177,11 +177,11 @@ def test_timestep_embedder_sin_cos_values():
 def test_policy_flow_head_shape_scalar_t():
     nets = make_nets()
     torch.manual_seed(11)
-    policy = nets.SJFPOFlowModel(action_dim=7, obs_dim=OBS)
+    policy = nets.SJFPOFlowModel(action_dim=7)
     assert next(policy.parameters()).dtype == torch.float32
     x_t = torch.randn(32, CHUNK, 7)  # DCT-coefficient space per Scope
-    condition = torch.randn(32, STATE_T, OBS)  # full state bins [B, T, obs]
-    v = policy(x_t, 0.37, condition, torch.randn(32, STATE_T, OBS))
+    condition = torch.randn(32, ZD)  # pre-fused state vector [B, D]
+    v = policy(x_t, 0.37, condition)
     assert v.shape == (32, CHUNK, 7)
     assert torch.isfinite(v).all()
 
@@ -189,11 +189,11 @@ def test_policy_flow_head_shape_scalar_t():
 def test_policy_flow_head_tensor_t_and_grad():
     nets = make_nets()
     torch.manual_seed(12)
-    policy = nets.SJFPOFlowModel(action_dim=3, obs_dim=OBS)
+    policy = nets.SJFPOFlowModel(action_dim=3)
     x_t = torch.randn(8, CHUNK, 3)
     t = torch.rand(8)
-    condition = torch.randn(8, STATE_T, OBS)  # full state bins [B, T, obs]
-    v = policy(x_t, t, condition, torch.randn(8, STATE_T, OBS))
+    condition = torch.randn(8, ZD)  # pre-fused state vector [B, D]
+    v = policy(x_t, t, condition)
     assert v.shape == (8, CHUNK, 3)
     v.sum().backward()
     assert all(
@@ -202,13 +202,15 @@ def test_policy_flow_head_tensor_t_and_grad():
     )
 
 
-def test_policy_flow_head_cond_from_spectral():
-    """Plan: condition carries full state DCT bins [B, T, obs]."""
+def test_policy_flow_head_cond_from_conditioner():
+    """Conditioner output plugs straight into the flow head [B, D]."""
     nets = make_nets()
     torch.manual_seed(18)
-    policy = nets.SJFPOFlowModel(action_dim=7, obs_dim=OBS)
-    fft = torch.randn(8, STATE_T, OBS)
-    v = policy(torch.randn(8, CHUNK, 7), 0.5, fft, torch.randn(8, STATE_T, OBS))
+    policy = nets.SJFPOFlowModel(action_dim=7)
+    conditioner = nets.StateConditioner(OBS)
+    fused = conditioner(torch.randn(8, STATE_T, OBS))
+    assert fused.shape == (8, ZD)
+    v = policy(torch.randn(8, CHUNK, 7), 0.5, fused)
     assert v.shape == (8, CHUNK, 7)
     v.sum().backward()
     assert all(
@@ -249,12 +251,11 @@ def test_timestep_embedder_finite_256():
 def test_policy_dit_zero_velocity_at_init():
     nets = make_nets()
     torch.manual_seed(20)
-    policy = nets.SJFPOFlowModel(action_dim=3, obs_dim=OBS)
+    policy = nets.SJFPOFlowModel(action_dim=3)
     v = policy(
         torch.randn(4, CHUNK, 3),
         0.5,
-        torch.randn(4, STATE_T, OBS),
-        torch.randn(4, STATE_T, OBS),
+        torch.randn(4, ZD),
     )
     assert v.shape == (4, CHUNK, 3)
     assert torch.isfinite(v).all()
@@ -309,7 +310,8 @@ def test_no_batchnorm_no_dropout_fp32_everywhere():
     torch.manual_seed(17)
     modules = [
         nets.WindowEncoder(in_dim=9),
-        nets.SJFPOFlowModel(action_dim=7, obs_dim=9),
+        nets.StateConditioner(9),
+        nets.SJFPOFlowModel(action_dim=7),
         nets.Critic(9),
     ]
     for mod in modules:
@@ -354,8 +356,9 @@ def test_window_encoder_mask_hides_tails():
     x = torch.randn(2, STATE_T, 6)
     garb = x.clone()
     garb[:, 8:, :] = 100.0
-    z1 = enc(x, [8, 8])
-    z2 = enc(garb, [8, 8])
+    key_mask = torch.arange(STATE_T).unsqueeze(0) >= torch.tensor([8, 8]).unsqueeze(1)
+    z1 = enc(x, key_mask)
+    z2 = enc(garb, key_mask)
     assert torch.allclose(z1[:, :8, :], z2[:, :8, :], atol=1e-6)
 
 
@@ -379,47 +382,68 @@ def test_positional_encoding_shape():
 
 
 def test_policy_bin_order_sensitive():
-    """Identical bin values still map to distinct rows (frequency-slot lock).
+    """Identical action rows still map to distinct outputs (slot-code lock).
 
-    Without bin codes, symmetric inputs give symmetric outputs and attention
-    can only mix bins by content magnitude; the encoding breaks the symmetry
-    so inter-bin relations are frequency-addressable."""
+    Without position codes, symmetric inputs give symmetric outputs; the
+    encoding breaks the symmetry so inter-row relations are addressable."""
     nets = make_nets()
     torch.manual_seed(32)
-    policy = nets.SJFPOFlowModel(action_dim=3, obs_dim=OBS)
+    policy = nets.SJFPOFlowModel(action_dim=3)
     # Wake the zero-init (adaLN gates + final out) so inputs matter.
     with torch.no_grad():
         for block in policy.blocks:
             block.adaLN.fc2.weight.normal_(std=0.1)
         policy.out.weight.normal_(std=0.1)
     ka = max(1, round(0.3 * CHUNK))  # 5
-    x_t = torch.ones(2, ka, 3)  # no freq info in the input itself
-    v = policy(
-        x_t,
-        0.5,
-        torch.randn(2, ka, OBS),
-        torch.randn(2, STATE_T, OBS),
-    )
+    x_t = torch.ones(2, ka, 3)  # no order info in the input itself
+    v = policy(x_t, 0.5, torch.randn(2, ZD))
     assert v.shape == (2, ka, 3)
     assert not torch.allclose(v[:, 0, :], v[:, 1, :], atol=1e-6)
 
 
-def test_policy_reads_raw_state_prefix():
-    """DiT output changes with the raw state window (prefix-token lock)."""
+def test_policy_reads_fused_state():
+    """DiT output changes with the fused state vector (conditioning live)."""
     nets = make_nets()
     torch.manual_seed(30)
-    policy = nets.SJFPOFlowModel(action_dim=3, obs_dim=OBS)
+    policy = nets.SJFPOFlowModel(action_dim=3)
+    conditioner = nets.StateConditioner(OBS)
     # Wake the zero-init (adaLN gates + final out) so inputs matter.
     with torch.no_grad():
         for block in policy.blocks:
             block.adaLN.fc2.weight.normal_(std=0.1)
         policy.out.weight.normal_(std=0.1)
     x_t = torch.randn(4, CHUNK, 3)
-    condition = torch.randn(4, STATE_T, OBS)  # full state bins [B, T, obs]
-    s1 = torch.randn(4, STATE_T, OBS)
-    v1 = policy(x_t, 0.5, condition, s1)
+    c1 = conditioner(torch.randn(4, STATE_T, OBS))
+    v1 = policy(x_t, 0.5, c1)
     assert v1.shape == (4, CHUNK, 3)  # only action positions read out
-    v2 = policy(x_t, 0.5, condition, torch.randn(4, STATE_T, OBS))
+    v2 = policy(x_t, 0.5, conditioner(torch.randn(4, STATE_T, OBS)))
+    assert not torch.allclose(v1, v2, atol=1e-6)
+
+
+def test_state_conditioner_shape_and_grad():
+    """[B, T, obs] -> [B, D], finite, grads reach every parameter."""
+    nets = make_nets()
+    torch.manual_seed(33)
+    conditioner = nets.StateConditioner(OBS)
+    assert next(conditioner.parameters()).dtype == torch.float32
+    out = conditioner(torch.randn(4, STATE_T, OBS))
+    assert out.shape == (4, ZD)
+    assert torch.isfinite(out).all()
+    out.sum().backward()
+    assert all(
+        p.grad is not None and torch.isfinite(p.grad).all()
+        for p in conditioner.parameters()
+    )
+
+
+def test_state_conditioner_sees_bin_order():
+    """Permuting state rows changes the fused vector (order-sensitive)."""
+    nets = make_nets()
+    torch.manual_seed(34)
+    conditioner = nets.StateConditioner(OBS)
+    s = torch.randn(2, STATE_T, OBS)
+    v1 = conditioner(s)
+    v2 = conditioner(s.flip(dims=(1,)))
     assert not torch.allclose(v1, v2, atol=1e-6)
 
 
@@ -427,13 +451,12 @@ def test_policy_forward_truncated_coeff_space():
     """DiT denoises Ka=top-p rows; zero-pad restores full H (shape lock)."""
     nets = make_nets()
     torch.manual_seed(31)
-    policy = nets.SJFPOFlowModel(action_dim=3, obs_dim=OBS)
+    policy = nets.SJFPOFlowModel(action_dim=3)
     ka = max(1, round(0.3 * CHUNK))  # 5
     v = policy(
         torch.randn(4, ka, 3),
         0.5,
-        torch.randn(4, ka, OBS),
-        torch.randn(4, STATE_T, OBS),
+        torch.randn(4, ZD),
     )
     assert v.shape == (4, ka, 3)
     padded = torch.nn.functional.pad(v, (0, 0, 0, CHUNK - ka))

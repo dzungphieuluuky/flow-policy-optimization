@@ -32,11 +32,10 @@ TAU_LO, TAU_HI = _DEFAULTS.min_timestep, _DEFAULTS.max_timestep
 class VelocityMLP(nn.Module):
     """Toy velocity net MLP[in+8 -> 128 -> 128 -> out] SiLU.
 
-    Signature matches the project flow heads: ``net(x_t, t, condition, state)``
+    Signature matches the project flow heads: ``net(x_t, t, condition)``
     returning a tensor with the same shape as ``x_t`` (trailing dims flattened
-    into the input features). ``condition``/``state`` are REQUIRED (positional,
-    may be None) and ignored (unconditional toy) — omitting ``state`` must
-    fail loudly, never train a history-blind field silently.
+    into the input features). ``condition`` is REQUIRED (positional, may be
+    None) and ignored (unconditional toy).
     """
 
     def __init__(self, in_dim: int, out_dim: int | None = None):
@@ -50,7 +49,7 @@ class VelocityMLP(nn.Module):
             nn.Linear(128, out_dim),
         )
 
-    def forward(self, x_t: torch.Tensor, t, condition, state) -> torch.Tensor:
+    def forward(self, x_t: torch.Tensor, t, condition) -> torch.Tensor:
         temb = TimestepEmbedder(time_dim=8)(t)
         if temb.shape[0] != x_t.shape[0]:
             temb = temb.expand(x_t.shape[0], -1)
@@ -78,7 +77,7 @@ def test_toy_gaussian_reference_gate(capsys):
         eps = torch.randn(4000, 1, 1)
         tau = float(torch.empty(1).uniform_(TAU_LO, TAU_HI))
         x_t = (1.0 - tau) * eps + tau * data.unsqueeze(1)  # [4000, 1, 1] (1−t)·ε+t·a
-        v_hat = net(x_t.reshape(4000, 1), torch.full((4000,), tau), None, None).reshape(
+        v_hat = net(x_t.reshape(4000, 1), torch.full((4000,), tau), None).reshape(
             4000, 1, 1
         )
         v_star = SJFPOPolicy.compute_target_velocity(data, eps)  # [4000, 1, 1]
@@ -91,7 +90,7 @@ def test_toy_gaussian_reference_gate(capsys):
         # 256 steps: coarse Euler (64) contracts variance by ~6% through any
         # imperfect field, which would confound this field-correctness gate.
         samples = fpo_core.sample_action(
-            lambda x, t, c, s: net(x, t, c, s),
+            lambda x, t, c: net(x, t, c),
             (4000, 1),
             condition=None,
             num_inference_steps=256,
@@ -131,7 +130,7 @@ def test_fitted_loss_below_shuffled_targets():
             eps = torch.randn(n, 1, generator=g)
             tau = float(torch.empty(1).uniform_(TAU_LO, TAU_HI, generator=g))
             x_t = (1.0 - tau) * eps + tau * data  # (1-t)*eps + t*a
-            v_hat = net(x_t, torch.full((n,), tau), None, None)
+            v_hat = net(x_t, torch.full((n,), tau), None)
             target = data - eps  # v* = a - eps
             if shuffle:
                 target = target[perm]  # break target<->anchor pairing
@@ -154,14 +153,14 @@ def test_fitted_loss_below_shuffled_targets():
         v_star = SJFPOPolicy.compute_target_velocity(fixtures, eps_ev)
         l_fit = fpo_core.compute_cfm_loss(
             net_fit(
-                x_t.reshape(40 * 256, 1), tau_ev.reshape(40 * 256), None, None
+                x_t.reshape(40 * 256, 1), tau_ev.reshape(40 * 256), None
             ).reshape(40, 256, 1),
             v_star,
             reduce_mode="sample",
         )
         l_shuf = fpo_core.compute_cfm_loss(
             net_shuf(
-                x_t.reshape(40 * 256, 1), tau_ev.reshape(40 * 256), None, None
+                x_t.reshape(40 * 256, 1), tau_ev.reshape(40 * 256), None
             ).reshape(40, 256, 1),
             v_star,
             reduce_mode="sample",
@@ -189,7 +188,7 @@ def test_ratio_shape_and_degeneracy_guard():
     x_t = (1.0 - t) * eps_tr + t * a.unsqueeze(1)  # [4, m, 8, 3]
     v_star_tr = SJFPOPolicy.compute_target_velocity(a, eps_tr)
     loss = fpo_core.compute_cfm_loss(
-        net_new(x_t.reshape(4 * m, 8, 3), tau_tr.reshape(4 * m), None, None).reshape(
+        net_new(x_t.reshape(4 * m, 8, 3), tau_tr.reshape(4 * m), None).reshape(
             4, m, 8, 3
         ),
         v_star_tr,
@@ -206,14 +205,14 @@ def test_ratio_shape_and_degeneracy_guard():
         v_star = SJFPOPolicy.compute_target_velocity(a, eps_ev)
         l_old = fpo_core.compute_cfm_loss(
             net_old(
-                x_t.reshape(4 * m, 8, 3), tau_ev.reshape(4 * m), None, None
+                x_t.reshape(4 * m, 8, 3), tau_ev.reshape(4 * m), None
             ).reshape(4, m, 8, 3),
             v_star,
             reduce_mode="sample",
         )
         l_new = fpo_core.compute_cfm_loss(
             net_new(
-                x_t.reshape(4 * m, 8, 3), tau_ev.reshape(4 * m), None, None
+                x_t.reshape(4 * m, 8, 3), tau_ev.reshape(4 * m), None
             ).reshape(4, m, 8, 3),
             v_star,
             reduce_mode="sample",
@@ -304,7 +303,7 @@ def test_policy_loss_fd_gradient():
     v_star = SJFPOPolicy.compute_target_velocity(a, eps)  # [1, m, 8, 1]
 
     def v_hat_of(net_) -> torch.Tensor:
-        return net_(x_t_flat, tau_flat, None, None).reshape(1, m, 8, 1)
+        return net_(x_t_flat, tau_flat, None).reshape(1, m, 8, 1)
 
     with torch.no_grad():
         l_old = fpo_core.compute_cfm_loss(v_hat_of(net), v_star, reduce_mode="sample")
@@ -343,9 +342,9 @@ def test_euler_sampler_grid_update_and_zero_noise():
     seen_ts: list[float] = []
 
     class Probe(nn.Module):
-        def forward(self, x_t, t, condition=None, state=None):
+        def forward(self, x_t, t, condition=None):
             seen_ts.append(float(t))
-            return net(x_t, t, condition, state)
+            return net(x_t, t, condition)
 
     out = fpo_core.sample_action(
         Probe(), (5, 1), None, num_inference_steps=64, generator=torch.Generator().manual_seed(42)
@@ -363,7 +362,7 @@ def test_euler_sampler_grid_update_and_zero_noise():
     x = eps.clone()
     with torch.no_grad():
         for i in range(64):
-            x = x + (grid[i + 1] - grid[i]) * net(x, grid[i], None, None)
+            x = x + (grid[i + 1] - grid[i]) * net(x, grid[i], None)
     assert torch.allclose(out, x, atol=1e-6), "sampler deviates from x <- x + dt*v_hat"
 
     # Zero-sampling path (eps = 0) is deterministic given the weights.
@@ -377,9 +376,8 @@ def test_euler_sampler_grid_update_and_zero_noise():
 
 def test_space_consistency_dct_pipeline():
     torch.manual_seed(51)
-    policy = SJFPOFlowModel(action_dim=3, obs_dim=4)
-    k = max(1, round(_DEFAULTS.top_p_spectral_tokens * 16))
-    condition = torch.zeros(4, k, 4)
+    policy = SJFPOFlowModel(action_dim=3)
+    condition = torch.zeros(4, _DEFAULTS.hidden_dim)  # pre-fused state vector
     with torch.no_grad():
         coeffs = fpo_core.sample_action(
             policy,
@@ -387,7 +385,6 @@ def test_space_consistency_dct_pipeline():
             condition,
             num_inference_steps=16,
             generator=torch.Generator().manual_seed(52),
-            state=torch.zeros(4, _DEFAULTS.n_obs_steps, 4),
         )
         actions = idct(coeffs, dim=1)  # coefficient space -> action space
         low, high = -0.5, 0.5

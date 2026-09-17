@@ -16,7 +16,7 @@
 │   ├── configuration_sjfpo.py      # SJFPO policy config (sole hyperparam source)
 │   ├── modeling_sjfpo.py         # SJFPOPolicy (ASPO + value update, owns all modules)
 │   ├── train_sjfpo.py            # online train entry used by scripts/train.py
-│   ├── networks.py               # WindowEncoder (owned instances), SpectralEncoder, pure-DiT flow, Critic
+│   ├── networks.py               # WindowEncoder (owned instances), StateConditioner, DiT flow, V(s) Critic
 │   ├── dct_utils.py              # orthonormal DCT-II/III action chunks
 │   ├── evaluator.py              # Evaluator → 3-col CSV [episode,return,length]
 │   ├── baselines.py              # skrl PPO/SAC (shared GaussianPolicyImpl + baseline_train_loop)

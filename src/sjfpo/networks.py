@@ -12,6 +12,7 @@ import torch
 from torch import nn
 
 from sjfpo.configuration_sjfpo import SJFPOConfig
+from sjfpo.dct_utils import dct
 
 # Single source for constructor defaults (see SJFPOConfig).
 _DEFAULTS = SJFPOConfig()
@@ -80,9 +81,9 @@ class WindowEncoder(nn.Module):
     """Two pre-norm residual blocks over a time window -> Z[B, L, hidden_dim].
 
     Single class for state windows and action chunks: the only difference is
-    the optional key mask (``executed_n_action_steps``), which hides padded
-    tails as attention keys. Actor and critic each own their instances (no
-    RL weight sharing); call sites keep the ``state_encoder`` /
+    the optional boolean key mask [B, L] (True = pad, ignore as attention
+    key), which hides padded tails. Actor and critic each own their instances
+    (no RL weight sharing); call sites keep the ``state_encoder`` /
     ``action_encoder`` attribute names, so old checkpoints still load.
     """
 
@@ -110,21 +111,12 @@ class WindowEncoder(nn.Module):
         self.norm4 = nn.RMSNorm(hidden_dim, eps=1e-6)
         self.mlp2 = SwiGLU(hidden_dim, mlp_hidden, hidden_dim)
 
-    def forward(self, x: torch.Tensor, executed_n_action_steps=None) -> torch.Tensor:
-        """[B, L, in_dim] -> [B, L, hidden_dim]; tails masked as keys when given."""
+    def forward(self, x: torch.Tensor, key_mask: torch.Tensor | None = None) -> torch.Tensor:
+        """[B, L, in_dim] -> [B, L, hidden_dim]; pad rows masked as keys when given."""
         h = self.frame_proj(x)
         h = self.pos_encoding(h)
-        key_mask = None
-        if executed_n_action_steps is not None:
-            if not isinstance(executed_n_action_steps, torch.Tensor):
-                # Eager callers may pass python lists; dynamo cannot trace
-                # list() unbinds, so coerce before the math below.
-                executed_n_action_steps = torch.as_tensor(
-                    list(executed_n_action_steps), device=h.device
-                )
-            n_real = executed_n_action_steps.to(h.device)
-            step = torch.arange(h.shape[1], device=h.device).unsqueeze(0)
-            key_mask = step >= n_real.unsqueeze(1)  # True = pad, ignore as key
+        if key_mask is not None:
+            key_mask = torch.as_tensor(key_mask, dtype=torch.bool, device=h.device)
         n = self.norm1(h)
         attn, _ = self.attn1(n, n, n, key_padding_mask=key_mask)
         h = h + attn
@@ -256,19 +248,56 @@ class DiTBlock(nn.Module):
         return out
 
 
+class StateConditioner(nn.Module):
+    """Fuse raw state window + its DCT bins into one [B, D] vector (Flamingo-style).
+
+    State tokens query spectral tokens in one cross-attention block
+    (residual), then mean-pool. Bin order rides a sinusoidal code, so
+    attention weights index frequency.
+    """
+
+    def __init__(
+        self,
+        obs_dim: int,
+        hidden_dim: int | None = None,
+        n_heads: int = 4,
+    ):
+        super().__init__()
+        if obs_dim <= 0:
+            raise ValueError("obs_dim must be positive")
+        hidden_dim = int(resolve_config_value("hidden_dim", hidden_dim))
+        self.state_encoder = WindowEncoder(obs_dim, hidden_dim=hidden_dim)
+        self.bin_norm = nn.RMSNorm(obs_dim)
+        self.bin_encoding = PositionalEncoding()  # bin index = frequency order
+        self.key_proj = nn.Linear(obs_dim, hidden_dim)
+        self.norm_q = nn.RMSNorm(hidden_dim)
+        self.norm_kv = nn.RMSNorm(hidden_dim)
+        self.attn = nn.MultiheadAttention(hidden_dim, n_heads, batch_first=True)
+        self.out_proj = nn.Linear(hidden_dim, hidden_dim)
+
+    def forward(self, states: torch.Tensor) -> torch.Tensor:
+        """[B, T, obs] -> [B, D]."""
+        q = self.norm_q(self.state_encoder(states))
+        kv = self.norm_kv(
+            self.key_proj(self.bin_encoding(self.bin_norm(dct(states, dim=1))))
+        )
+        attn, _ = self.attn(q, kv, kv, need_weights=False)
+        return self.out_proj((q + attn).mean(dim=1))
+
+
 class SJFPOFlowModel(nn.Module):
     """DiT velocity model over noisy-action tokens, conditioned via adaLN.
 
-    Pure-DiT conditioning: a single vector ``c = time + state + spectral``
-    modulates every block (adaLN-Zero); the transformer never sees state
-    tokens, so there is exactly one observation path and no competing
-    in-context route. Only action positions exist, so no readout slice.
+    Takes a pre-fused condition vector [B, D] (see StateConditioner);
+    ``c = time + condition`` modulates every block (adaLN-Zero). The
+    transformer never sees state tokens, so there is exactly one
+    observation path and no competing in-context route. Only action
+    positions exist, so no readout slice.
     """
 
     def __init__(
         self,
         action_dim: int,
-        obs_dim: int,
         hidden_dim: int | None = None,
         dit_depth: int | None = None,
         dit_heads: int | None = None,
@@ -285,9 +314,7 @@ class SJFPOFlowModel(nn.Module):
         self.timestep_embedder = TimestepEmbedder(time_dim=self.time_dim)
         self.in_proj = nn.Linear(action_dim, hidden_dim)
         self.bin_encoding = PositionalEncoding()
-        self.state_encoder = WindowEncoder(obs_dim, hidden_dim=hidden_dim)
         self.time_mlp = CondMLP(dit_time_dim, 4 * hidden_dim, hidden_dim)
-        self.cond_proj = nn.Linear(obs_dim, hidden_dim)
         self.blocks = nn.ModuleList(
             DiTBlock(hidden_dim, dit_heads, dit_mlp_ratio) for _ in range(dit_depth)
         )
@@ -299,31 +326,25 @@ class SJFPOFlowModel(nn.Module):
         # Zero final layer: an untrained policy predicts ~zero velocity.
         nn.init.constant_(self.out.weight, 0.0)
         nn.init.constant_(self.out.bias, 0.0)
-        self.bin_norm = nn.RMSNorm(obs_dim)
         self.last_cond_stats: dict[str, torch.Tensor] | None = None
 
-    def forward(
-        self, x_t: torch.Tensor, t, condition: torch.Tensor, state: torch.Tensor
-    ) -> torch.Tensor:
-        """Predict velocity: ([B, Ka, action_dim], t, [B, T, obs_dim], [B, T, obs_dim])
-        -> [B, Ka, action_dim]. Ka = top-p low-frequency action rows (<= H);
-        condition carries full state DCT bins (K-filter is action-only)."""
-        condition = self.bin_norm(condition)
+    def forward(self, x_t: torch.Tensor, t, condition: torch.Tensor) -> torch.Tensor:
+        """Predict velocity: ([B, Ka, action_dim], t, [B, D]) -> [B, Ka, action_dim].
+
+        Ka = top-p low-frequency action rows (<= H); condition is the
+        pre-fused state vector (see StateConditioner)."""
         timesteps_embedding = self.timestep_embedder(t).to(
             device=x_t.device, dtype=x_t.dtype
         )
         if timesteps_embedding.dim() == 1:
             timesteps_embedding = timesteps_embedding.expand(x_t.shape[0], -1)
-        branch = self.cond_proj(condition.mean(dim=1))  # mean-pooled spectral bins
-        z_state = self.state_encoder(state).mean(dim=1)
-        c = self.time_mlp(timesteps_embedding) + branch + z_state
+        c = self.time_mlp(timesteps_embedding) + condition.to(dtype=x_t.dtype)
         h = self.bin_encoding(self.in_proj(x_t))
         for block in self.blocks:
             h = block(h, c)
         self.last_cond_stats = {
             "temb": timesteps_embedding.detach().pow(2).mean().sqrt(),
-            "pooled": branch.detach().pow(2).mean().sqrt(),
-            "z_state": z_state.detach().pow(2).mean().sqrt(),
+            "fused": condition.detach().pow(2).mean().sqrt(),
             "c": c.detach().pow(2).mean().sqrt(),
             **{
                 k: torch.stack(

@@ -32,8 +32,7 @@ INFO_KEYS = {
     "flow_rho_bin_outside_frac",
     "flow_v_star_rms",
     "cond_temb",
-    "cond_pooled",
-    "cond_z_state",
+    "cond_fused",
     "cond_c",
     "cond_gate_msa",
     "cond_gate_mlp",
@@ -74,15 +73,19 @@ def test_name_and_config_class_and_modules():
     assert policy.config_class is SJFPOConfig
     for m in (
         policy.actor,
+        policy.conditioner,
         policy.critic,
         policy.obs_normalizer,
         policy.old_actor,
+        policy.old_conditioner,
     ):
         assert isinstance(m, torch.nn.Module)
-    # State spectral path is a stateless full-DCT fn (K-filter is action-only).
-    assert callable(policy.spectral)
     # Snapshot matches live weights at init (unit ratios).
     for p_old, p_live in zip(policy.old_actor.parameters(), policy.actor.parameters()):
+        assert torch.equal(p_old, p_live)
+    for p_old, p_live in zip(
+        policy.old_conditioner.parameters(), policy.conditioner.parameters()
+    ):
         assert torch.equal(p_old, p_live)
 
 
@@ -119,13 +122,17 @@ def test_forward_finite_loss_and_native_dict():
 def test_optim_params_exclude_snapshot():
     policy = SJFPOPolicy(make_config())
     groups = policy.get_optim_params()["params"]
-    assert len(groups) == 3  # actor decay / actor no-decay (zero-init) / critic
+    assert len(groups) == 4  # actor decay / actor no-decay / conditioner / critic
     optim_ids = {id(p) for g in groups for p in g["params"]}
-    live_ids = {id(p) for p in policy.actor.parameters()} | {
-        id(p) for p in policy.critic.parameters()
-    }
+    live_ids = (
+        {id(p) for p in policy.actor.parameters()}
+        | {id(p) for p in policy.conditioner.parameters()}
+        | {id(p) for p in policy.critic.parameters()}
+    )
     assert optim_ids == live_ids
-    snap_ids = {id(p) for p in policy.old_actor.parameters()}
+    snap_ids = {id(p) for p in policy.old_actor.parameters()} | {
+        id(p) for p in policy.old_conditioner.parameters()
+    }
     ema_ids = {id(p) for p in policy.ema_actor.parameters()}
     assert optim_ids.isdisjoint(snap_ids)
     assert optim_ids.isdisjoint(ema_ids)
@@ -143,17 +150,16 @@ def test_compute_predicted_velocity_old_vs_live():
     policy = SJFPOPolicy(make_config())
     x_t = torch.randn(4, 5, ACT_DIM)
     tau = torch.rand(4)
-    condition = torch.randn(4, 5, OBS_DIM)
     states = torch.randn(4, 16, OBS_DIM)
-    v_live = policy.compute_predicted_velocity(x_t, tau, condition, states)
-    v_old = policy.compute_predicted_velocity(x_t, tau, condition, states, old=True)
+    v_live = policy.compute_predicted_velocity(x_t, tau, states)
+    v_old = policy.compute_predicted_velocity(x_t, tau, states, old=True)
     assert torch.equal(v_live, v_old)  # snapshot matches at init
     with torch.no_grad():
         # Perturb the readout bias: the zero-init final layer would swallow
         # any upstream perturbation, so touch the output directly.
         policy.actor.out.bias.add_(1.0)
-    v_live2 = policy.compute_predicted_velocity(x_t, tau, condition, states)
-    v_old2 = policy.compute_predicted_velocity(x_t, tau, condition, states, old=True)
+    v_live2 = policy.compute_predicted_velocity(x_t, tau, states)
+    v_old2 = policy.compute_predicted_velocity(x_t, tau, states, old=True)
     assert not torch.equal(v_live2, v_old2)
 
 
@@ -262,12 +268,12 @@ def test_generate_rollout_returns_forward_ready_batch():
 def test_optim_params_actor_critic_groups():
     policy = SJFPOPolicy(make_config())
     groups = policy.get_optim_params()["params"]
-    assert len(groups) == 3
+    assert len(groups) == 4  # actor decay / no-decay / conditioner / critic
     ema_ids = {id(p) for p in policy.ema_actor.parameters()}
     for g in groups:
         assert not any(id(p) in ema_ids for p in g["params"])
     opt = policy.config.get_optimizer_preset().build(groups)
-    assert [g["lr"] for g in opt.param_groups] == [1e-4, 1e-4, 1e-4]  # single LR
+    assert [g["lr"] for g in opt.param_groups] == [1e-4] * 4  # single LR
     assert [g["weight_decay"] for g in opt.param_groups][1] == 0.0
 
 

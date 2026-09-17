@@ -13,8 +13,8 @@ PYTHONPATH=src .venv/bin/python -m pytest -q
 **Spectral test flake**
 
 Keep fp32 storage; bf16 autocast applies to matmuls on CUDA only (CPU paths
-stay fp32). Check the DCT→low-K→Linear order in
-`networks.py::SpectralEncoder` first.
+stay fp32). Check the state→conditioner→flow order in
+`networks.py::StateConditioner` first.
 
 ## Smoke / Runner
 

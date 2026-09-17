@@ -195,21 +195,20 @@ def compute_policy_loss(
 
 
 def sample_action(
-    predict_velocity: Callable[[torch.Tensor, torch.Tensor, Any, Any], torch.Tensor],
+    predict_velocity: Callable[[torch.Tensor, torch.Tensor, Any], torch.Tensor],
     shape,
     condition,
     num_inference_steps: int,
     eps: torch.Tensor | None = None,
     generator: torch.Generator | None = None,
     device=None,
-    state=None,
     mode: str = "euler",
 ) -> torch.Tensor:
     """Sample the learned flow from t=0 (noise) to t=1 (data).
 
-    ``predict_velocity`` maps (x, t, condition, state) -> v̂ (e.g. an
-    SJFPOPolicy.compute_predicted_velocity bound method); the loop only
-    integrates (Euler or other modes) and never touches network weights.
+    ``predict_velocity`` maps (x, t, condition) -> v̂, where condition is the
+    pre-fused state vector; the loop only integrates (Euler or other modes)
+    and never touches network weights.
 
     Euler: ``x ← x + δ·v̂`` on the ascending linspace(0, 1, steps+1) grid,
     δ = 1/steps at the left-endpoint t. ``eps=None`` draws N(0, I);
@@ -225,6 +224,6 @@ def sample_action(
     x = eps
     with torch.inference_mode():
         for i in range(num_inference_steps):
-            v_hat = predict_velocity(x, grid[i], condition, state)
+            v_hat = predict_velocity(x, grid[i], condition)
             x = x + (grid[i + 1] - grid[i]) * v_hat
     return x

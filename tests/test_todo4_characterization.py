@@ -148,8 +148,7 @@ class TestTrainerGolden:
             "flow_rho_bin_outside_frac",
             "flow_v_star_rms",
             "cond_temb",
-            "cond_pooled",
-            "cond_z_state",
+            "cond_fused",
             "cond_c",
             "cond_gate_msa",
             "cond_gate_mlp",
@@ -168,11 +167,10 @@ class TestTrainerGolden:
         top_k_spectral_action_tokens = max(1, round(cfg.top_p_spectral_tokens * cfg.action_horizon))
         x_t = torch.randn(4 * cfg.num_mc_samples, top_k_spectral_action_tokens, action_dim).to(device)
         tau = torch.rand(4 * cfg.num_mc_samples, device=device)
-        condition = torch.randn(4 * cfg.num_mc_samples, 5, obs_dim).to(device)
         states = torch.randn(4 * cfg.num_mc_samples, cfg.n_obs_steps, obs_dim).to(
             device
         )
-        v = policy.compute_predicted_velocity(x_t, tau, condition, states)
+        v = policy.compute_predicted_velocity(x_t, tau, states)
         assert v.shape == (4 * cfg.num_mc_samples, top_k_spectral_action_tokens, action_dim)
         assert torch.isfinite(v).all()
 

@@ -76,11 +76,11 @@ class TestPolicyDevice:
         t = self.policy(device="cpu")
         for m in (
             t.actor,
+            t.conditioner,
             t.critic,
         ):
             assert next(m.parameters()).device == torch.device("cpu")
         assert next(t.critic.state_encoder.parameters()).device == torch.device("cpu")
-        assert callable(t.spectral)  # stateless full-DCT fn, nothing to move
 
     def test_update_on_default_device(self):
         t = self.policy()

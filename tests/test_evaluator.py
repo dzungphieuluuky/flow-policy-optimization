@@ -23,8 +23,7 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from sjfpo.configuration_sjfpo import SJFPOConfig
-from sjfpo.networks import SJFPOFlowModel
-from sjfpo.utils import encode_dct  # full state bins; K-filter is action-only
+from sjfpo.networks import SJFPOFlowModel, StateConditioner
 from sjfpo.fpo_core import sample_action
 from sjfpo.evaluator import Evaluator
 
@@ -69,11 +68,11 @@ def callable_policy(obs: np.ndarray) -> np.ndarray:
 class SJFPOPolicyAdapter:
     """SJFPO-style adapter with zero-noise eval and internal state window."""
 
-    def __init__(self, policy_head, spectral, cfg):
+    def __init__(self, policy_head, conditioner, cfg):
         from collections import deque
 
         self.policy_head = policy_head
-        self.spectral = spectral
+        self.conditioner = conditioner
         self.cfg = cfg
         self.window = deque(maxlen=cfg.n_obs_steps)
         self.first_obs = None
@@ -91,16 +90,15 @@ class SJFPOPolicyAdapter:
         self.window.append(obs_t)
         state = torch.stack(list(self.window), dim=0).unsqueeze(0)  # [1, T, obs]
         with torch.no_grad():
-            condition = self.spectral(state)
+            condition = self.conditioner(state)  # [1, D] fused outside the head
             # Policy model (zero noise via eps=zeros for deterministic eval)
             top_k_spectral_action_tokens = max(1, round(self.cfg.top_p_spectral_tokens * self.cfg.action_horizon))
             chunk = sample_action(
-                lambda x, t, c, s: self.policy_head(x, t, c, s),
+                lambda x, t, c: self.policy_head(x, t, c),
                 (1, top_k_spectral_action_tokens, self.action_dim),
                 condition,
                 num_inference_steps=self.cfg.num_inference_steps,
                 eps=torch.zeros(1, top_k_spectral_action_tokens, self.action_dim),
-                state=state,
             )  # [1, Ka, action_dim]
             chunk = torch.nn.functional.pad(
                 chunk, (0, 0, 0, self.cfg.action_horizon - top_k_spectral_action_tokens)
@@ -167,11 +165,11 @@ class TestPolicyKinds:
 
     def test_sjfpo_zero_noise(self):
         cfg = SJFPOConfig()
-        policy_head = SJFPOFlowModel(4, 17, hidden_dim=cfg.hidden_dim)
-        spectral = encode_dct
+        policy_head = SJFPOFlowModel(4, hidden_dim=cfg.hidden_dim)
+        conditioner = StateConditioner(17, hidden_dim=cfg.hidden_dim)
 
         env = FakeEnv(obs_dim=17, action_dim=4)
-        adapter = SJFPOPolicyAdapter(policy_head, spectral, cfg)
+        adapter = SJFPOPolicyAdapter(policy_head, conditioner, cfg)
         adapter.action_dim = 4
 
         evaluator = Evaluator(env, eval_seed=42, max_episodes=2)
@@ -233,11 +231,11 @@ class TestDeterminism:
 class TestBatchSizeOne:
     def test_b1_no_calibration_needed(self):
         cfg = SJFPOConfig()
-        policy_head = SJFPOFlowModel(4, 17, hidden_dim=cfg.hidden_dim)
-        spectral = encode_dct
+        policy_head = SJFPOFlowModel(4, hidden_dim=cfg.hidden_dim)
+        conditioner = StateConditioner(17, hidden_dim=cfg.hidden_dim)
 
         env = FakeEnv(obs_dim=17, action_dim=4)
-        adapter = SJFPOPolicyAdapter(policy_head, spectral, cfg)
+        adapter = SJFPOPolicyAdapter(policy_head, conditioner, cfg)
         adapter.action_dim = 4
 
         evaluator = Evaluator(env, eval_seed=0, max_episodes=2)

@@ -33,11 +33,12 @@ from sjfpo.fpo_core import (
     sample_timesteps,
 )
 from sjfpo.gae import compute_advantages
-from sjfpo.utils import autocast_context, encode_dct, filter_low_freq, to_numpy_1d, to_tensor_1d
+from sjfpo.utils import autocast_context, filter_low_freq, to_numpy_1d, to_tensor_1d
 from sjfpo.networks import (
     Critic,
     RunningMeanStd,
     SJFPOFlowModel,
+    StateConditioner,
 )
 from sjfpo.processor_sjfpo import make_sjfpo_pre_post_processors
 
@@ -63,12 +64,14 @@ class SJFPOPolicy(PreTrainedPolicy):
         action_dim = int(config.action_feature.shape[0])
         self.actor = SJFPOFlowModel(
             action_dim,
+            hidden_dim=config.hidden_dim,
+        )
+        # Fused state conditioning (Flamingo-style: state queries DCT bins),
+        # computed externally; the flow head only sees the [B, D] vector.
+        self.conditioner = StateConditioner(
             obs_dim,
             hidden_dim=config.hidden_dim,
         )
-        # State conditioning: full DCT bins (no K-filter). The K-lowest
-        # filter applies to the action path only (see forward()).
-        self.spectral = encode_dct
         self.critic = Critic(
             obs_dim,
             hidden_dim=config.hidden_dim,
@@ -86,6 +89,8 @@ class SJFPOPolicy(PreTrainedPolicy):
         # it, and DDP treats grad-less requires_grad params as an error.
         self.old_actor = copy.deepcopy(self.actor)
         self.old_actor.requires_grad_(False)
+        self.old_conditioner = copy.deepcopy(self.conditioner)
+        self.old_conditioner.requires_grad_(False)
         # Slow EMA anchor for the KL loss; inference-only (never compiled,
         # never optimized), rides state_dict so checkpoints resume it.
         self.ema_actor = copy.deepcopy(self.actor)
@@ -102,12 +107,11 @@ class SJFPOPolicy(PreTrainedPolicy):
         """v* = a − ε broadcast over MC draws: [B, *flow] x [B, m, *flow] -> [B, m, *flow]."""
         return a.unsqueeze(1) - eps
 
-    def compute_predicted_velocity(
-        self, x_t, tau, condition, state, old=False
-    ) -> torch.Tensor:
+    def compute_predicted_velocity(self, x_t, tau, states, old=False) -> torch.Tensor:
         """Velocity from the live head, or the frozen snapshot when old."""
+        conditioner = self.old_conditioner if old else self.conditioner
         net = self.old_actor if old else self.actor
-        return net(x_t, tau, condition, state)
+        return net(x_t, tau, conditioner(states))
 
     def reset(self):
         """Reset per-episode state. Called by lerobot-eval at the start of each episode."""
@@ -127,13 +131,15 @@ class SJFPOPolicy(PreTrainedPolicy):
         """
         self.old_actor = copy.deepcopy(self.actor)
         self.old_actor.requires_grad_(False)  # deepcopy inherits live grad flags
+        self.old_conditioner = copy.deepcopy(self.conditioner)
+        self.old_conditioner.requires_grad_(False)
 
     def get_optim_params(self) -> dict:
-        """Actor (decay / no-decay) + critic groups (EMA never trains).
+        """Actor (decay / no-decay) + conditioner + critic groups.
 
-        Single LR for actor and critic (PPO standard). Zero-init layers
-        (adaLN regressors incl. adaLN_out, final out) skip weight decay so
-        decay never fights the identity-at-init design.
+        Single LR everywhere (PPO standard); snapshots never train. Zero-init
+        layers (adaLN regressors incl. adaLN_out, final out) skip weight decay
+        so decay never fights the identity-at-init design.
         """
         decay, no_decay = [], []
         for name, p in self.actor.named_parameters():
@@ -148,6 +154,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             "params": [
                 {"params": decay},
                 {"params": no_decay, "weight_decay": 0.0},
+                {"params": list(self.conditioner.parameters())},
                 {"params": list(self.critic.parameters())},
             ]
         }
@@ -185,18 +192,17 @@ class SJFPOPolicy(PreTrainedPolicy):
         top_k_spectral_action_tokens = max(1, round(cfg.top_p_spectral_tokens * cfg.action_horizon))
         action_dim = int(self.config.action_feature.shape[0])
         with torch.inference_mode(), autocast_context(states.device):
-            condition = self.spectral(states)  # full state bins; Ka filter is action-only
+            condition = self.conditioner(states)  # [B, D] fused outside the flow head
             shape = (states.shape[0], top_k_spectral_action_tokens, action_dim)
             eps = None if noise else torch.zeros(*shape, device=states.device)
             num_inference_steps = cfg.num_euler_steps if noise else cfg.num_inference_steps
             x0 = sample_action(
-                self.compute_predicted_velocity,
+                lambda x, t, c: self.actor(x, t, c),
                 shape,
                 condition,
                 num_inference_steps=num_inference_steps,
                 eps=eps,
                 device=states.device,
-                state=states,
             )
             x0 = x0.float()
         x0 = torch.nn.functional.pad(x0, (0, 0, 0, cfg.action_horizon - top_k_spectral_action_tokens))
@@ -363,20 +369,13 @@ class SJFPOPolicy(PreTrainedPolicy):
         states = self.preprocessor({OBS_STATE: states})[OBS_STATE]
         is_pad = batch.get("action_is_pad")
         if is_pad is None:
-            executed_n_action_steps = torch.full(
-                (actions.shape[0],),
-                actions.shape[1],
-                dtype=torch.long,
-                device=actions.device,
-            )  # [B] all executed
             a_exec = actions
         else:
             is_pad = to_tensor(is_pad, dtype=torch.bool, device=actions.device)
             a_exec = actions * (~is_pad).to(actions.dtype).unsqueeze(-1)
         top_k_spectral_action_tokens = max(1, round(cfg.top_p_spectral_tokens * cfg.action_horizon))
-        # K-lowest filter: action only. State keeps full DCT bins via self.spectral.
+        # K-lowest filter: action only. State conditioning is fused externally.
         spectral_action_tokens = filter_low_freq(dct(a_exec, dim=1), top_k_spectral_action_tokens, dim=1)
-        condition = self.spectral(states)
         n = states.shape[0]
         tau = sample_timesteps(
             cfg.num_mc_samples,
@@ -395,22 +394,19 @@ class SJFPOPolicy(PreTrainedPolicy):
             (1.0 - tau_bn[:, None]) * eps_flat + tau_bn[:, None] * a_rep
         ).reshape(-1, *flow_shape)  # (1−t)·ε+t·a
         cond_flat = einx.id(
-            "n m k d -> (n m) k d", einx.id("n k d -> n m k d", condition, m=num_mc)
-        )
-        state_flat = einx.id(
-            "n m t d -> (n m) t d", einx.id("n t d -> n m t d", states, m=num_mc)
+            "n m d -> (n m) d", einx.id("n d -> n m d", self.conditioner(states), m=num_mc)
         )
         tau_flat = einx.id("m -> n m", tau, n=n).reshape(n * num_mc)
 
         # Frozen snapshot (l_old) vs live weights; DCT/CFM/ratio math stays fp32.
         with torch.inference_mode(), autocast_context(states.device):
-            v_old = self.compute_predicted_velocity(
-                x_t_flat, tau_flat, cond_flat, state_flat, old=True
-            ).float()
+            old_cond_flat = einx.id(
+                "n m d -> (n m) d",
+                einx.id("n d -> n m d", self.old_conditioner(states), m=num_mc),
+            )
+            v_old = self.old_actor(x_t_flat, tau_flat, old_cond_flat).float()
         with autocast_context(states.device):
-            v_new = self.compute_predicted_velocity(
-                x_t_flat, tau_flat, cond_flat, state_flat
-            ).float()
+            v_new = self.actor(x_t_flat, tau_flat, cond_flat).float()
         cond_stats = dict(self.actor.last_cond_stats)
         v_star = self.compute_target_velocity(spectral_action_tokens, eps)
         l_old = compute_cfm_loss(

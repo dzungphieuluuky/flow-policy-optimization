@@ -8,7 +8,7 @@ Use this as a jump table. Each row: what the file owns, the key symbols, and the
 |---|---|---|---|
 | `config.py` | Flags, run matrices, budgets, PPO/SAC dataclasses | `PPOConfig / SACConfig`, `RUN_MATRIX` (45) (SJFPO hyperparams live in `configuration_sjfpo.py::SJFPOConfig` only) | Change sweep size → `METHODS/ENVS/SEEDS` env axes or edit axes |
 | `modeling_sjfpo.py` | SJFPO policy (FPO++ ASPO + value update) | `SJFPOPolicy.forward`, `SJFPOAborted` | `test_modeling_sjfpo.py` NaN + param count |
-| `networks.py` | WindowEncoder + spectral + pure-DiT flow | `WindowEncoder` (shared class, owned instances), `SpectralEncoder` (raw obs→DCT→low-K bins, parameter-free), `SJFPOFlowModel` (DiT-8 adaLN-Zero, action tokens only, `c = time + state + spectral`), `CondMLP`, `Critic` (1 cross-attention block) V(s,a) | `test_networks.py` |
+| `networks.py` | WindowEncoder + conditioner + DiT flow + V(s) critic | `WindowEncoder` (shared class, owned instances), `StateConditioner` (raw window queries DCT bins, Flamingo-style → `[B,D]`), `SJFPOFlowModel` (`x_t, t, condition`, DiT adaLN-Zero, action tokens only, `c = time + condition`), `CondMLP`, `SwiGLU`, `Critic` V(s) | `test_networks.py` |
 | `dct_utils.py` | DCT orthonormal action chunks | `dct`, `idct`, `discounted_chunk_reward` | `test_dct.py` roundtrip `1e-5` |
 | `evaluator.py` | Metrics | `Evaluator` → 3-col CSV `[episode,return,length]` | `test_evaluator.py` schema + `test_pipeline_cpu.py` |
 | `baselines.py` | skrl PPO/SAC | `ppo_train_run` / `sac_train_run`, shared `GaussianPolicyImpl`, `seed_and_wrap_env`, `mean_action_eval_policy`, `baseline_train_loop`, `FrameStackWrapper` | `test_baselines.py` provenance |
@@ -42,8 +42,8 @@ Use this as a jump table. Each row: what the file owns, the key symbols, and the
 1. New to the SJFPO path: `configuration_sjfpo.py` → `modeling_sjfpo.py::SJFPOPolicy` →
    `networks.py` (encoders→spectral) → `dct_utils.py` → `modeling_sjfpo.py` →
    `evaluator.py` → `sweep.py`/`analysis.py`.
-2. Debugging spectral: jump to `networks.py::SpectralEncoder` — order is
-   DCT→low-K→Linear, no normalization.
+2. Debugging conditioning: jump to `networks.py::StateConditioner` — order is
+   WindowEncoder(states) queries DCT bins → residual cross-attn → mean-pool.
 3. Touching sweep dispatch: `sweep.py` — read `test_sweep.py` order + resume invariants before changing anything.
 
 ## Naming Standard (HuggingFace-cited)

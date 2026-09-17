@@ -7,7 +7,7 @@ User-facing navigation + architecture reference. 12 md files (MuJoCo-only). All 
 ```
 README.md            entry map + mental model
 project-structure.md directory tree roles
-architecture.md      mermaid flow DCT spectral K5 → DCT action chunks → DiT policy + V(s,a) critic
+architecture.md      mermaid flow conditioner → DiT policy + V(s) critic
 modules.md           jump table per src/sjfpo file
 getting-started.md   smoke commands (tiny matrix, train.py single-run, notebook)
 config-flags.md      env flags / TINY / matrix filters

@@ -59,9 +59,8 @@ collection ~linear speedup); eval stays single-env. Override with
 Each ablation is one flag/config change; keep everything else frozen.
 These are the paper's differentiation vs. SOTA (FAFM, FreqPolicy, FAST):
 
-- [ ] A1 — spectral placement: joint (default) vs. action-only
-      (`top_p_spectral_tokens=1.0` equiv / bypass obs DCT) vs. state-only
-      (time-domain action head). Tests the "joint" claim.
+- [ ] A1 — conditioning: fused StateConditioner (default) vs. state-only
+      (raw window branch) vs. spectral-only (DCT branch). Tests the "joint" claim.
 - [x] A2 — pooling: decided mean-only; attention pooler deleted.
 - [ ] A3 — bandwidth: `top_p_spectral_tokens` in {0.1, 0.3, 0.5}.
 - [ ] A4 — trust region: ASPO vs. plain PPO-clip (validates SHINY claim 3).
