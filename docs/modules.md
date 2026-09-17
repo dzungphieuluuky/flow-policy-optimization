@@ -8,7 +8,7 @@ Use this as a jump table. Each row: what the file owns, the key symbols, and the
 |---|---|---|---|
 | `config.py` | Flags, run matrices, budgets, PPO/SAC dataclasses | `PPOConfig / SACConfig`, `RUN_MATRIX` (45) (SJFPO hyperparams live in `configuration_sjfpo.py::SJFPOConfig` only) | Change sweep size → `METHODS/ENVS/SEEDS` env axes or edit axes |
 | `modeling_sjfpo.py` | SJFPO policy (FPO++ ASPO + value update) | `SJFPOPolicy.forward`, `SJFPOAborted` | `test_modeling_sjfpo.py` NaN + param count |
-| `networks.py` | WindowEncoder + spectral + pure-DiT flow | `WindowEncoder` (shared class, owned instances), `SpectralEncoder` (raw obs→DCT→low-K bins, parameter-free), `SJFOPolicyModel` (DiT-8 adaLN-Zero, action tokens only, `c = time + state + spectral`), `CondMLP`, `Critic` (1 cross-attention block) V(s,a) | `test_networks.py` |
+| `networks.py` | WindowEncoder + spectral + pure-DiT flow | `WindowEncoder` (shared class, owned instances), `SpectralEncoder` (raw obs→DCT→low-K bins, parameter-free), `SJFPOFlowModel` (DiT-8 adaLN-Zero, action tokens only, `c = time + state + spectral`), `CondMLP`, `Critic` (1 cross-attention block) V(s,a) | `test_networks.py` |
 | `dct_utils.py` | DCT orthonormal action chunks | `dct`, `idct`, `discounted_chunk_reward` | `test_dct.py` roundtrip `1e-5` |
 | `evaluator.py` | Metrics | `Evaluator` → 3-col CSV `[episode,return,length]` | `test_evaluator.py` schema + `test_pipeline_cpu.py` |
 | `baselines.py` | skrl PPO/SAC | `ppo_train_run` / `sac_train_run`, shared `GaussianPolicyImpl`, `seed_and_wrap_env`, `mean_action_eval_policy`, `baseline_train_loop`, `FrameStackWrapper` | `test_baselines.py` provenance |
@@ -56,7 +56,7 @@ HuggingFace convention (transformers / diffusers / accelerate):
   `log_eval_summary`).
 - CapWords classes with role suffixes: `BertModel` / `BertConfig`
   (transformers), `DDPMScheduler` (diffusers) — mirrored here
-  (`SJFOPolicyModel`, `Critic`, `SJFPOPolicy`).
+  (`SJFPOFlowModel`, `Critic`, `SJFPOPolicy`).
 - File mirrors class: `modeling_bert.py` → `BertModel`; here `sweep.py` →
   `SweepError` / `ScanResult`, `modeling_sjfpo.py` → `SJFPOPolicy` / `SJFPOAborted`.
 - UPPER_SNAKE constants: `BASIS_CACHE`, `OPTIMIZER_FILE`, `COUNTERS_FILE`.

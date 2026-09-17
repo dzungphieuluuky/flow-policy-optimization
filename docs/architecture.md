@@ -16,7 +16,7 @@ flowchart LR
   O[O_t stacked obs] --> DCT["DCT-II dim=1 → [B,16,obs]\nretain K lowest bins → [B,K,obs]"]
   DCT --> TOK["tokens [B,K,obs] (raw bins, no projector)"]
   DCT --> TOK["tokens [B,K,obs] (raw bins, no projector)"]
-  TOK --> DIT["SJFOPolicyModel DiT-8 adaLN-Zero\naction tokens only; c = time + state + spectral"]
+  TOK --> DIT["SJFPOFlowModel DiT-8 adaLN-Zero\naction tokens only; c = time + state + spectral"]
   O --> DIT
   DIT --> V["v̂ velocity [B,Ka,action_dim] (Ka=top_p·H rows)"]
   V --> PAD["zero-pad time → [B,H,action_dim] → IDCT → clamp"]
@@ -39,7 +39,7 @@ frame-stacked env through the shared `baseline_train_loop`
   with no normalization and no projector (last dim stays `obs_dim`). Tests assert
   invariance `B=1` vs `B=32`. (rFFT is reserved for observation.image.)
 - **One encoder per model:** spectral tokens come straight from the raw obs window
-  (no standalone policy state encoder — it lives inside `SJFOPolicyModel`);
+  (no standalone policy state encoder — it lives inside `SJFPOFlowModel`);
   `Critic` owns its critic state encoder, carrying value grads.
   GAE values come from the Critic.
 - **Inference:** deterministic zero-sampling eval (`eps=0`), single

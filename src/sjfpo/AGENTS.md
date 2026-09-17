@@ -5,7 +5,7 @@ MuJoCo-only hotspot — single live train path, chunked flow policy: Transition-
 
 ## Structure
 ```
-networks.py      StateEncoder + ActionEncoder (same definition; policy state encoder inside SJFOPolicyModel, state+action encoders inside Critic) + RunningMeanStd (obs stats, checkpointed) + SpectralEncoder(raw-obs DCT-II, parameter-free) + DiT-8 SJFOPolicyModel ([state;action] tokens) + 1-block cross-attn Critic V(s,a trans real-space +PE query)
+networks.py      StateEncoder + ActionEncoder (same definition; policy state encoder inside SJFPOFlowModel, state+action encoders inside Critic) + RunningMeanStd (obs stats, checkpointed) + SpectralEncoder(raw-obs DCT-II, parameter-free) + DiT-8 SJFPOFlowModel ([state;action] tokens) + 1-block cross-attn Critic V(s,a trans real-space +PE query)
 modeling_sjfpo.py   SJFPOPolicy.forward: ASPO (truncated Ka coeffs, negated) + V(s,a) critic on executed-masked real actions (frozen GAE returns, PPO-clipped) + running obs norm; optimizer = live policy weights; global grad-clip; NaN-guard aborts
 train_sjfpo.py    online train entry: generate_rollout → forward → AdamW step → eval → Hub ckpt
 collector.py      241L — Transition TypedDict (9 LeRobot keys incl. next.action chaining); full-H open-loop chunks; real-space scaled action anchor [H,action_dim] (DCT downstream in forward); all chunks train (trainer zero-pads unexecuted tails)
@@ -33,7 +33,7 @@ utils.py           23L — shared pure helpers (device/dtype/compile), no sjfpo 
 ## Code Map
 | File | Export | Caller |
 |---|---|---|
-| `networks.py` | `WindowEncoder` `RunningMeanStd` `SpectralEncoder` `SJFOPolicyModel` `Critic` `DiTBlock` `CrossAttentionBlock` `CondMLP` | `modeling_sjfpo.py` (live) |
+| `networks.py` | `WindowEncoder` `RunningMeanStd` `SpectralEncoder` `SJFPOFlowModel` `Critic` `DiTBlock` `CrossAttentionBlock` `CondMLP` | `modeling_sjfpo.py` (live) |
 | `collector.py` | `Transition` `collect_chunks` (+`collect_chunks_vec` for `num_envs>1`) | `tests/test_transition_v4.py` |
 | `dct_utils.py` | `dct` `idct` `discounted_chunk_reward` | `collector.py` `fpo_core.py` (DCT) + `tests/test_dct.py` |
 | `utils.py` | `resolve_device` `is_bf16_available` `resolve_compute_dtype` `resolve_mixed_precision` `maybe_compile` | `baselines.py` |

@@ -100,11 +100,11 @@ opentelemetry-proto==1.44.0
 opentelemetry-sdk==1.44.0
 opentelemetry-semantic-conventions==0.65b0
 opt-einsum==3.4.0
-packaging==25.0
+packaging==26.3
 pandas==2.3.3
 pettingzoo==1.27.0
 pillow==12.3.0
-platformdirs==4.11.8
+platformdirs==4.11.9
 pluggy==1.6.0
 propcache==0.5.2
 protobuf==7.36.1
@@ -147,7 +147,7 @@ typing-extensions==4.16.0
 typing-inspect==0.9.0
 typing-inspection==0.4.4
 tzdata==2026.4
-urllib3==2.7.0
+urllib3==2.8.0
 wandb==0.30.0
 werkzeug==3.1.8
 xxhash==4.0.1

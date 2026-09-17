@@ -18,7 +18,7 @@ test_analysis.py (13)        analyze_results IQM/bootstrap
 test_evaluator.py (11)       Evaluator 3-col CSV
 test_transition_v4.py (11)   Transition 9-key/shape/dtype + continuity + next.action chaining + no-aux-head lock
 test_runner_sjfpo.py (9)     train_run incl. CLI smoke
-test_fpo_core.py (9)         ASPO/CFM (imports euler_sample, SJFOPolicyModel)
+test_fpo_core.py (9)         ASPO/CFM (imports euler_sample, SJFPOFlowModel)
 test_collector.py (9)        collect_chunks incl. NEVER-hardcode-horizon guards (fake_env)
 test_pipeline_cpu.py (7)     end-to-end invariants: CSV + 45 + wandb
 test_baselines.py (7)        skrl PPO/SAC drivers + tiny smokes

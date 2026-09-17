@@ -30,7 +30,11 @@ from typing import Literal
 
 import draccus
 import torch  # noqa: E402
-
+torch.backends.fp32_precision = "ieee"
+torch.backends.cuda.matmul.fp32_precision = "ieee"
+torch.backends.cudnn.fp32_precision = "ieee"
+torch.backends.cudnn.conv.fp32_precision = "tf32"
+torch.backends.cudnn.rnn.fp32_precision = "tf32"
 # Ensure src/ is importable
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 

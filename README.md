@@ -10,7 +10,7 @@ Research code: correctness, clarity, reproducibility over infrastructure. See `A
 
 - Stack `T=16` obs frames → `WindowEncoder` (frame proj + sinusoidal PE + 2× pre-norm attn/SwiGLU blocks) → mean-pooled state branch `Z [N,D=128]`.
 - DCT-II over the raw obs window (time axis) → keep `K` lowest low-frequency bins (`K = round(top_p*T)`, default 5) → raw bins = `SpectralEncoder` conditioning `[N,K,obs]`, no projector, no calibration, no encoder latent. (rFFT is reserved for `observation.image`; state and action use DCT.)
-- Action chunk `[N,H=16,action_dim]` stored real-space scaled to [-1,1] (one row per predicted step). Flow (DiT-8, adaLN-Zero, `SJFOPolicyModel`) DCTs it internally and predicts action velocities in DCT space over the `Ka` low-frequency rows.
+- Action chunk `[N,H=16,action_dim]` stored real-space scaled to [-1,1] (one row per predicted step). Flow (DiT-8, adaLN-Zero, `SJFPOFlowModel`) DCTs it internally and predicts action velocities in DCT space over the `Ka` low-frequency rows.
 - Pure-DiT conditioning: a single adaLN vector `c = time + state + spectral`; the transformer sees action-bin tokens only (frequency-slot codes = bin index, so inter-bin attention is frequency-addressable). Sample with `fpo_core.sample` (mode="euler", ascending `t: 0→1`, `x ← x + δ·v̂`); decode with `predict_action_chunk` (pad → IDCT + single `clamp(-1,1)`). Training executes the full predicted chunk open-loop (`H=16`); inference/eval execute the `executed_vs_predicted_ratio=0.5` prefix (8 steps), then replan.
 - Update (`SJFPOPolicy.forward`): per-sample MC log-liks `[N,m=16]` → STE-capped ratios → ASPO surrogate (PPO-clip for `A≥0`, SPO penalty for `A<0`, mean-of-ψ) + `V(s,a)` critic on frozen GAE returns. One AdamW optimizer over the policy's live weights (spectral is parameter-free); global grad-clip; NaN aborts via `SJFPOAborted`.
 - Chunk rollout uses LeRobot-keyed `Transition` dicts; chunk-level semi-MDP GAE (`gae.compute_advantages`, numpy fp64, advantages standardized).
@@ -32,7 +32,7 @@ Single source of truth: every module under `src/sjfpo/` is on the live path. The
 src/sjfpo/          # all production code (MuJoCo-only, fp32)
   config.py         # flags, PPO/SAC dataclasses, RUN_MATRIX
   configuration_sjfpo.py  # sole SJFPO hyperparam source (LeRobot PreTrainedConfig)
-  networks.py       # WindowEncoder, SpectralEncoder, SJFOPolicyModel (pure-DiT), Critic
+  networks.py       # WindowEncoder, SpectralEncoder, SJFPOFlowModel (pure-DiT), Critic
   fpo_core.py       # CFM losses, compute_policy_ratio (STE cap), compute_aspo_surrogate, compute_policy_loss, sample
   collector.py      # Transition dict (9 LeRobot keys), open-loop full-H chunks in training, next.action chaining
   gae.py            # chunk semi-MDP GAE (R_k intradiscounted, γ^L bootstrap, (γλ)^L recursion)

@@ -108,13 +108,6 @@ def compute_cfm_loss(
     clamp: float | None = None,
 ) -> torch.Tensor:
     """CFM squared-velocity loss with selectable reduction.
-
-    Pure reduction over precomputed velocities (interpolation/targets built
-    by the caller). "scalar" = mean over everything; "sample" = mean over
-    flow coords → clamped per-sample ℓ for the ratio math; "bin" = mean over
-    action dims only → clamped per-bin ℓ [n, mc, K] for per-bin ratio
-    diagnostics (read-only in Phase 0; bin.mean(-1) reproduces "sample"
-    wherever the clamp does not bind).
     """
     if v_hat.shape != v_star.shape:
         raise ValueError(

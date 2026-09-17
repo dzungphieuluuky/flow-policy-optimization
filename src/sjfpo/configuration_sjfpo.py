@@ -32,10 +32,7 @@ class SJFPOConfig(PreTrainedConfig):
     chunks_per_update: int = 128
     num_epochs: int = 10
     num_minibatches: int = 8
-    num_envs: int = 8  # parallel rollout envs (AsyncVectorEnv); total env-steps
-    # per update stay constant, so wall-clock collection scales ~linearly.
-    # 8 fits a 16-core/32GB laptop (one MuJoCo proc is a few hundred MB); 1
-    # reproduces the legacy single-env loop exactly.
+    num_envs: int = 8  # parallel rollout environments; 1 uses single-env collection
 
     gamma: float = 0.99
     gae_lambda: float = 0.95
@@ -56,7 +53,7 @@ class SJFPOConfig(PreTrainedConfig):
     # every channel sits at angle <= 1 and t is nearly unresolvable.
 
     vf_coef: float = 0.1
-    kl_coef: float = 0.01
+    kl_coef: float = 0.00
     ema_decay: float = 0.999
     grad_clip_norm: float = 1.0
 

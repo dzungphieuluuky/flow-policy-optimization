@@ -38,7 +38,9 @@ def apply_matrix_along_dim(
     x: torch.Tensor, dim: int, mat: torch.Tensor
 ) -> torch.Tensor:
     """Right-multiply the ``dim`` slice of ``x`` by ``mat`` (same shape out)."""
+    # convert negative dimension into correspoding positive dimension
     dim = dim % x.dim()
+    # move the dim the last dimension it not already
     if dim != x.dim() - 1:
         x = x.movedim(dim, -1)
     out = x @ mat.to(x.device)
