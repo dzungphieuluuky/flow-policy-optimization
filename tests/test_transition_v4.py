@@ -231,7 +231,6 @@ class TestNoAuxHeadV4:
         assert set(info) == {
             "policy_loss",
             "value_loss",
-            "kl_loss",
             "mean_log_ratio",
             "flow_rho_mean",
             "flow_rho_std",

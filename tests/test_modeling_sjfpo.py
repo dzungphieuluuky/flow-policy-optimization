@@ -22,7 +22,6 @@ OBS_DIM, ACT_DIM = 4, 2
 INFO_KEYS = {
     "policy_loss",
     "value_loss",
-    "kl_loss",
     "mean_log_ratio",
     "flow_rho_mean",
     "flow_rho_std",
@@ -270,11 +269,14 @@ def test_optim_params_actor_critic_groups():
     assert [g["weight_decay"] for g in opt.param_groups][1] == 0.0
 
 
-def test_ema_anchor_zero_kl_at_init():
+def test_loss_contains_only_policy_and_value():
     policy = SJFPOPolicy(make_config())
     policy.train()
-    _, info = policy(make_batch())
-    assert info["kl_loss"] == 0.0  # deepcopy anchor, deterministic forward
+    loss, info = policy(make_batch())
+    assert "kl_loss" not in info
+    assert loss.item() == pytest.approx(
+        info["policy_loss"] + policy.config.vf_coef * info["value_loss"]
+    )
 
 
 def test_update_ema_decay_zero_copies_live_weights():
@@ -287,15 +289,15 @@ def test_update_ema_decay_zero_copies_live_weights():
         assert torch.equal(p_ema, p)
 
 
-def test_kl_loss_positive_when_actor_drifts():
-    policy = SJFPOPolicy(make_config(ema_decay=0.5, kl_coef=1.0))
-    with torch.no_grad():
-        for p in policy.actor.parameters():
-            p.add_(0.01)
-    policy.update_ema()  # anchor halfway: orig+0.5 vs live orig+1
-    policy.train()
+def test_loss_does_not_use_ema_actor(monkeypatch):
+    policy = SJFPOPolicy(make_config(kl_coef=1.0))
+
+    def unexpected_forward(*args, **kwargs):
+        pytest.fail("EMA actor must not be evaluated for training loss")
+
+    monkeypatch.setattr(policy.ema_actor, "forward", unexpected_forward)
     loss, info = policy(make_batch())
-    assert info["kl_loss"] > 0.0
+    assert "kl_loss" not in info
     assert torch.isfinite(loss)
 
 
