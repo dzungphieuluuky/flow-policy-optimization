@@ -113,14 +113,17 @@ class WindowEncoder(nn.Module):
 
     def forward(self, x: torch.Tensor, key_mask: torch.Tensor | None = None) -> torch.Tensor:
         """[B, L, in_dim] -> [B, L, hidden_dim]; pad rows masked as keys when given."""
+        # ------- project frames into latent space + add position codes -------
         h = self.frame_proj(x)
         h = self.pos_encoding(h)
         if key_mask is not None:
             key_mask = torch.as_tensor(key_mask, dtype=torch.bool, device=h.device)
+        # ------- self-attention block 1 (pad rows masked as keys) -------
         n = self.norm1(h)
         attn, _ = self.attn1(n, n, n, key_padding_mask=key_mask)
         h = h + attn
         h = h + self.mlp1(self.norm2(h))
+        # ------- self-attention block 2 -------
         n = self.norm3(h)
         attn, _ = self.attn2(n, n, n, key_padding_mask=key_mask)
         h = h + attn
@@ -232,12 +235,15 @@ class DiTBlock(nn.Module):
 
     def forward(self, x: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
         """([B, H, D], [B, D]) -> [B, H, D]."""
+        # ------- regress adaLN-Zero modulation from condition -------
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaLN(c)[
             :, None, :
         ].chunk(6, dim=-1)
+        # ------- gated self-attention residual -------
         h = modulate(self.norm1(x), shift_msa, scale_msa)
         attn, _ = self.attn(h, h, h)
         x = x + gate_msa * attn
+        # ------- gated MLP residual -------
         out = x + gate_mlp * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
         self.last_gate_norms = {
             "gate_msa": gate_msa.detach().pow(2).mean().sqrt(),
@@ -277,10 +283,13 @@ class StateConditioner(nn.Module):
 
     def forward(self, states: torch.Tensor) -> torch.Tensor:
         """[B, T, obs] -> [B, D]."""
+        # ------- encode raw window into state tokens -------
         q = self.norm_q(self.state_encoder(states))
+        # ------- encode DCT bins into spectral tokens -------
         kv = self.norm_kv(
             self.key_proj(self.bin_encoding(self.bin_norm(dct(states, dim=1))))
         )
+        # ------- fuse spectral into state by cross-attention + pool -------
         attn, _ = self.attn(q, kv, kv, need_weights=False)
         return self.out_proj((q + attn).mean(dim=1))
 
@@ -333,13 +342,17 @@ class SJFPOFlowModel(nn.Module):
 
         Ka = top-p low-frequency action rows (<= H); condition is the
         pre-fused state vector (see StateConditioner)."""
+        # ------- embed flow timestep -------
         timesteps_embedding = self.timestep_embedder(t).to(
             device=x_t.device, dtype=x_t.dtype
         )
         if timesteps_embedding.dim() == 1:
             timesteps_embedding = timesteps_embedding.expand(x_t.shape[0], -1)
+        # ------- blend time + fused state into one adaLN vector -------
         c = self.time_mlp(timesteps_embedding) + condition.to(dtype=x_t.dtype)
+        # ------- embed noisy action tokens + add slot codes -------
         h = self.bin_encoding(self.in_proj(x_t))
+        # ------- denoise through DiT blocks -------
         for block in self.blocks:
             h = block(h, c)
         self.last_cond_stats = {
@@ -353,6 +366,7 @@ class SJFPOFlowModel(nn.Module):
                 for k in ("gate_msa", "gate_mlp", "scale_msa", "scale_mlp")
             },
         }
+        # ------- read out velocity -------
         shift_out, scale_out = self.adaLN_out(c)[:, None, :].chunk(2, dim=-1)
         return self.out(modulate(self.norm_out(h), shift_out, scale_out))
 

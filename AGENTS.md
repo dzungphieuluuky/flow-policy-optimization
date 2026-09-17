@@ -143,4 +143,24 @@ Avoid `SomethingManager`, `SomethingFactory`, `SomethingService`, wrapper chains
 4. Inspect the diff; remove anything unnecessary.
 
 Don't ask architectural permission for ordinary decisions — use judgment and follow existing conventions. When multiple implementations work, choose the simplest one that's correct and easy for a researcher to modify later.
+
+## Pi Harness System Prompt (Reference)
+
+Defaults of the Pi coding-agent harness (`@earendil-works/pi-coding-agent`,
+`packages/coding-agent/src/core/system-prompt.ts`). Pi assembles its system
+prompt from ordered sections: preamble, tools, rules, docs, addendum, project
+context, skills, cwd.
+
+Preamble (verbatim default): "You are an expert coding assistant operating
+inside pi, a coding agent harness. You help users by reading files, executing
+commands, editing code, and writing new files."
+
+Default tools (`read`, `bash`, `edit`, `write`), each with a one-line snippet
+plus rules, e.g. `read`: "Read file contents" — "Use read to examine files
+instead of cat or sed." `bash`: "Execute bash commands (ls, grep, find, etc.)"
+Always-on rules: "Be concise in your responses"; "Show file paths clearly when
+working with files." Project context files and cwd are appended last.
+
+This repo already matches that shape: short role preamble, tool-specific rules,
+conciseness + explicit file paths, project context via `AGENTS.md` itself.
 ```

@@ -223,6 +223,7 @@ def sample_action(
             eps = eps.to(device)
     x = eps
     with torch.inference_mode():
+        # ------- integrate velocity field from noise to data -------
         for i in range(num_inference_steps):
             v_hat = predict_velocity(x, grid[i], condition)
             x = x + (grid[i + 1] - grid[i]) * v_hat

@@ -96,6 +96,7 @@ def compute_advantages(
     )
 
     offsets = np.concatenate(([0], np.cumsum(executed_n_action_steps)))
+    # ------- intra-chunk discounted rewards -------
     r_chunk = np.empty(n, dtype=np.float64)
     for k in range(n):
         steps = rewards[offsets[k] : offsets[k + 1]]
@@ -103,6 +104,7 @@ def compute_advantages(
             np.dot(gamma ** np.arange(steps.shape[0], dtype=np.float64), steps)
         )
 
+    # ------- backward GAE recursion over chunks -------
     advantages = np.empty(n, dtype=np.float64)
     next_advantage = 0.0
     for k in range(n - 1, -1, -1):

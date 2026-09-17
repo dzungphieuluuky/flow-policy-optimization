@@ -186,16 +186,19 @@ class SJFPOPolicy(PreTrainedPolicy):
         """Full action chunk [B, H, action_dim]; ``noise=True`` samples, else zeros."""
         noise = kwargs.get("noise", False)
         cfg = self.config
+        # ------- standardize + normalize obs window -------
         states = self.standardize_obs_tensor(batch[OBS_STATE])
         states = states.to(next(self.actor.parameters()).device)
         states = self.preprocessor({OBS_STATE: states})[OBS_STATE]
         top_k_spectral_action_tokens = max(1, round(cfg.top_p_spectral_tokens * cfg.action_horizon))
         action_dim = int(self.config.action_feature.shape[0])
         with torch.inference_mode(), autocast_context(states.device):
+            # ------- fuse state into one condition vector -------
             condition = self.conditioner(states)  # [B, D] fused outside the flow head
             shape = (states.shape[0], top_k_spectral_action_tokens, action_dim)
             eps = None if noise else torch.zeros(*shape, device=states.device)
             num_inference_steps = cfg.num_euler_steps if noise else cfg.num_inference_steps
+            # ------- denoise action chunk with Euler sampler -------
             x0 = sample_action(
                 lambda x, t, c: self.actor(x, t, c),
                 shape,
@@ -205,6 +208,7 @@ class SJFPOPolicy(PreTrainedPolicy):
                 device=states.device,
             )
             x0 = x0.float()
+        # ------- pad + decode chunk back to action space -------
         x0 = torch.nn.functional.pad(x0, (0, 0, 0, cfg.action_horizon - top_k_spectral_action_tokens))
         scaled = idct(x0, dim=1).clamp(-1.0, 1.0)
         return self.postprocessor({ACTION: scaled})[ACTION]
@@ -243,7 +247,7 @@ class SJFPOPolicy(PreTrainedPolicy):
     ) -> dict[str, torch.Tensor]:
         """Roll out open-loop chunks; return a forward-ready batch.
 
-        Full-horizon noisy rollouts, V(s,a) under frozen stats, chunk GAE.
+        Full-horizon noisy rollouts, V(s) under frozen stats, chunk GAE.
         Obs stats stay frozen here; ``forward`` updates them in train mode.
         """
         if total_steps <= 0:
@@ -264,6 +268,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             return chunk.cpu()
 
         if int(getattr(env, "num_envs", 1)) > 1:
+            # ------- collect open-loop chunks from env -------
             chunks = collect_chunks_vec(
                 env,
                 _propose_batch,
@@ -274,6 +279,7 @@ class SJFPOPolicy(PreTrainedPolicy):
                 n_action_steps=cfg.action_horizon,
             )
         else:
+            # ------- collect open-loop chunks from env -------
             chunks = collect_chunks(
                 env,
                 _propose,
@@ -293,12 +299,14 @@ class SJFPOPolicy(PreTrainedPolicy):
             )
             states_n = self.preprocessor({OBS_STATE: states})[OBS_STATE]
             next_states_n = self.preprocessor({OBS_STATE: next_states})[OBS_STATE]
+            # ------- score states with frozen V(s) critic -------
             with autocast_context(device):
                 values = self.critic(states_n).float()
                 v_next_all = self.critic(next_states_n).float()
             terminated = to_tensor([bool(c[DONE]) for c in chunks], dtype=torch.bool, device=device)
             next_values = torch.where(terminated, 0.0, v_next_all)
         all_rewards = np.concatenate([to_numpy_1d(c[REWARD]) for c in chunks])
+        # ------- chunk GAE into advantages + returns -------
         advantages, returns = compute_advantages(
             all_rewards,
             to_numpy_1d(values),
@@ -374,9 +382,10 @@ class SJFPOPolicy(PreTrainedPolicy):
             is_pad = to_tensor(is_pad, dtype=torch.bool, device=actions.device)
             a_exec = actions * (~is_pad).to(actions.dtype).unsqueeze(-1)
         top_k_spectral_action_tokens = max(1, round(cfg.top_p_spectral_tokens * cfg.action_horizon))
-        # K-lowest filter: action only. State conditioning is fused externally.
+        # ------- keep K-lowest action DCT bins, drop the rest -------
         spectral_action_tokens = filter_low_freq(dct(a_exec, dim=1), top_k_spectral_action_tokens, dim=1)
         n = states.shape[0]
+        # ------- draw flow timesteps + noise -------
         tau = sample_timesteps(
             cfg.num_mc_samples,
             (cfg.min_timestep, cfg.max_timestep),
@@ -387,18 +396,20 @@ class SJFPOPolicy(PreTrainedPolicy):
             device=states.device,
         )
 
+        # ------- interpolate noisy anchors along the flow -------
         tau_bn, eps_flat, a_rep, flow_shape, num_mc = run_mc_simulation(
             spectral_action_tokens, eps, tau
         )
         x_t_flat = (
             (1.0 - tau_bn[:, None]) * eps_flat + tau_bn[:, None] * a_rep
         ).reshape(-1, *flow_shape)  # (1−t)·ε+t·a
+        # ------- fuse states once, replicate over MC draws -------
         cond_flat = einx.id(
             "n m d -> (n m) d", einx.id("n d -> n m d", self.conditioner(states), m=num_mc)
         )
         tau_flat = einx.id("m -> n m", tau, n=n).reshape(n * num_mc)
 
-        # Frozen snapshot (l_old) vs live weights; DCT/CFM/ratio math stays fp32.
+        # ------- live velocities vs frozen snapshot velocities -------
         with torch.inference_mode(), autocast_context(states.device):
             old_cond_flat = einx.id(
                 "n m d -> (n m) d",
@@ -408,6 +419,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         with autocast_context(states.device):
             v_new = self.actor(x_t_flat, tau_flat, cond_flat).float()
         cond_stats = dict(self.actor.last_cond_stats)
+        # ------- CFM losses under target velocities -------
         v_star = self.compute_target_velocity(spectral_action_tokens, eps)
         l_old = compute_cfm_loss(
             v_old.reshape(n, num_mc, *flow_shape), v_star, reduce_mode="sample"
@@ -416,11 +428,13 @@ class SJFPOPolicy(PreTrainedPolicy):
             v_new.reshape(n, num_mc, *flow_shape), v_star, reduce_mode="sample"
         )
 
+        # ------- ASPO trust-region policy loss -------
         rho = compute_policy_ratio(l_old, l_new, advantage=advantages.unsqueeze(1))
         psi = compute_aspo_surrogate(
             rho, advantages.unsqueeze(1), cfg.epsilon_low, cfg.epsilon_high
         )
         policy_per_chunk = -psi.mean(dim=1)
+        # ------- PPO clipped value loss on raw returns -------
         with autocast_context(states.device):
             v_pred = self.critic(states).float()
         # PPO standard: regress RAW returns (no per-batch whitening; the
