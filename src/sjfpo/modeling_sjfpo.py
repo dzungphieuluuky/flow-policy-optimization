@@ -21,7 +21,7 @@ from lerobot.processor.converters import to_tensor
 from lerobot.utils.constants import ACTION, DONE, OBS_STATE, REWARD, TRUNCATED
 
 from sjfpo.configuration_sjfpo import SJFPOConfig
-from sjfpo.collector import bootstrap_action_lengths, collect_chunks, collect_chunks_vec
+from sjfpo.collector import bootstrap_action_lengths, collect_chunks
 from sjfpo.dct_utils import dct, idct, mask_actions
 from sjfpo.fpo_core import (
     compute_aspo_surrogate,
@@ -37,7 +37,7 @@ from sjfpo.utils import autocast_context, to_numpy_1d, to_tensor_1d
 from sjfpo.networks import (
     Critic,
     RunningMeanStd,
-    SJFOPolicyModel,
+    SJFPOFlowModel,
     SpectralEncoder,
 )
 from sjfpo.processor_sjfpo import make_sjfpo_pre_post_processors
@@ -62,7 +62,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         config.validate_features()
         obs_dim = int(config.robot_state_feature.shape[0])
         action_dim = int(config.action_feature.shape[0])
-        self.actor = SJFOPolicyModel(
+        self.actor = SJFPOFlowModel(
             action_dim,
             obs_dim,
             hidden_dim=config.hidden_dim,
@@ -167,7 +167,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         for p_ema, p in zip(self.ema_actor.parameters(), live.parameters()):
             p_ema.mul_(decay).add_(p.detach(), alpha=1.0 - decay)
 
-    def _window_from_batch(self, states: torch.Tensor) -> torch.Tensor:
+    def standardize_obs_tensor(self, states: torch.Tensor) -> torch.Tensor:
         """Coerce [B, T, obs] / [B, obs] / [T, obs] to a [B, T, obs] window."""
         states = to_tensor(states, dtype=torch.float32)
         if states.dim() == 3:
@@ -186,7 +186,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         """Full action chunk [B, H, action_dim]; ``noise=True`` samples, else zeros."""
         noise = kwargs.get("noise", False)
         cfg = self.config
-        states = self._window_from_batch(batch[OBS_STATE])
+        states = self.standardize_obs_tensor(batch[OBS_STATE])
         states = states.to(next(self.actor.parameters()).device)
         states = self.preprocessor({OBS_STATE: states})[OBS_STATE]
         top_k_spectral_action_tokens = max(1, round(cfg.top_p_spectral_tokens * cfg.action_horizon))
@@ -258,32 +258,15 @@ class SJFPOPolicy(PreTrainedPolicy):
             )[0]
             return chunk.cpu()  # env stepping stays on CPU
 
-        def _propose_batch(states: torch.Tensor) -> torch.Tensor:
-            chunk = self.predict_action_chunk(
-                {OBS_STATE: states.to(device)}, noise=noisy
-            )
-            return chunk.cpu()  # env stepping stays on CPU
-
-        if int(getattr(env, "num_envs", 1)) > 1:
-            chunks = collect_chunks_vec(
-                env,
-                _propose_batch,
-                total_steps,
-                action_low,
-                action_high,
-                n_obs_steps=cfg.n_obs_steps,
-                n_action_steps=cfg.action_horizon,
-            )
-        else:
-            chunks = collect_chunks(
-                env,
-                _propose,
-                total_steps,
-                action_low,
-                action_high,
-                n_obs_steps=cfg.n_obs_steps,
-                n_action_steps=cfg.action_horizon,
-            )
+        chunks = collect_chunks(
+            env,
+            _propose,
+            total_steps,
+            action_low,
+            action_high,
+            n_obs_steps=cfg.n_obs_steps,
+            n_action_steps=cfg.action_horizon,
+        )
         executed_n_action_steps = to_tensor(
             [int(c["executed_n_action_steps"]) for c in chunks], dtype=torch.long
         )  # [N] CPU; compiled critic takes the device copy below
@@ -433,11 +416,14 @@ class SJFPOPolicy(PreTrainedPolicy):
             v_new = self.compute_predicted_velocity(
                 x_t_flat, tau_flat, cond_flat, state_flat
             ).float()
-        cond_stats = dict(self.actor.last_cond_stats)  # live-actor diagnostics
+        cond_stats = dict(self.actor.last_cond_stats) 
         # Fixed-variance Gaussian KL(current || EMA) on velocities.
-        with torch.inference_mode(), autocast_context(states.device):
-            v_ema = self.ema_actor(x_t_flat, tau_flat, cond_flat, state_flat).float()
-        kl_loss = (v_new - v_ema).pow(2).mean()
+        if cfg.kl_coef > 0:
+            with torch.inference_mode(), autocast_context(states.device):
+                v_ema = self.ema_actor(x_t_flat, tau_flat, cond_flat, state_flat).float()
+            kl_loss = (v_new - v_ema).pow(2).mean()
+        else:
+            kl_loss = torch.tensor(0)
 
         v_star = self.compute_target_velocity(spectral_action_tokens, eps)
         l_old = compute_cfm_loss(
@@ -459,7 +445,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         # the value loss scale stays stable across reward scales. old_values use
         # the same batch stats so the PPO-style clip stays in the same space.
         returns_mean = returns_d.mean()
-        returns_std = returns_d.std(unbiased=False) + 1e-8
+        returns_std = returns_d.std(unbiased=False).clamp_min(1e-8)
         returns_norm = (returns_d - returns_mean) / returns_std
         se = (v_pred - returns_norm).pow(2)
         if "values" in batch:  # PPO-style clipped value loss against v_old
