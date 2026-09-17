@@ -335,7 +335,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         Outputs:
             (loss, info_dict) where ``loss`` is scalar if ``reduction="mean"``
             or per-chunk [B] if ``reduction="none"``. ``info_dict`` holds detached
-            scalar summaries: ``policy_loss``, ``value_loss``, ``kl_loss``,
+            scalar summaries: ``policy_loss``, ``value_loss`` (kl_loss removed),
             ``mean_log_ratio``, plus diagnostics (auto-logged to wandb as
             ``train/...``): ``flow_rho_mean/std``, ``flow_v_star_rms``, and
             ``cond_*`` RMS norms (``temb``, ``pooled``, ``c``, per-block mean
@@ -417,14 +417,8 @@ class SJFPOPolicy(PreTrainedPolicy):
                 x_t_flat, tau_flat, cond_flat, state_flat
             ).float()
         cond_stats = dict(self.actor.last_cond_stats) 
-        # Fixed-variance Gaussian KL(current || EMA) on velocities.
-        if cfg.kl_coef > 0:
-            with torch.inference_mode(), autocast_context(states.device):
-                v_ema = self.ema_actor(x_t_flat, tau_flat, cond_flat, state_flat).float()
-            kl_loss = (v_new - v_ema).pow(2).mean()
-        else:
-            kl_loss = torch.tensor(0)
-
+        # KL/EMA anchor removed from pipeline per instruction.
+        kl_loss = torch.tensor(0.0)
         v_star = self.compute_target_velocity(spectral_action_tokens, eps)
         l_old = compute_cfm_loss(
             v_old.reshape(n, num_mc, *flow_shape), v_star, reduce_mode="sample"
@@ -462,9 +456,9 @@ class SJFPOPolicy(PreTrainedPolicy):
         if reduction == "mean":
             policy_loss = policy_per_chunk.mean()
             value_loss = value_per_chunk.mean()
-            loss = policy_loss + cfg.vf_coef * value_loss + cfg.kl_coef * kl_loss
+            loss = policy_loss + cfg.vf_coef * value_loss
         elif reduction == "none":
-            loss = policy_per_chunk + cfg.vf_coef * value_per_chunk + cfg.kl_coef * kl_loss
+            loss = policy_per_chunk + cfg.vf_coef * value_per_chunk
         else:
             raise ValueError(f"reduction={reduction!r} must be 'mean' or 'none'")
         if not bool(torch.isfinite(loss).all()):
@@ -511,7 +505,6 @@ class SJFPOPolicy(PreTrainedPolicy):
         return loss, {
             "policy_loss": float(policy_per_chunk.mean().detach()),
             "value_loss": float(value_per_chunk.mean().detach()),
-            "kl_loss": float(kl_loss.detach()),
             "mean_log_ratio": mean_log_ratio,
             "flow_rho_mean": rho_mean,
             "flow_rho_std": rho_std,
