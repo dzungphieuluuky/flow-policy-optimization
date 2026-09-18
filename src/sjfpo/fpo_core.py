@@ -105,11 +105,15 @@ def compute_cfm_loss(
     v_hat: torch.Tensor,
     v_star: torch.Tensor,
     reduce_mode: str = "scalar",
+    clamp: float | None = None,
 ) -> torch.Tensor:
     """CFM squared-velocity loss with selectable reduction (paper Eq.7-8).
 
-    Pure mean-squared error; no clamping. ``sample`` averages over flow dims
-    per (chunk, mc) draw, ``bin`` keeps frequency bins.
+    OFF ``sqrt`` convention (``rl_cfg.cfm_loss_reduction`` default): per-draw
+    losses are ``sum / sqrt(D)`` over flow dims, which preserves variance
+    across action dims instead of shrinking log-ratios like a mean. ``bin``
+    applies the same scaling per frequency bin (diagnostic path only).
+    Symmetric max-clamp (OFF ``cfm_loss_clamp``) applies to ``sample``/``bin``.
     """
     if v_hat.shape != v_star.shape:
         raise ValueError(
@@ -117,15 +121,21 @@ def compute_cfm_loss(
         )
     squared_errors = (v_hat - v_star).pow(2)
     if reduce_mode == "scalar":
+        if clamp is not None:
+            raise ValueError("clamp applies to reduce_mode='sample'/'bin' only")
         return squared_errors.mean()
     elif reduce_mode == "sample":
-        return squared_errors.flatten(2).mean(dim=-1)
+        flat = squared_errors.flatten(2)
+        reduced = flat.sum(dim=-1) / math.sqrt(flat.shape[-1])
     elif reduce_mode == "bin":
-        return squared_errors.mean(dim=-1)
+        reduced = squared_errors.sum(dim=-1) / math.sqrt(squared_errors.shape[-1])
     else:
         raise ValueError(
             f"reduce_mode={reduce_mode!r} must be 'scalar', 'sample', or 'bin'"
         )
+
+    clamp = _DEFAULTS.cfm_clamp if clamp is None else clamp
+    return torch.clamp(reduced, max=clamp)
 
 
 def compute_aspo_surrogate(
@@ -135,8 +145,8 @@ def compute_aspo_surrogate(
 ) -> torch.Tensor:
     """ASPO piecewise trust region ψ(ρ, Â) (paper Eq.12).
 
-    Single clipping parameter for both branches: Â ≥ 0 PPO-clip,
-    Â < 0 SPO quadratic. Elementwise; scalars and tensors both supported.
+    Single clipping parameter for both branches: Â > 0 PPO-clip,
+    Â ≤ 0 SPO quadratic. Elementwise; scalars and tensors both supported.
     """
     epsilon_clip = _DEFAULTS.epsilon_clip if epsilon_clip is None else epsilon_clip
     pos = torch.min(
@@ -144,18 +154,30 @@ def compute_aspo_surrogate(
         torch.clamp(rho, 1.0 - epsilon_clip, 1.0 + epsilon_clip) * advantage,
     )
     neg = rho * advantage - (advantage.abs() / (2.0 * epsilon_clip)) * (rho - 1.0) ** 2
-    return torch.where(advantage >= 0, pos, neg)
+    return torch.where(advantage > 0, pos, neg)
 
 
 def compute_policy_ratio(
     l_old: torch.Tensor,
     l_new: torch.Tensor,
+    cfm_clamp: float | None = None,
+    cap: float | None = None,
 ) -> torch.Tensor:
-    """Per-sample importance ratios (paper Eq.10): ρ_i = exp(ℓ_old,i − ℓ_new,i).
+    """Per-sample importance ratios (paper Eq.10 + OFF clamps).
 
-    Pure exponential; no negative-advantage clamp, no STE cap.
+    ρ_i = exp(ℓ_old,i − ℓ_new,i) with OFF's stabilizers: symmetric max-clamp
+    on both losses (``cfm_loss_clamp``) and an STE cap on the log-ratio
+    (forward clamped, gradient flows; ``cfm_diff_clamp_max``). OFF's separate
+    negative-advantage max coincides with ``cfm_clamp`` here (single knob),
+    so the symmetric clamp already covers it.
     """
-    return torch.exp(l_old - l_new)
+    cfm_clamp = _DEFAULTS.cfm_clamp if cfm_clamp is None else cfm_clamp
+    l_old_c = torch.clamp(l_old, max=cfm_clamp)
+    l_new_c = torch.clamp(l_new, max=cfm_clamp)
+    cap = _DEFAULTS.log_ratio_cap if cap is None else cap
+    delta = l_old_c - l_new_c
+    delta_st = delta + (torch.clamp(delta, max=cap) - delta).detach()
+    return torch.exp(delta_st)
 
 
 def compute_policy_loss(
@@ -163,12 +185,14 @@ def compute_policy_loss(
     l_new: torch.Tensor,
     advantage: torch.Tensor,
     epsilon_clip: float | None = None,
+    cfm_clamp: float | None = None,
+    cap: float | None = None,
 ) -> torch.Tensor:
     """Scalar FPO++ policy objective: MEAN over i of ψ per chunk (Eq.13).
 
     Per-sample ratios enter the mean directly — never an exp-of-mean estimator.
     """
-    rho = compute_policy_ratio(l_old, l_new)
+    rho = compute_policy_ratio(l_old, l_new, cfm_clamp=cfm_clamp, cap=cap)
     return compute_aspo_surrogate(rho, advantage, epsilon_clip).mean()
 
 

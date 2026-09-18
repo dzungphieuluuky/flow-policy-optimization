@@ -37,12 +37,15 @@ most chunked-action treatments hand-wave.
 ## 3. ASPO trust region on estimated likelihoods
 
 Per-sample MC flow losses `ℓ` become ratios `ρ = exp(ℓ_old − ℓ_new)` under one
-shared `(τ, ε)` draw (else `ρ` is pure MC noise), and the objective is
-**mean-of-ψ over samples** (paper Eq.13) — never exp-of-mean. The trust
-region itself is asymmetric and piecewise (`fpo_core.compute_aspo_surrogate`):
+shared `(τ, ε)` draw per collection round (else `ρ` is pure MC noise), and the
+objective is **mean-of-ψ over samples** (paper Eq.13) — never exp-of-mean.
+The trust region follows the official repo (`amazon-far/fpo-control`):
+single `ε_clip = 0.05` for both branches, OFF `sqrt` CFM reduction
+(`sum/sqrt(D)`), symmetric loss clamp `20`, negative-advantage clamp `20`,
+and STE log-ratio cap `10`:
 
-- `Â ≥ 0`: PPO-clip with single bound `clip(ρ, 1−ε, 1+ε)`,
-- `Â < 0`: SPO quadratic penalty `ρÂ − (|Â|/(2ε))·(ρ−1)²` (same `ε`, paper-original).
+- `Â > 0`: PPO-clip with single bound `clip(ρ, 1−ε, 1+ε)`,
+- `Â ≤ 0`: SPO quadratic penalty `ρÂ − (|Â|/(2ε))·(ρ−1)²`.
 
 This is a trust region designed for *noisy estimated* likelihoods rather than
 PPO's exact Gaussian densities — a different problem, hence different math.

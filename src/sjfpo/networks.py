@@ -58,33 +58,71 @@ def resolve_config_value(name: str, override):
     """Policy default for ``name`` unless ``override`` is not None."""
     return override if override is not None else getattr(_DEFAULTS, name)
 
-class PositionalEncoding(nn.Module):
-    """Fixed sinusoidal position codes (stateless: nothing in state_dict)."""
+class SinusoidalEncoding(nn.Module):
+    """Fixed sinusoidal codes (stateless: nothing in state_dict).
+
+    One helper for both uses: position codes (``scale=1``) and flow-time
+    codes (``scale=timestep_scale``, resolving the DDPM ladder designed for
+    integer steps 0-1000 when ``t`` lives in [0, 1]).
+    """
+
+    def __init__(self, dim: int, scale: float = 1.0):
+        super().__init__()
+        if dim <= 0:
+            raise ValueError(f"dim={dim} must be positive")
+        self.dim = dim
+        self.scale = float(scale)
+
+    def frequencies(self, half: int, device) -> torch.Tensor:
+        return torch.exp(
+            -math.log(10000.0)
+            * torch.arange(half, device=device, dtype=torch.float32)
+            / max(half - 1, 1)
+        )
+
+    def add_to(self, x: torch.Tensor, positions: torch.Tensor) -> torch.Tensor:
+        """Add codes for ``positions`` ([..., L]) to ``x`` ([..., L, D])."""
+        scale = 1.0 if self.scale is None else float(self.scale)
+        ang = (positions.to(dtype=torch.float32) * scale).unsqueeze(-1) * self.frequencies(
+            self.dim // 2, x.device
+        )
+        pe = torch.cat([ang.sin(), ang.cos()], dim=-1)
+        if pe.shape[-1] < self.dim:  # odd dim: pad the missing column with zeros
+            pe = torch.nn.functional.pad(pe, (0, self.dim - pe.shape[-1]))
+        return x + pe.to(dtype=x.dtype)
+
+    def encode_times(self, t: torch.Tensor) -> torch.Tensor:
+        """Sinusoidal embedding for continuous timestep values.
+
+        Returns an embedding of shape ``t.shape + (dim,)``; ``t`` is scaled
+        first (flow times in [0, 1] need the DDPM-scale ladder to resolve).
+        """
+        t = torch.as_tensor(t, dtype=torch.float32) * float(self.scale)
+        half = self.dim // 2
+        ang = t.unsqueeze(-1) * self.frequencies(half, t.device)
+        emb = torch.cat([ang.sin(), ang.cos()], dim=-1)
+        if self.dim % 2:
+            emb = torch.nn.functional.pad(emb, (0, 1))
+        return emb
+
+    def positions(self, length: int, device) -> torch.Tensor:
+        """0..L-1 index vector for slot/frame codes."""
+        return torch.arange(length, dtype=torch.float32, device=device)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Add position codes: [..., T, D] -> [..., T, D]."""
-        t, dim = x.shape[-2], x.shape[-1]
-        pos = torch.arange(t, dtype=torch.float32, device=x.device).unsqueeze(1)
-        half = dim // 2
-        freqs = torch.exp(
-            -math.log(10000.0)
-            * torch.arange(half, device=x.device, dtype=torch.float32)
-            / half
-        )
-        ang = pos * freqs
-        pe = torch.cat([ang.sin(), ang.cos()], dim=-1)
-        if pe.shape[-1] < dim:  # odd dim: pad the missing column with zeros
-            pe = torch.nn.functional.pad(pe, (0, dim - pe.shape[-1]))
-        return x + pe[:, :dim].to(dtype=x.dtype)
+        """Add position codes by slot index: [..., L, D] -> [..., L, D]."""
+        return self.add_to(x, self.positions(x.shape[-2], x.device))
 
 class WindowEncoder(nn.Module):
-    """Two pre-norm residual blocks over a time window -> Z[B, L, hidden_dim].
+    """One pre-norm residual block over a time window -> Z[B, L, hidden_dim].
 
     Single class for state windows and action chunks: the only difference is
     the optional boolean key mask [B, L] (True = pad, ignore as attention
-    key), which hides padded tails. Actor and critic each own their instances
-    (no RL weight sharing); call sites keep the ``state_encoder`` /
-    ``action_encoder`` attribute names, so old checkpoints still load.
+    key), which hides padded tails. Only the conditioner owns one now (the
+    critic is a plain MLP on the current frame); call sites keep the
+    ``state_encoder`` / ``action_encoder`` attribute names, so old
+    checkpoints still load. One global-mixing layer suffices for short,
+    smooth proprioceptive windows.
     """
 
     def __init__(
@@ -100,16 +138,12 @@ class WindowEncoder(nn.Module):
         hidden_dim = resolve_config_value("hidden_dim", hidden_dim)
         mlp_ratio = float(resolve_config_value("dit_mlp_ratio", mlp_ratio))
         self.frame_proj = nn.Linear(in_dim, hidden_dim)
-        self.pos_encoding = PositionalEncoding()
+        self.pos_encoding = SinusoidalEncoding(hidden_dim)
         self.norm1 = nn.RMSNorm(hidden_dim, eps=1e-6)
         self.attn1 = nn.MultiheadAttention(hidden_dim, n_heads, batch_first=True)
         self.norm2 = nn.RMSNorm(hidden_dim, eps=1e-6)
         mlp_hidden = int(hidden_dim * mlp_ratio)
         self.mlp1 = SwiGLU(hidden_dim, mlp_hidden, hidden_dim)
-        self.norm3 = nn.RMSNorm(hidden_dim, eps=1e-6)
-        self.attn2 = nn.MultiheadAttention(hidden_dim, n_heads, batch_first=True)
-        self.norm4 = nn.RMSNorm(hidden_dim, eps=1e-6)
-        self.mlp2 = SwiGLU(hidden_dim, mlp_hidden, hidden_dim)
 
     def forward(self, x: torch.Tensor, key_mask: torch.Tensor | None = None) -> torch.Tensor:
         """[B, L, in_dim] -> [B, L, hidden_dim]; pad rows masked as keys when given."""
@@ -118,16 +152,11 @@ class WindowEncoder(nn.Module):
         h = self.pos_encoding(h)
         if key_mask is not None:
             key_mask = torch.as_tensor(key_mask, dtype=torch.bool, device=h.device)
-        # ------- self-attention block 1 (pad rows masked as keys) -------
+        # ------- self-attention block (pad rows masked as keys) -------
         n = self.norm1(h)
         attn, _ = self.attn1(n, n, n, key_padding_mask=key_mask)
         h = h + attn
         h = h + self.mlp1(self.norm2(h))
-        # ------- self-attention block 2 -------
-        n = self.norm3(h)
-        attn, _ = self.attn2(n, n, n, key_padding_mask=key_mask)
-        h = h + attn
-        h = h + self.mlp2(self.norm4(h))
         return h
 
 class RunningMeanStd(nn.Module):
@@ -177,42 +206,6 @@ def modulate(x: torch.Tensor, shift: torch.Tensor, scale: torch.Tensor) -> torch
     return x * (1.0 + scale) + shift
 
 
-class TimestepEmbedder(nn.Module):
-    def __init__(
-        self,
-        time_dim: int,
-        scale: float = None,
-    ):
-        super().__init__()
-        assert time_dim % 2 == 0
-        self.time_dim = time_dim
-        self.scale = scale
-
-    def forward(self, t: torch.Tensor) -> torch.Tensor:
-        """Compute a sinusoidal embedding for continuous timestep values.
-
-        ``t`` is scaled by ``timestep_scale`` before applying the sinusoidal
-        frequency ladder. This is useful when ``t`` is normalized to [0, 1]
-        but the model was designed around DDPM-like timestep magnitudes.
-
-        Returns an embedding of shape ``t.shape + (dim,)``.
-        """
-        scale = float(resolve_config_value("timestep_scale", self.scale))
-        t = torch.as_tensor(t, dtype=torch.float32) * scale
-
-        half = self.time_dim // 2
-        freqs = torch.exp(
-            -math.log(10000.0)
-            * torch.arange(half, dtype=torch.float32, device=t.device)
-            / max(half - 1, 1)
-        )
-        angles = t.unsqueeze(-1) * freqs
-        emb = torch.cat([angles.sin(), angles.cos()], dim=-1)
-        if self.time_dim % 2:
-            emb = torch.nn.functional.pad(emb, (0, 1))
-        return emb
-
-
 class DiTBlock(nn.Module):
     """Pre-norm DiT block with adaLN-Zero conditioning.
 
@@ -255,11 +248,12 @@ class DiTBlock(nn.Module):
 
 
 class StateConditioner(nn.Module):
-    """Fuse raw state window + its DCT bins into one [B, D] vector (Flamingo-style).
+    """Fuse raw state window + its DCT bins into one [B, D] vector.
 
-    State tokens query spectral tokens in one cross-attention block
-    (residual), then mean-pool. Bin order rides a sinusoidal code, so
-    attention weights index frequency.
+    Mean-pool each stream, concat, one linear readout. Bin order rides a
+    sinusoidal code, so the spectral stream stays frequency-indexed. (A
+    query-dependent cross-attention fusion was cut: mean+concat keeps the
+    spectral path at a sixth of the modules.)
     """
 
     def __init__(
@@ -272,26 +266,22 @@ class StateConditioner(nn.Module):
         if obs_dim <= 0:
             raise ValueError("obs_dim must be positive")
         hidden_dim = int(resolve_config_value("hidden_dim", hidden_dim))
+        del n_heads  # accepted for call-site compat; fusion is linear now
         self.state_encoder = WindowEncoder(obs_dim, hidden_dim=hidden_dim)
         self.bin_norm = nn.RMSNorm(obs_dim)
-        self.bin_encoding = PositionalEncoding()  # bin index = frequency order
+        self.bin_encoding = SinusoidalEncoding(obs_dim)  # bin index = frequency order
         self.key_proj = nn.Linear(obs_dim, hidden_dim)
-        self.norm_q = nn.RMSNorm(hidden_dim)
-        self.norm_kv = nn.RMSNorm(hidden_dim)
-        self.attn = nn.MultiheadAttention(hidden_dim, n_heads, batch_first=True)
-        self.out_proj = nn.Linear(hidden_dim, hidden_dim)
+        self.fuse = nn.Linear(2 * hidden_dim, hidden_dim)
 
     def forward(self, states: torch.Tensor) -> torch.Tensor:
         """[B, T, obs] -> [B, D]."""
-        # ------- encode raw window into state tokens -------
-        q = self.norm_q(self.state_encoder(states))
-        # ------- encode DCT bins into spectral tokens -------
-        kv = self.norm_kv(
-            self.key_proj(self.bin_encoding(self.bin_norm(dct(states, dim=1))))
+        # ------- encode raw window + DCT bins, pool each stream -------
+        raw = self.state_encoder(states).mean(dim=1)
+        spec = self.key_proj(self.bin_encoding(self.bin_norm(dct(states, dim=1)))).mean(
+            dim=1
         )
-        # ------- fuse spectral into state by cross-attention + pool -------
-        attn, _ = self.attn(q, kv, kv, need_weights=False)
-        return self.out_proj((q + attn).mean(dim=1))
+        # ------- fuse by concat + linear -------
+        return self.fuse(torch.cat([raw, spec], dim=-1))
 
 
 class SJFPOFlowModel(nn.Module):
@@ -320,9 +310,11 @@ class SJFPOFlowModel(nn.Module):
         dit_mlp_ratio = float(resolve_config_value("dit_mlp_ratio", dit_mlp_ratio))
         dit_time_dim = int(resolve_config_value("dit_time_dim", dit_time_dim))
         self.time_dim = dit_time_dim
-        self.timestep_embedder = TimestepEmbedder(time_dim=self.time_dim)
+        self.timestep_embedder = SinusoidalEncoding(
+            self.time_dim, scale=float(resolve_config_value("timestep_scale", None))
+        )
         self.in_proj = nn.Linear(action_dim, hidden_dim)
-        self.bin_encoding = PositionalEncoding()
+        self.bin_encoding = SinusoidalEncoding(hidden_dim)
         self.time_mlp = CondMLP(dit_time_dim, 4 * hidden_dim, hidden_dim)
         self.blocks = nn.ModuleList(
             DiTBlock(hidden_dim, dit_heads, dit_mlp_ratio) for _ in range(dit_depth)
@@ -343,7 +335,7 @@ class SJFPOFlowModel(nn.Module):
         Ka = top-p low-frequency action rows (<= H); condition is the
         pre-fused state vector (see StateConditioner)."""
         # ------- embed flow timestep -------
-        timesteps_embedding = self.timestep_embedder(t).to(
+        timesteps_embedding = self.timestep_embedder.encode_times(t).to(
             device=x_t.device, dtype=x_t.dtype
         )
         if timesteps_embedding.dim() == 1:
@@ -371,7 +363,12 @@ class SJFPOFlowModel(nn.Module):
         return self.out(modulate(self.norm_out(h), shift_out, scale_out))
 
 class Critic(nn.Module):
-    """State-value baseline V(s) (PPO standard): mean-pooled window encoding."""
+    """State-value baseline V(s) (PPO standard): MLP on the current frame.
+
+    OFF uses an MLP critic; temporal attention is unnecessary for V(s), so
+    the window encoder lives only in the conditioner now. Windows are still
+    accepted ([B, T, obs]) with the last frame scored.
+    """
 
     def __init__(
         self,
@@ -383,11 +380,9 @@ class Critic(nn.Module):
         if obs_dim <= 0:
             raise ValueError("obs_dim must be positive")
         hidden_dim = resolve_config_value("hidden_dim", hidden_dim)
-        self.state_encoder = WindowEncoder(
-            obs_dim, n_obs_steps=n_obs_steps, hidden_dim=hidden_dim
-        )
-        self.out = nn.Linear(hidden_dim, 1)
+        del n_obs_steps  # accepted for call-site compat; only the last frame scores
+        self.mlp = CondMLP(obs_dim, hidden_dim, 1)
 
     def forward(self, states: torch.Tensor) -> torch.Tensor:
         """[B, T, obs] -> [B]."""
-        return self.out(self.state_encoder(states).mean(dim=1)).squeeze(-1)
+        return self.mlp(states[:, -1, :]).squeeze(-1)

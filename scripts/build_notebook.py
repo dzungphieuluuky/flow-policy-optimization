@@ -59,7 +59,7 @@ ENV_CELL = """\
 # Detect runtime and load secrets from the right store.
 import os
 
-def _detect_env():
+def detect_env():
     try:
         if "google.colab" in str(get_ipython()):
             return "colab"
@@ -69,7 +69,7 @@ def _detect_env():
         return "kaggle"
     return "local"
 
-ENV_NAME = _detect_env()
+ENV_NAME = detect_env()
 print(f"Environment: {ENV_NAME}")
 
 def load_secret(key_name):

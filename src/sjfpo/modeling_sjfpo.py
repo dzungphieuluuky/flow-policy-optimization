@@ -243,13 +243,13 @@ class SJFPOPolicy(PreTrainedPolicy):
         cfg = self.config
         device = next(self.parameters()).device
 
-        def _propose(state: torch.Tensor) -> torch.Tensor:
+        def propose(state: torch.Tensor) -> torch.Tensor:
             chunk = self.predict_action_chunk(
                 {OBS_STATE: state.to(device)}, noise=noisy
             )[0]
             return chunk.cpu()  # env stepping stays on CPU
 
-        def _propose_batch(states: torch.Tensor) -> torch.Tensor:
+        def propose_batch(states: torch.Tensor) -> torch.Tensor:
             chunk = self.predict_action_chunk(
                 {OBS_STATE: states.to(device)}, noise=noisy
             )
@@ -259,7 +259,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             # ------- collect open-loop chunks from env -------
             chunks = collect_chunks_vec(
                 env,
-                _propose_batch,
+                propose_batch,
                 total_steps,
                 action_low,
                 action_high,
@@ -270,7 +270,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             # ------- collect open-loop chunks from env -------
             chunks = collect_chunks(
                 env,
-                _propose,
+                propose,
                 total_steps,
                 action_low,
                 action_high,
@@ -280,11 +280,14 @@ class SJFPOPolicy(PreTrainedPolicy):
         executed_n_action_steps = to_tensor(
             [int(c["executed_n_action_steps"]) for c in chunks], dtype=torch.long
         )  # [N] CPU
+        # Stacked once: reused for critic scoring below and the return dict
+        # (stacking must stay outside inference_mode so forward() autograd
+        # can consume the batch).
+        states = torch.stack([c[OBS_STATE] for c in chunks]).to(device)
+        next_states = torch.stack([c["next.observation.state"] for c in chunks]).to(
+            device
+        )
         with torch.inference_mode():
-            states = torch.stack([c[OBS_STATE] for c in chunks]).to(device)
-            next_states = torch.stack([c["next.observation.state"] for c in chunks]).to(
-                device
-            )
             states_n = self.preprocessor({OBS_STATE: states})[OBS_STATE]
             next_states_n = self.preprocessor({OBS_STATE: next_states})[OBS_STATE]
             # ------- score states with frozen V(s) critic -------
@@ -309,13 +312,27 @@ class SJFPOPolicy(PreTrainedPolicy):
         is_pad = torch.arange(cfg.action_horizon).unsqueeze(0) >= to_tensor(
             executed_n_action_steps, dtype=torch.long
         ).unsqueeze(1)
+        n_chunks = len(chunks)
+        action_dim = int(self.config.action_feature.shape[0])
+        # ------- common random numbers: one shared (tau, eps) draw per round -------
+        # Stored in the batch and reused by every forward() on it, so l_old and
+        # l_new always compare the same MC samples (OFF rollout storage). The
+        # behavior snapshot is frozen per round (train loop), never per step.
+        top_k = max(1, round(cfg.top_p_spectral_tokens * cfg.action_horizon))
+        tau = sample_timesteps(
+            cfg.num_mc_samples, (cfg.min_timestep, cfg.max_timestep), device=device
+        )
+        eps = sample_noise((n_chunks, cfg.num_mc_samples, top_k, action_dim), device=device)
+        actions = torch.stack([c["action"] for c in chunks]).to(device)
         return {
-            OBS_STATE: torch.stack([c[OBS_STATE] for c in chunks]).to(device),
-            ACTION: torch.stack([c["action"] for c in chunks]).to(device),
+            OBS_STATE: states,
+            ACTION: actions,
             "action_is_pad": is_pad.to(device),
             "advantages": to_tensor(advantages, dtype=torch.float32, device=device),
             "returns": to_tensor(returns, dtype=torch.float32, device=device),
             "values": values.detach().to(device),
+            "tau": tau.unsqueeze(0).expand(n_chunks, -1).contiguous(),
+            "eps": eps,
         }
 
     def forward(
@@ -331,6 +348,8 @@ class SJFPOPolicy(PreTrainedPolicy):
             values:              [B]  (optional; frozen v_old for clipped value loss)
             action_is_pad:       [B, H] bool (accepted but ignored: the CFM loss
                 always sees the full proposed chunk, paper-original)
+            tau:                 [B, m] (stored rollout draw; reused for CRN)
+            eps:                 [B, m, K, act] (stored rollout draw)
 
         Outputs:
             (loss, info_dict) where ``loss`` is scalar if ``reduction="mean"``
@@ -372,16 +391,34 @@ class SJFPOPolicy(PreTrainedPolicy):
         # before the DCT leaks zeros into every frequency bin).
         spectral_action_tokens = filter_low_freq(dct(actions, dim=1), top_k_spectral_action_tokens, dim=1)
         n = states.shape[0]
-        # ------- draw flow timesteps + noise -------
-        tau = sample_timesteps(
-            cfg.num_mc_samples,
-            (cfg.min_timestep, cfg.max_timestep),
-            device=states.device,
-        )
-        eps = sample_noise(
-            (n, cfg.num_mc_samples, top_k_spectral_action_tokens, actions.shape[-1]),
-            device=states.device,
-        )
+        # ------- MC draws: reuse the rollout's stored (tau, eps) when present ---
+        # (common random numbers: l_old/l_new compare identical samples across
+        # all epochs, OFF rollout storage). Batches built by hand (tests) fall
+        # back to a fresh draw.
+        if "tau" in batch and "eps" in batch:
+            tau = to_tensor(batch["tau"], dtype=torch.float32, device=states.device)
+            tau = tau[0] if tau.dim() == 2 else tau
+            eps = to_tensor(batch["eps"], dtype=torch.float32, device=states.device)
+            if tuple(eps.shape) != (
+                n,
+                cfg.num_mc_samples,
+                top_k_spectral_action_tokens,
+                actions.shape[-1],
+            ):
+                raise ValueError(
+                    f"stored eps shape {tuple(eps.shape)} != "
+                    f"({(n, cfg.num_mc_samples, top_k_spectral_action_tokens, actions.shape[-1])})"
+                )
+        else:
+            tau = sample_timesteps(
+                cfg.num_mc_samples,
+                (cfg.min_timestep, cfg.max_timestep),
+                device=states.device,
+            )
+            eps = sample_noise(
+                (n, cfg.num_mc_samples, top_k_spectral_action_tokens, actions.shape[-1]),
+                device=states.device,
+            )
 
         # ------- interpolate noisy anchors along the flow -------
         tau_bn, eps_flat, a_rep, flow_shape, num_mc = run_mc_simulation(
@@ -394,51 +431,50 @@ class SJFPOPolicy(PreTrainedPolicy):
         cond_flat = einx.id(
             "n m d -> (n m) d", einx.id("n d -> n m d", self.conditioner(states), m=num_mc)
         )
-        tau_flat = einx.id("m -> n m", tau, n=n).reshape(n * num_mc)
 
         # ------- live velocities vs frozen snapshot velocities -------
+        # (tau_bn already holds the flattened MC times; no second expansion.)
         with torch.inference_mode(), autocast_context(states.device):
             old_cond_flat = einx.id(
                 "n m d -> (n m) d",
                 einx.id("n d -> n m d", self.old_conditioner(states), m=num_mc),
             )
-            v_old = self.old_actor(x_t_flat, tau_flat, old_cond_flat).float()
+            v_old = self.old_actor(x_t_flat, tau_bn, old_cond_flat).float()
         with autocast_context(states.device):
-            v_new = self.actor(x_t_flat, tau_flat, cond_flat).float()
+            v_new = self.actor(x_t_flat, tau_bn, cond_flat).float()
         cond_stats = dict(self.actor.last_cond_stats)
         # ------- CFM losses under target velocities -------
         v_star = self.compute_target_velocity(spectral_action_tokens, eps)
-        l_old = compute_cfm_loss(
-            v_old.reshape(n, num_mc, *flow_shape), v_star, reduce_mode="sample"
-        )
-        l_new = compute_cfm_loss(
-            v_new.reshape(n, num_mc, *flow_shape), v_star, reduce_mode="sample"
-        )
+        v_old_r = v_old.reshape(n, num_mc, *flow_shape)
+        v_new_r = v_new.reshape(n, num_mc, *flow_shape)
+        l_old = compute_cfm_loss(v_old_r, v_star, reduce_mode="sample")
+        l_new = compute_cfm_loss(v_new_r, v_star, reduce_mode="sample")
 
-        # ------- ASPO trust-region policy loss (paper Eq.12-13) -------
+        # ------- ASPO trust-region policy loss (paper Eq.12-13, OFF clamps) ----
+        adv_mc = advantages.unsqueeze(1)
         rho = compute_policy_ratio(l_old, l_new)
         psi = compute_aspo_surrogate(
-            rho, advantages.unsqueeze(1), cfg.epsilon_clip
+            rho, adv_mc, cfg.epsilon_clip
         )
         policy_per_chunk = -psi.mean(dim=1)
-        # ------- PPO clipped value loss on raw returns -------
+        # ------- value loss on raw returns (OFF: no 0.5, unclipped default) ---
         with autocast_context(states.device):
             v_pred = self.critic(states).float()
-        # PPO standard: regress RAW returns (no per-batch whitening; the
-        # target must not depend on its minibatch). 0.5 factor + clip at the
-        # policy epsilon, exactly as CleanRL's clipped value loss.
+        # Regress RAW returns (no per-batch whitening; the target must not
+        # depend on its minibatch). OFF disables value clipping by default
+        # ("value clipping adds instability" under tight policy clip).
         returns_d = returns.to(v_pred.device)
         se = (v_pred - returns_d).pow(2)
-        if "values" in batch:  # clipped value loss against rollout v_old
+        if cfg.use_clipped_value_loss and "values" in batch:
             old_values = to_tensor(
                 batch["values"], dtype=torch.float32, device=v_pred.device
             )
             v_clipped = old_values + (v_pred - old_values).clamp(
                 -cfg.epsilon_clip, cfg.epsilon_clip
             )
-            value_per_chunk = 0.5 * torch.max(se, (v_clipped - returns_d).pow(2))
+            value_per_chunk = torch.max(se, (v_clipped - returns_d).pow(2))
         else:
-            value_per_chunk = 0.5 * se
+            value_per_chunk = se
         if reduction == "mean":
             policy_loss = policy_per_chunk.mean()
             value_loss = value_per_chunk.mean()
@@ -466,12 +502,8 @@ class SJFPOPolicy(PreTrainedPolicy):
             # ratio math as the scalar path, unreduced over bins. The scalar
             # loss above is untouched; these stats only answer "is rho flat
             # in k?" ahead of any per-bin clipping experiment.
-            l_old_bin = compute_cfm_loss(
-                v_old.reshape(n, num_mc, *flow_shape), v_star, reduce_mode="bin"
-            )
-            l_new_bin = compute_cfm_loss(
-                v_new.reshape(n, num_mc, *flow_shape), v_star, reduce_mode="bin"
-            )
+            l_old_bin = compute_cfm_loss(v_old_r, v_star, reduce_mode="bin")
+            l_new_bin = compute_cfm_loss(v_new_r, v_star, reduce_mode="bin")
             rho_bin = compute_policy_ratio(l_old_bin, l_new_bin)
             rho_bin_mean = rho_bin.mean(dim=(0, 1))  # [K] over batch, mc
             n_bins = rho_bin_mean.numel()

@@ -22,7 +22,9 @@ def resolve_device() -> torch.device:
     return torch.device("cpu")
 
 
-from accelerate.utils import is_bf16_available  # accelerate library detection
+def is_bf16_available() -> bool:
+    """True when the CUDA device supports bf16 matmuls (else fp32 path)."""
+    return torch.cuda.is_available() and torch.cuda.is_bf16_supported()
 
 
 def filter_low_freq(x: torch.Tensor, k: int, dim: int = 1) -> torch.Tensor:
@@ -40,16 +42,6 @@ def resolve_compute_dtype() -> torch.dtype:
     if want == "bf16":
         return torch.bfloat16 if is_bf16_available() else torch.float32
     return torch.bfloat16 if is_bf16_available() else torch.float32
-
-
-def resolve_mixed_precision() -> str:
-    """Accelerator mp mode: explicit ``ACCELERATE_MIXED_PRECISION`` wins (set
-    by ``accelerate launch --mixed_precision`` or ``accelerate config``);
-    otherwise bf16 when the hardware supports it, fp32 (``'no'``) fallback."""
-    explicit = os.environ.get("ACCELERATE_MIXED_PRECISION", "").strip().lower()
-    if explicit:
-        return explicit
-    return "bf16" if is_bf16_available() else "no"
 
 
 def autocast_context(device=None):

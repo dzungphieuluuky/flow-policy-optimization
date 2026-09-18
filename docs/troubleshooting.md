@@ -36,10 +36,9 @@ env var (don't just set `os.environ` in a REPL).
 
 **`Sync batchnorm` / `Distributed` errors**
 
-Single-process by default (CUDA with CPU fallback); multi-GPU goes through
-`accelerate launch`, not manual `DistributedDataParallel`. If you pulled in
-`skrl` distributed helpers, drop them; the supported paths are the plain
-loop and `baseline_train_loop`.
+Single-process plain PyTorch only (CUDA with CPU fallback); there is no
+multi-GPU path. If you pulled in `skrl` distributed helpers, drop them; the
+supported paths are the plain loop and `baseline_train_loop`.
 
 ## Notebook Build
 

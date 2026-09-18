@@ -15,7 +15,7 @@ and video recording of rollouts.
 
 Train PyTorch models — including transformers and generative/flow models — on
 CUDA GPUs (`torch`, `torchvision`, `torchaudio`, `torchcodec`, `triton`),
-with mixed-precision support (`accelerate`), memory-efficient 8-bit optimizers
+with mixed-precision support (pure-torch bf16 autocast), memory-efficient 8-bit optimizers
 (`bitsandbytes`), and einops/einx-style tensor notation. Numerics via
 `numpy`, `scipy`, `scikit-learn`; GPU stack via the CUDA 12/13 wheels
 (`nvidia-cublas/cudnn/nccl/...`, `cuda-toolkit`).

@@ -225,21 +225,57 @@ def test_forward_clipped_value_loss_engages():
     p_plain = SJFPOPolicy(make_config())
     _, info_plain = p_plain(make_batch())
     torch.manual_seed(3)
-    p_clip = SJFPOPolicy(make_config())
+    p_clip = SJFPOPolicy(make_config(use_clipped_value_loss=True))
     batch_far = dict(make_batch(), values=torch.full((2,), 1e6))
     _, info_clip = p_clip(batch_far)
     assert math.isfinite(info_clip["value_loss"])
     assert info_clip["value_loss"] != info_plain["value_loss"]
 
 
-def test_critic_encoder_receives_grads():
+def test_forward_ignores_values_without_clip_flag():
+    # OFF default: unclipped value loss never reads rollout values.
+    torch.manual_seed(3)
+    policy = SJFPOPolicy(make_config())
+    batch = make_batch()
+    _, info_plain = policy(batch)
+    batch_far = dict(batch, values=torch.full((2,), 1e6))
+    _, info_far = policy(batch_far)
+    assert info_far["value_loss"] == info_plain["value_loss"]
+
+
+def test_rollout_stores_common_random_numbers():
+    torch.manual_seed(0)
+    policy = SJFPOPolicy(make_config())
+    env = FakeGymEnv(obs_dim=OBS_DIM, action_dim=ACT_DIM, max_steps=20)
+    batch = policy.generate_rollout(env, total_steps=32)
+    n = batch["observation.state"].shape[0]
+    assert batch["tau"].shape == (n, policy.config.num_mc_samples)
+    assert batch["eps"].shape[0] == n
+    # Same stored draws reused: repeated forwards agree exactly (eval mode
+    # freezes obs stats, so only the MC draws can move the ratios)...
+    policy.eval()
+    with torch.no_grad():
+        # Perturb live weights so old-vs-new ratios are nonzero (at init the
+        # snapshot matches and every ratio is exactly 1).
+        policy.actor.out.bias.add_(1.0)
+    _, info1 = policy(batch)
+    _, info2 = policy(batch)
+    assert info1["mean_log_ratio"] == info2["mean_log_ratio"]
+    # ...while fresh draws would not (CRN pins the MC noise per round).
+    other = dict(batch)
+    other["eps"] = torch.randn_like(batch["eps"])
+    _, info3 = policy(other)
+    assert info3["mean_log_ratio"] != info1["mean_log_ratio"]
+
+
+def test_critic_receives_grads():
     policy = SJFPOPolicy(make_config())
     loss, _ = policy(make_batch())
     policy.zero_grad()
     loss.backward()
-    grads = [p.grad for p in policy.critic.state_encoder.parameters()]
+    grads = [p.grad for p in policy.critic.parameters()]
     assert all(g is not None and g.abs().sum() > 0 for g in grads), (
-        "critic state encoder missing grads"
+        "critic missing grads"
     )
 
 

@@ -7,7 +7,6 @@ only steps the optimizer, evaluates, and checkpoints.
 from __future__ import annotations
 
 import dataclasses
-import os
 import sys
 import time
 from pathlib import Path
@@ -15,7 +14,6 @@ from typing import Any
 
 import numpy as np
 import torch
-from accelerate import Accelerator
 from lerobot.configs.types import FeatureType, PolicyFeature
 from lerobot.utils.random_utils import set_seed
 
@@ -26,7 +24,6 @@ from sjfpo.modeling_sjfpo import SJFPOPolicy
 from sjfpo.utils import (
     maybe_compile,
     resolve_device,
-    resolve_mixed_precision,
     to_numpy_1d,
 )
 from sjfpo.wandb_logging import (
@@ -113,7 +110,7 @@ def train_sjfpo_run(
     out_dir: str | Path,
     cfg: SJFPOConfig | None = None,
     *,
-    seed: int = 0,
+    seed: int = 3407,
     total_steps: int = 2000,
     eval_steps: int = 1000,
     save_steps: int = 1000,
@@ -122,12 +119,9 @@ def train_sjfpo_run(
 ) -> dict[str, Any]:
     """Run a single SJFPO training run, returning summary with artifacts.
 
-    Single device: ``PYTHONPATH=src python scripts/train.py ...``. Multi-GPU:
-    ``PYTHONPATH=src accelerate launch scripts/train.py ...`` — one process
-    per GPU; ranks collect seed-offset rollouts and average gradients via
-    DDP while eval, checkpointing, and wandb stay on rank 0. Mixed precision
-    auto-detects (bf16 when supported, fp32 fallback) unless
-    ``ACCELERATE_MIXED_PRECISION`` is set explicitly.
+    Plain single-process PyTorch (``PYTHONPATH=src python scripts/train.py
+    ...``). Mixed precision auto-detects: bf16 autocast matmuls when the CUDA
+    device supports bf16 (see ``utils.is_bf16_available``), fp32 otherwise.
     """
     cfg = cfg or SJFPOConfig()
     out_dir = Path(out_dir)
@@ -138,13 +132,8 @@ def train_sjfpo_run(
     if obs_dim is None or action_dim is None:
         obs_dim = int(np.prod(env.observation_space.shape))
         action_dim = int(np.prod(env.action_space.shape))
-    set_seed(seed)  # identical init on every rank (DDP also broadcasts rank 0)
-    accelerator = Accelerator(
-        mixed_precision=resolve_mixed_precision(),
-        cpu=os.environ.get("SJFPO_DEVICE", "auto").lower() == "cpu",
-    )
-    is_main = accelerator.is_main_process
-    device = accelerator.device  # per-process GPU under `accelerate launch`
+    set_seed(seed)
+    device = resolve_device()  # SJFPO_DEVICE=cpu|auto honors the CPU override
     # Real env bounds (not ±1): InvertedPendulum ±3, Pusher ±2, Humanoid ±0.4.
     action_low = np.atleast_1d(np.asarray(env.action_space.low, dtype=np.float32))
     action_high = np.atleast_1d(np.asarray(env.action_space.high, dtype=np.float32))
@@ -159,22 +148,11 @@ def train_sjfpo_run(
     policy = build_policy(obs_dim, action_dim, cfg, device=device,
                            action_low=action_low, action_high=action_high)
     optimizer = build_optimizer(policy, cfg)
-    policy, optimizer = accelerator.prepare(policy, optimizer)
-    # Inner module for attribute writes: DDP forwards method calls but
-    # `policy.step_count += 1` would set the counter on the wrapper, not the
-    # module. Params are shared (no copy), so in-place snapshot/EMA updates
-    # via either reference stay in sync.
-    raw_policy = accelerator.unwrap_model(policy)
-    if accelerator.num_processes > 1:
-        # Diverge RNG streams post-build so ranks collect different rollouts
-        # (noisy proposals), MC draws (tau/eps), and minibatch orders.
-        set_seed(seed + accelerator.process_index)
-    if is_main:
-        print(policy, file=sys.stderr)
+    print(policy, file=sys.stderr)
     evaluator = Evaluator(env, eval_seed=10000 + seed, max_episodes=12)
     eval_policy = _EvalPolicy(policy)
-    r_rand = random_baseline(evaluator, env) if is_main else 1.0
-    wandb_enabled = is_main and init_wandb_run_for_method(
+    r_rand = random_baseline(evaluator, env)
+    wandb_enabled = init_wandb_run_for_method(
         method="sjfpo",
         env_name=env_name,
         seed=seed,
@@ -199,19 +177,18 @@ def train_sjfpo_run(
             policy.train()
             infos = []
             grad_norms = []  # pre-clip totals; clip_grad_norm_ returns the norm
-            # PPO-style: fixed epochs, each epoch sweeps shuffled minibatches
-            # (not the whole buffer per update).
+            # PPO-style: freeze the behavior snapshot once per collection round
+            # (OFF semantics: fixed pi_old + stored eps/t for all epochs), then
+            # sweep shuffled minibatches with reshuffled partitions per epoch.
+            policy.snapshot_behavior_policy()
             n_chunks = batch["advantages"].shape[0]
             n_mb = max(1, min(cfg.num_minibatches, n_chunks))
             for _ in range(cfg.num_epochs):
                 for mb_idx in torch.randperm(n_chunks).split(max(1, n_chunks // n_mb)):
                     optimizer.zero_grad()
                     mb_idx = mb_idx.to(batch["advantages"].device)
-                    # Rolling one-step delay: compare live weights to the previous
-                    # step's snapshot, refresh the snapshot pre-step (post-step
-                    # would compare weights to themselves: ratio 0).
                     loss, epoch_info = policy(sample_minibatch(batch, mb_idx))
-                    accelerator.backward(loss)
+                    loss.backward()
                     all_params = [
                         p for group in optimizer.param_groups for p in group["params"]
                     ]
@@ -220,25 +197,10 @@ def train_sjfpo_run(
                     )
                     grad_norms.append(float(grad_norm))
                     optimizer.step()
-                    policy.snapshot_behavior_policy()
-                    raw_policy.step_count += 1
+                    policy.step_count += 1
                     infos.append(epoch_info)
             info = {k: sum(d[k] for d in infos) / len(infos) for k in infos[0]}
             grad_norm_mean = sum(grad_norms) / len(grad_norms) if grad_norms else 0.0
-            if accelerator.num_processes > 1:
-                # Mean update stats across ranks (collective: every rank calls).
-                keys = list(info)
-                averaged = accelerator.reduce(
-                    torch.tensor([info[k] for k in keys], device=device),
-                    reduction="mean",
-                )
-                info = dict(zip(keys, averaged.tolist()))
-                grad_norm_mean = float(
-                    accelerator.reduce(
-                        torch.tensor(grad_norm_mean, device=device),
-                        reduction="mean",
-                    )
-                )
             if wandb_enabled:
                 data = {f"train/{k}": v for k, v in info.items()}
                 data["train/grad_norm_preclip"] = grad_norm_mean
@@ -256,7 +218,7 @@ def train_sjfpo_run(
                 log_metrics(data, step=global_step)
             diverged_now = False
             diverge_msg = ""
-            if is_main and (global_step % eval_steps < cfg.action_horizon or global_step >= total_steps):
+            if global_step % eval_steps < cfg.action_horizon or global_step >= total_steps:
                 eval_results = evaluator.evaluate(eval_policy, out_dir=out_dir)
                 mean_return = float(np.mean([r["return"] for r in eval_results]))
                 all_eval_returns.append(mean_return)
@@ -294,32 +256,24 @@ def train_sjfpo_run(
                         f"DIVERGED at step {global_step}: mean_return={mean_return:.2f} "
                         f"< 0.10*R_rand={0.10 * r_rand:.2f}"
                     )
-            # Broadcast the stop decision: a main-only break would hang the
-            # other ranks inside the next DDP backward (collective op).
-            stop = accelerator.reduce(
-                torch.tensor(float(diverged_now), device=device), reduction="max"
-            )
-            if bool(stop.item()):
+            if diverged_now:
                 diverged = True
-                if is_main:
-                    if wandb_enabled:
-                        log_metrics(
-                            {"eval/diverged": 1, "eval/diverge_step": global_step},
-                            step=global_step,
-                        )
-                    print(diverge_msg)
+                if wandb_enabled:
+                    log_metrics(
+                        {"eval/diverged": 1, "eval/diverge_step": global_step},
+                        step=global_step,
+                    )
+                print(diverge_msg)
                 break
             if global_step % save_steps < cfg.action_horizon or global_step >= total_steps:
-                accelerator.wait_for_everyone()
-                if is_main:
-                    ckpt_dir = out_dir / f"checkpoint_{global_step}"
-                    save_policy_checkpoint(
-                        ckpt_dir,
-                        policy=accelerator.unwrap_model(policy),
-                        optimizer=optimizer,
-                        global_step=global_step,
-                    )
-                    artifacts.append(str(ckpt_dir / "model.safetensors"))
+                ckpt_dir = out_dir / f"checkpoint_{global_step}"
+                save_policy_checkpoint(
+                    ckpt_dir,
+                    policy=policy,
+                    optimizer=optimizer,
+                    global_step=global_step,
+                )
+                artifacts.append(str(ckpt_dir / "model.safetensors"))
         elapsed = time.time() - t_start
         fps = global_step / max(elapsed, 1e-6)
         if wandb_enabled:
@@ -332,18 +286,16 @@ def train_sjfpo_run(
         if wandb_enabled:
             finish_run(exit_code=1 if diverged else 0)
 
-    accelerator.wait_for_everyone()
-    if is_main:
-        ckpt_dir = out_dir / "checkpoint_final"
-        save_policy_checkpoint(
-            ckpt_dir,
-            policy=accelerator.unwrap_model(policy),
-            optimizer=optimizer,
-            global_step=global_step,
-        )
-        artifacts.append(str(ckpt_dir / "model.safetensors"))
+    ckpt_dir = out_dir / "checkpoint_final"
+    save_policy_checkpoint(
+        ckpt_dir,
+        policy=policy,
+        optimizer=optimizer,
+        global_step=global_step,
+    )
+    artifacts.append(str(ckpt_dir / "model.safetensors"))
     csv_path = out_dir / "eval_history.csv"
-    if is_main and csv_path.exists():
+    if csv_path.exists():
         artifacts.append(str(csv_path))
     return {
         "method": "sjfpo",

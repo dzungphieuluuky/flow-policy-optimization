@@ -10,7 +10,7 @@ modeling_sjfpo.py   SJFPOPolicy.forward: ASPO (truncated Ka coeffs, negated) + V
 train_sjfpo.py    online train entry: generate_rollout → forward → AdamW step → eval → Hub ckpt
 collector.py      346L — Transition TypedDict (8 LeRobot keys); full-H open-loop chunks; real-space scaled action anchor [H,action_dim] (DCT downstream in forward); all chunks train (trainer zero-pads unexecuted tails)
 gae.py            123L — chunk semi-MDP GAE (R_k intradiscounted, γ^L bootstrap, (γλ)^L recursion); terminated cuts all, truncated bootstraps δ but cuts recursion; train advantages raw (ASPO sign)
-fpo_core.py       230L — CFM/SQL-ℓ [N,m], STE-capped ρ, ASPO piecewise (PPO-clip Â≥0 / SPO Â<0), mean-of-ψ objective, sample(mode=euler) t:0→1; policy + vf_coef·value summed inline in forward
+fpo_core.py       230L — CFM/SQL-ℓ [N,m], STE-capped ρ, ASPO piecewise (PPO-clip Â>0 / SPO Â≤0), mean-of-ψ objective, sample(mode=euler) t:0→1; policy + vf_coef·value summed inline in forward
 dct_utils.py      orthonormal DCT-II/III [H,action_dim] action chunks + discounted_chunk_reward + einx.id (parity-guarded)
 config.py         flags + PPO/SAC dataclasses, RUN_MATRIX 45 (TINY 3) + build_run_matrix; SACConfig.polyak is skrl-boundary (keep). SJFPO hyperparams live ONLY in configuration_sjfpo.py::SJFPOConfig (H=16/T=16/top_p=0.3→K=5/D=128, DiT-8/4heads/mlp×4/t256)
 baselines.py      804L — skrl PPO/SAC via baseline_train_loop; FrameStackWrapper shared with evaluator
@@ -36,7 +36,7 @@ utils.py          149L — shared pure helpers (device/dtype/compile), no sjfpo 
 | `networks.py` | `WindowEncoder` `RunningMeanStd` `StateConditioner` `SJFPOFlowModel` `Critic` `DiTBlock` `CondMLP` `SwiGLU` | `modeling_sjfpo.py` (live) |
 | `collector.py` | `Transition` `collect_chunks` (+`collect_chunks_vec` for `num_envs>1`) | `tests/test_transition_v4.py` |
 | `dct_utils.py` | `dct` `idct` `discounted_chunk_reward` | `collector.py` `fpo_core.py` (DCT) + `tests/test_dct.py` |
-| `utils.py` | `resolve_device` `is_bf16_available` `resolve_compute_dtype` `resolve_mixed_precision` `maybe_compile` | `baselines.py` |
+| `utils.py` | `resolve_device` `is_bf16_available` `resolve_compute_dtype` `maybe_compile` | `baselines.py` |
 | `modeling_sjfpo.py` | `SJFPOPolicy` `SJFPOAborted` | `sweep.py` |
 | `wandb_logging.py` | `wandb_disabled` `init_wandb_run_for_method`->bool `log_metrics` `log_eval_summary` `finish_run` (5 fns SDK-direct) | `runner.py` `baselines.py` (REQUIRED import, SJFPO_DISABLE_WANDB=1 gate) |
 

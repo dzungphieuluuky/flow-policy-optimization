@@ -401,7 +401,7 @@ if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
 
 
-def _vec_records(seed=0, n_envs=2, total=64):
+def vec_records(seed=0, n_envs=2, total=64):
     import gymnasium as gym
 
     from tests.fixtures.fake_env import FakeGymEnv
@@ -433,7 +433,7 @@ def _vec_records(seed=0, n_envs=2, total=64):
 
 def test_collect_chunks_vec_budget_and_shapes():
     """N envs split ceil(total/N) steps each; records carry full Transition keys."""
-    records = _vec_records()
+    records = vec_records()
     assert records, "vector collector must produce chunks"
     total_exec = sum(int(r["executed_n_action_steps"]) for r in records)
     assert total_exec >= 64
@@ -446,7 +446,7 @@ def test_collect_chunks_vec_budget_and_shapes():
 
 
 def test_collect_chunks_vec_keeps_trajectories_separate_for_gae():
-    records = _vec_records(total=64)
+    records = vec_records(total=64)
     assert [bool(r["next.truncated"]) for r in records] == [False, True, False, True]
     for start in (0, 2):
         assert torch.equal(
@@ -457,8 +457,8 @@ def test_collect_chunks_vec_keeps_trajectories_separate_for_gae():
 
 def test_collect_chunks_vec_deterministic_under_seed():
     """Same seed + same policy draws -> identical record streams."""
-    r1 = _vec_records(seed=7)
-    r2 = _vec_records(seed=7)
+    r1 = vec_records(seed=7)
+    r2 = vec_records(seed=7)
     assert len(r1) == len(r2)
     for a, b in zip(r1, r2):
         assert torch.equal(a["action"], b["action"])

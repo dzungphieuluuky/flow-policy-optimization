@@ -80,7 +80,6 @@ class TestPolicyDevice:
             t.critic,
         ):
             assert next(m.parameters()).device == torch.device("cpu")
-        assert next(t.critic.state_encoder.parameters()).device == torch.device("cpu")
 
     def test_update_on_default_device(self):
         t = self.policy()

@@ -62,9 +62,13 @@ def compute_returns(advantages, values):
     )
 
 
-def normalize_advantages(advantages):
+def normalize_advantages(advantages, clamp: float | None = 100.0):
     advantages = np.asarray(advantages, dtype=np.float64)
-    return (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+    normalized = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+    if clamp is not None:
+        # OFF advantage_clamp (100, 100): insurance against pathological skew.
+        normalized = np.clip(normalized, -clamp, clamp)
+    return normalized
 
 
 def compute_advantages(

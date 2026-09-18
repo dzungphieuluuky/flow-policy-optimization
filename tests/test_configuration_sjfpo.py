@@ -24,7 +24,7 @@ def test_canonical_defaults():
     assert cfg.n_action_steps == round(cfg.executed_vs_predicted_ratio * cfg.action_horizon)
     assert (cfg.optimizer_lr, cfg.optimizer_weight_decay) == (1e-4, 1e-4)
     assert cfg.grad_clip_norm == 1.0
-    assert cfg.num_epochs == 10
+    assert cfg.num_epochs == 16
     assert cfg.chunks_per_update == 128
 
 
@@ -79,5 +79,7 @@ def test_post_init_rejects_bad_timestep_range():
         SJFPOConfig(min_timestep=1.0, max_timestep=1.0)
     with pytest.raises(ValueError, match="epsilon_clip"):
         SJFPOConfig(epsilon_clip=0.0)
-    # Paper-original endpoints are valid.
-    assert SJFPOConfig(min_timestep=0.0, max_timestep=1.0).min_timestep == 0.0
+    with pytest.raises(ValueError, match="cfm_clamp"):
+        SJFPOConfig(cfm_clamp=0.0)
+    # OFF endpoints are valid.
+    assert SJFPOConfig(min_timestep=0.005, max_timestep=0.995).min_timestep == 0.005

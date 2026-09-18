@@ -55,7 +55,7 @@ class TrainConfig:
 
     method: Literal["sjfpo", "ppo", "sac"] = "sjfpo"
     env: str | None = None
-    seed: int = 0
+    seed: int = 3407
     total_steps: int | None = None
     eval_steps: int | None = None
     save_steps: int | None = None

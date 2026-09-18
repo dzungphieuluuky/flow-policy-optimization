@@ -122,6 +122,9 @@ def test_sjfpo_config_documented_ranges():
     assert 0 < c.gamma < 1
     assert 0 < c.gae_lambda < 1
     assert 0 < c.epsilon_clip < 1
+    assert c.cfm_clamp > 0
+    assert c.log_ratio_cap > 0
+    assert c.advantage_clamp > 0
     lo, hi = c.min_timestep, c.max_timestep
     assert 0 <= lo < hi <= 1
     assert c.vf_coef >= 0

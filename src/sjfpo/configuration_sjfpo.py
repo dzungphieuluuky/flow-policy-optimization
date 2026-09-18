@@ -30,15 +30,19 @@ class SJFPOConfig(PreTrainedConfig):
     num_euler_steps: int = 16
     num_inference_steps: int = 16
     chunks_per_update: int = 128
-    num_epochs: int = 10
-    num_minibatches: int = 8
+    num_epochs: int = 16
+    num_minibatches: int = 4
     num_envs: int = 8  # parallel rollout environments; 1 uses single-env collection
 
     gamma: float = 0.99
     gae_lambda: float = 0.95
     epsilon_clip: float = 0.05
-    min_timestep: float = 0.0
-    max_timestep: float = 1.0
+    cfm_clamp: float = 20.0
+    log_ratio_cap: float = 10.0
+    advantage_clamp: float = 100.0
+    use_clipped_value_loss: bool = False
+    min_timestep: float = 0.005
+    max_timestep: float = 0.995
 
     dit_depth: int = 8
     dit_heads: int = 4
@@ -48,7 +52,7 @@ class SJFPOConfig(PreTrainedConfig):
     # the DDPM sinusoidal ladder (designed for integer steps 0-1000); without it
     # every channel sits at angle <= 1 and t is nearly unresolvable.
 
-    vf_coef: float = 0.1
+    vf_coef: float = 1.0
     grad_clip_norm: float = 1.0
 
     top_p_spectral_tokens: float = 0.3
@@ -78,6 +82,14 @@ class SJFPOConfig(PreTrainedConfig):
         if not 0.0 < self.epsilon_clip < 1.0:
             raise ValueError(
                 f"require 0 < epsilon_clip < 1, got ({self.epsilon_clip})"
+            )
+        if self.cfm_clamp <= 0:
+            raise ValueError(f"cfm_clamp={self.cfm_clamp} must be positive")
+        if self.log_ratio_cap <= 0:
+            raise ValueError(f"log_ratio_cap={self.log_ratio_cap} must be positive")
+        if self.advantage_clamp <= 0:
+            raise ValueError(
+                f"advantage_clamp={self.advantage_clamp} must be positive"
             )
         if not 0.0 <= self.min_timestep < self.max_timestep <= 1.0:
             raise ValueError(

@@ -110,7 +110,7 @@ def test_action_low_freq_filter_keeps_ka_bins():
 
 def test_timestep_embedder_sin_cos_values():
     nets = make_nets()
-    emb = nets.TimestepEmbedder(time_dim=8, scale=1.0)(0.5)
+    emb = nets.SinusoidalEncoding(8, scale=1.0).encode_times(0.5)
     assert emb.shape == (8,)
     freqs = [math.exp(-math.log(10000.0) * k / 3) for k in range(4)]
     expected = [math.sin(0.5 * f) for f in freqs] + [math.cos(0.5 * f) for f in freqs]
@@ -178,8 +178,8 @@ def test_dit_block_identity_at_init():
 
 def test_timestep_scale_resolves_flow_times():
     nets = make_nets()
-    a = nets.TimestepEmbedder(time_dim=32)(0.20)
-    b = nets.TimestepEmbedder(time_dim=32)(0.25)
+    a = nets.SinusoidalEncoding(32, scale=_DEFAULTS.timestep_scale).encode_times(0.20)
+    b = nets.SinusoidalEncoding(32, scale=_DEFAULTS.timestep_scale).encode_times(0.25)
     assert float((a - b).abs().max()) > 0.5, (
         "default scale must separate nearby flow times (unscaled diff < 0.05)"
     )
@@ -187,7 +187,7 @@ def test_timestep_scale_resolves_flow_times():
 
 def test_timestep_embedder_finite_256():
     nets = make_nets()
-    emb = nets.TimestepEmbedder(time_dim=256)(torch.rand(16))
+    emb = nets.SinusoidalEncoding(256).encode_times(torch.rand(16))
     assert emb.shape == (16, 256)
     assert torch.isfinite(emb).all(), "256-dim ladder must stay finite in fp32"
 
@@ -319,7 +319,7 @@ def test_critic_state_order_sensitive():
 
 def test_positional_encoding_shape():
     nets = make_nets()
-    out = nets.PositionalEncoding()(torch.zeros(2, STATE_T, ZD))
+    out = nets.SinusoidalEncoding(ZD)(torch.zeros(2, STATE_T, ZD))
     assert out.shape == (2, STATE_T, ZD)
     assert torch.isfinite(out).all()
     assert not torch.allclose(out[:, 0, :], out[:, 1, :])  # positions differ

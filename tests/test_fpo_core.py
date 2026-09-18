@@ -21,7 +21,7 @@ from sjfpo.configuration_sjfpo import SJFPOConfig  # noqa: E402
 
 _DEFAULTS = SJFPOConfig()
 from sjfpo.dct_utils import dct, idct  # noqa: E402
-from sjfpo.networks import SJFPOFlowModel, TimestepEmbedder  # noqa: E402
+from sjfpo.networks import SJFPOFlowModel, SinusoidalEncoding  # noqa: E402
 from sjfpo.modeling_sjfpo import SJFPOPolicy  # noqa: E402 (velocity helpers under test)
 
 from sjfpo import fpo_core  # noqa: E402  (RED until implemented)
@@ -50,7 +50,7 @@ class VelocityMLP(nn.Module):
         )
 
     def forward(self, x_t: torch.Tensor, t, condition) -> torch.Tensor:
-        temb = TimestepEmbedder(time_dim=8)(t)
+        temb = SinusoidalEncoding(8, scale=_DEFAULTS.timestep_scale).encode_times(t)
         if temb.shape[0] != x_t.shape[0]:
             temb = temb.expand(x_t.shape[0], -1)
         z = self.net(torch.cat([x_t.reshape(x_t.shape[0], -1), temb], dim=-1))
@@ -256,25 +256,37 @@ def test_aspo_surrogate_hand_computed():
     mixed = fpo_core.compute_aspo_surrogate(rho, advantage, eps)
     assert mixed[0].item() == pytest.approx(1.0 + eps, abs=1e-3)
     assert mixed[1].item() == pytest.approx(expected, abs=1e-3)
+    # OFF boundary: zero advantage routes through SPO but both branches are 0.
+    zero = fpo_core.compute_aspo_surrogate(torch.tensor(1.5), torch.tensor(0.0), eps)
+    assert zero.item() == pytest.approx(0.0, abs=1e-9)
 
 
-def test_policy_ratio_is_pure_exponential():
-    # Paper Eq.10: rho = exp(l_old - l_new), no clamps or caps.
+def test_policy_ratio_ste_cap_value_and_gradient():
+    # OFF cfm_diff_clamp_max=10: Delta=50 -> exp(10) forward, gradient flows.
     l_old = torch.tensor([60.0])
-    l_new = torch.tensor([10.0], requires_grad=True)  # Delta = 50
+    l_new = torch.tensor([10.0], requires_grad=True)
     rho = fpo_core.compute_policy_ratio(l_old, l_new)
-    assert rho.item() == pytest.approx(math.exp(50.0), rel=1e-5)
+    assert rho.item() == pytest.approx(math.exp(10.0), rel=1e-5)
     rho.backward()
     assert l_new.grad is not None
-    assert l_new.grad.item() == pytest.approx(-math.exp(50.0), rel=1e-5)
+    assert l_new.grad.item() == pytest.approx(-math.exp(10.0), rel=1e-5)
 
 
-def test_neg_advantage_has_no_clamp():
-    # Paper-original: negative advantages get no special loss clamp.
+def test_large_loss_clamped_for_negative_advantage():
+    # l_new=100 -> max-clamped to cfm_clamp=20, so rho = exp(-20) even for Â<0
+    # (the symmetric clamp covers OFF's neg-advantage max: single knob).
     l_old = torch.zeros(1)
-    l_new = torch.full((1,), 100.0)  # raw Delta = -100
+    l_new = torch.full((1,), 100.0)
     rho = fpo_core.compute_policy_ratio(l_old, l_new)
-    assert rho.item() == pytest.approx(math.exp(-100.0), rel=1e-6)
+    assert rho.item() == pytest.approx(math.exp(-20.0), rel=1e-6)
+
+
+def test_symmetric_cfm_clamp_applies_to_both():
+    # OFF cfm_loss_clamp=20 binds old and new alike.
+    l_old = torch.full((2,), 100.0)
+    l_new = torch.zeros(2)
+    rho = fpo_core.compute_policy_ratio(l_old, l_new)
+    assert rho.tolist() == pytest.approx([math.exp(10.0)] * 2, rel=1e-5)  # (20-0)->STE 10
 
     # (g) Finite-difference gradient check of the policy loss w.r.t. one
     #     velocity-net weight (rel. error < 5%).
@@ -406,15 +418,21 @@ def test_compute_cfm_loss_reduce_mode_contract():
     assert scalar.dim() == 0
     per_sample = fpo_core.compute_cfm_loss(v_hat, v_star, reduce_mode="sample")
     assert per_sample.shape == (2, 4)
-    assert per_sample.mean().item() == pytest.approx(scalar.item(), rel=1e-5)
+    # OFF sqrt convention: sample = sum/sqrt(D); mean over draws recovers the
+    # scalar mean up to sqrt(D_flat).
+    assert per_sample.mean().item() == pytest.approx(
+        scalar.item() * math.sqrt(3), rel=1e-5
+    )
     with pytest.raises(ValueError, match="reduce_mode"):
         fpo_core.compute_cfm_loss(v_hat, v_star, reduce_mode="mean")
+    with pytest.raises(ValueError, match="clamp"):
+        fpo_core.compute_cfm_loss(v_hat, v_star, clamp=1.0)
     with pytest.raises(ValueError, match="shape"):
         fpo_core.compute_cfm_loss(v_hat, v_star[..., :2])
 
 
 def test_compute_cfm_loss_bin_mode_parity():
-    """Phase 0: per-bin errors average back to the scalar path."""
+    """Phase 0: per-bin sqrt losses average back to the sample path up to sqrt(K)."""
     torch.manual_seed(62)
     # Small errors so the clamp never binds on either path.
     v_hat = torch.randn(2, 4, 5, 3) * 0.1
@@ -422,12 +440,13 @@ def test_compute_cfm_loss_bin_mode_parity():
     per_bin = fpo_core.compute_cfm_loss(v_hat, v_star, reduce_mode="bin")
     assert per_bin.shape == (2, 4, 5)
     per_sample = fpo_core.compute_cfm_loss(v_hat, v_star, reduce_mode="sample")
-    torch.testing.assert_close(per_bin.mean(dim=-1), per_sample)
-    # No clamping (paper-original): large errors pass through unclamped.
+    # bin_k = sum_D/sqrt(D); sample = sum/sqrt(K*D) = bin.mean * sqrt(K).
+    torch.testing.assert_close(per_bin.mean(dim=-1) * math.sqrt(5), per_sample)
+    # Clamp binds on both paths (OFF cfm_loss_clamp).
     big = fpo_core.compute_cfm_loss(
         torch.zeros(1, 1, 2, 2), torch.ones(1, 1, 2, 2) * 10.0, reduce_mode="bin"
     )
-    assert bool((big == 100.0).all())
+    assert bool((big == fpo_core._DEFAULTS.cfm_clamp).all())
 
 
 def test_sample_timesteps_modes_and_contract():
