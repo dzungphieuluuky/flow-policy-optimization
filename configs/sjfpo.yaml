@@ -9,12 +9,9 @@ optimizer_lr: 0.0003
 optimizer_weight_decay: 0.0001
 gamma: 0.999
 gae_lambda: 0.995
-epsilon_low: 0.2
-epsilon_high: 0.28
-cfm_clamp: 20.0
-log_ratio_cap: 10.0
-min_timestep: 0.005
-max_timestep: 0.995
+epsilon_clip: 0.05
+min_timestep: 0.0
+max_timestep: 1.0
 dit_depth: 4
 dit_heads: 4
 dit_mlp_ratio: 4.0

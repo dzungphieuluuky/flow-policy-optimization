@@ -121,11 +121,9 @@ def test_sjfpo_config_documented_ranges():
     assert c.optimizer_weight_decay >= 0
     assert 0 < c.gamma < 1
     assert 0 < c.gae_lambda < 1
-    assert 0 < c.epsilon_low <= c.epsilon_high < 1
-    assert c.cfm_clamp > 0
-    assert c.log_ratio_cap > 0
+    assert 0 < c.epsilon_clip < 1
     lo, hi = c.min_timestep, c.max_timestep
-    assert 0 < lo < hi < 1
+    assert 0 <= lo < hi <= 1
     assert c.vf_coef >= 0
     assert c.dit_depth >= 1
     assert c.dit_heads >= 1

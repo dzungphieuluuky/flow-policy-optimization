@@ -105,9 +105,11 @@ def compute_cfm_loss(
     v_hat: torch.Tensor,
     v_star: torch.Tensor,
     reduce_mode: str = "scalar",
-    clamp: float | None = None,
 ) -> torch.Tensor:
-    """CFM squared-velocity loss with selectable reduction.
+    """CFM squared-velocity loss with selectable reduction (paper Eq.7-8).
+
+    Pure mean-squared error; no clamping. ``sample`` averages over flow dims
+    per (chunk, mc) draw, ``bin`` keeps frequency bins.
     """
     if v_hat.shape != v_star.shape:
         raise ValueError(
@@ -115,83 +117,59 @@ def compute_cfm_loss(
         )
     squared_errors = (v_hat - v_star).pow(2)
     if reduce_mode == "scalar":
-        if clamp is not None:
-            raise ValueError("clamp applies to reduce_mode='sample'/'bin' only")
         return squared_errors.mean()
     elif reduce_mode == "sample":
-        reduced = squared_errors.flatten(2).mean(dim=-1)
+        return squared_errors.flatten(2).mean(dim=-1)
     elif reduce_mode == "bin":
-        reduced = squared_errors.mean(dim=-1)
+        return squared_errors.mean(dim=-1)
     else:
         raise ValueError(
             f"reduce_mode={reduce_mode!r} must be 'scalar', 'sample', or 'bin'"
         )
 
-    clamp = _DEFAULTS.cfm_clamp if clamp is None else clamp
-    return torch.clamp(reduced, min=-clamp, max=clamp)
-
 
 def compute_aspo_surrogate(
     rho: torch.Tensor,
     advantage: torch.Tensor,
-    epsilon_low: float | None = None,
-    epsilon_high: float | None = None,
+    epsilon_clip: float | None = None,
 ) -> torch.Tensor:
     """ASPO piecewise trust region ψ(ρ, Â) (paper Eq.12).
 
-    Â ≥ 0: PPO-clip  ψ = min(ρÂ, clip(ρ, 1−ε_low, 1+ε_high)·Â);
-    Â < 0: SPO       ψ = ρÂ − (|Â| / (2ε_low)) · (ρ−1)².
-    Elementwise; scalars and tensors both supported.
+    Single clipping parameter for both branches: Â ≥ 0 PPO-clip,
+    Â < 0 SPO quadratic. Elementwise; scalars and tensors both supported.
     """
-    epsilon_low = _DEFAULTS.epsilon_low if epsilon_low is None else epsilon_low
-    epsilon_high = _DEFAULTS.epsilon_high if epsilon_high is None else epsilon_high
+    epsilon_clip = _DEFAULTS.epsilon_clip if epsilon_clip is None else epsilon_clip
     pos = torch.min(
         rho * advantage,
-        torch.clamp(rho, 1.0 - epsilon_low, 1.0 + epsilon_high) * advantage,
+        torch.clamp(rho, 1.0 - epsilon_clip, 1.0 + epsilon_clip) * advantage,
     )
-    neg = rho * advantage - (advantage.abs() / (2.0 * epsilon_low)) * (rho - 1.0) ** 2
+    neg = rho * advantage - (advantage.abs() / (2.0 * epsilon_clip)) * (rho - 1.0) ** 2
     return torch.where(advantage >= 0, pos, neg)
 
 
 def compute_policy_ratio(
     l_old: torch.Tensor,
     l_new: torch.Tensor,
-    advantage: torch.Tensor,
-    cfm_clamp: float | None = None,
-    cap: float | None = None,
 ) -> torch.Tensor:
-    """Per-sample importance ratios: negative-advantage trust clamp + STE cap.
+    """Per-sample importance ratios (paper Eq.10): ρ_i = exp(ℓ_old,i − ℓ_new,i).
 
-    Iff Â < 0: ℓ_new ← min(ℓ_new, ℓ_old + cfm_clamp), bounding how much worse
-    the new policy may fit a negative-advantage chunk. Then
-    ρ_i = exp(min(ℓ_old,i − ℓ_new,i, cap)) straight-through-clamped
-    (forward clamped, gradient flows).
+    Pure exponential; no negative-advantage clamp, no STE cap.
     """
-    cfm_clamp = _DEFAULTS.cfm_clamp if cfm_clamp is None else cfm_clamp
-    l_new_eff = torch.where(
-        advantage < 0, torch.minimum(l_new, l_old + cfm_clamp), l_new
-    )
-    cap = _DEFAULTS.log_ratio_cap if cap is None else cap
-    delta = l_old - l_new_eff
-    delta_st = delta + (torch.clamp(delta, max=cap) - delta).detach()
-    return torch.exp(delta_st)
+    return torch.exp(l_old - l_new)
 
 
 def compute_policy_loss(
     l_old: torch.Tensor,
     l_new: torch.Tensor,
     advantage: torch.Tensor,
-    epsilon_low: float | None = None,
-    epsilon_high: float | None = None,
-    cfm_clamp: float | None = None,
-    cap: float | None = None,
+    epsilon_clip: float | None = None,
 ) -> torch.Tensor:
     """Scalar FPO++ policy objective: MEAN over i of ψ per chunk (Eq.13).
 
     Per-sample ratios enter the mean directly — never an exp-of-mean estimator.
     """
-    rho = compute_policy_ratio(l_old, l_new, advantage, cfm_clamp=cfm_clamp, cap=cap)
-    return compute_aspo_surrogate(rho, advantage, epsilon_low, epsilon_high).mean()
+    rho = compute_policy_ratio(l_old, l_new)
+    return compute_aspo_surrogate(rho, advantage, epsilon_clip).mean()
 
 
 def sample_action(

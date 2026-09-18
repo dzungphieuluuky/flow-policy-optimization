@@ -36,12 +36,9 @@ class SJFPOConfig(PreTrainedConfig):
 
     gamma: float = 0.99
     gae_lambda: float = 0.95
-    epsilon_low: float = 0.2
-    epsilon_high: float = 0.28
-    cfm_clamp: float = 20.0
-    log_ratio_cap: float = 10.0
-    min_timestep: float = 0.005
-    max_timestep: float = 0.995
+    epsilon_clip: float = 0.05
+    min_timestep: float = 0.0
+    max_timestep: float = 1.0
 
     dit_depth: int = 8
     dit_heads: int = 4
@@ -78,14 +75,13 @@ class SJFPOConfig(PreTrainedConfig):
         p = self.top_p_spectral_tokens
         if not 0.0 < p <= 1.0:
             raise ValueError(f"top_p_spectral_tokens={p} must satisfy 0 < p <= 1")
-        if not 0.0 < self.epsilon_low <= self.epsilon_high < 1.0:
+        if not 0.0 < self.epsilon_clip < 1.0:
             raise ValueError(
-                "require 0 < epsilon_low <= epsilon_high < 1, got "
-                f"({self.epsilon_low}, {self.epsilon_high})"
+                f"require 0 < epsilon_clip < 1, got ({self.epsilon_clip})"
             )
-        if not 0.0 < self.min_timestep < self.max_timestep < 1.0:
+        if not 0.0 <= self.min_timestep < self.max_timestep <= 1.0:
             raise ValueError(
-                "require 0 < min_timestep < max_timestep < 1, got "
+                "require 0 <= min_timestep < max_timestep <= 1, got "
                 f"({self.min_timestep}, {self.max_timestep})"
             )
         if self.timestep_scale <= 0:

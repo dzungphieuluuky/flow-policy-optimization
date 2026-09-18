@@ -33,5 +33,5 @@ Source of truth: `src/sjfpo/config.py`. YAML mirrors in `configs/`
 
 - **Shave runtime:** `SJFPO_TINY_MATRIX=1`, `scripts/train.py --total_steps N`,
   or shrink the sweep with `METHODS/ENVS/SEEDS` axes.
-- **Change binding:** `epsilon_low / epsilon_high / cfm_clamp / vf_coef / top_p / H`
+- **Change binding:** `epsilon_clip / vf_coef / top_p / H`
   live in `SJFPOConfig` (mirrored in `configs/sjfpo.yaml`).

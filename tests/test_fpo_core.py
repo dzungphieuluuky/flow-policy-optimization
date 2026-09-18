@@ -58,7 +58,7 @@ class VelocityMLP(nn.Module):
 
 
 def draw_tau(shape, generator) -> torch.Tensor:
-    """tau ~ U[0.005, 0.995] (binding min/max_timestep from config)."""
+    """tau ~ U[0, 1] (binding min/max_timestep from config, paper-original)."""
     return TAU_LO + (TAU_HI - TAU_LO) * torch.rand(shape, generator=generator)
 
     # (a) Reference-equivalence gate: integrated velocity field reproduces the
@@ -217,7 +217,7 @@ def test_ratio_shape_and_degeneracy_guard():
             v_star,
             reduce_mode="sample",
         )
-        rho = fpo_core.compute_policy_ratio(l_old, l_new, torch.zeros_like(l_old))
+        rho = fpo_core.compute_policy_ratio(l_old, l_new)
 
     assert rho.shape == (4, _DEFAULTS.num_mc_samples)
     log_rho = torch.log(rho)
@@ -228,60 +228,53 @@ def test_ratio_shape_and_degeneracy_guard():
 
 
 def test_aspo_surrogate_hand_computed():
-    lo, hi = _DEFAULTS.epsilon_low, _DEFAULTS.epsilon_high  # 0.2 / 0.28
-    # Positive advantage inside both bounds: PPO-clip branch is the identity.
+    eps = _DEFAULTS.epsilon_clip  # 0.05, single paper-original parameter
+    # Positive advantage inside bounds: PPO-clip branch is the identity.
     psi_ppo = fpo_core.compute_aspo_surrogate(
-        torch.tensor(1.04), torch.tensor(1.0), lo, hi
+        torch.tensor(1.02), torch.tensor(1.0), eps
     )
-    assert psi_ppo.item() == pytest.approx(1.04, abs=1e-3)
-    # Above the upper bound: clipped to 1 + eps_high.
+    assert psi_ppo.item() == pytest.approx(1.02, abs=1e-3)
+    # Above the upper bound: clipped to 1 + eps.
     psi_hi = fpo_core.compute_aspo_surrogate(
-        torch.tensor(1.3), torch.tensor(1.0), lo, hi
+        torch.tensor(1.3), torch.tensor(1.0), eps
     )
-    assert psi_hi.item() == pytest.approx(1.0 + hi, abs=1e-3)
+    assert psi_hi.item() == pytest.approx(1.0 + eps, abs=1e-3)
     # Below the lower bound: min picks the unclipped (smaller) value.
     psi_lo = fpo_core.compute_aspo_surrogate(
-        torch.tensor(0.7), torch.tensor(1.0), lo, hi
+        torch.tensor(0.7), torch.tensor(1.0), eps
     )
     assert psi_lo.item() == pytest.approx(0.7, abs=1e-3)
-    # Negative advantage: SPO branch  rho*A - (|A|/(2*eps_low))*(rho-1)^2.
+    # Negative advantage: SPO branch  rho*A - (|A|/(2*eps))*(rho-1)^2.
     psi_spo = fpo_core.compute_aspo_surrogate(
-        torch.tensor(1.04), torch.tensor(-1.0), lo, hi
+        torch.tensor(1.02), torch.tensor(-1.0), eps
     )
-    expected = -1.04 - (1.0 / (2 * lo)) * 0.04**2  # = -1.044
+    expected = -1.02 - (1.0 / (2 * eps)) * 0.02**2
     assert psi_spo.item() == pytest.approx(expected, abs=1e-3)
     # Mixed batch routes each element through its own branch.
-    rho = torch.tensor([1.3, 1.04])
+    rho = torch.tensor([1.3, 1.02])
     advantage = torch.tensor([1.0, -1.0])
-    mixed = fpo_core.compute_aspo_surrogate(rho, advantage, lo, hi)
-    assert mixed[0].item() == pytest.approx(1.0 + hi, abs=1e-3)
+    mixed = fpo_core.compute_aspo_surrogate(rho, advantage, eps)
+    assert mixed[0].item() == pytest.approx(1.0 + eps, abs=1e-3)
     assert mixed[1].item() == pytest.approx(expected, abs=1e-3)
 
-    # (e) STE log-ratio clamp: Delta_l = 50 -> value exp(10), gradient flows.
 
-
-def test_ste_clamp_value_and_gradient():
+def test_policy_ratio_is_pure_exponential():
+    # Paper Eq.10: rho = exp(l_old - l_new), no clamps or caps.
     l_old = torch.tensor([60.0])
-    l_new = torch.tensor([10.0], requires_grad=True)  # Delta_l = 50 > cap 10
-    rho = fpo_core.compute_policy_ratio(l_old, l_new, torch.zeros_like(l_old))
-    assert rho.item() == pytest.approx(math.exp(_DEFAULTS.log_ratio_cap), rel=1e-6)
+    l_new = torch.tensor([10.0], requires_grad=True)  # Delta = 50
+    rho = fpo_core.compute_policy_ratio(l_old, l_new)
+    assert rho.item() == pytest.approx(math.exp(50.0), rel=1e-5)
     rho.backward()
     assert l_new.grad is not None
-    assert l_new.grad.abs().item() > 0.0, "straight-through clamp blocked gradients"
-    assert l_new.grad.item() == pytest.approx(
-        -math.exp(_DEFAULTS.log_ratio_cap), rel=1e-5
-    )
-
-    # (f) Negative-advantage clamp: l_new - l_old effectively capped at +20.
+    assert l_new.grad.item() == pytest.approx(-math.exp(50.0), rel=1e-5)
 
 
-def test_neg_advantage_clamp_caps_delta():
+def test_neg_advantage_has_no_clamp():
+    # Paper-original: negative advantages get no special loss clamp.
     l_old = torch.zeros(1)
-    l_new = torch.full((1,), 100.0)  # raw Delta_l = -100
-    advantage = torch.full((1,), -1.0)
-    rho = fpo_core.compute_policy_ratio(l_old, l_new, advantage)
-    # Effective Delta_l becomes -cfm_clamp = -20, so rho = exp(-20) (NOT exp(-100)).
-    assert rho.item() == pytest.approx(math.exp(-_DEFAULTS.cfm_clamp), rel=1e-6)
+    l_new = torch.full((1,), 100.0)  # raw Delta = -100
+    rho = fpo_core.compute_policy_ratio(l_old, l_new)
+    assert rho.item() == pytest.approx(math.exp(-100.0), rel=1e-6)
 
     # (g) Finite-difference gradient check of the policy loss w.r.t. one
     #     velocity-net weight (rel. error < 5%).
@@ -416,8 +409,6 @@ def test_compute_cfm_loss_reduce_mode_contract():
     assert per_sample.mean().item() == pytest.approx(scalar.item(), rel=1e-5)
     with pytest.raises(ValueError, match="reduce_mode"):
         fpo_core.compute_cfm_loss(v_hat, v_star, reduce_mode="mean")
-    with pytest.raises(ValueError, match="clamp"):
-        fpo_core.compute_cfm_loss(v_hat, v_star, clamp=1.0)
     with pytest.raises(ValueError, match="shape"):
         fpo_core.compute_cfm_loss(v_hat, v_star[..., :2])
 
@@ -432,11 +423,11 @@ def test_compute_cfm_loss_bin_mode_parity():
     assert per_bin.shape == (2, 4, 5)
     per_sample = fpo_core.compute_cfm_loss(v_hat, v_star, reduce_mode="sample")
     torch.testing.assert_close(per_bin.mean(dim=-1), per_sample)
-    # Clamp binds per-bin (same semantics as the sample path).
+    # No clamping (paper-original): large errors pass through unclamped.
     big = fpo_core.compute_cfm_loss(
         torch.zeros(1, 1, 2, 2), torch.ones(1, 1, 2, 2) * 10.0, reduce_mode="bin"
     )
-    assert bool((big <= fpo_core._DEFAULTS.cfm_clamp).all())
+    assert bool((big == 100.0).all())
 
 
 def test_sample_timesteps_modes_and_contract():

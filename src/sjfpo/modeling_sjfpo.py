@@ -329,7 +329,8 @@ class SJFPOPolicy(PreTrainedPolicy):
             advantages:          [B]  (frozen GAE; never optimized)
             returns:             [B]  (GAE targets for value loss)
             values:              [B]  (optional; frozen v_old for clipped value loss)
-            action_is_pad:       [B, H] bool (optional; if missing, full horizon executed)
+            action_is_pad:       [B, H] bool (accepted but ignored: the CFM loss
+                always sees the full proposed chunk, paper-original)
 
         Outputs:
             (loss, info_dict) where ``loss`` is scalar if ``reduction="mean"``
@@ -363,15 +364,13 @@ class SJFPOPolicy(PreTrainedPolicy):
                 states
             )  # train batches only; rollout/eval frozen
         states = self.preprocessor({OBS_STATE: states})[OBS_STATE]
-        is_pad = batch.get("action_is_pad")
-        if is_pad is None:
-            a_exec = actions
-        else:
-            is_pad = to_tensor(is_pad, dtype=torch.bool, device=actions.device)
-            a_exec = actions * (~is_pad).to(actions.dtype).unsqueeze(-1)
         top_k_spectral_action_tokens = max(1, round(cfg.top_p_spectral_tokens * cfg.action_horizon))
         # ------- keep K-lowest action DCT bins, drop the rest -------
-        spectral_action_tokens = filter_low_freq(dct(a_exec, dim=1), top_k_spectral_action_tokens, dim=1)
+        # Paper-original: the loss sees the FULL proposed chunk. Unexecuted
+        # tails (early termination / budget cutoff) only shape GAE via
+        # executed_n_action_steps; they are never zero-masked here (masking
+        # before the DCT leaks zeros into every frequency bin).
+        spectral_action_tokens = filter_low_freq(dct(actions, dim=1), top_k_spectral_action_tokens, dim=1)
         n = states.shape[0]
         # ------- draw flow timesteps + noise -------
         tau = sample_timesteps(
@@ -416,10 +415,10 @@ class SJFPOPolicy(PreTrainedPolicy):
             v_new.reshape(n, num_mc, *flow_shape), v_star, reduce_mode="sample"
         )
 
-        # ------- ASPO trust-region policy loss -------
-        rho = compute_policy_ratio(l_old, l_new, advantage=advantages.unsqueeze(1))
+        # ------- ASPO trust-region policy loss (paper Eq.12-13) -------
+        rho = compute_policy_ratio(l_old, l_new)
         psi = compute_aspo_surrogate(
-            rho, advantages.unsqueeze(1), cfg.epsilon_low, cfg.epsilon_high
+            rho, advantages.unsqueeze(1), cfg.epsilon_clip
         )
         policy_per_chunk = -psi.mean(dim=1)
         # ------- PPO clipped value loss on raw returns -------
@@ -435,7 +434,7 @@ class SJFPOPolicy(PreTrainedPolicy):
                 batch["values"], dtype=torch.float32, device=v_pred.device
             )
             v_clipped = old_values + (v_pred - old_values).clamp(
-                -cfg.epsilon_low, cfg.epsilon_low
+                -cfg.epsilon_clip, cfg.epsilon_clip
             )
             value_per_chunk = 0.5 * torch.max(se, (v_clipped - returns_d).pow(2))
         else:
@@ -473,9 +472,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             l_new_bin = compute_cfm_loss(
                 v_new.reshape(n, num_mc, *flow_shape), v_star, reduce_mode="bin"
             )
-            rho_bin = compute_policy_ratio(
-                l_old_bin, l_new_bin, advantage=advantages.view(n, 1, 1)
-            )
+            rho_bin = compute_policy_ratio(l_old_bin, l_new_bin)
             rho_bin_mean = rho_bin.mean(dim=(0, 1))  # [K] over batch, mc
             n_bins = rho_bin_mean.numel()
             split = max(1, n_bins // 2)
@@ -488,8 +485,8 @@ class SJFPOPolicy(PreTrainedPolicy):
             )
             rho_bin_outside = float(
                 (
-                    (rho_bin < 1.0 - cfg.epsilon_low)
-                    | (rho_bin > 1.0 + cfg.epsilon_high)
+                    (rho_bin < 1.0 - cfg.epsilon_clip)
+                    | (rho_bin > 1.0 + cfg.epsilon_clip)
                 )
                 .float()
                 .mean()

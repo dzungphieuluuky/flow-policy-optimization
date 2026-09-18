@@ -41,10 +41,8 @@ shared `(τ, ε)` draw (else `ρ` is pure MC noise), and the objective is
 **mean-of-ψ over samples** (paper Eq.13) — never exp-of-mean. The trust
 region itself is asymmetric and piecewise (`fpo_core.compute_aspo_surrogate`):
 
-- `Â ≥ 0`: PPO-clip with split bounds `clip(ρ, 1−ε_low, 1+ε_high)`,
-- `Â < 0`: SPO quadratic penalty `ρÂ − (|Â|/(2ε_low))·(ρ−1)²`,
-- plus an STE log-ratio cap (clamped forward, gradient flows) and an
-  `ℓ_new ← min(ℓ_new, ℓ_old + cfm_clamp)` clamp for negative advantages.
+- `Â ≥ 0`: PPO-clip with single bound `clip(ρ, 1−ε, 1+ε)`,
+- `Â < 0`: SPO quadratic penalty `ρÂ − (|Â|/(2ε))·(ρ−1)²` (same `ε`, paper-original).
 
 This is a trust region designed for *noisy estimated* likelihoods rather than
 PPO's exact Gaussian densities — a different problem, hence different math.

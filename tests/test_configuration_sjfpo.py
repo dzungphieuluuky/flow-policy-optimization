@@ -76,4 +76,8 @@ def test_post_init_rejects_bad_timestep_range():
     with pytest.raises(ValueError, match="min_timestep"):
         SJFPOConfig(min_timestep=0.5, max_timestep=0.1)
     with pytest.raises(ValueError, match="min_timestep"):
-        SJFPOConfig(min_timestep=0.0)
+        SJFPOConfig(min_timestep=1.0, max_timestep=1.0)
+    with pytest.raises(ValueError, match="epsilon_clip"):
+        SJFPOConfig(epsilon_clip=0.0)
+    # Paper-original endpoints are valid.
+    assert SJFPOConfig(min_timestep=0.0, max_timestep=1.0).min_timestep == 0.0
