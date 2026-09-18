@@ -33,7 +33,7 @@ from sjfpo.fpo_core import (
     sample_timesteps,
 )
 from sjfpo.gae import compute_advantages
-from sjfpo.utils import autocast_context, filter_low_freq, to_numpy_1d, to_tensor_1d
+from sjfpo.utils import autocast_context, filter_low_freq, to_device_async, to_numpy_1d, to_tensor_1d
 from sjfpo.networks import (
     Critic,
     RunningMeanStd,
@@ -176,7 +176,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         cfg = self.config
         # ------- standardize + normalize obs window -------
         states = self.standardize_obs_tensor(batch[OBS_STATE])
-        states = states.to(next(self.actor.parameters()).device)
+        states = to_device_async(states, next(self.actor.parameters()).device)
         states = self.preprocessor({OBS_STATE: states})[OBS_STATE]
         top_k_spectral_action_tokens = max(1, round(cfg.top_p_spectral_tokens * cfg.action_horizon))
         action_dim = int(self.config.action_feature.shape[0])
@@ -245,13 +245,13 @@ class SJFPOPolicy(PreTrainedPolicy):
 
         def propose(state: torch.Tensor) -> torch.Tensor:
             chunk = self.predict_action_chunk(
-                {OBS_STATE: state.to(device)}, noise=noisy
+                {OBS_STATE: to_device_async(state, device)}, noise=noisy
             )[0]
             return chunk.cpu()  # env stepping stays on CPU
 
         def propose_batch(states: torch.Tensor) -> torch.Tensor:
             chunk = self.predict_action_chunk(
-                {OBS_STATE: states.to(device)}, noise=noisy
+                {OBS_STATE: to_device_async(states, device)}, noise=noisy
             )
             return chunk.cpu()
 
@@ -283,9 +283,11 @@ class SJFPOPolicy(PreTrainedPolicy):
         # Stacked once: reused for critic scoring below and the return dict
         # (stacking must stay outside inference_mode so forward() autograd
         # can consume the batch).
-        states = torch.stack([c[OBS_STATE] for c in chunks]).to(device)
-        next_states = torch.stack([c["next.observation.state"] for c in chunks]).to(
-            device
+        states = to_device_async(
+            torch.stack([c[OBS_STATE] for c in chunks]), device
+        )
+        next_states = to_device_async(
+            torch.stack([c["next.observation.state"] for c in chunks]), device
         )
         with torch.inference_mode():
             states_n = self.preprocessor({OBS_STATE: states})[OBS_STATE]
@@ -323,13 +325,15 @@ class SJFPOPolicy(PreTrainedPolicy):
             cfg.num_mc_samples, (cfg.min_timestep, cfg.max_timestep), device=device
         )
         eps = sample_noise((n_chunks, cfg.num_mc_samples, top_k, action_dim), device=device)
-        actions = torch.stack([c["action"] for c in chunks]).to(device)
+        actions = to_device_async(torch.stack([c["action"] for c in chunks]), device)
         return {
             OBS_STATE: states,
             ACTION: actions,
-            "action_is_pad": is_pad.to(device),
-            "advantages": to_tensor(advantages, dtype=torch.float32, device=device),
-            "returns": to_tensor(returns, dtype=torch.float32, device=device),
+            "action_is_pad": to_device_async(is_pad, device),
+            "advantages": to_device_async(
+                to_tensor(advantages, dtype=torch.float32), device
+            ),
+            "returns": to_device_async(to_tensor(returns, dtype=torch.float32), device),
             "values": values.detach().to(device),
             "tau": tau.unsqueeze(0).expand(n_chunks, -1).contiguous(),
             "eps": eps,

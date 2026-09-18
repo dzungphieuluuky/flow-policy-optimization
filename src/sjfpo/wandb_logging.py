@@ -18,6 +18,44 @@ def wandb_disabled() -> bool:
     return os.environ.get("SJFPO_DISABLE_WANDB") == "1"
 
 
+def compact_value(v) -> str:
+    """Short wandb-safe rendering: ints plain, floats via ``:g``."""
+    if isinstance(v, bool):
+        return str(int(v))
+    if isinstance(v, int):
+        return str(v)
+    if isinstance(v, float):
+        return f"{v:g}"
+    return str(v)
+
+
+def build_run_name(method: str, env_name: str, seed: int, cfg_dict: dict) -> str:
+    """``{method}_{env}_s{seed}_{tags}`` from major config keys.
+
+    Fixed tag order, missing keys skipped, so sjfpo/ppo/sac dicts all work:
+    e.g. ``sjfpo_Hopper-v5_s3407_top0.3_d128x8_ep16_lr0.0001_eps0.05_mc16``.
+    """
+    tags: list[str] = []
+    get = cfg_dict.get
+    if get("top_p_spectral_tokens") is not None:
+        tags.append(f"top{compact_value(get('top_p_spectral_tokens'))}")
+    if get("hidden_dim") is not None and get("dit_depth") is not None:
+        tags.append(f"d{get('hidden_dim')}x{get('dit_depth')}")
+    epochs = get("num_epochs", get("learning_epochs"))
+    if epochs is not None:
+        tags.append(f"ep{epochs}")
+    lr = get("optimizer_lr", get("lr"))
+    if lr is not None:
+        tags.append(f"lr{compact_value(lr)}")
+    eps = get("epsilon_clip", get("ratio_clip"))
+    if eps is not None:
+        tags.append(f"eps{compact_value(eps)}")
+    if get("num_mc_samples") is not None:
+        tags.append(f"mc{get('num_mc_samples')}")
+    base = f"{method}_{env_name}_s{seed}"
+    return base if not tags else f"{base}_{'_'.join(tags)}"
+
+
 def init_wandb_run_for_method(
     *,
     method: str,
@@ -32,7 +70,7 @@ def init_wandb_run_for_method(
     wandb.init(
         project=method,
         group=f"{method}_{env_name}",
-        name=None,
+        name=build_run_name(method, env_name, seed, cfg_dict),
         tags=[method, "mujoco", "cpu-first"],
         config={**cfg_dict, "method": method, "seed": seed, "env": env_name},
         job_type="smoke" if total_steps <= 10000 else "train",

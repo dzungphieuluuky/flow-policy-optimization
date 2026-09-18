@@ -7,7 +7,8 @@ Locked contract — see ``.omo/evidence/wandb-simplify/t1-sdk-probe.md``:
   ``wandb_log`` -> ``log_metrics``, ``wandb_finish`` -> ``finish_run``).
 - ``init_wandb_run_for_method(*, method, env_name, seed, total_steps,
   cfg_dict) -> bool`` with SDK-direct ``wandb.init`` kwargs
-  (``project=method``, ``name=None``, ``group={method}_{env}``,
+  (``project=method``, auto ``name`` from ``build_run_name``,
+  ``group={method}_{env}``,
   ``job_type`` smoke<=10000/train, locked ``mode`` passthrough,
   ``reinit="finish_previous"``, ``force=True``) with no custom step metric
   (default ``step=global_step`` is the x-axis, matching system auto-logging).
@@ -122,7 +123,7 @@ class TestInitWandbRunForMethod:
         assert isinstance(result, bool)
 
     def test_project_group_name_kwargs(self, monkeypatch):
-        """project=method, name=None, group={method}_{env}."""
+        """project=method, auto name, group={method}_{env}."""
         monkeypatch.delenv("SJFPO_DISABLE_WANDB", raising=False)
         import sjfpo.wandb_logging as wl
 
@@ -138,8 +139,40 @@ class TestInitWandbRunForMethod:
         )
         kw = init_kwargs(recorder)
         assert kw["project"] == "sjfpo"
-        assert kw["name"] is None
+        assert kw["name"] == "sjfpo_Hopper-v5_s3047"
         assert kw["group"] == "sjfpo_Hopper-v5"
+
+    def test_build_run_name_from_major_configs(self):
+        import sjfpo.wandb_logging as wl
+
+        assert (
+            wl.build_run_name(
+                "sjfpo",
+                "Hopper-v5",
+                3407,
+                {
+                    "top_p_spectral_tokens": 0.3,
+                    "hidden_dim": 128,
+                    "dit_depth": 8,
+                    "num_epochs": 16,
+                    "optimizer_lr": 1e-4,
+                    "epsilon_clip": 0.05,
+                    "num_mc_samples": 16,
+                },
+            )
+            == "sjfpo_Hopper-v5_s3407_top0.3_d128x8_ep16_lr0.0001_eps0.05_mc16"
+        )
+        # Baselines use different key names; missing keys are skipped.
+        assert (
+            wl.build_run_name(
+                "ppo",
+                "Walker2d-v5",
+                0,
+                {"learning_epochs": 10, "lr": 3e-4, "ratio_clip": 0.2},
+            )
+            == "ppo_Walker2d-v5_s0_ep10_lr0.0003_eps0.2"
+        )
+        assert wl.build_run_name("sac", "Hopper-v5", 1, {}) == "sac_Hopper-v5_s1"
 
     def test_job_type_smoke_and_train(self, monkeypatch):
         """job_type smoke<=10000 (boundary), else train."""

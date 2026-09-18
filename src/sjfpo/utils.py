@@ -121,6 +121,19 @@ def default_smoke_dir(env: str | None = None) -> Path:
     return Path(".omo/evidence/smoke")
 
 
+def to_device_async(x: torch.Tensor, device) -> torch.Tensor:
+    """Host-to-device move that overlaps with CPU work on CUDA.
+
+    Pinned staging + ``non_blocking=True`` lets DMA run while the collector
+    stacks the next tensors; ordering stays safe on the default stream.
+    Plain ``.to()`` on CPU.
+    """
+    device = torch.device(device)
+    if device.type == "cuda" and x.device != device:
+        return x.pin_memory().to(device, non_blocking=True)
+    return x.to(device)
+
+
 def to_numpy_1d(x: torch.Tensor | np.ndarray | float) -> np.ndarray:
     """to numpy with atleast_1d: singletons stay [1], never 0-d/scalar."""
     return np.atleast_1d(from_tensor_to_numpy(x))

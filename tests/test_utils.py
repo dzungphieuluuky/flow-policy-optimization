@@ -99,6 +99,17 @@ class TestBuilderIncludesUtils:
         assert "!git clone" not in "\n".join(heads)
 
 
+class TestToDeviceAsync:
+    def test_cpu_roundtrip_preserves_values(self):
+        import torch
+        from sjfpo.utils import to_device_async
+
+        x = torch.randn(4, 5)
+        y = to_device_async(x, torch.device("cpu"))
+        assert y.device.type == "cpu"
+        assert torch.equal(y, x)
+
+
 class TestBf16AutoDetect:
     def test_detector_agrees_with_dtype(self):
         import torch

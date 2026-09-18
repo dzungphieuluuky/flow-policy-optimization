@@ -36,6 +36,38 @@ def make_nets():
     # StateEncoder
 
 
+def test_self_attention_matches_math_reference():
+    """SDPA module equals softmax(QK'/sqrt(d))V through its own projections."""
+    nets = make_nets()
+    torch.manual_seed(40)
+    attn = nets.SelfAttention(32, n_heads=4)
+    x = torch.randn(3, 9, 32)
+    with torch.no_grad():
+        q, k, v = attn.qkv(x).chunk(3, dim=-1)
+
+        def heads(t):
+            return t.view(3, 9, 4, 8).transpose(1, 2)
+
+        ref = torch.softmax(heads(q) @ heads(k).transpose(-1, -2) / math.sqrt(8), dim=-1)
+        ref = attn.out((ref @ heads(v)).transpose(1, 2).reshape(3, 9, 32))
+    got = attn(x)
+    assert torch.allclose(got, ref, atol=1e-5)
+
+
+def test_self_attention_mask_hides_keys():
+    """key_mask=True rows are ignored (key_padding_mask convention)."""
+    nets = make_nets()
+    torch.manual_seed(41)
+    attn = nets.SelfAttention(32, n_heads=4)
+    x = torch.randn(2, 9, 32)
+    garb = x.clone()
+    garb[:, 5:, :] = 100.0
+    mask = torch.arange(9).unsqueeze(0) >= torch.tensor([5, 5]).unsqueeze(1)
+    z1 = attn(x, mask)
+    z2 = attn(garb, mask)
+    assert torch.allclose(z1[:, :5, :], z2[:, :5, :], atol=1e-4)
+
+
 def test_window_encoder_shape_dtype_finite():
     nets = make_nets()
     torch.manual_seed(0)

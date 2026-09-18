@@ -113,6 +113,45 @@ class SinusoidalEncoding(nn.Module):
         """Add position codes by slot index: [..., L, D] -> [..., L, D]."""
         return self.add_to(x, self.positions(x.shape[-2], x.device))
 
+class SelfAttention(nn.Module):
+    """Multi-head self-attention on ``F.scaled_dot_product_attention``.
+
+    Fused QKV + output projections; flash / memory-efficient kernels are
+    dispatched automatically (and compose with ``torch.compile``), unlike the
+    unfused ``nn.MultiheadAttention`` path. ``key_mask`` follows the familiar
+    ``key_padding_mask`` convention ([B, L] bool, True = ignore), inverted
+    internally since SDPA boolean masks mean "attend".
+    """
+
+    def __init__(self, hidden_dim: int, n_heads: int = 4):
+        super().__init__()
+        if hidden_dim % n_heads != 0:
+            raise ValueError(f"hidden_dim={hidden_dim} must split over {n_heads} heads")
+        self.n_heads = n_heads
+        self.head_dim = hidden_dim // n_heads
+        self.qkv = nn.Linear(hidden_dim, 3 * hidden_dim)
+        self.out = nn.Linear(hidden_dim, hidden_dim)
+
+    def forward(
+        self, x: torch.Tensor, key_mask: torch.Tensor | None = None
+    ) -> torch.Tensor:
+        """[B, L, D] -> [B, L, D]."""
+        b, length, _ = x.shape
+        q, k, v = self.qkv(x).chunk(3, dim=-1)
+
+        def split_heads(t: torch.Tensor) -> torch.Tensor:
+            return t.view(b, length, self.n_heads, self.head_dim).transpose(1, 2)
+
+        mask = None
+        if key_mask is not None:
+            mask = torch.as_tensor(key_mask, dtype=torch.bool, device=x.device)
+            mask = ~mask.view(b, 1, 1, length)
+        y = torch.nn.functional.scaled_dot_product_attention(
+            split_heads(q), split_heads(k), split_heads(v), attn_mask=mask
+        )
+        return self.out(y.transpose(1, 2).reshape(b, length, -1))
+
+
 class WindowEncoder(nn.Module):
     """One pre-norm residual block over a time window -> Z[B, L, hidden_dim].
 
@@ -140,7 +179,7 @@ class WindowEncoder(nn.Module):
         self.frame_proj = nn.Linear(in_dim, hidden_dim)
         self.pos_encoding = SinusoidalEncoding(hidden_dim)
         self.norm1 = nn.RMSNorm(hidden_dim, eps=1e-6)
-        self.attn1 = nn.MultiheadAttention(hidden_dim, n_heads, batch_first=True)
+        self.attn1 = SelfAttention(hidden_dim, n_heads)
         self.norm2 = nn.RMSNorm(hidden_dim, eps=1e-6)
         mlp_hidden = int(hidden_dim * mlp_ratio)
         self.mlp1 = SwiGLU(hidden_dim, mlp_hidden, hidden_dim)
@@ -154,8 +193,7 @@ class WindowEncoder(nn.Module):
             key_mask = torch.as_tensor(key_mask, dtype=torch.bool, device=h.device)
         # ------- self-attention block (pad rows masked as keys) -------
         n = self.norm1(h)
-        attn, _ = self.attn1(n, n, n, key_padding_mask=key_mask)
-        h = h + attn
+        h = h + self.attn1(n, key_mask)
         h = h + self.mlp1(self.norm2(h))
         return h
 
@@ -217,7 +255,7 @@ class DiTBlock(nn.Module):
     def __init__(self, hidden_dim: int, n_heads: int, mlp_ratio: float):
         super().__init__()
         self.norm1 = nn.RMSNorm(hidden_dim)
-        self.attn = nn.MultiheadAttention(hidden_dim, n_heads, batch_first=True)
+        self.attn = SelfAttention(hidden_dim, n_heads)
         self.norm2 = nn.RMSNorm(hidden_dim)
         mlp_hidden = int(hidden_dim * mlp_ratio)
         self.mlp = SwiGLU(hidden_dim, mlp_hidden, hidden_dim)
@@ -234,8 +272,7 @@ class DiTBlock(nn.Module):
         ].chunk(6, dim=-1)
         # ------- gated self-attention residual -------
         h = modulate(self.norm1(x), shift_msa, scale_msa)
-        attn, _ = self.attn(h, h, h)
-        x = x + gate_msa * attn
+        x = x + gate_msa * self.attn(h)
         # ------- gated MLP residual -------
         out = x + gate_mlp * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
         self.last_gate_norms = {

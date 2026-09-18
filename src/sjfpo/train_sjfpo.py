@@ -88,7 +88,11 @@ def build_optimizer(policy: SJFPOPolicy, cfg: SJFPOConfig):
         return bnb.optim.AdamW8bit(
             params, lr=cfg.optimizer_lr, weight_decay=cfg.optimizer_weight_decay
         )
-    return cfg.get_optimizer_preset().build(params)
+    kwargs = dataclasses.asdict(cfg.get_optimizer_preset())
+    kwargs.pop("grad_clip_norm", None)  # applied manually after backward
+    if next(policy.parameters()).is_cuda:
+        kwargs["fused"] = True  # single-kernel AdamW step; CPU falls back
+    return torch.optim.AdamW(params, **kwargs)
 
 
 def sample_minibatch(
