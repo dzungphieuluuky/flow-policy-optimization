@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import math
 
+import einx
 import torch
 from torch import nn
 
@@ -128,7 +129,6 @@ class SelfAttention(nn.Module):
         if hidden_dim % n_heads != 0:
             raise ValueError(f"hidden_dim={hidden_dim} must split over {n_heads} heads")
         self.n_heads = n_heads
-        self.head_dim = hidden_dim // n_heads
         self.qkv = nn.Linear(hidden_dim, 3 * hidden_dim)
         self.out = nn.Linear(hidden_dim, hidden_dim)
 
@@ -136,20 +136,19 @@ class SelfAttention(nn.Module):
         self, x: torch.Tensor, key_mask: torch.Tensor | None = None
     ) -> torch.Tensor:
         """[B, L, D] -> [B, L, D]."""
-        b, length, _ = x.shape
         q, k, v = self.qkv(x).chunk(3, dim=-1)
-
-        def split_heads(t: torch.Tensor) -> torch.Tensor:
-            return t.view(b, length, self.n_heads, self.head_dim).transpose(1, 2)
-
+        # ------- split heads (named axes beat view/transpose chains) -------
+        q = einx.id("b l (h d) -> b h l d", q, h=self.n_heads)
+        k = einx.id("b l (h d) -> b h l d", k, h=self.n_heads)
+        v = einx.id("b l (h d) -> b h l d", v, h=self.n_heads)
         mask = None
         if key_mask is not None:
-            mask = torch.as_tensor(key_mask, dtype=torch.bool, device=x.device)
-            mask = ~mask.view(b, 1, 1, length)
-        y = torch.nn.functional.scaled_dot_product_attention(
-            split_heads(q), split_heads(k), split_heads(v), attn_mask=mask
-        )
-        return self.out(y.transpose(1, 2).reshape(b, length, -1))
+            mask = einx.id(
+                "b l -> b 1 1 l",
+                ~torch.as_tensor(key_mask, dtype=torch.bool, device=x.device),
+            )
+        y = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=mask)
+        return self.out(einx.id("b h l d -> b l (h d)", y))
 
 
 class WindowEncoder(nn.Module):
