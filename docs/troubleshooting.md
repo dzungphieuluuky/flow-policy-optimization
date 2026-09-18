@@ -47,7 +47,7 @@ loop and `baseline_train_loop`.
 
 Notebooks carry no source — rebuild after changing the command set:
 `python scripts/build_notebook.py`, then the jupytext structure check passes
-and both files stay at 8 cells each. Never hand-edit ipynbs.
+(writefile coverage + train cell). Never hand-edit ipynbs.
 
 **`jupyter nbconvert --execute` hangs**
 

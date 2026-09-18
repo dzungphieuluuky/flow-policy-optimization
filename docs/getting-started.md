@@ -43,11 +43,13 @@ ls -lh spectral_joint_flow.ipynb
 
 These mirror the axes `RUN_MATRIX` enumerates — see [Config & Flags](config-flags.md).
 
-## Notebooks on Colab
+## Notebooks on Kaggle (offline)
 
-- Open the `.ipynb` from GitHub in Colab, paste a PAT when prompted
-  (or set the `GITHUB_TOKEN` secret), run top to bottom.
-- The notebook clones this repo, installs `requirements-linux.txt`, then
+- Open `spectral_joint_flow.ipynb` on Kaggle with internet OFF. Attach the
+  wheels dataset and set `WHEELS_DIR` in the install cell (or set the
+  `WANDB_API_KEY` secret), run top to bottom.
+- The notebook recreates `src/` + `scripts/train.py` via `%%writefile`,
+  installs `requirements-linux.txt` offline, then
   calls `scripts/train.py` — eval runs inside training.
 
 ## Where to Look Next

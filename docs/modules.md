@@ -33,7 +33,7 @@ Use this as a jump table. Each row: what the file owns, the key symbols, and the
 | Path | Usage |
 |---|---|
 | `scripts/train.py` | Single run: `... --method sjfpo --env Hopper-v5 --seed 0 --total_steps 2000` (underscores, draccus). Sweeps live in `scripts/sweep.sh` (`METHODS/ENVS/SEEDS` axes, `--tiny`). Exits 0/1/2/4. |
-| `scripts/build_notebook.py` | `python scripts/build_notebook.py` → standalone ipynb (8 cells, structure-checked, no source inlined; jupytext percent-format, no nbformat). Never hand-edit ipynbs. |
+| `scripts/build_notebook.py` | `python scripts/build_notebook.py` → Kaggle ipynb (33 cells: %%writefile sources + offline pip + !train.py, structure-checked; jupytext percent-format, no nbformat). Never hand-edit ipynbs. |
 | `scripts/verify_deps.sh` | Pinned dep check. |
 | `configs/{shared,sjfpo,ppo,sac}.yaml` | YAML defaults mirroring `config.py` dataclasses (pyyaml `safe_load` only). |
 

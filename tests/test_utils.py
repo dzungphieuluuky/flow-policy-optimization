@@ -86,11 +86,17 @@ class TestBuilderIncludesUtils:
         assert "class StateEncoder" not in code
         assert "scripts/train.py" in code
 
-    def test_clone_cell_uses_token_url(self):
+    def test_notebook_writefile_cells_cover_runtime_files(self):
         b = self.builder()
-        assert "GITHUB_TOKEN" in b.CLONE_CELL
-        assert b.REPO_SLUG in b.CLONE_CELL
-        assert "getpass" in b.CLONE_CELL
+        nb = b.build_notebook()
+        heads = [
+            str(c["source"]).splitlines()[0].strip()
+            for c in nb.cells
+            if c["cell_type"] == "code"
+        ]
+        for p in b.embedded_files():
+            assert f"%%writefile {p.relative_to(b.ROOT).as_posix()}" in heads
+        assert "!git clone" not in "\n".join(heads)
 
 
 class TestBf16AutoDetect:

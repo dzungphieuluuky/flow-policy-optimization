@@ -51,5 +51,5 @@ PYTHONPATH=src .venv/bin/python scripts/train.py --method sjfpo --env Hopper-v5 
 METHODS="sjfpo ppo sac" ENVS="Hopper-v5" SEEDS="0" TOTAL_STEPS=2000 bash scripts/sweep.sh --out-base .omo/evidence/smoke --python .venv/bin/python
 
 # 4. Build notebook
-python scripts/build_notebook.py                          # standalone ipynb (8 cells, no source)
+python scripts/build_notebook.py                          # Kaggle ipynb (33 cells, sources embedded)
 ```

@@ -11,7 +11,7 @@ architecture.md      mermaid flow conditioner → DiT policy + V(s) critic
 modules.md           jump table per src/sjfpo file
 getting-started.md   smoke commands (tiny matrix, train.py single-run, notebook)
 config-flags.md      env flags / TINY / matrix filters
-notebooks.md         build/run (8-cell clone notebooks, no source inlined)
+notebooks.md         build/run (33-cell Kaggle notebook, sources embedded via %%writefile)
 testing.md           suite size (300) + numeric gates
 troubleshooting.md   sys.path, train.py exit codes, AnalysisError fallback
 wandb.md             default-on gate (SJFPO_DISABLE_WANDB=1) + metric namespaces

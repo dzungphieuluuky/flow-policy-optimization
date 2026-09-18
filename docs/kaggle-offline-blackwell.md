@@ -1,10 +1,9 @@
 # Run `spectral_joint_flow.ipynb` on Kaggle (RTX PRO 6000 Blackwell, internet OFF)
 
-> **STATUS (2026-09): the notebook is now a 6-cell clone/install/train stub —
-> it carries no source and `!git clone`s this repo, so it needs internet ON
-> (or the repo uploaded as a Kaggle dataset) instead of the offline wheelhouse
-> flow below.** GPU/pin content below is MEASURED and kept as-is; notebook cell
-> references marked [STALE] no longer match.
+> **STATUS (2026-09): the notebook embeds all sources via `%%writefile`
+> cells (`src/`, `scripts/train.py`, `configs/`, `requirements-linux.txt`),
+> so it runs with internet OFF — only the wheels dataset (deps) must be
+> attached. GPU/pin content below is MEASURED and kept as-is.
 >
 > Research journal: `.omo/ulw-research/20260903-225626/` (Wave-1/2 digests, claim graph, execution verification).
 > Lineage labels: **MEASURED** = stated in a fetched source or observed by execution here;
@@ -22,16 +21,17 @@
 4. **Attach it** to a new notebook (Add Input → mounts read-only under `/kaggle/input/<slug>/`),
    set **Internet OFF**.
 5. **First cell**: `!pip install --no-index --find-links=/kaggle/input/<slug>/… <packages>`.
-6. **Upload/run only `spectral_joint_flow.ipynb`** [STALE: now 8 cells — clone +
-   install + `!train.py` smoke/full commands, source stays in `src/`].
+6. **Upload/run only `spectral_joint_flow.ipynb`** (33 cells: title + setup +
+   mkdir + secrets, then one `%%writefile` cell per runtime file, then
+   offline pip + wandb + smoke/full `!train.py` commands).
    Prepend the `MUJOCO_GL=osmesa` header below.
 7. **Write artifacts to `/kaggle/working`** (≤20 GB MEASURED); Save Version → Save & Run All.
 
 ## 1. What the notebook actually needs (verified by execution)
 
-`spectral_joint_flow.ipynb` = 8 cells [STALE: was 61 self-contained cells]: clone +
-install + `!train.py` smoke/full commands — **the repo itself must be reachable**
-(internet ON for `git clone`, or upload it as a dataset).
+`spectral_joint_flow.ipynb` = 33 cells: title + setup + mkdir + secrets,
+25 `%%writefile` cells recreating the source tree, offline pip from the
+attached wheels dataset, wandb login, smoke + full `!train.py` runs.
 
 | Dependency | Role | Tested-good pin |
 |---|---|---|
@@ -145,9 +145,8 @@ print(torch.__version__, torch.version.cuda, torch.cuda.get_arch_list())
 print(torch.cuda.get_device_properties(0))  # expect sm_120 / CC (12,0), ~96 GB
 ```
 
-**Cell order** [STALE — now]: title → access note → `!git clone` → `!pip install` →
-`!train.py` smoke → `!train.py` full run. No setup asserts / module cells /
-self-tests remain in the notebook (that coverage lives in `pytest`).
+**Cell order**: title → setup → mkdir → secrets → `%%writefile` × 25 →
+offline `!pip install` → wandb → `!train.py` smoke → `!train.py` full run.
 
 **Skip / do-not-touch offline**: any `pip install datasets`, `push_checkpoints_to_dataset()`
 (docs-only helper, no code — leave disabled; fetch checkpoints from `/kaggle/working`),

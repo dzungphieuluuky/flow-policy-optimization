@@ -31,7 +31,7 @@ Single source of truth: every module under `src/sjfpo/` is on the live path. The
 src/sjfpo/          # all production code (MuJoCo-only, fp32)
   config.py         # flags, PPO/SAC dataclasses, RUN_MATRIX
   configuration_sjfpo.py  # sole SJFPO hyperparam source (LeRobot PreTrainedConfig)
-  networks.py       # WindowEncoder, SpectralEncoder, SJFPOFlowModel (pure-DiT), Critic
+  networks.py       # WindowEncoder, StateConditioner, SJFPOFlowModel, V(s) Critic
   fpo_core.py       # CFM losses, compute_policy_ratio (STE cap), compute_aspo_surrogate, compute_policy_loss, sample
   collector.py      # Transition dict (9 LeRobot keys), open-loop full-H chunks in training, next.action chaining
   gae.py            # chunk semi-MDP GAE (R_k intradiscounted, γ^L bootstrap, (γλ)^L recursion)
@@ -47,7 +47,7 @@ src/sjfpo/          # all production code (MuJoCo-only, fp32)
 configs/            # sjfpo.yaml, ppo.yaml, sac.yaml, shared.yaml (mirror config.py)
 scripts/train.py    # draccus single-run CLI
 scripts/sweep.sh    # methods × envs × seeds sweep (calls train.py per run)
-scripts/build_notebook.py  # builds both minimal Colab .ipynb (never hand-edit notebooks)
+scripts/build_notebook.py  # builds the Kaggle .ipynb (never hand-edit notebooks)
 tests/              # 300 tests; test_pipeline_cpu.py invariants never touched
 docs/               # architecture, modules, config-flags, testing, wandb, troubleshooting
 ```
@@ -85,7 +85,7 @@ Exit codes: `0` success · `1` usage error · `2` runtime/divergence abort · `4
 
 Env switches: `SJFPO_DEVICE=cuda|cpu|auto` · `SJFPO_DISABLE_WANDB=1` (only wandb off switch; wandb is a required import).
 
-Key `SJFPOConfig` defaults: `num_mc_samples=16`, `euler_train=16`, `euler_eval=16`, `chunks_per_update=128`, `n_obs_steps=16`, `action_horizon=16`, `executed_vs_predicted_ratio=0.5`, `top_p_spectral_tokens=0.3`, `num_envs=8`, `hidden_dim=128`, `dit_depth=8`, `dit_heads=4`, `dit_mlp_ratio=4.0`, `dit_time_dim=256`, `optimizer_lr=1e-4`, `optimizer_weight_decay=1e-4`, `clip_range=0.05`, `clip_range_vf=10.0`, `cfm_clamp=20`, `log_ratio_cap=10`, `vf_coef=0.1`, `grad_clip=1.0`, `gamma=0.99`, `gae_lambda=0.95`.
+Key `SJFPOConfig` defaults: `num_mc_samples=16`, `num_euler_steps=16`, `num_inference_steps=16`, `chunks_per_update=128`, `n_obs_steps=16`, `action_horizon=16`, `executed_vs_predicted_ratio=0.5`, `top_p_spectral_tokens=0.3`, `num_envs=8`, `hidden_dim=128`, `dit_depth=8`, `dit_heads=4`, `dit_mlp_ratio=4.0`, `dit_time_dim=256`, `optimizer_lr=1e-4`, `optimizer_weight_decay=1e-4`, `epsilon_low=0.2`, `epsilon_high=0.28`, `cfm_clamp=20`, `log_ratio_cap=10`, `vf_coef=0.1`, `grad_clip_norm=1.0`, `gamma=0.99`, `gae_lambda=0.95`.
 
 ## Outputs
 
@@ -98,7 +98,7 @@ Key `SJFPOConfig` defaults: `num_mc_samples=16`, `euler_train=16`, `euler_eval=1
 ## Tests
 
 ```bash
-PYTHONPATH=src .venv/bin/python -m pytest -q                  # 300 tests
+PYTHONPATH=src .venv/bin/python -m pytest -q                  # ~300 tests
 PYTHONPATH=src .venv/bin/python -m pytest tests/test_pipeline_cpu.py -v
 ```
 
@@ -110,7 +110,7 @@ Numeric gates: DCT roundtrip `<1e-5`, spectral order tol `2e-3`, `einx.id` match
 .venv/bin/python scripts/build_notebook.py
 ```
 
-Regenerates both minimal Colab notebooks (clone + install + `!train.py`, no source inlined). `*.ipynb` are git-ignored build artifacts.
+Regenerates the Kaggle notebook (%%writefile sources + offline pip + `!train.py`). `*.ipynb` are git-ignored build artifacts.
 
 ## Conventions (read `src/sjfpo/AGENTS.md` first)
 

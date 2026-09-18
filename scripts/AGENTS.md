@@ -1,19 +1,19 @@
 # AGENTS — scripts
 
 ## Overview
-3 entry points: `train.py` (unified CLI) → `runner`/`baselines`; `build_notebook.py` (minimal Colab notebooks: clone + install + `!train.py`, no source inlined); `verify_deps.sh` (dep-pin gate, partly stale — see Notes).
+3 entry points: `train.py` (unified CLI) → `runner`/`baselines`; `build_notebook.py` (Kaggle notebook: `%%writefile` sources + offline pip + `!train.py`); `verify_deps.sh` (dep-pin gate, partly stale — see Notes).
 
 ## Structure
 ```
 train.py            argparse (singular + plural flags) → matrix/single dispatch → build_cfg → run_single
-build_notebook.py   jupytext percent-format cells → standalone .ipynb (8 cells, structure-checked)
+build_notebook.py   jupytext percent-format cells → Kaggle .ipynb (%%writefile sources + !train.py, structure-checked)
 verify_deps.sh      venv bootstrap + inline version asserts (STALE vs pyproject — see Notes)
 ```
 
 ## Where to Look
 - `train.py:select_method_cfg` — CLI flags > flat-YAML overlay > dataclass defaults; only dataclass fields pass (`total_steps`/`eval_steps`/`save_steps`/`obs_dim`/`action_dim` are runner scalars, NOT config fields)
 - `sweep.sh` axes → `sweep.scan_runs`/`run_pending` (reentrant: scans FS for done runs, dispatches pending sequentially)
-- `build_notebook.py:CLONE_CELL` — getpass/GITHUB_TOKEN → `!git clone` (skipped if present) → `%cd`; notebooks never inline `src/`
+- `build_notebook.py:embedded_files` — runtime files recreated via `%%writefile` (`src/`, `scripts/train.py`, `configs/`, `requirements-linux.txt`); rebuild after changing any of them
 
 ## Conventions
 - Precedence: CLI flags > `--config <yaml>` > dataclass defaults (`configs/{sjfpo,ppo,sac,shared}.yaml`; YAML keys ⊆ dataclass fields per `test_config_yaml_parity.py`)
@@ -30,7 +30,7 @@ verify_deps.sh      venv bootstrap + inline version asserts (STALE vs pyproject 
 ```bash
 PYTHONPATH=src .venv/bin/python scripts/train.py --method sjfpo --env Hopper-v5 --seed 0 --total_steps 2000
 METHODS="sjfpo ppo" ENVS=Hopper-v5 SEEDS="0 1" bash scripts/sweep.sh --python .venv/bin/python
-PYTHONPATH=src .venv/bin/python scripts/build_notebook.py   # rebuilds both .ipynb
+PYTHONPATH=src .venv/bin/python scripts/build_notebook.py   # rebuilds spectral_joint_flow.ipynb
 ```
 
 ## Notes

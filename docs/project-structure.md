@@ -8,7 +8,7 @@
 ├── configs/                      # shared/sjfpo/ppo/sac YAML defaults (mirror config.py)
 ├── docs/                         # ← you are here
 ├── scripts/
-│   ├── build_notebook.py         # generates both minimal Colab ipynbs (clone + install + !train.py)
+│   ├── build_notebook.py         # generates the Kaggle ipynb (%%writefile cells + !train.py)
 │   ├── train.py                  # single-run CLI (sweeps live in sweep.sh)
 │   └── verify_deps.sh            # pinned dep check
 ├── src/sjfpo/                     # production code (MuJoCo-only, flat Box, fp32 storage + bf16 autocast)
@@ -28,7 +28,7 @@
 │   ├── utils.py                  # device/dtype/compile helpers
 │   └── __init__.py
 ├── tests/                        # 300 green; test_pipeline_cpu.py (5 tests) never touched
-├── spectral_joint_flow.ipynb     # 8 cells, clone + train (primary deliverable)
+├── spectral_joint_flow.ipynb     # 33 cells, %%writefile sources + !train.py (primary deliverable)
 ├── requirements-linux.txt        # Linux pins (+ pyyaml for configs/)
 └── requirements-amd.txt          # AMD/ROCm pins
 ```
