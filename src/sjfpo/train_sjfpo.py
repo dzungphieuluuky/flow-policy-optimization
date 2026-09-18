@@ -121,7 +121,7 @@ def train_sjfpo_run(
     save_steps: int = 1000,
     obs_dim: int | None = None,
     action_dim: int | None = None,
-    resume_from: str | Path | None = None,
+    resume_from_checkpoint: str | Path | None = None,
 ) -> dict[str, Any]:
     """Run a single SJFPO training run, returning summary with artifacts.
 
@@ -129,7 +129,7 @@ def train_sjfpo_run(
     ...``). Mixed precision auto-detects: bf16 autocast matmuls when the CUDA
     device supports bf16 (see ``utils.is_bf16_available``), fp32 otherwise.
 
-    ``resume_from`` points at a ``save_policy_checkpoint`` directory
+    ``resume_from_checkpoint`` points at a ``save_policy_checkpoint`` directory
     (``checkpoint_<step>`` or ``checkpoint_final``): policy, optimizer, and
     counters continue from there. ``total_steps`` stays an absolute env-step
     budget (the run stops when ``global_step`` reaches it). The checkpoint's
@@ -161,18 +161,18 @@ def train_sjfpo_run(
     action_low = np.atleast_1d(np.asarray(env.action_space.low, dtype=np.float32))
     action_high = np.atleast_1d(np.asarray(env.action_space.high, dtype=np.float32))
     global_step = 0
-    if resume_from is not None:
+    if resume_from_checkpoint is not None:
         # Exact continuation: weights, optimizer state, and counters come
         # from the checkpoint dir (raises ResumeError when incomplete).
         policy, optimizer, counters = load_policy_checkpoint(
-            resume_from, device=device
+            resume_from_checkpoint, device=device
         )
         global_step = int(counters["global_step"])
         policy.train()  # loader leaves eval mode; rollouts train like fresh
         (out_dir / "resume_info.json").write_text(
             json.dumps(
                 {
-                    "resume_from": str(resume_from),
+                    "resume_from_checkpoint": str(resume_from_checkpoint),
                     "restored_global_step": global_step,
                 },
                 indent=2,

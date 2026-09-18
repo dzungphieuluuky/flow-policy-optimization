@@ -152,7 +152,7 @@ def run_single(
     obs_dim: int | None,
     action_dim: int | None,
     n_obs_steps: int = 16,
-    resume_from: str | None = None,
+    resume_from_checkpoint: str | None = None,
 ) -> dict:
     """Dispatch one run to train_sjfpo_run/ppo_train_run/sac_train_run."""
     import gymnasium as gym
@@ -186,11 +186,11 @@ def run_single(
         from sjfpo.train_sjfpo import train_sjfpo_run
 
         runners = {
-            "sjfpo": (train_sjfpo_run, {"obs_dim": obs_dim, "action_dim": action_dim, "resume_from": resume_from}),
+            "sjfpo": (train_sjfpo_run, {"obs_dim": obs_dim, "action_dim": action_dim, "resume_from_checkpoint": resume_from_checkpoint}),
             "ppo": (ppo_train_run, {"n_obs_steps": n_obs_steps}),
             "sac": (sac_train_run, {"n_obs_steps": n_obs_steps}),
         }
-        if resume_from is not None and method != "sjfpo":
+        if resume_from_checkpoint is not None and method != "sjfpo":
             raise ValueError(f"--resume is sjfpo-only, got method={method!r}")
         run_fn, extra = runners[method]
         return run_fn(

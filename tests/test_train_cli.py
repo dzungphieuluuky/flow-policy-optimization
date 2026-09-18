@@ -1,4 +1,4 @@
-"""Tests for scripts/train.py --resume and train_sjfpo_run(resume_from=)."""
+"""Tests for scripts/train.py --resume and train_sjfpo_run(resume_from_checkpoint=)."""
 
 from __future__ import annotations
 
@@ -86,9 +86,9 @@ def test_resume_from_continues_training(tmp_path):
         total_steps=32,
         eval_steps=1000,
         save_steps=1000,
-        resume_from=ckpt_dir,
+        resume_from_checkpoint=ckpt_dir,
     )
     assert result["global_step"] >= 32  # absolute budget continued past restore
     info = json.loads((out_dir / "resume_info.json").read_text(encoding="utf-8"))
-    assert info == {"resume_from": str(ckpt_dir), "restored_global_step": 0}
+    assert info == {"resume_from_checkpoint": str(ckpt_dir), "restored_global_step": 0}
     assert (out_dir / "checkpoint_final" / "model.safetensors").is_file()
