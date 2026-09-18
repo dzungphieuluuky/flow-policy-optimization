@@ -52,8 +52,6 @@ class SJFPOConfig(PreTrainedConfig):
     # every channel sits at angle <= 1 and t is nearly unresolvable.
 
     vf_coef: float = 0.1
-    kl_coef: float = 0.00
-    ema_decay: float = 0.999
     grad_clip_norm: float = 1.0
 
     top_p_spectral_tokens: float = 0.3
@@ -96,10 +94,6 @@ class SJFPOConfig(PreTrainedConfig):
             raise ValueError(
                 f"require optimizer_lr > 0, got ({self.optimizer_lr})"
             )
-        if not 0.0 <= self.ema_decay < 1.0:
-            raise ValueError(f"ema_decay={self.ema_decay} must satisfy 0 <= d < 1")
-        if self.kl_coef < 0:
-            raise ValueError(f"kl_coef={self.kl_coef} must be >= 0")
         if self.num_envs < 1:
             raise ValueError(f"num_envs={self.num_envs} must be >= 1")
 

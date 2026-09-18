@@ -1,4 +1,4 @@
-"""Networks: window encoders (for robot state and action), spectral tokens, flow heads, critic.
+"""Networks: window encoders, state conditioner (raw + spectral), flow heads, V(s) critic.
 
 Tensor conventions: B batch, N chunk batch, T obs window, H action_horizon,
 K spectral tokens, D hidden dim, action_dim env action dim. Params are fp32;

@@ -96,7 +96,7 @@ class TestEinxGuard:
         )
 
 
-class TestSpectralEncoderEinx:
+class TestDctEinx:
     """einx op equivalence for reshape/concat shapes on the encoder path."""
 
     def test_dct_low_bin_slice(self):

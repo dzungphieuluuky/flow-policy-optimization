@@ -221,7 +221,6 @@ def train_sjfpo_run(
                     grad_norms.append(float(grad_norm))
                     optimizer.step()
                     policy.snapshot_behavior_policy()
-                    policy.update_ema()
                     raw_policy.step_count += 1
                     infos.append(epoch_info)
             info = {k: sum(d[k] for d in infos) / len(infos) for k in infos[0]}

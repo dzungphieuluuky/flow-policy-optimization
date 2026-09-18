@@ -23,12 +23,6 @@ def resolve_device() -> torch.device:
 
 
 from accelerate.utils import is_bf16_available  # accelerate library detection
-from sjfpo.dct_utils import dct
-
-
-def encode_dct(x: torch.Tensor, dim: int = 1) -> torch.Tensor:
-    """Full DCT-II along ``dim`` (all frequency bins, no truncation)."""
-    return dct(x, dim=dim)
 
 
 def filter_low_freq(x: torch.Tensor, k: int, dim: int = 1) -> torch.Tensor:

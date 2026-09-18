@@ -21,8 +21,6 @@ dit_mlp_ratio: 4.0
 dit_time_dim: 128
 timestep_scale: 1000.0
 vf_coef: 0.01
-kl_coef: 0.01
-ema_decay: 0.999
 grad_clip_norm: 1.0
 n_obs_steps: 16
 action_horizon: 16

@@ -1,4 +1,4 @@
-"""SJFPO policy (LeRobot-native): flow head + spectral encoder + critic + obs stats.
+"""SJFPO policy (LeRobot-native): flow head + state conditioner + critic + obs stats.
 
 Batch contract for ``forward`` (fp32, on policy device): observation.state
 [B, T, obs], action [B, H, action_dim] real scaled, action_is_pad [B, H]
@@ -91,10 +91,6 @@ class SJFPOPolicy(PreTrainedPolicy):
         self.old_actor.requires_grad_(False)
         self.old_conditioner = copy.deepcopy(self.conditioner)
         self.old_conditioner.requires_grad_(False)
-        # Slow EMA anchor for the KL loss; inference-only (never compiled,
-        # never optimized), rides state_dict so checkpoints resume it.
-        self.ema_actor = copy.deepcopy(self.actor)
-        self.ema_actor.requires_grad_(False)
         self._frame_buffer: deque[torch.Tensor] = deque(maxlen=config.n_obs_steps)
         self._action_buffer: deque[torch.Tensor] = deque()
         self.step_count = 0
@@ -158,14 +154,6 @@ class SJFPOPolicy(PreTrainedPolicy):
                 {"params": list(self.critic.parameters())},
             ]
         }
-
-    @torch.no_grad()
-    def update_ema(self) -> None:
-        """Fold live weights into the EMA anchor (call after optimizer.step)."""
-        live = getattr(self.actor, "_orig_mod", self.actor)
-        decay = self.config.ema_decay
-        for p_ema, p in zip(self.ema_actor.parameters(), live.parameters()):
-            p_ema.mul_(decay).add_(p.detach(), alpha=1.0 - decay)
 
     def standardize_obs_tensor(self, states: torch.Tensor) -> torch.Tensor:
         """Coerce [B, T, obs] / [B, obs] / [T, obs] to a [B, T, obs] window."""

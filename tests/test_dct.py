@@ -26,7 +26,6 @@ from sjfpo.dct_utils import (  # noqa: E402
     dct,
     discounted_chunk_reward,
     idct,
-    mask_actions,
 )
 
 # Chunk length H=8 per plan; A_dim varies. Both plan-mandated shapes.
@@ -187,21 +186,3 @@ def test_discounted_chunk_reward_batched_shape():
     assert out.shape == (6,)
     manual_first = sum((0.99**t) * r[0, t].item() for t in range(8))
     assert abs(out[0].item() - manual_first) < 1e-5
-
-
-def test_mask_actions_full_length_is_identity():
-    """All-ones mask (L == H) returns the real-space input unchanged."""
-    torch.manual_seed(0)
-    x = torch.randn(4, 16, 3)
-    out = mask_actions(x, [16, 16, 16, 16], dim=1)
-    assert torch.equal(out, x)
-
-
-def test_mask_actions_zeroes_tail_rows():
-    """Rows past each row's executed length are exactly zero; kept rows match."""
-    torch.manual_seed(1)
-    x = torch.randn(2, 16, 3)
-    out = mask_actions(x, [8, 16], dim=1)
-    assert torch.equal(out[0, 8:], torch.zeros(8, 3))
-    assert torch.allclose(out[0, :8], x[0, :8], atol=1e-5)
-    assert torch.allclose(out[1], x[1], atol=1e-5)

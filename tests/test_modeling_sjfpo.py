@@ -133,9 +133,7 @@ def test_optim_params_exclude_snapshot():
     snap_ids = {id(p) for p in policy.old_actor.parameters()} | {
         id(p) for p in policy.old_conditioner.parameters()
     }
-    ema_ids = {id(p) for p in policy.ema_actor.parameters()}
     assert optim_ids.isdisjoint(snap_ids)
-    assert optim_ids.isdisjoint(ema_ids)
 
 
 def test_compute_target_velocity_broadcast():
@@ -269,9 +267,6 @@ def test_optim_params_actor_critic_groups():
     policy = SJFPOPolicy(make_config())
     groups = policy.get_optim_params()["params"]
     assert len(groups) == 4  # actor decay / no-decay / conditioner / critic
-    ema_ids = {id(p) for p in policy.ema_actor.parameters()}
-    for g in groups:
-        assert not any(id(p) in ema_ids for p in g["params"])
     opt = policy.config.get_optimizer_preset().build(groups)
     assert [g["lr"] for g in opt.param_groups] == [1e-4] * 4  # single LR
     assert [g["weight_decay"] for g in opt.param_groups][1] == 0.0
@@ -285,28 +280,6 @@ def test_loss_contains_only_policy_and_value():
     assert loss.item() == pytest.approx(
         info["policy_loss"] + policy.config.vf_coef * info["value_loss"]
     )
-
-
-def test_update_ema_decay_zero_copies_live_weights():
-    policy = SJFPOPolicy(make_config(ema_decay=0.0))
-    with torch.no_grad():
-        for p in policy.actor.parameters():
-            p.add_(1.0)
-    policy.update_ema()
-    for p_ema, p in zip(policy.ema_actor.parameters(), policy.actor.parameters()):
-        assert torch.equal(p_ema, p)
-
-
-def test_loss_does_not_use_ema_actor(monkeypatch):
-    policy = SJFPOPolicy(make_config(kl_coef=1.0))
-
-    def unexpected_forward(*args, **kwargs):
-        pytest.fail("EMA actor must not be evaluated for training loss")
-
-    monkeypatch.setattr(policy.ema_actor, "forward", unexpected_forward)
-    loss, info = policy(make_batch())
-    assert "kl_loss" not in info
-    assert torch.isfinite(loss)
 
 
 def test_save_pretrained_roundtrip(tmp_path):

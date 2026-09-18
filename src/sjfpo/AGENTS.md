@@ -8,18 +8,18 @@ MuJoCo-only hotspot — single live train path, chunked flow policy: Transition-
 networks.py      WindowEncoder (shared; conditioner + critic own instances) + RunningMeanStd (obs stats, checkpointed) + StateConditioner(raw window + DCT bins, Flamingo-style cross-attn -> [B,D]) + DiT SJFPOFlowModel (x_t, t, condition[B,D]) + V(s) Critic
 modeling_sjfpo.py   SJFPOPolicy.forward: ASPO (truncated Ka coeffs, negated) + V(s) critic on raw GAE returns (0.5 factor, PPO-clipped) + running obs norm; optimizer = live policy weights; global grad-clip; NaN-guard aborts
 train_sjfpo.py    online train entry: generate_rollout → forward → AdamW step → eval → Hub ckpt
-collector.py      241L — Transition TypedDict (8 LeRobot keys); full-H open-loop chunks; real-space scaled action anchor [H,action_dim] (DCT downstream in forward); all chunks train (trainer zero-pads unexecuted tails)
-gae.py            137L — chunk semi-MDP GAE (R_k intradiscounted, γ^L bootstrap, (γλ)^L recursion); terminated cuts all, truncated bootstraps δ but cuts recursion; train advantages raw (ASPO sign)
-fpo_core.py       432L — CFM/SQL-ℓ [N,m], STE-capped ρ, ASPO piecewise (PPO-clip Â≥0 / SPO Â<0), mean-of-ψ objective, sample(mode=euler) t:0→1; policy + vf_coef·value summed inline in forward
+collector.py      346L — Transition TypedDict (8 LeRobot keys); full-H open-loop chunks; real-space scaled action anchor [H,action_dim] (DCT downstream in forward); all chunks train (trainer zero-pads unexecuted tails)
+gae.py            123L — chunk semi-MDP GAE (R_k intradiscounted, γ^L bootstrap, (γλ)^L recursion); terminated cuts all, truncated bootstraps δ but cuts recursion; train advantages raw (ASPO sign)
+fpo_core.py       230L — CFM/SQL-ℓ [N,m], STE-capped ρ, ASPO piecewise (PPO-clip Â≥0 / SPO Â<0), mean-of-ψ objective, sample(mode=euler) t:0→1; policy + vf_coef·value summed inline in forward
 dct_utils.py      orthonormal DCT-II/III [H,action_dim] action chunks + discounted_chunk_reward + einx.id (parity-guarded)
 config.py         flags + PPO/SAC dataclasses, RUN_MATRIX 45 (TINY 3) + build_run_matrix; SACConfig.polyak is skrl-boundary (keep). SJFPO hyperparams live ONLY in configuration_sjfpo.py::SJFPOConfig (H=16/T=16/top_p=0.3→K=5/D=128, DiT-8/4heads/mlp×4/t256)
-baselines.py      690L — skrl PPO/SAC via baseline_train_loop; FrameStackWrapper shared with evaluator
+baselines.py      804L — skrl PPO/SAC via baseline_train_loop; FrameStackWrapper shared with evaluator
 checkpointing.py  Hub policy ckpt (config.json + safetensors via save/load_policy_checkpoint)
-evaluator.py      162L — Evaluator MuJoCo 3-col [episode,return,length]
-sweep.py          227L — scan_runs/run_pending state machine
+evaluator.py      159L — Evaluator MuJoCo 3-col [episode,return,length]
+sweep.py          196L — scan_runs/run_pending state machine
 analysis.py       IQM+bootstrap 2000, notebook-invoked (train.py never imports it; risk boundary)
-wandb_logging.py  ~120L — sole wandb importer (REQUIRED, hard import): 5 fns SDK-direct (wandb_disabled, init_wandb_run_for_method->bool, log_metrics, log_eval_summary, finish_run; shared baselines)
-utils.py           23L — shared pure helpers (device/dtype/compile), no sjfpo imports
+wandb_logging.py  ~114L — sole wandb importer (REQUIRED, hard import): 5 fns SDK-direct (wandb_disabled, init_wandb_run_for_method->bool, log_metrics, log_eval_summary, finish_run; shared baselines)
+utils.py          149L — shared pure helpers (device/dtype/compile), no sjfpo imports
 ```
 
 ## Where to Look

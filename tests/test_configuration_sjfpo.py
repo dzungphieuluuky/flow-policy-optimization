@@ -67,13 +67,9 @@ def test_validate_features_needs_state_and_action():
     cfg.validate_features()
 
 
-def test_post_init_rejects_bad_optimizer_kl_ema():
+def test_post_init_rejects_bad_optimizer():
     with pytest.raises(ValueError, match="optimizer_lr"):
         SJFPOConfig(optimizer_lr=0.0)
-    with pytest.raises(ValueError, match="ema_decay"):
-        SJFPOConfig(ema_decay=1.0)
-    with pytest.raises(ValueError, match="kl_coef"):
-        SJFPOConfig(kl_coef=-0.1)
 
 
 def test_post_init_rejects_bad_timestep_range():

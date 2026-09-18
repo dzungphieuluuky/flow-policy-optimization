@@ -90,63 +90,7 @@ def test_running_stats_rejects_nonpositive_dim():
     with pytest.raises(ValueError):
         nets.RunningMeanStd(0)
 
-    # Spectral utils — full DCT for the conditioner; K-lowest filter is
-    # action-only (utils.filter_low_freq).
-
-
-def pinned_input():
-    return (
-        torch.arange(STATE_T * OBS, dtype=torch.float32).reshape(1, STATE_T, OBS)
-        / 2048.0
-    )
-
-
-def test_state_spectral_full_bins_no_truncation():
-    """State path keeps all T bins: encode_dct == manual DCT-II, no slicing."""
-    from sjfpo.dct_utils import dct
-    from sjfpo.utils import encode_dct
-
-    torch.manual_seed(3)
-    sample = torch.randn(4, STATE_T, OBS)
-    out = encode_dct(sample)
-    assert out.shape == (4, STATE_T, OBS)  # full bins, last dim == obs
-    assert torch.isfinite(out).all()
-    assert torch.allclose(out, dct(sample, dim=1), atol=1e-6)
-
-
-def test_state_spectral_batch_invariance():
-    from sjfpo.utils import encode_dct
-
-    inp = pinned_input()
-
-    tokens_b1 = encode_dct(inp)
-    assert tokens_b1.shape == (1, STATE_T, OBS)  # full bins, last dim == obs
-
-    # identical input, repeated call -> bitwise identical output
-    assert torch.equal(encode_dct(inp), tokens_b1)
-
-    tokens_b32 = encode_dct(inp.repeat(32, 1, 1))
-    assert tokens_b32.shape == (32, STATE_T, OBS)
-    # cross-batch equality is allclose@1e-6, not bitwise (matmul kernels
-    # may vary by batch size)
-    assert torch.allclose(tokens_b1, tokens_b32[0], atol=1e-6) is True
-
-    # huge outlier row prepended: rows are independent (no batch statistics),
-    # so unchanged rows are unchanged within 1e-6
-    outlier_batch = torch.cat([torch.full((1, STATE_T, OBS), 1.0e4), inp], dim=0)
-    tokens_out = encode_dct(outlier_batch)
-    assert torch.allclose(tokens_out[1], tokens_b1[0], atol=1e-6)
-
-
-def test_state_spectral_nan_propagates_detectably():
-    """Documented failure behavior: NaN inputs propagate to the output
-    (detectable via torch.isnan); no silent swallowing, no crash."""
-    from sjfpo.utils import encode_dct
-
-    x = pinned_input().clone()
-    x[0, 0, 0] = float("nan")
-    out = encode_dct(x)
-    assert torch.isnan(out).any()
+    # Spectral utils — K-lowest filter is action-only (utils.filter_low_freq).
 
 
 def test_action_low_freq_filter_keeps_ka_bins():
