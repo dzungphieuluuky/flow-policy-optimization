@@ -28,9 +28,9 @@ PYTHONPATH=src .venv/bin/python scripts/train.py --method sjfpo --env Hopper-v5 
 # 3. Matrix smoke (sweep.sh axes)
 METHODS="sjfpo ppo sac" ENVS="Hopper-v5" SEEDS="0" TOTAL_STEPS=2000 bash scripts/sweep.sh --out-base .omo/evidence/smoke --python .venv/bin/python
 
-# 4. Notebooks (both, validated)
+# 4. Notebook (standalone, checked)
 python scripts/build_notebook.py
-ls -lh spectral_joint_flow.ipynb flow_matching_vs_ppo_sac.ipynb
+ls -lh spectral_joint_flow.ipynb
 ```
 
 ## Config Flags (env vars)

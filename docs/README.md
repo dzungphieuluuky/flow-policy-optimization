@@ -50,7 +50,6 @@ PYTHONPATH=src .venv/bin/python scripts/train.py --method sjfpo --env Hopper-v5 
 # 3. Matrix smoke (sweep.sh axes, proves no regression)
 METHODS="sjfpo ppo sac" ENVS="Hopper-v5" SEEDS="0" TOTAL_STEPS=2000 bash scripts/sweep.sh --out-base .omo/evidence/smoke --python .venv/bin/python
 
-# 4. Build notebooks
-python scripts/build_notebook.py                          # builds both minimal ipynbs (8 cells each, no source)
-python scripts/build_notebook.py --spectral-only          # only spectral_joint_flow.ipynb
+# 4. Build notebook
+python scripts/build_notebook.py                          # standalone ipynb (8 cells, no source)
 ```

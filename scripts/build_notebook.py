@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
-"""Build minimal Colab notebooks: spectral_joint_flow.ipynb + flow_matching_vs_ppo_sac.ipynb.
+"""Build the standalone Colab notebook spectral_joint_flow.ipynb.
 
-The notebooks carry NO source code. Each one clones this repo (private: GitHub
+The notebook carries NO source code. It clones this repo (private: GitHub
 token in the URL), installs deps, then shells out to scripts/train.py with `!`
 (train + eval happen inside train.py via periodic eval → eval_history.csv).
 Single source of truth stays in src/.
+
+The notebook is authored as a jupytext percent-format script (in-memory text)
+and converted with the jupytext API — no nbformat import here.
 
 Usage:
     python scripts/build_notebook.py [--output spectral_joint_flow.ipynb]
@@ -15,7 +18,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-import nbformat as nbf
+import jupytext
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -29,14 +32,6 @@ Train the spectral flow policy on MuJoCo from a clean Colab runtime.
 All code lives in `src/` of the cloned repo — this notebook only clones,
 installs, and calls `scripts/train.py` (eval runs inside training and lands
 in `eval_history.csv`).
-"""
-
-TITLE_COMPARISON = """\
-# SJFPO vs PPO/SAC on Colab
-
-Run the SJFPO / PPO / SAC comparison matrix on MuJoCo from a clean Colab
-runtime. Same pattern as the spectral notebook: clone, install, then call
-`scripts/sweep.sh` with `METHODS/ENVS/SEEDS` axes (eval runs inside training).
 """
 
 SETUP_MD = """\
@@ -120,28 +115,37 @@ FULL_TRAIN_CELL = """\
 !PYTHONPATH=src python scripts/train.py --method sjfpo --env Hopper-v5 --seed 0 --total_steps 1000000 --eval_steps 50000 --save_steps 25000
 """
 
-MATRIX_CELL = """\
-# Comparison matrix: all methods x Hopper-v5 x seed 0 (extend ENVS/SEEDS for full).
-# Each sweep row calls: PYTHONPATH=src python scripts/train.py --method <m> --env <e> --seed <s>
-!METHODS="sjfpo ppo sac" ENVS="Hopper-v5" SEEDS="0" bash scripts/sweep.sh
-"""
 
-RESULTS_CELL = """\
-# Eval histories produced by training (one CSV per run).
-!find .omo/evidence/train -name eval_history.csv
-"""
+def md_block(source: str) -> str:
+    """Markdown source as a jupytext percent-format cell chunk."""
+    lines = ["# %% [markdown]"]
+    lines += [("# " + ln) if ln.strip() else "" for ln in source.strip().splitlines()]
+    return "\n".join(lines)
 
 
-def md_block(source: str):
-    return nbf.v4.new_markdown_cell(source.strip())
+def code_block(source: str) -> str:
+    """Code source as a jupytext percent-format cell chunk."""
+    return "# %%\n" + source.strip()
 
 
-def code_block(source: str):
-    return nbf.v4.new_code_cell(source.strip())
+def build_script() -> str:
+    """Assemble the percent-format script (parsed by jupytext, never written)."""
+    chunks = [
+        md_block(TITLE_SPECTRAL),
+        md_block(SETUP_MD),
+        code_block(ENV_CELL),
+        code_block(CLONE_CELL),
+        code_block(INSTALL_CELL),
+        code_block(WANDB_CELL),
+        code_block(SMOKE_CELL),
+        code_block(FULL_TRAIN_CELL),
+    ]
+    return "\n\n".join(chunks) + "\n"
 
 
-def new_notebook_shell():
-    nb = nbf.v4.new_notebook()
+def build_notebook():
+    """Assemble the standalone clone/install/train notebook (no source inlined)."""
+    nb = jupytext.reads(build_script(), fmt="py:percent")
     nb.metadata.update(
         {
             "kernelspec": {
@@ -155,73 +159,42 @@ def new_notebook_shell():
     return nb
 
 
-def build_notebook(spectral: bool = False):
-    """Assemble the minimal clone/install/train notebook (no source inlined)."""
-    nb = new_notebook_shell()
-    cells = [
-        md_block(TITLE_SPECTRAL if spectral else TITLE_COMPARISON),
-        md_block(SETUP_MD),
-        code_block(ENV_CELL),
-        code_block(CLONE_CELL),
-        code_block(INSTALL_CELL),
-        code_block(WANDB_CELL),
-    ]
-    if spectral:
-        cells += [code_block(SMOKE_CELL), code_block(FULL_TRAIN_CELL)]
-    else:
-        cells += [code_block(MATRIX_CELL), code_block(RESULTS_CELL)]
-    nb.cells = cells
-    return nb
-
-
 def parse_build_args() -> argparse.Namespace:
     """Parse the notebook-builder CLI flags."""
-    parser = argparse.ArgumentParser(description="Build minimal Colab notebook(s)")
+    parser = argparse.ArgumentParser(description="Build the standalone Colab notebook")
     parser.add_argument(
         "--output",
         "-o",
         default=None,
-        help="Output notebook path (default: build both spectral_joint_flow.ipynb + legacy)",
-    )
-    parser.add_argument(
-        "--legacy-only",
-        action="store_true",
-        help="Only build legacy flow_matching_vs_ppo_sac.ipynb",
-    )
-    parser.add_argument(
-        "--spectral-only",
-        action="store_true",
-        help="Only build spectral_joint_flow.ipynb",
+        help="Output notebook path (default: spectral_joint_flow.ipynb)",
     )
     return parser.parse_args()
 
 
-def write_notebook(out: Path, spectral: bool) -> None:
-    """Build, validate, and write one notebook."""
+def check_notebook(nb) -> None:
+    """Structural gate: 8 cells in md/md/code×6 order, all non-empty."""
+    kinds = [c["cell_type"] for c in nb.cells]
+    if kinds != ["markdown", "markdown"] + ["code"] * 6:
+        raise ValueError(f"unexpected cell order: {kinds}")
+    for i, c in enumerate(nb.cells):
+        if not str(c["source"]).strip():
+            raise ValueError(f"cell {i} is empty")
+
+
+def write_notebook(out: Path) -> None:
+    """Build, check, and write the notebook via the jupytext API."""
     out = Path(out)
-    print(f"Building notebook: {out} (spectral={spectral})")
-    nb = build_notebook(spectral=spectral)
-    nbf.validate(nb)
-    with open(out, "w", encoding="utf-8") as f:
-        nbf.write(nb, f)
-    print(f"Wrote {len(nb.cells)} cells to {out} spectral={spectral} validated.")
-
-
-def write_default_notebooks(args: argparse.Namespace) -> None:
-    """Build both notebooks, honoring --legacy-only/--spectral-only."""
-    if not args.legacy_only:
-        write_notebook(ROOT / "spectral_joint_flow.ipynb", True)
-    if not args.spectral_only:
-        write_notebook(ROOT / "flow_matching_vs_ppo_sac.ipynb", False)
+    print(f"Building notebook: {out}")
+    nb = build_notebook()
+    check_notebook(nb)
+    jupytext.write(nb, str(out))
+    print(f"Wrote {len(nb.cells)} cells to {out} checked.")
 
 
 def main():
     args = parse_build_args()
-    if args.output:
-        out = ROOT / args.output
-        write_notebook(out, "spectral" in out.name)
-        return
-    write_default_notebooks(args)
+    out = ROOT / args.output if args.output else ROOT / "spectral_joint_flow.ipynb"
+    write_notebook(out)
 
 
 if __name__ == "__main__":

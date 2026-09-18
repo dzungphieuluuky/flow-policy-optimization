@@ -46,8 +46,8 @@ loop and `baseline_train_loop`.
 **Notebook content looks stale**
 
 Notebooks carry no source — rebuild after changing the command set:
-`python scripts/build_notebook.py`, then `nbformat.validate` passes and both
-files stay at 8 cells each. Never hand-edit ipynbs.
+`python scripts/build_notebook.py`, then the jupytext structure check passes
+and both files stay at 8 cells each. Never hand-edit ipynbs.
 
 **`jupyter nbconvert --execute` hangs**
 

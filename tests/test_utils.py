@@ -79,13 +79,12 @@ class TestBuilderIncludesUtils:
 
     def test_notebooks_inline_no_source(self):
         b = self.builder()
-        for spectral in (True, False):
-            nb = b.build_notebook(spectral=spectral)
-            code = "\n".join(c["source"] for c in nb.cells if c["cell_type"] == "code")
-            assert "Register inlined" not in code
-            assert "sys.modules['sjfpo" not in code
-            assert "class StateEncoder" not in code
-            assert "scripts/train.py" in code
+        nb = b.build_notebook()
+        code = "\n".join(c["source"] for c in nb.cells if c["cell_type"] == "code")
+        assert "Register inlined" not in code
+        assert "sys.modules['sjfpo" not in code
+        assert "class StateEncoder" not in code
+        assert "scripts/train.py" in code
 
     def test_clone_cell_uses_token_url(self):
         b = self.builder()

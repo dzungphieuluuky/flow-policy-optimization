@@ -29,7 +29,6 @@
 │   └── __init__.py
 ├── tests/                        # 300 green; test_pipeline_cpu.py (5 tests) never touched
 ├── spectral_joint_flow.ipynb     # 8 cells, clone + train (primary deliverable)
-├── flow_matching_vs_ppo_sac.ipynb # 8 cells, sweep.sh + results + results
 ├── requirements-linux.txt        # Linux pins (+ pyyaml for configs/)
 └── requirements-amd.txt          # AMD/ROCm pins
 ```

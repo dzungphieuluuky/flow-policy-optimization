@@ -6,7 +6,7 @@
 ## Structure
 ```
 train.py            argparse (singular + plural flags) → matrix/single dispatch → build_cfg → run_single
-build_notebook.py   title/md + clone/install/train cells → 2 source-free .ipynb (8 cells each)
+build_notebook.py   jupytext percent-format cells → standalone .ipynb (8 cells, structure-checked)
 verify_deps.sh      venv bootstrap + inline version asserts (STALE vs pyproject — see Notes)
 ```
 
