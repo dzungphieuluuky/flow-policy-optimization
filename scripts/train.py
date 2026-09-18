@@ -122,6 +122,30 @@ def select_method_cfg(args: TrainConfig, yaml_dict: dict):
     return apply_flat_yaml(method_cfg, yaml_dict)
 
 
+def resumed_cfg_overrides(cfg) -> list[str]:
+    """Scalar fields differing from dataclass defaults.
+
+    Used to warn with --resume: the checkpoint config wins there, so CLI
+    overrides of these fields are silently ignored. Only plain scalars are
+    compared (dict/tensor features have no meaningful CLI equality).
+    """
+    try:
+        fresh = type(cfg)()
+    except Exception:
+        return []
+    touched = []
+    for f in dataclasses.fields(cfg):
+        try:
+            cur, default = getattr(cfg, f.name), getattr(fresh, f.name)
+        except Exception:
+            continue
+        if isinstance(cur, (bool, int, float, str)) or cur is None:
+            if isinstance(default, (bool, int, float, str)) or default is None:
+                if cur != default:
+                    touched.append(f.name)
+    return sorted(touched)
+
+
 def resolve_run_dir(out_base: str | Path, method: str, env: str, seed: int, resume: str | None) -> Path:
     """Run dir for one invocation; resumed runs get a fresh suffixed dir.
 
@@ -233,6 +257,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.resume and not Path(args.resume).is_dir():
         print(f"ERROR: --resume dir not found: {args.resume}", file=sys.stderr)
         return 1
+    if args.resume:
+        overridden = resumed_cfg_overrides(cfg)
+        if overridden:
+            print(
+                "WARNING: --resume restores the checkpoint config; "
+                f"CLI overrides ignored for: {', '.join(overridden)}",
+                file=sys.stderr,
+            )
     # Same layout the old matrix used (sweep.format_run_directory_name),
     # suffixed when resuming so the source run is never overwritten.
     run_dir = resolve_run_dir(args.out_dir, args.method, args.env, args.seed, args.resume)

@@ -61,6 +61,17 @@ def test_main_rejects_resume_for_baselines_and_missing_dir(tmp_path):
     )
 
 
+def test_resumed_cfg_overrides_lists_touched_scalars():
+    from sjfpo.configuration_sjfpo import SJFPOConfig as Cfg
+
+    train = load_train_module()
+    assert train.resumed_cfg_overrides(Cfg()) == []
+    assert train.resumed_cfg_overrides(Cfg(epsilon_clip=0.1)) == ["epsilon_clip"]
+    assert train.resumed_cfg_overrides(
+        Cfg(epsilon_clip=0.1, num_epochs=4, use_per_bin_clip=True)
+    ) == ["epsilon_clip", "num_epochs", "use_per_bin_clip"]
+
+
 def test_resume_from_continues_training(tmp_path):
     torch.manual_seed(0)
     cfg = SJFPOConfig(

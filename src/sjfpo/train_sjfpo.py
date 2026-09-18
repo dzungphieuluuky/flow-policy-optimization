@@ -134,7 +134,7 @@ def train_sjfpo_run(
     counters continue from there. ``total_steps`` stays an absolute env-step
     budget (the run stops when ``global_step`` reaches it). The checkpoint's
     own config shapes the policy; CLI hyperparameter overrides do not apply
-    to a resumed run.
+    to a resumed run (scripts/train.py warns about them).
     """
     cfg = cfg or SJFPOConfig()
     out_dir = Path(out_dir)
