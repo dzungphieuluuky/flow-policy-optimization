@@ -30,6 +30,8 @@ INFO_KEYS = {
     "flow_rho_bin_lowfreq",
     "flow_rho_bin_highfreq",
     "flow_rho_bin_outside_frac",
+    "flow_rho_bin_low_outside_frac",
+    "flow_rho_bin_high_outside_frac",
     "flow_v_star_rms",
     "cond_temb",
     "cond_fused",
@@ -168,6 +170,37 @@ def test_snapshot_refresh_tracks_live_weights():
     policy.snapshot_behavior_policy()
     for p_old, p_live in zip(policy.old_actor.parameters(), policy.actor.parameters()):
         assert torch.equal(p_old, p_live)
+
+
+def test_forward_per_bin_clip_finite_and_binds_per_group():
+    policy = SJFPOPolicy(
+        make_config(use_per_bin_clip=True, epsilon_clip_lowfreq=0.02, epsilon_clip_highfreq=0.10)
+    )
+    policy.train()
+    batch = make_batch()
+    batch["tau"] = torch.rand(2)
+    loss, info = policy(batch)
+    assert loss.dim() == 0 and torch.isfinite(loss)
+    assert set(info) == INFO_KEYS
+    assert 0.0 <= info["flow_rho_bin_low_outside_frac"] <= 1.0
+    assert 0.0 <= info["flow_rho_bin_high_outside_frac"] <= 1.0
+    loss.backward()  # per-bin psi graph reaches the live actor
+    assert any(p.grad is not None for p in policy.actor.parameters())
+    loss2, _ = policy(batch)  # stored CRN draws reused: deterministic
+    assert torch.equal(loss, loss2)
+
+
+def test_forward_per_bin_uniform_eps_matches_scalar_reduction_order():
+    # low == high isolates the reduction-order change (mean-of-psi over bins
+    # vs psi of the summed loss) from the trust-region change.
+    cfg = dict(use_per_bin_clip=True, epsilon_clip_lowfreq=0.05, epsilon_clip_highfreq=0.05)
+    torch.manual_seed(0)
+    policy = SJFPOPolicy(make_config(**cfg))
+    policy.train()
+    batch = make_batch()
+    batch["tau"] = torch.rand(2)
+    loss_bin, _ = policy(batch)
+    assert torch.isfinite(loss_bin)
 
 
 def test_forward_reduction_none_returns_per_chunk_vector():

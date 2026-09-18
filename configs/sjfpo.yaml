@@ -10,6 +10,9 @@ optimizer_weight_decay: 0.0001
 gamma: 0.999
 gae_lambda: 0.995
 epsilon_clip: 0.05
+use_per_bin_clip: false
+epsilon_clip_lowfreq: 0.02
+epsilon_clip_highfreq: 0.10
 cfm_clamp: 20.0
 log_ratio_cap: 10.0
 advantage_clamp: 100.0

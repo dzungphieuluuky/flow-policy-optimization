@@ -50,6 +50,11 @@ def build_run_name(method: str, env_name: str, seed: int, cfg_dict: dict) -> str
     eps = get("epsilon_clip", get("ratio_clip"))
     if eps is not None:
         tags.append(f"eps{compact_value(eps)}")
+    if get("use_per_bin_clip"):
+        tags.append(
+            f"bin{compact_value(get('epsilon_clip_lowfreq'))}"
+            f"-{compact_value(get('epsilon_clip_highfreq'))}"
+        )
     if get("num_mc_samples") is not None:
         tags.append(f"mc{get('num_mc_samples')}")
     base = f"{method}_{env_name}_s{seed}"

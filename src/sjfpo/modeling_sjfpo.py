@@ -451,16 +451,34 @@ class SJFPOPolicy(PreTrainedPolicy):
         v_star = self.compute_target_velocity(spectral_action_tokens, eps)
         v_old_r = v_old.reshape(n, num_mc, *flow_shape)
         v_new_r = v_new.reshape(n, num_mc, *flow_shape)
-        l_old = compute_cfm_loss(v_old_r, v_star, reduce_mode="sample")
-        l_new = compute_cfm_loss(v_new_r, v_star, reduce_mode="sample")
-
         # ------- ASPO trust-region policy loss (paper Eq.12-13, OFF clamps) ----
         adv_mc = advantages.unsqueeze(1)
+        rho_bin = None
+        eps_bin = None
+        if cfg.use_per_bin_clip:
+            # Phase 1 per-bin trust region: mean-of-psi over DCT bins with a
+            # two-group epsilon (tight on low-frequency intent bins, loose on
+            # high-frequency detail). Same elementwise ratio/ASPO math, no
+            # fpo_core change; OFF-faithful scalar path when disabled.
+            l_old_bin = compute_cfm_loss(v_old_r, v_star, reduce_mode="bin")
+            l_new_bin = compute_cfm_loss(v_new_r, v_star, reduce_mode="bin")
+            rho_bin = compute_policy_ratio(l_old_bin, l_new_bin)
+            n_bins = rho_bin.shape[-1]
+            split = max(1, n_bins // 2)
+            eps_bin = torch.full(
+                (n_bins,), cfg.epsilon_clip_highfreq, device=rho_bin.device
+            )
+            eps_bin[:split] = cfg.epsilon_clip_lowfreq
+            psi = compute_aspo_surrogate(rho_bin, adv_mc.unsqueeze(-1), eps_bin)
+            policy_per_chunk = -psi.mean(dim=(1, 2))
+        l_old = compute_cfm_loss(v_old_r, v_star, reduce_mode="sample")
+        l_new = compute_cfm_loss(v_new_r, v_star, reduce_mode="sample")
         rho = compute_policy_ratio(l_old, l_new)
-        psi = compute_aspo_surrogate(
-            rho, adv_mc, cfg.epsilon_clip
-        )
-        policy_per_chunk = -psi.mean(dim=1)
+        if rho_bin is None:  # scalar path owns the loss; per-bin logged only
+            psi = compute_aspo_surrogate(
+                rho, adv_mc, cfg.epsilon_clip
+            )
+            policy_per_chunk = -psi.mean(dim=1)
         # ------- value loss on raw returns (OFF: no 0.5, unclipped default) ---
         with autocast_context(states.device):
             v_pred = self.critic(states).float()
@@ -502,13 +520,14 @@ class SJFPOPolicy(PreTrainedPolicy):
             explained_var = float(
                 1.0 - (returns_d.detach() - v_pred.detach()).var(unbiased=False) / returns_var
             )
-            # Phase 0 per-bin trust diagnostics (read-only): same elementwise
-            # ratio math as the scalar path, unreduced over bins. The scalar
-            # loss above is untouched; these stats only answer "is rho flat
-            # in k?" ahead of any per-bin clipping experiment.
-            l_old_bin = compute_cfm_loss(v_old_r, v_star, reduce_mode="bin")
-            l_new_bin = compute_cfm_loss(v_new_r, v_star, reduce_mode="bin")
-            rho_bin = compute_policy_ratio(l_old_bin, l_new_bin)
+            # Phase 0 per-bin trust diagnostics (read-only on the scalar path;
+            # live trust region when use_per_bin_clip): same elementwise
+            # ratio math, unreduced over bins. Reuses the loss path's rho_bin
+            # when present so logged stats match the applied trust region.
+            if rho_bin is None:
+                l_old_bin = compute_cfm_loss(v_old_r, v_star, reduce_mode="bin")
+                l_new_bin = compute_cfm_loss(v_new_r, v_star, reduce_mode="bin")
+                rho_bin = compute_policy_ratio(l_old_bin, l_new_bin)
             rho_bin_mean = rho_bin.mean(dim=(0, 1))  # [K] over batch, mc
             n_bins = rho_bin_mean.numel()
             split = max(1, n_bins // 2)
@@ -527,6 +546,30 @@ class SJFPOPolicy(PreTrainedPolicy):
                 .float()
                 .mean()
             )
+            # Per-group clip fractions against the eps actually applied
+            # (per-bin eps when enabled, scalar eps for both groups otherwise).
+            eps_low = cfg.epsilon_clip_lowfreq if eps_bin is not None else cfg.epsilon_clip
+            eps_high = cfg.epsilon_clip_highfreq if eps_bin is not None else cfg.epsilon_clip
+            rho_bin_low_outside = float(
+                (
+                    (rho_bin[..., :split] < 1.0 - eps_low)
+                    | (rho_bin[..., :split] > 1.0 + eps_low)
+                )
+                .float()
+                .mean()
+            )
+            rho_bin_high_outside = (
+                float(
+                    (
+                        (rho_bin[..., split:] < 1.0 - eps_high)
+                        | (rho_bin[..., split:] > 1.0 + eps_high)
+                    )
+                    .float()
+                    .mean()
+                )
+                if n_bins > 1
+                else rho_bin_low_outside
+            )
         return loss, {
             "policy_loss": float(policy_per_chunk.mean().detach()),
             "value_loss": float(value_per_chunk.mean().detach()),
@@ -538,6 +581,8 @@ class SJFPOPolicy(PreTrainedPolicy):
             "flow_rho_bin_lowfreq": rho_bin_low,
             "flow_rho_bin_highfreq": rho_bin_high,
             "flow_rho_bin_outside_frac": rho_bin_outside,
+            "flow_rho_bin_low_outside_frac": rho_bin_low_outside,
+            "flow_rho_bin_high_outside_frac": rho_bin_high_outside,
             "flow_v_star_rms": v_star_rms,
             **{f"cond_{k}": float(v.detach()) for k, v in cond_stats.items()},
         }

@@ -145,6 +145,8 @@ class TestTrainerGolden:
             "flow_rho_bin_lowfreq",
             "flow_rho_bin_highfreq",
             "flow_rho_bin_outside_frac",
+            "flow_rho_bin_low_outside_frac",
+            "flow_rho_bin_high_outside_frac",
             "flow_v_star_rms",
             "cond_temb",
             "cond_fused",

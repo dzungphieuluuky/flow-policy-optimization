@@ -37,6 +37,9 @@ class SJFPOConfig(PreTrainedConfig):
     gamma: float = 0.99
     gae_lambda: float = 0.95
     epsilon_clip: float = 0.05
+    use_per_bin_clip: bool = False  # Phase 1: two-group epsilon over DCT bins
+    epsilon_clip_lowfreq: float = 0.02  # tight: low bins carry task intent
+    epsilon_clip_highfreq: float = 0.10  # loose: high bins are detail/exploration
     cfm_clamp: float = 20.0
     log_ratio_cap: float = 10.0
     advantage_clamp: float = 100.0
@@ -82,6 +85,11 @@ class SJFPOConfig(PreTrainedConfig):
         if not 0.0 < self.epsilon_clip < 1.0:
             raise ValueError(
                 f"require 0 < epsilon_clip < 1, got ({self.epsilon_clip})"
+            )
+        if not 0.0 < self.epsilon_clip_lowfreq <= self.epsilon_clip_highfreq < 1.0:
+            raise ValueError(
+                "require 0 < epsilon_clip_lowfreq <= epsilon_clip_highfreq < 1, got "
+                f"({self.epsilon_clip_lowfreq}, {self.epsilon_clip_highfreq})"
             )
         if self.cfm_clamp <= 0:
             raise ValueError(f"cfm_clamp={self.cfm_clamp} must be positive")

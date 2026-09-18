@@ -83,3 +83,16 @@ def test_post_init_rejects_bad_timestep_range():
         SJFPOConfig(cfm_clamp=0.0)
     # OFF endpoints are valid.
     assert SJFPOConfig(min_timestep=0.005, max_timestep=0.995).min_timestep == 0.005
+
+
+def test_per_bin_clip_defaults_off_and_validated():
+    cfg = SJFPOConfig()
+    assert cfg.use_per_bin_clip is False
+    assert (cfg.epsilon_clip_lowfreq, cfg.epsilon_clip_highfreq) == (0.02, 0.10)
+    with pytest.raises(ValueError, match="epsilon_clip_lowfreq"):
+        SJFPOConfig(epsilon_clip_lowfreq=0.0)
+    with pytest.raises(ValueError, match="epsilon_clip_lowfreq"):
+        SJFPOConfig(epsilon_clip_lowfreq=0.2, epsilon_clip_highfreq=0.1)
+    with pytest.raises(ValueError, match="epsilon_clip_highfreq"):
+        SJFPOConfig(epsilon_clip_highfreq=1.0)
+    assert SJFPOConfig(epsilon_clip_lowfreq=0.05, epsilon_clip_highfreq=0.05)
