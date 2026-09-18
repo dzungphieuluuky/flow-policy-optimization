@@ -7,6 +7,7 @@ only steps the optimizer, evaluates, and checkpoints.
 from __future__ import annotations
 
 import dataclasses
+import json
 import sys
 import time
 from pathlib import Path
@@ -17,7 +18,7 @@ import torch
 from lerobot.configs.types import FeatureType, PolicyFeature
 from lerobot.utils.random_utils import set_seed
 
-from sjfpo.checkpointing import save_policy_checkpoint
+from sjfpo.checkpointing import load_policy_checkpoint, save_policy_checkpoint
 from sjfpo.configuration_sjfpo import SJFPOConfig
 from sjfpo.evaluator import Evaluator, check_divergence, render_episode_frames
 from sjfpo.modeling_sjfpo import SJFPOPolicy
@@ -120,12 +121,20 @@ def train_sjfpo_run(
     save_steps: int = 1000,
     obs_dim: int | None = None,
     action_dim: int | None = None,
+    resume_from: str | Path | None = None,
 ) -> dict[str, Any]:
     """Run a single SJFPO training run, returning summary with artifacts.
 
     Plain single-process PyTorch (``PYTHONPATH=src python scripts/train.py
     ...``). Mixed precision auto-detects: bf16 autocast matmuls when the CUDA
     device supports bf16 (see ``utils.is_bf16_available``), fp32 otherwise.
+
+    ``resume_from`` points at a ``save_policy_checkpoint`` directory
+    (``checkpoint_<step>`` or ``checkpoint_final``): policy, optimizer, and
+    counters continue from there. ``total_steps`` stays an absolute env-step
+    budget (the run stops when ``global_step`` reaches it). The checkpoint's
+    own config shapes the policy; CLI hyperparameter overrides do not apply
+    to a resumed run.
     """
     cfg = cfg or SJFPOConfig()
     out_dir = Path(out_dir)
@@ -151,9 +160,29 @@ def train_sjfpo_run(
     # Real env bounds (not ±1): InvertedPendulum ±3, Pusher ±2, Humanoid ±0.4.
     action_low = np.atleast_1d(np.asarray(env.action_space.low, dtype=np.float32))
     action_high = np.atleast_1d(np.asarray(env.action_space.high, dtype=np.float32))
-    policy = build_policy(obs_dim, action_dim, cfg, device=device,
-                           action_low=action_low, action_high=action_high)
-    optimizer = build_optimizer(policy, cfg)
+    global_step = 0
+    if resume_from is not None:
+        # Exact continuation: weights, optimizer state, and counters come
+        # from the checkpoint dir (raises ResumeError when incomplete).
+        policy, optimizer, counters = load_policy_checkpoint(
+            resume_from, device=device
+        )
+        global_step = int(counters["global_step"])
+        policy.train()  # loader leaves eval mode; rollouts train like fresh
+        (out_dir / "resume_info.json").write_text(
+            json.dumps(
+                {
+                    "resume_from": str(resume_from),
+                    "restored_global_step": global_step,
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+    else:
+        policy = build_policy(obs_dim, action_dim, cfg, device=device,
+                               action_low=action_low, action_high=action_high)
+        optimizer = build_optimizer(policy, cfg)
     print(policy, file=sys.stderr)
     evaluator = Evaluator(env, eval_seed=10000 + seed, max_episodes=12)
     eval_policy = _EvalPolicy(policy)
@@ -166,7 +195,6 @@ def train_sjfpo_run(
         cfg_dict=dataclasses.asdict(cfg),
     )
 
-    global_step = 0
     eval_count = 0
     consecutive_below = 0
     diverged = False

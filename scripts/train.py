@@ -6,6 +6,9 @@ Sweeps live in scripts/sweep.sh: one call here per method x env x seed.
 
     python scripts/train.py --method sjfpo --env Hopper-v5 --seed 0 --total_steps 2000
     python scripts/train.py --method sjfpo --env Hopper-v5 --sjfpo.optimizer_lr 3e-4
+    python scripts/train.py --method sjfpo --env Hopper-v5 --seed 0 \
+        --resume .omo/evidence/train/sjfpo_Hopper-v5_seed0/checkpoint_1000 \
+        --total_steps 4000
     METHODS="sjfpo ppo" ENVS=Hopper-v5 SEEDS="0 1" scripts/sweep.sh
 
 Flags use underscores (draccus convention, same as lerobot-train).
@@ -63,6 +66,10 @@ class TrainConfig:
     action_dim: int | None = None
     out_dir: str = ".omo/evidence/train"
     config: str | None = None  # legacy flat YAML overlay for the method config
+    # Resume an sjfpo checkpoint dir (checkpoint_<step>/ or checkpoint_final/):
+    # continues policy + optimizer + counters into a FRESH run dir
+    # (<base>_resume[/2...]). total_steps stays an absolute env-step budget.
+    resume: str | None = None
     sjfpo: SJFPOConfig = field(default_factory=SJFPOConfig)
     ppo: PPOConfig = field(default_factory=PPOConfig)
     sac: SACConfig = field(default_factory=SACConfig)
@@ -115,6 +122,24 @@ def select_method_cfg(args: TrainConfig, yaml_dict: dict):
     return apply_flat_yaml(method_cfg, yaml_dict)
 
 
+def resolve_run_dir(out_base: str | Path, method: str, env: str, seed: int, resume: str | None) -> Path:
+    """Run dir for one invocation; resumed runs get a fresh suffixed dir.
+
+    ``<method>_<env>_seed<seed>`` normally, else the first free
+    ``<base>_resume``, ``<base>_resume2``, ... so a resume never overwrites
+    the original run (or an earlier resume).
+    """
+    base = Path(out_base) / f"{method}_{env}_seed{seed}"
+    if not resume:
+        return base
+    candidate = Path(str(base) + "_resume")
+    i = 2
+    while candidate.exists():
+        candidate = Path(f"{base}_resume{i}")
+        i += 1
+    return candidate
+
+
 def run_single(
     method: str,
     env_id: str,
@@ -127,6 +152,7 @@ def run_single(
     obs_dim: int | None,
     action_dim: int | None,
     n_obs_steps: int = 16,
+    resume_from: str | None = None,
 ) -> dict:
     """Dispatch one run to train_sjfpo_run/ppo_train_run/sac_train_run."""
     import gymnasium as gym
@@ -160,10 +186,12 @@ def run_single(
         from sjfpo.train_sjfpo import train_sjfpo_run
 
         runners = {
-            "sjfpo": (train_sjfpo_run, {"obs_dim": obs_dim, "action_dim": action_dim}),
+            "sjfpo": (train_sjfpo_run, {"obs_dim": obs_dim, "action_dim": action_dim, "resume_from": resume_from}),
             "ppo": (ppo_train_run, {"n_obs_steps": n_obs_steps}),
             "sac": (sac_train_run, {"n_obs_steps": n_obs_steps}),
         }
+        if resume_from is not None and method != "sjfpo":
+            raise ValueError(f"--resume is sjfpo-only, got method={method!r}")
         run_fn, extra = runners[method]
         return run_fn(
             env=env,
@@ -199,8 +227,15 @@ def main(argv: list[str] | None = None) -> int:
     ckpt_i = args.save_steps or int(yaml_dict.get("save_steps", min(1000, total)))
     n_obs_steps = int(yaml_dict.get("n_obs_steps", 16))
     cfg = select_method_cfg(args, yaml_dict)
-    # Same layout the old matrix used (sweep.format_run_directory_name).
-    run_dir = Path(args.out_dir) / f"{args.method}_{args.env}_seed{args.seed}"
+    if args.resume and args.method != "sjfpo":
+        print(f"ERROR: --resume is sjfpo-only, got --method {args.method!r}", file=sys.stderr)
+        return 1
+    if args.resume and not Path(args.resume).is_dir():
+        print(f"ERROR: --resume dir not found: {args.resume}", file=sys.stderr)
+        return 1
+    # Same layout the old matrix used (sweep.format_run_directory_name),
+    # suffixed when resuming so the source run is never overwritten.
+    run_dir = resolve_run_dir(args.out_dir, args.method, args.env, args.seed, args.resume)
     run_dir.mkdir(parents=True, exist_ok=True)
     try:
         result = run_single(
@@ -215,6 +250,7 @@ def main(argv: list[str] | None = None) -> int:
             args.obs_dim,
             args.action_dim,
             n_obs_steps,
+            args.resume,
         )
     except Exception as exc:
         print(
