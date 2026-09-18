@@ -15,7 +15,6 @@ import torch
 __all__ = [
     "dct",
     "idct",
-    "mask_actions",
     "discounted_chunk_reward",
 ]
 
@@ -38,9 +37,7 @@ def apply_matrix_along_dim(
     x: torch.Tensor, dim: int, mat: torch.Tensor
 ) -> torch.Tensor:
     """Right-multiply the ``dim`` slice of ``x`` by ``mat`` (same shape out)."""
-    # convert negative dimension into correspoding positive dimension
     dim = dim % x.dim()
-    # move the dim the last dimension it not already
     if dim != x.dim() - 1:
         x = x.movedim(dim, -1)
     out = x @ mat.to(x.device)
@@ -56,19 +53,6 @@ def dct(x: torch.Tensor, dim: int = -1) -> torch.Tensor:
 def idct(x: torch.Tensor, dim: int = -1) -> torch.Tensor:
     """Inverse (DCT-III) along ``dim``: matmul with M (M⁻¹ = Mᵀ)."""
     return apply_matrix_along_dim(x, dim, dct_basis_matrix(x.shape[dim % x.dim()]))
-
-
-def mask_actions(actions: torch.Tensor, executed_n_action_steps, dim: int = 1) -> torch.Tensor:
-    """Zero-pad unexecuted tail rows of a real-space chunk; return same space.
-
-    Stored chunks are real-space with time == action_horizon, so masking is a plain
-    row multiply. Executed counts [N] (1 <= L <= H) along ``dim`` (default 1).
-    """
-    h = actions.shape[dim % actions.dim()]
-    lens = torch.as_tensor(list(executed_n_action_steps), device=actions.device)
-    row = torch.arange(h, device=actions.device).unsqueeze(0)
-    mask = (row < lens.unsqueeze(1)).to(actions.dtype).unsqueeze(-1)
-    return actions * mask
 
 
 def discounted_chunk_reward(rewards: torch.Tensor, gamma: float) -> torch.Tensor:
