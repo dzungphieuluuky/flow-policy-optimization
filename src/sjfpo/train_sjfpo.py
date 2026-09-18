@@ -138,17 +138,19 @@ def train_sjfpo_run(
         action_dim = int(np.prod(env.action_space.shape))
     set_seed(seed)
     device = resolve_device()  # SJFPO_DEVICE=cpu|auto honors the CPU override
-    # Real env bounds (not ±1): InvertedPendulum ±3, Pusher ±2, Humanoid ±0.4.
-    action_low = np.atleast_1d(np.asarray(env.action_space.low, dtype=np.float32))
-    action_high = np.atleast_1d(np.asarray(env.action_space.high, dtype=np.float32))
     train_env = env
     if cfg.num_envs > 1 and env_name != "unknown":
-        # Keep evaluation single-env; fixtures without a registered id stay local.
+        # Build BEFORE any CUDA init: fork-based workers inherit the parent's
+        # CUDA context otherwise (CleanRL/SB3 order the same way). Keep
+        # evaluation single-env; fixtures without a registered id stay local.
         import gymnasium as gym
 
         train_env = gym.vector.AsyncVectorEnv(
             [lambda: gym.make(env_name) for _ in range(cfg.num_envs)]
         )
+    # Real env bounds (not ±1): InvertedPendulum ±3, Pusher ±2, Humanoid ±0.4.
+    action_low = np.atleast_1d(np.asarray(env.action_space.low, dtype=np.float32))
+    action_high = np.atleast_1d(np.asarray(env.action_space.high, dtype=np.float32))
     policy = build_policy(obs_dim, action_dim, cfg, device=device,
                            action_low=action_low, action_high=action_high)
     optimizer = build_optimizer(policy, cfg)
