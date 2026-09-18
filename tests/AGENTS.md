@@ -16,10 +16,10 @@ test_modeling_sjfpo.py (13)  SJFPOPolicy modules/inference/forward/hub roundtrip
 test_todo3_characterization.py (15) behavior pins (evaluator/sweep/collector goldens)
 test_analysis.py (13)        analyze_results IQM/bootstrap
 test_evaluator.py (11)       Evaluator 3-col CSV
-test_transition_v4.py (11)   Transition 9-key/shape/dtype + continuity + next.action chaining + no-aux-head lock
+test_transition_v4.py (9)    Transition 8-key/shape/dtype + continuity + no-aux-head lock
 test_runner_sjfpo.py (9)     train_run incl. CLI smoke
 test_fpo_core.py (9)         ASPO/CFM (imports euler_sample, SJFPOFlowModel)
-test_collector.py (9)        collect_chunks incl. NEVER-hardcode-horizon guards (fake_env)
+test_collector.py (8)        collect_chunks incl. NEVER-hardcode-horizon guards (fake_env)
 test_pipeline_cpu.py (7)     end-to-end invariants: CSV + 45 + wandb
 test_baselines.py (7)        skrl PPO/SAC drivers + tiny smokes
 test_gae.py (6)              compute_advantages vs zero-shared-code brute-force oracle
@@ -31,7 +31,7 @@ fixtures/fake_env.py       FakeGymEnv shared fixture
 ## Where to Look
 - Pipeline lock: `test_pipeline_cpu.py` (CSV schema, 45/TINY cardinality, wandb default-on/disabled)
 - Parity locks: `test_einx_migration.py`, `test_config_yaml_parity.py`, `test_dct.py` (denormalize atol 1e-6)
-- Transition lock: `test_transition_v4.py` (exact 9-key set incl. next.action, `n_action_steps == len(next.reward)`, bool dtypes, chunk continuity, next.action chaining)
+- Transition lock: `test_transition_v4.py` (exact 8-key set, `n_action_steps == len(next.reward)`, bool dtypes, chunk continuity)
 - Horizon guards: `test_collector.py` NEVER-hardcodes n_obs_steps/horizon (uses policy `SJFPOConfig` defaults); executed steps are caller-passed (`N_STEPS = 8` local)
 - Reload-pattern tests: `test_config.py` (SJFPO_TINY_MATRIX swap), `test_pipeline_cpu.py` (tiny reload)
 - Characterization guards: `test_todo3_characterization.py`, `test_todo4_characterization.py` (behavior pins)

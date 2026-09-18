@@ -105,7 +105,6 @@ class TestTrainerGolden:
                 {
                     "observation.state": torch.randn(cfg.n_obs_steps, obs_dim),
                     "action": torch.randn(cfg.action_horizon, action_dim) * 0.5,
-                    "next.action": torch.randn(cfg.action_horizon, action_dim) * 0.5,
                     "next.observation.state": torch.randn(cfg.n_obs_steps, obs_dim),
                     "next.reward": torch.rand(8),
                     "next.done": torch.tensor(False),

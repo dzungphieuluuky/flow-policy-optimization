@@ -1,11 +1,9 @@
 """Transition dict (LeRobot keys) + action_horizon split + next-state loss.
 
 - Transition: dict with LeRobot keys observation.state / action /
-  next.action / next.observation.state / next.reward / next.done / next.truncated
+  next.observation.state / next.reward / next.done / next.truncated
   (+ repo extensions n_action_steps / clip_count).
 - H (chunk_size) = 16 predict, n (n_action_steps) = 8 execute, T = 16.
-- next-state loss target = trainable critic state encoder encoding of next.observation.state
-  (grad flows, no target net); critic V(s,a) bootstraps V(s',a').
 """
 
 from __future__ import annotations
@@ -28,7 +26,6 @@ ACT_DIM = 2
 EXPECTED_KEYS = {
     "observation.state",
     "action",
-    "next.action",
     "next.observation.state",
     "next.reward",
     "next.done",
@@ -113,34 +110,12 @@ class TestCollectorV4:
         for t in chunks:
             assert t["observation.state"].shape == (16, OBS_DIM)
             assert t["action"].shape == (16, ACT_DIM)  # full-H anchor, always
-            assert t["next.action"].shape == (16, ACT_DIM)  # chained/next proposal
             assert t["next.observation.state"].shape == (16, OBS_DIM)
             assert t["observation.state"].dtype == torch.float32
             assert t["action"].dtype == torch.float32
             assert t["next.done"].dtype == torch.bool
             assert t["next.truncated"].dtype == torch.bool
             assert int(t["executed_n_action_steps"]) == len(t["next.reward"])
-
-    def test_next_action_chains_to_next_proposal(self):
-        """continue chunk[k].next.action == chunk[k+1].action."""
-        chunks = collect()
-        checked = 0
-        for prev, cur in zip(chunks, chunks[1:]):
-            if bool(prev["next.done"]) or bool(prev["next.truncated"]):
-                continue  # boundary: own behavior proposal, not chained
-            assert torch.equal(prev["next.action"], cur["action"]), (
-                "continue chunks must chain next.action from the next proposal"
-            )
-            checked += 1
-        assert checked > 0, "no continue pairs found"
-
-    def test_terminated_next_action_is_zeros(self):
-        chunks = collect(terminate_at=10)
-        term = [t for t in chunks if bool(t["next.done"])]
-        assert len(term) >= 1
-        for t in term:
-            assert t["next.action"].shape == (16, ACT_DIM)
-            assert bool((t["next.action"] == 0).all()), "terminated: no bootstrap"
 
     def test_continue_chunk_executes_n_steps(self):
         chunks = collect()
@@ -196,7 +171,6 @@ def make_transitions(n: int = 32):
             {
                 "observation.state": torch.randn(16, OBS_DIM),
                 "action": torch.randn(16, ACT_DIM) * 0.5,
-                "next.action": torch.randn(16, ACT_DIM) * 0.5,
                 "next.observation.state": torch.randn(16, OBS_DIM),
                 "next.reward": torch.randn(8) * 0.1,
                 "next.done": torch.tensor(False),

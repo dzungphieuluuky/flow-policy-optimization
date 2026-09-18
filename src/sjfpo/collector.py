@@ -2,17 +2,16 @@
 
 The policy is queried ONCE per chunk; the first ``n_action_steps`` proposed
 actions execute OPEN-LOOP (1 <= n <= H). Transitions are plain tensor dicts
-with LeRobot-style keys; ``action``/``next.action`` are the FULL proposed
-chunks in real scaled space ([H, action_dim], one row per predicted step;
-DCT happens downstream in ``forward``).
+with LeRobot-style keys; ``action`` is the FULL proposed chunk in real scaled
+space ([H, action_dim], one row per predicted step; DCT happens downstream
+in ``forward``). V(s) bootstraps from the stored next window, so no
+next-action proposal is collected.
 
-Boundary semantics: terminated stops at once (no bootstrap, next.action
-zeros); truncated stops with bootstrap-eligible next.action (fresh behavior
-proposal on the pre-reset window); continue chains next.action from the next
-proposal (budget-exhausted tails get a live-window proposal). Actions are
-clipped to bounds before execution and every clipped element is counted.
-On env error the ``on_error_flush`` hook runs first, then the original
-exception re-raises.
+Boundary semantics: terminated stops at once (no bootstrap); truncated stops
+bootstrap-eligible; budget-exhausted tails are marked truncated so GAE never
+recurses past the collected stream. Actions are clipped to bounds before
+execution and every clipped element is counted. On env error the
+``on_error_flush`` hook runs first, then the original exception re-raises.
 """
 
 from __future__ import annotations
@@ -30,23 +29,7 @@ from sjfpo.configuration_sjfpo import SJFPOConfig
 
 _DEFAULTS = SJFPOConfig()  # bare policy config: single source for defaults
 
-__all__ = ["Transition", "collect_chunks", "collect_chunks_vec", "bootstrap_action_lengths"]
-
-
-def bootstrap_action_lengths(chunks, chunk_size: int) -> list[int]:
-    """Executed-step mask lengths for bootstrap next-actions.
-
-    Interior-continue chunks use the NEXT chunk's executed length; truncated
-    and tail proposals stay full; terminated entries are unused (full).
-    """
-    n = len(chunks)
-    out: list[int] = []
-    for i, c in enumerate(chunks):
-        if not bool(c[DONE]) and not bool(c[TRUNCATED]) and i + 1 < n:
-            out.append(int(chunks[i + 1]["executed_n_action_steps"]))
-        else:
-            out.append(chunk_size)
-    return out
+__all__ = ["Transition", "collect_chunks", "collect_chunks_vec"]
 
 
 Transition = TypedDict(
@@ -54,7 +37,6 @@ Transition = TypedDict(
     {
         "observation.state": torch.Tensor,  # [T, obs] state window at replan time
         "action": torch.Tensor,  # [H, action_dim] real SCALED FULL proposed chunk
-        "next.action": torch.Tensor,  # [H, action_dim] real SCALED NEXT proposed chunk
         "next.observation.state": torch.Tensor,  # [T, obs] window after execution
         "next.reward": torch.Tensor,  # [n_executed] per executed step
         "next.done": torch.Tensor,  # bool scalar, terminated only
@@ -120,23 +102,6 @@ def execute_open_loop_steps(
     return rewards, done_kind
 
 
-def propose_action_chunk(
-    policy: Callable[[torch.Tensor], torch.Tensor],
-    state: torch.Tensor,
-    low: torch.Tensor,
-    high: torch.Tensor,
-    chunk_size: int,
-) -> torch.Tensor:
-    proposed = as_float_tensor(policy(state))
-    executed, scaled, clip_count = scale_and_clip_chunk(proposed, low, high)
-    if scaled.shape[0] != chunk_size:
-        raise ValueError(
-            f"proposed chunk has {scaled.shape[0]} rows, "
-            f"expected chunk_size={chunk_size}"
-        )
-    return scaled
-
-
 def finalize_transition(
     state: torch.Tensor,
     next_state: torch.Tensor,
@@ -146,7 +111,6 @@ def finalize_transition(
     clip_count: int,
     chunk_size: int,
     n_action_steps: int,
-    next_action: torch.Tensor | None = None,
 ) -> Transition:
     if scaled.shape[0] != chunk_size:
         raise ValueError(
@@ -159,12 +123,9 @@ def finalize_transition(
             f"1 <= n <= chunk_size={chunk_size}"
         )
     n_executed = len(rewards)
-    if next_action is None:
-        next_action = torch.zeros_like(scaled)  # placeholder; filled by chaining
     return {
         OBS_STATE: state,
         "action": scaled,
-        "next.action": next_action,
         "next.observation.state": next_state,
         REWARD: to_tensor(rewards, dtype=torch.float32),
         DONE: to_tensor(done_kind == "terminated", dtype=torch.bool),
@@ -192,10 +153,6 @@ def propose_and_execute_chunk(
         env, executed, window, executed_total, total_steps, n_action_steps
     )
     next_state = torch.stack(tuple(window), dim=0)
-    if done_kind == "truncated":
-        next_action = propose_action_chunk(policy, next_state, low, high, chunk_size)
-    else:
-        next_action = None
     record = finalize_transition(
         state,
         next_state,
@@ -205,7 +162,6 @@ def propose_and_execute_chunk(
         clip_count,
         chunk_size,
         n_action_steps,
-        next_action,
     )
     return record, done_kind
 
@@ -316,10 +272,6 @@ def collect_chunks_vec(
                     else:
                         done_kind = "continue"
                     next_state = torch.stack(tuple(windows[i]), dim=0)
-                    next_action = None
-                    if done_kind == "truncated":
-                        prop = as_float_tensor(policy(next_state.unsqueeze(0)))[0]
-                        _, next_action, _ = scale_and_clip_chunk(prop, low, high)
                     record = finalize_transition(
                         replan,
                         next_state,
@@ -329,10 +281,7 @@ def collect_chunks_vec(
                         clip_count,
                         chunk_size,
                         n_action_steps,
-                        next_action,
                     )
-                    if prev[i] is not None and prev_done[i] == "continue":
-                        prev[i]["next.action"] = record["action"].clone()
                     executed_total[i] += n_exec
                     records[i].append(record)
                     prev[i], prev_done[i] = record, done_kind
@@ -340,17 +289,10 @@ def collect_chunks_vec(
                     if done[i]:
                         awaiting[i] = True
         tails = [i for i in range(n) if prev[i] is not None and prev_done[i] == "continue"]
-        if tails:
-            # Budget exhausted mid-episode: behavior proposals on live windows.
-            states = torch.stack(
-                [torch.stack(tuple(windows[i]), dim=0) for i in tails]
-            )
-            props = as_float_tensor(policy(states))  # [M, H, act]
-            for k, i in enumerate(tails):
-                _, scaled_tail, _ = scale_and_clip_chunk(props[k], low, high)
-                prev[i]["next.action"] = scaled_tail
-                # Bootstrap the budget cut, but never recurse into another env's GAE.
-                prev[i][TRUNCATED] = torch.tensor(True)
+        for i in tails:
+            # Budget exhausted mid-episode: bootstrap the cut, but never
+            # recurse into another env's GAE.
+            prev[i][TRUNCATED] = torch.tensor(True)
         return [record for trajectory in records for record in trajectory]
     except Exception:
         flush_on_collection_error(on_error_flush)
@@ -382,8 +324,6 @@ def collect_chunks(
         window = build_warmup_window(first_obs, n_obs_steps)
         records: list[Transition] = []
         executed_total = 0
-        prev: Transition | None = None
-        prev_done = "continue"
         while executed_total < total_steps:
             record, done_kind = propose_and_execute_chunk(
                 policy,
@@ -396,19 +336,10 @@ def collect_chunks(
                 chunk_size,
                 n_action_steps,
             )
-            if prev is not None and prev_done == "continue":
-                # The next proposal IS the bootstrap action of the previous chunk.
-                prev["next.action"] = record["action"].clone()
             executed_total += int(record["executed_n_action_steps"])
             records.append(record)
-            prev, prev_done = record, done_kind
             if done_kind != "continue":
                 window = reset_chunk_window(env, n_obs_steps)
-        if records and prev_done == "continue":
-            # Budget exhausted mid-episode: behavior proposal on the live window.
-            records[-1]["next.action"] = propose_action_chunk(
-                policy, torch.stack(tuple(window), dim=0), low, high, chunk_size
-            )
         return records
     except Exception:
         flush_on_collection_error(on_error_flush)

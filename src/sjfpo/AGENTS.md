@@ -1,14 +1,14 @@
 # AGENTS — src/sjfpo
 
 ## Overview
-MuJoCo-only hotspot — single live train path, chunked flow policy: Transition-dict rollout (H=16/n=8/T=16, next.action chaining) → chunk GAE → ASPO + V(s) TD-critic; CUDA-default (CPU fallback) fp32, einx.id shapes (collector/fpo_core/trainer + dct_utils/baselines), RUN_MATRIX 45. analysis.py is notebook-invoked (train.py never imports it), everything else is live.
+MuJoCo-only hotspot — single live train path, chunked flow policy: Transition-dict rollout (H=16/n=8/T=16) → chunk GAE → ASPO + V(s) TD-critic; CUDA-default (CPU fallback) fp32, einx.id shapes (collector/fpo_core/trainer + dct_utils/baselines), RUN_MATRIX 45. analysis.py is notebook-invoked (train.py never imports it), everything else is live.
 
 ## Structure
 ```
 networks.py      WindowEncoder (shared; conditioner + critic own instances) + RunningMeanStd (obs stats, checkpointed) + StateConditioner(raw window + DCT bins, Flamingo-style cross-attn -> [B,D]) + DiT SJFPOFlowModel (x_t, t, condition[B,D]) + V(s) Critic
 modeling_sjfpo.py   SJFPOPolicy.forward: ASPO (truncated Ka coeffs, negated) + V(s) critic on raw GAE returns (0.5 factor, PPO-clipped) + running obs norm; optimizer = live policy weights; global grad-clip; NaN-guard aborts
 train_sjfpo.py    online train entry: generate_rollout → forward → AdamW step → eval → Hub ckpt
-collector.py      241L — Transition TypedDict (9 LeRobot keys incl. next.action chaining); full-H open-loop chunks; real-space scaled action anchor [H,action_dim] (DCT downstream in forward); all chunks train (trainer zero-pads unexecuted tails)
+collector.py      241L — Transition TypedDict (8 LeRobot keys); full-H open-loop chunks; real-space scaled action anchor [H,action_dim] (DCT downstream in forward); all chunks train (trainer zero-pads unexecuted tails)
 gae.py            137L — chunk semi-MDP GAE (R_k intradiscounted, γ^L bootstrap, (γλ)^L recursion); terminated cuts all, truncated bootstraps δ but cuts recursion; train advantages raw (ASPO sign)
 fpo_core.py       432L — CFM/SQL-ℓ [N,m], STE-capped ρ, ASPO piecewise (PPO-clip Â≥0 / SPO Â<0), mean-of-ψ objective, sample(mode=euler) t:0→1; policy + vf_coef·value summed inline in forward
 dct_utils.py      orthonormal DCT-II/III [H,action_dim] action chunks + discounted_chunk_reward + einx.id (parity-guarded)
@@ -23,11 +23,11 @@ utils.py           23L — shared pure helpers (device/dtype/compile), no sjfpo 
 ```
 
 ## Where to Look
-- `collector.py:51` `Transition`: 9 LeRobot keys (`observation.state [T,obs_dim]`, real scaled `action [H,action_dim]`, `next.action [H,action_dim]` chained/behavior proposal, `next.*`, `n_action_steps` i64, `clip_count` i64); `next.reward` is variable-length `[L_k]`
+- `collector.py:51` `Transition`: 8 LeRobot keys (`observation.state [T,obs_dim]`, real scaled `action [H,action_dim]`, `next.*`, `n_action_steps` i64, `clip_count` i64); `next.reward` is variable-length `[L_k]`
 - `modeling_sjfpo.py:forward`: stack (guards H/T) → StateConditioner fuses states to `condition [N,D]` → policy ℓ/ρ/ψ `[N,m]` → critic `V(s)` → clip → loss (stepped by the training loop)
 - `networks.py:StateConditioner`: raw window tokens query DCT-II bins (bin index = frequency order) in one cross-attn block, mean-pool → `[B,D]` (rFFT reserved for observation.image)
 - `gae.py:compute_advantages`: per-chunk `R_k`, `δ_k`, backward `(γλ)^L`; terminated cuts recursion, truncated bootstraps δ from last next-frame but cuts recursion
-- `runner.py:build_training_components`: policy/critic/spectral (each model owns its state encoder, no target nets, no aux head); `compute_chunk_values` V(s,a) via Critic, bootstraps truncated only
+- `runner.py:build_training_components`: policy/critic/conditioner (each model owns its state encoder, no target nets, no aux head); `compute_chunk_values` V(s) via Critic, bootstraps truncated only
 - trainer sums `policy + vf_coef·value` inline (no helper); `sweep.py:ScanResult(pending,skipped,diverged)` deterministic sort (method,env,seed)
 
 ## Code Map
@@ -69,4 +69,4 @@ PYTHONPATH=src .venv/bin/python scripts/train.py --method sjfpo --env Hopper-v5 
 
 ## Notes
 - One `WindowEncoder` class serves all time windows (conditioner state branch, critic state encoder), each owned by its model; ASPO grads land on the policy head (incl. conditioner)
-- `compute_chunk_values` bootstraps truncated chunks from the full next window + stored `next.action`
+- `compute_chunk_values` bootstraps truncated chunks from the full next window

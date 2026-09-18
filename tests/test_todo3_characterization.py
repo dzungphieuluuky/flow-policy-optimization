@@ -213,7 +213,6 @@ class TestCollectorHelperCharacterization:
         continued: Transition = {
             "observation.state": torch.zeros(2, 2),
             "action": torch.zeros(16, 2),
-            "next.action": torch.zeros(16, 2),
             "next.observation.state": torch.zeros(2, 2),
             "next.reward": torch.tensor([1.0]),
             "next.done": torch.tensor(False),

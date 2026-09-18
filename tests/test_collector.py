@@ -145,13 +145,12 @@ def test_a_exact_chunk_count_and_replan_every_n_steps():
     )
 
     assert len(records) == math.ceil(20 / N_STEPS) == 3
-    # 3 replans + 1 stream-end tail proposal (bootstrap next.action, no execution).
-    assert len(policy.states) == 4, "3 replans + 1 tail next-action proposal"
+    # 3 replans, no tail proposal (V(s) bootstraps from the next window).
+    assert len(policy.states) == 3, "3 replans, no extra proposal"
     assert len(env.applied_actions) == 20
     assert [int(r["executed_n_action_steps"]) for r in records] == [8, 8, 4]  # ceil budget split
     assert all(is_continue(r) for r in records)
     assert all(r["action"].shape == (ACTION_HORIZON, ACT_DIM) for r in records)
-    assert all(torch.isfinite(r["next.action"]).all() for r in records)
 
     # Exact multiple: 24 steps -> 3 full chunks.
     env24 = FakeEnv()
@@ -166,7 +165,7 @@ def test_a_exact_chunk_count_and_replan_every_n_steps():
     )
     assert len(recs24) == math.ceil(24 / N_STEPS) == 3
     assert [int(r["executed_n_action_steps"]) for r in recs24] == [8, 8, 8]
-    assert len(pol24.states) == 4  # 3 replans + 1 tail proposal
+    assert len(pol24.states) == 3  # 3 replans, no tail proposal
 
     # (b) mid-chunk termination: discard rest, no bootstrap, full-H anchor kept
 
@@ -402,27 +401,6 @@ if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
 
 
-def test_bootstrap_action_lengths_rule():
-    """Interior-continue masks to the NEXT chunk's length; rest stay full."""
-    from sjfpo.collector import bootstrap_action_lengths
-
-    def chunk(done, truncated, n):
-        return {
-            "next.done": torch.tensor(done),
-            "next.truncated": torch.tensor(truncated),
-            "executed_n_action_steps": torch.tensor(n),
-        }
-
-    chunks = [
-        chunk(False, False, 16),  # interior continue → L_1 = 8
-        chunk(False, False, 8),  # interior continue → L_2 = 5
-        chunk(False, True, 5),  # truncated proposal stays full
-        chunk(True, False, 3),  # terminated unused → full
-        chunk(False, False, 16),  # budget-cut tail → full
-    ]
-    assert bootstrap_action_lengths(chunks, 16) == [8, 5, 16, 16, 16]
-
-
 def _vec_records(seed=0, n_envs=2, total=64):
     import gymnasium as gym
 
@@ -475,7 +453,6 @@ def test_collect_chunks_vec_keeps_trajectories_separate_for_gae():
             records[start]["next.observation.state"],
             records[start + 1]["observation.state"],
         )
-        assert torch.equal(records[start]["next.action"], records[start + 1]["action"])
 
 
 def test_collect_chunks_vec_deterministic_under_seed():
@@ -485,4 +462,3 @@ def test_collect_chunks_vec_deterministic_under_seed():
     assert len(r1) == len(r2)
     for a, b in zip(r1, r2):
         assert torch.equal(a["action"], b["action"])
-        assert torch.equal(a["next.action"], b["next.action"])

@@ -60,11 +60,10 @@ only, no prefix tokens). Bin order rides sinusoidal codes, so attention
 weights index frequency. Frequency-domain memory with no RNN, no longer
 Transformer context.
 
-## 5. Chained `next.action` bootstrapping
+## 5. Next-window V(s) bootstrapping
 
-Every `Transition` carries the chunk proposed at the *next* replan, so the
-`V(s)` critic bootstraps `V(s′)` on the stored next window. It reuses
-computation the rollout already did — no extra policy queries for targets.
+Every `Transition` carries the window after execution, so the `V(s)` critic
+bootstraps `V(s′)` with no extra policy queries for targets.
 
 ## Borrowed machinery (not claimed as new)
 
