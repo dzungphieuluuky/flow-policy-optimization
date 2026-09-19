@@ -11,20 +11,22 @@ import numpy as np
 import torch
 from lerobot.processor.converters import from_tensor_to_numpy, to_tensor
 
+_CUDA_AVAILABLE = torch.cuda.is_available()
+
 
 def resolve_device() -> torch.device:
     """CUDA when available, else CPU (``SJFPO_DEVICE`` overrides)."""
     want = os.environ.get("SJFPO_DEVICE", "auto").lower()
     if want == "cpu":
         return torch.device("cpu")
-    if torch.cuda.is_available():
+    if _CUDA_AVAILABLE:
         return torch.device("cuda")
     return torch.device("cpu")
 
 
 def is_bf16_available() -> bool:
     """True when the CUDA device supports bf16 matmuls (else fp32 path)."""
-    return torch.cuda.is_available() and torch.cuda.is_bf16_supported()
+    return _CUDA_AVAILABLE and torch.cuda.is_bf16_supported()
 
 
 def filter_low_freq(x: torch.Tensor, k: int, dim: int = 1) -> torch.Tensor:
@@ -36,7 +38,7 @@ def filter_low_freq(x: torch.Tensor, k: int, dim: int = 1) -> torch.Tensor:
 
 def resolve_compute_dtype() -> torch.dtype:
     """Autocast matmul dtype (storage stays fp32; ``SJFPO_DTYPE`` overrides)."""
-    if not torch.cuda.is_available():
+    if not _CUDA_AVAILABLE:
         return torch.float32
     want = os.environ.get("SJFPO_DTYPE", "auto").lower()
     if want == "fp32":
@@ -48,7 +50,7 @@ def resolve_compute_dtype() -> torch.dtype:
 
 def autocast_context(device=None):
     """CUDA bf16 autocast when enabled and supported; else no-op."""
-    if not torch.cuda.is_available():
+    if not _CUDA_AVAILABLE:
         return contextlib.nullcontext()
     if resolve_compute_dtype() != torch.bfloat16:
         return contextlib.nullcontext()
@@ -57,7 +59,7 @@ def autocast_context(device=None):
     except Exception:
         dev_type = None
     if dev_type is None:
-        dev_type = "cuda" if torch.cuda.is_available() else "cpu"
+        dev_type = "cuda" if _CUDA_AVAILABLE else "cpu"
     if dev_type != "cuda" or not is_bf16_available():
         return contextlib.nullcontext()
     return torch.autocast(device_type="cuda", dtype=torch.bfloat16)
@@ -80,7 +82,7 @@ def maybe_compile(module: torch.nn.Module) -> torch.nn.Module:
     """
     if os.environ.get("SJFPO_COMPILE", "1") == "0":
         return module
-    if not torch.cuda.is_available():
+    if not _CUDA_AVAILABLE:
         return module
     # Guarded scalar raises (e.g. Critic's executed-step check) stay in the
     # compiled graph instead of forcing an eager fallback for the whole module.

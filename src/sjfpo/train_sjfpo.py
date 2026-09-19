@@ -154,7 +154,7 @@ def train_sjfpo_run(
         # evaluation single-env; fixtures without a registered id stay local.
         import gymnasium as gym
 
-        train_env = gym.vector.AsyncVectorEnv(
+        train_env = gym.vector.SyncVectorEnv(
             [lambda: gym.make(env_name) for _ in range(cfg.num_envs)]
         )
     # Real env bounds (not ±1): InvertedPendulum ±3, Pusher ±2, Humanoid ±0.4.
