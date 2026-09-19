@@ -36,6 +36,8 @@ def filter_low_freq(x: torch.Tensor, k: int, dim: int = 1) -> torch.Tensor:
 
 def resolve_compute_dtype() -> torch.dtype:
     """Autocast matmul dtype (storage stays fp32; ``SJFPO_DTYPE`` overrides)."""
+    if not torch.cuda.is_available():
+        return torch.float32
     want = os.environ.get("SJFPO_DTYPE", "auto").lower()
     if want == "fp32":
         return torch.float32
@@ -46,6 +48,8 @@ def resolve_compute_dtype() -> torch.dtype:
 
 def autocast_context(device=None):
     """CUDA bf16 autocast when enabled and supported; else no-op."""
+    if not torch.cuda.is_available():
+        return contextlib.nullcontext()
     if resolve_compute_dtype() != torch.bfloat16:
         return contextlib.nullcontext()
     try:

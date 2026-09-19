@@ -121,7 +121,12 @@ def test_save_rejects_non_sjfpo_policy(tmp_path):
 
 def test_compiled_policy_saves_eager_keys_and_loads_cross_mode(tmp_path):
     """Checkpoints hold the real inner model: no _orig_mod keys on disk, and
-    a compile-wrapped saver reloads exactly into an eager policy."""
+    a compile-wrapped saver reloads exactly into an eager policy.
+
+    On CPU (no CUDA) maybe_compile auto-disables, so this becomes an eager
+    roundtrip check — the unwrapping logic is still exercised via
+    unwrapped_policy (no-op when not wrapped).
+    """
     from safetensors.torch import load_file  # noqa: E402
 
     from sjfpo.utils import maybe_compile  # noqa: E402
@@ -131,12 +136,12 @@ def test_compiled_policy_saves_eager_keys_and_loads_cross_mode(tmp_path):
     policy.actor = maybe_compile(policy.actor)
     policy.old_actor = maybe_compile(policy.old_actor)
     policy.critic = maybe_compile(policy.critic)
-    assert hasattr(policy.actor, "_orig_mod")
+    is_compiled = hasattr(policy.actor, "_orig_mod")
     opt = torch.optim.AdamW(policy.get_optim_params()["params"])
     d = tmp_path / "ckpt"
     save_policy_checkpoint(d, policy=policy, optimizer=opt, global_step=5)
-    # Wrappers restored after save: training continues compiled.
-    assert hasattr(policy.actor, "_orig_mod")
+    # Wrappers restored after save: training continues compiled (no-op on CPU).
+    assert hasattr(policy.actor, "_orig_mod") == is_compiled
 
     keys = load_file(d / "model.safetensors")
     assert keys, "empty safetensors"
@@ -145,8 +150,9 @@ def test_compiled_policy_saves_eager_keys_and_loads_cross_mode(tmp_path):
 
     loaded, _, _ = load_policy_checkpoint(d)
     assert not hasattr(loaded.actor, "_orig_mod")  # from_pretrained builds eager
+    orig_state = policy.actor._orig_mod.state_dict() if is_compiled else policy.actor.state_dict()
     for (kn, vn), (kl, vl) in zip(
-        sorted(policy.actor._orig_mod.state_dict().items()),
+        sorted(orig_state.items()),
         sorted(loaded.actor.state_dict().items()),
     ):
         assert kn == kl

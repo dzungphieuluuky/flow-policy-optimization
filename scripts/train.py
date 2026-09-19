@@ -33,11 +33,11 @@ from typing import Literal
 
 import draccus
 import torch  # noqa: E402
-torch.backends.fp32_precision = "ieee"
-torch.backends.cuda.matmul.fp32_precision = "ieee"
-torch.backends.cudnn.fp32_precision = "ieee"
-torch.backends.cudnn.conv.fp32_precision = "tf32"
-torch.backends.cudnn.rnn.fp32_precision = "tf32"
+if torch.cuda.is_available():
+    torch.backends.cuda.matmul.fp32_precision = "ieee"
+    torch.backends.cudnn.fp32_precision = "ieee"
+    torch.backends.cudnn.conv.fp32_precision = "tf32"
+    torch.backends.cudnn.rnn.fp32_precision = "tf32"
 # Ensure src/ is importable
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -234,7 +234,8 @@ def run_single(
 def main(argv: list[str] | None = None) -> int:
     # Tensor-core fp32 matmuls (TF32) for leftover fp32 GEMMs; autocast still
     # handles bf16. Precision impact is far below the numeric gates.
-    torch.set_float32_matmul_precision("high")
+    if torch.cuda.is_available():
+        torch.set_float32_matmul_precision("high")
     args = draccus.parse(config_class=TrainConfig, args=argv)
     if not args.env:
         print("ERROR: --env is required", file=sys.stderr)
