@@ -9,7 +9,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from accelerate import utils as accelerate_utils
+
 from lerobot.processor.converters import from_tensor_to_numpy, to_tensor
 
 _CUDA_AVAILABLE = torch.cuda.is_available()
@@ -40,8 +40,8 @@ def resolve_compute_dtype() -> torch.dtype:
     if want == "fp32":
         return torch.float32
     if want == "bf16":
-        return torch.bfloat16 if accelerate_utils.is_bf16_available() else torch.float32
-    return torch.bfloat16 if accelerate_utils.is_bf16_available() else torch.float32
+        return torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float32
+    return torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float32
 
 
 def autocast_context(device=None):
@@ -56,7 +56,7 @@ def autocast_context(device=None):
         dev_type = None
     if dev_type is None:
         dev_type = "cuda" if _CUDA_AVAILABLE else "cpu"
-    if dev_type != "cuda" or not accelerate_utils.is_bf16_available():
+    if dev_type != "cuda" or not torch.cuda.is_bf16_supported():
         return contextlib.nullcontext()
     return torch.autocast(device_type="cuda", dtype=torch.bfloat16)
 
@@ -81,7 +81,7 @@ def maybe_compile(module: torch.nn.Module) -> torch.nn.Module:
     if not _CUDA_AVAILABLE:
         return module
     # Only compile when bf16 is available (GPU optimization tied to bf16 support).
-    if not accelerate_utils.is_bf16_available():
+    if not torch.cuda.is_bf16_supported():
         return module
     # Guarded scalar raises (e.g. Critic's executed-step check) stay in the
     # compiled graph instead of forcing an eager fallback for the whole module.
