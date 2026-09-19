@@ -20,7 +20,7 @@ from lerobot.utils.random_utils import set_seed
 
 from sjfpo.checkpointing import load_policy_checkpoint, save_policy_checkpoint
 from sjfpo.configuration_sjfpo import SJFPOConfig
-from sjfpo.evaluator import Evaluator, check_divergence, render_episode_frames
+from sjfpo.evaluator import Evaluator, check_divergence, mean_chunk_jerk, render_episode_frames
 from sjfpo.modeling_sjfpo import SJFPOPolicy
 from sjfpo.utils import (
     maybe_compile,
@@ -198,6 +198,8 @@ def train_sjfpo_run(
     eval_count = 0
     consecutive_below = 0
     diverged = False
+    best_return: float | None = None
+    steps_to_best: int | None = None
     artifacts: list = []
     all_eval_returns: list = []
     t_start = time.time()
@@ -208,6 +210,13 @@ def train_sjfpo_run(
             batch = policy.generate_rollout(train_env, collect_steps,
                                               action_low=action_low, action_high=action_high)
             global_step += int((~batch["action_is_pad"]).sum())
+            # Exploration smoothness: mean jerk over executed chunk prefixes.
+            rollout_jerk = None
+            if "action" in batch and "action_is_pad" in batch:
+                rollout_jerk = mean_chunk_jerk(
+                    batch["action"].detach().cpu().numpy(),
+                    batch["action_is_pad"].detach().cpu().numpy(),
+                )
             policy.train()
             infos = []
             grad_norms = []  # pre-clip totals; clip_grad_norm_ returns the norm
@@ -238,6 +247,8 @@ def train_sjfpo_run(
             if wandb_enabled:
                 data = {f"train/{k}": v for k, v in info.items()}
                 data["train/grad_norm_preclip"] = grad_norm_mean
+                if rollout_jerk is not None:
+                    data["train/rollout_jerk"] = rollout_jerk
                 data["train/total_loss"] = (
                     info["policy_loss"] + cfg.vf_coef * info["value_loss"]
                 )
@@ -257,6 +268,9 @@ def train_sjfpo_run(
                 mean_return = float(np.mean([r["return"] for r in eval_results]))
                 all_eval_returns.append(mean_return)
                 eval_count += 1
+                if best_return is None or mean_return > best_return:
+                    best_return = mean_return
+                    steps_to_best = global_step
                 if wandb_enabled:
                     log_eval_summary(
                         mean_return,
@@ -266,6 +280,8 @@ def train_sjfpo_run(
                         global_step,
                         r_rand=r_rand,
                         consecutive_below=consecutive_below,
+                        best_return=best_return,
+                        steps_to_best=steps_to_best,
                     )
                     try:
                         frames, demo_return = render_episode_frames(

@@ -431,8 +431,8 @@ class TestLogEvalSummary:
             1.5, [{"episode": 0, "return": 1.5, "length": 10}], [1.5], 1, 7
         )
         table_kw = recorder.Table.call_args.kwargs
-        assert table_kw["columns"] == ["episode", "return", "length"]
-        assert table_kw["data"] == [[0, 1.5, 10]]
+        assert table_kw["columns"] == ["episode", "return", "length", "success", "jerk"]
+        assert table_kw["data"] == [[0, 1.5, 10, None, None]]
         assert all(type(row) is list for row in table_kw["data"])
 
     def test_log_eval_summary_noop_when_disabled(self, monkeypatch):

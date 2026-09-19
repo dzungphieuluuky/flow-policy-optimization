@@ -261,6 +261,56 @@ class TestEpisodeAndStepLimits:
         total_steps = sum(r["length"] for r in results)
         assert total_steps <= 50, f"total steps {total_steps} > max_steps 50"
 
+
+class TestSmoothnessMetrics:
+    def test_action_jerk_zero_for_constant_and_linear(self):
+        from sjfpo.evaluator import action_jerk
+
+        assert action_jerk(np.zeros((10, 4))) == 0.0
+        ramp = np.arange(10, dtype=float).reshape(-1, 1) * np.ones((1, 3))
+        assert action_jerk(ramp) == 0.0  # constant velocity, no jerk
+        assert action_jerk(np.zeros((2, 4))) is None  # < 3 steps undefined
+
+    def test_action_jerk_positive_for_alternation(self):
+        from sjfpo.evaluator import action_jerk
+
+        bang = np.array([[1.0], [-1.0]] * 5)  # bang-bang switching
+        assert action_jerk(bang) == pytest.approx(16.0)
+
+    def test_extract_success_absent_and_present(self):
+        from sjfpo.evaluator import extract_success
+
+        assert extract_success({}) is None
+        assert extract_success({"success": True}) == 1.0
+        assert extract_success({"success": 0}) == 0.0
+
+    def test_mean_chunk_jerk_masks_tails(self):
+        from sjfpo.evaluator import action_jerk, mean_chunk_jerk
+
+        actions = np.zeros((2, 8, 2))
+        actions[0, 4] = 1.0  # spike inside the executed prefix
+        is_pad = np.zeros((2, 8), dtype=bool)
+        is_pad[0, 5:] = True  # executed prefix of 5
+        is_pad[1, :] = True  # fully padded chunk contributes nothing
+        assert mean_chunk_jerk(actions, is_pad) == pytest.approx(
+            action_jerk(actions[0, :5])
+        )
+        assert mean_chunk_jerk(actions, np.ones((2, 8), dtype=bool)) is None
+
+    def test_rollout_reports_success_and_jerk(self):
+        from sjfpo.evaluator import Evaluator
+
+        class SuccessEnv(FakeEnv):
+            def step(self, action):
+                obs, reward, terminated, truncated, _ = super().step(action)
+                info = {"success": True} if terminated else {}
+                return obs, reward, terminated, truncated, info
+
+        ev = Evaluator(SuccessEnv(max_steps=5), eval_seed=0, max_episodes=2)
+        results = ev.evaluate(lambda obs: np.zeros(4, dtype=np.float32))
+        assert [r["success"] for r in results] == [1.0, 1.0]
+        assert all(r["jerk"] == 0.0 for r in results)
+
         # Need this import for TestBatchSizeOne
 
 

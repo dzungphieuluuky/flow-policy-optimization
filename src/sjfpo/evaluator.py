@@ -1,4 +1,9 @@
-"""SJFPO evaluator — deterministic rollouts, ``eval_history.csv`` [episode, return, length]."""
+"""SJFPO evaluator — deterministic rollouts, ``eval_history.csv``.
+
+Columns ``[episode, return, length, success, jerk]``: ``success`` is the env's
+``info["success"]`` when provided (else empty); ``jerk`` is mean squared
+second-difference of the episode actions (else empty for < 3 steps).
+"""
 
 from __future__ import annotations
 
@@ -11,14 +16,53 @@ import numpy as np
 
 
 def write_eval_csv(results: list[dict[str, Any]], out_dir: str | Path) -> None:
-    """Write ``eval_history.csv`` with columns ``[episode, return, length]``."""
+    """Write ``eval_history.csv`` with columns ``[episode, return, length, success, jerk]``."""
     out_path = Path(out_dir)
     out_path.mkdir(parents=True, exist_ok=True)
     csv_path = out_path / "eval_history.csv"
     with open(csv_path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=["episode", "return", "length"])
+        writer = csv.DictWriter(
+            f, fieldnames=["episode", "return", "length", "success", "jerk"]
+        )
         writer.writeheader()
         writer.writerows(results)
+
+
+def action_jerk(actions: np.ndarray) -> float | None:
+    """Mean squared second-difference of actions [T, D] (None when T < 3).
+
+    Scale-free smoothness probe: constant or constant-velocity action streams
+    score exactly 0; contact jitter and bang-bang switching score high.
+    """
+    a = np.asarray(actions, dtype=np.float64)
+    if a.ndim != 2 or a.shape[0] < 3:
+        return None
+    return float(np.square(a[2:] - 2.0 * a[1:-1] + a[:-2]).mean())
+
+
+def extract_success(info: dict) -> float | None:
+    """Env-reported task success (``info["success"]``), None when absent."""
+    if not isinstance(info, dict) or info.get("success") is None:
+        return None
+    return float(bool(info["success"]))
+
+
+def mean_chunk_jerk(actions: np.ndarray, is_pad: np.ndarray) -> float | None:
+    """Mean ``action_jerk`` over chunks' executed prefixes.
+
+    ``actions`` [N, H, D] real-space chunks, ``is_pad`` [N, H] tail mask.
+    None when no chunk executed >= 3 steps.
+    """
+    a = np.asarray(actions)
+    pad = np.asarray(is_pad, dtype=bool)
+    jerks = []
+    for chunk, mask in zip(a, pad):
+        n_exec = int((~mask).sum())
+        if n_exec >= 3:
+            j = action_jerk(chunk[:n_exec])
+            if j is not None:
+                jerks.append(j)
+    return float(np.mean(jerks)) if jerks else None
 
 
 def render_episode_frames(
@@ -121,6 +165,8 @@ class Evaluator:
         ep_length = 0
         steps_taken = 0
         done = False
+        ep_actions: list[np.ndarray] = []
+        ep_success: float | None = None
         while not done:
             action = policy(obs)
             obs, reward, terminated, truncated, info = self.env.step(action)
@@ -128,12 +174,18 @@ class Evaluator:
             ep_length += 1
             steps_taken += 1
             done = terminated or truncated
+            ep_actions.append(np.asarray(action, dtype=np.float64).reshape(-1))
+            success = extract_success(info)
+            if success is not None:
+                ep_success = success  # last report wins (terminal info)
             if step_budget is not None and steps_taken >= step_budget:
                 break
         return {
             "episode": episode,
             "return": ep_return,
             "length": ep_length,
+            "success": ep_success,
+            "jerk": action_jerk(np.stack(ep_actions)) if ep_actions else None,
         }, steps_taken
 
     def evaluate(

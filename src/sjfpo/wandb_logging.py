@@ -102,12 +102,16 @@ def log_eval_summary(
     *,
     r_rand: float | None = None,
     consecutive_below: int | None = None,
+    best_return: float | None = None,
+    steps_to_best: int | None = None,
 ) -> None:
     """Eval metrics + per-episode table in one commit (shared runner/baselines home)."""
     if wandb_disabled():
         return
     returns = [r["return"] for r in eval_results]
     eval_lengths = [r["length"] for r in eval_results]
+    successes = [r["success"] for r in eval_results if r.get("success") is not None]
+    jerks = [r["jerk"] for r in eval_results if r.get("jerk") is not None]
     data: dict = {
         "eval/mean_return": mean_return,
         "eval/min_return": float(np.min(returns)) if returns else 0.0,
@@ -118,14 +122,26 @@ def log_eval_summary(
         "eval/std_length": float(np.std(eval_lengths)) if eval_lengths else 0.0,
         "eval/episode_count": eval_count,
     }
+    if successes:
+        data["eval/success_rate"] = float(np.mean(successes))
+    if jerks:
+        data["eval/mean_jerk"] = float(np.mean(jerks))
+        data["eval/max_jerk"] = float(np.max(jerks))
+    if best_return is not None:
+        data["eval/best_mean_return"] = float(best_return)
+    if steps_to_best is not None:
+        data["eval/steps_to_best"] = int(steps_to_best)
     if r_rand is not None:
         data["eval/random_baseline"] = float(r_rand)
     if consecutive_below is not None:
         data["eval/consecutive_below"] = int(consecutive_below)
     if eval_results:
-        rows = [(r["episode"], r["return"], r["length"]) for r in eval_results]
+        rows = [
+            (r["episode"], r["return"], r["length"], r.get("success"), r.get("jerk"))
+            for r in eval_results
+        ]
         data["eval/episodes"] = wandb.Table(
-            columns=["episode", "return", "length"],
+            columns=["episode", "return", "length", "success", "jerk"],
             data=[list(r) for r in rows],
         )
     if len(all_eval_returns) >= 2:

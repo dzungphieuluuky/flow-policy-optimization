@@ -40,7 +40,7 @@ class ScriptedEnv:
 
 
 class TestEvaluatorCharacterization:
-    def test_csv_schema_three_cols(self, tmp_path):
+    def test_csv_schema_five_cols(self, tmp_path):
         from sjfpo.evaluator import Evaluator
 
         ev = Evaluator(ScriptedEnv(), eval_seed=0, max_episodes=2)
@@ -48,9 +48,15 @@ class TestEvaluatorCharacterization:
             lambda obs: np.zeros(2, dtype=np.float32), out_dir=tmp_path
         )
         assert len(results) == 2
-        assert all(set(r) == {"episode", "return", "length"} for r in results)
+        assert all(
+            set(r) == {"episode", "return", "length", "success", "jerk"}
+            for r in results
+        )
+        # ScriptedEnv reports no success; zero-policy actions are jerk-free.
+        assert [r["success"] for r in results] == [None, None]
+        assert [r["jerk"] for r in results] == [0.0, 0.0]
         header = (tmp_path / "eval_history.csv").read_text().splitlines()[0]
-        assert header == "episode,return,length"
+        assert header == "episode,return,length,success,jerk"
 
     def test_returns_and_lengths_match_env(self, tmp_path):
         from sjfpo.evaluator import Evaluator

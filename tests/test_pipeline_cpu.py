@@ -24,7 +24,7 @@ from sjfpo.configuration_sjfpo import SJFPOConfig
 from tests.fixtures.fake_env import FakeGymEnv
 
 
-def test_baselines_write_3col_csv(tmp_path, monkeypatch):
+def test_baselines_write_5col_csv(tmp_path, monkeypatch):
     import torch
 
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
@@ -51,10 +51,10 @@ def test_baselines_write_3col_csv(tmp_path, monkeypatch):
     assert csv_artifacts, "no csv artifact"
     with open(csv_artifacts[0], newline="") as f:
         header = next(csv.reader(f))
-        assert header == ["episode", "return", "length"]
+        assert header == ["episode", "return", "length", "success", "jerk"]
 
 
-def test_sjfpo_train_run_writes_3col_csv(tmp_path):
+def test_sjfpo_train_run_writes_5col_csv(tmp_path):
     from sjfpo.train_sjfpo import train_sjfpo_run
 
     env = FakeGymEnv()
@@ -85,11 +85,11 @@ def test_sjfpo_train_run_writes_3col_csv(tmp_path):
     with open(csv_path, newline="") as f:
         reader = csv.reader(f)
         header = next(reader)
-        assert header == ["episode", "return", "length"], f"header mismatch: {header}"
+        assert header == ["episode", "return", "length", "success", "jerk"], f"header mismatch: {header}"
         rows = list(reader)
         assert len(rows) >= 1
         for r in rows:
-            assert len(r) == 3
+            assert len(r) == 5
 
 
 def test_run_matrix_cardinality_is_45():
