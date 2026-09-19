@@ -133,8 +133,18 @@ class TestMaybeCompile:
         from sjfpo.utils import maybe_compile
 
         monkeypatch.delenv("SJFPO_COMPILE", raising=False)
+        monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
         m = torch.nn.Linear(4, 4)
         out = maybe_compile(m)
         assert out is not m  # lazy wrapper; no graph compiled until first call
         stripped = {k.removeprefix("_orig_mod.") for k in out.state_dict()}
         assert stripped == set(m.state_dict())
+
+    def test_auto_disables_on_cpu_without_cuda(self, monkeypatch):
+        import torch
+        from sjfpo.utils import maybe_compile
+
+        monkeypatch.delenv("SJFPO_COMPILE", raising=False)
+        monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+        m = torch.nn.Linear(4, 4)
+        assert maybe_compile(m) is m  # CPU inductor guard bug -> eager

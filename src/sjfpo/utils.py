@@ -64,6 +64,9 @@ def maybe_compile(module: torch.nn.Module) -> torch.nn.Module:
 
     On by default; ``SJFPO_COMPILE=0`` opts out (e.g. driver-only CUDA
     without a toolkit, where inductor fails, or CPU-only debugging).
+    CPU inductor hits a guard bug (``___from_numpy`` ADInplaceOrView
+    DispatchKeySet mismatch on Colab) so it auto-disables when CUDA is
+    unavailable — eager is numerically identical.
     Default dynamic-shape mode: batch shapes vary, and static-shape
     cudagraphs would waste the 8GB budget. Wrapping is lazy — the compile
     cost lands on the first train/infer call, not here. Params are untouched;
@@ -72,6 +75,8 @@ def maybe_compile(module: torch.nn.Module) -> torch.nn.Module:
     fallback) when inductor itself fails — set ``SJFPO_COMPILE=0``.
     """
     if os.environ.get("SJFPO_COMPILE", "1") == "0":
+        return module
+    if not torch.cuda.is_available():
         return module
     # Guarded scalar raises (e.g. Critic's executed-step check) stay in the
     # compiled graph instead of forcing an eager fallback for the whole module.
