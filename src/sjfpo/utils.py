@@ -80,6 +80,9 @@ def maybe_compile(module: torch.nn.Module) -> torch.nn.Module:
         return module
     if not _CUDA_AVAILABLE:
         return module
+    # Only compile when bf16 is available (GPU optimization tied to bf16 support).
+    if not accelerate_utils.is_bf16_available():
+        return module
     # Guarded scalar raises (e.g. Critic's executed-step check) stay in the
     # compiled graph instead of forcing an eager fallback for the whole module.
     torch._dynamo.config.capture_scalar_outputs = True
