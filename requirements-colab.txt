@@ -1,4 +1,4 @@
-%%writefile requirements-linux.txt
+%%writefile requirements-colab.txt
 # Deep Learning
 torch
 torchvision

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the standalone Kaggle notebook spectral_joint_flow.ipynb.
+"""Build the standalone offline Kaggle notebook sjfpo_offline.ipynb.
 
 Kaggle runs with internet DISABLED, so the notebook carries the full source:
 one `%%writefile` cell per runtime file recreates `src/`, `scripts/train.py`,
@@ -11,7 +11,7 @@ The notebook is authored as a jupytext percent-format script (in-memory text)
 and converted with the jupytext API — no nbformat import here.
 
 Usage:
-    python scripts/build_notebook.py [--output spectral_joint_flow.ipynb]
+    python scripts/build_offline_notebook.py [--output sjfpo_offline.ipynb]
 """
 
 from __future__ import annotations
@@ -49,10 +49,13 @@ MKDIR_CELL = """\
 """
 
 INSTALL_CELL = """\
-# Offline install from the attached wheels dataset (no internet on Kaggle).
-# Edit WHEELS_DIR to the /kaggle/input/... path of your packages dataset.
-WHEELS_DIR = "/kaggle/input/sjfpo-packages"
-!pip install -q --no-index --find-links=$WHEELS_DIR -r requirements-linux.txt
+# Detect runtime and choose install source.
+ENV_NAME = detect_env()
+if ENV_NAME == "colab":
+    !uv pip install -r requirements-colab.txt
+else:
+    WHEELS_DIR = "/kaggle/input/sjfpo-packages"
+    !pip install -q --no-index --find-links=$WHEELS_DIR -r requirements-linux.txt
 """
 
 ENV_CELL = """\
@@ -96,13 +99,27 @@ else:
 """
 
 SMOKE_CELL = """\
-# Smoke: 2k steps, single SJFPO run on Hopper (eval + checkpoints included).
-!python scripts/train.py --method sjfpo --env Hopper-v5 --seed 0 --total_steps 2000
+# Smoke: 200k steps, single SJFPO run on Hopper.
+!python scripts/train.py \
+    --method sjfpo \
+    --env Hopper-v5 \
+    --seed 3407 \
+    --total_steps 200000 \
+    --eval_steps 50 \
+    --save_steps 10000 \
+    --use_per_bin_clip true
 """
 
 FULL_TRAIN_CELL = """\
-# Full run: 1M steps with the matrix budgets (50k eval / 25k ckpt).
-!python scripts/train.py --method sjfpo --env Hopper-v5 --seed 0 --total_steps 1000000 --eval_steps 50000 --save_steps 25000
+# Full run: 200k steps with 50 eval / 10k save.
+!python scripts/train.py \
+    --method sjfpo \
+    --env Hopper-v5 \
+    --seed 3407 \
+    --total_steps 200000 \
+    --eval_steps 50 \
+    --save_steps 10000 \
+    --use_per_bin_clip true
 """
 
 
@@ -161,7 +178,7 @@ def build_script() -> str:
     return "\n\n".join(chunks) + "\n"
 
 
-def build_notebook():
+def build_offline_notebook():
     """Assemble the standalone offline notebook (sources embedded)."""
     nb = jupytext.reads(build_script(), fmt="py:percent")
     nb.metadata.update(
@@ -179,12 +196,12 @@ def build_notebook():
 
 def parse_build_args() -> argparse.Namespace:
     """Parse the notebook-builder CLI flags."""
-    parser = argparse.ArgumentParser(description="Build the standalone Colab notebook")
+    parser = argparse.ArgumentParser(description="Build the standalone offline Colab notebook")
     parser.add_argument(
         "--output",
         "-o",
         default=None,
-        help="Output notebook path (default: spectral_joint_flow.ipynb)",
+        help="Output notebook path (default: sjfpo_offline.ipynb)",
     )
     return parser.parse_args()
 
@@ -210,7 +227,7 @@ def write_notebook(out: Path) -> None:
     """Build, check, and write the notebook via the jupytext API."""
     out = Path(out)
     print(f"Building notebook: {out}")
-    nb = build_notebook()
+    nb = build_offline_notebook()
     check_notebook(nb)
     jupytext.write(nb, str(out))
     print(f"Wrote {len(nb.cells)} cells to {out} checked.")
@@ -218,7 +235,7 @@ def write_notebook(out: Path) -> None:
 
 def main():
     args = parse_build_args()
-    out = ROOT / args.output if args.output else ROOT / "spectral_joint_flow.ipynb"
+    out = ROOT / args.output if args.output else ROOT / "sjfpo_offline.ipynb"
     write_notebook(out)
 
 
