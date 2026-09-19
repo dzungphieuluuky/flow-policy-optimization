@@ -58,7 +58,7 @@ class SJFPOConfig(PreTrainedConfig):
     vf_coef: float = 1.0
     grad_clip_norm: float = 1.0
 
-    top_p_spectral_tokens: float = 0.3
+    top_p_spectral_tokens: float = 1.0
     executed_vs_predicted_ratio: float = 0.5
 
     optimizer_lr: float = 1e-4
