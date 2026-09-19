@@ -9,6 +9,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from accelerate import utils as accelerate_utils
 from lerobot.processor.converters import from_tensor_to_numpy, to_tensor
 
 _CUDA_AVAILABLE = torch.cuda.is_available()
@@ -22,11 +23,6 @@ def resolve_device() -> torch.device:
     if _CUDA_AVAILABLE:
         return torch.device("cuda")
     return torch.device("cpu")
-
-
-def is_bf16_available() -> bool:
-    """True when the CUDA device supports bf16 matmuls (else fp32 path)."""
-    return _CUDA_AVAILABLE and torch.cuda.is_bf16_supported()
 
 
 def filter_low_freq(x: torch.Tensor, k: int, dim: int = 1) -> torch.Tensor:
@@ -44,8 +40,8 @@ def resolve_compute_dtype() -> torch.dtype:
     if want == "fp32":
         return torch.float32
     if want == "bf16":
-        return torch.bfloat16 if is_bf16_available() else torch.float32
-    return torch.bfloat16 if is_bf16_available() else torch.float32
+        return torch.bfloat16 if accelerate_utils.is_bf16_available() else torch.float32
+    return torch.bfloat16 if accelerate_utils.is_bf16_available() else torch.float32
 
 
 def autocast_context(device=None):
@@ -60,7 +56,7 @@ def autocast_context(device=None):
         dev_type = None
     if dev_type is None:
         dev_type = "cuda" if _CUDA_AVAILABLE else "cpu"
-    if dev_type != "cuda" or not is_bf16_available():
+    if dev_type != "cuda" or not accelerate_utils.is_bf16_available():
         return contextlib.nullcontext()
     return torch.autocast(device_type="cuda", dtype=torch.bfloat16)
 
