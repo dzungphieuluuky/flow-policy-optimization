@@ -7,7 +7,7 @@ Sweeps live in scripts/sweep.sh: one call here per method x env x seed.
     python scripts/train.py --method sjfpo --env Hopper-v5 --seed 0 --total_steps 2000
     python scripts/train.py --method sjfpo --env Hopper-v5 --sjfpo.optimizer_lr 3e-4
     python scripts/train.py --method sjfpo --env Hopper-v5 --seed 0 \
-        --resume .omo/evidence/train/sjfpo_Hopper-v5_seed0/checkpoint_1000 \
+        --resume outputs/sjfpo_Hopper-v5_seed0/checkpoint_1000 \
         --total_steps 4000
     METHODS="sjfpo ppo" ENVS=Hopper-v5 SEEDS="0 1" scripts/sweep.sh
 
@@ -64,7 +64,7 @@ class TrainConfig:
     save_steps: int | None = None
     obs_dim: int | None = None
     action_dim: int | None = None
-    out_dir: str = ".omo/evidence/train"
+    out_dir: str = "outputs/"
     config: str | None = None  # legacy flat YAML overlay for the method config
     # Resume an sjfpo checkpoint dir (checkpoint_<step>/ or checkpoint_final/):
     # continues policy + optimizer + counters into a FRESH run dir

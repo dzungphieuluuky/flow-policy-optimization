@@ -14,7 +14,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON="${PYTHON:-python}"
-OUT_BASE=".omo/evidence/train"
+OUT_BASE="outputs/"
 TINY=0
 EXTRA=()
 

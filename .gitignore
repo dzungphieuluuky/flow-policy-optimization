@@ -3,7 +3,6 @@ __pycache__/
 .omo/evidence/
 *.pt
 runs/
-*.ipynb
 outputs/
 wandb/
 uv.log

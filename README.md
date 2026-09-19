@@ -89,7 +89,7 @@ Key `SJFPOConfig` defaults: `num_mc_samples=16`, `num_euler_steps=16`, `num_infe
 
 ## Outputs
 
-`--out_dir` defaults to `.omo/evidence/train` (git-ignored). Each run writes under `<out_dir>/<method>_<env>_seed<seed>/` (same format as `sweep.format_run_directory_name`):
+`--out_dir` defaults to `outputs/` (git-ignored). Each run writes under `<out_dir>/<method>_<env>_seed<seed>/` (same format as `sweep.format_run_directory_name`):
 
 - `eval_history.csv` — `episode,return,length`
 - `checkpoint_<step>/` + `checkpoint_final/` — `model.safetensors` (+ `config.json`, `optimizer.pt`, `counters.json`)

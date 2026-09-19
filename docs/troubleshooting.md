@@ -20,7 +20,7 @@ stay fp32). Check the state→conditioner→flow order in
 
 **`No eval histories` after smoke**
 
-Smokes write under `--out_dir` (default `.omo/evidence/train`). If you changed
+Smokes write under `--out_dir` (default `outputs/`). If you changed
 `--out_dir` or sweep axes mid-run, clear the old dir or re-run with the
 intended flags. `eval_history.csv` appears only after the first eval steps.
 

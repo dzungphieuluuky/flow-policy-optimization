@@ -15,7 +15,7 @@ tiny sweep (3 runs x 20k) in progress, full 45-run matrix empty, no manuscript.
 - [ ] Confirm tiny sweep finishes: `tail /tmp/sweep_tiny.log` shows
       `sweep: 3 ok, 0 failed`.
 - [ ] Re-scan: `PYTHONPATH=src .venv/bin/python -c` with
-      `scan_runs(RUN_MATRIX, '.omo/evidence/train')` shows 3 skipped (tiny).
+      `scan_runs(RUN_MATRIX, 'outputs/')` shows 3 skipped (tiny).
 - [ ] `PYTHONPATH=src .venv/bin/python -m pytest -q` green.
 - [ ] `git status` clean. Tag: `git tag v0-tiny && git push --tags`.
 
@@ -25,7 +25,7 @@ Open question that blocks all writing: Phase-1 per-bin trust region.
 
 - [ ] Run the 2M-step Hopper diagnostic run the notebooks point at:
       `PYTHONPATH=src .venv/bin/python scripts/train.py --method sjfpo \
---env Hopper-v5 --seed 0 --total_steps 2000000 --out_dir .omo/evidence/train`
+--env Hopper-v5 --seed 0 --total_steps 2000000 --out_dir outputs/`
       (GPU strongly advised; on CPU run 200k and extrapolate).
 - [ ] Read `flow_rho_bin_range / lowfreq / highfreq / outside_frac` from logs.
 - [ ] Decision, exactly one:
@@ -48,7 +48,7 @@ collection ~linear speedup); eval stays single-env. Override with
 
 - [ ] Launch: `METHODS="sjfpo ppo sac" ENVS="HalfCheetah-v5 Walker2d-v5 Hopper-v5" \
       SEEDS="0 1 2 3 4" bash scripts/sweep.sh` (out base
-      `.omo/evidence/train` by default).
+      `outputs/` by default).
 - [ ] Monitor via `scan_runs`: pending -> 0, diverged investigated (a
       diverged run is a result too, but three in a cell means a bug).
 - [ ] Back up run dirs (manifests + `eval_history.csv` + final checkpoints).
