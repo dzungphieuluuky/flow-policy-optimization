@@ -179,12 +179,12 @@ class SJFPOPolicy(PreTrainedPolicy):
         states = self.standardize_obs_tensor(batch[OBS_STATE])
         states = to_device_async(states, next(self.actor.parameters()).device)
         states = self.preprocessor({OBS_STATE: states})[OBS_STATE]
-        top_k_spectral_action_tokens = max(1, round(cfg.top_p_spectral_tokens * cfg.action_horizon))
+        token_dim = max(1, round(cfg.top_p_spectral_tokens * cfg.action_horizon))
         action_dim = int(self.config.action_feature.shape[0])
         with torch.inference_mode(), autocast_context(states.device):
             # ------- fuse state into one condition vector -------
             condition = self.conditioner(states)  # [B, D] fused outside the flow head
-            shape = (states.shape[0], top_k_spectral_action_tokens, action_dim)
+            shape = (states.shape[0], token_dim, action_dim)
             eps = None if noise else torch.zeros(*shape, device=states.device)
             num_inference_steps = cfg.num_euler_steps if noise else cfg.num_inference_steps
             # ------- denoise action chunk with Euler sampler -------
@@ -198,7 +198,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             )
             x0 = x0.float()
         # ------- pad + decode chunk back to action space -------
-        x0 = torch.nn.functional.pad(x0, (0, 0, 0, cfg.action_horizon - top_k_spectral_action_tokens))
+        x0 = torch.nn.functional.pad(x0, (0, 0, 0, cfg.action_horizon - token_dim))
         scaled = idct(x0, dim=1).clamp(-1.0, 1.0)
         return self.postprocessor({ACTION: scaled})[ACTION]
 
@@ -393,13 +393,16 @@ class SJFPOPolicy(PreTrainedPolicy):
         def _actor_ckpt(s):
             return self.actor(s)
         actor_wrapper = lambda s: cp.checkpoint(_actor_ckpt, s, use_reentrant=False)
-        top_k_spectral_action_tokens = max(1, round(cfg.top_p_spectral_tokens * cfg.action_horizon))
+        token_dim = token_dim if cfg.use_dct_transform else cfg.action_horizon
         # ------- keep K-lowest action DCT bins, drop the rest -------
         # Paper-original: the loss sees the FULL proposed chunk. Unexecuted
         # tails (early termination / budget cutoff) only shape GAE via
         # executed_n_action_steps; they are never zero-masked here (masking
         # before the DCT leaks zeros into every frequency bin).
-        spectral_action_tokens = filter_low_freq(dct(actions, dim=1), top_k_spectral_action_tokens, dim=1)
+        if cfg.use_dct_transform:
+            spectral_action_tokens = filter_low_freq(dct(actions, dim=1), token_dim, dim=1)
+        else:
+            spectral_action_tokens = actions
         n = states.shape[0]
         # ------- MC draws: reuse the rollout's stored (tau, eps) when present ---
         # (common random numbers: l_old/l_new compare identical samples across
@@ -412,12 +415,12 @@ class SJFPOPolicy(PreTrainedPolicy):
             if tuple(eps.shape) != (
                 n,
                 cfg.num_mc_samples,
-                top_k_spectral_action_tokens,
+                token_dim,
                 actions.shape[-1],
             ):
                 raise ValueError(
                     f"stored eps shape {tuple(eps.shape)} != "
-                    f"({(n, cfg.num_mc_samples, top_k_spectral_action_tokens, actions.shape[-1])})"
+                    f"({(n, cfg.num_mc_samples, token_dim, actions.shape[-1])})"
                 )
         else:
             tau = sample_timesteps(
@@ -426,7 +429,7 @@ class SJFPOPolicy(PreTrainedPolicy):
                 device=states.device,
             )
             eps = sample_noise(
-                (n, cfg.num_mc_samples, top_k_spectral_action_tokens, actions.shape[-1]),
+                (n, cfg.num_mc_samples, token_dim if cfg.use_dct_transform else actions.shape[-1], actions.shape[-1]),
                 device=states.device,
             )
 

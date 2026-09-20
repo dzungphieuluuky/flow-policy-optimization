@@ -144,13 +144,22 @@ def compute_aspo_surrogate(
     rho: torch.Tensor,
     advantage: torch.Tensor,
     epsilon_clip: float | None = None,
+    symmetrical_ppo: bool | None = None,
 ) -> torch.Tensor:
-    """ASPO piecewise trust region ψ(ρ, Â) (paper Eq.12).
+    """ASPO piecewise trust region ψ(ρ, Â) (paper Eq.12) or standard PPO clip.
 
-    Single clipping parameter for both branches: Â > 0 PPO-clip,
-    Â ≤ 0 SPO quadratic. Elementwise; scalars and tensors both supported.
+    If ``symmetrical_ppo`` (or ``_DEFAULTS.use_aspo`` False), uses uniform
+    PPO-clip for both positive and negative advantages (original FPO-control
+    symmetrical mode).
     """
     epsilon_clip = _DEFAULTS.epsilon_clip if epsilon_clip is None else epsilon_clip
+    if symmetrical_ppo is None:
+        symmetrical_ppo = not _DEFAULTS.use_aspo
+    if symmetrical_ppo:
+        return torch.min(
+            rho * advantage,
+            torch.clamp(rho, 1.0 - epsilon_clip, 1.0 + epsilon_clip) * advantage,
+        )
     pos = torch.min(
         rho * advantage,
         torch.clamp(rho, 1.0 - epsilon_clip, 1.0 + epsilon_clip) * advantage,

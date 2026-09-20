@@ -37,6 +37,8 @@ class SJFPOConfig(PreTrainedConfig):
     gamma: float = 0.99
     gae_lambda: float = 0.95
     epsilon_clip: float = 0.05
+    use_dct_transform: bool = True  # spectral chunk encoding; False = raw action chunk
+    use_aspo: bool = True  # piecewise ASPO (positive PPO / negative SPO); False = symmetrical PPO only
     use_per_bin_clip: bool = False  # Phase 1: two-group epsilon over DCT bins
     epsilon_clip_lowfreq: float = 0.02  # tight: low bins carry task intent
     epsilon_clip_highfreq: float = 0.10  # loose: high bins are detail/exploration
