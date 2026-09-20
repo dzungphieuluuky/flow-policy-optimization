@@ -34,6 +34,7 @@ from sjfpo.fpo_core import (
 )
 from sjfpo.gae import compute_advantages
 from sjfpo.utils import autocast_context, filter_low_freq, resolve_storage_dtype, to_device_async, to_numpy_1d, to_tensor_1d
+STORAGE_DTYPE = resolve_storage_dtype()  # cached once
 from sjfpo.networks import (
     Critic,
     RunningMeanStd,
