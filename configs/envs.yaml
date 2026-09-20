@@ -3,6 +3,9 @@
 # env space is validated against the registry at startup (mismatch = loud
 # error, usually a gym version change — re-measure and update).
 # Dims below MEASURED with gymnasium 1.x + mujoco on 2026-09-14.
+CartPole-v1: {obs_dim: 4, action_dim: 2, tier: toy, requires: gymnasium}
+Pendulum-v5: {obs_dim: 3, action_dim: 1, tier: smoke, requires: gymnasium}
+MountainCar-v0: {obs_dim: 2, action_dim: 3, tier: toy, requires: gymnasium}
 InvertedPendulum-v5: {obs_dim: 4, action_dim: 1, tier: smoke}
 InvertedDoublePendulum-v5: {obs_dim: 9, action_dim: 1, tier: smoke}
 Reacher-v5: {obs_dim: 10, action_dim: 2, tier: smoke}
