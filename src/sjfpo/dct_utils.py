@@ -11,6 +11,7 @@ import math
 
 import einx
 import torch
+from sjfpo.utils import resolve_storage_dtype
 
 __all__ = [
     "dct",
@@ -25,8 +26,8 @@ def dct_basis_matrix(n: int) -> torch.Tensor:
     """[n, n] orthonormal DCT-II basis M (MᵀM = I)."""
     m = BASIS_CACHE.get(n)
     if m is None:
-        k = einx.id("n -> n 1", torch.arange(n, dtype=torch.float32))
-        t = einx.id("n -> 1 n", torch.arange(n, dtype=torch.float32))
+        k = einx.id("n -> n 1", torch.arange(n, dtype=resolve_storage_dtype()))
+        t = einx.id("n -> 1 n", torch.arange(n, dtype=resolve_storage_dtype()))
         m = math.sqrt(2.0 / n) * torch.cos(math.pi * (2.0 * t + 1.0) * k / (2.0 * n))
         m[0].mul_(torch.rsqrt(torch.tensor(2.0)))
         BASIS_CACHE[n] = m

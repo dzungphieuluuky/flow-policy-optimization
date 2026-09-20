@@ -8,6 +8,7 @@ import einx
 import math
 import torch
 from sjfpo.configuration_sjfpo import SJFPOConfig
+from sjfpo.utils import resolve_storage_dtype
 
 
 # Single source for ``None``-fallback defaults.
@@ -77,7 +78,7 @@ def run_mc_simulation(a: torch.Tensor, eps: torch.Tensor, tau):
     flow_shape = tuple(a.shape[1:])
     if tuple(eps.shape) != (b, num_mc, *flow_shape):
         raise ValueError(f"eps shape {tuple(eps.shape)} != {(b, num_mc, *flow_shape)}")
-    t = torch.as_tensor(tau, dtype=torch.float32)
+    t = torch.as_tensor(tau, dtype=resolve_storage_dtype())
     if t.dim() == 0:
         t = einx.id(" -> b m", t, b=b, m=num_mc)
     elif t.dim() == 1:

@@ -25,6 +25,7 @@ import torch
 
 from lerobot.processor.converters import to_tensor
 from lerobot.utils.constants import DONE, OBS_STATE, REWARD, TRUNCATED
+from sjfpo.utils import resolve_storage_dtype
 from sjfpo.configuration_sjfpo import SJFPOConfig
 
 _DEFAULTS = SJFPOConfig()  # bare policy config: single source for defaults
@@ -49,7 +50,7 @@ Transition = TypedDict(
 
 def as_float_tensor(x: object) -> torch.Tensor:
     if isinstance(x, torch.Tensor):
-        return x.detach().to(torch.float32)
+        return x.detach().to(resolve_storage_dtype())
     return to_tensor(np.asarray(x, dtype=np.float32))
 
 
@@ -127,7 +128,7 @@ def finalize_transition(
         OBS_STATE: state,
         "action": scaled,
         "next.observation.state": next_state,
-        REWARD: to_tensor(rewards, dtype=torch.float32),
+        REWARD: to_tensor(rewards, dtype=resolve_storage_dtype()),
         DONE: to_tensor(done_kind == "terminated", dtype=torch.bool),
         TRUNCATED: to_tensor(done_kind == "truncated", dtype=torch.bool),
         "executed_n_action_steps": to_tensor(n_executed, dtype=torch.int64),

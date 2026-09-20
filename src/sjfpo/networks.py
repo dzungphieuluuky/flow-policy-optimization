@@ -13,6 +13,7 @@ import torch
 from torch import nn
 
 from sjfpo.configuration_sjfpo import SJFPOConfig
+from sjfpo.utils import resolve_storage_dtype
 from sjfpo.dct_utils import dct
 
 # Single source for constructor defaults (see SJFPOConfig).
@@ -77,14 +78,14 @@ class SinusoidalEncoding(nn.Module):
     def frequencies(self, half: int, device) -> torch.Tensor:
         return torch.exp(
             -math.log(10000.0)
-            * torch.arange(half, device=device, dtype=torch.float32)
+            * torch.arange(half, device=device, dtype=resolve_storage_dtype())
             / max(half - 1, 1)
         )
 
     def add_to(self, x: torch.Tensor, positions: torch.Tensor) -> torch.Tensor:
         """Add codes for ``positions`` ([..., L]) to ``x`` ([..., L, D])."""
         scale = 1.0 if self.scale is None else float(self.scale)
-        ang = (positions.to(dtype=torch.float32) * scale).unsqueeze(-1) * self.frequencies(
+        ang = (positions.to(dtype=resolve_storage_dtype()) * scale).unsqueeze(-1) * self.frequencies(
             self.dim // 2, x.device
         )
         pe = torch.cat([ang.sin(), ang.cos()], dim=-1)
@@ -98,7 +99,7 @@ class SinusoidalEncoding(nn.Module):
         Returns an embedding of shape ``t.shape + (dim,)``; ``t`` is scaled
         first (flow times in [0, 1] need the DDPM-scale ladder to resolve).
         """
-        t = torch.as_tensor(t, dtype=torch.float32) * float(self.scale)
+        t = torch.as_tensor(t, dtype=resolve_storage_dtype()) * float(self.scale)
         half = self.dim // 2
         ang = t.unsqueeze(-1) * self.frequencies(half, t.device)
         emb = torch.cat([ang.sin(), ang.cos()], dim=-1)
@@ -108,7 +109,7 @@ class SinusoidalEncoding(nn.Module):
 
     def positions(self, length: int, device) -> torch.Tensor:
         """0..L-1 index vector for slot/frame codes."""
-        return torch.arange(length, dtype=torch.float32, device=device)
+        return torch.arange(length, dtype=resolve_storage_dtype(), device=device)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Add position codes by slot index: [..., L, D] -> [..., L, D]."""
