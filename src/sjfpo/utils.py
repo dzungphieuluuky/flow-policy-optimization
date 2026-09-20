@@ -43,8 +43,15 @@ def filter_low_freq(x: torch.Tensor, k: int, dim: int = 1) -> torch.Tensor:
     return x[tuple(s)]
 
 
+def resolve_storage_dtype() -> torch.dtype:
+    """Storage dtype for params/checkpoints: bf16 on Blackwell (lower memory), else fp32."""
+    if is_rtx_1000_pro_blackwell():
+        return torch.bfloat16
+    return torch.float32
+
+
 def resolve_compute_dtype() -> torch.dtype:
-    """Autocast matmul dtype (storage stays fp32; Blackwell uses fp8)."""
+    """Matmul/autocast dtype: fp8 on Blackwell (TCGen05); bf16/fp32 fallback."""
     if is_rtx_1000_pro_blackwell():
         return torch.float8_e4m3fn
     if not _CUDA_AVAILABLE:

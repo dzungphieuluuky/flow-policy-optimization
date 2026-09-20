@@ -127,7 +127,7 @@ def train_sjfpo_run(
 
     Plain single-process PyTorch (``PYTHONPATH=src python scripts/train.py
     ...``). Mixed precision auto-detects: bf16 autocast matmuls when the CUDA
-    device supports bf16 (see ``torch.cuda.is_bf16_supported``), fp32 otherwise.
+    device supports bf16 (see ``torch.cuda.is_bf16_supported``) or Blackwell (bf16 storage + fp8 matmuls), fp32 otherwise.
 
     ``resume_from_checkpoint`` points at a ``save_policy_checkpoint`` directory
     (``checkpoint_<step>`` or ``checkpoint_final``): policy, optimizer, and
