@@ -34,8 +34,8 @@ class SJFPOConfig(PreTrainedConfig):
     num_minibatches: int = 4
     num_envs: int = 2  # low for 8GB Blackwell mobile VRAM
 
-    gamma: float = 0.99
-    gae_lambda: float = 0.95
+    gamma: float = 0.999
+    gae_lambda: float = 0.995
     epsilon_clip: float = 0.05
     use_dct_transform: bool = True  # spectral chunk encoding; False = raw action chunk
     use_aspo: bool = True  # piecewise ASPO (positive PPO / negative SPO); False = symmetrical PPO only
@@ -49,10 +49,10 @@ class SJFPOConfig(PreTrainedConfig):
     min_timestep: float = 0.005
     max_timestep: float = 0.995
 
-    dit_depth: int = 8
+    dit_depth: int = 4
     dit_heads: int = 4
     dit_mlp_ratio: float = 4.0
-    dit_time_dim: int = 256
+    dit_time_dim: int = 128
     timestep_scale: float = 1000.0  # Flow time t in [0,1] is scaled by this before
     # the DDPM sinusoidal ladder (designed for integer steps 0-1000); without it
     # every channel sits at angle <= 1 and t is nearly unresolvable.
@@ -63,7 +63,7 @@ class SJFPOConfig(PreTrainedConfig):
     top_p_spectral_tokens: float = 1.0
     executed_vs_predicted_ratio: float = 0.5
 
-    optimizer_lr: float = 1e-4
+    optimizer_lr: float = 3e-4
     optimizer_weight_decay: float = 1e-4
     optimizer_8bit: bool = False
 
