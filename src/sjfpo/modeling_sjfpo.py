@@ -33,7 +33,7 @@ from sjfpo.fpo_core import (
     sample_timesteps,
 )
 from sjfpo.gae import compute_advantages
-from sjfpo.utils import autocast_context, filter_low_freq, to_device_async, to_numpy_1d, to_tensor_1d
+from sjfpo.utils import autocast_context, filter_low_freq, resolve_storage_dtype, to_device_async, to_numpy_1d, to_tensor_1d
 from sjfpo.networks import (
     Critic,
     RunningMeanStd,
@@ -117,8 +117,8 @@ class SJFPOPolicy(PreTrainedPolicy):
     def set_action_bounds(self, low: np.ndarray | torch.Tensor, high: np.ndarray | torch.Tensor) -> None:
         """Real env bounds for unscaling; defaults (±1) are identity."""
         # copy_ keeps buffer registration (device moves still follow .to()).
-        self.action_low.copy_(to_tensor_1d(low, dtype=torch.float32, device=self.action_low.device))
-        self.action_high.copy_(to_tensor_1d(high, dtype=torch.float32, device=self.action_high.device))
+        self.action_low.copy_(to_tensor_1d(low, dtype=resolve_storage_dtype(), device=self.action_low.device))
+        self.action_high.copy_(to_tensor_1d(high, dtype=resolve_storage_dtype(), device=self.action_high.device))
 
     def snapshot_behavior_policy(self) -> None:
         """Freeze current weights as the behavior policy for l_old.
@@ -157,7 +157,7 @@ class SJFPOPolicy(PreTrainedPolicy):
 
     def standardize_obs_tensor(self, states: torch.Tensor) -> torch.Tensor:
         """Coerce [B, T, obs] / [B, obs] / [T, obs] to a [B, T, obs] window."""
-        states = to_tensor(states, dtype=torch.float32)
+        states = to_tensor(states, dtype=resolve_storage_dtype())
         if states.dim() == 3:
             return states
         if states.dim() == 2:
@@ -203,7 +203,7 @@ class SJFPOPolicy(PreTrainedPolicy):
 
     def select_action(self, batch: dict[str, torch.Tensor], **kwargs) -> torch.Tensor:
         """One action per call: replan a chunk, drain its executed prefix open-loop."""
-        obs = to_tensor(batch[OBS_STATE], dtype=torch.float32)
+        obs = to_tensor(batch[OBS_STATE], dtype=resolve_storage_dtype())
         if obs.dim() == 1:
             if not self._frame_buffer:
                 for _ in range(self.config.n_obs_steps):
@@ -331,9 +331,9 @@ class SJFPOPolicy(PreTrainedPolicy):
             ACTION: actions,
             "action_is_pad": to_device_async(is_pad, device),
             "advantages": to_device_async(
-                to_tensor(advantages, dtype=torch.float32), device
+                to_tensor(advantages, dtype=resolve_storage_dtype()), device
             ),
-            "returns": to_device_async(to_tensor(returns, dtype=torch.float32), device),
+            "returns": to_device_async(to_tensor(returns, dtype=resolve_storage_dtype()), device),
             "values": values.detach().to(device),
             "tau": tau.unsqueeze(0).expand(n_chunks, -1).contiguous(),
             "eps": eps,
@@ -370,10 +370,10 @@ class SJFPOPolicy(PreTrainedPolicy):
             - ``old_actor`` (behavior snapshot) is frozen (``inference_mode``).
         """
         cfg = self.config
-        states = to_tensor(batch[OBS_STATE], dtype=torch.float32)
-        actions = to_tensor(batch[ACTION], dtype=torch.float32)
-        advantages = to_tensor(batch["advantages"], dtype=torch.float32)
-        returns = to_tensor(batch["returns"], dtype=torch.float32)  # [B]
+        states = to_tensor(batch[OBS_STATE], dtype=resolve_storage_dtype())
+        actions = to_tensor(batch[ACTION], dtype=resolve_storage_dtype())
+        advantages = to_tensor(batch["advantages"], dtype=resolve_storage_dtype())
+        returns = to_tensor(batch["returns"], dtype=resolve_storage_dtype())  # [B]
         if states.shape[-2] != cfg.n_obs_steps:
             raise ValueError(
                 f"state length {states.shape[-2]} != n_obs_steps {cfg.n_obs_steps}"
@@ -405,9 +405,9 @@ class SJFPOPolicy(PreTrainedPolicy):
         # all epochs, OFF rollout storage). Batches built by hand (tests) fall
         # back to a fresh draw.
         if "tau" in batch and "eps" in batch:
-            tau = to_tensor(batch["tau"], dtype=torch.float32, device=states.device)
+            tau = to_tensor(batch["tau"], dtype=resolve_storage_dtype(), device=states.device)
             tau = tau[0] if tau.dim() == 2 else tau
-            eps = to_tensor(batch["eps"], dtype=torch.float32, device=states.device)
+            eps = to_tensor(batch["eps"], dtype=resolve_storage_dtype(), device=states.device)
             if tuple(eps.shape) != (
                 n,
                 cfg.num_mc_samples,
@@ -494,7 +494,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         se = (v_pred - returns_d).pow(2)
         if cfg.use_clipped_value_loss and "values" in batch:
             old_values = to_tensor(
-                batch["values"], dtype=torch.float32, device=v_pred.device
+                batch["values"], dtype=resolve_storage_dtype(), device=v_pred.device
             )
             v_clipped = old_values + (v_pred - old_values).clamp(
                 -cfg.epsilon_clip, cfg.epsilon_clip
