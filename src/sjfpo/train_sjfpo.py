@@ -219,7 +219,8 @@ def train_sjfpo_run(
                 )
             policy.train()
             infos = []
-            grad_norms = []  # pre-clip totals; clip_grad_norm_ returns the norm
+            grad_norms_before = []  # pre-clip norms (clip_grad_norm_ returns before-clip)
+            grad_norms_after = []  # post-clip norms
             # PPO-style: freeze the behavior snapshot once per collection round
             # (OFF semantics: fixed pi_old + stored eps/t for all epochs), then
             # sweep shuffled minibatches with reshuffled partitions per epoch.
@@ -238,15 +239,24 @@ def train_sjfpo_run(
                     grad_norm = torch.nn.utils.clip_grad_norm_(
                         all_params, cfg.grad_clip_norm
                     )
-                    grad_norms.append(float(grad_norm))
+                    grad_norm_after = 0.0
+                    for p in all_params:
+                        if p.grad is not None:
+                            param_norm = p.grad.data.norm(2)
+                            grad_norm_after += param_norm.item() ** 2
+                    grad_norm_after = grad_norm_after ** 0.5
+                    grad_norms_before.append(float(grad_norm))
+                    grad_norms_after.append(float(grad_norm_after))
                     optimizer.step()
                     policy.step_count += 1
                     infos.append(epoch_info)
             info = {k: sum(d[k] for d in infos) / len(infos) for k in infos[0]}
-            grad_norm_mean = sum(grad_norms) / len(grad_norms) if grad_norms else 0.0
+            grad_norm_mean_before = sum(grad_norms_before) / len(grad_norms_before) if grad_norms_before else 0.0
+            grad_norm_mean_after = sum(grad_norms_after) / len(grad_norms_after) if grad_norms_after else 0.0
             if wandb_enabled:
                 data = {f"train/{k}": v for k, v in info.items()}
-                data["train/grad_norm_preclip"] = grad_norm_mean
+                data["train/grad_norm_preclip"] = grad_norm_mean_before
+                data["train/grad_norm_after_clip"] = grad_norm_mean_after
                 if rollout_jerk is not None:
                     data["train/rollout_jerk"] = rollout_jerk
                 data["train/total_loss"] = (

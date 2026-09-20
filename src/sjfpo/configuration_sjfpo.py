@@ -55,7 +55,7 @@ class SJFPOConfig(PreTrainedConfig):
     # the DDPM sinusoidal ladder (designed for integer steps 0-1000); without it
     # every channel sits at angle <= 1 and t is nearly unresolvable.
 
-    vf_coef: float = 1.0
+    vf_coef: float = 0.01
     grad_clip_norm: float = 1.0
 
     top_p_spectral_tokens: float = 1.0
