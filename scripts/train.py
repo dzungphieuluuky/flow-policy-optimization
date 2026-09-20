@@ -65,6 +65,9 @@ class TrainConfig:
     obs_dim: int | None = None
     action_dim: int | None = None
     out_dir: str = "outputs/"
+    wandb_project: str = "sjfpo"
+    wandb_enabled: bool = True
+    wandb_run_name: str | None = None
     config: str | None = None  # legacy flat YAML overlay for the method config
     # Resume an sjfpo checkpoint dir (checkpoint_<step>/ or checkpoint_final/):
     # continues policy + optimizer + counters into a FRESH run dir
