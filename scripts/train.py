@@ -65,7 +65,7 @@ class TrainConfig:
     obs_dim: int | None = None
     action_dim: int | None = None
     out_dir: str = "outputs/"
-    wandb_project: str = "sjfpo"
+    wandb_project: str | None = None
     wandb_enabled: bool = True
     wandb_run_name: str | None = None
     config: str | None = None  # legacy flat YAML overlay for the method config
