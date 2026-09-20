@@ -32,22 +32,7 @@ except Exception:
 _REGISTRY_KEYS = list(_ENV_REGISTRY.keys()) if isinstance(_ENV_REGISTRY, dict) else []
 ENVS = tuple(k for k in _REGISTRY_KEYS if _ENV_REGISTRY[k].get("tier") == "core")
 PROTOTYPE_ENVS = tuple(k for k in _REGISTRY_KEYS if _ENV_REGISTRY[k].get("tier") != "core")
-# If YAML missing/unreadable, fall back to legacy hardcoded list for stability.
-if not ENVS:
-    ENVS = ("HalfCheetah-v5", "Walker2d-v5", "Hopper-v5")
-if not PROTOTYPE_ENVS:
-    PROTOTYPE_ENVS = (
-        "InvertedPendulum-v5",
-        "InvertedDoublePendulum-v5",
-        "Reacher-v5",
-        "Swimmer-v5",
-        "Pusher-v5",
-        "Ant-v5",
-        "Humanoid-v5",
-        "AdroitHandDoor-v1",
-        "AdroitHandPen-v1",
-        "AdroitHandHammer-v1",
-    )
+# No legacy fallback: config must read from envs.yaml.
 KNOWN_ENVS = ENVS + PROTOTYPE_ENVS
 SEEDS = (0, 1, 2, 3, 4)
 
