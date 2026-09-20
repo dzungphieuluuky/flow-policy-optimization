@@ -32,7 +32,7 @@ class SJFPOConfig(PreTrainedConfig):
     chunks_per_update: int = 128
     num_epochs: int = 16
     num_minibatches: int = 4
-    num_envs: int = 8  # parallel rollout environments; 1 uses single-env collection
+    num_envs: int = 2  # low for 8GB Blackwell mobile VRAM
 
     gamma: float = 0.99
     gae_lambda: float = 0.95
@@ -66,8 +66,8 @@ class SJFPOConfig(PreTrainedConfig):
     optimizer_8bit: bool = False
 
     # Blackwell / GPU optimization flags
-    use_gradient_checkpointing: bool = False  # save activation memory
-    grad_accum_steps: int = 1  # gradient accumulation for low memory
+    use_gradient_checkpointing: bool = True  # memory optimization (Blackwell)
+    grad_accum_steps: int = 4  # gradient accumulation for 8GB VRAM
 
     def __post_init__(self):
         super().__post_init__()
