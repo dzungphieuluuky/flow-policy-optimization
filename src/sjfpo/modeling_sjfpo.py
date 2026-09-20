@@ -387,14 +387,11 @@ class SJFPOPolicy(PreTrainedPolicy):
                 states
             )  # train batches only; rollout/eval frozen
         states = self.preprocessor({OBS_STATE: states})[OBS_STATE]
-        # Blackwell / GPU optimization: gradient checkpointing to cut memory
-        if cfg.use_gradient_checkpointing and self.training:
-            import torch.utils.checkpoint as cp
-            def _actor_ckpt(s):
-                return self.actor(s)
-            actor_wrapper = lambda s: cp.checkpoint(_actor_ckpt, s, use_reentrant=False)
-        else:
-            actor_wrapper = None
+        # Gradient checkpointing (Blackwell / memory optimization)
+        import torch.utils.checkpoint as cp
+        def _actor_ckpt(s):
+            return self.actor(s)
+        actor_wrapper = lambda s: cp.checkpoint(_actor_ckpt, s, use_reentrant=False)
         top_k_spectral_action_tokens = max(1, round(cfg.top_p_spectral_tokens * cfg.action_horizon))
         # ------- keep K-lowest action DCT bins, drop the rest -------
         # Paper-original: the loss sees the FULL proposed chunk. Unexecuted
