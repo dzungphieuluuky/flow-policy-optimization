@@ -15,6 +15,12 @@ from torch import nn
 from sjfpo.configuration_sjfpo import SJFPOConfig
 from sjfpo.utils import resolve_storage_dtype
 STORAGE_DTYPE = resolve_storage_dtype()  # cached once
+
+
+def _rms_norm(hidden_dim: int, eps: float = 1e-6) -> nn.RMSNorm:
+    norm = nn.RMSNorm(hidden_dim, eps=eps)
+    norm.weight.data = norm.weight.data.to(STORAGE_DTYPE)
+    return norm
 from sjfpo.dct_utils import dct
 
 # Single source for constructor defaults (see SJFPOConfig).
@@ -179,9 +185,9 @@ class WindowEncoder(nn.Module):
         mlp_ratio = float(resolve_config_value("dit_mlp_ratio", mlp_ratio))
         self.frame_proj = nn.Linear(in_dim, hidden_dim)
         self.pos_encoding = SinusoidalEncoding(hidden_dim)
-        self.norm1 = nn.RMSNorm(hidden_dim, eps=1e-6)
+        self.norm1 = _rms_norm(hidden_dim, eps=1e-6)
         self.attn1 = SelfAttention(hidden_dim, n_heads)
-        self.norm2 = nn.RMSNorm(hidden_dim, eps=1e-6)
+        self.norm2 = _rms_norm(hidden_dim, eps=1e-6)
         mlp_hidden = int(hidden_dim * mlp_ratio)
         self.mlp1 = SwiGLU(hidden_dim, mlp_hidden, hidden_dim)
 
@@ -255,9 +261,9 @@ class DiTBlock(nn.Module):
 
     def __init__(self, hidden_dim: int, n_heads: int, mlp_ratio: float):
         super().__init__()
-        self.norm1 = nn.RMSNorm(hidden_dim)
+        self.norm1 = _rms_norm(hidden_dim)
         self.attn = SelfAttention(hidden_dim, n_heads)
-        self.norm2 = nn.RMSNorm(hidden_dim)
+        self.norm2 = _rms_norm(hidden_dim)
         mlp_hidden = int(hidden_dim * mlp_ratio)
         self.mlp = SwiGLU(hidden_dim, mlp_hidden, hidden_dim)
         self.adaLN = CondMLP(hidden_dim, hidden_dim, 6 * hidden_dim)
@@ -306,7 +312,7 @@ class StateConditioner(nn.Module):
         hidden_dim = int(resolve_config_value("hidden_dim", hidden_dim))
         del n_heads  # accepted for call-site compat; fusion is linear now
         self.state_encoder = WindowEncoder(obs_dim, hidden_dim=hidden_dim)
-        self.bin_norm = nn.RMSNorm(obs_dim)
+        self.bin_norm = _rms_norm(obs_dim)
         self.bin_encoding = SinusoidalEncoding(obs_dim)  # bin index = frequency order
         self.key_proj = nn.Linear(obs_dim, hidden_dim)
         self.fuse = nn.Linear(2 * hidden_dim, hidden_dim)
@@ -357,7 +363,7 @@ class SJFPOFlowModel(nn.Module):
         self.blocks = nn.ModuleList(
             DiTBlock(hidden_dim, dit_heads, dit_mlp_ratio) for _ in range(dit_depth)
         )
-        self.norm_out = nn.RMSNorm(hidden_dim)
+        self.norm_out = _rms_norm(hidden_dim)
         self.adaLN_out = nn.Linear(hidden_dim, 2 * hidden_dim)
         nn.init.constant_(self.adaLN_out.weight, 0.0)
         nn.init.constant_(self.adaLN_out.bias, 0.0)
