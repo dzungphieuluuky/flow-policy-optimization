@@ -15,6 +15,17 @@ from lerobot.processor.converters import from_tensor_to_numpy, to_tensor
 _CUDA_AVAILABLE = torch.cuda.is_available()
 
 
+def is_rtx_1000_pro_blackwell() -> bool:
+    """True when running on an NVIDIA RTX 1000 Pro Blackwell GPU."""
+    try:
+        if _CUDA_AVAILABLE:
+            name = torch.cuda.get_device_name(0).lower()
+            return "rtx pro 1000" in name and "blackwell" in name
+    except Exception:
+        pass
+    return False
+
+
 def resolve_device() -> torch.device:
     """CUDA when available, else CPU (``SJFPO_DEVICE`` overrides)."""
     want = os.environ.get("SJFPO_DEVICE", "auto").lower()
@@ -33,7 +44,9 @@ def filter_low_freq(x: torch.Tensor, k: int, dim: int = 1) -> torch.Tensor:
 
 
 def resolve_compute_dtype() -> torch.dtype:
-    """Autocast matmul dtype (storage stays fp32; ``SJFPO_DTYPE`` overrides)."""
+    """Autocast matmul dtype (storage stays fp32; Blackwell uses fp8)."""
+    if is_rtx_1000_pro_blackwell():
+        return torch.float8_e4m3fn
     if not _CUDA_AVAILABLE:
         return torch.float32
     want = os.environ.get("SJFPO_DTYPE", "auto").lower()
@@ -45,10 +58,17 @@ def resolve_compute_dtype() -> torch.dtype:
 
 
 def autocast_context(device=None):
-    """CUDA bf16 autocast when enabled and supported; else no-op."""
+    """CUDA autocast for bf16 or Blackwell fp8; else no-op."""
     if not _CUDA_AVAILABLE:
         return contextlib.nullcontext()
-    if resolve_compute_dtype() != torch.bfloat16:
+    dtype = resolve_compute_dtype()
+    if dtype == torch.float32:
+        return contextlib.nullcontext()
+    if dtype == torch.bfloat16:
+        autocast_dtype = torch.bfloat16
+    elif dtype == torch.float8_e4m3fn:
+        autocast_dtype = torch.float8_e4m3fn
+    else:
         return contextlib.nullcontext()
     try:
         dev_type = device.type if isinstance(device, torch.device) else None
@@ -56,9 +76,9 @@ def autocast_context(device=None):
         dev_type = None
     if dev_type is None:
         dev_type = "cuda" if _CUDA_AVAILABLE else "cpu"
-    if dev_type != "cuda" or not torch.cuda.is_bf16_supported():
+    if dev_type != "cuda":
         return contextlib.nullcontext()
-    return torch.autocast(device_type="cuda", dtype=torch.bfloat16)
+    return torch.autocast(device_type="cuda", dtype=autocast_dtype)
 
 
 def maybe_compile(module: torch.nn.Module) -> torch.nn.Module:
@@ -80,8 +100,8 @@ def maybe_compile(module: torch.nn.Module) -> torch.nn.Module:
         return module
     if not _CUDA_AVAILABLE:
         return module
-    # Only compile when bf16 is available (GPU optimization tied to bf16 support).
-    if not torch.cuda.is_bf16_supported():
+    # Compile when bf16 supported OR Blackwell (fp8) detected.
+    if not torch.cuda.is_bf16_supported() and not is_rtx_1000_pro_blackwell():
         return module
     # Guarded scalar raises (e.g. Critic's executed-step check) stay in the
     # compiled graph instead of forcing an eager fallback for the whole module.

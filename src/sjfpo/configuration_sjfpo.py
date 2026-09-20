@@ -65,6 +65,10 @@ class SJFPOConfig(PreTrainedConfig):
     optimizer_weight_decay: float = 1e-4
     optimizer_8bit: bool = False
 
+    # Blackwell / GPU optimization flags
+    use_gradient_checkpointing: bool = False  # save activation memory
+    grad_accum_steps: int = 1  # gradient accumulation for low memory
+
     def __post_init__(self):
         super().__post_init__()
         if self.num_euler_steps < 1:
@@ -106,6 +110,8 @@ class SJFPOConfig(PreTrainedConfig):
             )
         if self.timestep_scale <= 0:
             raise ValueError(f"timestep_scale={self.timestep_scale} must be positive")
+        if self.grad_accum_steps < 1:
+            raise ValueError(f"grad_accum_steps={self.grad_accum_steps} must be >= 1")
         if self.optimizer_lr <= 0:
             raise ValueError(
                 f"require optimizer_lr > 0, got ({self.optimizer_lr})"
