@@ -18,21 +18,37 @@ IS_KAGGLE = os.environ.get("KAGGLE_KERNEL_RUN_TYPE") is not None
 TINY_MATRIX = os.environ.get("SJFPO_TINY_MATRIX") == "1"
 
 METHODS = ("sjfpo", "ppo", "sac")
-ENVS = ("HalfCheetah-v5", "Walker2d-v5", "Hopper-v5")
-PROTOTYPE_ENVS = (
-    "InvertedPendulum-v5",
-    "InvertedDoublePendulum-v5",
-    "Reacher-v5",
-    "Swimmer-v5",
-    "Pusher-v5",
-    "Ant-v5",
-    "Humanoid-v5",
-    "AdroitHandDoor-v1",
-    "AdroitHandPen-v1",
-    "AdroitHandHammer-v1",
-)
-KNOWN_ENVS = ENVS + PROTOTYPE_ENVS  # --env choices; matrix still uses ENVS only
 ENV_REGISTRY_PATH = Path(__file__).resolve().parents[2] / "configs" / "envs.yaml"
+
+try:
+    import yaml
+
+    with open(ENV_REGISTRY_PATH) as f:
+        _ENV_REGISTRY = yaml.safe_load(f) or {}
+except Exception:
+    _ENV_REGISTRY = {}
+
+# Read env names directly from envs.yaml (no hardcoding)
+_REGISTRY_KEYS = list(_ENV_REGISTRY.keys()) if isinstance(_ENV_REGISTRY, dict) else []
+ENVS = tuple(k for k in _REGISTRY_KEYS if _ENV_REGISTRY[k].get("tier") == "core")
+PROTOTYPE_ENVS = tuple(k for k in _REGISTRY_KEYS if _ENV_REGISTRY[k].get("tier") != "core")
+# If YAML missing/unreadable, fall back to legacy hardcoded list for stability.
+if not ENVS:
+    ENVS = ("HalfCheetah-v5", "Walker2d-v5", "Hopper-v5")
+if not PROTOTYPE_ENVS:
+    PROTOTYPE_ENVS = (
+        "InvertedPendulum-v5",
+        "InvertedDoublePendulum-v5",
+        "Reacher-v5",
+        "Swimmer-v5",
+        "Pusher-v5",
+        "Ant-v5",
+        "Humanoid-v5",
+        "AdroitHandDoor-v1",
+        "AdroitHandPen-v1",
+        "AdroitHandHammer-v1",
+    )
+KNOWN_ENVS = ENVS + PROTOTYPE_ENVS
 SEEDS = (0, 1, 2, 3, 4)
 
 TOTAL_STEPS = 1_000_000
