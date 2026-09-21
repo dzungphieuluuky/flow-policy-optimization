@@ -256,10 +256,9 @@ class SJFPOPolicy(PreTrainedPolicy):
             )
             return chunk.cpu()
 
-        unwrapped = getattr(env, "unwrapped", env)
-        spec = getattr(unwrapped, "spec", None)
-        env_name = getattr(spec, "id", "unknown") if spec is not None else "unknown"
-        from sjfpo.mjx_env import mjx_collect_chunks, want_mjx
+        from sjfpo.mjx_env import mjx_collect_chunks, resolve_env_name, want_mjx
+
+        env_name = resolve_env_name(env)
 
         if want_mjx():
             # ------- GPU-batched MJX rollout (Blackwell box; raises if unavailable) -------

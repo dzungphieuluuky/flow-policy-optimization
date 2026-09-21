@@ -32,6 +32,7 @@ STORAGE_DTYPE = resolve_storage_dtype()  # cached once
 __all__ = [
     "mjx_available",
     "want_mjx",
+    "resolve_env_name",
     "halfcheetah_obs",
     "halfcheetah_reward",
     "mjx_collect_chunks",
@@ -64,6 +65,26 @@ def mjx_available() -> bool:
 def want_mjx() -> bool:
     """Explicit opt-in: ``SJFPO_MJX=1`` (default off; CPU path unchanged)."""
     return os.environ.get("SJFPO_MJX") == "1"
+
+
+def resolve_env_name(env) -> str:
+    """Env id from single or vector envs (``SyncVectorEnv.spec`` is None).
+
+    Vector envs expose per-sub-env specs via ``get_attr('spec')``; single
+    envs via ``unwrapped.spec``. Returns ``'unknown'`` when unresolvable.
+    """
+    get_attr = getattr(env, "get_attr", None)
+    if callable(get_attr):
+        try:
+            specs = get_attr("spec")
+            if specs and getattr(specs[0], "id", None):
+                return specs[0].id
+        except Exception:
+            pass
+    unwrapped = getattr(env, "unwrapped", env)
+    spec = getattr(unwrapped, "spec", None)
+    env_id = getattr(spec, "id", None) if spec is not None else None
+    return env_id or "unknown"
 
 
 def halfcheetah_obs(qpos: np.ndarray, qvel: np.ndarray) -> np.ndarray:

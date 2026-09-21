@@ -22,6 +22,7 @@ from sjfpo.mjx_env import (  # noqa: E402
     halfcheetah_reward,
     mjx_available,
     mjx_collect_chunks,
+    resolve_env_name,
     want_mjx,
 )
 
@@ -50,6 +51,23 @@ def test_want_mjx_gating(monkeypatch):
 
 def test_available_never_raises():
     assert isinstance(mjx_available(), bool)
+
+
+def test_resolve_env_name_single_and_vec():
+    """Regression: default num_envs=2 makes a SyncVectorEnv (spec=None)."""
+    import gymnasium as gym
+
+    env = gym.make("HalfCheetah-v5")
+    vec = gym.vector.SyncVectorEnv(
+        [lambda: gym.make("HalfCheetah-v5") for _ in range(2)]
+    )
+    try:
+        assert resolve_env_name(env) == "HalfCheetah-v5"
+        assert resolve_env_name(vec) == "HalfCheetah-v5"
+        assert vec.spec is None  # the trap that caused 'unknown'
+    finally:
+        vec.close()
+        env.close()
 
 
 def test_unsupported_env_rejected_without_gpu():
