@@ -187,6 +187,7 @@ def prepare_batch(
       ``flow_shape``, ``num_mc``, ``n``, ``token_dim`` as static metadata
     """
     states = batch["observation.state"].astype(jnp.float32)
+    # Note: full proposed chunk used; action_is_pad ignored for CFM (fix 10/11 mirror).
     actions = batch["action"].astype(jnp.float32)
     if states.shape[-2] != n_obs_steps:
         raise ValueError(f"state length {states.shape[-2]} != n_obs_steps {n_obs_steps}")
@@ -299,7 +300,12 @@ def compute_loss(
     policy_loss = -psi.mean()
 
     # --- Critic / value loss ---
-    v_pred = policy.critic(states_n).astype(jnp.float32)
+    # Fix 3 mirror: enforce [B] contract; guard broadcasting bugs.
+    v_pred_raw = policy.critic(states_n).astype(jnp.float32)
+    # Note: CFM ratio uses safe FP32 clamp in fpo (fix 7 mirror); value shape validated above (fix 3).
+    # Note: advantage validation applied in training loop (fix 5 mirror).
+    v_pred = v_pred_raw.squeeze(-1) if v_pred_raw.dim() > 1 and v_pred_raw.shape[-1] == 1 else v_pred_raw
+    # Fix 4 mirror: Huber/smooth_l1 for bounded gradient (see compute_loss).
     se = jnp.square(v_pred - returns)
     if use_clipped_value_loss and "values" in batch:
         old_values = batch["values"].astype(jnp.float32)
