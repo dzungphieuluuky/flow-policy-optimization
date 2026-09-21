@@ -218,6 +218,13 @@ def train_sjfpo_run(
                     batch["action"].detach().cpu().numpy(),
                     batch["action_is_pad"].detach().cpu().numpy(),
                 )
+            # Fix 8/12: verify actions are normalized [-1, 1] before training.
+            action_abs_max = float(batch["action"].abs().max())
+            if action_abs_max > 1.05:
+                raise ValueError(
+                    f"Unnormalized actions detected: max_abs={action_abs_max:.3f} "
+                    f"(expected scaled [-1, 1]; check rollout/action bounds or preprocessing)"
+                )
             policy.train()
             # Freeze observation stats once with rollout batch (not per epoch/minibatch)
             # to prevent drift: old_actor/conditioner must see same stats as collection.
