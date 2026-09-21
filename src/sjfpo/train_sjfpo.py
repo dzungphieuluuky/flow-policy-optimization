@@ -294,20 +294,7 @@ def train_sjfpo_run(
                         steps_to_best=steps_to_best,
                     )
                     try:
-                        frames, demo_return = render_episode_frames(
-                            env_name, eval_policy, seed=10000 + seed
-                        )
-                        log_eval_video(frames, global_step)
-                        log_metrics(
-                            {
-                                "eval/demo_return": demo_return,
-                                "eval/video_ok": 1,
-                            },
-                            step=global_step,
-                        )
-                    except Exception:
-                        log_metrics({"eval/video_ok": 0}, step=global_step)
-                        pass  # headless/GL failures must never break training
+                        pass  # Video rendering disabled to avoid GLFW/libc++ crash in headless
                 consecutive_below, diverged_now = check_divergence(
                     mean_return, r_rand, consecutive_below
                 )
