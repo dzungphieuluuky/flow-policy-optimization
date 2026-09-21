@@ -305,7 +305,11 @@ class SJFPOFlowModel(nnx.Module):
         self.bin_encoding = SinusoidalEncoding(hidden_dim)
         self.time_mlp = CondMLP(dit_time_dim, 4 * hidden_dim, hidden_dim, rngs=rngs,
                                 param_dtype=param_dtype)
-        self.blocks = nnx.List(
+        # nnx.List on new flax, plain list where nnx.List is absent: the two
+        # releases track module containers in opposite ways; use whichever
+        # exists so both import and register blocks correctly.
+        _List = getattr(nnx, "List", list)
+        self.blocks = _List(
             [DiTBlock(hidden_dim, dit_heads, dit_mlp_ratio, rngs=rngs, param_dtype=param_dtype)
              for _ in range(dit_depth)]
         )
