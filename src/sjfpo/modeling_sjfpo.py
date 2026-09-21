@@ -511,6 +511,11 @@ class SJFPOPolicy(PreTrainedPolicy):
         l_old = compute_cfm_loss(v_old_r, v_star, reduce_mode="sample")
         l_new = compute_cfm_loss(v_new_r, v_star, reduce_mode="sample")
         rho = compute_policy_ratio(l_old, l_new)
+        # Log ratio overflow diagnostics (suggestion #2).
+        with torch.inference_mode():
+            log_rho = (l_old.detach() - l_new).clamp(-10.0, 10.0)  # approximate
+            log_rho_max = float(log_rho.abs().max())
+            log_rho_clip_frac = float((log_rho.abs() > 10.0).float().mean())
         if rho_bin is None:  # scalar path owns the loss; per-bin logged only
             psi = compute_aspo_surrogate(
                 rho, adv_mc, cfg.epsilon_clip
@@ -612,6 +617,8 @@ class SJFPOPolicy(PreTrainedPolicy):
             "value_loss": float(value_per_chunk.mean().detach()),
             "explained_var": explained_var,
             "mean_log_ratio": mean_log_ratio,
+            "log_rho_max": log_rho_max,
+            "log_rho_clip_frac": log_rho_clip_frac,
             "flow_rho_mean": rho_mean,
             "flow_rho_std": rho_std,
             "flow_rho_bin_range": rho_bin_range,

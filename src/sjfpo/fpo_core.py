@@ -187,7 +187,14 @@ def compute_policy_ratio(
     l_new_c = torch.clamp(l_new, max=cfm_clamp)
     cap = _DEFAULTS.log_ratio_cap if cap is None else cap
     delta = l_old_c - l_new_c
-    delta_st = delta + (torch.clamp(delta, max=cap) - delta).detach()
+    # Suggestion #2: clamp log-ratio before exp to prevent overflow.
+    # We apply a separate log-ratio clamp (10.0) independent of the CFM
+    # loss clamp (cfm_clamp) so ratios cannot explode numerically.
+    log_limit = 10.0  # Tune and log max(abs(delta)) + fraction clipped.
+    safe_delta = delta.clamp(-log_limit, log_limit)
+    # Forward uses clamped delta (safe); backward flows through unclamped
+    # delta via STE so gradients don't vanish at the boundary.
+    delta_st = safe_delta + (delta - safe_delta).detach()
     return torch.exp(delta_st)
 
 
