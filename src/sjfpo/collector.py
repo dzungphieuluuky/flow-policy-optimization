@@ -212,6 +212,10 @@ def collect_chunks_vec(
     if seed is None:
         seed = int(torch.randint(0, 2**31, (1,)).item())
     act_dim = int(np.asarray(envs.single_action_space.shape).prod())
+    from sjfpo.rollout_storage import RolloutStorage
+    storage = RolloutStorage(n, chunk_size, int(obs[0].shape[-1]), act_dim, max_steps=target + chunk_size)
+    obs_low = np.min(np.asarray(envs.single_action_space.low), axis=0) if hasattr(envs.single_action_space.low, '__len__') else float(envs.single_action_space.low)
+    obs_high = np.max(np.asarray(envs.single_action_space.high), axis=0) if hasattr(envs.single_action_space.high, '__len__') else float(envs.single_action_space.high)
     try:
         obs, _ = envs.reset(seed=[seed + i for i in range(n)])
         windows = [
@@ -295,7 +299,12 @@ def collect_chunks_vec(
             # Budget exhausted mid-episode: bootstrap the cut, but never
             # recurse into another env's GAE.
             prev[i][TRUNCATED] = torch.tensor(True)
-        return [record for trajectory in records for record in trajectory]
+        # Persistent array batches (rsl-rl optimization)
+        batch_size = min(256, storage.total_steps)
+        batches = []
+        for b in range(0, storage.total_steps, batch_size):
+            batches.append(storage.get_batch(batch_size=batch_size, start=b))
+        return batches
     except Exception:
         flush_on_collection_error(on_error_flush)
         raise
@@ -342,7 +351,12 @@ def collect_chunks(
             records.append(record)
             if done_kind != "continue":
                 window = reset_chunk_window(env, n_obs_steps)
-        return records
+        # Persistent array batches (rsl-rl optimization)
+        batch_size = min(256, storage.total_steps)
+        batches = []
+        for b in range(0, storage.total_steps, batch_size):
+            batches.append(storage.get_batch(batch_size=batch_size, start=b))
+        return batches
     except Exception:
         flush_on_collection_error(on_error_flush)
         raise
