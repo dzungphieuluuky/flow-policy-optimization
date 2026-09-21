@@ -165,11 +165,17 @@ class MjxHalfCheetahVec:
         self.reset()
 
     def _torch(self, x):
-        """JAX-GPU -> torch-CUDA, zero-copy via DLPack."""
+        """JAX-GPU -> torch-CUDA, zero-copy via DLPack.
+
+        Per the JAX library code, ``jax.dlpack`` exposes only ``from_dlpack``
+        (import); export uses the ``__dlpack__`` protocol on ``jax.Array``,
+        which torch consumes directly.
+        """
         import jax
         import torch.utils.dlpack as dlpack
 
-        return dlpack.from_dlpack(jax.dlpack.to_dlpack(x))
+        jax.block_until_ready(x)
+        return dlpack.from_dlpack(x)
 
     def _jax(self, t: torch.Tensor):
         """torch-CUDA -> JAX-GPU, zero-copy via DLPack."""
