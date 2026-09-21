@@ -117,9 +117,6 @@ class MjxVec:
     def _sample_state(self, rng, n: int):
         import jax
 
-        from sjfpo_jax.envs import get_spec as _gs  # local alias, avoids cycles
-
-        del _gs
         s = self.spec["reset_noise_scale"]
         k1, k2 = jax.random.split(rng)
         qpos = self._init_qpos + jax.random.uniform(
