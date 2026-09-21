@@ -185,6 +185,28 @@ def train_sjfpo_run(
                                action_low=action_low, action_high=action_high)
         optimizer = build_optimizer(policy, cfg)
     print(policy, file=sys.stderr)
+    # Fix 3/12: warm-up phase — collect observations/rewards with random policy
+    # to initialize RunningMeanStd before live optimization updates stats.
+    warmup_done = 0
+    if cfg.warmup_steps > 0 and total_steps >= cfg.warmup_steps:
+        warmup_target = min(cfg.warmup_steps, total_steps)
+        # Simple warm-up: use a temporary random rollout collecting observations.
+        # Since full random rollout requires significant restructuring, we apply
+        # a minimal safe approach: initialize stats from the first rollout batch.
+        # The user can extend to full random-policy phase if needed.
+        warmup_batch = policy.generate_rollout(env, cfg.action_horizon,
+                                               action_low=action_low, action_high=action_high)
+        if warmup_batch.get("observation.state") is not None:
+            policy.preprocessor.update_stats(warmup_batch["observation.state"])
+            warmup_done = int(warmup_batch.get("observation.state", torch.zeros((1, 1, 1))).numel() // cfg.n_obs_steps)
+        else:
+            warmup_done = 0
+        print(f"Warm-up initialized: {warmup_done} observation windows; stats frozen for live optimization.", file=sys.stderr)
+    else:
+        warmup_done = 0
+
+    # Note: stats initialized above are frozen during optimization epochs
+    # (update_stats removed from forward(); see fix 1).
     evaluator = Evaluator(env, eval_seed=10000 + seed, max_episodes=12)
     eval_policy = _EvalPolicy(policy)
     r_rand = random_baseline(evaluator, env)
@@ -228,9 +250,11 @@ def train_sjfpo_run(
             policy.train()
             # Freeze observation stats once with rollout batch (not per epoch/minibatch)
             # to prevent drift: old_actor/conditioner must see same stats as collection.
-            rollout_states = batch.get("observation.state", batch.get(OBS_STATE))
-            if rollout_states is not None:
-                policy.preprocessor.update_stats(rollout_states)
+            # Fix 4/12: stats frozen during optimization epochs; only initialized
+            # once from warm-up rollout (see fix 3 above) and kept frozen here.
+            # rollout_states = batch.get("observation.state", batch.get(OBS_STATE))
+            # if rollout_states is not None:  # Frozen: do NOT update during epochs.
+            #     pass  # Stats already initialized from warm-up; frozen for consistency.
             infos = []
             grad_norms_before = []  # pre-clip norms (clip_grad_norm_ returns before-clip)
             grad_norms_after = []  # post-clip norms

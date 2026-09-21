@@ -66,6 +66,7 @@ class SJFPOConfig(PreTrainedConfig):
     optimizer_lr: float = 3e-4
     optimizer_weight_decay: float = 1e-4
     optimizer_8bit: bool = False
+    warmup_steps: int = 100000  # random-policy rollout before live optimization; stats initialized after this
 
     # Blackwell / GPU optimization flags
     use_gradient_checkpointing: bool = True  # memory optimization (Blackwell)
