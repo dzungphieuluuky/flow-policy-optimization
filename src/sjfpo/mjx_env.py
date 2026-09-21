@@ -181,6 +181,7 @@ class MjxHalfCheetahVec:
 
     def _sample_state(self, rng, n: int):
         import jax
+        import jax.numpy as jnp
 
         k1, k2 = jax.random.split(rng)
         qpos = self._init_qpos + jax.random.uniform(
