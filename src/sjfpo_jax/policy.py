@@ -85,6 +85,9 @@ def _path_names(path) -> list[str]:
     """
     names = []
     for p in path:
+        if isinstance(p, (str, int)):
+            names.append(str(p))
+            continue
         key = getattr(p, "key", None)
         if not isinstance(key, str):
             key = getattr(p, "name", None)

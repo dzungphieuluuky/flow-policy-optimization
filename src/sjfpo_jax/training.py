@@ -222,8 +222,10 @@ def train_jax_run(
                 ckpt = save_checkpoint(
                     out_dir / f"checkpoint_{global_step}", policy=policy,
                     optimizer=optimizer, global_step=global_step, env_name=env_name,
+                    behavior=behavior,
                 )
                 artifacts.append(str(Path(ckpt["dir"]) / "arrays"))
+                artifacts.append(ckpt["model"])
         elapsed = time.time() - t_start
         fps = global_step / max(elapsed, 1e-6)
         if wandb_enabled:
@@ -233,9 +235,10 @@ def train_jax_run(
             finish_run(exit_code=1 if diverged else 0)
     ckpt = save_checkpoint(
         out_dir / "checkpoint_final", policy=policy, optimizer=optimizer,
-        global_step=global_step, env_name=env_name,
+        global_step=global_step, env_name=env_name, behavior=behavior,
     )
     artifacts.append(str(Path(ckpt["dir"]) / "arrays"))
+    artifacts.append(ckpt["model"])
     csv_path = out_dir / "eval_history.csv"
     if csv_path.exists():
         artifacts.append(str(csv_path))
