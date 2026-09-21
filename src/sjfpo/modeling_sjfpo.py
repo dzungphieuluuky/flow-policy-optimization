@@ -410,10 +410,10 @@ class SJFPOPolicy(PreTrainedPolicy):
             raise ValueError(
                 f"action action_horizon {actions.shape[-2]} != action_horizon {cfg.action_horizon}"
             )
-        if self.training:
-            self.preprocessor.update_stats(
-                states
-            )  # train batches only; rollout/eval frozen
+        # Observation stats frozen for this rollout/update cycle (updated once
+        # outside PPO epochs, not per epoch/minibatch, to avoid drift during
+        # optimization: old_policy sees the same normalized inputs as at
+        # collection time).
         states = self.preprocessor({OBS_STATE: states})[OBS_STATE]
         # Gradient checkpointing (Blackwell / memory optimization)
         import torch.utils.checkpoint as cp
@@ -421,7 +421,8 @@ class SJFPOPolicy(PreTrainedPolicy):
             return self.actor(s)
         actor_wrapper = lambda s: cp.checkpoint(_actor_ckpt, s, use_reentrant=False)
         token_dim = max(1, round(cfg.top_p_spectral_tokens * cfg.action_horizon)) if cfg.use_dct_transform else cfg.action_horizon
-        # ------- keep K-lowest action DCT bins, drop the rest -------
+        # FPO / spectral flow-matching action representation: full chunk [B, H, D]
+        # (not masked to executed steps); DCT transforms the temporal dimension.
         # Paper-original: the loss sees the FULL proposed chunk. Unexecuted
         # tails (early termination / budget cutoff) only shape GAE via
         # executed_n_action_steps; they are never zero-masked here (masking

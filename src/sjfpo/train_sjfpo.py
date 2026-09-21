@@ -219,6 +219,11 @@ def train_sjfpo_run(
                     batch["action_is_pad"].detach().cpu().numpy(),
                 )
             policy.train()
+            # Freeze observation stats once with rollout batch (not per epoch/minibatch)
+            # to prevent drift: old_actor/conditioner must see same stats as collection.
+            rollout_states = batch.get("observation.state", batch.get(OBS_STATE))
+            if rollout_states is not None:
+                policy.preprocessor.update_stats(rollout_states)
             infos = []
             grad_norms_before = []  # pre-clip norms (clip_grad_norm_ returns before-clip)
             grad_norms_after = []  # post-clip norms
