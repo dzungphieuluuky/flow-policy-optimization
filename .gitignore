@@ -6,3 +6,5 @@ runs/
 outputs/
 wandb/
 uv.log
+.feynman/
+.pi-subagents/
