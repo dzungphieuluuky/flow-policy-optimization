@@ -216,7 +216,11 @@ def seed_and_wrap_env(
 def mean_action_eval_policy(agent: Any) -> Any:
 
     def eval_policy(obs):
-        obs_t = einx.id("d -> 1 d", torch.as_tensor(obs, dtype=torch.float32))
+        # Model lives on resolve_device(); CPU obs would fault addmm on CUDA.
+        obs_t = einx.id(
+            "d -> 1 d",
+            torch.as_tensor(obs, dtype=torch.float32).to(resolve_device()),
+        )
         with torch.inference_mode():
             agent.enable_training_mode(False)
             actions, outputs = agent.act(obs_t, None, timestep=0, timesteps=1)
@@ -302,7 +306,10 @@ def resolve_eval_policy(agent, eval_policy_fn):
         return eval_policy_fn
     return lambda obs: (
         agent.act(
-            einx.id("d -> 1 d", torch.as_tensor(obs, dtype=torch.float32)),
+            einx.id(
+                "d -> 1 d",
+                torch.as_tensor(obs, dtype=torch.float32).to(resolve_device()),
+            ),
             None,
             timestep=0,
             timesteps=1,
@@ -314,11 +321,15 @@ def resolve_eval_policy(agent, eval_policy_fn):
 
 
 def query_agent_actions(agent, observations, states, global_step, total_steps):
+    device = resolve_device()
+    obs_t = (
+        observations
+        if torch.is_tensor(observations)
+        else torch.as_tensor(observations, dtype=torch.float32)
+    ).to(device)
     with torch.inference_mode():
         actions, _ = agent.act(
-            observations
-            if torch.is_tensor(observations)
-            else torch.as_tensor(observations, dtype=torch.float32),
+            obs_t,
             states,
             timestep=global_step,
             timesteps=total_steps,
@@ -349,16 +360,18 @@ def record_agent_transition(
     global_step,
     total_steps,
 ):
-    next_obs_t = torch.as_tensor(next_obs, dtype=torch.float32)
+    device = resolve_device()
+    next_obs_t = torch.as_tensor(next_obs, dtype=torch.float32).to(device)
     # skrl convention is [num_envs, 1]; [1] breaks in-place bootstrap math.
-    reward_t = torch.as_tensor([[reward]], dtype=torch.float32)
-    terminated_t = torch.as_tensor([[terminated]])
-    truncated_t = torch.as_tensor([[truncated]])
+    reward_t = torch.as_tensor([[reward]], dtype=torch.float32).to(device)
+    terminated_t = torch.as_tensor([[terminated]]).to(device)
+    truncated_t = torch.as_tensor([[truncated]]).to(device)
     obs_t = (
         observations
         if torch.is_tensor(observations)
         else torch.as_tensor(observations, dtype=torch.float32)
-    )
+    ).to(device)
+    actions = actions.to(device) if torch.is_tensor(actions) else actions
     agent.record_transition(
         observations=einx.id("d -> 1 d", obs_t) if obs_t.dim() == 1 else obs_t,
         states=states,
