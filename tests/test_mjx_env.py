@@ -119,6 +119,24 @@ def test_dlpack_import_takes_tensor_not_capsule():
         jax.dlpack.from_dlpack(torch_dlpack.to_dlpack(t))
 
 
+def test_shift_window_rolls_without_overlap_fault():
+    """Regression: in-place view shifting faults; roll+writeback works."""
+    import torch
+
+    from sjfpo.mjx_env import shift_window
+
+    windows = torch.arange(2 * 4 * 3, dtype=torch.float32).reshape(2, 4, 3)
+    old = windows[1].clone()
+    # The old code did exactly this and raised on overlapping memory.
+    with pytest.raises(RuntimeError, match="single memory location"):
+        w = windows[1]
+        w[:-1].copy_(w[1:])
+    shift_window(windows, 1, torch.full((3,), 99.0))
+    assert torch.equal(windows[1, :-1], old[1:])  # rows shift up, first dropped
+    assert torch.equal(windows[1, -1], torch.full((3,), 99.0))
+    assert torch.equal(windows[0], torch.arange(12, dtype=torch.float32).reshape(4, 3))
+
+
 def test_module_imports_without_jax_or_mjx():
     """Heavy deps are lazy: importing mjx_env must never require them."""
     import importlib

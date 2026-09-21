@@ -35,6 +35,7 @@ __all__ = [
     "resolve_env_name",
     "halfcheetah_obs",
     "halfcheetah_reward",
+    "shift_window",
     "mjx_collect_chunks",
 ]
 
@@ -99,6 +100,18 @@ def halfcheetah_reward(
     forward = _FORWARD_WEIGHT * (x_after - x_before) / dt
     ctrl = _CTRL_WEIGHT * float(np.sum(np.square(action)))
     return float(forward - ctrl)
+
+
+def shift_window(windows: torch.Tensor, idx: int, new_obs: torch.Tensor) -> None:
+    """Roll one env's ``[T, obs]`` window forward, appending ``new_obs``.
+
+    ``torch.roll`` returns a fresh tensor: shifting the ``windows[idx]``
+    view in place faults on overlapping memory ("some elements ... refer
+    to a single memory location").
+    """
+    w = torch.roll(windows[idx], shifts=-1, dims=0)
+    w[-1].copy_(new_obs.to(dtype=w.dtype))
+    windows[idx] = w
 
 
 class MjxHalfCheetahVec:
@@ -346,9 +359,7 @@ def mjx_collect_chunks(
                         ).clone().to(dtype=STORAGE_DTYPE)
                         dones[k] = True
                     else:
-                        w = windows[need[k]]
-                        w[:-1].copy_(w[1:])
-                        w[-1].copy_(obs[need[k]].to(dtype=STORAGE_DTYPE))
+                        shift_window(windows, need[k], obs[need[k]])
             for k, i in enumerate(need):
                 n_exec = int(step_idx[k])
                 if n_exec == 0:
