@@ -56,7 +56,7 @@ VALID_ENVS = KNOWN_ENVS
 class TrainConfig:
     """One training run (singular values only; sweep axes live in sweep.sh)."""
 
-    method: Literal["sjfpo", "ppo", "sac"] = "sjfpo"
+    method: Literal["sjfpo", "ppo", "sac", "sjfpo_jax"] = "sjfpo"
     env: str | None = None
     seed: int = 3407
     total_steps: int | None = None
@@ -121,7 +121,8 @@ def apply_flat_yaml(method_cfg, yaml_dict: dict):
 
 def select_method_cfg(args: TrainConfig, yaml_dict: dict):
     """Nested draccus sub-config for the method, overlaid with flat YAML."""
-    method_cfg = {"sjfpo": args.sjfpo, "ppo": args.ppo, "sac": args.sac}[args.method]
+    method_cfg = {"sjfpo": args.sjfpo, "ppo": args.ppo, "sac": args.sac,
+                  "sjfpo_jax": args.sjfpo}[args.method]
     return apply_flat_yaml(method_cfg, yaml_dict)
 
 
@@ -212,6 +213,42 @@ def run_single(
         from sjfpo.baselines import ppo_train_run, sac_train_run
         from sjfpo.train_sjfpo import train_sjfpo_run
 
+        if method == "sjfpo_jax":
+            # JAX port (parallel tree): hyperparams ride the sjfpo config.
+            from sjfpo_jax.training import train_jax_run
+
+            return train_jax_run(
+                env_name=env_id,
+                eval_env=env,
+                out_dir=out_dir,
+                seed=seed,
+                total_steps=total_steps,
+                eval_steps=eval_steps,
+                save_steps=save_steps,
+                num_envs=cfg.num_envs,
+                n_obs_steps=cfg.n_obs_steps,
+                action_horizon=cfg.action_horizon,
+                hidden_dim=cfg.hidden_dim,
+                dit_depth=cfg.dit_depth,
+                dit_heads=cfg.dit_heads,
+                dit_mlp_ratio=cfg.dit_mlp_ratio,
+                dit_time_dim=cfg.dit_time_dim,
+                optimizer_lr=cfg.optimizer_lr,
+                optimizer_weight_decay=cfg.optimizer_weight_decay,
+                grad_clip_norm=cfg.grad_clip_norm,
+                gamma=cfg.gamma,
+                gae_lambda=cfg.gae_lambda,
+                epsilon_clip=cfg.epsilon_clip,
+                vf_coef=cfg.vf_coef,
+                num_epochs=cfg.num_epochs,
+                num_minibatches=cfg.num_minibatches,
+                chunks_per_update=cfg.chunks_per_update,
+                num_mc_samples=cfg.num_mc_samples,
+                num_euler_steps=cfg.num_euler_steps,
+                num_inference_steps=cfg.num_inference_steps,
+                top_p_spectral_tokens=cfg.top_p_spectral_tokens,
+                executed_vs_predicted_ratio=cfg.executed_vs_predicted_ratio,
+            )
         runners = {
             "sjfpo": (train_sjfpo_run, {"obs_dim": obs_dim, "action_dim": action_dim, "resume_from_checkpoint": resume_from_checkpoint}),
             "ppo": (ppo_train_run, {"n_obs_steps": n_obs_steps}),
