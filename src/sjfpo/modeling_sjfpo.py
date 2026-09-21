@@ -574,8 +574,10 @@ class SJFPOPolicy(PreTrainedPolicy):
             raise ValueError(f"reduction={reduction!r} must be 'mean' or 'none'")
         if not bool(torch.isfinite(loss).all()):
             raise SJFPOAborted(
-                f"Non-finite loss: policy={float(policy_per_chunk.mean().detach())}, "
-                f"value={float(value_per_chunk.mean().detach())}"
+                f"Non-finite loss: policy_loss={float(policy_per_chunk.mean().detach())}, "
+                f"value_loss={float(value_per_chunk.mean().detach())}, "
+                f"loss_shape={tuple(loss.shape)}, batch_shape={tuple(batch.get('observation.state', batch.get(OBS_STATE)).shape)}, "
+                f"policy_shape={tuple(policy_per_chunk.shape)}, value_shape={tuple(value_per_chunk.shape)}"
             )
         with torch.inference_mode():
             mean_log_ratio = float((l_old - l_new).mean())
