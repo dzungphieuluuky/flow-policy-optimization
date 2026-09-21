@@ -256,7 +256,25 @@ class SJFPOPolicy(PreTrainedPolicy):
             )
             return chunk.cpu()
 
-        if int(getattr(env, "num_envs", 1)) > 1:
+        unwrapped = getattr(env, "unwrapped", env)
+        spec = getattr(unwrapped, "spec", None)
+        env_name = getattr(spec, "id", "unknown") if spec is not None else "unknown"
+        from sjfpo.mjx_env import mjx_collect_chunks, want_mjx
+
+        if want_mjx():
+            # ------- GPU-batched MJX rollout (Blackwell box; raises if unavailable) -------
+            chunks = mjx_collect_chunks(
+                self,
+                env_name,
+                total_steps,
+                action_low,
+                action_high,
+                n_obs_steps=cfg.n_obs_steps,
+                n_action_steps=cfg.action_horizon,
+                num_envs=cfg.num_envs,
+                seed=int(torch.randint(0, 2**31, (1,)).item()),
+            )
+        elif int(getattr(env, "num_envs", 1)) > 1:
             # ------- collect open-loop chunks from env -------
             chunks = collect_chunks_vec(
                 env,
