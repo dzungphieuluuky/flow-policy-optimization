@@ -521,14 +521,21 @@ class SJFPOPolicy(PreTrainedPolicy):
                 rho, adv_mc, cfg.epsilon_clip
             )
             policy_per_chunk = -psi.mean(dim=1)
-        # ------- value loss on raw returns (OFF: no 0.5, unclipped default) ---
+        # ------- value loss on raw returns -------
         with autocast_context(states.device):
-            v_pred = self.critic(states).float()
-        # Regress RAW returns (no per-batch whitening; the target must not
-        # depend on its minibatch). OFF disables value clipping by default
-        # ("value clipping adds instability" under tight policy clip).
-        returns_d = returns.to(v_pred.device)
+            v_pred_raw = self.critic(states).float()
+        # Fix 3/12: enforce [B] contract; guard broadcasting / shape bugs.
+        v_pred = v_pred_raw.squeeze(-1)
+        returns_d = returns.to(v_pred.device).reshape(-1)
+        if v_pred.shape != returns_d.shape:
+            raise ValueError(
+                f"value/return shape mismatch: v_pred={tuple(v_pred.shape)}, "
+                f"returns_d={tuple(returns_d.shape)}; critic output must be [B] (got {tuple(v_pred_raw.shape)})"
+            )
         se = (v_pred - returns_d).pow(2)
+        value_error_max = float(se.max().detach())
+        value_pred_max = float(v_pred.abs().max().detach())
+        return_max = float(returns_d.abs().max().detach())
         if cfg.use_clipped_value_loss and "values" in batch:
             old_values = to_tensor(
                 batch["values"], dtype=STORAGE_DTYPE, device=v_pred.device
@@ -619,6 +626,9 @@ class SJFPOPolicy(PreTrainedPolicy):
             "mean_log_ratio": mean_log_ratio,
             "log_rho_max": log_rho_max,
             "log_rho_clip_frac": log_rho_clip_frac,
+            "value_error_max": value_error_max,
+            "value_pred_max": value_pred_max,
+            "return_max": return_max,
             "flow_rho_mean": rho_mean,
             "flow_rho_std": rho_std,
             "flow_rho_bin_range": rho_bin_range,
