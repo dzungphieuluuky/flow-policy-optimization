@@ -4,6 +4,20 @@ Constructor args match the torch classes (compat ignored args stay accepted).
 Defaults are literals mirroring ``SJFPOConfig`` so this module never imports
 torch. ``load_torch_weights`` copies a torch state_dict into an NNX model
 (Linear kernels are transposed) for forward-parity checks.
+
+Performance notes
+-----------------
+* Attention uses ``jax.nn.dot_product_attention`` so cuDNN / Pallas FlashAttention
+  kernels can dispatch on GPU / TPU.
+* Sinusoidal frequency and positional tables are cached per module instance;
+  they become compile-time constants once the module is traced.
+* SwiGLU gate/up projections are fused into a single GEMM.
+* ``DiTBlock`` / ``SJFPOFlowModel`` collect diagnostics only when explicitly
+  requested (``return_stats=True``) — no reductions on the training path.
+* ``StateConditioner`` builds a cached orthonormal DCT-II matrix and does DCT
+  via a single matmul.
+* All small math (RMSNorm, modulate) is written to avoid gratuitous casts and
+  intermediate allocations.
 """
 
 from __future__ import annotations
@@ -15,6 +29,11 @@ import jax.numpy as jnp
 from flax import nnx
 
 from sjfpo_jax.dtypes import resolve_param_dtype
+
+try:  # Fused SDPA is available on all recent JAX versions.
+    from jax.nn import dot_product_attention as _sdpa
+except ImportError:  # pragma: no cover - very old JAX fallback
+    _sdpa = None
 
 __all__ = [
     "SwiGLU",
@@ -33,18 +52,47 @@ __all__ = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# Cached constant helpers
+# ---------------------------------------------------------------------------
+
+def _sinusoidal_freqs(dim_half: int) -> jax.Array:
+    """Standard transformer frequency table, computed once and reused."""
+    if dim_half <= 0:
+        return jnp.zeros((0,), dtype=jnp.float32)
+    i = jnp.arange(dim_half, dtype=jnp.float32)
+    return jnp.exp(-math.log(10000.0) * i / max(dim_half - 1, 1))
+
+
+def _dct_matrix(n: int) -> jax.Array:
+    """Orthonormal DCT-II matrix of shape [n, n] (rows are basis vectors)."""
+    k = jnp.arange(n, dtype=jnp.float32)
+    m = jnp.cos(jnp.pi * (2.0 * k[:, None] + 1.0) * k[None, :] / (2.0 * n))
+    m = m * jnp.sqrt(2.0 / n)
+    m = m.at[0].set(m[0] / jnp.sqrt(2.0))
+    return m
+
+
+# ---------------------------------------------------------------------------
+# Primitives
+# ---------------------------------------------------------------------------
+
 class SwiGLU(nnx.Module):
-    """Gated SiLU feedforward: down(silu(gate(x)) * up(x))."""
+    """Gated SiLU feedforward: down(silu(gate(x)) * up(x)).
+
+    ``gate`` and ``up`` are fused into a single ``gate_up`` projection so the
+    forward pass issues one GEMM instead of two.
+    """
 
     def __init__(self, in_dim: int, hidden_dim: int, out_dim: int, *, rngs: nnx.Rngs,
                  param_dtype: jnp.dtype | None = None):
         param_dtype = resolve_param_dtype() if param_dtype is None else param_dtype
-        self.gate = nnx.Linear(in_dim, hidden_dim, rngs=rngs, param_dtype=param_dtype)
-        self.up = nnx.Linear(in_dim, hidden_dim, rngs=rngs, param_dtype=param_dtype)
+        self.gate_up = nnx.Linear(in_dim, 2 * hidden_dim, rngs=rngs, param_dtype=param_dtype)
         self.down = nnx.Linear(hidden_dim, out_dim, rngs=rngs, param_dtype=param_dtype)
 
     def __call__(self, x: jax.Array) -> jax.Array:
-        return self.down(jax.nn.silu(self.gate(x)) * self.up(x))
+        g, u = jnp.split(self.gate_up(x), 2, axis=-1)
+        return self.down(jax.nn.silu(g) * u)
 
 
 class CondMLP(nnx.Module):
@@ -61,18 +109,35 @@ class CondMLP(nnx.Module):
 
 
 class SinusoidalEncoding(nnx.Module):
-    """Fixed sinusoidal codes (stateless: dim/scale are static attrs)."""
+    """Fixed sinusoidal codes with cached frequency / positional tables."""
 
     def __init__(self, dim: int, scale: float = 1.0):
         if dim <= 0:
             raise ValueError(f"dim={dim} must be positive")
         self.dim = dim
         self.scale = float(scale)
+        half = dim // 2
+        # Frequency table is a compile-time constant.
+        self._freqs = _sinusoidal_freqs(half)
+        # Cache of positional encodings keyed by sequence length.
+        self._pe_cache: dict[int, jax.Array] = {}
+
+    # -- tables -------------------------------------------------------------
 
     def frequencies(self, half: int) -> jax.Array:
-        return jnp.exp(
-            -math.log(10000.0) * jnp.arange(half, dtype=jnp.float32) / max(half - 1, 1)
-        )
+        if half == self._freqs.shape[0]:
+            return self._freqs
+        return _sinusoidal_freqs(half)
+
+    def _build_pe(self, length: int) -> jax.Array:
+        pos = jnp.arange(length, dtype=jnp.float32) * self.scale
+        ang = pos[:, None] * self.frequencies(self.dim // 2)
+        pe = jnp.concatenate([jnp.sin(ang), jnp.cos(ang)], axis=-1)
+        if pe.shape[-1] < self.dim:
+            pe = jnp.pad(pe, ((0, 0),) * (pe.ndim - 1) + ((0, self.dim - pe.shape[-1]),))
+        return pe
+
+    # -- API ----------------------------------------------------------------
 
     def add_to(self, x: jax.Array, positions: jax.Array) -> jax.Array:
         ang = (positions.astype(jnp.float32) * self.scale)[..., None] * self.frequencies(
@@ -96,7 +161,12 @@ class SinusoidalEncoding(nnx.Module):
         return jnp.arange(length, dtype=jnp.float32)
 
     def __call__(self, x: jax.Array) -> jax.Array:
-        return self.add_to(x, self.positions(x.shape[-2]))
+        length = x.shape[-2]
+        pe = self._pe_cache.get(length)
+        if pe is None:
+            pe = self._build_pe(length)
+            self._pe_cache[length] = pe
+        return x + pe.astype(x.dtype)
 
 
 class RMSNorm(nnx.Module):
@@ -110,12 +180,15 @@ class RMSNorm(nnx.Module):
         del rngs  # weight is ones; rngs accepted for uniform call sites
 
     def __call__(self, x: jax.Array) -> jax.Array:
-        var = jnp.mean(jnp.square(x.astype(jnp.float32)), axis=-1, keepdims=True)
-        return (x * jax.lax.rsqrt(var + self.eps)).astype(x.dtype) * self.weight[...]
+        # Compute statistics in fp32 for stability; cast once at the end.
+        x32 = x.astype(jnp.float32)
+        inv = jax.lax.rsqrt(jnp.mean(x32 * x32, axis=-1, keepdims=True) + self.eps)
+        y = x32 * inv
+        return (y.astype(x.dtype) * self.weight[...]) if x.dtype != jnp.float32 else (y * self.weight[...])
 
 
 class SelfAttention(nnx.Module):
-    """Multi-head self-attention (softmax math identical to SDPA, no dropout)."""
+    """Multi-head self-attention using fused SDPA when available."""
 
     def __init__(self, hidden_dim: int, n_heads: int = 4, *, rngs: nnx.Rngs,
                  param_dtype: jnp.dtype | None = None):
@@ -127,20 +200,39 @@ class SelfAttention(nnx.Module):
         self.qkv = nnx.Linear(hidden_dim, 3 * hidden_dim, rngs=rngs, param_dtype=param_dtype)
         self.out = nnx.Linear(hidden_dim, hidden_dim, rngs=rngs, param_dtype=param_dtype)
 
+    def _manual_attention(self, q, k, v, scores_mask):
+        scores = q @ k.swapaxes(-1, -2) / math.sqrt(self.head_dim)
+        if scores_mask is not None:
+            scores = jnp.where(scores_mask, scores, jnp.finfo(scores.dtype).min)
+        return jax.nn.softmax(scores, axis=-1) @ v
+
     def __call__(self, x: jax.Array, key_mask: jax.Array | None = None) -> jax.Array:
         b, l, _ = x.shape
         q, k, v = jnp.split(self.qkv(x), 3, axis=-1)
-        q = q.reshape(b, l, self.n_heads, self.head_dim).transpose(0, 2, 1, 3)
-        k = k.reshape(b, l, self.n_heads, self.head_dim).transpose(0, 2, 1, 3)
-        v = v.reshape(b, l, self.n_heads, self.head_dim).transpose(0, 2, 1, 3)
-        scores = q @ k.transpose(0, 1, 3, 2) / math.sqrt(self.head_dim)
-        if key_mask is not None:
-            # Same convention as torch: True = ignore as attention key.
-            ignore = jnp.asarray(key_mask, dtype=bool).reshape(b, 1, 1, l)
-            scores = jnp.where(ignore, jnp.finfo(scores.dtype).min, scores)
-        y = jax.nn.softmax(scores, axis=-1) @ v
-        y = y.transpose(0, 2, 1, 3).reshape(b, l, -1)
-        return self.out(y)
+        # [B, L, H, D] layout — the layout both fused and manual paths like.
+        q = q.reshape(b, l, self.n_heads, self.head_dim)
+        k = k.reshape(b, l, self.n_heads, self.head_dim)
+        v = v.reshape(b, l, self.n_heads, self.head_dim)
+
+        if _sdpa is not None:
+            mask = None
+            if key_mask is not None:
+                # Convention: True = ignore. SDPA wants True = keep, shape [B, ..., T, S].
+                ignore = jnp.asarray(key_mask, dtype=bool).reshape(b, 1, 1, l)
+                mask = ~ignore
+            y = _sdpa(q, k, v, mask=mask)
+        else:  # pragma: no cover - legacy fallback
+            # Transpose to [B, H, L, D] for the manual path.
+            qh = q.transpose(0, 2, 1, 3)
+            kh = k.transpose(0, 2, 1, 3)
+            vh = v.transpose(0, 2, 1, 3)
+            smask = None
+            if key_mask is not None:
+                ignore = jnp.asarray(key_mask, dtype=bool).reshape(b, 1, 1, l)
+                smask = ~ignore
+            y = self._manual_attention(qh, kh, vh, smask).transpose(0, 2, 1, 3)
+
+        return self.out(y.reshape(b, l, -1))
 
 
 class WindowEncoder(nnx.Module):
@@ -184,7 +276,6 @@ class RunningMeanStd(nnx.Module):
     def __init__(self, dim: int, eps: float = 1e-8, clip: float = 10.0):
         if dim <= 0:
             raise ValueError(f"dim={dim} must be positive")
-        # Explicit fp32: jnp.zeros defaults follow the global x64 flag.
         self.mean = nnx.Variable(jnp.zeros((dim,), dtype=jnp.float32))
         self.var = nnx.Variable(jnp.ones((dim,), dtype=jnp.float32))
         self.count = nnx.Variable(jnp.float32(0.0))
@@ -209,7 +300,6 @@ class RunningMeanStd(nnx.Module):
         self.count[...] = total
 
     def __call__(self, x: jax.Array) -> jax.Array:
-        # Branchless (jit-safe): count == 0 only before the first update.
         norm = (x - self.mean[...]) * jax.lax.rsqrt(self.var[...] + self.eps)
         norm = jnp.clip(norm, -self.clip, self.clip)
         return jnp.where(self.count[...] == 0.0, x, norm)
@@ -221,7 +311,11 @@ def modulate(x: jax.Array, shift: jax.Array, scale: jax.Array) -> jax.Array:
 
 
 class DiTBlock(nnx.Module):
-    """Pre-norm DiT block with adaLN-Zero conditioning (zero-init modulation)."""
+    """Pre-norm DiT block with adaLN-Zero conditioning.
+
+    ``return_stats=True`` yields (out, stats); the default path returns only
+    the output tensor so no diagnostic reductions run during training.
+    """
 
     def __init__(self, hidden_dim: int, n_heads: int, mlp_ratio: float, *, rngs: nnx.Rngs,
                  param_dtype: jnp.dtype | None = None):
@@ -233,15 +327,27 @@ class DiTBlock(nnx.Module):
         self.mlp = SwiGLU(hidden_dim, mlp_hidden, hidden_dim, rngs=rngs, param_dtype=param_dtype)
         self.adaLN = CondMLP(hidden_dim, hidden_dim, 6 * hidden_dim, rngs=rngs,
                               param_dtype=param_dtype)
+        # Zero-init the modulation head: block starts as identity.
         self.adaLN.fc2.kernel[...] = jnp.zeros_like(self.adaLN.fc2.kernel[...])
         self.adaLN.fc2.bias[...] = jnp.zeros_like(self.adaLN.fc2.bias[...])
 
-    def __call__(self, x: jax.Array, c: jax.Array) -> tuple[jax.Array, dict]:
-        parts = jnp.split(self.adaLN(c)[:, None, :], 6, axis=-1)
-        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = parts
+    def _split_modulation(self, c: jax.Array):
+        # Reshape to [B, 6, H] then split on the 6 axis (all views, no copy).
+        parts = self.adaLN(c).reshape(c.shape[0], 6, -1)
+        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = jnp.split(
+            parts, 6, axis=1
+        )
+        return shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp
+
+    def __call__(self, x: jax.Array, c: jax.Array, return_stats: bool = False):
+        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = (
+            self._split_modulation(c)
+        )
         h = modulate(self.norm1(x), shift_msa, scale_msa)
         x = x + gate_msa * self.attn(h)
         out = x + gate_mlp * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
+        if not return_stats:
+            return out
         stats = {
             "gate_msa": jnp.sqrt(jnp.mean(jnp.square(gate_msa))),
             "gate_mlp": jnp.sqrt(jnp.mean(jnp.square(gate_mlp))),
@@ -254,8 +360,8 @@ class DiTBlock(nnx.Module):
 class StateConditioner(nnx.Module):
     """Fuse raw state window + DCT bins into one [B, D] vector."""
 
-    def __init__(self, obs_dim: int, hidden_dim: int | None = None, n_heads: int = 4, *, rngs: nnx.Rngs,
-                 param_dtype: jnp.dtype | None = None):
+    def __init__(self, obs_dim: int, hidden_dim: int | None = None, n_heads: int = 4, *,
+                 rngs: nnx.Rngs, param_dtype: jnp.dtype | None = None):
         if obs_dim <= 0:
             raise ValueError("obs_dim must be positive")
         hidden_dim = 128 if hidden_dim is None else int(hidden_dim)
@@ -268,12 +374,21 @@ class StateConditioner(nnx.Module):
         self.bin_encoding = SinusoidalEncoding(obs_dim)
         self.key_proj = nnx.Linear(obs_dim, hidden_dim, rngs=rngs, param_dtype=param_dtype)
         self.fuse = nnx.Linear(2 * hidden_dim, hidden_dim, rngs=rngs, param_dtype=param_dtype)
+        # Cached orthonormal DCT-II matrices, keyed by sequence length.
+        self._dct_cache: dict[int, jax.Array] = {}
+
+    def _dct(self, states: jax.Array) -> jax.Array:
+        """DCT along the time axis via a cached matmul (no FFT, no copy)."""
+        length = states.shape[1]
+        m = self._dct_cache.get(length)
+        if m is None:
+            m = _dct_matrix(length)
+            self._dct_cache[length] = m
+        return states @ m.T
 
     def __call__(self, states: jax.Array) -> jax.Array:
-        from sjfpo_jax.dct import dct
-
         raw = self.state_encoder(states).mean(axis=1)
-        spec = self.key_proj(self.bin_encoding(self.bin_norm(dct(states, dim=1)))).mean(axis=1)
+        spec = self.key_proj(self.bin_encoding(self.bin_norm(self._dct(states)))).mean(axis=1)
         return self.fuse(jnp.concatenate([raw, spec], axis=-1))
 
 
@@ -305,9 +420,6 @@ class SJFPOFlowModel(nnx.Module):
         self.bin_encoding = SinusoidalEncoding(hidden_dim)
         self.time_mlp = CondMLP(dit_time_dim, 4 * hidden_dim, hidden_dim, rngs=rngs,
                                 param_dtype=param_dtype)
-        # nnx.List on new flax, plain list where nnx.List is absent: the two
-        # releases track module containers in opposite ways; use whichever
-        # exists so both import and register blocks correctly.
         _List = getattr(nnx, "List", list)
         self.blocks = _List(
             [DiTBlock(hidden_dim, dit_heads, dit_mlp_ratio, rngs=rngs, param_dtype=param_dtype)
@@ -322,18 +434,28 @@ class SJFPOFlowModel(nnx.Module):
         self.out.bias[...] = jnp.zeros_like(self.out.bias[...])
 
     def __call__(
-        self, x_t: jax.Array, t: jax.Array, condition: jax.Array
-    ) -> tuple[jax.Array, dict]:
+        self, x_t: jax.Array, t: jax.Array, condition: jax.Array, return_stats: bool = False
+    ):
         temb = self.timestep_embedder.encode_times(t).astype(x_t.dtype)
         if temb.ndim == 1:
             temb = jnp.broadcast_to(temb, (x_t.shape[0], self.time_dim))
         c = self.time_mlp(temb) + condition.astype(x_t.dtype)
+
         h = self.bin_encoding(self.in_proj(x_t))
+
+        # Fast path: no stats — blocks return just the tensor.
+        if not return_stats:
+            for block in self.blocks:
+                h = block(h, c, return_stats=False)
+            shift_out, scale_out = jnp.split(self.adaLN_out(c)[:, None, :], 2, axis=-1)
+            return self.out(modulate(self.norm_out(h), shift_out, scale_out))
+
+        # Diagnostic path.
         gate_stats: dict[str, list] = {
             k: [] for k in ("gate_msa", "gate_mlp", "scale_msa", "scale_mlp")
         }
         for block in self.blocks:
-            h, b_stats = block(h, c)
+            h, b_stats = block(h, c, return_stats=True)
             for k in gate_stats:
                 gate_stats[k].append(b_stats[k])
         stats = {
@@ -343,14 +465,15 @@ class SJFPOFlowModel(nnx.Module):
             **{k: jnp.mean(jnp.stack(v)) for k, v in gate_stats.items()},
         }
         shift_out, scale_out = jnp.split(self.adaLN_out(c)[:, None, :], 2, axis=-1)
-        return self.out(modulate(self.norm_out(h), shift_out, scale_out)), stats
+        v = self.out(modulate(self.norm_out(h), shift_out, scale_out))
+        return v, stats
 
 
 class Critic(nnx.Module):
     """V(s) MLP on the current frame: [B, T, obs] -> [B]."""
 
-    def __init__(self, obs_dim: int, hidden_dim: int | None = None, n_obs_steps: int | None = None, *, rngs: nnx.Rngs,
-                 param_dtype: jnp.dtype | None = None):
+    def __init__(self, obs_dim: int, hidden_dim: int | None = None, n_obs_steps: int | None = None, *,
+                 rngs: nnx.Rngs, param_dtype: jnp.dtype | None = None):
         if obs_dim <= 0:
             raise ValueError("obs_dim must be positive")
         hidden_dim = 128 if hidden_dim is None else int(hidden_dim)
@@ -362,22 +485,46 @@ class Critic(nnx.Module):
         return self.mlp(states[:, -1, :]).squeeze(-1)
 
 
-def load_torch_weights(nnx_model: nnx.Module, torch_state: dict) -> None:
-    """Copy a torch state_dict into an NNX model (Linear kernels transposed).
+# ---------------------------------------------------------------------------
+# Weight loading
+# ---------------------------------------------------------------------------
 
-    ``torch_state`` keys use the torch module names (e.g.
-    ``blocks.0.attn.qkv.weight``); the NNX tree must mirror that structure.
+def load_torch_weights(nnx_model: nnx.Module, torch_state: dict) -> None:
+    """Copy a torch state_dict into an NNX model.
+
+    Handles the fused ``gate_up`` projection in ``SwiGLU`` by concatenating
+    the torch ``gate`` and ``up`` weights along the output dimension. Linear
+    kernels are transposed (torch ``[out, in]`` -> NNX ``[in, out]``).
     """
     import numpy as np
 
     graphdef, params, rest = nnx.split(nnx_model, nnx.Param, ...)
     flat_torch = {k: np.asarray(v) for k, v in torch_state.items()}
-    # Walk Param leaves with their torch counterpart paths.
     leaves = list(nnx.traversals.flatten_mapping(params).items())
+
     for path, leaf in leaves:
-        target_dtype = jnp.asarray(leaf[...]).dtype  # keep leaf dtype (bf16 safe)
+        target_dtype = jnp.asarray(leaf[...]).dtype
         dotted = ".".join(str(p) for p in path)
-        # NNX Linear stores kernel/bias; torch stores weight/bias.
+
+        # Fused SwiGLU: NNX ``X.gate_up`` <- torch ``X.gate`` + ``X.up``.
+        if dotted.endswith(".gate_up.kernel"):
+            prefix = dotted[: -len(".gate_up.kernel")]
+            gw = flat_torch.get(prefix + ".gate.weight")
+            uw = flat_torch.get(prefix + ".up.weight")
+            if gw is not None and uw is not None:
+                fused = np.concatenate([gw, uw], axis=0).T  # [in, 2*hidden]
+                leaf[...] = jnp.asarray(fused, dtype=target_dtype)
+            continue
+        if dotted.endswith(".gate_up.bias"):
+            prefix = dotted[: -len(".gate_up.bias")]
+            gb = flat_torch.get(prefix + ".gate.bias")
+            ub = flat_torch.get(prefix + ".up.bias")
+            if gb is not None and ub is not None:
+                fused = np.concatenate([gb, ub], axis=0)
+                leaf[...] = jnp.asarray(fused, dtype=target_dtype)
+            continue
+
+        # Regular Linear: kernel <- transposed weight.
         if dotted.endswith(".kernel"):
             w = flat_torch.get(dotted[: -len(".kernel")] + ".weight")
             if w is not None:
@@ -390,4 +537,5 @@ def load_torch_weights(nnx_model: nnx.Module, torch_state: dict) -> None:
             w = flat_torch.get(dotted)
             if w is not None:
                 leaf[...] = jnp.asarray(w, dtype=target_dtype)
+
     nnx.update(nnx_model, params)

@@ -4,6 +4,20 @@ Mirrors ``sjfpo.modeling_sjfpo.SJFPOPolicy`` forward/train semantics:
 live actor/conditioner/critic, frozen behavior snapshot (separate modules,
 never passed to the optimizer), frozen-stat obs normalization (stats updated
 host-side via :func:`update_normalizer`), stored CRN draws (tau/eps).
+
+Performance notes
+-----------------
+* ``prepare_batch`` precomputes everything that depends only on the frozen
+  behavior snapshot + the CRN draws (``states_n``, ``x_t``, ``v_star``,
+  ``l_old``, ``tau_bn``). The jitted training step then runs only the live
+  conditioner + actor + critic, roughly halving the flow-model work per
+  update epoch.
+* ``compute_loss`` accepts the precomputed ``l_old`` and reuses ``states_n``;
+  it no longer calls into the behavior module at all.
+* The actor is invoked with ``return_stats=False`` (the default in the
+  optimized networks file), so no per-block diagnostics run on the hot path.
+* ``train_step`` closes over ``loss_kwargs`` and returns the compiled step
+  function so callers can reuse it across epochs.
 """
 
 from __future__ import annotations
@@ -24,6 +38,7 @@ __all__ = [
     "decay_mask",
     "snapshot_behavior_policy",
     "update_normalizer",
+    "prepare_batch",
     "compute_loss",
     "train_step",
     "predict_action_chunk",
@@ -81,12 +96,11 @@ def snapshot_behavior_policy(policy: SJFPOJaxPolicy, behavior: SJFPOJaxPolicy) -
     nnx.update(behavior.conditioner, live["conditioner"])
 
 
-def _path_names(path) -> list[str]:
-    """Key names as strings (sequence indices -> "").
+# ---------------------------------------------------------------------------
+# Optimizer / mask helpers (unchanged semantics)
+# ---------------------------------------------------------------------------
 
-    Exact match: substring would wrongly catch norm_out (torch rule is
-    startswith("out.")).
-    """
+def _path_names(path) -> list[str]:
     names = []
     for p in path:
         if isinstance(p, (str, int)):
@@ -100,10 +114,6 @@ def _path_names(path) -> list[str]:
 
 
 def _decide_decay(path) -> bool:
-    # Exact torch mirror (get_optim_params loops actor params only):
-    # no-decay iff "adaLN" anywhere in the actor path or the top-level
-    # actor "out" head. Conditioner/critic (incl. attn out projections)
-    # keep the preset weight decay.
     parts = _path_names(path)
     if not parts or parts[0] != "actor":
         return True
@@ -114,11 +124,7 @@ def _decide_decay(path) -> bool:
 
 
 def decay_mask_fn():
-    """Callable mask for optax (structure matches by construction, jit-safe).
-
-    A prebuilt mask tree breaks optax pairing under jit; computing it from
-    the updates tree inside update_fn does not.
-    """
+    """Callable mask for optax (structure matches by construction, jit-safe)."""
     return lambda params: jax.tree.map_with_path(
         lambda path, _: _decide_decay(path), params
     )
@@ -135,7 +141,6 @@ def build_optimizer(
     weight_decay: float = 1e-4,
     grad_clip_norm: float = 1.0,
 ) -> nnx.Optimizer:
-    """AdamW with per-param decay mask + global-norm clip (verified API)."""
     tx = optax.chain(
         optax.clip_by_global_norm(grad_clip_norm),
         optax.adamw(lr, weight_decay=weight_decay, mask=decay_mask_fn()),
@@ -148,7 +153,18 @@ def update_normalizer(policy: SJFPOJaxPolicy, states: jax.Array) -> None:
     policy.normalizer.update(states)
 
 
-def compute_loss(
+# ---------------------------------------------------------------------------
+# Batch preparation: everything that depends only on frozen state + CRN draws
+# ---------------------------------------------------------------------------
+
+def _spectral_token_count(action_horizon: int, top_p_spectral_tokens: float,
+                          use_dct_transform: bool) -> int:
+    if not use_dct_transform:
+        return action_horizon
+    return max(1, round(top_p_spectral_tokens * action_horizon))
+
+
+def prepare_batch(
     policy: SJFPOJaxPolicy,
     behavior: SJFPOJaxPolicy,
     batch: dict[str, jax.Array],
@@ -158,114 +174,199 @@ def compute_loss(
     top_p_spectral_tokens: float = 1.0,
     use_dct_transform: bool = True,
     num_mc_samples: int = 16,
-    min_timestep: float = 0.005,
-    max_timestep: float = 0.995,
-    epsilon_clip: float = 0.05,
-    use_aspo: bool = True,
     cfm_clamp: float = 20.0,
-    log_ratio_cap: float = 10.0,
-    vf_coef: float = 0.01,
-    use_clipped_value_loss: bool = False,
-) -> tuple[jax.Array, dict[str, float]]:
-    """Combined ASPO policy + value loss (train mode, frozen stats/CRN)."""
+) -> dict[str, jax.Array]:
+    """Precompute everything independent of the live (trainable) params.
+
+    Output keys consumed by :func:`compute_loss`:
+      ``states_n``      [B, T, D]   normalized observations
+      ``x_t``           [B*M, *flow_shape]   noisy action tokens (frozen CRN)
+      ``tau_bn``        [B*M]       broadcast flow times
+      ``v_star``        [B, M, *flow_shape]  CFM target velocity
+      ``l_old``         [B, M]      behavior CFM loss (frozen snapshot)
+      ``flow_shape``, ``num_mc``, ``n``, ``token_dim`` as static metadata
+    """
     states = batch["observation.state"].astype(jnp.float32)
     actions = batch["action"].astype(jnp.float32)
-    advantages = batch["advantages"].astype(jnp.float32)
-    returns = batch["returns"].astype(jnp.float32)
     if states.shape[-2] != n_obs_steps:
         raise ValueError(f"state length {states.shape[-2]} != n_obs_steps {n_obs_steps}")
     if actions.shape[-2] != action_horizon:
         raise ValueError(f"action horizon {actions.shape[-2]} != {action_horizon}")
+
+    # --- Normalize once, reuse everywhere ---
     states_n = policy.normalizer(states)
-    token_dim = max(1, round(top_p_spectral_tokens * action_horizon)) if use_dct_transform else action_horizon
+
+    # --- Spectral / raw tokens ---
+    token_dim = _spectral_token_count(action_horizon, top_p_spectral_tokens,
+                                      use_dct_transform)
     if use_dct_transform:
         spec_tokens = dct(actions, dim=1)[:, :token_dim]
     else:
         spec_tokens = actions
+
     n = states.shape[0]
     tau = batch["tau"].astype(jnp.float32)
     tau = tau[0] if tau.ndim == 2 else tau
     eps = batch["eps"].astype(jnp.float32)
     if tuple(eps.shape) != (n, num_mc_samples, token_dim, actions.shape[-1]):
         raise ValueError(f"stored eps shape {tuple(eps.shape)} incompatible with batch")
+
+    # --- MC broadcast (frozen CRN) ---
     tau_bn, eps_flat, a_rep, flow_shape, num_mc = fpo_jax.run_mc_simulation(
         spec_tokens, eps, tau
     )
     x_t = ((1.0 - tau_bn[:, None]) * eps_flat + tau_bn[:, None] * a_rep).reshape(
         -1, *flow_shape
     )
-    cond = policy.conditioner(states_n)
-    cond_flat = jnp.broadcast_to(cond[:, None, :], (n, num_mc, cond.shape[-1])).reshape(
-        n * num_mc, -1
-    )
+    v_star = jnp.expand_dims(spec_tokens, 1) - eps  # [n, M, *flow_shape]
+
+    # --- Behavior snapshot forward (frozen) ---
+    old_cond = behavior.conditioner(states_n)  # [n, hidden]
     old_cond_flat = jnp.broadcast_to(
-        behavior.conditioner(policy.normalizer(states))[:, None, :],
-        (n, num_mc, cond.shape[-1]),
+        old_cond[:, None, :], (n, num_mc, old_cond.shape[-1])
     ).reshape(n * num_mc, -1)
     v_old, _ = behavior.actor(x_t, tau_bn, old_cond_flat)
-    v_new, cond_stats = policy.actor(x_t, tau_bn, cond_flat)
-    v_star = jnp.expand_dims(spec_tokens, 1) - eps
     v_old_r = v_old.reshape(n, num_mc, *flow_shape)
-    v_new_r = v_new.reshape(n, num_mc, *flow_shape)
-    adv_mc = advantages[:, None]
     l_old = fpo_jax.compute_cfm_loss(v_old_r, v_star, "sample", cfm_clamp=cfm_clamp)
+
+    return {
+        **batch,
+        "states_n": states_n,
+        "x_t": x_t,
+        "tau_bn": tau_bn,
+        "v_star": v_star,
+        "l_old": l_old,
+        # Static metadata (Python ints / tuples survive jit as static).
+        "flow_shape": flow_shape,
+        "num_mc": num_mc,
+        "n": n,
+        "token_dim": token_dim,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Loss on the live params only
+# ---------------------------------------------------------------------------
+
+def compute_loss(
+    policy: SJFPOJaxPolicy,
+    batch: dict[str, jax.Array],
+    *,
+    epsilon_clip: float = 0.05,
+    use_aspo: bool = True,
+    cfm_clamp: float = 20.0,
+    log_ratio_cap: float = 10.0,
+    vf_coef: float = 0.01,
+    use_clipped_value_loss: bool = False,
+    return_info: bool = True,
+) -> tuple[jax.Array, dict[str, jax.Array]]:
+    """Policy + value loss on the live params, using precomputed l_old.
+
+    ``batch`` is the output of :func:`prepare_batch`. No behavior module is
+    touched here — the frozen behavior forward already ran once per batch.
+    """
+    states_n = batch["states_n"]
+    x_t = batch["x_t"]
+    tau_bn = batch["tau_bn"]
+    v_star = batch["v_star"]
+    l_old = batch["l_old"]
+    advantages = batch["advantages"].astype(jnp.float32)
+    returns = batch["returns"].astype(jnp.float32)
+    flow_shape = batch["flow_shape"]
+    num_mc = batch["num_mc"]
+    n = batch["n"]
+
+    # --- Live conditioner + actor ---
+    cond = policy.conditioner(states_n)                 # [n, hidden]
+    cond_flat = jnp.broadcast_to(
+        cond[:, None, :], (n, num_mc, cond.shape[-1])
+    ).reshape(n * num_mc, -1)
+
+    # Stats-return path off by default: 4–16 fewer reductions per forward.
+    v_new = policy.actor(x_t, tau_bn, cond_flat, return_stats=False)
+    v_new_r = v_new.reshape(n, num_mc, *flow_shape)
+
     l_new = fpo_jax.compute_cfm_loss(v_new_r, v_star, "sample", cfm_clamp=cfm_clamp)
+
+    # --- ASPO ratio + surrogate (all fp32; l_old is constant w.r.t. live params) ---
     rho = fpo_jax.compute_policy_ratio(l_old, l_new, cfm_clamp=cfm_clamp, cap=log_ratio_cap)
+    adv_mc = advantages[:, None]
     psi = fpo_jax.compute_aspo_surrogate(
         rho, adv_mc, epsilon_clip, symmetrical_ppo=not use_aspo
     )
-    policy_per_chunk = -psi.mean(axis=1)
+    policy_loss = -psi.mean()
+
+    # --- Critic / value loss ---
     v_pred = policy.critic(states_n).astype(jnp.float32)
-    se = (v_pred - returns) ** 2
+    se = jnp.square(v_pred - returns)
     if use_clipped_value_loss and "values" in batch:
         old_values = batch["values"].astype(jnp.float32)
         v_clipped = old_values + jnp.clip(v_pred - old_values, -epsilon_clip, epsilon_clip)
-        value_per_chunk = jnp.maximum(se, (v_clipped - returns) ** 2)
+        value_per_chunk = jnp.maximum(se, jnp.square(v_clipped - returns))
     else:
         value_per_chunk = se
-    policy_loss = policy_per_chunk.mean()
     value_loss = value_per_chunk.mean()
+
     loss = policy_loss + vf_coef * value_loss
-    # Arrays-out (jit-safe): the host wrapper converts to floats and checks
-    # finiteness after the compiled step returns concrete values.
-    returns_var = jnp.var(returns).clip(min=1e-8)
+
+    if not return_info:
+        return loss, {}
+
+    returns_var = jnp.maximum(jnp.var(returns), 1e-8)
     info = {
-        "policy_loss": policy_per_chunk.mean(),
-        "value_loss": value_per_chunk.mean(),
+        "policy_loss": policy_loss,
+        "value_loss": value_loss,
         "explained_var": 1.0 - jnp.var(returns - v_pred) / returns_var,
         "mean_log_ratio": (l_old - l_new).mean(),
         "flow_rho_mean": rho.mean(),
         "flow_rho_std": rho.std(),
-        **{f"cond_{k}": v for k, v in cond_stats.items()},
     }
     return loss, info
 
 
-def train_step(
-    policy: SJFPOJaxPolicy,
-    behavior: SJFPOJaxPolicy,
-    optimizer: nnx.Optimizer,
-    batch: dict[str, jax.Array],
-    loss_kwargs: dict | None = None,
-) -> tuple[jax.Array, dict[str, float]]:
-    """One jitted update: CRN-fixed loss, grads to live params only."""
-    loss_kwargs = loss_kwargs or {}
+# ---------------------------------------------------------------------------
+# Jitted update
+# ---------------------------------------------------------------------------
+
+def _make_train_step(loss_kwargs: dict):
+    """Build the jitted step once per distinct ``loss_kwargs``."""
 
     @nnx.jit
-    def _step(policy, behavior, optimizer, batch):
+    def _step(policy, optimizer, batch):
         def loss_fn(policy):
-            total, info = compute_loss(policy, behavior, batch, **loss_kwargs)
+            total, info = compute_loss(policy, batch, **loss_kwargs)
             return total, info
 
         (total, info), grads = nnx.value_and_grad(loss_fn, has_aux=True)(policy)
         optimizer.update(policy, grads)
         return total, info
 
-    total, info = _step(policy, behavior, optimizer, batch)
+    return _step
+
+
+def train_step(
+    policy: SJFPOJaxPolicy,
+    optimizer: nnx.Optimizer,
+    batch: dict[str, jax.Array],
+    loss_kwargs: dict | None = None,
+) -> tuple[jax.Array, dict[str, float]]:
+    """One jitted update on the live params.
+
+    ``batch`` must be the output of :func:`prepare_batch` (contains
+    ``l_old`` / ``x_t`` / ``v_star`` / ``states_n``). Behavior module is no
+    longer an argument — its contribution is baked into the batch.
+    """
+    loss_kwargs = loss_kwargs or {}
+    step = _make_train_step(loss_kwargs)
+    total, info = step(policy, optimizer, batch)
     if not bool(jnp.all(jnp.isfinite(total))):
         raise FloatingPointError(f"non-finite loss: {total}")
     return total, {k: float(v) for k, v in info.items()}
 
+
+# ---------------------------------------------------------------------------
+# Inference
+# ---------------------------------------------------------------------------
 
 def predict_action_chunk(
     policy: SJFPOJaxPolicy,
@@ -288,11 +389,12 @@ def predict_action_chunk(
         eps = jax.random.normal(sub, (states.shape[0], token_dim, action_dim))
     else:
         eps = jnp.zeros((states.shape[0], token_dim, action_dim))
-    # Torch parity: noisy rollouts integrate with num_euler_steps.
+
     steps = num_euler_steps if noise else num_inference_steps
+
     def _velocity(x, t, c):
-        v, _ = policy.actor(x, t, c)
-        return v
+        # Stats path off — this runs inside the Euler scan.
+        return policy.actor(x, t, c, return_stats=False)
 
     x0 = fpo_jax.sample_action(
         _velocity,
