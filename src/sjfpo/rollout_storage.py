@@ -1,70 +1,152 @@
-"""Minimal persistent rollout storage matching rsl-rl design (fixed arrays,
-chunk-level batch indexing, multi-env [envs, chunk_size, ...] tensors).
-No Python dict per transition overhead; arrays updated in-place."""
+"""Chunk-level rollout storage (rsl-rl style, preallocated device buffers).
+
+One entry = one open-loop chunk: window [T, obs], full proposed chunk
+[H, act], padded executed rewards [H] + length, done/truncated flags.
+Buffers are allocated once per collection round on the policy device and
+written with in-place ``copy_`` (no per-chunk allocs, no list-of-dicts in
+the hot path). ``to_transition_list`` rebuilds the legacy ``Transition``
+dicts for tests / the stacking path in ``generate_rollout``.
+"""
 from __future__ import annotations
 
 import torch
 
+__all__ = ["RolloutStorage", "mini_batch_indices"]
+
 
 class RolloutStorage:
-    """Persistent array rollout storage (rsl-rl style)."""
+    """Preallocated [C, N, ...] chunk buffers (C = max chunks per env)."""
 
-    def __init__(self, num_envs: int, chunk_size: int, obs_dim: int,
-                 action_dim: int, hidden_dim: int = 0, max_steps: int = 10000):
-        self.num_envs = num_envs
-        self.chunk_size = chunk_size
-        self.obs_dim = obs_dim
-        self.action_dim = action_dim
-        self.max_steps = max_steps
-        # Persistent arrays [envs, max_steps, ...]
-        self.obs = torch.zeros(num_envs, max_steps, obs_dim)
-        self.action = torch.zeros(num_envs, max_steps, action_dim)
-        self.reward = torch.zeros(num_envs, max_steps)
-        self.done = torch.zeros(num_envs, max_steps, dtype=torch.bool)
-        self.truncated = torch.zeros(num_envs, max_steps, dtype=torch.bool)
-        self.advantage = torch.zeros(num_envs, max_steps)
-        self.returnss = torch.zeros(num_envs, max_steps)
-        self.value = torch.zeros(num_envs, max_steps)
-        if hidden_dim > 0:
-            self.hidden_state = torch.zeros(num_envs, hidden_dim)
+    def __init__(
+        self,
+        num_envs: int,
+        max_chunks: int,
+        n_obs_steps: int,
+        action_horizon: int,
+        obs_dim: int,
+        action_dim: int,
+        device: torch.device | str = "cpu",
+        dtype: torch.dtype = torch.float32,
+    ):
+        if num_envs < 1 or max_chunks < 1:
+            raise ValueError("num_envs and max_chunks must be >= 1")
+        self.num_envs = int(num_envs)
+        self.max_chunks = int(max_chunks)
+        self.n_obs_steps = int(n_obs_steps)
+        self.action_horizon = int(action_horizon)
+        self.obs_dim = int(obs_dim)
+        self.action_dim = int(action_dim)
+        self.device = torch.device(device)
+        self.dtype = dtype
+        # Rollout fields (floats on device/dtype; flags as bool).
+        self.states = torch.zeros(
+            max_chunks, num_envs, n_obs_steps, obs_dim, device=self.device, dtype=dtype
+        )
+        self.next_states = torch.zeros(
+            max_chunks, num_envs, n_obs_steps, obs_dim, device=self.device, dtype=dtype
+        )
+        self.actions = torch.zeros(
+            max_chunks, num_envs, action_horizon, action_dim, device=self.device, dtype=dtype
+        )
+        self.rewards = torch.zeros(
+            max_chunks, num_envs, action_horizon, device=self.device, dtype=dtype
+        )
+        self.lengths = torch.zeros(max_chunks, num_envs, device=self.device, dtype=torch.long)
+        self.dones = torch.zeros(max_chunks, num_envs, device=self.device, dtype=torch.bool)
+        self.truncated = torch.zeros(max_chunks, num_envs, device=self.device, dtype=torch.bool)
+        # Post-collection targets (filled by generate_rollout, same layout).
+        self.values = torch.zeros(max_chunks, num_envs, device=self.device, dtype=dtype)
+        self.returns = torch.zeros(max_chunks, num_envs, device=self.device, dtype=dtype)
+        self.advantages = torch.zeros(max_chunks, num_envs, device=self.device, dtype=dtype)
+        self.cursor = torch.zeros(num_envs, dtype=torch.long)
+        self.count = 0
+
+    def num_chunks(self) -> int:
+        """Total chunks stored across envs."""
+        return self.count
+
+    def clear(self) -> None:
+        """Reset cursors for the next collection round (buffers reused)."""
+        self.cursor.zero_()
+        self.count = 0
+
+    def add_chunk(
+        self,
+        env_idx: int,
+        state: torch.Tensor,
+        action: torch.Tensor,
+        next_state: torch.Tensor,
+        rewards_1d: torch.Tensor | list[float],
+        done: bool,
+        truncated: bool = False,
+    ) -> None:
+        """Copy one chunk into ``[cursor, env_idx]`` (rsl-rl ``add_transition``)."""
+        c = int(self.cursor[env_idx].item())
+        if c >= self.max_chunks:
+            raise OverflowError("Rollout buffer overflow: call clear() before reuse")
+        if isinstance(rewards_1d, torch.Tensor):
+            r = rewards_1d.detach().to(device=self.device, dtype=self.dtype).reshape(-1)
         else:
-            self.hidden_state = None
-        self.step = torch.zeros(num_envs, dtype=torch.long)
-        self.total_steps = 0
+            r = torch.as_tensor(rewards_1d, device=self.device, dtype=self.dtype).reshape(-1)
+        length = int(r.numel())
+        if not 1 <= length <= self.action_horizon:
+            raise ValueError(f"chunk must execute 1..H steps, got {length}")
+        self.states[c, env_idx].copy_(state.to(device=self.device, dtype=self.dtype))
+        self.actions[c, env_idx].copy_(action.to(device=self.device, dtype=self.dtype))
+        self.next_states[c, env_idx].copy_(next_state.to(device=self.device, dtype=self.dtype))
+        self.rewards[c, env_idx].zero_()
+        self.rewards[c, env_idx, :length].copy_(r)
+        self.lengths[c, env_idx] = length
+        self.dones[c, env_idx] = bool(done)
+        self.truncated[c, env_idx] = bool(truncated)
+        self.cursor[env_idx] += 1
+        self.count += 1
 
-    def add_chunk(self, env_idx: int, step_offset: int,
-                  obs: torch.Tensor, action: torch.Tensor,
-                  reward: float, done: bool, truncated: bool = False):
-        s = self.step[env_idx].item()
-        self.obs[env_idx, s] = obs.squeeze(0)
-        self.action[env_idx, s] = action.squeeze(0)
-        self.reward[env_idx, s] = float(reward)
-        self.done[env_idx, s] = bool(done)
-        self.truncated[env_idx, s] = bool(truncated)
-        self.step[env_idx] += 1
-        self.total_steps += 1
+    def to_transition_list(self) -> list[dict]:
+        """Legacy ``Transition`` dicts in [env, chunk] order (tests / stack path)."""
+        from lerobot.processor.converters import to_tensor
+        from lerobot.utils.constants import DONE, OBS_STATE, REWARD, TRUNCATED
 
-    def get_batch(self, batch_size: int = 256, start: int = 0) -> dict:
-        # Minimal batch indexing: return slice of stored arrays
-        end = min(start + batch_size, self.total_steps)
-        s = torch.arange(start, end)
-        return {
-            "obs": self.obs[:, s],
-            "action": self.action[:, s],
-            "reward": self.reward[:, s],
-            "done": self.done[:, s],
-            "truncated": self.truncated[:, s],
-            "advantage": self.advantage[:, s],
-            "return": self.returns[:, s],
-            "value": self.value[:, s],
-        }
+        out: list[dict] = []
+        for e in range(self.num_envs):
+            for c in range(int(self.cursor[e].item())):
+                length = int(self.lengths[c, e].item())
+                out.append(
+                    {
+                        OBS_STATE: to_tensor(self.states[c, e].detach().cpu()),
+                        "action": to_tensor(self.actions[c, e].detach().cpu()),
+                        "next.observation.state": to_tensor(
+                            self.next_states[c, e].detach().cpu()
+                        ),
+                        REWARD: to_tensor(
+                            self.rewards[c, e, :length].detach().cpu(), dtype=self.dtype
+                        ),
+                        DONE: to_tensor(bool(self.dones[c, e].item()), dtype=torch.bool),
+                        TRUNCATED: to_tensor(
+                            bool(self.truncated[c, e].item()), dtype=torch.bool
+                        ),
+                        "executed_n_action_steps": to_tensor(length, dtype=torch.int64),
+                        "clip_count": to_tensor(0, dtype=torch.int64),
+                    }
+                )
+        return out
 
-    def clear_done_envs(self, done_mask: torch.Tensor):
-        for i in range(self.num_envs):
-            if done_mask[i].item():
-                self.step[i] = 0
-                self.obs[i] = 0
-                self.action[i] = 0
-                self.reward[i] = 0
-                self.done[i] = False
-                self.truncated[i] = False
+
+def mini_batch_indices(
+    n: int, num_minibatches: int, device: torch.device | str, num_epochs: int = 1
+):
+    """Yield one GPU ``randperm`` split per epoch (rsl-rl ``mini_batch_generator``).
+
+    Single permutation per epoch, contiguous splits (last batch takes the
+    remainder) — no dropped samples,unlike ``split(n // n_mb)``.
+    """
+    if n < 1:
+        raise ValueError(f"n={n} must be >= 1")
+    n_mb = max(1, min(int(num_minibatches), n))
+    device = torch.device(device)
+    for _ in range(max(1, int(num_epochs))):
+        perm = torch.randperm(n, device=device)
+        for i in range(n_mb):
+            start = (i * n) // n_mb
+            stop = ((i + 1) * n) // n_mb
+            yield perm[start:stop]
