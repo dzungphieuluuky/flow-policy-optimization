@@ -9,13 +9,16 @@ backend-agnostic ``Evaluator``/divergence/wandb helpers from ``sjfpo``.
 
 from __future__ import annotations
 
+import os
 import time
 from pathlib import Path
 from typing import Any
 
 import jax
 import jax.numpy as jnp
+import jax.profiler
 import numpy as np
+from flax import nnx
 
 from sjfpo.evaluator import Evaluator, check_divergence
 from sjfpo.wandb_logging import (
@@ -29,7 +32,12 @@ from sjfpo_jax.checkpointing import save_checkpoint
 from sjfpo_jax.envs import get_spec
 from sjfpo_jax.rollout import generate_batch
 
-__all__ = ["spec_dims", "train_jax_run"]
+__all__ = ["spec_dims", "train_jax_run", "profile_dir"]
+
+
+def profile_dir() -> str | None:
+    """Trace output dir from ``SJFPO_PROFILE_DIR`` (unset = no tracing)."""
+    return os.environ.get("SJFPO_PROFILE_DIR") or None
 
 
 def spec_dims(env_name: str) -> tuple[int, int]:
@@ -167,35 +175,46 @@ def train_jax_run(
     steps_to_best: int | None = None
     artifacts: list = []
     all_eval_returns: list = []
+    trace_dir = profile_dir()
+    if trace_dir is not None:
+        Path(trace_dir).mkdir(parents=True, exist_ok=True)
+        jax.profiler.start_trace(trace_dir)
     t_start = time.time()
     try:
         while global_step < total_steps:
             steps_to_go = total_steps - global_step
             collect_steps = min(chunks_per_update * action_horizon, steps_to_go)
             key, sub = jax.random.split(key)
-            batch = generate_batch(
-                policy, env_name, collect_steps, jnp.asarray(action_low),
-                jnp.asarray(action_high), sub, n_obs_steps=n_obs_steps,
-                action_horizon=action_horizon, num_envs=num_envs, seed=int(sub[0]),
-                num_mc_samples=num_mc_samples,
-                top_p_spectral_tokens=top_p_spectral_tokens,
-                num_euler_steps=num_euler_steps, gamma=gamma, gae_lambda=gae_lambda,
-                vec_factory=vec_factory,
-            )
-            global_step += int((~batch["action_is_pad"]).sum())
-            jpol.update_normalizer(policy, batch["observation.state"])
-            jpol.snapshot_behavior_policy(policy, behavior)
-            n_chunks = int(batch["advantages"].shape[0])
-            n_mb = max(1, min(num_minibatches, n_chunks))
-            infos = []
-            for _ in range(max(1, int(num_epochs))):
-                key, sub = jax.random.split(key)
-                perm = jax.random.permutation(sub, n_chunks)
-                for i in range(n_mb):
-                    idx = perm[(i * n_chunks) // n_mb:((i + 1) * n_chunks) // n_mb]
-                    mb = {k: v[idx] for k, v in batch.items()}
-                    _, info = jpol.train_step(policy, behavior, optimizer, mb, loss_kwargs)
-                    infos.append(info)
+            # Profiler annotations are no-ops unless SJFPO_PROFILE_DIR started
+            # a trace; device ranges then show per-phase in TensorBoard.
+            with jax.profiler.StepTraceAnnotation("train", step_num=global_step):
+                with jax.profiler.TraceAnnotation("collect"):
+                    batch = generate_batch(
+                        policy, env_name, collect_steps, jnp.asarray(action_low),
+                        jnp.asarray(action_high), sub, n_obs_steps=n_obs_steps,
+                        action_horizon=action_horizon, num_envs=num_envs, seed=int(sub[0]),
+                        num_mc_samples=num_mc_samples,
+                        top_p_spectral_tokens=top_p_spectral_tokens,
+                        num_euler_steps=num_euler_steps, gamma=gamma, gae_lambda=gae_lambda,
+                        vec_factory=vec_factory,
+                    )
+                jax.block_until_ready(batch["advantages"])
+                global_step += int((~batch["action_is_pad"]).sum())
+                jpol.update_normalizer(policy, batch["observation.state"])
+                jpol.snapshot_behavior_policy(policy, behavior)
+                n_chunks = int(batch["advantages"].shape[0])
+                n_mb = max(1, min(num_minibatches, n_chunks))
+                infos = []
+                with jax.profiler.TraceAnnotation("update"):
+                    for _ in range(max(1, int(num_epochs))):
+                        key, sub = jax.random.split(key)
+                        perm = jax.random.permutation(sub, n_chunks)
+                        for i in range(n_mb):
+                            idx = perm[(i * n_chunks) // n_mb:((i + 1) * n_chunks) // n_mb]
+                            mb = {k: v[idx] for k, v in batch.items()}
+                            _, info = jpol.train_step(policy, behavior, optimizer, mb, loss_kwargs)
+                            infos.append(info)
+                jax.block_until_ready(jax.tree.leaves(nnx.state(policy, nnx.Param))[0])
             info = {k: sum(d[k] for d in infos) / len(infos) for k in infos[0]}
             if wandb_enabled:
                 log_metrics({f"train/{k}": v for k, v in info.items()}, step=global_step)
@@ -231,6 +250,8 @@ def train_jax_run(
         if wandb_enabled:
             log_metrics({"timing/fps": fps, "timing/elapsed_s": elapsed}, step=global_step)
     finally:
+        if trace_dir is not None:
+            jax.profiler.stop_trace()
         if wandb_enabled:
             finish_run(exit_code=1 if diverged else 0)
     ckpt = save_checkpoint(
@@ -242,7 +263,7 @@ def train_jax_run(
     csv_path = out_dir / "eval_history.csv"
     if csv_path.exists():
         artifacts.append(str(csv_path))
-    return {
+    result = {
         "method": "sjfpo_jax",
         "env_name": env_name,
         "seed": seed,
@@ -254,3 +275,6 @@ def train_jax_run(
         "diverged": diverged,
         "global_step": global_step,
     }
+    if trace_dir is not None:
+        result["profile_dir"] = trace_dir
+    return result
