@@ -361,6 +361,16 @@ class SJFPOPolicy(PreTrainedPolicy):
             cfg.num_mc_samples, (cfg.min_timestep, cfg.max_timestep), device=device
         )
         eps = sample_noise((n_chunks, cfg.num_mc_samples, top_k, action_dim), device=device)
+        # Fix 11/12: verify eps shape aligns with both DCT (top_k) and non-DCT (action_horizon) paths.
+        expected_shape = (n_chunks, cfg.num_mc_samples,
+                           (max(1, round(cfg.top_p_spectral_tokens * cfg.action_horizon))
+                            if cfg.use_dct_transform else cfg.action_horizon),
+                           action_dim)
+        if tuple(eps.shape) != expected_shape:
+            raise ValueError(
+                f"CRN eps shape {tuple(eps.shape)} != expected {expected_shape} "
+                f"(use_dct_transform={cfg.use_dct_transform}, action_horizon={cfg.action_horizon})"
+            )
         actions = to_device_async(torch.stack([c["action"] for c in chunks]), device)
         # Fix 10/12: confirm chunk arrays contain full proposed chunks; detect
         # partial/invalid actions that would corrupt DCT/CFM loss.
