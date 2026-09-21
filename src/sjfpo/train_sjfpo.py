@@ -246,6 +246,13 @@ def train_sjfpo_run(
             ):
                 optimizer.zero_grad()
                 loss, epoch_info = policy(sample_minibatch(batch, mb_idx))
+                # Fix 12/12: verify scalar loss (mean reduction) before backward to
+                # prevent batch-size-dependent gradient scaling.
+                if loss.dim() != 0:
+                    raise ValueError(
+                        f"Loss must be scalar (reduction='mean') before backward; got shape {tuple(loss.shape)}. "
+                        f"If using reduction='none', scale loss explicitly (e.g., loss.sum()/batch_size) before backward."
+                    )
                 loss.backward()
                 all_params = [
                     p for group in optimizer.param_groups for p in group["params"]
