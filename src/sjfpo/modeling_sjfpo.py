@@ -393,7 +393,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         def _actor_ckpt(s):
             return self.actor(s)
         actor_wrapper = lambda s: cp.checkpoint(_actor_ckpt, s, use_reentrant=False)
-        token_dim = token_dim if cfg.use_dct_transform else cfg.action_horizon
+        token_dim = max(1, round(cfg.top_p_spectral_tokens * cfg.action_horizon)) if cfg.use_dct_transform else cfg.action_horizon
         # ------- keep K-lowest action DCT bins, drop the rest -------
         # Paper-original: the loss sees the FULL proposed chunk. Unexecuted
         # tails (early termination / budget cutoff) only shape GAE via
