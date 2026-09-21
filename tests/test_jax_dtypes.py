@@ -61,8 +61,8 @@ def test_bf16_loss_parity_with_fp32(tmp_path):
         "tau": jnp.full((2, 2), 0.5),
         "eps": jnp.zeros((2, 2, 8, 3)),
     }
-    kw = {"n_obs_steps": 4, "action_horizon": 8, "num_mc_samples": 2}
+    prep_kw = {"n_obs_steps": 4, "action_horizon": 8, "num_mc_samples": 2}
     _, bf = jpol.build_policy(6, 3, seed=0, hidden_dim=8, dit_depth=1, dit_heads=2)
-    lf, _ = jpol.compute_loss(pf, bf, batch, **kw)
-    lb, _ = jpol.compute_loss(pb, bf, batch, **kw)
+    lf, _ = jpol.compute_loss(pf, jpol.prepare_batch(pf, bf, batch, **prep_kw))
+    lb, _ = jpol.compute_loss(pb, jpol.prepare_batch(pb, bf, batch, **prep_kw))
     np.testing.assert_allclose(float(lb), float(lf), rtol=1e-2, atol=1e-2)

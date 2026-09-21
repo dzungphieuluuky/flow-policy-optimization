@@ -42,11 +42,31 @@ def profile_dir() -> str | None:
     return os.environ.get("SJFPO_PROFILE_DIR") or None
 
 
+# Prepared-batch keys that are Python statics (never sliced, never jitted).
+_PREPARED_STATICS = ("flow_shape", "num_mc", "n", "token_dim")
+
+
+def _slice_prepared(prep: dict, idx: jax.Array, num_mc: int) -> dict:
+    """Minibatch slice of a prepared batch (flat MC rows need index expansion)."""
+    flat_idx = (idx[:, None] * num_mc + jnp.arange(num_mc)[None, :]).reshape(-1)
+    mb = {}
+    for k, v in prep.items():
+        if k in _PREPARED_STATICS:
+            continue  # compute_loss derives sizes from array shapes
+        if k in ("x_t", "tau_bn"):
+            mb[k] = v[flat_idx]
+        else:
+            mb[k] = v[idx]
+    return mb
+
+
 def spec_dims(env_name: str) -> tuple[int, int]:
     """(obs_dim, action_dim) from the model XML (needs mujoco, not MJX)."""
     import mujoco
 
     import gymnasium as gym
+
+    from sjfpo_jax.envs import obs_dim as _obs_dim_fn
 
     spec = get_spec(env_name)
     xml = (
@@ -57,8 +77,7 @@ def spec_dims(env_name: str) -> tuple[int, int]:
         / spec["xml"]
     )
     model = mujoco.MjModel.from_xml_path(str(xml))
-    obs_dim = model.nq - (1 if spec["obs_drop_first"] else 0) + model.nv
-    return int(obs_dim), int(model.nu)
+    return int(_obs_dim_fn(spec, model.nq, model.nv, model.nbody)), int(model.nu)
 
 
 class _ChunkEvalPolicy:
@@ -168,11 +187,12 @@ def train_jax_run(
         method="sjfpo_jax", env_name=env_name, seed=seed, total_steps=total_steps,
         cfg_dict={"hidden_dim": hidden_dim, "optimizer_lr": optimizer_lr},
     )
-    loss_kwargs = {
+    prepare_kwargs = {
         "n_obs_steps": n_obs_steps, "action_horizon": action_horizon,
-        "top_p_spectral_tokens": top_p_spectral_tokens, "num_mc_samples": num_mc_samples,
-        "epsilon_clip": epsilon_clip, "vf_coef": vf_coef,
+        "top_p_spectral_tokens": top_p_spectral_tokens,
+        "num_mc_samples": num_mc_samples,
     }
+    loss_kwargs = {"epsilon_clip": epsilon_clip, "vf_coef": vf_coef}
     global_step = 0
     eval_count = 0
     consecutive_below = 0
@@ -208,6 +228,7 @@ def train_jax_run(
                 global_step += int((~batch["action_is_pad"]).sum())
                 jpol.update_normalizer(policy, batch["observation.state"])
                 jpol.snapshot_behavior_policy(policy, behavior)
+                prep = jpol.prepare_batch(policy, behavior, batch, **prepare_kwargs)
                 n_chunks = int(batch["advantages"].shape[0])
                 n_mb = max(1, min(num_minibatches, n_chunks))
                 infos = []
@@ -217,8 +238,8 @@ def train_jax_run(
                         perm = jax.random.permutation(sub, n_chunks)
                         for i in range(n_mb):
                             idx = perm[(i * n_chunks) // n_mb:((i + 1) * n_chunks) // n_mb]
-                            mb = {k: v[idx] for k, v in batch.items()}
-                            _, info = jpol.train_step(policy, behavior, optimizer, mb, loss_kwargs)
+                            mb = _slice_prepared(prep, idx, num_mc_samples)
+                            _, info = jpol.train_step(policy, optimizer, mb, loss_kwargs)
                             infos.append(info)
                 jax.block_until_ready(jax.tree.leaves(nnx.state(policy, nnx.Param))[0])
             info = {k: sum(d[k] for d in infos) / len(infos) for k in infos[0]}

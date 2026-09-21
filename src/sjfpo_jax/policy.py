@@ -225,7 +225,7 @@ def prepare_batch(
     old_cond_flat = jnp.broadcast_to(
         old_cond[:, None, :], (n, num_mc, old_cond.shape[-1])
     ).reshape(n * num_mc, -1)
-    v_old, _ = behavior.actor(x_t, tau_bn, old_cond_flat)
+    v_old = behavior.actor(x_t, tau_bn, old_cond_flat)
     v_old_r = v_old.reshape(n, num_mc, *flow_shape)
     l_old = fpo_jax.compute_cfm_loss(v_old_r, v_star, "sample", cfm_clamp=cfm_clamp)
 
@@ -272,9 +272,11 @@ def compute_loss(
     l_old = batch["l_old"]
     advantages = batch["advantages"].astype(jnp.float32)
     returns = batch["returns"].astype(jnp.float32)
-    flow_shape = batch["flow_shape"]
-    num_mc = batch["num_mc"]
-    n = batch["n"]
+    # Sizes from array shapes (static under jit); the "n"/"num_mc" metadata
+    # entries are plain ints that nnx.jit traces, breaking reshape calls.
+    n = int(advantages.shape[0])
+    num_mc = int(l_old.shape[1])
+    flow_shape = tuple(v_star.shape[2:])
 
     # --- Live conditioner + actor ---
     cond = policy.conditioner(states_n)                 # [n, hidden]

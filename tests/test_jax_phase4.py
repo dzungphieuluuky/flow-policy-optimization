@@ -38,10 +38,10 @@ def test_roundtrip_restores_params_and_counters(tmp_path):
         "tau": jnp.full((2, 2), 0.5),
         "eps": jnp.zeros((2, 2, 8, 3)),
     }
-    jpol.train_step(
-        pj, bj, opt, _batch,
-        {"n_obs_steps": 4, "action_horizon": 8, "num_mc_samples": 2},
+    _prep = jpol.prepare_batch(
+        pj, bj, _batch, n_obs_steps=4, action_horizon=8, num_mc_samples=2,
     )
+    jpol.train_step(pj, opt, _prep)
     out = save_checkpoint(tmp_path / "ckpt_10", policy=pj, optimizer=opt,
                           global_step=10, env_name="HalfCheetah-v5")
     assert Path(out["meta"]).exists()
@@ -104,7 +104,7 @@ def test_safetensors_jax_to_torch_strict(tmp_path):
     tpol.eval()
     with torch.no_grad():
         expected = tpol.actor(x, t, c).detach().numpy()
-    got, _ = pj.actor(jnp.asarray(x.numpy()), jnp.asarray(t.numpy()),
+    got = pj.actor(jnp.asarray(x.numpy()), jnp.asarray(t.numpy()),
                        jnp.asarray(c.numpy()))
     np.testing.assert_allclose(np.asarray(got), expected, rtol=1e-5, atol=1e-5)
 
@@ -125,7 +125,7 @@ def test_safetensors_torch_to_jax(tmp_path):
     tpol.eval()
     with torch.no_grad():
         expected = tpol.actor(x, t, c).detach().numpy()
-    got, _ = pj.actor(jnp.asarray(x.numpy()), jnp.asarray(t.numpy()),
+    got = pj.actor(jnp.asarray(x.numpy()), jnp.asarray(t.numpy()),
                        jnp.asarray(c.numpy()))
     np.testing.assert_allclose(np.asarray(got), expected, rtol=1e-5, atol=1e-5)
 

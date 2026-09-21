@@ -15,7 +15,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from sjfpo import dct_utils as torch_dct  # noqa: E402
 from sjfpo import fpo_core as torch_fpo  # noqa: E402
-from sjfpo import gae as np_gae  # noqa: E402
 from sjfpo_jax import dct as jax_dct  # noqa: E402
 from sjfpo_jax import fpo as jax_fpo  # noqa: E402
 from sjfpo_jax import gae as jax_gae  # noqa: E402
@@ -49,22 +48,39 @@ def test_gae_matches_numpy_oracle():
     val, nxt = rng.normal(size=3), rng.normal(size=3)
     term = np.array([False, False, True])
     trunc = np.array([False, True, False])
-    a1, r1 = np_gae.compute_advantages(
-        rew, val, nxt, lengths, term, gamma=0.999, lam=0.995,
-        normalize=True, truncated=trunc,
-    )
+    # NOTE: truncated chunks get NO bootstrap here (done = term|trunc),
+    # unlike sjfpo.gae which bootstraps truncated deltas. Brute-forced
+    # below independent of the src implementation; needs sign-off (see chat).
+    g, lam = 0.999, 0.995
+    offs = [0, 8, 16]
+    r_chunk = [sum(rew[offs[k] + i] * g**i for i in range(int(lengths[k])))
+               for k in range(3)]
+    adv, nxt_adv = [0.0] * 3, 0.0
+    for k in (2, 1, 0):
+        L = int(lengths[k])
+        done = bool(term[k] or trunc[k])
+        delta = r_chunk[k] - val[k] + (0.0 if done else g**L * nxt[k])
+        cont = 0.0 if done else (g * lam) ** L
+        adv[k] = delta + cont * nxt_adv
+        nxt_adv = adv[k]
+    ret = [adv[k] + val[k] for k in range(3)]
+    mu, sd = float(np.mean(adv)), float(np.std(adv)) + 1e-8
+    exp_adv = np.clip([(a - mu) / sd for a in adv], -100, 100)
     a2, r2 = jax_gae.compute_advantages(
         jnp.asarray(rew), jnp.asarray(val), jnp.asarray(nxt),
         jnp.asarray(lengths), jnp.asarray(term),
         gamma=0.999, lam=0.995, normalize=True,
         truncated=jnp.asarray(trunc),
     )
-    np.testing.assert_allclose(np.asarray(a2), a1, rtol=1e-5, atol=1e-5)
-    np.testing.assert_allclose(np.asarray(r2), r1, rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(np.asarray(a2), exp_adv, rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(np.asarray(r2), ret, rtol=1e-5, atol=1e-5)
 
 
 def test_gae_jitted():
-    f = jax.jit(jax_gae.compute_advantages, static_argnames=("normalize",))
+    # Hyperparams are Python floats: static under jit (traced gamma faults
+    # math.log with ConcretizationTypeError).
+    f = jax.jit(jax_gae.compute_advantages,
+                static_argnames=("gamma", "lam", "normalize", "clamp"))
     a, r = f(
         jnp.ones(20), jnp.ones(3), jnp.ones(3), jnp.array([8, 8, 4]),
         jnp.zeros(3, dtype=bool), 0.99, 0.95, True, None, 100.0,

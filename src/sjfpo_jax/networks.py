@@ -64,15 +64,6 @@ def _sinusoidal_freqs(dim_half: int) -> jax.Array:
     return jnp.exp(-math.log(10000.0) * i / max(dim_half - 1, 1))
 
 
-def _dct_matrix(n: int) -> jax.Array:
-    """Orthonormal DCT-II matrix of shape [n, n] (rows are basis vectors)."""
-    k = jnp.arange(n, dtype=jnp.float32)
-    m = jnp.cos(jnp.pi * (2.0 * k[:, None] + 1.0) * k[None, :] / (2.0 * n))
-    m = m * jnp.sqrt(2.0 / n)
-    m = m.at[0].set(m[0] / jnp.sqrt(2.0))
-    return m
-
-
 # ---------------------------------------------------------------------------
 # Primitives
 # ---------------------------------------------------------------------------
@@ -116,17 +107,14 @@ class SinusoidalEncoding(nnx.Module):
             raise ValueError(f"dim={dim} must be positive")
         self.dim = dim
         self.scale = float(scale)
-        half = dim // 2
-        # Frequency table is a compile-time constant.
-        self._freqs = _sinusoidal_freqs(half)
-        # Cache of positional encodings keyed by sequence length.
-        self._pe_cache: dict[int, jax.Array] = {}
+        # NOTE: no stored arrays here (freq tables, PE caches): any array
+        # attribute breaks nnx.jit flattening once populated, and cache
+        # writes fault inside traced code. Tables are rebuilt per call
+        # (arange+exp over <=128 elems: negligible next to DiT).
 
     # -- tables -------------------------------------------------------------
 
     def frequencies(self, half: int) -> jax.Array:
-        if half == self._freqs.shape[0]:
-            return self._freqs
         return _sinusoidal_freqs(half)
 
     def _build_pe(self, length: int) -> jax.Array:
@@ -161,12 +149,7 @@ class SinusoidalEncoding(nnx.Module):
         return jnp.arange(length, dtype=jnp.float32)
 
     def __call__(self, x: jax.Array) -> jax.Array:
-        length = x.shape[-2]
-        pe = self._pe_cache.get(length)
-        if pe is None:
-            pe = self._build_pe(length)
-            self._pe_cache[length] = pe
-        return x + pe.astype(x.dtype)
+        return x + self._build_pe(x.shape[-2]).astype(x.dtype)
 
 
 class RMSNorm(nnx.Module):
@@ -374,21 +357,14 @@ class StateConditioner(nnx.Module):
         self.bin_encoding = SinusoidalEncoding(obs_dim)
         self.key_proj = nnx.Linear(obs_dim, hidden_dim, rngs=rngs, param_dtype=param_dtype)
         self.fuse = nnx.Linear(2 * hidden_dim, hidden_dim, rngs=rngs, param_dtype=param_dtype)
-        # Cached orthonormal DCT-II matrices, keyed by sequence length.
-        self._dct_cache: dict[int, jax.Array] = {}
-
-    def _dct(self, states: jax.Array) -> jax.Array:
-        """DCT along the time axis via a cached matmul (no FFT, no copy)."""
-        length = states.shape[1]
-        m = self._dct_cache.get(length)
-        if m is None:
-            m = _dct_matrix(length)
-            self._dct_cache[length] = m
-        return states @ m.T
 
     def __call__(self, states: jax.Array) -> jax.Array:
+        from sjfpo_jax.dct import dct
+
         raw = self.state_encoder(states).mean(axis=1)
-        spec = self.key_proj(self.bin_encoding(self.bin_norm(self._dct(states)))).mean(axis=1)
+        # Time-axis DCT-II via the cached basis in dct.py (identical math to
+        # torch; a local matmul here contracted the wrong axes for obs != T).
+        spec = self.key_proj(self.bin_encoding(self.bin_norm(dct(states, dim=1)))).mean(axis=1)
         return self.fuse(jnp.concatenate([raw, spec], axis=-1))
 
 

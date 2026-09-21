@@ -89,10 +89,11 @@ def test_loss_matches_torch_forward():
     with torch.no_grad():
         tpol.eval()
         t_loss, t_info = tpol(tb)
-    j_loss, j_info = jpol.compute_loss(
+    prep = jpol.prepare_batch(
         pj, bj, jb, n_obs_steps=T, action_horizon=H,
         top_p_spectral_tokens=1.0, num_mc_samples=M,
     )
+    j_loss, j_info = jpol.compute_loss(pj, prep)
     assert float(t_loss) == float(t_loss)  # finite torch side
     np.testing.assert_allclose(float(j_loss), float(t_loss), rtol=1e-4, atol=1e-4)
     np.testing.assert_allclose(
@@ -111,10 +112,10 @@ def test_train_step_updates_live_freezes_snapshot():
     opt = jpol.build_optimizer(pj)
     before = jnp.concatenate([v.reshape(-1) for v in jax.tree.leaves(nnx.state(pj, nnx.Param))])
     old_before = jnp.concatenate([v.reshape(-1) for v in jax.tree.leaves(nnx.state(bj, nnx.Param))])
-    loss, info = jpol.train_step(
-        pj, bj, opt, jb,
-        {"n_obs_steps": T, "action_horizon": H, "num_mc_samples": M},
+    prep = jpol.prepare_batch(
+        pj, bj, jb, n_obs_steps=T, action_horizon=H, num_mc_samples=M,
     )
+    loss, info = jpol.train_step(pj, opt, prep)
     assert np.isfinite(float(loss))
     after = jnp.concatenate([v.reshape(-1) for v in jax.tree.leaves(nnx.state(pj, nnx.Param))])
     old_after = jnp.concatenate([v.reshape(-1) for v in jax.tree.leaves(nnx.state(bj, nnx.Param))])

@@ -66,6 +66,18 @@ def test_conditioner_matches():
     )
 
 
+def test_conditioner_nonsquare_time_vs_obs():
+    """Regression: time-axis DCT must work for T != obs (Hopper: 16 vs 11)."""
+    tm = torch_nets.StateConditioner(11, hidden_dim=H).eval()
+    jm = jax_nets.StateConditioner(11, hidden_dim=H, rngs=nnx.Rngs(0))
+    _load(tm, jm)
+    x = torch.randn(2, 6, 11)
+    np.testing.assert_allclose(
+        np.asarray(jm(jnp.asarray(x.numpy()))), tm(x).detach().numpy(),
+        rtol=1e-5, atol=1e-5,
+    )
+
+
 def test_flow_model_matches():
     kwargs = dict(hidden_dim=H, dit_depth=1, dit_heads=N_HEADS,
                   dit_mlp_ratio=2.0, dit_time_dim=H)
@@ -76,9 +88,8 @@ def test_flow_model_matches():
     t = torch.rand(2)
     c = torch.randn(2, H)
     out_t = tm(x, t, c).detach().numpy()
-    out_j, _ = jm(jnp.asarray(x.numpy()), jnp.asarray(t.numpy()),
-                   jnp.asarray(c.numpy()))
-    out_j = np.asarray(out_j)
+    out_j = np.asarray(jm(jnp.asarray(x.numpy()), jnp.asarray(t.numpy()),
+                          jnp.asarray(c.numpy())))
     np.testing.assert_allclose(out_j, out_t, rtol=1e-5, atol=1e-5)
     # Zero-init: untrained velocity is ~0.
     assert abs(out_j).max() < 1e-4
