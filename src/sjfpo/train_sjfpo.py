@@ -22,6 +22,7 @@ from sjfpo.checkpointing import load_policy_checkpoint, save_policy_checkpoint
 from sjfpo.configuration_sjfpo import SJFPOConfig
 from sjfpo.evaluator import Evaluator, check_divergence, mean_chunk_jerk, render_episode_frames
 from sjfpo.modeling_sjfpo import SJFPOPolicy
+from sjfpo.rollout_storage import mini_batch_indices
 from sjfpo.utils import (
     maybe_compile,
     resolve_device,
@@ -226,30 +227,31 @@ def train_sjfpo_run(
             # sweep shuffled minibatches with reshuffled partitions per epoch.
             policy.snapshot_behavior_policy()
             n_chunks = batch["advantages"].shape[0]
-            n_mb = max(1, min(cfg.num_minibatches, n_chunks))
-            for _ in range(cfg.num_epochs):
-                for mb_idx in torch.randperm(n_chunks).split(max(1, n_chunks // n_mb)):
-                    optimizer.zero_grad()
-                    mb_idx = mb_idx.to(batch["advantages"].device)
-                    loss, epoch_info = policy(sample_minibatch(batch, mb_idx))
-                    loss.backward()
-                    all_params = [
-                        p for group in optimizer.param_groups for p in group["params"]
-                    ]
-                    grad_norm = torch.nn.utils.clip_grad_norm_(
-                        all_params, cfg.grad_clip_norm
-                    )
-                    grad_norm_after = 0.0
-                    for p in all_params:
-                        if p.grad is not None:
-                            param_norm = p.grad.data.norm(2)
-                            grad_norm_after += param_norm.item() ** 2
-                    grad_norm_after = grad_norm_after ** 0.5
-                    grad_norms_before.append(float(grad_norm))
-                    grad_norms_after.append(float(grad_norm_after))
-                    optimizer.step()
-                    policy.step_count += 1
-                    infos.append(epoch_info)
+            # One GPU randperm per epoch, contiguous splits (no dropped tails).
+            for mb_idx in mini_batch_indices(
+                n_chunks, cfg.num_minibatches, batch["advantages"].device,
+                num_epochs=cfg.num_epochs,
+            ):
+                optimizer.zero_grad()
+                loss, epoch_info = policy(sample_minibatch(batch, mb_idx))
+                loss.backward()
+                all_params = [
+                    p for group in optimizer.param_groups for p in group["params"]
+                ]
+                grad_norm = torch.nn.utils.clip_grad_norm_(
+                    all_params, cfg.grad_clip_norm
+                )
+                grad_norm_after = 0.0
+                for p in all_params:
+                    if p.grad is not None:
+                        param_norm = p.grad.data.norm(2)
+                        grad_norm_after += param_norm.item() ** 2
+                grad_norm_after = grad_norm_after ** 0.5
+                grad_norms_before.append(float(grad_norm))
+                grad_norms_after.append(float(grad_norm_after))
+                optimizer.step()
+                policy.step_count += 1
+                infos.append(epoch_info)
             info = {k: sum(d[k] for d in infos) / len(infos) for k in infos[0]}
             grad_norm_mean_before = sum(grad_norms_before) / len(grad_norms_before) if grad_norms_before else 0.0
             grad_norm_mean_after = sum(grad_norms_after) / len(grad_norms_after) if grad_norms_after else 0.0
