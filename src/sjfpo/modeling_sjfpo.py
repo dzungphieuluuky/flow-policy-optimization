@@ -532,7 +532,10 @@ class SJFPOPolicy(PreTrainedPolicy):
                 f"value/return shape mismatch: v_pred={tuple(v_pred.shape)}, "
                 f"returns_d={tuple(returns_d.shape)}; critic output must be [B] (got {tuple(v_pred_raw.shape)})"
             )
-        se = (v_pred - returns_d).pow(2)
+        # Fix 4/12: replace raw MSE with Huber (smooth_l1) for bounded gradient.
+        se = torch.nn.functional.smooth_l1_loss(
+            v_pred, returns_d, reduction="none", beta=1.0
+        )
         value_error_max = float(se.max().detach())
         value_pred_max = float(v_pred.abs().max().detach())
         return_max = float(returns_d.abs().max().detach())
@@ -543,7 +546,10 @@ class SJFPOPolicy(PreTrainedPolicy):
             v_clipped = old_values + (v_pred - old_values).clamp(
                 -cfg.epsilon_clip, cfg.epsilon_clip
             )
-            value_per_chunk = torch.max(se, (v_clipped - returns_d).pow(2))
+            clipped_se = torch.nn.functional.smooth_l1_loss(
+                v_clipped, returns_d, reduction="none", beta=1.0
+            )
+            value_per_chunk = torch.max(se, clipped_se)
         else:
             value_per_chunk = se
         if reduction == "mean":
