@@ -57,8 +57,8 @@ def get_spec(env_name: str) -> dict:
 
 def obs(spec: dict, qpos: np.ndarray, qvel: np.ndarray) -> np.ndarray:
     """``qpos[1:] + clipped qvel`` (both envs drop rootx by default)."""
-    qpos = np.asarray(qpos, dtype=np.float64).ravel()
-    qvel = np.asarray(qvel, dtype=np.float64).ravel()
+    qpos = np.asarray(qpos, dtype=np.float32).ravel()
+    qvel = np.asarray(qvel, dtype=np.float32).ravel()
     if spec["obs_drop_first"]:
         qpos = qpos[1:]
     if spec["qvel_clip"] is not None:
@@ -70,8 +70,8 @@ def is_healthy(spec: dict, qpos: np.ndarray, qvel: np.ndarray) -> bool:
     """Post-step health (HalfCheetah: always True)."""
     if not spec["terminate_when_unhealthy"] and spec["healthy_reward"] == 0.0:
         return True
-    qpos = np.asarray(qpos, dtype=np.float64).ravel()
-    qvel = np.asarray(qvel, dtype=np.float64).ravel()
+    qpos = np.asarray(qpos, dtype=np.float32).ravel()
+    qvel = np.asarray(qvel, dtype=np.float32).ravel()
     z, angle = qpos[1], qpos[2]
     state = np.concatenate([qpos, qvel])[2:]
     s_lo, s_hi = spec["healthy_state_range"]
@@ -112,11 +112,11 @@ def reset_state(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Initial (qpos, qvel) with per-env noise (mirrors reset_model)."""
     s = spec["reset_noise_scale"]
-    qpos = np.asarray(init_qpos, dtype=np.float64) + rng.uniform(-s, s, len(init_qpos))
+    qpos = np.asarray(init_qpos, dtype=np.float32) + rng.uniform(-s, s, len(init_qpos))
     if spec["qvel_dist"] == "normal":
-        qvel = np.asarray(init_qvel, dtype=np.float64) + s * rng.standard_normal(len(init_qvel))
+        qvel = np.asarray(init_qvel, dtype=np.float32) + s * rng.standard_normal(len(init_qvel))
     elif spec["qvel_dist"] == "uniform":
-        qvel = np.asarray(init_qvel, dtype=np.float64) + rng.uniform(-s, s, len(init_qvel))
+        qvel = np.asarray(init_qvel, dtype=np.float32) + rng.uniform(-s, s, len(init_qvel))
     else:
         raise ValueError(f"qvel_dist={spec['qvel_dist']!r} unknown")
     return qpos, qvel

@@ -2,7 +2,8 @@
 
 Backward recursion runs as ``jax.lax.scan`` over the reversed chunk stream
 (jit-friendly); intra-chunk discounted rewards use padded segment sums so
-shapes stay static. Population std (``jnp.std``, ddof=0) matches numpy.
+shapes stay static. fp32 throughout (matches training precision); population
+std (``jnp.std``, ddof=0) matches numpy up to fp32 rounding.
 """
 
 from __future__ import annotations
@@ -26,9 +27,9 @@ def compute_advantages(
     clamp: float | None = 100.0,
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """Semi-MDP chunk GAE -> (advantages [N], returns [N]), fp64 compute."""
-    rewards_1d = rewards_1d.reshape(-1).astype(jnp.float64)
-    values = values.reshape(-1).astype(jnp.float64)
-    next_values = next_values.reshape(-1).astype(jnp.float64)
+    rewards_1d = rewards_1d.reshape(-1).astype(jnp.float32)
+    values = values.reshape(-1).astype(jnp.float32)
+    next_values = next_values.reshape(-1).astype(jnp.float32)
     lengths = lengths.reshape(-1).astype(jnp.int32)
     terminated = terminated.reshape(-1).astype(bool)
     # Static shape check only (safe under jit); data-dependent validation
@@ -47,7 +48,7 @@ def compute_advantages(
     )
     step_ids = jnp.arange(rewards_1d.shape[0])
     chunk_ids = jnp.searchsorted(offsets[1:], step_ids, side="right").astype(jnp.int32)
-    pos = (step_ids - offsets[chunk_ids]).astype(jnp.float64)
+    pos = (step_ids - offsets[chunk_ids]).astype(jnp.float32)
     r_chunk = jax.ops.segment_sum(
         rewards_1d * jnp.power(gamma, pos),
         chunk_ids,
@@ -57,7 +58,7 @@ def compute_advantages(
     # ------- backward GAE recursion over chunks (scan, reversed) -------
     def body(next_adv, k_inputs):
         r_k, v_k, nv_k, len_k, term_k, trunc_k = k_inputs
-        len_f = len_k.astype(jnp.float64)
+        len_f = len_k.astype(jnp.float32)
         delta = jnp.where(
             term_k,
             r_k - v_k,
@@ -77,7 +78,7 @@ def compute_advantages(
         terminated[::-1],
         truncated_t[::-1],
     )
-    _, advantages = jax.lax.scan(body, jnp.float64(0.0), stacked)
+    _, advantages = jax.lax.scan(body, jnp.float32(0.0), stacked)
     advantages = advantages[::-1]
     returns = advantages + values
     if normalize:

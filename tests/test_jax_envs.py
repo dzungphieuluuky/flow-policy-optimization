@@ -40,7 +40,7 @@ def test_semantics_match_live_gym():
             d = env.unwrapped.data
             np.testing.assert_allclose(
                 obs(spec, d.qpos, d.qvel), np.asarray(obs0, dtype=np.float64),
-                rtol=1e-9, atol=1e-9,
+                rtol=1e-5, atol=1e-5,
             )
             rng = np.random.default_rng(1)
             action = rng.uniform(-1, 1, env.action_space.shape).astype(np.float64)
@@ -51,11 +51,12 @@ def test_semantics_match_live_gym():
             healthy = is_healthy(spec, d2.qpos, d2.qvel)
             assert term == terminated(spec, healthy)
             assert r == pytest.approx(
-                reward(spec, x_before, float(d2.qpos[0]), dt, action, healthy)
+                reward(spec, x_before, float(d2.qpos[0]), dt, action, healthy),
+                abs=1e-5,
             )
             np.testing.assert_allclose(
                 obs(spec, d2.qpos, d2.qvel), np.asarray(o, dtype=np.float64),
-                rtol=1e-9, atol=1e-9,
+                rtol=1e-5, atol=1e-5,
             )
             # Unhealthy state terminates hopper, never the cheetah.
             bad = np.asarray(d2.qpos); bad[1] = 0.1

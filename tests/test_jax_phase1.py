@@ -20,9 +20,6 @@ from sjfpo_jax import dct as jax_dct  # noqa: E402
 from sjfpo_jax import fpo as jax_fpo  # noqa: E402
 from sjfpo_jax import gae as jax_gae  # noqa: E402
 
-jax.config.update("jax_enable_x64", True)
-
-
 def test_dct_matches_torch():
     x = torch.randn(4, 16, 6, dtype=torch.float32)
     xj = jnp.asarray(x.numpy())
@@ -62,8 +59,8 @@ def test_gae_matches_numpy_oracle():
         gamma=0.999, lam=0.995, normalize=True,
         truncated=jnp.asarray(trunc),
     )
-    np.testing.assert_allclose(np.asarray(a2), a1, rtol=1e-10, atol=1e-10)
-    np.testing.assert_allclose(np.asarray(r2), r1, rtol=1e-10, atol=1e-10)
+    np.testing.assert_allclose(np.asarray(a2), a1, rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(np.asarray(r2), r1, rtol=1e-5, atol=1e-5)
 
 
 def test_gae_jitted():
