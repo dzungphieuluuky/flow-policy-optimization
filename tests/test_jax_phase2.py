@@ -51,8 +51,8 @@ def test_running_mean_std_matches():
         np.asarray(jm(jnp.asarray(x.numpy()))), tm(x).detach().numpy(),
         rtol=1e-5, atol=1e-5,
     )
-    np.testing.assert_allclose(np.asarray(jm.mean.value), tm.mean.numpy(), atol=1e-6)
-    np.testing.assert_allclose(np.asarray(jm.var.value), tm.var.numpy(), atol=1e-6)
+    np.testing.assert_allclose(np.asarray(jm.mean[...]), tm.mean.numpy(), atol=1e-6)
+    np.testing.assert_allclose(np.asarray(jm.var[...]), tm.var.numpy(), atol=1e-6)
 
 
 def test_conditioner_matches():
@@ -76,8 +76,9 @@ def test_flow_model_matches():
     t = torch.rand(2)
     c = torch.randn(2, H)
     out_t = tm(x, t, c).detach().numpy()
-    out_j = np.asarray(jm(jnp.asarray(x.numpy()), jnp.asarray(t.numpy()),
-                          jnp.asarray(c.numpy())))
+    out_j, _ = jm(jnp.asarray(x.numpy()), jnp.asarray(t.numpy()),
+                   jnp.asarray(c.numpy()))
+    out_j = np.asarray(out_j)
     np.testing.assert_allclose(out_j, out_t, rtol=1e-5, atol=1e-5)
     # Zero-init: untrained velocity is ~0.
     assert abs(out_j).max() < 1e-4
@@ -99,5 +100,5 @@ def test_zero_init_preserved():
         ACT, hidden_dim=H, dit_depth=1, dit_heads=N_HEADS,
         dit_mlp_ratio=2.0, dit_time_dim=H, rngs=nnx.Rngs(0),
     )
-    assert float(jnp.abs(jm.out.kernel.value).max()) == 0.0
-    assert float(jnp.abs(jm.adaLN_out.kernel.value).max()) == 0.0
+    assert float(jnp.abs(jm.out.kernel[...]).max()) == 0.0
+    assert float(jnp.abs(jm.adaLN_out.kernel[...]).max()) == 0.0

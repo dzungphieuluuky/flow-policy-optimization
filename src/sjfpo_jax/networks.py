@@ -103,7 +103,7 @@ class RMSNorm(nnx.Module):
 
     def __call__(self, x: jax.Array) -> jax.Array:
         var = jnp.mean(jnp.square(x.astype(jnp.float32)), axis=-1, keepdims=True)
-        return (x * jax.lax.rsqrt(var + self.eps)).astype(x.dtype) * self.weight.value
+        return (x * jax.lax.rsqrt(var + self.eps)).astype(x.dtype) * self.weight[...]
 
 
 class SelfAttention(nnx.Module):
@@ -184,21 +184,21 @@ class RunningMeanStd(nnx.Module):
             return
         b_mean = batch.mean(axis=0)
         b_var = batch.var(axis=0)
-        delta = b_mean - self.mean.value
-        total = self.count.value + b
-        self.mean.value = self.mean.value + delta * b / total
-        self.var.value = (
-            self.count.value * self.var.value
+        delta = b_mean - self.mean[...]
+        total = self.count[...] + b
+        self.mean[...] = self.mean[...] + delta * b / total
+        self.var[...] = (
+            self.count[...] * self.var[...]
             + b * b_var
-            + jnp.square(delta) * self.count.value * b / total
+            + jnp.square(delta) * self.count[...] * b / total
         ) / total
-        self.count.value = total
+        self.count[...] = total
 
     def __call__(self, x: jax.Array) -> jax.Array:
-        if float(self.count.value) == 0.0:
-            return x
-        norm = (x - self.mean.value) * jax.lax.rsqrt(self.var.value + self.eps)
-        return jnp.clip(norm, -self.clip, self.clip)
+        # Branchless (jit-safe): count == 0 only before the first update.
+        norm = (x - self.mean[...]) * jax.lax.rsqrt(self.var[...] + self.eps)
+        norm = jnp.clip(norm, -self.clip, self.clip)
+        return jnp.where(self.count[...] == 0.0, x, norm)
 
 
 def modulate(x: jax.Array, shift: jax.Array, scale: jax.Array) -> jax.Array:
@@ -216,23 +216,22 @@ class DiTBlock(nnx.Module):
         mlp_hidden = int(hidden_dim * mlp_ratio)
         self.mlp = SwiGLU(hidden_dim, mlp_hidden, hidden_dim, rngs=rngs)
         self.adaLN = CondMLP(hidden_dim, hidden_dim, 6 * hidden_dim, rngs=rngs)
-        self.adaLN.fc2.kernel.value = jnp.zeros_like(self.adaLN.fc2.kernel.value)
-        self.adaLN.fc2.bias.value = jnp.zeros_like(self.adaLN.fc2.bias.value)
-        self.last_gate_norms = nnx.data(None)
+        self.adaLN.fc2.kernel[...] = jnp.zeros_like(self.adaLN.fc2.kernel[...])
+        self.adaLN.fc2.bias[...] = jnp.zeros_like(self.adaLN.fc2.bias[...])
 
-    def __call__(self, x: jax.Array, c: jax.Array) -> jax.Array:
+    def __call__(self, x: jax.Array, c: jax.Array) -> tuple[jax.Array, dict]:
         parts = jnp.split(self.adaLN(c)[:, None, :], 6, axis=-1)
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = parts
         h = modulate(self.norm1(x), shift_msa, scale_msa)
         x = x + gate_msa * self.attn(h)
         out = x + gate_mlp * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
-        self.last_gate_norms = nnx.data({
+        stats = {
             "gate_msa": jnp.sqrt(jnp.mean(jnp.square(gate_msa))),
             "gate_mlp": jnp.sqrt(jnp.mean(jnp.square(gate_mlp))),
             "scale_msa": jnp.sqrt(jnp.mean(jnp.square(1.0 + scale_msa))),
             "scale_mlp": jnp.sqrt(jnp.mean(jnp.square(1.0 + scale_mlp))),
-        })
-        return out
+        }
+        return out, stats
 
 
 class StateConditioner(nnx.Module):
@@ -288,32 +287,35 @@ class SJFPOFlowModel(nnx.Module):
         )
         self.norm_out = RMSNorm(hidden_dim, rngs=rngs)
         self.adaLN_out = nnx.Linear(hidden_dim, 2 * hidden_dim, rngs=rngs)
-        self.adaLN_out.kernel.value = jnp.zeros_like(self.adaLN_out.kernel.value)
-        self.adaLN_out.bias.value = jnp.zeros_like(self.adaLN_out.bias.value)
+        self.adaLN_out.kernel[...] = jnp.zeros_like(self.adaLN_out.kernel[...])
+        self.adaLN_out.bias[...] = jnp.zeros_like(self.adaLN_out.bias[...])
         self.out = nnx.Linear(hidden_dim, action_dim, rngs=rngs)
-        self.out.kernel.value = jnp.zeros_like(self.out.kernel.value)
-        self.out.bias.value = jnp.zeros_like(self.out.bias.value)
-        self.last_cond_stats = nnx.data(None)
+        self.out.kernel[...] = jnp.zeros_like(self.out.kernel[...])
+        self.out.bias[...] = jnp.zeros_like(self.out.bias[...])
 
-    def __call__(self, x_t: jax.Array, t: jax.Array, condition: jax.Array) -> jax.Array:
+    def __call__(
+        self, x_t: jax.Array, t: jax.Array, condition: jax.Array
+    ) -> tuple[jax.Array, dict]:
         temb = self.timestep_embedder.encode_times(t).astype(x_t.dtype)
         if temb.ndim == 1:
             temb = jnp.broadcast_to(temb, (x_t.shape[0], self.time_dim))
         c = self.time_mlp(temb) + condition.astype(x_t.dtype)
         h = self.bin_encoding(self.in_proj(x_t))
+        gate_stats: dict[str, list] = {
+            k: [] for k in ("gate_msa", "gate_mlp", "scale_msa", "scale_mlp")
+        }
         for block in self.blocks:
-            h = block(h, c)
-        self.last_cond_stats = nnx.data({
+            h, b_stats = block(h, c)
+            for k in gate_stats:
+                gate_stats[k].append(b_stats[k])
+        stats = {
             "temb": jnp.sqrt(jnp.mean(jnp.square(temb))),
             "fused": jnp.sqrt(jnp.mean(jnp.square(condition))),
             "c": jnp.sqrt(jnp.mean(jnp.square(c))),
-            **{
-                k: jnp.mean(jnp.stack([b.last_gate_norms[k] for b in self.blocks]))
-                for k in ("gate_msa", "gate_mlp", "scale_msa", "scale_mlp")
-            },
-        })
+            **{k: jnp.mean(jnp.stack(v)) for k, v in gate_stats.items()},
+        }
         shift_out, scale_out = jnp.split(self.adaLN_out(c)[:, None, :], 2, axis=-1)
-        return self.out(modulate(self.norm_out(h), shift_out, scale_out))
+        return self.out(modulate(self.norm_out(h), shift_out, scale_out)), stats
 
 
 class Critic(nnx.Module):
@@ -348,13 +350,13 @@ def load_torch_weights(nnx_model: nnx.Module, torch_state: dict) -> None:
         if dotted.endswith(".kernel"):
             w = flat_torch.get(dotted[: -len(".kernel")] + ".weight")
             if w is not None:
-                leaf.value = jnp.asarray(w.T if w.ndim == 2 else w)
+                leaf[...] = jnp.asarray(w.T if w.ndim == 2 else w)
         elif dotted.endswith(".bias"):
             b = flat_torch.get(dotted)
             if b is not None:
-                leaf.value = jnp.asarray(b)
+                leaf[...] = jnp.asarray(b)
         else:  # RMSNorm weight / plain vectors share names.
             w = flat_torch.get(dotted)
             if w is not None:
-                leaf.value = jnp.asarray(w)
+                leaf[...] = jnp.asarray(w)
     nnx.update(nnx_model, params)
