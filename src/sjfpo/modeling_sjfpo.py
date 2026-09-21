@@ -489,7 +489,19 @@ class SJFPOPolicy(PreTrainedPolicy):
         v_old_r = v_old.reshape(n, num_mc, *flow_shape)
         v_new_r = v_new.reshape(n, num_mc, *flow_shape)
         # ------- ASPO trust-region policy loss (paper Eq.12-13, OFF clamps) ----
-        adv_mc = advantages.unsqueeze(1)
+        # Fix 5/12: validate advantages (prevent NaN/Inf/unbounded gradients).
+        advantages_t = advantages.detach().float()
+        if not torch.isfinite(advantages_t).all():
+            raise SJFPOAborted(
+                f"advantages contain NaN/Inf: max_abs={advantages_t.abs().max().item()}, "
+                f"mean={advantages_t.mean().item()}, std={advantages_t.std(unbiased=False).item()}"
+            )
+        if advantages_t.abs().max() > 100.0:
+            print(
+                f"WARNING: advantages max_abs very large: {advantages_t.abs().max().item():.3f} "
+                f"(mean={advantages_t.mean().item():.3f}, std={advantages_t.std(unbiased=False).item():.3f})"
+            )
+        adv_mc = advantages_t.unsqueeze(1)
         rho_bin = None
         eps_bin = None
         if cfg.use_per_bin_clip:
