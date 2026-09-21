@@ -9,34 +9,52 @@ a GPU backend, construction raises with install hints.
 
 from __future__ import annotations
 
+import os
+import warnings
+
 import jax
 import jax.numpy as jnp
 
-from sjfpo_jax import fpo as fpo_jax
 from sjfpo_jax.envs import get_spec
 from sjfpo_jax.gae import compute_advantages, validate_stream
 
-__all__ = ["rollout_available", "MjxVec", "generate_batch"]
+__all__ = ["rollout_available", "allow_cpu_rollout", "MjxVec", "generate_batch"]
+
+
+def allow_cpu_rollout() -> bool:
+    """Explicit CPU prototyping opt-in: ``SJFPO_JAX_CPU=1`` (slow)."""
+    return os.environ.get("SJFPO_JAX_CPU") == "1"
 
 
 def rollout_available() -> bool:
-    """True when MJX imports and the JAX backend is a GPU (lazy, never raises)."""
+    """True when MJX imports and the backend is usable (lazy, never raises).
+
+    GPU always; CPU only with ``SJFPO_JAX_CPU=1`` (prototyping, slow).
+    """
     try:
         from mujoco import mjx  # noqa: F401
     except Exception:
         return False
     try:
-        return jax.default_backend() == "gpu"
+        backend = jax.default_backend()
     except Exception:
         return False
+    return backend == "gpu" or (backend == "cpu" and allow_cpu_rollout())
 
 
 def _require_rollout():
-    if not rollout_available():
+    if rollout_available():
+        if jax.default_backend() == "cpu":
+            warnings.warn("SJFPO_JAX_CPU=1: MJX on CPU is for prototyping only")
+        return
+    if allow_cpu_rollout():
         raise RuntimeError(
-            "JAX MJX rollout needs a CUDA box with mujoco.mjx + JAX-GPU "
-            '(pip install -U "mujoco>=3.3" "jax[cuda12]")'
+            "SJFPO_JAX_CPU=1 needs mujoco.mjx installed (pip install -U mujoco)"
         )
+    raise RuntimeError(
+        "JAX MJX rollout needs a CUDA box with mujoco.mjx + JAX-GPU "
+        '(pip install -U "mujoco>=3.3" "jax[cuda12]")'
+    )
 
 
 class MjxVec:
