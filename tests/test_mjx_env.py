@@ -88,6 +88,20 @@ def test_explicit_opt_in_fails_loud_on_cpu_box():
         )
 
 
+def test_init_state_fallback_matches_gymnasium():
+    """Regression: MjModel has no qvel0; init = qpos0 / zeros(nv)."""
+    import mujoco
+    import gymnasium as gym
+    from pathlib import Path
+
+    xml = Path(gym.__file__).parent / "envs" / "mujoco" / "assets" / "half_cheetah.xml"
+    m = mujoco.MjModel.from_xml_path(str(xml))
+    assert m.nkey == 0  # else-branch: the one that crashed
+    assert not hasattr(m, "qvel0")
+    assert np.asarray(m.qpos0).shape == (m.nq,)
+    assert np.zeros(m.nv).shape == (m.nv,)
+
+
 def test_module_imports_without_jax_or_mjx():
     """Heavy deps are lazy: importing mjx_env must never require them."""
     import importlib

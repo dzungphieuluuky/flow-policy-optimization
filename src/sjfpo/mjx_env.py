@@ -129,12 +129,14 @@ class MjxHalfCheetahVec:
         self.nq, self.nv, self.nu = mj_model.nq, mj_model.nv, mj_model.nu
         self.obs_dim = self.nq - 1 + self.nv
         self.dt = float(mj_model.opt.timestep * _FRAME_SKIP)
+        # Mirror gymnasium MujocoEnv: init from data state at load
+        # (= qpos0 / zeros); MjModel has no qvel0 attribute.
         if mj_model.nkey > 0:
             init_qpos = np.asarray(mj_model.key_qpos[0])
             init_qvel = np.asarray(mj_model.key_qvel[0])
         else:
             init_qpos = np.asarray(mj_model.qpos0)
-            init_qvel = np.asarray(mj_model.qvel0)
+            init_qvel = np.zeros(mj_model.nv)
         self._init_qpos = jnp.asarray(init_qpos, dtype=jnp.float32)
         self._init_qvel = jnp.asarray(init_qvel, dtype=jnp.float32)
 
