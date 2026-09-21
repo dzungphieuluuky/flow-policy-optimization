@@ -89,15 +89,23 @@ class SJFPOPolicy(PreTrainedPolicy):
         # Inference-only (requires_grad off): nothing ever backprops through
         # it, and DDP treats grad-less requires_grad params as an error.
         self.old_actor = copy.deepcopy(self.actor)
-        self.old_actor.requires_grad_(False)
+        self.old_actor.requires_grad_(False).eval()
         self.old_conditioner = copy.deepcopy(self.conditioner)
-        self.old_conditioner.requires_grad_(False)
+        self.old_conditioner.requires_grad_(False).eval()
         self._frame_buffer: deque[torch.Tensor] = deque(maxlen=config.n_obs_steps)
         self._action_buffer: deque[torch.Tensor] = deque()
         self.step_count = 0
         # LeRobot-fashion pre/post pair sharing the live normalizer + bounds.
         self.preprocessor, self.postprocessor = make_sjfpo_pre_post_processors(self)
         del dataset_stats  # stats stay online (RunningMeanStd), never frozen
+
+    def train(self, mode: bool = True):
+        super().train(mode)
+        # Fix 9/12: keep frozen behavior snapshot in eval mode regardless of
+        # self.train() calls during PPO optimization rounds.
+        self.old_actor.eval()
+        self.old_conditioner.eval()
+        return self
 
     @staticmethod
     def compute_target_velocity(a: torch.Tensor, eps: torch.Tensor) -> torch.Tensor:
