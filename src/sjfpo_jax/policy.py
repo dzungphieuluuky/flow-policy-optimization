@@ -46,13 +46,17 @@ class SJFPOJaxPolicy(nnx.Module):
         n_obs_steps: int = 16,
         *,
         rngs: nnx.Rngs,
+        param_dtype: jnp.dtype | None = None,
     ):
         self.actor = SJFPOFlowModel(
             action_dim, hidden_dim, dit_depth, dit_heads,
             dit_mlp_ratio, dit_time_dim, timestep_scale, rngs=rngs,
+            param_dtype=param_dtype,
         )
-        self.conditioner = StateConditioner(obs_dim, hidden_dim, rngs=rngs)
-        self.critic = Critic(obs_dim, hidden_dim, n_obs_steps, rngs=rngs)
+        self.conditioner = StateConditioner(obs_dim, hidden_dim, rngs=rngs,
+                                            param_dtype=param_dtype)
+        self.critic = Critic(obs_dim, hidden_dim, n_obs_steps, rngs=rngs,
+                             param_dtype=param_dtype)
         self.normalizer = RunningMeanStd(obs_dim)
         self.action_low = nnx.Variable(jnp.full((action_dim,), -1.0))
         self.action_high = nnx.Variable(jnp.full((action_dim,), 1.0))

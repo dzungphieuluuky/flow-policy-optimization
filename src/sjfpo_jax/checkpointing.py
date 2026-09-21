@@ -167,14 +167,15 @@ def load_safetensors(policy, path: str | Path) -> list[str]:
             if names[-1] == "kernel" and transpose_2d and arr.ndim == 2:
                 arr = arr.T
             # Scalar promotion: the flax binding stores 0-d as 1-d.
-            want = np.asarray(leaf[...]).shape
+            leaf_arr = np.asarray(leaf[...])
+            want, want_dtype = leaf_arr.shape, leaf_arr.dtype
             if arr.shape != want:
                 if int(np.size(arr)) != int(np.size(np.zeros(want))):
                     raise ValueError(
                         f"shape mismatch for {key!r}: file {arr.shape} vs model {want}"
                     )
                 arr = arr.reshape(want)
-            leaf[...] = jnp.asarray(arr)
+            leaf[...] = jnp.asarray(arr, dtype=want_dtype)  # keep leaf dtype
             loaded.append(key)
 
     _take(params, True)
