@@ -178,12 +178,16 @@ class MjxHalfCheetahVec:
         return dlpack.from_dlpack(x)
 
     def _jax(self, t: torch.Tensor):
-        """torch-CUDA -> JAX-GPU, zero-copy via DLPack."""
+        """torch-CUDA -> JAX-GPU, zero-copy via DLPack.
+
+        ``jax.dlpack.from_dlpack`` takes the tensor itself (it exposes
+        ``__dlpack__``); passing a ``to_dlpack()`` capsule fails. Mirror
+        image of the earlier ``to_dlpack`` export bug.
+        """
         import jax
-        import torch.utils.dlpack as dlpack
 
         t = t.to(device="cuda", dtype=torch.float32).contiguous()
-        return jax.dlpack.from_dlpack(dlpack.to_dlpack(t))
+        return jax.dlpack.from_dlpack(t)
 
     def _sample_state(self, rng, n: int):
         import jax

@@ -102,6 +102,23 @@ def test_init_state_fallback_matches_gymnasium():
     assert np.zeros(m.nv).shape == (m.nv,)
 
 
+def test_dlpack_import_takes_tensor_not_capsule():
+    """Regression: from_dlpack(tensor) works; from_dlpack(capsule) fails.
+
+    The Kaggle bug passed a ``to_dlpack()`` capsule. CPU torch+JAX here
+    exercise the same protocol without MJX or a GPU.
+    """
+    import jax
+    import torch
+    import torch.utils.dlpack as torch_dlpack
+
+    t = torch.randn(2, 3)
+    back = jax.dlpack.from_dlpack(t)
+    np.testing.assert_allclose(np.asarray(back), t.numpy(), rtol=1e-6, atol=1e-6)
+    with pytest.raises(Exception):
+        jax.dlpack.from_dlpack(torch_dlpack.to_dlpack(t))
+
+
 def test_module_imports_without_jax_or_mjx():
     """Heavy deps are lazy: importing mjx_env must never require them."""
     import importlib
