@@ -617,7 +617,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             mean_log_ratio = float((l_old - l_new).mean())
             rho_mean = float(rho.detach().mean())
             rho_std = float(rho.detach().std(unbiased=False))
-            v_star_rms = float(v_star.detach().pow(2).mean().sqrt())
+            v_star_rms = float(v_star_f.detach().pow(2).mean().sqrt())
             # PPO standard critic health: 1 - Var(G - V) / Var(G).
             returns_var = returns_d.detach().var(unbiased=False).clamp_min(1e-8)
             explained_var = float(
@@ -628,8 +628,8 @@ class SJFPOPolicy(PreTrainedPolicy):
             # ratio math, unreduced over bins. Reuses the loss path's rho_bin
             # when present so logged stats match the applied trust region.
             if rho_bin is None:
-                l_old_bin = compute_cfm_loss(v_old_r, v_star, reduce_mode="bin")
-                l_new_bin = compute_cfm_loss(v_new_r, v_star, reduce_mode="bin")
+                l_old_bin = compute_cfm_loss(v_old_r_f, v_star_f, reduce_mode="bin")
+                l_new_bin = compute_cfm_loss(v_new_r_f, v_star_f, reduce_mode="bin")
                 rho_bin = compute_policy_ratio(l_old_bin, l_new_bin)
             rho_bin_mean = rho_bin.mean(dim=(0, 1))  # [K] over batch, mc
             n_bins = rho_bin_mean.numel()
