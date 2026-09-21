@@ -295,6 +295,8 @@ def train_sjfpo_run(
                     )
                     try:
                         pass  # Video rendering disabled to avoid GLFW/libc++ crash in headless
+                    except Exception:
+                        pass
                 consecutive_below, diverged_now = check_divergence(
                     mean_return, r_rand, consecutive_below
                 )
