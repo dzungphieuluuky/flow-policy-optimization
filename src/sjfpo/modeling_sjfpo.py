@@ -485,10 +485,13 @@ class SJFPOPolicy(PreTrainedPolicy):
             v_new = self.actor(x_t_flat, tau_bn, cond_flat).float()
         cond_stats = dict(self.actor.last_cond_stats)
         # ------- CFM losses under target velocities -------
-        v_star = self.compute_target_velocity(spectral_action_tokens, eps)
-        v_old_r = v_old.reshape(n, num_mc, *flow_shape)
-        v_new_r = v_new.reshape(n, num_mc, *flow_shape)
-        # ------- ASPO trust-region policy loss (paper Eq.12-13, OFF clamps) ----
+        # Fix 7/12: keep CFM ratio computation in FP32 (disable autocast here)
+        # to prevent mixed-precision overflow inside exp() / squared errors.
+        with torch.autocast(device_type=states.device.type, enabled=False):
+            v_star_f = self.compute_target_velocity(spectral_action_tokens, eps).float()
+            v_old_r_f = v_old.reshape(n, num_mc, *flow_shape).float()
+            v_new_r_f = v_new.reshape(n, num_mc, *flow_shape).float()
+            # ------- ASPO trust-region policy loss (paper Eq.12-13, OFF clamps) ----
         # Fix 5/12: validate advantages (prevent NaN/Inf/unbounded gradients).
         advantages_t = advantages.detach().float()
         if not torch.isfinite(advantages_t).all():
@@ -509,8 +512,8 @@ class SJFPOPolicy(PreTrainedPolicy):
             # two-group epsilon (tight on low-frequency intent bins, loose on
             # high-frequency detail). Same elementwise ratio/ASPO math, no
             # fpo_core change; OFF-faithful scalar path when disabled.
-            l_old_bin = compute_cfm_loss(v_old_r, v_star, reduce_mode="bin")
-            l_new_bin = compute_cfm_loss(v_new_r, v_star, reduce_mode="bin")
+            l_old_bin = compute_cfm_loss(v_old_r_f, v_star_f, reduce_mode="bin")
+            l_new_bin = compute_cfm_loss(v_new_r_f, v_star_f, reduce_mode="bin")
             rho_bin = compute_policy_ratio(l_old_bin, l_new_bin)
             n_bins = rho_bin.shape[-1]
             split = max(1, n_bins // 2)
@@ -520,8 +523,8 @@ class SJFPOPolicy(PreTrainedPolicy):
             eps_bin[:split] = cfg.epsilon_clip_lowfreq
             psi = compute_aspo_surrogate(rho_bin, adv_mc.unsqueeze(-1), eps_bin)
             policy_per_chunk = -psi.mean(dim=(1, 2))
-        l_old = compute_cfm_loss(v_old_r, v_star, reduce_mode="sample")
-        l_new = compute_cfm_loss(v_new_r, v_star, reduce_mode="sample")
+        l_old = compute_cfm_loss(v_old_r_f, v_star_f, reduce_mode="sample")
+        l_new = compute_cfm_loss(v_new_r_f, v_star_f, reduce_mode="sample")
         rho = compute_policy_ratio(l_old, l_new)
         # Log ratio overflow diagnostics (suggestion #2).
         with torch.inference_mode():
