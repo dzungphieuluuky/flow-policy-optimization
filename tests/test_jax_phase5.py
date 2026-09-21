@@ -72,8 +72,15 @@ def test_profiler_trace_gated_by_env(tmp_path, monkeypatch):
 
 
 def test_spec_dims_match_registry():
-    assert spec_dims("HalfCheetah-v5") == (17, 6)
-    assert spec_dims("Hopper-v5") == (11, 3)
+    import yaml
+
+    from sjfpo_jax.envs import ENV_SPECS
+
+    with open(Path(__file__).resolve().parents[1] / "configs" / "envs.yaml") as fh:
+        registry = yaml.safe_load(fh)
+    for env_name in ENV_SPECS:
+        entry = registry[env_name]
+        assert spec_dims(env_name) == (entry["obs_dim"], entry["action_dim"]), env_name
 
 
 def test_none_num_envs_means_jax_default(tmp_path):

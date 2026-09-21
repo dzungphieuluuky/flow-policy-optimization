@@ -65,13 +65,14 @@ def compute_advantages(
 
     # --- Intra-chunk discounted rewards (static-shape segment sums) ---
     # chunk_ids[j] = index of the chunk that step j belongs to.
+    # searchsorted (not repeat): repeat needs static repeat counts, which
+    # traced lengths cannot provide under jit.
     offsets = jnp.concatenate(
         [jnp.zeros((1,), dtype=jnp.int32), jnp.cumsum(lengths)]
     )
-    chunk_ids = jnp.repeat(jnp.arange(n, dtype=jnp.int32), lengths)
-    pos = (
-        jnp.arange(rewards_1d.shape[0], dtype=jnp.int32) - offsets[chunk_ids]
-    ).astype(jnp.float32)
+    step_ids = jnp.arange(rewards_1d.shape[0], dtype=jnp.int32)
+    chunk_ids = jnp.searchsorted(offsets[1:], step_ids, side="right").astype(jnp.int32)
+    pos = (step_ids - offsets[chunk_ids]).astype(jnp.float32)
     # γ^{pos} = exp(pos · log γ); pos is a small non-negative integer.
     r_chunk = jax.ops.segment_sum(
         rewards_1d * jnp.exp(pos * log_gamma),

@@ -71,11 +71,29 @@ def test_resolve_env_name_single_and_vec():
 
 
 def test_unsupported_env_rejected_without_gpu():
-    with pytest.raises(ValueError, match="supports"):
+    # MJX-blocked envs fail loudly with the reason, unknown ids with KeyError.
+    with pytest.raises(RuntimeError, match="no MJX path"):
         mjx_collect_chunks(
-            object(), "Hopper-v5", 16, -1.0, 1.0,
+            object(), "Humanoid-v5", 16, -1.0, 1.0,
             n_obs_steps=16, n_action_steps=16, num_envs=1, seed=0,
         )
+    with pytest.raises(RuntimeError, match="classic control"):
+        mjx_collect_chunks(
+            object(), "CartPole-v1", 16, -1.0, 1.0,
+            n_obs_steps=16, n_action_steps=16, num_envs=1, seed=0,
+        )
+    with pytest.raises(KeyError):
+        mjx_collect_chunks(
+            object(), "Nope-v5", 16, -1.0, 1.0,
+            n_obs_steps=16, n_action_steps=16, num_envs=1, seed=0,
+        )
+    # Newly supported: Hopper passes the gate (fails later on CUDA here).
+    if not mjx_available():
+        with pytest.raises(RuntimeError, match="SJFPO_MJX=1 needs"):
+            mjx_collect_chunks(
+                object(), "Hopper-v5", 16, -1.0, 1.0,
+                n_obs_steps=16, n_action_steps=16, num_envs=1, seed=0,
+            )
 
 
 def test_explicit_opt_in_fails_loud_on_cpu_box():
