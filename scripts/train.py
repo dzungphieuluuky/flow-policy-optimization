@@ -126,6 +126,14 @@ def select_method_cfg(args: TrainConfig, yaml_dict: dict):
     return apply_flat_yaml(method_cfg, yaml_dict)
 
 
+def default_intervals(total: int, args_val: int | None, yaml_dict: dict,
+                      key: str, cap: int) -> int:
+    """CLI > YAML > capped default (the cap keeps smoke runs sane)."""
+    if args_val:
+        return args_val
+    return int(yaml_dict.get(key, min(cap, total)))
+
+
 def resumed_cfg_overrides(cfg) -> list[str]:
     """Scalar fields differing from dataclass defaults.
 
@@ -215,6 +223,7 @@ def run_single(
 
         if method == "sjfpo_jax":
             # JAX port (parallel tree): hyperparams ride the sjfpo config.
+            # GPU default 128 envs; an explicit --sjfpo.num_envs always wins.
             from sjfpo_jax.training import train_jax_run
 
             return train_jax_run(
@@ -225,7 +234,8 @@ def run_single(
                 total_steps=total_steps,
                 eval_steps=eval_steps,
                 save_steps=save_steps,
-                num_envs=cfg.num_envs,
+                num_envs=(cfg.num_envs if cfg.num_envs != SJFPOConfig().num_envs
+                          else None),
                 n_obs_steps=cfg.n_obs_steps,
                 action_horizon=cfg.action_horizon,
                 hidden_dim=cfg.hidden_dim,
@@ -288,8 +298,12 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     yaml_dict: dict = load_yaml_dict(args.config) if args.config else {}
     total = args.total_steps or int(yaml_dict.get("total_steps", 2000))
-    eval_s = args.eval_steps or int(yaml_dict.get("eval_steps", min(1000, total)))
-    ckpt_i = args.save_steps or int(yaml_dict.get("save_steps", min(1000, total)))
+    # JAX eval is 12 full episodes: sparse defaults (capped by total for smokes).
+    is_jax = args.method == "sjfpo_jax"
+    eval_s = default_intervals(total, args.eval_steps, yaml_dict, "eval_steps",
+                               20000 if is_jax else 1000)
+    ckpt_i = default_intervals(total, args.save_steps, yaml_dict, "save_steps",
+                               25000 if is_jax else 1000)
     n_obs_steps = int(yaml_dict.get("n_obs_steps", 16))
     cfg = select_method_cfg(args, yaml_dict)
     if args.resume and args.method != "sjfpo":

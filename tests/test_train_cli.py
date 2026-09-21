@@ -61,6 +61,18 @@ def test_main_rejects_resume_for_baselines_and_missing_dir(tmp_path):
     )
 
 
+def test_default_intervals_cli_yaml_capped_default():
+    train = load_train_module()
+    d = train.default_intervals
+    # CLI wins, then YAML, then capped default (smoke totals stay small).
+    assert d(200000, 5000, {}, "eval_steps", 20000) == 5000
+    assert d(200000, None, {"eval_steps": 7000}, "eval_steps", 20000) == 7000
+    assert d(200000, None, {}, "eval_steps", 20000) == 20000
+    assert d(200, None, {}, "eval_steps", 20000) == 200
+    assert d(200000, None, {}, "save_steps", 25000) == 25000
+    assert d(200, None, {}, "eval_steps", 1000) == 200
+
+
 def test_resumed_cfg_overrides_lists_touched_scalars():
     from sjfpo.configuration_sjfpo import SJFPOConfig as Cfg
 

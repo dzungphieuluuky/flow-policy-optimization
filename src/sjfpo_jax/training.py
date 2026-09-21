@@ -32,7 +32,9 @@ from sjfpo_jax.checkpointing import save_checkpoint
 from sjfpo_jax.envs import get_spec
 from sjfpo_jax.rollout import generate_batch
 
-__all__ = ["spec_dims", "train_jax_run", "profile_dir"]
+__all__ = ["spec_dims", "train_jax_run", "profile_dir", "JAX_DEFAULT_NUM_ENVS"]
+
+JAX_DEFAULT_NUM_ENVS = 128
 
 
 def profile_dir() -> str | None:
@@ -104,7 +106,9 @@ def train_jax_run(
     total_steps: int = 2000,
     eval_steps: int = 1000,
     save_steps: int = 1000,
-    num_envs: int = 2,
+    # None = JAX GPU default (128); the CLI passes an int only when the user
+    # overrode --sjfpo.num_envs, so torch's default of 2 never leaks in.
+    num_envs: int | None = None,
     n_obs_steps: int = 16,
     action_horizon: int = 16,
     hidden_dim: int = 128,
@@ -132,6 +136,8 @@ def train_jax_run(
 ) -> dict[str, Any]:
     """Run a single JAX training run, returning summary with artifacts."""
     _ = get_spec(env_name)  # fail fast on unknown ids.
+    if num_envs is None:
+        num_envs = JAX_DEFAULT_NUM_ENVS
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     obs_dim, action_dim = spec_dims(env_name)

@@ -76,6 +76,35 @@ def test_spec_dims_match_registry():
     assert spec_dims("Hopper-v5") == (11, 3)
 
 
+def test_none_num_envs_means_jax_default(tmp_path):
+    from sjfpo_jax.training import JAX_DEFAULT_NUM_ENVS, train_jax_run
+
+    seen = {}
+
+    class RecordingVec(StubVec17):
+        def __init__(self, env_name, num_envs, seed):
+            seen["num_envs"] = num_envs
+            super().__init__(env_name, num_envs, seed)
+
+    import os
+
+    os.environ["SJFPO_DISABLE_WANDB"] = "1"
+    eval_env = gym.make("HalfCheetah-v5")
+    try:
+        train_jax_run(
+            env_name="HalfCheetah-v5", eval_env=eval_env,
+            out_dir=tmp_path / "run", seed=0, total_steps=8,
+            eval_steps=8, save_steps=8, num_envs=None, n_obs_steps=4,
+            action_horizon=8, hidden_dim=8, dit_depth=1, dit_heads=2,
+            dit_mlp_ratio=2.0, dit_time_dim=8, num_epochs=1, num_minibatches=1,
+            chunks_per_update=1, num_mc_samples=2, num_euler_steps=2,
+            num_inference_steps=2, eval_episodes=1, vec_factory=RecordingVec,
+        )
+    finally:
+        eval_env.close()
+    assert seen["num_envs"] == JAX_DEFAULT_NUM_ENVS == 128
+
+
 def test_train_jax_run_smoke(tmp_path):
     import os
 
