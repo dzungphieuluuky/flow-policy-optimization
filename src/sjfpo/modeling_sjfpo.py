@@ -32,8 +32,8 @@ from sjfpo.fpo_core import (
     sample_noise,
     sample_timesteps,
 )
-from sjfpo.gae import compute_advantages
-from sjfpo.utils import autocast_context, filter_low_freq, resolve_storage_dtype, to_device_async, to_numpy_1d, to_tensor_1d
+from sjfpo.gae import compute_advantages_torch
+from sjfpo.utils import autocast_context, filter_low_freq, resolve_storage_dtype, to_device_async, to_tensor_1d
 STORAGE_DTYPE = resolve_storage_dtype()  # cached once
 from sjfpo.networks import (
     Critic,
@@ -278,9 +278,12 @@ class SJFPOPolicy(PreTrainedPolicy):
                 n_obs_steps=cfg.n_obs_steps,
                 n_action_steps=cfg.action_horizon,
             )
-        executed_n_action_steps = to_tensor(
-            [int(c["executed_n_action_steps"]) for c in chunks], dtype=torch.long
-        )  # [N] CPU
+        # Torch-only path (no numpy roundtrip): lengths/flags built on device.
+        lengths = torch.as_tensor(
+            [int(c["executed_n_action_steps"]) for c in chunks],
+            dtype=torch.long,
+            device=device,
+        )  # [N] on device
         # Stacked once: reused for critic scoring below and the return dict
         # (stacking must stay outside inference_mode so forward() autograd
         # can consume the batch).
@@ -297,24 +300,31 @@ class SJFPOPolicy(PreTrainedPolicy):
             with autocast_context(device):
                 values = self.critic(states_n).float()
                 v_next_all = self.critic(next_states_n).float()
-            terminated = to_tensor([bool(c[DONE]) for c in chunks], dtype=torch.bool, device=device)
+            terminated = torch.as_tensor(
+                [bool(c[DONE]) for c in chunks], dtype=torch.bool, device=device
+            )
+            truncated = torch.as_tensor(
+                [bool(c[TRUNCATED]) for c in chunks], dtype=torch.bool, device=device
+            )
             next_values = torch.where(terminated, 0.0, v_next_all)
-        all_rewards = np.concatenate([to_numpy_1d(c[REWARD]) for c in chunks])
-        # ------- chunk GAE into advantages + returns -------
-        advantages, returns = compute_advantages(
+        all_rewards = torch.cat(
+            [c[REWARD].reshape(-1).to(device=device, dtype=torch.float64) for c in chunks]
+        )
+        # ------- chunk GAE into advantages + returns (torch, fp64) -------
+        advantages, returns = compute_advantages_torch(
             all_rewards,
-            to_numpy_1d(values),
-            to_numpy_1d(next_values),
-            to_numpy_1d(executed_n_action_steps).astype(np.int64),
-            np.array([bool(c[DONE]) for c in chunks]),
+            values.detach(),
+            next_values.detach(),
+            lengths,
+            terminated,
             gamma=cfg.gamma,
             lam=cfg.gae_lambda,
             normalize=True,
-            truncated=np.array([bool(c[TRUNCATED]) for c in chunks]),
+            truncated=truncated,
         )
-        is_pad = torch.arange(cfg.action_horizon).unsqueeze(0) >= to_tensor(
-            executed_n_action_steps, dtype=torch.long
-        ).unsqueeze(1)
+        advantages = advantages.to(STORAGE_DTYPE)
+        returns = returns.to(STORAGE_DTYPE)
+        is_pad = torch.arange(cfg.action_horizon, device=device).unsqueeze(0) >= lengths.unsqueeze(1)
         n_chunks = len(chunks)
         action_dim = int(self.config.action_feature.shape[0])
         # ------- common random numbers: one shared (tau, eps) draw per round -------

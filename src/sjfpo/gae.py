@@ -14,7 +14,12 @@ from __future__ import annotations
 
 import numpy as np
 
-__all__ = ["compute_advantages", "compute_returns", "normalize_advantages"]
+__all__ = [
+    "compute_advantages",
+    "compute_advantages_torch",
+    "compute_returns",
+    "normalize_advantages",
+]
 
 
 def as_chunk_arrays(rewards, values, next_values, executed_n_action_steps, terminated):
@@ -124,4 +129,76 @@ def compute_advantages(
     returns = compute_returns(advantages, values)
     if normalize:
         advantages = normalize_advantages(advantages)
+    return advantages, returns
+
+
+def compute_advantages_torch(
+    rewards_1d: "torch.Tensor",
+    values: "torch.Tensor",
+    next_values: "torch.Tensor",
+    lengths: "torch.Tensor",
+    terminated: "torch.Tensor",
+    gamma: float = 0.99,
+    lam: float = 0.95,
+    normalize: bool = True,
+    truncated: "torch.Tensor | None" = None,
+    clamp: float | None = 100.0,
+):
+    """Torch mirror of :func:`compute_advantages` (same semi-MDP math, no numpy).
+
+    All inputs are 1-D torch tensors; compute runs in fp64 on ``values.device``
+    for numpy parity, outputs are fp64 ``(advantages, returns)`` on that device.
+    """
+    import torch
+
+    device = values.device
+    rewards_1d = rewards_1d.to(device=device, dtype=torch.float64).reshape(-1)
+    values = values.to(device=device, dtype=torch.float64).reshape(-1)
+    next_values = next_values.to(device=device, dtype=torch.float64).reshape(-1)
+    lengths = lengths.to(device=device, dtype=torch.long).reshape(-1)
+    terminated = terminated.to(device=device, dtype=torch.bool).reshape(-1)
+    n = int(values.numel())
+    if truncated is None:
+        truncated_t = torch.zeros(n, device=device, dtype=torch.bool)
+    else:
+        truncated_t = truncated.to(device=device, dtype=torch.bool).reshape(-1)
+    if not (next_values.numel() == n and lengths.numel() == n and terminated.numel() == n and truncated_t.numel() == n):
+        raise ValueError("shape mismatch in chunk stream")
+    if n == 0 or bool((lengths <= 0).any()):
+        raise ValueError("need a non-empty stream with every chunk >= 1 step")
+    if int(lengths.sum().item()) != int(rewards_1d.numel()):
+        raise ValueError("rewards length != sum(lengths)")
+    offsets = torch.cat(
+        [torch.zeros(1, dtype=torch.long, device=device), torch.cumsum(lengths, 0)]
+    )
+    r_chunk = torch.empty(n, device=device, dtype=torch.float64)
+    for k in range(n):
+        steps = rewards_1d[offsets[k] : offsets[k + 1]]
+        powers = torch.pow(
+            torch.tensor(gamma, device=device, dtype=torch.float64),
+            torch.arange(steps.numel(), device=device, dtype=torch.float64),
+        )
+        r_chunk[k] = torch.dot(powers, steps)
+    advantages = torch.empty(n, device=device, dtype=torch.float64)
+    next_advantage = torch.tensor(0.0, device=device, dtype=torch.float64)
+    for k in range(n - 1, -1, -1):
+        length = int(lengths[k].item())
+        if bool(terminated[k].item()):
+            delta = r_chunk[k] - values[k]
+            continuation = torch.tensor(0.0, device=device, dtype=torch.float64)
+        else:
+            delta = r_chunk[k] + (gamma**length) * next_values[k] - values[k]
+            continuation = (
+                torch.tensor(0.0, device=device, dtype=torch.float64)
+                if bool(truncated_t[k].item())
+                else torch.tensor((gamma * lam) ** length, device=device, dtype=torch.float64)
+            )
+        advantages[k] = delta + continuation * next_advantage
+        next_advantage = advantages[k]
+    returns = advantages + values
+    if normalize:
+        # Population std (unbiased=False) for numpy parity (np.std ddof=0).
+        advantages = (advantages - advantages.mean()) / (advantages.std(unbiased=False) + 1e-8)
+        if clamp is not None:
+            advantages = advantages.clamp(-clamp, clamp)
     return advantages, returns
