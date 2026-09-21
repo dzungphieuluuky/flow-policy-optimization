@@ -362,6 +362,19 @@ class SJFPOPolicy(PreTrainedPolicy):
         )
         eps = sample_noise((n_chunks, cfg.num_mc_samples, top_k, action_dim), device=device)
         actions = to_device_async(torch.stack([c["action"] for c in chunks]), device)
+        # Fix 10/12: confirm chunk arrays contain full proposed chunks; detect
+        # partial/invalid actions that would corrupt DCT/CFM loss.
+        if actions.dim() != 3 or actions.shape[1] != cfg.action_horizon:
+            raise ValueError(
+                f"Chunk actions shape {tuple(actions.shape)} != expected [B, H, D] "
+                f"(H={cfg.action_horizon}, D={action_dim}); rollout may contain partial/empty chunks."
+            )
+        actions_max = float(actions.abs().max().detach())
+        if actions_max > 1.5:  # Loose gate for scaled [-1, 1] chunks (should be ~1 after unscaling; here still scaled)
+            print(
+                f"WARNING: rollout action max_abs unexpectedly large: {actions_max:.3f} "
+                f"(expected ~[-1, 1] scaled chunk; verify rollout action storage)"
+            )
         return {
             OBS_STATE: states,
             ACTION: actions,
