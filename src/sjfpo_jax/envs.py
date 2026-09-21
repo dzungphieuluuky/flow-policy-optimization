@@ -11,8 +11,8 @@ from __future__ import annotations
 import numpy as np
 
 __all__ = [
-    "ENV_SPECS", "MJX_UNSUPPORTED", "get_spec", "obs", "is_healthy",
-    "reward", "terminated", "reset_state",
+    "ENV_SPECS", "MJX_UNSUPPORTED", "get_spec", "zero_extras", "obs_dim",
+    "obs", "is_healthy", "reward", "terminated", "reset_state",
 ]
 
 
@@ -38,6 +38,7 @@ ENV_SPECS: dict[str, dict] = {
         "healthy_reward": 0.0, "contact_weight": 0.0,
         "done_kind": "never", "terminate_when_unhealthy": False,
         "reset_kind": "uniform_normal", "reset_noise_scale": 0.1,
+        "forward_source": "qpos_x",
         "max_episode_steps": 1000,
     },
     "Hopper-v5": {
@@ -50,6 +51,7 @@ ENV_SPECS: dict[str, dict] = {
         "healthy_angle_range": (-0.2, 0.2),
         "healthy_state_range": (-100.0, 100.0),
         "reset_kind": "uniform_uniform", "reset_noise_scale": 5e-3,
+        "forward_source": "qpos_x",
         "max_episode_steps": 1000,
     },
     "Walker2d-v5": {
@@ -62,6 +64,7 @@ ENV_SPECS: dict[str, dict] = {
         "healthy_angle_range": (-1.0, 1.0),
         "healthy_state_range": None,  # walker checks z/angle only
         "reset_kind": "uniform_uniform", "reset_noise_scale": 5e-3,
+        "forward_source": "qpos_x",
         "max_episode_steps": 1000,
     },
     "Swimmer-v5": {
@@ -71,6 +74,7 @@ ENV_SPECS: dict[str, dict] = {
         "healthy_reward": 0.0, "contact_weight": 0.0,
         "done_kind": "never", "terminate_when_unhealthy": False,
         "reset_kind": "uniform_uniform", "reset_noise_scale": 0.1,
+        "forward_source": "qpos_x",
         "max_episode_steps": 1000,
     },
     "Ant-v5": {
@@ -83,6 +87,7 @@ ENV_SPECS: dict[str, dict] = {
         "healthy_z_range": (0.2, 1.0),
         "reset_kind": "uniform_normal", "reset_noise_scale": 0.1,
         "main_body": "torso",
+        "forward_source": "body_x",
         "max_episode_steps": 1000,
     },
     "InvertedPendulum-v5": {
@@ -91,6 +96,7 @@ ENV_SPECS: dict[str, dict] = {
         "reward_kind": "survive",
         "done_kind": "pole",
         "reset_kind": "uniform_uniform", "reset_noise_scale": 0.01,
+        "forward_source": "none",
         "max_episode_steps": 1000,
     },
     "InvertedDoublePendulum-v5": {
@@ -99,6 +105,7 @@ ENV_SPECS: dict[str, dict] = {
         "reward_kind": "double_pendulum", "healthy_reward": 10.0,
         "done_kind": "site_y",
         "reset_kind": "uniform_normal", "reset_noise_scale": 0.1,
+        "forward_source": "none", "site_index": 0,
         "max_episode_steps": 1000,
     },
     "Reacher-v5": {
@@ -108,6 +115,8 @@ ENV_SPECS: dict[str, dict] = {
         "reward_control_weight": 1.0,
         "done_kind": "never",
         "reset_kind": "reacher",
+        "forward_source": "none",
+        "com_bodies": ["fingertip", "target"],
         "max_episode_steps": 1000,
     },
     "Pusher-v5": {
@@ -117,9 +126,28 @@ ENV_SPECS: dict[str, dict] = {
         "reward_dist_weight": 1.0, "reward_control_weight": 0.1,
         "done_kind": "never",
         "reset_kind": "pusher",
+        "forward_source": "none",
+        "com_bodies": ["tips_arm", "object", "goal"],
         "max_episode_steps": 1000,
     },
 }
+
+
+def zero_extras(spec: dict, nbody: int, nv: int) -> dict:
+    """Zero sensor dict with the shapes ``obs`` needs (dim measurement)."""
+    extra: dict = {}
+    if spec["obs_kind"] == "ant":
+        extra["cfrc_ext"] = np.zeros((nbody, 6))
+    if spec["obs_kind"] == "double_pendulum":
+        extra["qfrc_constraint"] = np.zeros(nv)
+    for name in spec.get("com_bodies", []):
+        extra[name] = np.zeros(3)
+    return extra
+
+
+def obs_dim(spec: dict, nq: int, nv: int, nbody: int) -> int:
+    """Observation dim without running physics (registry gate)."""
+    return len(obs(spec, np.zeros(nq), np.zeros(nv), zero_extras(spec, nbody, nv)))
 
 
 def get_spec(env_name: str) -> dict:

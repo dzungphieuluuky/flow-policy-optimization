@@ -14,6 +14,7 @@ import warnings
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 
 from sjfpo_jax.envs import get_spec
 from sjfpo_jax.gae import compute_advantages, validate_stream
@@ -70,6 +71,8 @@ class MjxVec:
 
         if num_envs < 1:
             raise ValueError(f"num_envs={num_envs} must be >= 1")
+        from sjfpo_jax.envs import obs_dim as _obs_dim_fn
+
         self.spec = get_spec(env_name)
         xml = (
             Path(gym.__file__).resolve().parent
@@ -80,8 +83,16 @@ class MjxVec:
         )
         mj_model = mujoco.MjModel.from_xml_path(str(xml))
         self.nq, self.nv, self.nu = mj_model.nq, mj_model.nv, mj_model.nu
-        self.obs_dim = self.nq - 1 + self.nv if self.spec["obs_drop_first"] else self.nq + self.nv
+        self.obs_dim = _obs_dim_fn(self.spec, mj_model.nq, mj_model.nv, mj_model.nbody)
         self.dt = float(mj_model.opt.timestep * self.spec["frame_skip"])
+        # Named bodies for com/forward sensors (ant torso, reacher/pusher frames).
+        want_bodies = list(self.spec.get("com_bodies", []))
+        if self.spec.get("forward_source") == "body_x":
+            want_bodies.append(self.spec["main_body"])
+        self._body_ids = {
+            name: mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_BODY, name)
+            for name in want_bodies
+        }
         if mj_model.nkey > 0:
             self._init_qpos = jnp.asarray(mj_model.key_qpos[0], dtype=jnp.float32)
             self._init_qvel = jnp.asarray(mj_model.key_qvel[0], dtype=jnp.float32)
@@ -117,41 +128,144 @@ class MjxVec:
     def _sample_state(self, rng, n: int):
         import jax
 
-        s = self.spec["reset_noise_scale"]
-        k1, k2 = jax.random.split(rng)
-        qpos = self._init_qpos + jax.random.uniform(
-            k1, (n, self.nq), minval=-s, maxval=s
-        )
-        if self.spec["qvel_dist"] == "normal":
-            qvel = self._init_qvel + s * jax.random.normal(k2, (n, self.nv))
-        else:
-            qvel = self._init_qvel + jax.random.uniform(
-                k2, (n, self.nv), minval=-s, maxval=s
+        kind = self.spec["reset_kind"]
+        s = self.spec.get("reset_noise_scale", 0.0)
+        if kind in ("uniform_normal", "uniform_uniform"):
+            rng, k1, k2 = jax.random.split(rng, 3)
+            qpos = self._init_qpos + jax.random.uniform(
+                k1, (n, self.nq), minval=-s, maxval=s
             )
+            if self.spec.get("qvel_dist", "uniform") == "normal":
+                qvel = self._init_qvel + s * jax.random.normal(k2, (n, self.nv))
+            else:
+                qvel = self._init_qvel + jax.random.uniform(
+                    k2, (n, self.nv), minval=-s, maxval=s
+                )
+        elif kind == "reacher":
+            # Goal resampling is host-side (reset is eager, never jitted).
+            qpos = np.zeros((n, self.nq))
+            qvel = np.zeros((n, self.nv))
+            for i in range(n):
+                rng, k1, k2, k3 = jax.random.split(rng, 4)
+                qpos[i] = np.asarray(self._init_qpos) + np.asarray(
+                    jax.random.uniform(k1, (self.nq,), minval=-0.1, maxval=0.1)
+                )
+                while True:
+                    rng, kg = jax.random.split(rng)
+                    goal = np.asarray(jax.random.uniform(kg, (2,), minval=-0.2, maxval=0.2))
+                    if np.linalg.norm(goal) < 0.2:
+                        break
+                qpos[i, -2:] = goal
+                qvel[i] = np.asarray(self._init_qvel) + np.asarray(
+                    jax.random.uniform(k2, (self.nv,), minval=-0.005, maxval=0.005)
+                )
+                qvel[i, -2:] = 0
+            qpos = jnp.asarray(qpos, dtype=jnp.float32)
+            qvel = jnp.asarray(qvel, dtype=jnp.float32)
+        elif kind == "pusher":
+            qpos = np.zeros((n, self.nq))
+            qvel = np.zeros((n, self.nv))
+            for i in range(n):
+                rng, k1, k2 = jax.random.split(rng, 3)
+                qpos[i] = np.asarray(self._init_qpos)
+                goal = np.zeros(2)
+                while True:
+                    rng, kg1, kg2 = jax.random.split(rng, 3)
+                    cyl = np.concatenate([
+                        np.asarray(jax.random.uniform(kg1, (1,), minval=-0.3, maxval=0)),
+                        np.asarray(jax.random.uniform(kg2, (1,), minval=-0.2, maxval=0.2)),
+                    ])
+                    if np.linalg.norm(cyl - goal) > 0.17:
+                        break
+                qpos[i, -4:-2] = cyl
+                qpos[i, -2:] = goal
+                qvel[i] = np.asarray(self._init_qvel) + np.asarray(
+                    jax.random.uniform(k2, (self.nv,), minval=-0.005, maxval=0.005)
+                )
+                qvel[i, -4:] = 0
+            qpos = jnp.asarray(qpos, dtype=jnp.float32)
+            qvel = jnp.asarray(qvel, dtype=jnp.float32)
+        else:
+            raise ValueError(f"reset_kind={kind!r} unknown")
         return qpos.astype(jnp.float32), qvel.astype(jnp.float32)
 
-    def _obs_jax(self, dx):
-        qpos = dx.qpos[:, 1:] if self.spec["obs_drop_first"] else dx.qpos
-        qvel = dx.qvel
-        if self.spec["qvel_clip"] is not None:
-            qvel = jnp.clip(qvel, -self.spec["qvel_clip"], self.spec["qvel_clip"])
-        return jnp.concatenate([qpos, qvel], axis=1)
+    def _extras_jax(self, dx) -> dict:
+        extra = {}
+        if self.spec["obs_kind"] == "ant" or self.spec.get("contact_weight"):
+            lo, hi = self.spec["contact_force_range"]
+            extra["cfrc_ext"] = jnp.clip(dx.cfrc_ext, lo, hi)
+        if self.spec["obs_kind"] == "double_pendulum":
+            extra["qfrc_constraint"] = dx.qfrc_constraint
+        for name in self.spec.get("com_bodies", []):
+            extra[name] = dx.xpos[:, self._body_ids[name]]
+        return extra
 
-    def _healthy_jax(self, dx):
-        if not self.spec["terminate_when_unhealthy"] and self.spec["healthy_reward"] == 0.0:
+    def _obs_jax(self, dx):
+        kind = self.spec["obs_kind"]
+        if kind == "qpos_qvel":
+            qpos = dx.qpos[:, self.spec["obs_drop"]:]
+            qvel = dx.qvel
+            if self.spec["qvel_clip"] is not None:
+                qvel = jnp.clip(qvel, -self.spec["qvel_clip"], self.spec["qvel_clip"])
+            return jnp.concatenate([qpos, qvel], axis=1)
+        if kind == "full":
+            return jnp.concatenate([dx.qpos, dx.qvel], axis=1)
+        if kind == "ant":
+            qpos = dx.qpos[:, self.spec["obs_drop"]:]
+            lo, hi = self.spec["contact_force_range"]
+            cfrc = jnp.clip(dx.cfrc_ext, lo, hi)[:, 1:].reshape(dx.qpos.shape[0], -1)
+            return jnp.concatenate([qpos, dx.qvel, cfrc], axis=1)
+        if kind == "reacher":
+            theta = dx.qpos[:, :2]
+            extra = self._extras_jax(dx)
+            return jnp.concatenate([
+                jnp.cos(theta), jnp.sin(theta), dx.qpos[:, 2:], dx.qvel[:, :2],
+                (extra["fingertip"] - extra["target"])[:, :2],
+            ], axis=1)
+        if kind == "double_pendulum":
+            return jnp.concatenate([
+                dx.qpos[:, :1], jnp.sin(dx.qpos[:, 1:]), jnp.cos(dx.qpos[:, 1:]),
+                jnp.clip(dx.qvel, -10, 10),
+                jnp.clip(dx.qfrc_constraint, -10, 10)[:, :1],
+            ], axis=1)
+        if kind == "pusher":
+            extra = self._extras_jax(dx)
+            return jnp.concatenate([
+                dx.qpos[:, :7], dx.qvel[:, :7],
+                extra["tips_arm"], extra["object"], extra["goal"],
+            ], axis=1)
+        raise ValueError(f"obs_kind={kind!r} unknown")
+
+    def _healthy_jax(self, dx, obs):
+        kind = self.spec["done_kind"]
+        if kind == "never":
             return jnp.ones((dx.qpos.shape[0],), dtype=bool)
-        z, angle = dx.qpos[:, 1], dx.qpos[:, 2]
-        state = jnp.concatenate([dx.qpos, dx.qvel], axis=1)[:, 2:]
-        s_lo, s_hi = self.spec["healthy_state_range"]
-        z_lo, z_hi = self.spec["healthy_z_range"]
-        a_lo, a_hi = self.spec["healthy_angle_range"]
-        return (
-            jnp.all((s_lo < state) & (state < s_hi), axis=1)
-            & (z_lo < z)
-            & (z < z_hi)
-            & (a_lo < angle)
-            & (angle < a_hi)
-        )
+        if kind == "healthy":
+            z, angle = dx.qpos[:, 1], dx.qpos[:, 2]
+            ok = (self.spec["healthy_z_range"][0] < z) & (z < self.spec["healthy_z_range"][1])
+            ok = ok & (self.spec["healthy_angle_range"][0] < angle) & (angle < self.spec["healthy_angle_range"][1])
+            if self.spec.get("healthy_state_range") is not None:
+                s_lo, s_hi = self.spec["healthy_state_range"]
+                state = jnp.concatenate([dx.qpos, dx.qvel], axis=1)[:, 2:]
+                ok = ok & jnp.all((s_lo < state) & (state < s_hi), axis=1)
+            return ok
+        if kind == "ant":
+            state = jnp.concatenate([dx.qpos, dx.qvel], axis=1)
+            z_lo, z_hi = self.spec["healthy_z_range"]
+            return jnp.isfinite(state).all(axis=1) & (z_lo <= state[:, 2]) & (state[:, 2] <= z_hi)
+        if kind == "pole":
+            return jnp.isfinite(obs).all(axis=1) & (jnp.abs(obs[:, 1]) <= 0.2)
+        if kind == "site_y":
+            return dx.site_xpos[:, self.spec.get("site_index", 0), 2] > 1
+        raise ValueError(f"done_kind={kind!r} unknown")
+
+    def _forward_before(self, dx):
+        src = self.spec.get("forward_source", "none")
+        if src == "qpos_x":
+            return dx.qpos[:, 0]
+        if src == "body_x":
+            return dx.xpos[:, self._body_ids[self.spec["main_body"]], 0]
+        return jnp.zeros((dx.qpos.shape[0],))
 
     def reset(self) -> jnp.ndarray:
         import jax
@@ -174,20 +288,48 @@ class MjxVec:
         import jax
 
         ctrl = ctrl.astype(jnp.float32)
-        x_before = self._dx.qpos[:, 0]
+        x_before = self._forward_before(self._dx)
         self._dx = self._step_fn(self.mx, self._dx, ctrl)
-        x_after = self._dx.qpos[:, 0]
-        healthy = self._healthy_jax(self._dx)
-        fwd = self.spec["forward_weight"] * (x_after - x_before) / self.dt
-        survive = jnp.where(healthy, self.spec["healthy_reward"], 0.0)
-        ctrl_cost = self.spec["ctrl_weight"] * jnp.sum(ctrl * ctrl, axis=1)
-        rew = (fwd + survive - ctrl_cost).astype(jnp.float32)
-        terminated = (~healthy) & self.spec["terminate_when_unhealthy"]
+        obs = self._obs_jax(self._dx)
+        healthy = self._healthy_jax(self._dx, obs)
+        rk = self.spec["reward_kind"]
+        if rk == "locomotion":
+            x_after = self._forward_before(self._dx)
+            fwd = self.spec["forward_weight"] * (x_after - x_before) / self.dt
+            survive = jnp.where(healthy, self.spec["healthy_reward"], 0.0)
+            ctrl_cost = self.spec["ctrl_weight"] * jnp.sum(ctrl * ctrl, axis=1)
+            contact = jnp.zeros_like(fwd)
+            if self.spec["contact_weight"]:
+                lo, hi = self.spec["contact_force_range"]
+                cfrc = jnp.clip(self._dx.cfrc_ext, lo, hi)
+                contact = self.spec["contact_weight"] * jnp.sum(cfrc * cfrc, axis=(1, 2))
+            rew = (fwd + survive - ctrl_cost - contact).astype(jnp.float32)
+        elif rk == "survive":
+            rew = jnp.where(healthy, 1.0, 0.0).astype(jnp.float32)
+        elif rk == "double_pendulum":
+            v1, v2 = self._dx.qvel[:, 1], self._dx.qvel[:, 2]
+            site = self._dx.site_xpos[:, self.spec.get("site_index", 0)]
+            dist = 0.01 * site[:, 0] ** 2 + (site[:, 2] - 2) ** 2
+            vel = 1e-3 * v1**2 + 5e-3 * v2**2
+            rew = (self.spec["healthy_reward"] * healthy.astype(jnp.float32) - dist - vel).astype(jnp.float32)
+        elif rk == "reacher":
+            extra = self._extras_jax(self._dx)
+            vec = extra["fingertip"] - extra["target"]
+            rew = (-jnp.linalg.norm(vec, axis=1) * self.spec["reward_dist_weight"]
+                   - jnp.sum(ctrl * ctrl, axis=1) * self.spec["reward_control_weight"]).astype(jnp.float32)
+        elif rk == "pusher":
+            extra = self._extras_jax(self._dx)
+            near = -jnp.linalg.norm(extra["object"] - extra["tips_arm"], axis=1) * self.spec["reward_near_weight"]
+            dist = -jnp.linalg.norm(extra["object"] - extra["goal"], axis=1) * self.spec["reward_dist_weight"]
+            ctrl_cost = jnp.sum(ctrl * ctrl, axis=1) * self.spec["reward_control_weight"]
+            rew = (dist - ctrl_cost + near).astype(jnp.float32)
+        else:
+            raise ValueError(f"reward_kind={rk!r} unknown")
+        terminated = (~healthy) & self.spec.get("terminate_when_unhealthy", False)
         terminated = jnp.asarray(terminated)
         self._ep_len = self._ep_len + 1
         truncated = self._ep_len >= self.spec["max_episode_steps"]
         done = terminated | truncated
-        obs = self._obs_jax(self._dx)
         if bool(jnp.any(done)):
             self._rng, sub = jax.random.split(self._rng)
             qpos, qvel = self._sample_state(sub, self.num_envs)
