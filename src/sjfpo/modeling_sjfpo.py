@@ -16,7 +16,7 @@ from lerobot.utils.constants import ACTION, DONE, OBS_STATE, REWARD, TRUNCATED
 
 from sjfpo.configuration_sjfpo import SJFPOConfig
 from sjfpo.collector import collect_chunks, collect_chunks_vec
-from sjfpo.dct_utils import dct, idct
+from sjfpo.dct_utils import decode_coeffs_to_velocity, extract_dct_coeffs
 from sjfpo.fpo_core import (
     compute_aspo_surrogate,
     compute_cfm_loss,
@@ -27,7 +27,7 @@ from sjfpo.fpo_core import (
     sample_timesteps,
 )
 from sjfpo.gae import compute_advantages_torch
-from sjfpo.utils import autocast_context, filter_low_freq, resolve_storage_dtype, to_device_async, to_tensor_1d
+from sjfpo.utils import autocast_context, resolve_storage_dtype, to_device_async, to_tensor_1d
 STORAGE_DTYPE = resolve_storage_dtype()  # cached once
 from sjfpo.networks import (
     Critic,
@@ -166,7 +166,8 @@ class SJFPOPolicy(PreTrainedPolicy):
         states = self.standardize_obs_tensor(batch[OBS_STATE])
         states = to_device_async(states, next(self.actor.parameters()).device)
         states = self.preprocessor({OBS_STATE: states})[OBS_STATE]
-        token_dim = max(1, round(cfg.top_p_spectral_tokens * cfg.action_horizon))
+        M_modes = max(1, cfg.action_horizon - 1)
+        token_dim = M_modes + 1 if cfg.use_dct_transform else cfg.action_horizon
         action_dim = int(self.config.action_feature.shape[0])
         with torch.inference_mode(), autocast_context(states.device):
             # [B, D] fused outside flow head
@@ -184,9 +185,17 @@ class SJFPOPolicy(PreTrainedPolicy):
                 device=states.device,
             )
             x0 = x0.float()
-        # ------- pad + decode chunk back to action space -------
-        x0 = torch.nn.functional.pad(x0, (0, 0, 0, cfg.action_horizon - token_dim))
-        scaled = idct(x0, dim=1).clamp(-1.0, 1.0)
+        if cfg.use_dct_transform:
+            tau_grid = torch.linspace(0.0, 1.0, cfg.action_horizon, device=x0.device, dtype=torch.float32)
+            scaled = decode_coeffs_to_velocity(
+                x0,
+                tau=tau_grid,
+                T=1.0,
+                K_original=cfg.action_horizon,
+            )
+            scaled = scaled[:, :cfg.action_horizon, :].clamp(-1.0, 1.0)
+        else:
+            scaled = x0[:, :cfg.action_horizon, :].clamp(-1.0, 1.0)
         return self.postprocessor({ACTION: scaled})[ACTION]
 
     def select_action(self, batch: dict[str, torch.Tensor], **kwargs) -> torch.Tensor:
@@ -426,15 +435,10 @@ class SJFPOPolicy(PreTrainedPolicy):
         def _actor_ckpt(s):
             return self.actor(s)
         actor_wrapper = lambda s: cp.checkpoint(_actor_ckpt, s, use_reentrant=False)
-        token_dim = max(1, round(cfg.top_p_spectral_tokens * cfg.action_horizon)) if cfg.use_dct_transform else cfg.action_horizon
-        # FPO / spectral flow-matching action representation: full chunk [B, H, D]
-        # (not masked to executed steps); DCT transforms the temporal dimension.
-        # Paper-original: the loss sees the FULL proposed chunk. Unexecuted
-        # tails (early termination / budget cutoff) only shape GAE via
-        # executed_n_action_steps; they are never zero-masked here (masking
-        # before the DCT leaks zeros into every frequency bin).
+        M_modes = max(1, cfg.action_horizon - 1)
+        token_dim = (M_modes + 1) if cfg.use_dct_transform else cfg.action_horizon
         if cfg.use_dct_transform:
-            spectral_action_tokens = filter_low_freq(dct(actions, dim=1), token_dim, dim=1)
+            spectral_action_tokens = extract_dct_coeffs(actions, M=M_modes)
         else:
             spectral_action_tokens = actions
         n = states.shape[0]
