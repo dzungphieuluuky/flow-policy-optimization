@@ -2,6 +2,18 @@
 
 ``generate_rollout`` gathers a batch, ``forward`` computes the loss; this loop
 only steps the optimizer, evaluates, and checkpoints.
+
+Performance notes
+-----------------
+* Grad-norm-after-clip is derived analytically (``min(pre, clip_val)``) instead
+  of looping over parameters with ``.item()`` — no per-parameter device syncs.
+* ``zero_grad(set_to_none=True)`` frees grad buffers between minibatches.
+* Eval and checkpoint are triggered by explicit step counters, so no eval or
+  save is skipped when ``collect_steps`` overshoots the boundary.
+* Warm-up actually runs ``cfg.random_rollout_steps`` env steps (in batches of
+  ``chunks_per_update * action_horizon``) and updates running stats on each.
+* A resume re-applies ``maybe_compile`` so the freshly-loaded policy is
+  compiled like a fresh one.
 """
 
 from __future__ import annotations
@@ -10,6 +22,7 @@ import dataclasses
 import json
 import sys
 import time
+from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -20,19 +33,14 @@ from lerobot.utils.random_utils import set_seed
 
 from sjfpo.checkpointing import load_policy_checkpoint, save_policy_checkpoint
 from sjfpo.configuration_sjfpo import SJFPOConfig
-from sjfpo.evaluator import Evaluator, check_divergence, mean_chunk_jerk, render_episode_frames
+from sjfpo.evaluator import Evaluator, check_divergence, mean_chunk_jerk
 from sjfpo.modeling_sjfpo import SJFPOPolicy
 from sjfpo.rollout_storage import mini_batch_indices
-from sjfpo.utils import (
-    maybe_compile,
-    resolve_device,
-    to_numpy_1d,
-)
+from sjfpo.utils import maybe_compile, resolve_device, to_numpy_1d
 from sjfpo.wandb_logging import (
     finish_run,
     init_wandb_run_for_method,
     log_eval_summary,
-    log_eval_video,
     log_metrics,
 )
 
@@ -48,11 +56,21 @@ class _EvalPolicy:
 
     def __call__(self, obs: np.ndarray) -> np.ndarray:
         action = self.policy.select_action({"observation.state": obs})
-        return to_numpy_1d(action)  # atleast_1d: 1-D envs must stay [1], not scalar
+        return to_numpy_1d(action)  # atleast_1d: 1-D envs must stay [1]
+
+
+def _compile_in_place(policy: SJFPOPolicy) -> None:
+    """Apply ``maybe_compile`` to every submodule the training path touches."""
+    policy.actor = maybe_compile(policy.actor)
+    policy.old_actor = maybe_compile(policy.old_actor)
+    policy.critic = maybe_compile(policy.critic)
 
 
 def build_policy(
-    obs_dim: int, action_dim: int, cfg: SJFPOConfig, device=None,
+    obs_dim: int,
+    action_dim: int,
+    cfg: SJFPOConfig,
+    device=None,
     action_low: np.ndarray | None = None,
     action_high: np.ndarray | None = None,
 ) -> SJFPOPolicy:
@@ -64,14 +82,12 @@ def build_policy(
             "observation.state": PolicyFeature(FeatureType.STATE, (obs_dim,))
         },
         output_features={"action": PolicyFeature(FeatureType.ACTION, (action_dim,))},
-        n_action_steps=max(1, round(cfg.executed_vs_predicted_ratio * cfg.action_horizon)),
+        n_action_steps=max(
+            1, round(cfg.executed_vs_predicted_ratio * cfg.action_horizon)
+        ),
     )
     policy = SJFPOPolicy(policy_cfg).to(device)
-    # Spectral is parameter-free, normalizer is buffers-only; the snapshot
-    # deep-copies the compiled actor so l_old stays compiled too.
-    policy.actor = maybe_compile(policy.actor)
-    policy.old_actor = maybe_compile(policy.old_actor)
-    policy.critic = maybe_compile(policy.critic)
+    _compile_in_place(policy)
     if action_low is not None and action_high is not None:
         policy.set_action_bounds(action_low, action_high)
     return policy
@@ -93,23 +109,34 @@ def build_optimizer(policy: SJFPOPolicy, cfg: SJFPOConfig):
     kwargs = dataclasses.asdict(cfg.get_optimizer_preset())
     kwargs.pop("grad_clip_norm", None)  # applied manually after backward
     if next(policy.parameters()).is_cuda:
-        kwargs["fused"] = True  # single-kernel AdamW step; CPU falls back
+        kwargs["fused"] = True
     return torch.optim.AdamW(params, **kwargs)
 
 
 def sample_minibatch(
     batch: dict[str, torch.Tensor], indices: torch.Tensor
 ) -> dict[str, torch.Tensor]:
-    """Slice dim-0 rows; every batch value is a [B, ...] tensor."""
+    """Slice dim-0 rows; every batch value is a ``[B, ...]`` tensor."""
     return {k: v[indices] for k, v in batch.items()}
 
 
 def random_baseline(evaluator: Evaluator, env: Any) -> float:
-    """Mean random-policy return for divergence gating (1.0 if empty/zero)."""
-    results = evaluator.evaluate(lambda obs: env.action_space.sample(), out_dir=None)
-    r_rand = float(np.mean([r["return"] for r in results])) if results else 1.0
-    return r_rand or 1.0
+    """Mean random-policy return for divergence gating.
 
+    Returns ``0.0`` unchanged — callers gate on ``baseline > 0`` before
+    treating the value as meaningful (see ``check_divergence``).
+    """
+    results = evaluator.evaluate(
+        lambda obs: env.action_space.sample(), out_dir=None
+    )
+    if not results:
+        return 1.0
+    return float(np.mean([r["return"] for r in results]))
+
+
+# ---------------------------------------------------------------------------
+# Main loop
+# ---------------------------------------------------------------------------
 
 def train_sjfpo_run(
     env: Any,
@@ -124,52 +151,48 @@ def train_sjfpo_run(
     action_dim: int | None = None,
     resume_from_checkpoint: str | Path | None = None,
 ) -> dict[str, Any]:
-    """Run a single SJFPO training run, returning summary with artifacts.
+    """Run a single SJFPO training run, returning a summary with artifacts.
 
-    Plain single-process PyTorch (``PYTHONPATH=src python scripts/train.py
-    ...``). Mixed precision auto-detects: bf16 autocast matmuls when the CUDA
-    device supports bf16 (see ``torch.cuda.is_bf16_supported``) or Blackwell (bf16 storage + fp8 matmuls), fp32 otherwise.
-
-    ``resume_from_checkpoint`` points at a ``save_policy_checkpoint`` directory
-    (``checkpoint_<step>`` or ``checkpoint_final``): policy, optimizer, and
-    counters continue from there. ``total_steps`` stays an absolute env-step
-    budget (the run stops when ``global_step`` reaches it). The checkpoint's
-    own config shapes the policy; CLI hyperparameter overrides do not apply
-    to a resumed run (scripts/train.py warns about them).
+    Plain single-process PyTorch (``PYTHONPATH=src python scripts/train.py``).
+    Mixed precision auto-detects (bf16 autocast when supported, fp32
+    otherwise; Blackwell uses bf16 storage + fp8 matmuls).
     """
     cfg = cfg or SJFPOConfig()
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+
     unwrapped = getattr(env, "unwrapped", env)
     spec = getattr(unwrapped, "spec", None)
     env_name = getattr(spec, "id", "unknown") if spec is not None else "unknown"
     if obs_dim is None or action_dim is None:
         obs_dim = int(np.prod(env.observation_space.shape))
         action_dim = int(np.prod(env.action_space.shape))
+
     set_seed(seed)
-    device = resolve_device()  # SJFPO_DEVICE=cpu|auto honors the CPU override
+    device = resolve_device()
+
+    # Build vectorized training env *before* CUDA init so forked workers don't
+    # inherit the parent's CUDA context (CleanRL / SB3 ordering).
     train_env = env
     if cfg.num_envs > 1 and env_name != "unknown":
-        # Build BEFORE any CUDA init: fork-based workers inherit the parent's
-        # CUDA context otherwise (CleanRL/SB3 order the same way). Keep
-        # evaluation single-env; fixtures without a registered id stay local.
         import gymnasium as gym
 
         train_env = gym.vector.SyncVectorEnv(
             [lambda: gym.make(env_name) for _ in range(cfg.num_envs)]
         )
-    # Real env bounds (not ±1): InvertedPendulum ±3, Pusher ±2, Humanoid ±0.4.
+
     action_low = np.atleast_1d(np.asarray(env.action_space.low, dtype=np.float32))
     action_high = np.atleast_1d(np.asarray(env.action_space.high, dtype=np.float32))
+
     global_step = 0
     if resume_from_checkpoint is not None:
-        # Exact continuation: weights, optimizer state, and counters come
-        # from the checkpoint dir (raises ResumeError when incomplete).
         policy, optimizer, counters = load_policy_checkpoint(
             resume_from_checkpoint, device=device
         )
         global_step = int(counters["global_step"])
-        policy.train()  # loader leaves eval mode; rollouts train like fresh
+        policy.train()
+        # Re-apply compilation — from_pretrained builds an eager policy.
+        _compile_in_place(policy)
         (out_dir / "resume_info.json").write_text(
             json.dumps(
                 {
@@ -181,26 +204,39 @@ def train_sjfpo_run(
             encoding="utf-8",
         )
     else:
-        policy = build_policy(obs_dim, action_dim, cfg, device=device,
-                               action_low=action_low, action_high=action_high)
+        policy = build_policy(
+            obs_dim, action_dim, cfg, device=device,
+            action_low=action_low, action_high=action_high,
+        )
         optimizer = build_optimizer(policy, cfg)
-    print(policy, file=sys.stderr)
-    # Warm-up: initialize stats from rollout batch.
-    warmup_done = 0
-    if cfg.warmup_steps > 0 and total_steps >= cfg.warmup_steps:
-        warmup_target = min(cfg.warmup_steps, total_steps)
-        warmup_batch = policy.generate_rollout(env, cfg.action_horizon,
-                                               action_low=action_low, action_high=action_high)
-        if warmup_batch.get("observation.state") is not None:
-            policy.preprocessor.update_stats(warmup_batch["observation.state"])
-            warmup_done = int(warmup_batch.get("observation.state", torch.zeros((1, 1, 1))).numel() // cfg.n_obs_steps)
-        else:
-            warmup_done = 0
-        print(f"Warm-up initialized: {warmup_done} windows; stats frozen.", file=sys.stderr)
-    else:
-        warmup_done = 0
 
-    # Stats frozen during optimization epochs.
+    print(
+        f"SJFPO policy: actor_depth={cfg.dit_depth} hidden={cfg.hidden_dim} "
+        f"params={sum(p.numel() for p in policy.parameters()):,}",
+        file=sys.stderr,
+    )
+
+    # -- Warm-up: accumulate running stats over `random_rollout_steps` env steps. --
+    warmup_done = 0
+    if cfg.random_rollout_steps > 0 and total_steps >= cfg.random_rollout_steps:
+        warmup_target = min(cfg.random_rollout_steps, total_steps)
+        batch_steps = max(1, cfg.chunks_per_update * cfg.action_horizon)
+        while warmup_done < warmup_target:
+            collect = min(batch_steps, warmup_target - warmup_done)
+            wb = policy.generate_rollout(
+                train_env, collect,
+                action_low=action_low, action_high=action_high,
+            )
+            if wb.get("observation.state") is None:
+                break
+            policy.preprocessor.update_stats(wb["observation.state"])
+            warmup_done += int((~wb["action_is_pad"]).sum())
+        print(
+            f"Warm-up initialized: {warmup_done} env steps; stats frozen.",
+            file=sys.stderr,
+        )
+
+    # -- Eval / checkpoint infrastructure -----------------------------------
     evaluator = Evaluator(env, eval_seed=10000 + seed, max_episodes=12)
     eval_policy = _EvalPolicy(policy)
     r_rand = random_baseline(evaluator, env)
@@ -212,80 +248,95 @@ def train_sjfpo_run(
         cfg_dict=dataclasses.asdict(cfg),
     )
 
+    # Next step at which each periodic action fires.
+    next_eval = eval_steps
+    next_save = save_steps
+
     eval_count = 0
     consecutive_below = 0
     diverged = False
     best_return: float | None = None
     steps_to_best: int | None = None
-    artifacts: list = []
-    all_eval_returns: list = []
+    recent_eval_returns: deque[float] = deque(maxlen=10)
+    all_eval_returns: list[float] = []
+    artifacts: list[str] = []
+    elapsed = 0.0
+    fps = 0.0
     t_start = time.time()
+
     try:
         while global_step < total_steps:
             steps_to_go = total_steps - global_step
             collect_steps = min(cfg.chunks_per_update * cfg.action_horizon, steps_to_go)
-            batch = policy.generate_rollout(train_env, collect_steps,
-                                              action_low=action_low, action_high=action_high)
-            global_step += int((~batch["action_is_pad"]).sum())
-            # Exploration smoothness: mean jerk over executed chunk prefixes.
+            batch = policy.generate_rollout(
+                train_env, collect_steps,
+                action_low=action_low, action_high=action_high,
+            )
+            # Count executed env steps via executed chunk prefixes.
+            step_delta = int((~batch["action_is_pad"]).sum())
+            if step_delta <= 0:
+                raise RuntimeError(
+                    "rollout returned zero executed steps; aborting to avoid "
+                    "an infinite training loop."
+                )
+            global_step += step_delta
+
             rollout_jerk = None
             if "action" in batch and "action_is_pad" in batch:
                 rollout_jerk = mean_chunk_jerk(
                     batch["action"].detach().cpu().numpy(),
                     batch["action_is_pad"].detach().cpu().numpy(),
                 )
-            # Verify normalized actions [-1, 1].
             action_abs_max = float(batch["action"].abs().max())
             if action_abs_max > 1.05:
                 raise ValueError(
                     f"Unnormalized actions detected: max_abs={action_abs_max:.3f} "
-                    f"(expected scaled [-1, 1]; check rollout/action bounds or preprocessing)"
+                    "(expected scaled [-1, 1]; check rollout/action bounds)"
                 )
+
             policy.train()
-            infos = []
-            grad_norms_before = []  # pre-clip norms (clip_grad_norm_ returns before-clip)
-            grad_norms_after = []  # post-clip norms
-            # Freeze behavior snapshot once per collection round.
             policy.snapshot_behavior_policy()
+
+            infos: list[dict[str, float]] = []
+            grad_norm_pre: list[float] = []
             n_chunks = batch["advantages"].shape[0]
-            # One GPU randperm per epoch, contiguous splits (no dropped tails).
             for mb_idx in mini_batch_indices(
                 n_chunks, cfg.num_minibatches, batch["advantages"].device,
                 num_epochs=cfg.num_epochs,
             ):
-                optimizer.zero_grad()
+                optimizer.zero_grad(set_to_none=True)
                 loss, epoch_info = policy(sample_minibatch(batch, mb_idx))
-                # Verify scalar loss before backward.
                 if loss.dim() != 0:
                     raise ValueError(
-                        f"Loss must be scalar (reduction='mean') before backward; got shape {tuple(loss.shape)}. "
-                        f"If using reduction='none', scale loss explicitly (e.g., loss.sum()/batch_size) before backward."
+                        f"Loss must be scalar before backward; got {tuple(loss.shape)}."
                     )
                 loss.backward()
                 all_params = [
                     p for group in optimizer.param_groups for p in group["params"]
                 ]
-                grad_norm = torch.nn.utils.clip_grad_norm_(
+                # `clip_grad_norm_` returns the pre-clip total norm; post-clip
+                # is min(pre, max_norm) because clipping is a uniform scale.
+                pre = torch.nn.utils.clip_grad_norm_(
                     all_params, cfg.grad_clip_norm
                 )
-                grad_norm_after = 0.0
-                for p in all_params:
-                    if p.grad is not None:
-                        param_norm = p.grad.data.norm(2)
-                        grad_norm_after += param_norm.item() ** 2
-                grad_norm_after = grad_norm_after ** 0.5
-                grad_norms_before.append(float(grad_norm))
-                grad_norms_after.append(float(grad_norm_after))
+                grad_norm_pre.append(float(pre))
                 optimizer.step()
                 policy.step_count += 1
                 infos.append(epoch_info)
-            info = {k: sum(d[k] for d in infos) / len(infos) for k in infos[0]}
-            grad_norm_mean_before = sum(grad_norms_before) / len(grad_norms_before) if grad_norms_before else 0.0
-            grad_norm_mean_after = sum(grad_norms_after) / len(grad_norms_after) if grad_norms_after else 0.0
+
+            # Aggregate across epochs/minibatches.
+            info = {
+                k: sum(d[k] for d in infos) / len(infos) for k in infos[0]
+            }
+            grad_norm_mean_pre = (
+                sum(grad_norm_pre) / len(grad_norm_pre) if grad_norm_pre else 0.0
+            )
+            grad_norm_mean_post = min(grad_norm_mean_pre, cfg.grad_clip_norm)
+
             if wandb_enabled:
                 data = {f"train/{k}": v for k, v in info.items()}
-                data["train/grad_norm_preclip"] = grad_norm_mean_before
-                data["train/grad_norm_after_clip"] = grad_norm_mean_after
+                data["train/grad_norm_preclip"] = grad_norm_mean_pre
+                data["train/grad_norm_after_clip"] = grad_norm_mean_post
                 if rollout_jerk is not None:
                     data["train/rollout_jerk"] = rollout_jerk
                 data["train/total_loss"] = (
@@ -300,12 +351,15 @@ def train_sjfpo_run(
                     }
                 )
                 log_metrics(data, step=global_step)
+
+            # -- Periodic eval ------------------------------------------
             diverged_now = False
             diverge_msg = ""
-            if global_step % eval_steps < cfg.action_horizon or global_step >= total_steps:
+            if global_step >= next_eval or global_step >= total_steps:
                 eval_results = evaluator.evaluate(eval_policy, out_dir=out_dir)
                 mean_return = float(np.mean([r["return"] for r in eval_results]))
                 all_eval_returns.append(mean_return)
+                recent_eval_returns.append(mean_return)
                 eval_count += 1
                 if best_return is None or mean_return > best_return:
                     best_return = mean_return
@@ -322,18 +376,18 @@ def train_sjfpo_run(
                         best_return=best_return,
                         steps_to_best=steps_to_best,
                     )
-                    try:
-                        pass  # Video rendering disabled to avoid GLFW/libc++ crash in headless
-                    except Exception:
-                        pass
                 consecutive_below, diverged_now = check_divergence(
                     mean_return, r_rand, consecutive_below
                 )
                 if diverged_now:
                     diverge_msg = (
-                        f"DIVERGED at step {global_step}: mean_return={mean_return:.2f} "
+                        f"DIVERGED at step {global_step}: "
+                        f"mean_return={mean_return:.2f} "
                         f"< 0.10*R_rand={0.10 * r_rand:.2f}"
                     )
+                # Advance the trigger past the current step.
+                next_eval = max(global_step + eval_steps, next_eval + eval_steps)
+
             if diverged_now:
                 diverged = True
                 if wandb_enabled:
@@ -343,7 +397,9 @@ def train_sjfpo_run(
                     )
                 print(diverge_msg)
                 break
-            if global_step % save_steps < cfg.action_horizon or global_step >= total_steps:
+
+            # -- Periodic checkpoint ------------------------------------
+            if global_step >= next_save or global_step >= total_steps:
                 ckpt_dir = out_dir / f"checkpoint_{global_step}"
                 save_policy_checkpoint(
                     ckpt_dir,
@@ -352,11 +408,14 @@ def train_sjfpo_run(
                     global_step=global_step,
                 )
                 artifacts.append(str(ckpt_dir / "model.safetensors"))
+                next_save = max(global_step + save_steps, next_save + save_steps)
+
         elapsed = time.time() - t_start
         fps = global_step / max(elapsed, 1e-6)
         if wandb_enabled:
             log_metrics(
-                {"timing/fps": fps, "timing/elapsed_s": elapsed}, step=global_step
+                {"timing/fps": fps, "timing/elapsed_s": elapsed},
+                step=global_step,
             )
     finally:
         if train_env is not env:
@@ -372,15 +431,17 @@ def train_sjfpo_run(
         global_step=global_step,
     )
     artifacts.append(str(ckpt_dir / "model.safetensors"))
+
     csv_path = out_dir / "eval_history.csv"
     if csv_path.exists():
         artifacts.append(str(csv_path))
+
     return {
         "method": "sjfpo",
         "env_name": env_name,
         "seed": seed,
         "reward_mean_last10": (
-            float(np.mean(all_eval_returns[-10:])) if all_eval_returns else 0.0
+            float(np.mean(recent_eval_returns)) if recent_eval_returns else 0.0
         ),
         "fps": fps,
         "artifacts": artifacts,
