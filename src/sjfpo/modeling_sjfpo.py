@@ -16,7 +16,7 @@ from lerobot.utils.constants import ACTION, DONE, OBS_STATE, REWARD, TRUNCATED
 
 from sjfpo.configuration_sjfpo import SJFPOConfig
 from sjfpo.collector import collect_chunks, collect_chunks_vec
-from sjfpo.dct_utils import decode_coeffs_to_velocity, extract_dct_coeffs
+from sjfpo.dct_utils import decode_coeffs_to_velocity, extract_dct_coeffs, sample_freq_weighted_noise
 from sjfpo.fpo_core import (
     compute_aspo_surrogate,
     compute_cfm_loss,
@@ -344,7 +344,25 @@ class SJFPOPolicy(PreTrainedPolicy):
         tau = sample_timesteps(
             cfg.num_mc_samples, (cfg.min_timestep, cfg.max_timestep), device=device
         )
-        eps = sample_noise((n_chunks, cfg.num_mc_samples, top_k, action_dim), device=device)
+        if cfg.use_dct_transform:
+            M_modes = max(1, cfg.action_horizon - 1)
+            eps = sample_freq_weighted_noise(
+                M=M_modes,
+                d=action_dim,
+                T=1.0,
+                B=n_chunks * cfg.num_mc_samples,
+                sigma=1.0,
+            ).reshape(n_chunks, cfg.num_mc_samples, M_modes + 1, action_dim).to(device=device)
+            # Verify shape aligns with spectral tokens
+            expected_shape = (n_chunks, cfg.num_mc_samples, M_modes + 1, action_dim)
+            if tuple(eps.shape) != expected_shape:
+                raise ValueError(
+                    f"DCT eps shape {tuple(eps.shape)} != expected {expected_shape}"
+                )
+        else:
+            eps = sample_noise(
+                (n_chunks, cfg.num_mc_samples, cfg.action_horizon, action_dim), device=device
+            )
         # Fix 11/12: verify eps shape aligns with both DCT (top_k) and non-DCT (action_horizon) paths.
         expected_shape = (n_chunks, cfg.num_mc_samples,
                            (max(1, round(cfg.top_p_spectral_tokens * cfg.action_horizon))
@@ -463,10 +481,20 @@ class SJFPOPolicy(PreTrainedPolicy):
                 (cfg.min_timestep, cfg.max_timestep),
                 device=states.device,
             )
-            eps = sample_noise(
-                (n, cfg.num_mc_samples, token_dim if cfg.use_dct_transform else actions.shape[-1], actions.shape[-1]),
-                device=states.device,
-            )
+            if cfg.use_dct_transform:
+                M_modes = max(1, cfg.action_horizon - 1)
+                eps = sample_freq_weighted_noise(
+                    M=M_modes,
+                    d=actions.shape[-1],
+                    T=1.0,
+                    B=n * cfg.num_mc_samples,
+                    sigma=1.0,
+                ).reshape(n, cfg.num_mc_samples, M_modes + 1, actions.shape[-1]).to(device=states.device)
+            else:
+                eps = sample_noise(
+                    (n, cfg.num_mc_samples, cfg.action_horizon, actions.shape[-1]),
+                    device=states.device,
+                )
 
         # Interpolate noisy anchors: (1-t)·ε + t·a.
         tau_bn, eps_flat, a_rep, flow_shape, num_mc = run_mc_simulation(
