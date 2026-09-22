@@ -1,21 +1,34 @@
 """FPO++ core math: CFM losses, per-sample ratios, ASPO trust region, Euler sampler (arXiv 2602.02481 Eq.3-13)."""
+
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 from typing import Any
 
-import einx
-import math
 import torch
+
 from sjfpo.configuration_sjfpo import SJFPOConfig
-from sjfpo.dct_utils import dct, idct, extract_dct_coeffs, decode_coeffs_to_velocity, sample_freq_weighted_noise, estimate_M_from_dataset
 from sjfpo.utils import resolve_storage_dtype
-STORAGE_DTYPE = resolve_storage_dtype()  # cached once
+
+STORAGE_DTYPE = resolve_storage_dtype()
 
 
-# Single source for ``None``-fallback defaults.
-_DEFAULTS = SJFPOConfig()
+# Lazily materialized config: keeps import cheap and lets callers override
+# before the first use via `_defaults()`.
+_DEFAULT_CFG: SJFPOConfig | None = None
 
+
+def _defaults() -> SJFPOConfig:
+    global _DEFAULT_CFG
+    if _DEFAULT_CFG is None:
+        _DEFAULT_CFG = SJFPOConfig()
+    return _DEFAULT_CFG
+
+
+# ---------------------------------------------------------------------------
+# Sampling
+# ---------------------------------------------------------------------------
 
 def sample_timesteps(
     num_samples: int,
@@ -25,84 +38,102 @@ def sample_timesteps(
     *,
     alpha=None,
     beta=None,
+    generator: torch.Generator | None = None,
 ):
-    """Flow times τ for the shared MC draw: [num_samples] in [lo, hi].
+    """Flow times τ [num_samples] in [lo, hi].
 
-    ``mode``: "uniform" = U[lo, hi] (default); "normal" = N(mid, range/4)
-    clamped, oversampling mid-times where the field curves most;
-    "beta" = lerobot openpi Beta(alpha, beta) scaled to [lo, hi]
-    (needs alpha=/beta= kwargs).
+    ``mode``: ``"uniform"`` | ``"normal"`` (mid-weighted) | ``"beta"``
+    (lerobot openpi Beta(alpha, beta) scaled to [lo, hi]).
     """
+    cfg = _defaults()
     lo, hi = (
-        (_DEFAULTS.min_timestep, _DEFAULTS.max_timestep)
-        if tau_range is None
-        else tau_range
+        (cfg.min_timestep, cfg.max_timestep) if tau_range is None else tau_range
     )
     if mode == "uniform":
-        return torch.rand(num_samples, device=device) * (hi - lo) + lo
+        return torch.rand(num_samples, device=device, generator=generator) * (hi - lo) + lo
     if mode == "normal":
         mid = 0.5 * (lo + hi)
         std = 0.25 * (hi - lo)
-        return (torch.randn(num_samples, device=device) * std + mid).clamp(lo, hi)
+        z = torch.randn(num_samples, device=device, generator=generator)
+        return (z * std + mid).clamp(lo, hi)
     if mode == "beta":
         if alpha is None or beta is None:
             raise ValueError("mode='beta' needs alpha= and beta= kwargs")
         from lerobot.policies.common.flow_matching import sample_time_beta
 
         return sample_time_beta(
-            num_samples, device, alpha=alpha, beta=beta, scale=hi - lo, offset=lo
+            num_samples, device, alpha=alpha, beta=beta,
+            scale=hi - lo, offset=lo,
         )
     raise ValueError(f"mode={mode!r} unknown; expected 'uniform', 'normal' or 'beta'")
 
 
-def sample_noise(shape, device=None, mode="normal"):
-    """MC noise ε of shape [*shape].
+def sample_noise(
+    shape,
+    device=None,
+    mode="normal",
+    generator: torch.Generator | None = None,
+):
+    """MC noise ε of shape ``[*shape]``.
 
-    ``mode``: "normal" = N(0, I) (CFM-correct, v* assumes Gaussian endpoints);
-    "uniform" = U[-√3, √3] (unit variance, same velocity scale; ablations).
+    ``mode``: ``"normal"`` = N(0, I); ``"uniform"`` = U[-√3, √3] (unit variance).
     """
     if mode == "normal":
-        return torch.randn(*shape, device=device)
+        return torch.randn(*shape, device=device, generator=generator)
     if mode == "uniform":
         s = math.sqrt(3.0)
-        return (torch.rand(*shape, device=device) * 2.0 - 1.0) * s
+        return (torch.rand(*shape, device=device, generator=generator) * 2.0 - 1.0) * s
     raise ValueError(f"mode={mode!r} unknown; expected 'normal' or 'uniform'")
 
 
-def run_mc_simulation(a: torch.Tensor, eps: torch.Tensor, tau):
-    """Broadcast (a, eps, tau) onto the shared [B*num_mc_samples] MC axis.
+def run_mc_simulation(
+    a: torch.Tensor, eps: torch.Tensor, tau
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, tuple[int, ...], int]:
+    """Broadcast (a, eps, tau) onto the shared ``[B*M]`` MC axis.
 
-    tau: scalar, [num_mc_samples], or [B, num_mc_samples].
-    Returns (tau_bn, eps_flat, a_rep, flow_shape, num_mc); raises ValueError
-    on shape mismatches.
+    Returns ``(tau_bn, eps_flat, a_rep, flow_shape, num_mc)``.
     """
     b, num_mc = eps.shape[0], eps.shape[1]
     flow_shape = tuple(a.shape[1:])
     if tuple(eps.shape) != (b, num_mc, *flow_shape):
-        raise ValueError(f"eps shape {tuple(eps.shape)} != {(b, num_mc, *flow_shape)}")
-    t = torch.as_tensor(tau, dtype=STORAGE_DTYPE)
+        raise ValueError(
+            f"eps shape {tuple(eps.shape)} != {(b, num_mc, *flow_shape)}"
+        )
+
+    # Coerce tau to a device-matched tensor without a silent CPU hop.
+    if isinstance(tau, torch.Tensor):
+        t = tau.to(device=eps.device, dtype=STORAGE_DTYPE)
+    else:
+        t = torch.as_tensor(tau, dtype=STORAGE_DTYPE, device=eps.device)
+
     if t.dim() == 0:
-        t = einx.id(" -> b m", t, b=b, m=num_mc)
+        t = t.expand(b, num_mc)
     elif t.dim() == 1:
         if t.numel() != num_mc:
             raise ValueError(
-                f"tau vector must have num_mc_samples={num_mc} entries, got {t.numel()}"
+                f"tau vector must have num_mc_samples={num_mc} entries, "
+                f"got {t.numel()}"
             )
-        t = einx.id("m -> b m", t, b=b)
+        t = t.expand(b, num_mc)
     elif tuple(t.shape) != (b, num_mc):
         raise ValueError(
             f"tau shape {tuple(t.shape)} must be scalar, [num_mc_samples] or [B, num_mc_samples]"
         )
+
     d = a.numel() // b
-    a_flat = a.reshape(b, d)
+    a_flat = a.reshape(b, 1, d).expand(b, num_mc, d).reshape(b * num_mc, d)
     return (
-        einx.id("b m -> (b m)", t),
+        t.reshape(b * num_mc),
         eps.reshape(b * num_mc, d),
-        einx.id("b d -> (b m) d", a_flat, m=num_mc),
+        a_flat,
         flow_shape,
         num_mc,
     )
 
+
+# ---------------------------------------------------------------------------
+# CFM loss
+# ---------------------------------------------------------------------------
 
 def compute_cfm_loss(
     v_hat: torch.Tensor,
@@ -110,36 +141,40 @@ def compute_cfm_loss(
     reduce_mode: str = "scalar",
     clamp: float | None = None,
 ) -> torch.Tensor:
-    """CFM squared-velocity loss with selectable reduction (paper Eq.7-8).
+    """CFM squared-velocity loss (paper Eq.7-8).
 
-    OFF ``sqrt`` convention (``rl_cfg.cfm_loss_reduction`` default): per-draw
-    losses are ``sum / sqrt(D)`` over flow dims, which preserves variance
-    across action dims instead of shrinking log-ratios like a mean. ``bin``
-    applies the same scaling per frequency bin (diagnostic path only).
-    Symmetric max-clamp (OFF ``cfm_loss_clamp``) applies to ``sample``/``bin``.
+    ``sample``/``bin`` use ``sum / sqrt(D)`` — preserves variance across
+    action dims instead of shrinking log-ratios like a mean.
     """
     if v_hat.shape != v_star.shape:
         raise ValueError(
             f"v_hat shape {tuple(v_hat.shape)} != v_star shape {tuple(v_star.shape)}"
         )
-    squared_errors = (v_hat - v_star).pow(2)
+    sq = torch.square(v_hat - v_star)
+
     if reduce_mode == "scalar":
         if clamp is not None:
             raise ValueError("clamp applies to reduce_mode='sample'/'bin' only")
-        return squared_errors.mean()
-    elif reduce_mode == "sample":
-        flat = squared_errors.flatten(2)
+        return sq.mean()
+
+    if reduce_mode == "sample":
+        flat = sq.flatten(2)
         reduced = flat.sum(dim=-1) / math.sqrt(flat.shape[-1])
     elif reduce_mode == "bin":
-        reduced = squared_errors.sum(dim=-1) / math.sqrt(squared_errors.shape[-1])
+        reduced = sq.sum(dim=-1) / math.sqrt(sq.shape[-1])
     else:
         raise ValueError(
             f"reduce_mode={reduce_mode!r} must be 'scalar', 'sample', or 'bin'"
         )
 
-    clamp = _DEFAULTS.cfm_clamp if clamp is None else clamp
+    cfg = _defaults()
+    clamp = cfg.cfm_clamp if clamp is None else clamp
     return torch.clamp(reduced, max=clamp)
 
+
+# ---------------------------------------------------------------------------
+# ASPO surrogate / policy ratio / policy loss
+# ---------------------------------------------------------------------------
 
 def compute_aspo_surrogate(
     rho: torch.Tensor,
@@ -147,25 +182,25 @@ def compute_aspo_surrogate(
     epsilon_clip: float | None = None,
     symmetrical_ppo: bool | None = None,
 ) -> torch.Tensor:
-    """ASPO piecewise trust region ψ(ρ, Â) (paper Eq.12) or standard PPO clip.
+    """ASPO piecewise trust region ψ(ρ, Â) (paper Eq.12) or PPO clip.
 
-    If ``symmetrical_ppo`` (or ``_DEFAULTS.use_aspo`` False), uses uniform
-    PPO-clip for both positive and negative advantages (original FPO-control
-    symmetrical mode).
+    Hoists ``rho * advantage`` and the clipped ratio so neither is computed
+    twice on the non-symmetric branch.
     """
-    epsilon_clip = _DEFAULTS.epsilon_clip if epsilon_clip is None else epsilon_clip
+    cfg = _defaults()
+    if epsilon_clip is None:
+        epsilon_clip = cfg.epsilon_clip
     if symmetrical_ppo is None:
-        symmetrical_ppo = not _DEFAULTS.use_aspo
+        symmetrical_ppo = not cfg.use_aspo
+
+    rho_adv = rho * advantage
+    rho_clipped = torch.clamp(rho, 1.0 - epsilon_clip, 1.0 + epsilon_clip)
+    pos = torch.min(rho_adv, rho_clipped * advantage)
+
     if symmetrical_ppo:
-        return torch.min(
-            rho * advantage,
-            torch.clamp(rho, 1.0 - epsilon_clip, 1.0 + epsilon_clip) * advantage,
-        )
-    pos = torch.min(
-        rho * advantage,
-        torch.clamp(rho, 1.0 - epsilon_clip, 1.0 + epsilon_clip) * advantage,
-    )
-    neg = rho * advantage - (advantage.abs() / (2.0 * epsilon_clip)) * (rho - 1.0) ** 2
+        return pos
+
+    neg = rho_adv - (advantage.abs() / (2.0 * epsilon_clip)) * torch.square(rho - 1.0)
     return torch.where(advantage > 0, pos, neg)
 
 
@@ -175,23 +210,19 @@ def compute_policy_ratio(
     cfm_clamp: float | None = None,
     cap: float | None = None,
 ) -> torch.Tensor:
-    """Per-sample importance ratios (paper Eq.10 + OFF clamps).
+    """Per-sample importance ratios ρ_i = exp(ℓ_old,i − ℓ_new,i) with OFF clamps.
 
-    ρ_i = exp(ℓ_old,i − ℓ_new,i) with OFF's stabilizers: symmetric max-clamp
-    on both losses (``cfm_loss_clamp``) and an STE cap on the log-ratio
-    (forward clamped, gradient flows; ``cfm_diff_clamp_max``). OFF's separate
-    negative-advantage max coincides with ``cfm_clamp`` here (single knob),
-    so the symmetric clamp already covers it.
+    Symmetric max-clamp on both losses (``cfm_loss_clamp``) and a symmetric
+    STE cap on the log-ratio (``cfm_diff_clamp_max``) — forward clamped,
+    gradient flows.
     """
-    cfm_clamp = _DEFAULTS.cfm_clamp if cfm_clamp is None else cfm_clamp
-    l_old_c = torch.clamp(l_old, max=cfm_clamp)
-    l_new_c = torch.clamp(l_new, max=cfm_clamp)
-    cap = _DEFAULTS.log_ratio_cap if cap is None else cap
-    delta = l_old_c - l_new_c
-    # Clamp log-ratio before exp; independent of CFM loss clamp.
-    log_limit = 10.0  # Tune and log max(abs(delta)) + fraction clipped.
-    safe_delta = delta.clamp(-log_limit, log_limit)
-    # Forward uses clamped delta; backward flows through unclamped delta via STE.
+    cfg = _defaults()
+    cfm_clamp = cfg.cfm_clamp if cfm_clamp is None else cfm_clamp
+    cap = cfg.log_ratio_cap if cap is None else cap
+
+    delta = torch.clamp(l_old, max=cfm_clamp) - torch.clamp(l_new, max=cfm_clamp)
+    safe_delta = delta.clamp(-cap, cap)
+    # STE: forward uses clamped delta, backward flows through the unclamped delta.
     delta_st = safe_delta + (delta - safe_delta).detach()
     return torch.exp(delta_st)
 
@@ -204,13 +235,14 @@ def compute_policy_loss(
     cfm_clamp: float | None = None,
     cap: float | None = None,
 ) -> torch.Tensor:
-    """Scalar FPO++ policy objective: MEAN over i of ψ per chunk (Eq.13).
-
-    Per-sample ratios enter the mean directly — never an exp-of-mean estimator.
-    """
+    """Scalar FPO++ policy objective: MEAN over i of ψ per chunk (Eq.13)."""
     rho = compute_policy_ratio(l_old, l_new, cfm_clamp=cfm_clamp, cap=cap)
     return compute_aspo_surrogate(rho, advantage, epsilon_clip).mean()
 
+
+# ---------------------------------------------------------------------------
+# Inference
+# ---------------------------------------------------------------------------
 
 def sample_action(
     predict_velocity: Callable[[torch.Tensor, torch.Tensor, Any], torch.Tensor],
@@ -222,27 +254,33 @@ def sample_action(
     device=None,
     mode: str = "euler",
 ) -> torch.Tensor:
-    """Sample the learned flow from t=0 (noise) to t=1 (data).
+    """Sample the learned flow t=0 (noise) → t=1 (data); Euler by default.
 
-    ``predict_velocity`` maps (x, t, condition) -> v̂, where condition is the
-    pre-fused state vector; the loop only integrates (Euler or other modes)
-    and never touches network weights.
-
-    Euler: ``x ← x + δ·v̂`` on the ascending linspace(0, 1, steps+1) grid,
-    δ = 1/steps at the left-endpoint t. ``eps=None`` draws N(0, I);
-    explicit ``eps`` (e.g. zeros) bypasses randomness. Inference-only.
+    The grid and the initial noise are placed on ``device`` (defaults to
+    ``condition.device``), so no per-step CPU↔GPU syncs occur.
     """
     if mode != "euler":
         raise ValueError(f"mode={mode!r} unknown; expected 'euler'")
-    grid = torch.linspace(0.0, 1.0, num_inference_steps + 1)
+
+    # Resolve device from the condition when the caller didn't specify one.
+    if device is None:
+        device = condition.device if isinstance(condition, torch.Tensor) else None
+
+    grid = torch.linspace(
+        0.0, 1.0, num_inference_steps + 1,
+        device=device, dtype=torch.float32,
+    )
+
     if eps is None:
-        eps = torch.randn(*shape, generator=generator)
-        if device is not None:
-            eps = eps.to(device)
+        eps = torch.randn(*shape, device=device, generator=generator)
+    elif device is not None and eps.device != torch.device(device):
+        eps = eps.to(device)
+
     x = eps
     with torch.inference_mode():
-
+        # Precompute dt once; XLA/torch compile friendly.
+        dts = grid[1:] - grid[:-1]                 # [steps]
         for i in range(num_inference_steps):
             v_hat = predict_velocity(x, grid[i], condition)
-            x = x + (grid[i + 1] - grid[i]) * v_hat
+            x = x + dts[i] * v_hat
     return x
