@@ -1,9 +1,4 @@
-"""Orthonormal DCT-II / DCT-III utilities (pure torch matmuls, no scipy).
-
-M[k, n] = sqrt(2/N)·c_k·cos(π(2n+1)k/2N), c_0 = 1/√2. Orthonormality (MᵀM = I)
-preserves Euclidean measure, so Gaussians and log-densities survive the
-change of variables (log-det = 0). ``dct(x) = x @ Mᵀ``, ``idct(y) = y @ M``.
-"""
+"""Orthonormal DCT-II / DCT-III utilities (pure torch matmuls, no scipy)."""
 
 from __future__ import annotations
 

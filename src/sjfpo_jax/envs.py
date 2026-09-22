@@ -166,8 +166,8 @@ def obs(spec: dict, qpos: np.ndarray, qvel: np.ndarray,
     """Observation; ``extra`` carries cfrc_ext/site/body frames for exotics."""
     extra = extra or {}
     kind = spec["obs_kind"]
-    qpos = np.asarray(qpos, dtype=np.float64).ravel()
-    qvel = np.asarray(qvel, dtype=np.float64).ravel()
+    qpos = np.asarray(qpos, dtype=np.float32).ravel()
+    qvel = np.asarray(qvel, dtype=np.float32).ravel()
     if kind == "qpos_qvel":
         position = qpos[spec["obs_drop"]:]
         if spec["qvel_clip"] is not None:
@@ -178,7 +178,7 @@ def obs(spec: dict, qpos: np.ndarray, qvel: np.ndarray,
     if kind == "ant":
         position = qpos[spec["obs_drop"]:]
         lo, hi = spec["contact_force_range"]
-        cfrc = np.clip(np.asarray(extra["cfrc_ext"], dtype=np.float64), lo, hi)
+        cfrc = np.clip(np.asarray(extra["cfrc_ext"], dtype=np.float32), lo, hi)
         return np.concatenate([position, qvel, cfrc[1:].flatten()])
     if kind == "reacher":
         theta = qpos[:2]
@@ -207,8 +207,8 @@ def is_healthy(spec: dict, qpos: np.ndarray, qvel: np.ndarray,
     kind = spec["done_kind"]
     if kind == "never":
         return True
-    qpos = np.asarray(qpos, dtype=np.float64).ravel()
-    qvel = np.asarray(qvel, dtype=np.float64).ravel()
+    qpos = np.asarray(qpos, dtype=np.float32).ravel()
+    qvel = np.asarray(qvel, dtype=np.float32).ravel()
     if kind == "healthy":
         z, angle = qpos[1], qpos[2]
         z_lo, z_hi = spec["healthy_z_range"]
@@ -241,7 +241,7 @@ def reward(spec: dict, x_before: float, x_after: float, dt: float,
     """Step reward (healthy/dist terms read POST-step state, like gymnasium)."""
     extra = extra or {}
     kind = spec["reward_kind"]
-    action = np.asarray(action, dtype=np.float64)
+    action = np.asarray(action, dtype=np.float32)
     if kind == "locomotion":
         forward = spec["forward_weight"] * (x_after - x_before) / dt
         survive = spec["healthy_reward"] if healthy else 0.0
@@ -249,7 +249,7 @@ def reward(spec: dict, x_before: float, x_after: float, dt: float,
         contact = 0.0
         if spec["contact_weight"]:
             lo, hi = spec["contact_force_range"]
-            cfrc = np.clip(np.asarray(extra["cfrc_ext"], dtype=np.float64), lo, hi)
+            cfrc = np.clip(np.asarray(extra["cfrc_ext"], dtype=np.float32), lo, hi)
             contact = spec["contact_weight"] * float(np.sum(np.square(cfrc)))
         return float(forward + survive - ctrl - contact)
     if kind == "survive":
@@ -290,22 +290,22 @@ def reset_state(spec: dict, rng: np.random.Generator,
     s = spec.get("reset_noise_scale", 0.0)
     nq, nv = len(init_qpos), len(init_qvel)
     if kind == "uniform_normal":
-        qpos = np.asarray(init_qpos, dtype=np.float64) + rng.uniform(-s, s, nq)
-        qvel = np.asarray(init_qvel, dtype=np.float64) + s * rng.standard_normal(nv)
+        qpos = np.asarray(init_qpos, dtype=np.float32) + rng.uniform(-s, s, nq)
+        qvel = np.asarray(init_qvel, dtype=np.float32) + s * rng.standard_normal(nv)
     elif kind == "uniform_uniform":
-        qpos = np.asarray(init_qpos, dtype=np.float64) + rng.uniform(-s, s, nq)
-        qvel = np.asarray(init_qvel, dtype=np.float64) + rng.uniform(-s, s, nv)
+        qpos = np.asarray(init_qpos, dtype=np.float32) + rng.uniform(-s, s, nq)
+        qvel = np.asarray(init_qvel, dtype=np.float32) + rng.uniform(-s, s, nv)
     elif kind == "reacher":
-        qpos = np.asarray(init_qpos, dtype=np.float64) + rng.uniform(-0.1, 0.1, nq)
+        qpos = np.asarray(init_qpos, dtype=np.float32) + rng.uniform(-0.1, 0.1, nq)
         while True:
             goal = rng.uniform(low=-0.2, high=0.2, size=2)
             if np.linalg.norm(goal) < 0.2:
                 break
         qpos[-2:] = goal
-        qvel = np.asarray(init_qvel, dtype=np.float64) + rng.uniform(-0.005, 0.005, nv)
+        qvel = np.asarray(init_qvel, dtype=np.float32) + rng.uniform(-0.005, 0.005, nv)
         qvel[-2:] = 0
     elif kind == "pusher":
-        qpos = np.asarray(init_qpos, dtype=np.float64)
+        qpos = np.asarray(init_qpos, dtype=np.float32)
         goal = np.zeros(2)
         while True:
             cyl = np.concatenate([
@@ -316,7 +316,7 @@ def reset_state(spec: dict, rng: np.random.Generator,
                 break
         qpos[-4:-2] = cyl
         qpos[-2:] = goal
-        qvel = np.asarray(init_qvel, dtype=np.float64) + rng.uniform(-0.005, 0.005, nv)
+        qvel = np.asarray(init_qvel, dtype=np.float32) + rng.uniform(-0.005, 0.005, nv)
         qvel[-4:] = 0
     else:
         raise ValueError(f"reset_kind={kind!r} unknown")

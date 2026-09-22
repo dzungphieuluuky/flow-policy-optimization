@@ -1,10 +1,4 @@
-"""SJFPO policy (LeRobot-native): flow head + state conditioner + critic + obs stats.
-
-Batch contract for ``forward`` (fp32, on policy device): observation.state
-[B, T, obs], action [B, H, action_dim] real scaled, action_is_pad [B, H]
-bool (absent = all executed), advantages/returns [B] (frozen GAE),
-values [B] optional (v_old at collection for clipped value loss).
-"""
+"""SJFPO policy: flow head + state conditioner + critic. Batch contract: [B, T, obs], [B, H, action_dim], frozen GAE/values."""
 
 from __future__ import annotations
 
@@ -84,10 +78,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         # old checkpoints load unchanged; build_policy sets them per run.
         self.register_buffer("action_low", torch.full((action_dim,), -1.0), persistent=False)
         self.register_buffer("action_high", torch.full((action_dim,), 1.0), persistent=False)
-        # Frozen behavior snapshot (PPO π_old): unit ratios at init, refreshed
-        # per collection round; rides state_dict but excluded from the optimizer.
-        # Inference-only (requires_grad off): nothing ever backprops through
-        # it, and DDP treats grad-less requires_grad params as an error.
+        # Frozen behavior snapshot (PPO π_old); refreshed per collection round.
         self.old_actor = copy.deepcopy(self.actor)
         self.old_actor.requires_grad_(False).eval()
         self.old_conditioner = copy.deepcopy(self.conditioner)
@@ -95,14 +86,12 @@ class SJFPOPolicy(PreTrainedPolicy):
         self._frame_buffer: deque[torch.Tensor] = deque(maxlen=config.n_obs_steps)
         self._action_buffer: deque[torch.Tensor] = deque()
         self.step_count = 0
-        # LeRobot-fashion pre/post pair sharing the live normalizer + bounds.
         self.preprocessor, self.postprocessor = make_sjfpo_pre_post_processors(self)
-        del dataset_stats  # stats stay online (RunningMeanStd), never frozen
+        del dataset_stats
 
     def train(self, mode: bool = True):
         super().train(mode)
-        # Fix 9/12: keep frozen behavior snapshot in eval mode regardless of
-        # self.train() calls during PPO optimization rounds.
+        # Keep frozen snapshot in eval mode during PPO rounds.
         self.old_actor.eval()
         self.old_conditioner.eval()
         return self
@@ -130,26 +119,17 @@ class SJFPOPolicy(PreTrainedPolicy):
         self.action_high.copy_(to_tensor_1d(high, dtype=STORAGE_DTYPE, device=self.action_high.device))
 
     def snapshot_behavior_policy(self) -> None:
-        """Freeze current weights as the behavior policy for l_old.
-
-        Call once per collection round, before any update on the new batch.
-        """
+        """Freeze current weights as behavior policy (l_old)."""
         self.old_actor = copy.deepcopy(self.actor)
         self.old_actor.requires_grad_(False)  # deepcopy inherits live grad flags
         self.old_conditioner = copy.deepcopy(self.conditioner)
         self.old_conditioner.requires_grad_(False)
 
     def get_optim_params(self) -> dict:
-        """Actor (decay / no-decay) + conditioner + critic groups.
-
-        Single LR everywhere (PPO standard); snapshots never train. Zero-init
-        layers (adaLN regressors incl. adaLN_out, final out) skip weight decay
-        so decay never fights the identity-at-init design.
-        """
+        """Actor (decay/no-decay) + conditioner + critic. Zero-decay for identity-at-init layers."""
         decay, no_decay = [], []
         for name, p in self.actor.named_parameters():
-            # Strip the torch.compile wrapper prefix so compiled/eager group
-            # identically (else save/load optimizer states stop matching).
+            # Strip torch.compile wrapper so optimizer keys match.
             short = name.split("_orig_mod.")[-1]
             if "adaLN" in short or short.startswith("out."):
                 no_decay.append(p)
@@ -183,19 +163,18 @@ class SJFPOPolicy(PreTrainedPolicy):
         """Full action chunk [B, H, action_dim]; ``noise=True`` samples, else zeros."""
         noise = kwargs.get("noise", False)
         cfg = self.config
-        # ------- standardize + normalize obs window -------
         states = self.standardize_obs_tensor(batch[OBS_STATE])
         states = to_device_async(states, next(self.actor.parameters()).device)
         states = self.preprocessor({OBS_STATE: states})[OBS_STATE]
         token_dim = max(1, round(cfg.top_p_spectral_tokens * cfg.action_horizon))
         action_dim = int(self.config.action_feature.shape[0])
         with torch.inference_mode(), autocast_context(states.device):
-            # ------- fuse state into one condition vector -------
-            condition = self.conditioner(states)  # [B, D] fused outside the flow head
+            # [B, D] fused outside flow head
+            condition = self.conditioner(states)
             shape = (states.shape[0], token_dim, action_dim)
             eps = None if noise else torch.zeros(*shape, device=states.device)
             num_inference_steps = cfg.num_euler_steps if noise else cfg.num_inference_steps
-            # ------- denoise action chunk with Euler sampler -------
+            # Denoise action chunk with Euler sampler.
             x0 = sample_action(
                 lambda x, t, c: self.actor(x, t, c),
                 shape,
@@ -269,7 +248,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         env_name = resolve_env_name(env)
 
         if want_mjx():
-            # ------- GPU-batched MJX rollout (Blackwell box; raises if unavailable) -------
+
             chunks = mjx_collect_chunks(
                 self,
                 env_name,
@@ -282,7 +261,7 @@ class SJFPOPolicy(PreTrainedPolicy):
                 seed=int(torch.randint(0, 2**31, (1,)).item()),
             )
         elif int(getattr(env, "num_envs", 1)) > 1:
-            # ------- collect open-loop chunks from env -------
+
             chunks = collect_chunks_vec(
                 env,
                 propose_batch,
@@ -293,7 +272,7 @@ class SJFPOPolicy(PreTrainedPolicy):
                 n_action_steps=cfg.action_horizon,
             )
         else:
-            # ------- collect open-loop chunks from env -------
+
             chunks = collect_chunks(
                 env,
                 propose,
@@ -321,7 +300,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         with torch.inference_mode():
             states_n = self.preprocessor({OBS_STATE: states})[OBS_STATE]
             next_states_n = self.preprocessor({OBS_STATE: next_states})[OBS_STATE]
-            # ------- score states with frozen V(s) critic -------
+            # Score states with frozen V(s) critic.
             with autocast_context(device):
                 values = self.critic(states_n).float()
                 v_next_all = self.critic(next_states_n).float()
@@ -333,9 +312,8 @@ class SJFPOPolicy(PreTrainedPolicy):
             )
             next_values = torch.where(terminated, 0.0, v_next_all)
         all_rewards = torch.cat(
-            [c[REWARD].reshape(-1).to(device=device, dtype=torch.float64) for c in chunks]
+            [c[REWARD].reshape(-1).to(device=device, dtype=torch.float32) for c in chunks]
         )
-        # ------- chunk GAE into advantages + returns (torch, fp64) -------
         advantages, returns = compute_advantages_torch(
             all_rewards,
             values.detach(),
@@ -352,10 +330,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         is_pad = torch.arange(cfg.action_horizon, device=device).unsqueeze(0) >= lengths.unsqueeze(1)
         n_chunks = len(chunks)
         action_dim = int(self.config.action_feature.shape[0])
-        # ------- common random numbers: one shared (tau, eps) draw per round -------
-        # Stored in the batch and reused by every forward() on it, so l_old and
-        # l_new always compare the same MC samples (OFF rollout storage). The
-        # behavior snapshot is frozen per round (train loop), never per step.
+        # Common random numbers: reuse rollout's (tau, eps) for CRN.
         top_k = max(1, round(cfg.top_p_spectral_tokens * cfg.action_horizon))
         tau = sample_timesteps(
             cfg.num_mc_samples, (cfg.min_timestep, cfg.max_timestep), device=device
@@ -463,10 +438,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         else:
             spectral_action_tokens = actions
         n = states.shape[0]
-        # ------- MC draws: reuse the rollout's stored (tau, eps) when present ---
-        # (common random numbers: l_old/l_new compare identical samples across
-        # all epochs, OFF rollout storage). Batches built by hand (tests) fall
-        # back to a fresh draw.
+        # Freeze behavior snapshot once per collection round.
         if "tau" in batch and "eps" in batch:
             tau = to_tensor(batch["tau"], dtype=STORAGE_DTYPE, device=states.device)
             tau = tau[0] if tau.dim() == 2 else tau
@@ -492,20 +464,19 @@ class SJFPOPolicy(PreTrainedPolicy):
                 device=states.device,
             )
 
-        # ------- interpolate noisy anchors along the flow -------
+        # Interpolate noisy anchors: (1-t)·ε + t·a.
         tau_bn, eps_flat, a_rep, flow_shape, num_mc = run_mc_simulation(
             spectral_action_tokens, eps, tau
         )
         x_t_flat = (
             (1.0 - tau_bn[:, None]) * eps_flat + tau_bn[:, None] * a_rep
         ).reshape(-1, *flow_shape)  # (1−t)·ε+t·a
-        # ------- fuse states once, replicate over MC draws -------
+        # Fuse states once, replicate over MC draws.
         cond_flat = einx.id(
             "n m d -> (n m) d", einx.id("n d -> n m d", self.conditioner(states), m=num_mc)
         )
 
-        # ------- live velocities vs frozen snapshot velocities -------
-        # (tau_bn already holds the flattened MC times; no second expansion.)
+        # Live vs frozen snapshot velocities.
         with torch.inference_mode(), autocast_context(states.device):
             old_cond_flat = einx.id(
                 "n m d -> (n m) d",
@@ -515,15 +486,13 @@ class SJFPOPolicy(PreTrainedPolicy):
         with autocast_context(states.device):
             v_new = self.actor(x_t_flat, tau_bn, cond_flat).float()
         cond_stats = dict(self.actor.last_cond_stats)
-        # ------- CFM losses under target velocities -------
-        # Fix 7/12: keep CFM ratio computation in FP32 (disable autocast here)
-        # to prevent mixed-precision overflow inside exp() / squared errors.
+        # CFM losses under target velocities (FP32 to prevent overflow).
         with torch.autocast(device_type=states.device.type, enabled=False):
             v_star_f = self.compute_target_velocity(spectral_action_tokens, eps).float()
             v_old_r_f = v_old.reshape(n, num_mc, *flow_shape).float()
             v_new_r_f = v_new.reshape(n, num_mc, *flow_shape).float()
-            # ------- ASPO trust-region policy loss (paper Eq.12-13, OFF clamps) ----
-        # Fix 5/12: validate advantages (prevent NaN/Inf/unbounded gradients).
+            # ASPO trust-region policy loss (Eq.12-13).
+        # Validate advantages (prevent NaN/Inf gradients).
         advantages_t = advantages.detach().float()
         if not torch.isfinite(advantages_t).all():
             raise SJFPOAborted(
@@ -567,10 +536,10 @@ class SJFPOPolicy(PreTrainedPolicy):
                 rho, adv_mc, cfg.epsilon_clip
             )
             policy_per_chunk = -psi.mean(dim=1)
-        # ------- value loss on raw returns -------
+        # Value loss on raw returns (Huber).
         with autocast_context(states.device):
             v_pred_raw = self.critic(states).float()
-        # Fix 3/12: enforce [B] contract; guard broadcasting / shape bugs.
+        # [B] contract; guard broadcasting bugs.
         v_pred = v_pred_raw.squeeze(-1)
         returns_d = returns.to(v_pred.device).reshape(-1)
         if v_pred.shape != returns_d.shape:
@@ -578,7 +547,7 @@ class SJFPOPolicy(PreTrainedPolicy):
                 f"value/return shape mismatch: v_pred={tuple(v_pred.shape)}, "
                 f"returns_d={tuple(returns_d.shape)}; critic output must be [B] (got {tuple(v_pred_raw.shape)})"
             )
-        # Fix 4/12: replace raw MSE with Huber (smooth_l1) for bounded gradient.
+        # Replace MSE with Huber for bounded gradient.
         se = torch.nn.functional.smooth_l1_loss(
             v_pred, returns_d, reduction="none", beta=1.0
         )
@@ -618,15 +587,12 @@ class SJFPOPolicy(PreTrainedPolicy):
             rho_mean = float(rho.detach().mean())
             rho_std = float(rho.detach().std(unbiased=False))
             v_star_rms = float(v_star_f.detach().pow(2).mean().sqrt())
-            # PPO standard critic health: 1 - Var(G - V) / Var(G).
+            # PPO critic health: 1 - Var(G - V) / Var(G).
             returns_var = returns_d.detach().var(unbiased=False).clamp_min(1e-8)
             explained_var = float(
                 1.0 - (returns_d.detach() - v_pred.detach()).var(unbiased=False) / returns_var
             )
-            # Phase 0 per-bin trust diagnostics (read-only on the scalar path;
-            # live trust region when use_per_bin_clip): same elementwise
-            # ratio math, unreduced over bins. Reuses the loss path's rho_bin
-            # when present so logged stats match the applied trust region.
+            # Per-bin trust diagnostics (read-only scalar; live when enabled).
             if rho_bin is None:
                 l_old_bin = compute_cfm_loss(v_old_r_f, v_star_f, reduce_mode="bin")
                 l_new_bin = compute_cfm_loss(v_new_r_f, v_star_f, reduce_mode="bin")
@@ -649,8 +615,7 @@ class SJFPOPolicy(PreTrainedPolicy):
                 .float()
                 .mean()
             )
-            # Per-group clip fractions against the eps actually applied
-            # (per-bin eps when enabled, scalar eps for both groups otherwise).
+            # Per-group clip fractions against applied eps.
             eps_low = cfg.epsilon_clip_lowfreq if eps_bin is not None else cfg.epsilon_clip
             eps_high = cfg.epsilon_clip_highfreq if eps_bin is not None else cfg.epsilon_clip
             rho_bin_low_outside = float(

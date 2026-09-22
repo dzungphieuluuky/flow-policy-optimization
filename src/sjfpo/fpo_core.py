@@ -8,6 +8,7 @@ import einx
 import math
 import torch
 from sjfpo.configuration_sjfpo import SJFPOConfig
+from sjfpo.dct_utils import dct, idct, extract_dct_coeffs, decode_coeffs_to_velocity, sample_freq_weighted_noise, estimate_M_from_dataset
 from sjfpo.utils import resolve_storage_dtype
 STORAGE_DTYPE = resolve_storage_dtype()  # cached once
 
@@ -187,13 +188,10 @@ def compute_policy_ratio(
     l_new_c = torch.clamp(l_new, max=cfm_clamp)
     cap = _DEFAULTS.log_ratio_cap if cap is None else cap
     delta = l_old_c - l_new_c
-    # Suggestion #2: clamp log-ratio before exp to prevent overflow.
-    # We apply a separate log-ratio clamp (10.0) independent of the CFM
-    # loss clamp (cfm_clamp) so ratios cannot explode numerically.
+    # Clamp log-ratio before exp; independent of CFM loss clamp.
     log_limit = 10.0  # Tune and log max(abs(delta)) + fraction clipped.
     safe_delta = delta.clamp(-log_limit, log_limit)
-    # Forward uses clamped delta (safe); backward flows through unclamped
-    # delta via STE so gradients don't vanish at the boundary.
+    # Forward uses clamped delta; backward flows through unclamped delta via STE.
     delta_st = safe_delta + (delta - safe_delta).detach()
     return torch.exp(delta_st)
 
@@ -243,7 +241,7 @@ def sample_action(
             eps = eps.to(device)
     x = eps
     with torch.inference_mode():
-        # ------- integrate velocity field from noise to data -------
+
         for i in range(num_inference_steps):
             v_hat = predict_velocity(x, grid[i], condition)
             x = x + (grid[i + 1] - grid[i]) * v_hat

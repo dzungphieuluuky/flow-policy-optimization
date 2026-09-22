@@ -1,8 +1,4 @@
-"""wandb logging — sole wandb importer, enabled by default.
-
-REQUIRED dependency (missing package = hard ImportError). Only off switch:
-``SJFPO_DISABLE_WANDB=1``. Failed init fails fast, never degrades silently.
-"""
+"""wandb logging — sole wandb importer, enabled by default."""
 
 from __future__ import annotations
 
@@ -30,11 +26,7 @@ def compact_value(v) -> str:
 
 
 def build_run_name(method: str, env_name: str, seed: int, cfg_dict: dict) -> str:
-    """``{method}_{env}_s{seed}_{tags}`` from major config keys.
-
-    Fixed tag order, missing keys skipped, so sjfpo/ppo/sac dicts all work:
-    e.g. ``sjfpo_Hopper-v5_s3407_top0.3_d128x8_ep16_lr0.0001_eps0.05_mc16``.
-    """
+    """``{method}_{env}_s{seed}_{tags}`` from major config keys.      Fixed tag order, missing keys skipped, so sjfpo/ppo/sac d"""
     tags: list[str] = []
     get = cfg_dict.get
     if get("top_p_spectral_tokens") is not None:

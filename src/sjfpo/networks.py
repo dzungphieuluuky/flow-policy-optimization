@@ -1,9 +1,4 @@
-"""Networks: window encoders, state conditioner (raw + spectral), flow heads, V(s) critic.
-
-Tensor conventions: B batch, N chunk batch, T obs window, H action_horizon,
-K spectral tokens, D hidden dim, action_dim env action dim. Params are fp32;
-compute may autocast matmuls (see utils.autocast_context).
-"""
+"""Networks: window encoders, state conditioner (raw + spectral), flow heads, V(s) critic."""
 from __future__ import annotations
 
 import math
@@ -17,22 +12,26 @@ from sjfpo.utils import resolve_storage_dtype
 STORAGE_DTYPE = resolve_storage_dtype()  # cached once
 
 
+class _RMSNorm(nn.RMSNorm):
+    """nn.RMSNorm with storage-dtype weight."""
+
+    def __init__(self, hidden_dim: int, eps: float = 1e-6):
+        super().__init__(hidden_dim, eps=eps)
+        self.weight.data = self.weight.data.to(STORAGE_DTYPE)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return super().forward(x.to(dtype=self.weight.dtype))
+
+
 def _rms_norm(hidden_dim: int, eps: float = 1e-6) -> nn.RMSNorm:
-    norm = nn.RMSNorm(hidden_dim, eps=eps)
-    norm.weight.data = norm.weight.data.to(STORAGE_DTYPE)
-    return norm
+    return _RMSNorm(hidden_dim, eps=eps)
 from sjfpo.dct_utils import dct
 
-# Single source for constructor defaults (see SJFPOConfig).
 _DEFAULTS = SJFPOConfig()
 
 
 class SwiGLU(nn.Module):
-    """Gated SiLU feedforward: down(silu(gate(x)) * up(x)).
-
-    Drop-in for ``Sequential(Linear(in_dim, hidden_dim), SiLU,
-    Linear(hidden_dim, out_dim))`` with the same (in, hidden, out) widths.
-    """
+    """Gated SiLU feedforward."""
 
     def __init__(self, in_dim: int, hidden_dim: int, out_dim: int):
         super().__init__()
@@ -46,11 +45,7 @@ class SwiGLU(nn.Module):
 
 
 class CondMLP(nn.Module):
-    """SiLU MLP for conditioning regression (DiT canon: SiLU then Linear).
-
-    Gating belongs in block FFNs, not in the gate-regression path; the
-    modulation readout stays (near-)linear. Final layer is zero-initialized
-    by callers that need identity-at-init (adaLN-Zero)."""
+    """SiLU MLP for conditioning regression."""
 
     def __init__(self, in_dim: int, hidden_dim: int, out_dim: int):
         super().__init__()
@@ -68,12 +63,7 @@ def resolve_config_value(name: str, override):
     return override if override is not None else getattr(_DEFAULTS, name)
 
 class SinusoidalEncoding(nn.Module):
-    """Fixed sinusoidal codes (stateless: nothing in state_dict).
-
-    One helper for both uses: position codes (``scale=1``) and flow-time
-    codes (``scale=timestep_scale``, resolving the DDPM ladder designed for
-    integer steps 0-1000 when ``t`` lives in [0, 1]).
-    """
+    """Fixed sinusoidal codes (stateless)."""
 
     def __init__(self, dim: int, scale: float = 1.0):
         super().__init__()
@@ -101,11 +91,7 @@ class SinusoidalEncoding(nn.Module):
         return x + pe.to(dtype=x.dtype)
 
     def encode_times(self, t: torch.Tensor) -> torch.Tensor:
-        """Sinusoidal embedding for continuous timestep values.
-
-        Returns an embedding of shape ``t.shape + (dim,)``; ``t`` is scaled
-        first (flow times in [0, 1] need the DDPM-scale ladder to resolve).
-        """
+        """Sinusoidal embedding for continuous timestep values."""
         t = torch.as_tensor(t, dtype=STORAGE_DTYPE) * float(self.scale)
         half = self.dim // 2
         ang = t.unsqueeze(-1) * self.frequencies(half, t.device)
@@ -123,14 +109,7 @@ class SinusoidalEncoding(nn.Module):
         return self.add_to(x, self.positions(x.shape[-2], x.device))
 
 class SelfAttention(nn.Module):
-    """Multi-head self-attention on ``F.scaled_dot_product_attention``.
-
-    Fused QKV + output projections; flash / memory-efficient kernels are
-    dispatched automatically (and compose with ``torch.compile``), unlike the
-    unfused ``nn.MultiheadAttention`` path. ``key_mask`` follows the familiar
-    ``key_padding_mask`` convention ([B, L] bool, True = ignore), inverted
-    internally since SDPA boolean masks mean "attend".
-    """
+    """Multi-head self-attention on SDPA."""
 
     def __init__(self, hidden_dim: int, n_heads: int = 4):
         super().__init__()
@@ -145,7 +124,7 @@ class SelfAttention(nn.Module):
     ) -> torch.Tensor:
         """[B, L, D] -> [B, L, D]."""
         q, k, v = self.qkv(x).chunk(3, dim=-1)
-        # ------- split heads (named axes beat view/transpose chains) -------
+
         q = einx.id("b l (h d) -> b h l d", q, h=self.n_heads)
         k = einx.id("b l (h d) -> b h l d", k, h=self.n_heads)
         v = einx.id("b l (h d) -> b h l d", v, h=self.n_heads)
@@ -160,16 +139,7 @@ class SelfAttention(nn.Module):
 
 
 class WindowEncoder(nn.Module):
-    """One pre-norm residual block over a time window -> Z[B, L, hidden_dim].
-
-    Single class for state windows and action chunks: the only difference is
-    the optional boolean key mask [B, L] (True = pad, ignore as attention
-    key), which hides padded tails. Only the conditioner owns one now (the
-    critic is a plain MLP on the current frame); call sites keep the
-    ``state_encoder`` / ``action_encoder`` attribute names, so old
-    checkpoints still load. One global-mixing layer suffices for short,
-    smooth proprioceptive windows.
-    """
+    """Pre-norm residual block over a time window."""
 
     def __init__(
         self,
@@ -193,23 +163,19 @@ class WindowEncoder(nn.Module):
 
     def forward(self, x: torch.Tensor, key_mask: torch.Tensor | None = None) -> torch.Tensor:
         """[B, L, in_dim] -> [B, L, hidden_dim]; pad rows masked as keys when given."""
-        # ------- project frames into latent space + add position codes -------
+
         h = self.frame_proj(x)
         h = self.pos_encoding(h)
         if key_mask is not None:
             key_mask = torch.as_tensor(key_mask, dtype=torch.bool, device=h.device)
-        # ------- self-attention block (pad rows masked as keys) -------
+
         n = self.norm1(h)
         h = h + self.attn1(n, key_mask)
         h = h + self.mlp1(self.norm2(h))
         return h
 
 class RunningMeanStd(nn.Module):
-    """Per-dim running mean/variance over raw obs frames (buffers ride state_dict).
-
-    update() folds raw frames in with parallel Welford; forward() normalizes
-    with frozen stats. Fresh (count == 0) is the identity.
-    """
+    """Per-dim running mean/variance over raw obs frames."""
 
     def __init__(self, dim: int, eps: float = 1e-8, clip: float = 10.0):
         super().__init__()
@@ -252,12 +218,7 @@ def modulate(x: torch.Tensor, shift: torch.Tensor, scale: torch.Tensor) -> torch
 
 
 class DiTBlock(nn.Module):
-    """Pre-norm DiT block with adaLN-Zero conditioning.
-
-    x <- x + gate_msa * Attn(modulate(norm(x))); x <- x + gate_mlp * MLP(...).
-    Zero-initialized modulation makes each block start as the identity.
-    FFN is SwiGLU (DiT uses GELU); width still follows mlp_ratio.
-    """
+    """Pre-norm DiT block with adaLN-Zero conditioning."""
 
     def __init__(self, hidden_dim: int, n_heads: int, mlp_ratio: float):
         super().__init__()
@@ -273,14 +234,14 @@ class DiTBlock(nn.Module):
 
     def forward(self, x: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
         """([B, H, D], [B, D]) -> [B, H, D]."""
-        # ------- regress adaLN-Zero modulation from condition -------
+
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaLN(c)[
             :, None, :
         ].chunk(6, dim=-1)
-        # ------- gated self-attention residual -------
+
         h = modulate(self.norm1(x), shift_msa, scale_msa)
         x = x + gate_msa * self.attn(h)
-        # ------- gated MLP residual -------
+
         out = x + gate_mlp * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
         self.last_gate_norms = {
             "gate_msa": gate_msa.detach().pow(2).mean().sqrt(),
@@ -292,13 +253,7 @@ class DiTBlock(nn.Module):
 
 
 class StateConditioner(nn.Module):
-    """Fuse raw state window + its DCT bins into one [B, D] vector.
-
-    Mean-pool each stream, concat, one linear readout. Bin order rides a
-    sinusoidal code, so the spectral stream stays frequency-indexed. (A
-    query-dependent cross-attention fusion was cut: mean+concat keeps the
-    spectral path at a sixth of the modules.)
-    """
+    """Fuse raw state window + DCT bins into [B, D]."""
 
     def __init__(
         self,
@@ -319,24 +274,17 @@ class StateConditioner(nn.Module):
 
     def forward(self, states: torch.Tensor) -> torch.Tensor:
         """[B, T, obs] -> [B, D]."""
-        # ------- encode raw window + DCT bins, pool each stream -------
+
         raw = self.state_encoder(states).mean(dim=1)
         spec = self.key_proj(self.bin_encoding(self.bin_norm(dct(states, dim=1)))).mean(
             dim=1
         )
-        # ------- fuse by concat + linear -------
+
         return self.fuse(torch.cat([raw, spec], dim=-1))
 
 
 class SJFPOFlowModel(nn.Module):
-    """DiT velocity model over noisy-action tokens, conditioned via adaLN.
-
-    Takes a pre-fused condition vector [B, D] (see StateConditioner);
-    ``c = time + condition`` modulates every block (adaLN-Zero). The
-    transformer never sees state tokens, so there is exactly one
-    observation path and no competing in-context route. Only action
-    positions exist, so no readout slice.
-    """
+    """DiT velocity model over noisy-action tokens, conditioned via adaLN."""
 
     def __init__(
         self,
@@ -374,21 +322,18 @@ class SJFPOFlowModel(nn.Module):
         self.last_cond_stats: dict[str, torch.Tensor] | None = None
 
     def forward(self, x_t: torch.Tensor, t, condition: torch.Tensor) -> torch.Tensor:
-        """Predict velocity: ([B, Ka, action_dim], t, [B, D]) -> [B, Ka, action_dim].
+        """Predict velocity: ([B, Ka, D], t, [B, D]) -> [B, Ka, D]."""
 
-        Ka = top-p low-frequency action rows (<= H); condition is the
-        pre-fused state vector (see StateConditioner)."""
-        # ------- embed flow timestep -------
         timesteps_embedding = self.timestep_embedder.encode_times(t).to(
             device=x_t.device, dtype=x_t.dtype
         )
         if timesteps_embedding.dim() == 1:
             timesteps_embedding = timesteps_embedding.expand(x_t.shape[0], -1)
-        # ------- blend time + fused state into one adaLN vector -------
+
         c = self.time_mlp(timesteps_embedding) + condition.to(dtype=x_t.dtype)
-        # ------- embed noisy action tokens + add slot codes -------
+
         h = self.bin_encoding(self.in_proj(x_t))
-        # ------- denoise through DiT blocks -------
+
         for block in self.blocks:
             h = block(h, c)
         self.last_cond_stats = {
@@ -402,17 +347,12 @@ class SJFPOFlowModel(nn.Module):
                 for k in ("gate_msa", "gate_mlp", "scale_msa", "scale_mlp")
             },
         }
-        # ------- read out velocity -------
+
         shift_out, scale_out = self.adaLN_out(c)[:, None, :].chunk(2, dim=-1)
         return self.out(modulate(self.norm_out(h), shift_out, scale_out))
 
 class Critic(nn.Module):
-    """State-value baseline V(s) (PPO standard): MLP on the current frame.
-
-    OFF uses an MLP critic; temporal attention is unnecessary for V(s), so
-    the window encoder lives only in the conditioner now. Windows are still
-    accepted ([B, T, obs]) with the last frame scored.
-    """
+    """State-value baseline V(s): MLP on current frame."""
 
     def __init__(
         self,

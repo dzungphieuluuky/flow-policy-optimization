@@ -1,12 +1,4 @@
-"""Chunk-level rollout storage (rsl-rl style, preallocated device buffers).
-
-One entry = one open-loop chunk: window [T, obs], full proposed chunk
-[H, act], padded executed rewards [H] + length, done/truncated flags.
-Buffers are allocated once per collection round on the policy device and
-written with in-place ``copy_`` (no per-chunk allocs, no list-of-dicts in
-the hot path). ``to_transition_list`` rebuilds the legacy ``Transition``
-dicts for tests / the stacking path in ``generate_rollout``.
-"""
+"""Chunk-level rollout storage (rsl-rl style, preallocated device buffers)."""
 from __future__ import annotations
 
 import torch
@@ -135,11 +127,7 @@ class RolloutStorage:
 def mini_batch_indices(
     n: int, num_minibatches: int, device: torch.device | str, num_epochs: int = 1
 ):
-    """Yield one GPU ``randperm`` split per epoch (rsl-rl ``mini_batch_generator``).
-
-    Single permutation per epoch, contiguous splits (last batch takes the
-    remainder) — no dropped samples,unlike ``split(n // n_mb)``.
-    """
+    """Yield one GPU ``randperm`` split per epoch (rsl-rl ``mini_batch_generator``).      Single permutation per epoch, contigu"""
     if n < 1:
         raise ValueError(f"n={n} must be >= 1")
     n_mb = max(1, min(int(num_minibatches), n))

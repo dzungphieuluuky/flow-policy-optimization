@@ -1,8 +1,4 @@
-"""skrl PPO/SAC baselines sharing Evaluator and checkpointing.
-
-Frame-stacking matches SJFPO (n_obs_steps=16 → flat [obs_dim*16]). No
-spectral/flow code here.
-"""
+"""skrl PPO/SAC baselines sharing Evaluator and checkpointing."""
 
 from __future__ import annotations
 
@@ -31,7 +27,6 @@ from sjfpo.wandb_logging import (
     finish_run,
 )
 
-# skrl imports (lazy to allow partial import when skrl is unavailable)
 
 skrl_imported = False
 PPO_CFG_cls = None
@@ -48,8 +43,6 @@ SACPolicy = None
 SACCritic = None
 
 
-# Provenance: "default" = skrl default; "paper" = FPO++ paper;
-# "adaptation" = changed for benchmark fairness.
 PROVENANCE_TABLE: list[tuple[str, str, str, str]] = [
     # (method, key, value_source, note)
     ("PPO", "rollouts", "2048", "default"),
@@ -548,10 +541,7 @@ def baseline_train_loop(
     divergence_baseline=1.0,
     cfg_dict=None,
 ):
-    """Run the skrl agent through a standard act→step→record→post_interaction loop.
-
-    Returns the standard result dict (method, reward_mean_last10, artifacts, diverged).
-    """
+    """Run the skrl agent through a standard act→step→record→post_interaction loop.      Returns the standard result dict (meth"""
     evaluator, state = init_baseline_run(
         env, eval_env, out_dir, method_name, seed, total_steps, cfg_dict
     )
@@ -675,10 +665,7 @@ def ppo_train_run(
     save_steps: int = 1000,
     n_obs_steps: int = 16,
 ) -> dict[str, Any]:
-    """Run a single PPO training run using skrl 2.1.0.
-
-    Returns the standard result dict (method, reward_mean_last10, artifacts, diverged).
-    """
+    """Run a single PPO training run using skrl 2.1.0.      Returns the standard result dict (method, reward_mean_last10, artif"""
     import_skrl_dependencies()
 
     cfg = cfg or PPOConfig()
@@ -771,10 +758,7 @@ def sac_train_run(
     save_steps: int = 1000,
     n_obs_steps: int = 16,
 ) -> dict[str, Any]:
-    """Run a single SAC training run using skrl 2.1.0.
-
-    Returns the standard result dict (method, reward_mean_last10, artifacts, diverged).
-    """
+    """Run a single SAC training run using skrl 2.1.0.      Returns the standard result dict (method, reward_mean_last10, artif"""
     import_skrl_dependencies()
 
     cfg = cfg or SACConfig()

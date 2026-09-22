@@ -1,9 +1,4 @@
-"""Benchmark config registry: PPO/SAC hyperparameters + run matrix.
-
-Dataclasses are frozen with tuple defaults; RUN_MATRIX is a tuple of frozen
-RunSpec built over methods × envs × seeds. Mode switches read env vars once
-at import. MuJoCo-only (flat Box).
-"""
+"""Benchmark config registry: PPO/SAC hyperparameters + run matrix."""
 
 from __future__ import annotations
 
@@ -12,7 +7,6 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
-# Mode switches (plain module-level constants; read env at import time ONLY)
 
 IS_KAGGLE = os.environ.get("KAGGLE_KERNEL_RUN_TYPE") is not None
 TINY_MATRIX = os.environ.get("SJFPO_TINY_MATRIX") == "1"
@@ -28,11 +22,9 @@ try:
 except Exception:
     _ENV_REGISTRY = {}
 
-# Read env names directly from envs.yaml (no hardcoding)
 _REGISTRY_KEYS = list(_ENV_REGISTRY.keys()) if isinstance(_ENV_REGISTRY, dict) else []
 ENVS = tuple(k for k in _REGISTRY_KEYS if _ENV_REGISTRY[k].get("tier") == "core")
 PROTOTYPE_ENVS = tuple(k for k in _REGISTRY_KEYS if _ENV_REGISTRY[k].get("tier") != "core")
-# No legacy fallback: config must read from envs.yaml.
 KNOWN_ENVS = ENVS + PROTOTYPE_ENVS
 SEEDS = (0, 1, 2, 3, 4)
 
@@ -41,7 +33,6 @@ EVAL_STEPS = 50_000
 SAVE_STEPS = 25_000
 
 
-# Method hyperparameters (Scope §Must-have, verbatim values)
 
 
 @dataclass(frozen=True)
@@ -147,11 +138,7 @@ def parse_version_tuple(version: str) -> tuple[int, ...]:
 
 
 def assert_runtime(allow_fp16: bool = False) -> None:
-    """Fail fast on dependency pins and unsupported precision flags.
-
-    bf16 *autocast* (fp32 storage, bf16 matmuls) is allowed and needs no
-    flag; full half/bfloat STORAGE raises.
-    """
+    """Fail fast on dependency pins and unsupported precision flags.      bf16 *autocast* (fp32 storage, bf16 matmuls) is allow"""
     import importlib.metadata
 
     gym_version = importlib.metadata.version("gymnasium")

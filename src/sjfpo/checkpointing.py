@@ -1,10 +1,4 @@
-"""Policy checkpoint IO (HuggingFace style): save_pretrained/from_pretrained.
-
-``save_policy_checkpoint`` writes ``config.json`` + ``model.safetensors``
-(unwrapped eager keys, so artifacts are compile-mode independent) plus
-``optimizer.pt`` and ``counters.json``; ``load_policy_checkpoint`` rebuilds
-everything from the directory.
-"""
+"""Policy checkpoint IO (HuggingFace style): save_pretrained/from_pretrained."""
 
 from __future__ import annotations
 
@@ -26,12 +20,7 @@ class ResumeError(RuntimeError):
 
 @contextlib.contextmanager
 def unwrapped_policy(policy):
-    """Temporarily expose a policy's eager submodules for checkpoint IO.
-
-    Swap torch.compile wrappers for their inner modules (and swap back
-    afterwards); params are shared, so training continues untouched and the
-    artifact holds plain eager keys whatever SJFPO_COMPILE was.
-    """
+    """Temporarily expose a policy's eager submodules for checkpoint IO.      Swap torch.compile wrappers for their inner modul"""
     swapped = []
     for name in ("actor", "old_actor", "critic"):
         module = getattr(policy, name, None)
@@ -52,11 +41,7 @@ def save_policy_checkpoint(
     optimizer: torch.optim.Optimizer,
     global_step: int,
 ) -> None:
-    """Save through LeRobot's HubMixin (+ optimizer.pt, counters.json).
-
-    ``model.safetensors`` holds unwrapped eager keys, so artifacts are
-    compile-mode independent. ``config.json`` carries shapes + hypers.
-    """
+    """Save through LeRobot's HubMixin (+ optimizer.pt, counters.json).      ``model.safetensors`` holds unwrapped eager keys, """
     from sjfpo.modeling_sjfpo import SJFPOPolicy  # lazy: keeps this module import-light
 
     if not isinstance(policy, SJFPOPolicy):
@@ -82,11 +67,7 @@ def load_policy_checkpoint(
     *,
     device: str | torch.device | None = None,
 ):
-    """Load a checkpoint from :func:`save_policy_checkpoint`.
-
-        Rebuilds components from ``config.json`` (no caller dims); policy left in
-    eval mode. Raises ResumeError on missing/unreadable files.
-    """
+    """Load a checkpoint from :func:`save_policy_checkpoint`.          Rebuilds components from ``config.json`` (no caller dims"""
     from sjfpo.modeling_sjfpo import SJFPOPolicy  # lazy: keeps this module import-light
 
     d = Path(dir_path)

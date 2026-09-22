@@ -1,12 +1,4 @@
-"""Single home for every SJFPO hyperparameter (LeRobot PreTrainedConfig).
-
-Runs serialize/resume through HubMixin + draccus (``type = "sjfpo"``).
-Legacy names (``config.py::SJFPOConfig``): horizon/chunk_size (now action_horizon),
-optimizer_lr/lr, optimizer_weight_decay/wd,
-grad_clip_norm/grad_clip. ``n_action_steps`` is the intended inference prefix
-(``round(executed_vs_predicted_ratio * action_horizon)``); training executes the
-full action_horizon open-loop.
-"""
+"""Single home for every SJFPO hyperparameter (LeRobot PreTrainedConfig)."""
 
 from __future__ import annotations
 
@@ -38,6 +30,7 @@ class SJFPOConfig(PreTrainedConfig):
     gae_lambda: float = 0.995
     epsilon_clip: float = 0.05
     use_dct_transform: bool = True  # spectral chunk encoding; False = raw action chunk
+    use_coeff_space: bool = False  # coefficient-based flow (linked FAFM style); False = discrete token flow
     use_aspo: bool = True  # piecewise ASPO (positive PPO / negative SPO); False = symmetrical PPO only
     use_per_bin_clip: bool = False  # Phase 1: two-group epsilon over DCT bins
     epsilon_clip_lowfreq: float = 0.02  # tight: low bins carry task intent
@@ -45,7 +38,7 @@ class SJFPOConfig(PreTrainedConfig):
     cfm_clamp: float = 20.0
     log_ratio_cap: float = 10.0
     advantage_clamp: float = 100.0
-    use_clipped_value_loss: bool = False
+    use_clipped_value_loss: bool = True
     min_timestep: float = 0.005
     max_timestep: float = 0.995
 

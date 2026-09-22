@@ -1,18 +1,4 @@
-"""Chunked open-loop rollout collector.
-
-The policy is queried ONCE per chunk; the first ``n_action_steps`` proposed
-actions execute OPEN-LOOP (1 <= n <= H). Transitions are plain tensor dicts
-with LeRobot-style keys; ``action`` is the FULL proposed chunk in real scaled
-space ([H, action_dim], one row per predicted step; DCT happens downstream
-in ``forward``). V(s) bootstraps from the stored next window, so no
-next-action proposal is collected.
-
-Boundary semantics: terminated stops at once (no bootstrap); truncated stops
-bootstrap-eligible; budget-exhausted tails are marked truncated so GAE never
-recurses past the collected stream. Actions are clipped to bounds before
-execution and every clipped element is counted. On env error the
-``on_error_flush`` hook runs first, then the original exception re-raises.
-"""
+"""Chunked open-loop rollout collector."""
 
 from __future__ import annotations
 
@@ -190,15 +176,7 @@ def collect_chunks_vec(
     seed: int | None = None,
     on_error_flush: Callable[[], None] | None = None,
 ) -> list[Transition]:
-    """Vector twin of :func:`collect_chunks` (same records, same chaining).
-
-    ``envs`` is a ``gym.vector.VectorEnv`` (NextStep autoreset): each env runs
-    its own chunk loop (own window, prev-chain, budget), but proposals are one
-    batched policy call and stepping is one vector call. Per-env budget is
-    ``ceil(total_steps / num_envs)``, so the merged batch matches the
-    single-env size while collection scales ~linearly with env count.
-    ``policy`` takes ``[M, T, obs]`` and returns ``[M, H, action_dim]``.
-    """
+    """Vector twin of :func:`collect_chunks` (same records, same chaining).      ``envs`` is a ``gym.vector.VectorEnv`` (NextSt"""
     n = int(envs.num_envs)
     target = -(-total_steps // n)  # ceil: per-env executed-step budget
     low = as_float_tensor(action_low)

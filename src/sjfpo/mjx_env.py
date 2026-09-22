@@ -1,22 +1,4 @@
-"""GPU-batched MJX rollout env (Blackwell training box only).
-
-Wraps the ENTIRE chunk rollout on GPU: ``jit(vmap(mjx.step))`` physics (the
-canonical pattern from google-deepmind/mujoco + vmoens/mujoco-torch), the
-torch DiT policy on the same CUDA device, zero-copy exchange via DLPack.
-Fills the preallocated :class:`sjfpo.rollout_storage.RolloutStorage` on
-device, then converts to legacy ``Transition`` dicts so ``generate_rollout``
-downstream is unchanged.
-
-HalfCheetah-v5 semantics replicated from gymnasium (see installed
-``half_cheetah_v5.py``): obs ``qpos[1:]+qvel`` (17,), ``reward =
-forward - ctrl`` with weights (1.0, 0.1), ``frame_skip=5``, reset noise
-``U(+-0.1)``/``0.1*N(0,1)``, never terminates, truncate at 1000
-(TimeLimit equivalent).
-
-Opt-in only: ``SJFPO_MJX=1`` + CUDA + ``mujoco.mjx``/JAX-GPU. Import-time
-safe on CPU-only machines (all heavy imports are lazy). ThinkPad setup:
-``pip install -U "mujoco>=3.3" "jax[cuda12]"``.
-"""
+"""GPU-batched MJX rollout env (Blackwell training box only)."""
 
 from __future__ import annotations
 
@@ -39,7 +21,6 @@ __all__ = [
     "mjx_collect_chunks",
 ]
 
-# HalfCheetah-v5 defaults for the numpy mirrors below (physics now reads
 # per-env specs; see sjfpo_jax.envs).
 _FORWARD_WEIGHT = 1.0
 _CTRL_WEIGHT = 0.1
@@ -66,11 +47,7 @@ def want_mjx() -> bool:
 
 
 def resolve_env_name(env) -> str:
-    """Env id from single or vector envs (``SyncVectorEnv.spec`` is None).
-
-    Vector envs expose per-sub-env specs via ``get_attr('spec')``; single
-    envs via ``unwrapped.spec``. Returns ``'unknown'`` when unresolvable.
-    """
+    """Env id from single or vector envs (``SyncVectorEnv.spec`` is None).      Vector envs expose per-sub-env specs via ``get_"""
     get_attr = getattr(env, "get_attr", None)
     if callable(get_attr):
         try:
@@ -100,24 +77,14 @@ def halfcheetah_reward(
 
 
 def shift_window(windows: torch.Tensor, idx: int, new_obs: torch.Tensor) -> None:
-    """Roll one env's ``[T, obs]`` window forward, appending ``new_obs``.
-
-    ``torch.roll`` returns a fresh tensor: shifting the ``windows[idx]``
-    view in place faults on overlapping memory ("some elements ... refer
-    to a single memory location").
-    """
+    """Roll one env's ``[T, obs]`` window forward, appending ``new_obs``.      ``torch.roll`` returns a fresh tensor: shifting """
     w = torch.roll(windows[idx], shifts=-1, dims=0)
     w[-1].copy_(new_obs.to(dtype=w.dtype))
     windows[idx] = w
 
 
 class MjxVec:
-    """Batched MJX env on GPU; torch-CUDA in/out via DLPack (zero-copy).
-
-    Spec-driven over every ``sjfpo_jax.envs`` entry (same formulas as the
-    JAX ``MjxVec``; only the I/O is torch). ``reset() -> [M, obs]``;
-    ``step(ctrl) -> (obs, rew, terminated, truncated)`` with autoreset.
-    """
+    """Batched MJX env on GPU; torch-CUDA in/out via DLPack (zero-copy).      Spec-driven over every ``sjfpo_jax.envs`` entry ("""
 
     def __init__(self, env_name: str, num_envs: int, seed: int, device: torch.device):
         import jax
@@ -189,12 +156,7 @@ class MjxVec:
         self.reset()
 
     def _torch(self, x):
-        """JAX-GPU -> torch-CUDA, zero-copy via DLPack.
-
-        Per the JAX library code, ``jax.dlpack`` exposes only ``from_dlpack``
-        (import); export uses the ``__dlpack__`` protocol on ``jax.Array``,
-        which torch consumes directly.
-        """
+        """JAX-GPU -> torch-CUDA, zero-copy via DLPack.          Per the JAX library code, ``jax.dlpack`` exposes only ``from_dlpac"""
         import jax
         import torch.utils.dlpack as dlpack
 
@@ -202,12 +164,7 @@ class MjxVec:
         return dlpack.from_dlpack(x)
 
     def _jax(self, t: torch.Tensor):
-        """torch-CUDA -> JAX-GPU, zero-copy via DLPack.
-
-        ``jax.dlpack.from_dlpack`` takes the tensor itself (it exposes
-        ``__dlpack__``); passing a ``to_dlpack()`` capsule fails. Mirror
-        image of the earlier ``to_dlpack`` export bug.
-        """
+        """torch-CUDA -> JAX-GPU, zero-copy via DLPack.          ``jax.dlpack.from_dlpack`` takes the tensor itself (it exposes    """
         import jax
 
         t = t.to(device="cuda", dtype=torch.float32).contiguous()
@@ -438,13 +395,7 @@ def mjx_collect_chunks(
     num_envs: int,
     seed: int,
 ) -> list[dict]:
-    """Entire chunk rollout on GPU; returns legacy ``Transition`` dicts.
-
-    One batched policy call per chunk + ``H`` jitted physics steps, all on
-    CUDA; rewards/windows/flags never touch the host until the final
-    ``to_transition_list`` copy (~100KB). Raises loudly when MJX/CUDA is
-    missing (explicit opt-in must never silently fall back).
-    """
+    """Entire chunk rollout on GPU; returns legacy ``Transition`` dicts.      One batched policy call per chunk + ``H`` jitted """
     import torch
 
     from sjfpo.rollout_storage import RolloutStorage

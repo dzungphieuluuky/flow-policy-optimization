@@ -1,9 +1,4 @@
-"""SJFPO evaluator — deterministic rollouts, ``eval_history.csv``.
-
-Columns ``[episode, return, length, success, jerk]``: ``success`` is the env's
-``info["success"]`` when provided (else empty); ``jerk`` is mean squared
-second-difference of the episode actions (else empty for < 3 steps).
-"""
+"""SJFPO evaluator — deterministic rollouts, ``eval_history.csv``."""
 
 from __future__ import annotations
 
@@ -29,12 +24,8 @@ def write_eval_csv(results: list[dict[str, Any]], out_dir: str | Path) -> None:
 
 
 def action_jerk(actions: np.ndarray) -> float | None:
-    """Mean squared second-difference of actions [T, D] (None when T < 3).
-
-    Scale-free smoothness probe: constant or constant-velocity action streams
-    score exactly 0; contact jitter and bang-bang switching score high.
-    """
-    a = np.asarray(actions, dtype=np.float64)
+    """Mean squared second-difference of actions [T, D] (None when T < 3).      Scale-free smoothness probe: constant or consta"""
+    a = np.asarray(actions, dtype=np.float32)
     if a.ndim != 2 or a.shape[0] < 3:
         return None
     return float(np.square(a[2:] - 2.0 * a[1:-1] + a[:-2]).mean())
@@ -48,11 +39,7 @@ def extract_success(info: dict) -> float | None:
 
 
 def mean_chunk_jerk(actions: np.ndarray, is_pad: np.ndarray) -> float | None:
-    """Mean ``action_jerk`` over chunks' executed prefixes.
-
-    ``actions`` [N, H, D] real-space chunks, ``is_pad`` [N, H] tail mask.
-    None when no chunk executed >= 3 steps.
-    """
+    """Mean ``action_jerk`` over chunks' executed prefixes.      ``actions`` [N, H, D] real-space chunks, ``is_pad`` [N, H] tai"""
     a = np.asarray(actions)
     pad = np.asarray(is_pad, dtype=bool)
     jerks = []
@@ -174,7 +161,7 @@ class Evaluator:
             ep_length += 1
             steps_taken += 1
             done = terminated or truncated
-            ep_actions.append(np.asarray(action, dtype=np.float64).reshape(-1))
+            ep_actions.append(np.asarray(action, dtype=np.float32).reshape(-1))
             success = extract_success(info)
             if success is not None:
                 ep_success = success  # last report wins (terminal info)

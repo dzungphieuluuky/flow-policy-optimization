@@ -53,7 +53,7 @@ def resolve_storage_dtype() -> torch.dtype:
 def resolve_compute_dtype() -> torch.dtype:
     """Matmul/autocast dtype: fp8 on Blackwell (TCGen05); bf16/fp32 fallback."""
     if is_rtx_1000_pro_blackwell():
-        return torch.float8_e4m3fn
+        return torch.bfloat16
     if not _CUDA_AVAILABLE:
         return torch.float32
     want = os.environ.get("SJFPO_DTYPE", "auto").lower()
@@ -73,8 +73,8 @@ def autocast_context(device=None):
         return contextlib.nullcontext()
     if dtype == torch.bfloat16:
         autocast_dtype = torch.bfloat16
-    elif dtype == torch.float8_e4m3fn:
-        autocast_dtype = torch.float8_e4m3fn
+    elif dtype == torch.bfloat16:
+        autocast_dtype = torch.bfloat16
     else:
         return contextlib.nullcontext()
     try:
@@ -89,20 +89,7 @@ def autocast_context(device=None):
 
 
 def maybe_compile(module: torch.nn.Module) -> torch.nn.Module:
-    """Compile an nn.Module with inductor after build, before train/infer.
-
-    On by default; ``SJFPO_COMPILE=0`` opts out (e.g. driver-only CUDA
-    without a toolkit, where inductor fails, or CPU-only debugging).
-    CPU inductor hits a guard bug (``___from_numpy`` ADInplaceOrView
-    DispatchKeySet mismatch on Colab) so it auto-disables when CUDA is
-    unavailable — eager is numerically identical.
-    Default dynamic-shape mode: batch shapes vary, and static-shape
-    cudagraphs would waste the 8GB budget. Wrapping is lazy — the compile
-    cost lands on the first train/infer call, not here. Params are untouched;
-    checkpointing unwraps wrappers before saving, so artifacts hold plain
-    eager keys whatever this flag was. Raises loudly (never silent
-    fallback) when inductor itself fails — set ``SJFPO_COMPILE=0``.
-    """
+    """Compile an nn.Module with inductor after build, before train/infer.      On by default; ``SJFPO_COMPILE=0`` opts out (e."""
     if os.environ.get("SJFPO_COMPILE", "1") == "0":
         return module
     if not _CUDA_AVAILABLE:
@@ -113,7 +100,10 @@ def maybe_compile(module: torch.nn.Module) -> torch.nn.Module:
     # Guarded scalar raises (e.g. Critic's executed-step check) stay in the
     # compiled graph instead of forcing an eager fallback for the whole module.
     torch._dynamo.config.capture_scalar_outputs = True
-    return torch.compile(module)
+    # Symbolic batch dim: train minibatches (n_mb * num_mc), remainder
+    # splits, and inference (B=1) share one graph instead of one
+    # recompile per distinct B (dynamo recompile_limit).
+    return torch.compile(module, dynamic=True)
 
 
 def detect_runtime_env() -> str:
@@ -159,12 +149,7 @@ def default_smoke_dir(env: str | None = None) -> Path:
 
 
 def to_device_async(x: torch.Tensor, device) -> torch.Tensor:
-    """Host-to-device move that overlaps with CPU work on CUDA.
-
-    Pinned staging + ``non_blocking=True`` lets DMA run while the collector
-    stacks the next tensors; ordering stays safe on the default stream.
-    Plain ``.to()`` on CPU.
-    """
+    """Host-to-device move that overlaps with CPU work on CUDA.      Pinned staging + ``non_blocking=True`` lets DMA run while """
     device = torch.device(device)
     if device.type == "cuda" and x.device != device:
         return x.pin_memory().to(device, non_blocking=True)

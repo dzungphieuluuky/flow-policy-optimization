@@ -185,15 +185,10 @@ def train_sjfpo_run(
                                action_low=action_low, action_high=action_high)
         optimizer = build_optimizer(policy, cfg)
     print(policy, file=sys.stderr)
-    # Fix 3/12: warm-up phase — collect observations/rewards with random policy
-    # to initialize RunningMeanStd before live optimization updates stats.
+    # Warm-up: initialize stats from rollout batch.
     warmup_done = 0
     if cfg.warmup_steps > 0 and total_steps >= cfg.warmup_steps:
         warmup_target = min(cfg.warmup_steps, total_steps)
-        # Simple warm-up: use a temporary random rollout collecting observations.
-        # Since full random rollout requires significant restructuring, we apply
-        # a minimal safe approach: initialize stats from the first rollout batch.
-        # The user can extend to full random-policy phase if needed.
         warmup_batch = policy.generate_rollout(env, cfg.action_horizon,
                                                action_low=action_low, action_high=action_high)
         if warmup_batch.get("observation.state") is not None:
@@ -201,12 +196,11 @@ def train_sjfpo_run(
             warmup_done = int(warmup_batch.get("observation.state", torch.zeros((1, 1, 1))).numel() // cfg.n_obs_steps)
         else:
             warmup_done = 0
-        print(f"Warm-up initialized: {warmup_done} observation windows; stats frozen for live optimization.", file=sys.stderr)
+        print(f"Warm-up initialized: {warmup_done} windows; stats frozen.", file=sys.stderr)
     else:
         warmup_done = 0
 
-    # Note: stats initialized above are frozen during optimization epochs
-    # (update_stats removed from forward(); see fix 1).
+    # Stats frozen during optimization epochs.
     evaluator = Evaluator(env, eval_seed=10000 + seed, max_episodes=12)
     eval_policy = _EvalPolicy(policy)
     r_rand = random_baseline(evaluator, env)
@@ -240,7 +234,7 @@ def train_sjfpo_run(
                     batch["action"].detach().cpu().numpy(),
                     batch["action_is_pad"].detach().cpu().numpy(),
                 )
-            # Fix 8/12: verify actions are normalized [-1, 1] before training.
+            # Verify normalized actions [-1, 1].
             action_abs_max = float(batch["action"].abs().max())
             if action_abs_max > 1.05:
                 raise ValueError(
@@ -248,19 +242,10 @@ def train_sjfpo_run(
                     f"(expected scaled [-1, 1]; check rollout/action bounds or preprocessing)"
                 )
             policy.train()
-            # Freeze observation stats once with rollout batch (not per epoch/minibatch)
-            # to prevent drift: old_actor/conditioner must see same stats as collection.
-            # Fix 4/12: stats frozen during optimization epochs; only initialized
-            # once from warm-up rollout (see fix 3 above) and kept frozen here.
-            # rollout_states = batch.get("observation.state", batch.get(OBS_STATE))
-            # if rollout_states is not None:  # Frozen: do NOT update during epochs.
-            #     pass  # Stats already initialized from warm-up; frozen for consistency.
             infos = []
             grad_norms_before = []  # pre-clip norms (clip_grad_norm_ returns before-clip)
             grad_norms_after = []  # post-clip norms
-            # PPO-style: freeze the behavior snapshot once per collection round
-            # (OFF semantics: fixed pi_old + stored eps/t for all epochs), then
-            # sweep shuffled minibatches with reshuffled partitions per epoch.
+            # Freeze behavior snapshot once per collection round.
             policy.snapshot_behavior_policy()
             n_chunks = batch["advantages"].shape[0]
             # One GPU randperm per epoch, contiguous splits (no dropped tails).
@@ -270,8 +255,7 @@ def train_sjfpo_run(
             ):
                 optimizer.zero_grad()
                 loss, epoch_info = policy(sample_minibatch(batch, mb_idx))
-                # Fix 12/12: verify scalar loss (mean reduction) before backward to
-                # prevent batch-size-dependent gradient scaling.
+                # Verify scalar loss before backward.
                 if loss.dim() != 0:
                     raise ValueError(
                         f"Loss must be scalar (reduction='mean') before backward; got shape {tuple(loss.shape)}. "

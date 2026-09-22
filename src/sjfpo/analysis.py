@@ -100,12 +100,7 @@ def normalize_cross_env(
 
 
 def load_eval_histories(run_dir: Path, *, eval_steps: int) -> list[dict[str, Any]]:
-    """Scan run dirs for eval_history.csv files.
-
-    Returns [{method, env, seed, global_step, return}]; global_step is
-    episode_index * eval_steps (the CSV has no step column).
-    Malformed rows/headers raise loudly, never default to zero.
-    """
+    """Scan run dirs for eval_history.csv files.      Returns [{method, env, seed, global_step, return}]; global_step is     ep"""
     histories = []
 
     for subdir in run_dir.iterdir():

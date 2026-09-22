@@ -1,14 +1,4 @@
-"""SJFPO pre/post processors (LeRobot fashion): obs normalize, action unscale.
-
-Mirrors other policies' ``processor_<name>.py``: named ``ProcessorStep``s plus a
-``make_sjfpo_pre_post_processors`` pair factory. Two SJFPO deviations from the
-LeRobot default:
-- stats are ONLINE (RunningMeanStd updated every training batch), not frozen
-  dataset stats, so the obs step shares the policy's live normalizer object
-  and exposes ``update_stats`` (no LeRobot equivalent);
-- steps operate on the policy's native batch dicts (``{"observation.state"}`` /
-  ``{"action"}``) instead of EnvTransitions; shapes pass through unchanged.
-"""
+"""SJFPO pre/post processors (LeRobot fashion): obs normalize, action unscale."""
 
 from __future__ import annotations
 
@@ -79,12 +69,7 @@ class SJFPOActionPostprocessorStep(ProcessorStep):
 def make_sjfpo_pre_post_processors(
     policy,
 ) -> tuple[SJFPOObservationProcessorStep, SJFPOActionPostprocessorStep]:
-    """Build the (preprocessor, postprocessor) pair sharing the policy's live state.
-
-    Steps hold references (not copies): training stat updates and
-    ``set_action_bounds`` stay visible, and ``.to(device)`` keeps working
-    because the tensors remain owned by the policy module.
-    """
+    """Build the (preprocessor, postprocessor) pair sharing the policy's live state.      Steps hold references (not copies): t"""
     return (
         SJFPOObservationProcessorStep(policy.obs_normalizer),
         SJFPOActionPostprocessorStep(policy.action_low, policy.action_high),
