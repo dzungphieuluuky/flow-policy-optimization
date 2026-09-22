@@ -1,46 +1,53 @@
-# Added linked fafm step-level GAE (calculate_advantage)"""Chunk-level semi-MDP GAE + returns (torch)."""
+"""Step-level GAE over chunk-level rollout (Amazon-style)."""
 import torch
 
+
 def compute_advantages_torch(
-    rewards_1d, values, next_values, lengths, terminated,
-    gamma=0.99, lam=0.95, normalize=True, truncated=None, clamp=100.0
+    rewards_1d,
+    values,
+    next_values,
+    lengths,
+    terminated,
+    gamma=0.99,
+    lam=0.95,
+    normalize=True,
+    truncated=None,
+    clamp=100.0,
 ):
+    """Step-level GAE: expand chunk rewards to steps, compute GAE per chunk, aggregate."""
     device = values.device
-    rewards_1d_f = rewards_1d.to(device=device, dtype=torch.float32).reshape(-1)
-    values_f = values.to(device=device, dtype=torch.float32).reshape(-1)
-    next_values_f = next_values.to(device=device, dtype=torch.float32).reshape(-1)
-    lengths_f = lengths.to(device=device, dtype=torch.long).reshape(-1)
-    terminated_f = terminated.to(device=device, dtype=torch.bool).reshape(-1)
-    n = int(values_f.numel())
+    rewards_flat = rewards_1d.to(device=device, dtype=torch.float32).reshape(-1)
+    values_flat = values.to(device=device, dtype=torch.float32).reshape(-1)
+    next_values_flat = next_values.to(device=device, dtype=torch.float32).reshape(-1)
+    lengths_flat = lengths.to(device=device, dtype=torch.long).reshape(-1)
+    terminated_flat = terminated.to(device=device, dtype=torch.bool).reshape(-1)
+    n = int(values_flat.numel())
     if truncated is not None:
-        truncated_f = truncated.to(device=device, dtype=torch.bool).reshape(-1)
+        truncated_flat = truncated.to(device=device, dtype=torch.bool).reshape(-1)
     else:
-        truncated_f = torch.zeros(n, device=device, dtype=torch.bool)
-    if not (next_values_f.numel() == n and lengths_f.numel() == n and terminated_f.numel() == n and truncated_f.numel() == n):
-        raise ValueError("shape mismatch")
-    if n == 0 or bool((lengths_f <= 0).any()):
-        raise ValueError("non-empty stream, chunks >= 1")
-    if int(lengths_f.sum().item()) != int(rewards_1d_f.numel()):
-        raise ValueError("rewards length != sum(lengths)")
-    offsets = torch.cat([torch.zeros(1, dtype=torch.long, device=device), torch.cumsum(lengths_f, 0)])
-    r_chunk = torch.empty(n, device=device, dtype=torch.float32)
+        truncated_flat = torch.zeros(n, device=device, dtype=torch.bool)
+    if n == 0:
+        return torch.empty(0, device=device, dtype=torch.float32), torch.empty(0, device=device, dtype=torch.float32)
+
+    advantages_list = []
+    returns_list = []
     for k in range(n):
-        steps = rewards_1d_f[offsets[k]:offsets[k+1]]
-        powers = torch.pow(torch.tensor(gamma, device=device, dtype=torch.float32), torch.arange(steps.numel(), device=device, dtype=torch.float32))
-        r_chunk[k] = torch.dot(powers, steps)
-    advantages = torch.empty(n, device=device, dtype=torch.float32)
-    next_advantage = torch.tensor(0.0, device=device, dtype=torch.float32)
-    for k in range(n - 1, -1, -1):
-        length = int(lengths_f[k].item())
-        if bool(terminated_f[k].item()):
-            delta = r_chunk[k] - values_f[k]
-            continuation = torch.tensor(0.0, device=device, dtype=torch.float32)
-        else:
-            delta = r_chunk[k] + (gamma**length) * next_values_f[k] - values_f[k]
-            continuation = torch.tensor(0.0, device=device, dtype=torch.float32) if bool(truncated_f[k].item()) else torch.tensor((gamma * lam)**length, device=device, dtype=torch.float32)
-        advantages[k] = delta + continuation * next_advantage
-        next_advantage = advantages[k]
-    returns = advantages + values_f
+        L = int(lengths_flat[k].item())
+        if L <= 0:
+            advantages_list.append(torch.tensor(0.0, device=device, dtype=torch.float32))
+            returns_list.append(values_flat[k])
+            continue
+        # Amazon-style step-level GAE over chunk steps
+        chunk_adv = 0.0
+        for step_idx in reversed(range(L)):
+            delta_step = rewards_flat[k] - values_flat[k]
+            continuation_step = gamma * lam
+            chunk_adv = delta_step + continuation_step * chunk_adv
+        advantages_list.append(chunk_adv)
+        returns_list.append(chunk_adv + values_flat[k])
+
+    advantages = torch.stack(advantages_list)
+    returns = torch.stack(returns_list)
     if normalize:
         advantages = (advantages - advantages.mean()) / (advantages.std(unbiased=False) + 1e-8)
         if clamp is not None:

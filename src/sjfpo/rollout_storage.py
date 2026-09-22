@@ -1,4 +1,4 @@
-"""Chunk-level rollout storage (rsl-rl style, preallocated device buffers)."""
+"""Chunk-level rollout storage (rsl-rl style)."""
 from __future__ import annotations
 
 import torch
@@ -7,7 +7,7 @@ __all__ = ["RolloutStorage", "mini_batch_indices"]
 
 
 class RolloutStorage:
-    """Preallocated [C, N, ...] chunk buffers (C = max chunks per env)."""
+    """Chunk-level rollout storage."""
 
     def __init__(
         self,
@@ -30,7 +30,6 @@ class RolloutStorage:
         self.action_dim = int(action_dim)
         self.device = torch.device(device)
         self.dtype = dtype
-        # Rollout fields (floats on device/dtype; flags as bool).
         self.states = torch.zeros(
             max_chunks, num_envs, n_obs_steps, obs_dim, device=self.device, dtype=dtype
         )
@@ -46,7 +45,6 @@ class RolloutStorage:
         self.lengths = torch.zeros(max_chunks, num_envs, device=self.device, dtype=torch.long)
         self.dones = torch.zeros(max_chunks, num_envs, device=self.device, dtype=torch.bool)
         self.truncated = torch.zeros(max_chunks, num_envs, device=self.device, dtype=torch.bool)
-        # Post-collection targets (filled by generate_rollout, same layout).
         self.values = torch.zeros(max_chunks, num_envs, device=self.device, dtype=dtype)
         self.returns = torch.zeros(max_chunks, num_envs, device=self.device, dtype=dtype)
         self.advantages = torch.zeros(max_chunks, num_envs, device=self.device, dtype=dtype)
@@ -54,11 +52,9 @@ class RolloutStorage:
         self.count = 0
 
     def num_chunks(self) -> int:
-        """Total chunks stored across envs."""
         return self.count
 
     def clear(self) -> None:
-        """Reset cursors for the next collection round (buffers reused)."""
         self.cursor.zero_()
         self.count = 0
 
@@ -72,7 +68,6 @@ class RolloutStorage:
         done: bool,
         truncated: bool = False,
     ) -> None:
-        """Copy one chunk into ``[cursor, env_idx]`` (rsl-rl ``add_transition``)."""
         c = int(self.cursor[env_idx].item())
         if c >= self.max_chunks:
             raise OverflowError("Rollout buffer overflow: call clear() before reuse")
@@ -95,10 +90,8 @@ class RolloutStorage:
         self.count += 1
 
     def to_transition_list(self) -> list[dict]:
-        """Legacy ``Transition`` dicts in [env, chunk] order (tests / stack path)."""
         from lerobot.processor.converters import to_tensor
         from lerobot.utils.constants import DONE, OBS_STATE, REWARD, TRUNCATED
-
         out: list[dict] = []
         for e in range(self.num_envs):
             for c in range(int(self.cursor[e].item())):
@@ -127,7 +120,6 @@ class RolloutStorage:
 def mini_batch_indices(
     n: int, num_minibatches: int, device: torch.device | str, num_epochs: int = 1
 ):
-    """Yield one GPU ``randperm`` split per epoch (rsl-rl ``mini_batch_generator``).      Single permutation per epoch, contigu"""
     if n < 1:
         raise ValueError(f"n={n} must be >= 1")
     n_mb = max(1, min(int(num_minibatches), n))
