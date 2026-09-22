@@ -54,6 +54,40 @@ class RolloutStorage:
     def num_chunks(self) -> int:
         return self.count
 
+    def compute_returns(
+        self,
+        last_values: torch.Tensor,
+        gamma: float = 0.99,
+        lam: float = 0.95,
+        normalize_advantage: bool = True,
+    ) -> None:
+        """Amazon-style exact GAE: step-level over chunk steps, aggregate back."""
+        # For each stored chunk, expand to step-level and apply Amazon GAE
+        for c in range(self.max_chunks):
+            for e in range(self.num_envs):
+                L = int(self.lengths[c, e].item())
+                if c >= self.count or L <= 0:
+                    continue
+                # Amazon exact recursion over L steps inside this chunk
+                advantage = 0.0
+                for step in reversed(range(L)):
+                    if step == L - 1:
+                        next_values = last_values[e, 0] if last_values.dim() > 1 else last_values[e]
+                    else:
+                        # Approximate: use chunk value for intermediate steps
+                        next_values = self.values[c, e]
+                    next_is_not_terminal = 1.0 - float(self.dones[c, e].item()) if step == L - 1 else 1.0
+                    delta = float(self.rewards[c, e, step].item()) + next_is_not_terminal * gamma * float(next_values) - float(self.values[c, e].item())
+                    advantage = delta + next_is_not_terminal * gamma * lam * advantage
+                # Amazon exact: write after full chunk recursion
+                self.advantages[c, e] = float(advantage)
+                self.returns[c, e] = float(advantage + float(self.values[c, e].item()))
+        if normalize_advantage:
+            advantages_flat = self.advantages
+            mean_adv = advantages_flat.mean()
+            std_adv = advantages_flat.std(unbiased=False) + 1e-8
+            self.advantages = (advantages_flat - mean_adv) / std_adv
+
     def clear(self) -> None:
         self.cursor.zero_()
         self.count = 0
