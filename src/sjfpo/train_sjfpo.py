@@ -37,7 +37,6 @@ from sjfpo.checkpointing import load_policy_checkpoint, save_policy_checkpoint
 from sjfpo.configuration_sjfpo import SJFPOConfig
 from sjfpo.evaluator import Evaluator, check_divergence, mean_chunk_jerk
 from sjfpo.modeling_sjfpo import SJFPOPolicy, STORAGE_DTYPE
-# Standard checkpoint naming (lerobot.utils.constants)
 from lerobot.utils.constants import CHECKPOINTS_DIR
 from sjfpo.rollout_storage import mini_batch_indices
 from sjfpo.utils import maybe_compile, resolve_device, to_numpy_1d
@@ -101,12 +100,7 @@ def build_optimizer(policy: SJFPOPolicy, cfg: SJFPOConfig):
     """Lerobot preset AdamW; bitsandbytes 8-bit AdamW when opted in."""
     params = policy.get_optim_params()["params"]
     if cfg.optimizer_8bit:
-        try:
-            import bitsandbytes as bnb
-        except ImportError as e:
-            raise RuntimeError(
-                "optimizer_8bit=True needs bitsandbytes (pip install bitsandbytes)"
-            ) from e
+        import bitsandbytes as bnb
         return bnb.optim.AdamW8bit(
             params, lr=cfg.optimizer_lr, weight_decay=cfg.optimizer_weight_decay
         )

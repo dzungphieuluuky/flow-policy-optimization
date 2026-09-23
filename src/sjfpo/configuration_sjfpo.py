@@ -78,7 +78,8 @@ class SJFPOConfig(PreTrainedConfig):
     executed_vs_predicted_ratio: float = 0.5
 
     # -- Optimizer ---------------------------------------------------------
-    optimizer_lr: float = 3e-4
+    policy_lr: float = 3e-4
+    critic_lr: float = 9e-4  # 3x policy_lr for faster value tracking
     optimizer_weight_decay: float = 1e-4
     optimizer_8bit: bool = False
 
@@ -172,8 +173,10 @@ class SJFPOConfig(PreTrainedConfig):
             raise ValueError(f"vf_coef={self.vf_coef} must be >= 0")
 
     def _validate_optimizer(self) -> None:
-        if self.optimizer_lr <= 0:
-            raise ValueError(f"optimizer_lr={self.optimizer_lr} must be > 0")
+        if self.policy_lr <= 0:
+            raise ValueError(f"policy_lr={self.policy_lr} must be > 0")
+        if self.critic_lr <= 0:
+            raise ValueError(f"critic_lr={self.critic_lr} must be > 0")
         if self.optimizer_weight_decay < 0:
             raise ValueError(
                 f"optimizer_weight_decay={self.optimizer_weight_decay} must be >= 0"
@@ -239,7 +242,7 @@ class SJFPOConfig(PreTrainedConfig):
         version doesn't, this falls back to a plain fp32 AdamW and warns.
         """
         kwargs = dict(
-            lr=self.optimizer_lr,
+            lr=self.policy_lr,
             weight_decay=self.optimizer_weight_decay,
             grad_clip_norm=self.grad_clip_norm,
         )

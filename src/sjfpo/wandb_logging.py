@@ -9,6 +9,8 @@ import wandb
 
 
 # Direct wandb usage (library installed and enabled by default)
+# Disabled when SJFPO_DISABLE_WANDB=1/true/yes/on (case-insensitive).
+_SJFPO_DISABLE_WANDB = os.environ.get("SJFPO_DISABLE_WANDB", "").strip().lower() in {"1", "true", "yes", "on", "t", "y"}
 
 
 # ---------------------------------------------------------------------------
@@ -70,6 +72,8 @@ def init_wandb_run_for_method(
     total_steps: int,
     cfg_dict: dict,
 ) -> bool:
+    if _SJFPO_DISABLE_WANDB:
+        return False
     wandb.init(
         project=method,
         group=f"{method}_{env_name}",
@@ -84,6 +88,8 @@ def init_wandb_run_for_method(
 
 
 def finish_run(exit_code: int = 0) -> None:
+    if _SJFPO_DISABLE_WANDB:
+        return
     wandb.finish(exit_code=exit_code)
 
 
@@ -93,6 +99,8 @@ def finish_run(exit_code: int = 0) -> None:
 
 
 def log_metrics(data: dict, step: int) -> None:
+    if _SJFPO_DISABLE_WANDB:
+        return
     wandb.log(data, step=step)
 
 
@@ -108,6 +116,8 @@ def log_eval_summary(
     best_return: float | None = None,
     steps_to_best: int | None = None,
 ) -> None:
+    if _SJFPO_DISABLE_WANDB:
+        return
     returns = [r["return"] for r in eval_results]
     lengths = [r["length"] for r in eval_results]
     successes = [r["success"] for r in eval_results if r.get("success") is not None]
@@ -151,7 +161,7 @@ def log_eval_summary(
 
 
 def log_eval_video(frames: list, global_step: int, *, fps: int = 30) -> None:
-    if not frames:
+    if _SJFPO_DISABLE_WANDB or not frames:
         return
     try:
         video = np.stack([np.asarray(f, dtype=np.uint8) for f in frames])
