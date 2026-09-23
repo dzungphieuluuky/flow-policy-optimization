@@ -183,33 +183,21 @@ def log_eval_summary(
     successes = [r["success"] for r in eval_results if r.get("success") is not None]
     jerks = [r["jerk"] for r in eval_results if r.get("jerk") is not None]
 
-    def _safe_mean(xs):
-        return float(np.mean(xs)) if xs else 0.0
-
-    def _safe_min(xs):
-        return float(np.min(xs)) if xs else 0.0
-
-    def _safe_max(xs):
-        return float(np.max(xs)) if xs else 0.0
-
-    def _safe_std(xs):
-        return float(np.std(xs)) if xs else 0.0
-
-    data: dict = {
+    data = {
         "eval/mean_return": float(mean_return),
-        "eval/min_return": _safe_min(returns),
-        "eval/max_return": _safe_max(returns),
-        "eval/std_return": _safe_std(returns),
-        "eval/mean_length": _safe_mean(lengths),
-        "eval/max_length": _safe_max(lengths),
-        "eval/std_length": _safe_std(lengths),
-        "eval/episode_count": int(eval_count),
+        "eval/min_return": float(np.min(returns)) if returns else 0.0,
+        "eval/max_return": float(np.max(returns)) if returns else 0.0,
+        "eval/std_return": float(np.std(returns)) if returns else 0.0,
+        "eval/mean_length": float(np.mean(lengths)) if lengths else 0.0,
+        "eval/max_length": float(np.max(lengths)) if lengths else 0.0,
+        "eval/std_length": float(np.std(lengths)) if lengths else 0.0,
+        "eval/episode_count": eval_count,
     }
     if successes:
         data["eval/success_rate"] = float(np.mean(successes))
     if jerks:
-        data["eval/mean_jerk"] = _safe_mean(jerks)
-        data["eval/max_jerk"] = _safe_max(jerks)
+        data["eval/mean_jerk"] = float(np.mean(jerks)) if jerks else 0.0
+        data["eval/max_jerk"] = float(np.max(jerks)) if jerks else 0.0
     if best_return is not None:
         data["eval/best_mean_return"] = float(best_return)
     if steps_to_best is not None:
@@ -219,7 +207,6 @@ def log_eval_summary(
     if consecutive_below is not None:
         data["eval/consecutive_below"] = int(consecutive_below)
 
-    # Improvement vs. previous eval — only when the caller's convention holds.
     if len(all_eval_returns) >= 2 and all_eval_returns[-1] == mean_return:
         prev = all_eval_returns[-2]
         data["eval/reward_improvement"] = float(mean_return - prev)
@@ -228,19 +215,10 @@ def log_eval_summary(
         )
 
     if eval_results:
-        rows = [
-            (
-                r["episode"],
-                r["return"],
-                r["length"],
-                r.get("success"),
-                r.get("jerk"),
-            )
-            for r in eval_results
-        ]
         data["eval/episodes"] = _wandb.Table(
             columns=["episode", "return", "length", "success", "jerk"],
-            data=[list(r) for r in rows],
+            data=[[r["episode"], r["return"], r["length"], r.get("success"), r.get("jerk")]
+                  for r in eval_results],
         )
 
     log_metrics(data, step=global_step)
