@@ -29,12 +29,13 @@ from typing import Any
 import numpy as np
 import torch
 from lerobot.configs.types import FeatureType, PolicyFeature
+from lerobot.utils.constants import ACTION, DONE, OBS_STATE, REWARD, TRUNCATED
 from lerobot.utils.random_utils import set_seed
 
 from sjfpo.checkpointing import load_policy_checkpoint, save_policy_checkpoint
 from sjfpo.configuration_sjfpo import SJFPOConfig
 from sjfpo.evaluator import Evaluator, check_divergence, mean_chunk_jerk
-from sjfpo.modeling_sjfpo import SJFPOPolicy
+from sjfpo.modeling_sjfpo import SJFPOPolicy, STORAGE_DTYPE
 from sjfpo.rollout_storage import mini_batch_indices
 from sjfpo.utils import maybe_compile, resolve_device, to_numpy_1d
 from sjfpo.wandb_logging import (
@@ -126,9 +127,7 @@ def random_baseline(evaluator: Evaluator, env: Any) -> float:
     Returns ``0.0`` unchanged — callers gate on ``baseline > 0`` before
     treating the value as meaningful (see ``check_divergence``).
     """
-    results = evaluator.evaluate(
-        lambda obs: env.action_space.sample(), out_dir=None
-    )
+    results = evaluator.evaluate(lambda obs: env.action_space.sample(), out_dir=None)
     if not results:
         return 1.0
     return float(np.mean([r["return"] for r in results]))
@@ -137,6 +136,7 @@ def random_baseline(evaluator: Evaluator, env: Any) -> float:
 # ---------------------------------------------------------------------------
 # Main loop
 # ---------------------------------------------------------------------------
+
 
 def train_sjfpo_run(
     env: Any,
@@ -205,8 +205,12 @@ def train_sjfpo_run(
         )
     else:
         policy = build_policy(
-            obs_dim, action_dim, cfg, device=device,
-            action_low=action_low, action_high=action_high,
+            obs_dim,
+            action_dim,
+            cfg,
+            device=device,
+            action_low=action_low,
+            action_high=action_high,
         )
         optimizer = build_optimizer(policy, cfg)
 
@@ -220,9 +224,11 @@ def train_sjfpo_run(
     random_rollout_done = 0
     if cfg.random_rollout_steps > 0 and total_steps >= cfg.random_rollout_steps:
         random_rollout_target = min(cfg.random_rollout_steps, total_steps)
+
         # Actual uniform-random policy, not untrained flow (avoids wrong-state normalizer bias)
         def random_policy(obs):
             return train_env.action_space.sample()
+
         # Manual step loop; collect observations directly
         obs, _ = train_env.reset(seed=seed + 999)
         if hasattr(policy, "reset"):
@@ -233,7 +239,9 @@ def train_sjfpo_run(
             next_obs, _, term, trunc, _ = train_env.step(action)
             # Accumulate raw observation windows for stat initialization
             # For simplicity, stack single-frame observations (running stats handle windows)
-            policy.preprocessor.update_stats({"observation.state": np.atleast_2d(np.array(obs, dtype=np.float32))})
+            policy.preprocessor.update_stats(
+                {"observation.state": np.atleast_2d(np.array(obs, dtype=np.float32))}
+            )
             steps_collected += 1
             obs = next_obs
             if term or trunc:
@@ -249,9 +257,13 @@ def train_sjfpo_run(
     # -- Critic-only warm-up (~50k steps): freeze actor/conditioner, train critic only --
     critic_warmup_steps = cfg.random_rollout_steps  # use same budget
     if cfg.random_rollout_steps > 0:
-        for step in range(min(critic_warmup_steps, max(1, int(cfg.random_rollout_steps)))):
-            collect = min(cfg.chunks_per_update * cfg.action_horizon,
-                          max(1, cfg.chunks_per_update * cfg.action_horizon))
+        for step in range(
+            min(critic_warmup_steps, max(1, int(cfg.random_rollout_steps)))
+        ):
+            collect = min(
+                cfg.chunks_per_update * cfg.action_horizon,
+                max(1, cfg.chunks_per_update * cfg.action_horizon),
+            )
             policy.actor.requires_grad_(False)
             policy.old_actor.requires_grad_(False)
             policy.conditioner.requires_grad_(False)
@@ -259,12 +271,16 @@ def train_sjfpo_run(
             policy.critic.requires_grad_(True)
 
             wb = policy.generate_rollout(
-                train_env, collect,
-                action_low=action_low, action_high=action_high,
+                train_env,
+                collect,
+                action_low=action_low,
+                action_high=action_high,
             )
             if wb.get("observation.state") is None:
                 break
-            states_n = policy.preprocessor({OBS_STATE: wb["observation.state"]})[OBS_STATE]
+            states_n = policy.preprocessor({OBS_STATE: wb["observation.state"]})[
+                OBS_STATE
+            ]
             v_pred = policy.critic(states_n).float()
             target_approx = wb.get("returns")
             if target_approx is not None:
@@ -272,7 +288,8 @@ def train_sjfpo_run(
             else:
                 target = torch.zeros_like(v_pred.squeeze(-1))
             loss = torch.nn.functional.smooth_l1_loss(
-                v_pred.squeeze(-1), target.to(device=v_pred.device, dtype=STORAGE_DTYPE),
+                v_pred.squeeze(-1),
+                target.to(device=v_pred.device, dtype=STORAGE_DTYPE),
                 beta=1.0,
             )
             # Filter optimizer params to critic only
@@ -319,8 +336,10 @@ def train_sjfpo_run(
             steps_to_go = total_steps - global_step
             collect_steps = min(cfg.chunks_per_update * cfg.action_horizon, steps_to_go)
             batch = policy.generate_rollout(
-                train_env, collect_steps,
-                action_low=action_low, action_high=action_high,
+                train_env,
+                collect_steps,
+                action_low=action_low,
+                action_high=action_high,
             )
             # Count executed env steps via executed chunk prefixes.
             step_delta = int((~batch["action_is_pad"]).sum())
@@ -351,7 +370,9 @@ def train_sjfpo_run(
             grad_norm_pre: list[float] = []
             n_chunks = batch["advantages"].shape[0]
             for mb_idx in mini_batch_indices(
-                n_chunks, cfg.num_minibatches, batch["advantages"].device,
+                n_chunks,
+                cfg.num_minibatches,
+                batch["advantages"].device,
                 num_epochs=cfg.num_epochs,
             ):
                 optimizer.zero_grad(set_to_none=True)
@@ -366,18 +387,14 @@ def train_sjfpo_run(
                 ]
                 # `clip_grad_norm_` returns the pre-clip total norm; post-clip
                 # is min(pre, max_norm) because clipping is a uniform scale.
-                pre = torch.nn.utils.clip_grad_norm_(
-                    all_params, cfg.grad_clip_norm
-                )
+                pre = torch.nn.utils.clip_grad_norm_(all_params, cfg.grad_clip_norm)
                 grad_norm_pre.append(float(pre))
                 optimizer.step()
                 policy.step_count += 1
                 infos.append(epoch_info)
 
             # Aggregate across epochs/minibatches.
-            info = {
-                k: sum(d[k] for d in infos) / len(infos) for k in infos[0]
-            }
+            info = {k: sum(d[k] for d in infos) / len(infos) for k in infos[0]}
             grad_norm_mean_pre = (
                 sum(grad_norm_pre) / len(grad_norm_pre) if grad_norm_pre else 0.0
             )

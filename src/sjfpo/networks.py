@@ -62,6 +62,7 @@ def resolve_config_value(name: str, override: Any) -> Any:
 # Norm
 # ---------------------------------------------------------------------------
 
+
 class _RMSNorm(nn.RMSNorm):
     """``nn.RMSNorm`` initialized in ``STORAGE_DTYPE``.
 
@@ -85,6 +86,7 @@ def _rms_norm(hidden_dim: int, eps: float = 1e-6) -> nn.RMSNorm:
 # ---------------------------------------------------------------------------
 # Primitives
 # ---------------------------------------------------------------------------
+
 
 class SwiGLU(nn.Module):
     """Gated SiLU feedforward: down(silu(gate(x)) * up(x)).
@@ -145,9 +147,9 @@ class SinusoidalEncoding(nn.Module):
 
     def add_to(self, x: torch.Tensor, positions: torch.Tensor) -> torch.Tensor:
         """Add codes for ``positions`` ([..., L]) to ``x`` ([..., L, D])."""
-        ang = (
-            positions.to(dtype=torch.float32) * self.scale
-        ).unsqueeze(-1) * self._freqs(x.device)
+        ang = (positions.to(dtype=torch.float32) * self.scale).unsqueeze(
+            -1
+        ) * self._freqs(x.device)
         pe = torch.cat([ang.sin(), ang.cos()], dim=-1)
         if pe.shape[-1] < self.dim:  # odd dim: pad last column with zeros
             pe = F.pad(pe, (0, self.dim - pe.shape[-1]))
@@ -254,6 +256,7 @@ class WindowEncoder(nn.Module):
 # Running stats
 # ---------------------------------------------------------------------------
 
+
 class RunningMeanStd(nn.Module):
     """Per-dim running mean/variance over raw obs frames.
 
@@ -329,6 +332,7 @@ class RunningMeanStd(nn.Module):
 # DiT
 # ---------------------------------------------------------------------------
 
+
 def modulate(x: torch.Tensor, shift: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
     """adaLN modulation: x * (1 + scale) + shift."""
     return x * (1.0 + scale) + shift
@@ -364,9 +368,7 @@ class DiTBlock(nn.Module):
             dim=1
         )
 
-        h = modulate(
-            self.norm1(x), shift_msa.unsqueeze(1), scale_msa.unsqueeze(1)
-        )
+        h = modulate(self.norm1(x), shift_msa.unsqueeze(1), scale_msa.unsqueeze(1))
         x = x + gate_msa.unsqueeze(1) * self.attn(h)
 
         out = x + gate_mlp.unsqueeze(1) * self.mlp(
@@ -414,9 +416,9 @@ class StateConditioner(nn.Module):
     def forward(self, states: torch.Tensor) -> torch.Tensor:
         """[B, T, obs] -> [B, D]."""
         raw = self.state_encoder(states).mean(dim=1)
-        spec = self.key_proj(
-            self.bin_encoding(self.bin_norm(dct(states, dim=1)))
-        ).mean(dim=1)
+        spec = self.key_proj(self.bin_encoding(self.bin_norm(dct(states, dim=1)))).mean(
+            dim=1
+        )
         return self.fuse(torch.cat([raw, spec], dim=-1))
 
 
@@ -478,9 +480,7 @@ class SJFPOFlowModel(nn.Module):
             device=x_t.device, dtype=x_t.dtype
         )
         # No explicit expand: nn.Linear and the add below both broadcast.
-        c = self.time_mlp(temb) + condition.to(
-            device=x_t.device, dtype=x_t.dtype
-        )
+        c = self.time_mlp(temb) + condition.to(device=x_t.device, dtype=x_t.dtype)
 
         h = self.bin_encoding(self.in_proj(x_t))
 

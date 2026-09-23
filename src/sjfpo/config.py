@@ -24,15 +24,15 @@ except Exception:
 
 _REGISTRY_KEYS = list(_ENV_REGISTRY.keys()) if isinstance(_ENV_REGISTRY, dict) else []
 ENVS = tuple(k for k in _REGISTRY_KEYS if _ENV_REGISTRY[k].get("tier") == "core")
-PROTOTYPE_ENVS = tuple(k for k in _REGISTRY_KEYS if _ENV_REGISTRY[k].get("tier") != "core")
+PROTOTYPE_ENVS = tuple(
+    k for k in _REGISTRY_KEYS if _ENV_REGISTRY[k].get("tier") != "core"
+)
 KNOWN_ENVS = ENVS + PROTOTYPE_ENVS
 SEEDS = (0, 1, 2, 3, 4)
 
 TOTAL_STEPS = 1_000_000
 EVAL_STEPS = 50_000
 SAVE_STEPS = 25_000
-
-
 
 
 @dataclass(frozen=True)
@@ -72,7 +72,6 @@ SAC_CFG = SACConfig()
 
 @dataclass(frozen=True)
 class RunSpec:
-
     method: str
     env: str
     seed: int

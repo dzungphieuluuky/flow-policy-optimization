@@ -55,14 +55,14 @@ _INDEX_DTYPE = torch.int64
 Transition = TypedDict(
     "Transition",
     {
-        "observation.state": torch.Tensor,        # [T, obs] fp32
-        "action": torch.Tensor,                    # [H, action_dim] scaled
-        "next.observation.state": torch.Tensor,    # [T, obs] fp32
-        "next.reward": torch.Tensor,               # [n_exec] fp32
-        "next.done": torch.Tensor,                 # bool scalar
-        "next.truncated": torch.Tensor,            # bool scalar
-        "executed_n_action_steps": torch.Tensor,   # int64 scalar
-        "clip_count": torch.Tensor,                # int64 scalar
+        "observation.state": torch.Tensor,  # [T, obs] fp32
+        "action": torch.Tensor,  # [H, action_dim] scaled
+        "next.observation.state": torch.Tensor,  # [T, obs] fp32
+        "next.reward": torch.Tensor,  # [n_exec] fp32
+        "next.done": torch.Tensor,  # bool scalar
+        "next.truncated": torch.Tensor,  # bool scalar
+        "executed_n_action_steps": torch.Tensor,  # int64 scalar
+        "clip_count": torch.Tensor,  # int64 scalar
     },
 )
 
@@ -70,6 +70,7 @@ Transition = TypedDict(
 # ---------------------------------------------------------------------------
 # Conversions
 # ---------------------------------------------------------------------------
+
 
 def as_float_tensor(x: object) -> torch.Tensor:
     """Coerce to an fp32 CPU/GPU tensor without forcing a device hop.
@@ -87,8 +88,12 @@ def _bounds_to_tensor(
     high: float | np.ndarray | torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Coerce, validate, and return ``(low, range = high - low)`` on fp32."""
-    lo = torch.as_tensor(np.asarray(low, dtype=np.float32), dtype=torch.float32).reshape(-1)
-    hi = torch.as_tensor(np.asarray(high, dtype=np.float32), dtype=torch.float32).reshape(-1)
+    lo = torch.as_tensor(
+        np.asarray(low, dtype=np.float32), dtype=torch.float32
+    ).reshape(-1)
+    hi = torch.as_tensor(
+        np.asarray(high, dtype=np.float32), dtype=torch.float32
+    ).reshape(-1)
     if lo.shape != hi.shape:
         raise ValueError(
             f"action_low shape {tuple(lo.shape)} != action_high shape {tuple(hi.shape)}"
@@ -117,6 +122,7 @@ def scale_and_clip_chunk(
 # Window helpers
 # ---------------------------------------------------------------------------
 
+
 def build_warmup_window(
     first_obs: torch.Tensor, n_obs_steps: int
 ) -> deque[torch.Tensor]:
@@ -138,6 +144,7 @@ def reset_chunk_window(env, n_obs_steps: int) -> deque[torch.Tensor]:
 # ---------------------------------------------------------------------------
 # Transition builder
 # ---------------------------------------------------------------------------
+
 
 def _bool_tensor(v: bool) -> torch.Tensor:
     return torch.tensor(v, dtype=torch.bool)
@@ -188,9 +195,10 @@ def finalize_transition(
 # Single-env collector
 # ---------------------------------------------------------------------------
 
+
 def execute_open_loop_steps(
     env,
-    executed_np: np.ndarray,          # [H, act_dim] on host — no per-step sync
+    executed_np: np.ndarray,  # [H, act_dim] on host — no per-step sync
     window: deque[torch.Tensor],
     executed_total: int,
     total_steps: int,
@@ -235,8 +243,14 @@ def propose_and_execute_chunk(
     )
     next_state = torch.stack(tuple(window), dim=0)
     record = finalize_transition(
-        state, next_state, scaled, rewards, done_kind, clip_count,
-        chunk_size, n_action_steps,
+        state,
+        next_state,
+        scaled,
+        rewards,
+        done_kind,
+        clip_count,
+        chunk_size,
+        n_action_steps,
     )
     return record, done_kind
 
@@ -254,6 +268,7 @@ def flush_on_collection_error(
 # ---------------------------------------------------------------------------
 # Vector collector
 # ---------------------------------------------------------------------------
+
 
 def collect_chunks_vec(
     envs,
@@ -288,10 +303,8 @@ def collect_chunks_vec(
 
     try:
         obs, _ = envs.reset(seed=[seed + i for i in range(n)])
-        windows = [
-            build_warmup_window(as_float_tensor(o), n_obs_steps) for o in obs
-        ]
-        cur: list = [None] * n              # per-env in-flight chunk state
+        windows = [build_warmup_window(as_float_tensor(o), n_obs_steps) for o in obs]
+        cur: list = [None] * n  # per-env in-flight chunk state
         pos = [0] * n
         rewards: list[list[float]] = [[] for _ in range(n)]
         prev: list[Transition | None] = [None] * n
@@ -302,7 +315,8 @@ def collect_chunks_vec(
 
         while any(e < target for e in executed_total):
             need = [
-                i for i in range(n)
+                i
+                for i in range(n)
                 if cur[i] is None and not awaiting[i] and executed_total[i] < target
             ]
             if need:
@@ -359,8 +373,14 @@ def collect_chunks_vec(
                         done_kind = "continue"
                     next_state = torch.stack(tuple(windows[i]), dim=0)
                     record = finalize_transition(
-                        replan, next_state, scaled, rewards[i], done_kind,
-                        clip_count, chunk_size, n_action_steps,
+                        replan,
+                        next_state,
+                        scaled,
+                        rewards[i],
+                        done_kind,
+                        clip_count,
+                        chunk_size,
+                        n_action_steps,
                     )
                     executed_total[i] += n_exec
                     records[i].append(record)
@@ -384,6 +404,7 @@ def collect_chunks_vec(
 # ---------------------------------------------------------------------------
 # Single-env collector
 # ---------------------------------------------------------------------------
+
 
 def collect_chunks(
     env,
@@ -414,8 +435,15 @@ def collect_chunks(
         executed_total = 0
         while executed_total < total_steps:
             record, done_kind = propose_and_execute_chunk(
-                policy, window, low, range_, env,
-                executed_total, total_steps, chunk_size, n_action_steps,
+                policy,
+                window,
+                low,
+                range_,
+                env,
+                executed_total,
+                total_steps,
+                chunk_size,
+                n_action_steps,
             )
             executed_total += int(record["executed_n_action_steps"])
             records.append(record)

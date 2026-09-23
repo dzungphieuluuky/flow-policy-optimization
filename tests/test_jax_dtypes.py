@@ -25,27 +25,36 @@ def test_cpu_box_defaults_to_fp32():
     assert is_blackwell() is False
     assert resolve_param_dtype() == jnp.float32
     pj, _ = jpol.build_policy(6, 3, seed=0, hidden_dim=8, dit_depth=1, dit_heads=2)
-    dtypes = {np.dtype(jnp.asarray(v).dtype) for v in jax.tree.leaves(nnx.state(pj, nnx.Param))}
+    dtypes = {
+        np.dtype(jnp.asarray(v).dtype)
+        for v in jax.tree.leaves(nnx.state(pj, nnx.Param))
+    }
     assert dtypes == {np.dtype(np.float32)}
 
 
 def test_explicit_bf16_storage_with_fp32_stats():
-    pj, _ = jpol.build_policy(6, 3, seed=0, hidden_dim=8, dit_depth=1, dit_heads=2,
-                              param_dtype=jnp.bfloat16)
-    dtypes = {np.dtype(jnp.asarray(v).dtype) for v in jax.tree.leaves(nnx.state(pj, nnx.Param))}
-    assert dtypes == {np.dtype('bfloat16')}
+    pj, _ = jpol.build_policy(
+        6, 3, seed=0, hidden_dim=8, dit_depth=1, dit_heads=2, param_dtype=jnp.bfloat16
+    )
+    dtypes = {
+        np.dtype(jnp.asarray(v).dtype)
+        for v in jax.tree.leaves(nnx.state(pj, nnx.Param))
+    }
+    assert dtypes == {np.dtype("bfloat16")}
     # Running stats stay fp32 for stability.
     assert np.dtype(jnp.asarray(pj.normalizer.mean[...]).dtype) == np.dtype(np.float32)
     x = jnp.zeros((2, 4, 6))
-    out, _ = pj.actor(jnp.zeros((2, 8, 3)), jnp.full((2,), 0.5),
-                      pj.conditioner(pj.normalizer(x)))
+    out, _ = pj.actor(
+        jnp.zeros((2, 8, 3)), jnp.full((2,), 0.5), pj.conditioner(pj.normalizer(x))
+    )
     assert bool(jnp.all(jnp.isfinite(out)))
 
 
 def test_bf16_loss_parity_with_fp32(tmp_path):
     pf, _ = jpol.build_policy(6, 3, seed=0, hidden_dim=8, dit_depth=1, dit_heads=2)
-    pb, _ = jpol.build_policy(6, 3, seed=0, hidden_dim=8, dit_depth=1, dit_heads=2,
-                              param_dtype=jnp.bfloat16)
+    pb, _ = jpol.build_policy(
+        6, 3, seed=0, hidden_dim=8, dit_depth=1, dit_heads=2, param_dtype=jnp.bfloat16
+    )
     d = to_torch_dict(pf)
     import tempfile, os
 

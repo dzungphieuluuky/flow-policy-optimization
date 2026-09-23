@@ -17,7 +17,10 @@ if torch.cuda.is_available():
     torch.backends.cudnn.rnn.fp32_precision = "tf32"
     torch.backends.cudnn.benchmark = True
     import os
-    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:128,expandable_segments:True"
+
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = (
+        "max_split_size_mb:128,expandable_segments:True"
+    )
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -94,12 +97,19 @@ def main(argv: list[str] | None = None) -> int:
         # Policy callable that handles reset and returns action
         def policy_callable(obs: np.ndarray) -> np.ndarray:
             import torch
+
             with torch.inference_mode():
-                batch = {"observation.state": torch.as_tensor(obs, dtype=torch.float32).unsqueeze(0)}
+                batch = {
+                    "observation.state": torch.as_tensor(
+                        obs, dtype=torch.float32
+                    ).unsqueeze(0)
+                }
                 action = policy.select_action(batch, noise=False)
                 return action.squeeze(0).cpu().numpy()
 
-        print(f"Running {args.episodes} episode(s) with render_mode={args.render_mode!r}")
+        print(
+            f"Running {args.episodes} episode(s) with render_mode={args.render_mode!r}"
+        )
         results = evaluator.evaluate(policy_callable)
         for r in results:
             print(
@@ -118,9 +128,13 @@ def main(argv: list[str] | None = None) -> int:
             out_video_path = f"outputs/play_{args.env}_seed{args.seed}.mp4"
             # Note: frames returned as numpy arrays; caller can save with imageio/ffmpeg
             print(f"  First episode frames: {len(frames)} frames, return={ret:.2f}")
-            print(f"  (Save frames manually to video if needed; frame count: {len(frames)})")
+            print(
+                f"  (Save frames manually to video if needed; frame count: {len(frames)})"
+            )
         else:
-            print(f"  Render mode '{args.render_mode}': video output handled by env window/display.")
+            print(
+                f"  Render mode '{args.render_mode}': video output handled by env window/display."
+            )
 
     finally:
         env.close()

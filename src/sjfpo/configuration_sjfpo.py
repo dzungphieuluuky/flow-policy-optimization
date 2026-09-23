@@ -47,11 +47,11 @@ class SJFPOConfig(PreTrainedConfig):
     gamma: float = 0.999
     gae_lambda: float = 0.995
     epsilon_clip: float = 0.10  # widened: 5% was inside ratio noise floor
-    use_dct_transform: bool = True    # spectral chunk encoding; False = raw action chunk
-    use_coeff_space: bool = False     # coefficient-based flow; False = discrete token flow
+    use_dct_transform: bool = True  # spectral chunk encoding; False = raw action chunk
+    use_coeff_space: bool = False  # coefficient-based flow; False = discrete token flow
     use_aspo: bool = False  # disabled for discriminator run; re-enable once confirmed             # piecewise ASPO (positive PPO / negative SPO)
-    use_per_bin_clip: bool = False    # two-group epsilon over DCT bins
-    epsilon_clip_lowfreq: float = 0.02   # tight: low bins carry task intent
+    use_per_bin_clip: bool = False  # two-group epsilon over DCT bins
+    epsilon_clip_lowfreq: float = 0.02  # tight: low bins carry task intent
     epsilon_clip_highfreq: float = 0.10  # loose: high bins are detail/exploration
     cfm_clamp: float = 20.0
     log_ratio_cap: float = 10.0
@@ -71,7 +71,9 @@ class SJFPOConfig(PreTrainedConfig):
     timestep_scale: float = 1000.0
 
     # -- Losses / optimization --------------------------------------------
-    vf_coef: float = 1.0  # raised: critic needs equal footing; lower to 0.1 once explained_var > 0.3
+    vf_coef: float = (
+        1.0  # raised: critic needs equal footing; lower to 0.1 once explained_var > 0.3
+    )
     grad_clip_norm: float = 1.0
 
     # -- Chunk selection ---------------------------------------------------
@@ -107,7 +109,9 @@ class SJFPOConfig(PreTrainedConfig):
     def _resolve_n_action_steps(self) -> None:
         """If ``n_action_steps`` is None, derive it from the ratio."""
         if self.n_action_steps is None:
-            derived = max(1, round(self.action_horizon * self.executed_vs_predicted_ratio))
+            derived = max(
+                1, round(self.action_horizon * self.executed_vs_predicted_ratio)
+            )
             self.n_action_steps = min(derived, self.action_horizon)
 
     def _validate_geometry(self) -> None:
@@ -142,7 +146,9 @@ class SJFPOConfig(PreTrainedConfig):
         if not 0.0 < self.gamma <= 1.0:
             raise ValueError(f"gamma={self.gamma} must satisfy 0 < gamma <= 1")
         if not 0.0 < self.gae_lambda <= 1.0:
-            raise ValueError(f"gae_lambda={self.gae_lambda} must satisfy 0 < lambda <= 1")
+            raise ValueError(
+                f"gae_lambda={self.gae_lambda} must satisfy 0 < lambda <= 1"
+            )
         if not 0.0 < self.epsilon_clip < 1.0:
             raise ValueError(
                 f"epsilon_clip={self.epsilon_clip} must satisfy 0 < eps < 1"
@@ -208,14 +214,10 @@ class SJFPOConfig(PreTrainedConfig):
             )
         r = self.executed_vs_predicted_ratio
         if not 0.0 < r <= 1.0:
-            raise ValueError(
-                f"executed_vs_predicted_ratio={r} must satisfy 0 < r <= 1"
-            )
+            raise ValueError(f"executed_vs_predicted_ratio={r} must satisfy 0 < r <= 1")
         p = self.top_p_spectral_tokens
         if not 0.0 < p <= 1.0:
-            raise ValueError(
-                f"top_p_spectral_tokens={p} must satisfy 0 < p <= 1"
-            )
+            raise ValueError(f"top_p_spectral_tokens={p} must satisfy 0 < p <= 1")
         if self.use_coeff_space and not self.use_dct_transform:
             raise ValueError(
                 "use_coeff_space=True requires use_dct_transform=True "

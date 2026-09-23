@@ -77,7 +77,7 @@ def halfcheetah_reward(
 
 
 def shift_window(windows: torch.Tensor, idx: int, new_obs: torch.Tensor) -> None:
-    """Roll one env's ``[T, obs]`` window forward, appending ``new_obs``.      ``torch.roll`` returns a fresh tensor: shifting """
+    """Roll one env's ``[T, obs]`` window forward, appending ``new_obs``.      ``torch.roll`` returns a fresh tensor: shifting"""
     w = torch.roll(windows[idx], shifts=-1, dims=0)
     w[-1].copy_(new_obs.to(dtype=w.dtype))
     windows[idx] = w
@@ -164,7 +164,7 @@ class MjxVec:
         return dlpack.from_dlpack(x)
 
     def _jax(self, t: torch.Tensor):
-        """torch-CUDA -> JAX-GPU, zero-copy via DLPack.          ``jax.dlpack.from_dlpack`` takes the tensor itself (it exposes    """
+        """torch-CUDA -> JAX-GPU, zero-copy via DLPack.          ``jax.dlpack.from_dlpack`` takes the tensor itself (it exposes"""
         import jax
 
         t = t.to(device="cuda", dtype=torch.float32).contiguous()
@@ -191,14 +191,19 @@ class MjxVec:
                 )
         elif kind in ("reacher", "pusher"):
             # Goal resampling is host-side (reset is eager, never jitted).
-            rng_np = np.random.default_rng(int(jax.random.randint(rng, (), 0, 2**31 - 1)))
+            rng_np = np.random.default_rng(
+                int(jax.random.randint(rng, (), 0, 2**31 - 1))
+            )
             from sjfpo_jax.envs import reset_state as _reset_state
 
             qpos = np.zeros((n, self.nq))
             qvel = np.zeros((n, self.nv))
             for i in range(n):
                 qp, qv = _reset_state(
-                    self.spec, rng_np, np.asarray(self._init_qpos), np.asarray(self._init_qvel)
+                    self.spec,
+                    rng_np,
+                    np.asarray(self._init_qpos),
+                    np.asarray(self._init_qvel),
                 )
                 qpos[i], qvel[i] = qp, qv
             rng, _ = jax.random.split(rng)
@@ -226,7 +231,7 @@ class MjxVec:
 
         kind = self.spec["obs_kind"]
         if kind == "qpos_qvel":
-            qpos = dx.qpos[:, self.spec["obs_drop"]:]
+            qpos = dx.qpos[:, self.spec["obs_drop"] :]
             qvel = dx.qvel
             if self.spec["qvel_clip"] is not None:
                 qvel = jnp.clip(qvel, -self.spec["qvel_clip"], self.spec["qvel_clip"])
@@ -234,29 +239,46 @@ class MjxVec:
         if kind == "full":
             return jnp.concatenate([dx.qpos, dx.qvel], axis=1)
         if kind == "ant":
-            qpos = dx.qpos[:, self.spec["obs_drop"]:]
+            qpos = dx.qpos[:, self.spec["obs_drop"] :]
             lo, hi = self.spec["contact_force_range"]
             cfrc = jnp.clip(dx.cfrc_ext, lo, hi)[:, 1:].reshape(dx.qpos.shape[0], -1)
             return jnp.concatenate([qpos, dx.qvel, cfrc], axis=1)
         if kind == "reacher":
             theta = dx.qpos[:, :2]
             extra = self._extras_jax(dx)
-            return jnp.concatenate([
-                jnp.cos(theta), jnp.sin(theta), dx.qpos[:, 2:], dx.qvel[:, :2],
-                (extra["fingertip"] - extra["target"])[:, :2],
-            ], axis=1)
+            return jnp.concatenate(
+                [
+                    jnp.cos(theta),
+                    jnp.sin(theta),
+                    dx.qpos[:, 2:],
+                    dx.qvel[:, :2],
+                    (extra["fingertip"] - extra["target"])[:, :2],
+                ],
+                axis=1,
+            )
         if kind == "double_pendulum":
-            return jnp.concatenate([
-                dx.qpos[:, :1], jnp.sin(dx.qpos[:, 1:]), jnp.cos(dx.qpos[:, 1:]),
-                jnp.clip(dx.qvel, -10, 10),
-                jnp.clip(dx.qfrc_constraint, -10, 10)[:, :1],
-            ], axis=1)
+            return jnp.concatenate(
+                [
+                    dx.qpos[:, :1],
+                    jnp.sin(dx.qpos[:, 1:]),
+                    jnp.cos(dx.qpos[:, 1:]),
+                    jnp.clip(dx.qvel, -10, 10),
+                    jnp.clip(dx.qfrc_constraint, -10, 10)[:, :1],
+                ],
+                axis=1,
+            )
         if kind == "pusher":
             extra = self._extras_jax(dx)
-            return jnp.concatenate([
-                dx.qpos[:, :7], dx.qvel[:, :7],
-                extra["tips_arm"], extra["object"], extra["goal"],
-            ], axis=1)
+            return jnp.concatenate(
+                [
+                    dx.qpos[:, :7],
+                    dx.qvel[:, :7],
+                    extra["tips_arm"],
+                    extra["object"],
+                    extra["goal"],
+                ],
+                axis=1,
+            )
         raise ValueError(f"obs_kind={kind!r} unknown")
 
     def _healthy_jax(self, dx, obs):
@@ -267,8 +289,14 @@ class MjxVec:
             return jnp.ones((dx.qpos.shape[0],), dtype=bool)
         if kind == "healthy":
             z, angle = dx.qpos[:, 1], dx.qpos[:, 2]
-            ok = (self.spec["healthy_z_range"][0] < z) & (z < self.spec["healthy_z_range"][1])
-            ok = ok & (self.spec["healthy_angle_range"][0] < angle) & (angle < self.spec["healthy_angle_range"][1])
+            ok = (self.spec["healthy_z_range"][0] < z) & (
+                z < self.spec["healthy_z_range"][1]
+            )
+            ok = (
+                ok
+                & (self.spec["healthy_angle_range"][0] < angle)
+                & (angle < self.spec["healthy_angle_range"][1])
+            )
             if self.spec.get("healthy_state_range") is not None:
                 s_lo, s_hi = self.spec["healthy_state_range"]
                 state = jnp.concatenate([dx.qpos, dx.qvel], axis=1)[:, 2:]
@@ -277,7 +305,11 @@ class MjxVec:
         if kind == "ant":
             state = jnp.concatenate([dx.qpos, dx.qvel], axis=1)
             z_lo, z_hi = self.spec["healthy_z_range"]
-            return jnp.isfinite(state).all(axis=1) & (z_lo <= state[:, 2]) & (state[:, 2] <= z_hi)
+            return (
+                jnp.isfinite(state).all(axis=1)
+                & (z_lo <= state[:, 2])
+                & (state[:, 2] <= z_hi)
+            )
         if kind == "pole":
             return jnp.isfinite(obs).all(axis=1) & (jnp.abs(obs[:, 1]) <= 0.2)
         if kind == "site_y":
@@ -330,7 +362,9 @@ class MjxVec:
             if self.spec["contact_weight"]:
                 lo, hi = self.spec["contact_force_range"]
                 cfrc = jnp.clip(self._dx.cfrc_ext, lo, hi)
-                contact = self.spec["contact_weight"] * jnp.sum(cfrc * cfrc, axis=(1, 2))
+                contact = self.spec["contact_weight"] * jnp.sum(
+                    cfrc * cfrc, axis=(1, 2)
+                )
             rew = (fwd + survive - ctrl_cost - contact).astype(jnp.float32)
         elif rk == "survive":
             rew = jnp.where(healthy, 1.0, 0.0).astype(jnp.float32)
@@ -339,17 +373,29 @@ class MjxVec:
             site = self._dx.site_xpos[:, self.spec.get("site_index", 0)]
             dist = 0.01 * site[:, 0] ** 2 + (site[:, 2] - 2) ** 2
             vel = 1e-3 * v1**2 + 5e-3 * v2**2
-            rew = (self.spec["healthy_reward"] * healthy.astype(jnp.float32) - dist - vel).astype(jnp.float32)
+            rew = (
+                self.spec["healthy_reward"] * healthy.astype(jnp.float32) - dist - vel
+            ).astype(jnp.float32)
         elif rk == "reacher":
             extra = self._extras_jax(self._dx)
             vec = extra["fingertip"] - extra["target"]
-            rew = (-jnp.linalg.norm(vec, axis=1) * self.spec["reward_dist_weight"]
-                   - jnp.sum(ctrl_j * ctrl_j, axis=1) * self.spec["reward_control_weight"]).astype(jnp.float32)
+            rew = (
+                -jnp.linalg.norm(vec, axis=1) * self.spec["reward_dist_weight"]
+                - jnp.sum(ctrl_j * ctrl_j, axis=1) * self.spec["reward_control_weight"]
+            ).astype(jnp.float32)
         elif rk == "pusher":
             extra = self._extras_jax(self._dx)
-            near = -jnp.linalg.norm(extra["object"] - extra["tips_arm"], axis=1) * self.spec["reward_near_weight"]
-            dist = -jnp.linalg.norm(extra["object"] - extra["goal"], axis=1) * self.spec["reward_dist_weight"]
-            ctrl_cost = jnp.sum(ctrl_j * ctrl_j, axis=1) * self.spec["reward_control_weight"]
+            near = (
+                -jnp.linalg.norm(extra["object"] - extra["tips_arm"], axis=1)
+                * self.spec["reward_near_weight"]
+            )
+            dist = (
+                -jnp.linalg.norm(extra["object"] - extra["goal"], axis=1)
+                * self.spec["reward_dist_weight"]
+            )
+            ctrl_cost = (
+                jnp.sum(ctrl_j * ctrl_j, axis=1) * self.spec["reward_control_weight"]
+            )
             rew = (dist - ctrl_cost + near).astype(jnp.float32)
         else:
             raise ValueError(f"reward_kind={rk!r} unknown")
@@ -362,14 +408,10 @@ class MjxVec:
         if bool(jnp.any(done)):
             self._rng, sub = jax.random.split(self._rng)
             qpos, qvel = self._sample_state(sub)
-            fresh = self._fwd_fn(
-                self.mx, self._template.replace(qpos=qpos, qvel=qvel)
-            )
+            fresh = self._fwd_fn(self.mx, self._template.replace(qpos=qpos, qvel=qvel))
             take = done[:, None]
             self._dx = jax.tree.map(
-                lambda new, old: jnp.where(take, new, old)
-                if new.ndim == 2
-                else old,
+                lambda new, old: jnp.where(take, new, old) if new.ndim == 2 else old,
                 fresh,
                 self._dx,
             )
@@ -395,7 +437,7 @@ def mjx_collect_chunks(
     num_envs: int,
     seed: int,
 ) -> list[dict]:
-    """Entire chunk rollout on GPU; returns legacy ``Transition`` dicts.      One batched policy call per chunk + ``H`` jitted """
+    """Entire chunk rollout on GPU; returns legacy ``Transition`` dicts.      One batched policy call per chunk + ``H`` jitted"""
     import torch
 
     from sjfpo.rollout_storage import RolloutStorage
@@ -419,8 +461,14 @@ def mjx_collect_chunks(
     target = -(-total_steps // num_envs)  # ceil per-env budget
     max_chunks = target // min(n_action_steps, 1) + 2
     storage = RolloutStorage(
-        num_envs, max_chunks, n_obs_steps, n_action_steps, obs_dim, act_dim,
-        device=device, dtype=STORAGE_DTYPE,
+        num_envs,
+        max_chunks,
+        n_obs_steps,
+        n_action_steps,
+        obs_dim,
+        act_dim,
+        device=device,
+        dtype=STORAGE_DTYPE,
     )
     from lerobot.utils.constants import OBS_STATE
 
@@ -446,7 +494,8 @@ def mjx_collect_chunks(
             end_trunc = [False] * len(need)
             for _ in range(n_action_steps):
                 live = [
-                    k for k in range(len(need))
+                    k
+                    for k in range(len(need))
                     if not dones[k]
                     and executed_total[need[k]] + int(step_idx[k]) < target
                 ]
@@ -467,9 +516,13 @@ def mjx_collect_chunks(
                         dones[k] = True
                     if dones[k]:
                         # Autoreset obs returned: rebuild warmup (CPU parity).
-                        windows[need[k]] = obs[need[k]].unsqueeze(0).expand(
-                            n_obs_steps, -1
-                        ).clone().to(dtype=STORAGE_DTYPE)
+                        windows[need[k]] = (
+                            obs[need[k]]
+                            .unsqueeze(0)
+                            .expand(n_obs_steps, -1)
+                            .clone()
+                            .to(dtype=STORAGE_DTYPE)
+                        )
                     else:
                         shift_window(windows, need[k], obs[need[k]])
             for k, i in enumerate(need):
@@ -479,10 +532,13 @@ def mjx_collect_chunks(
                 r = torch.stack(rews[k][:n_exec])
                 term_k, trunc_k = end_term[k], end_trunc[k] and not end_term[k]
                 storage.add_chunk(
-                    i, states[k].to(dtype=STORAGE_DTYPE),
+                    i,
+                    states[k].to(dtype=STORAGE_DTYPE),
                     scaled[k].to(dtype=STORAGE_DTYPE),
                     windows[i].clone().to(dtype=STORAGE_DTYPE),
-                    r, term_k, trunc_k,
+                    r,
+                    term_k,
+                    trunc_k,
                 )
                 # Stash GPU-computed clip counts (storage writes 0; patched below).
                 if not hasattr(storage, "_clip"):
@@ -506,6 +562,8 @@ def mjx_collect_chunks(
         for e in range(num_envs):
             for c in range(int(storage.cursor[e].item())):
                 if (c, e) in clips:
-                    chunks[idx]["clip_count"] = to_tensor(clips[(c, e)], dtype=torch.int64)
+                    chunks[idx]["clip_count"] = to_tensor(
+                        clips[(c, e)], dtype=torch.int64
+                    )
                 idx += 1
     return chunks

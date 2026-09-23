@@ -64,14 +64,22 @@ class SJFPOJaxPolicy(nnx.Module):
         param_dtype: jnp.dtype | None = None,
     ):
         self.actor = SJFPOFlowModel(
-            action_dim, hidden_dim, dit_depth, dit_heads,
-            dit_mlp_ratio, dit_time_dim, timestep_scale, rngs=rngs,
+            action_dim,
+            hidden_dim,
+            dit_depth,
+            dit_heads,
+            dit_mlp_ratio,
+            dit_time_dim,
+            timestep_scale,
+            rngs=rngs,
             param_dtype=param_dtype,
         )
-        self.conditioner = StateConditioner(obs_dim, hidden_dim, rngs=rngs,
-                                            param_dtype=param_dtype)
-        self.critic = Critic(obs_dim, hidden_dim, n_obs_steps, rngs=rngs,
-                             param_dtype=param_dtype)
+        self.conditioner = StateConditioner(
+            obs_dim, hidden_dim, rngs=rngs, param_dtype=param_dtype
+        )
+        self.critic = Critic(
+            obs_dim, hidden_dim, n_obs_steps, rngs=rngs, param_dtype=param_dtype
+        )
         self.normalizer = RunningMeanStd(obs_dim)
         self.action_low = nnx.Variable(jnp.full((action_dim,), -1.0))
         self.action_high = nnx.Variable(jnp.full((action_dim,), 1.0))
@@ -81,7 +89,9 @@ class SJFPOJaxPolicy(nnx.Module):
         self.action_high[...] = jnp.asarray(high, dtype=jnp.float32).reshape(-1)
 
 
-def build_policy(obs_dim: int, action_dim: int, seed: int = 0, **kwargs) -> SJFPOJaxPolicy:
+def build_policy(
+    obs_dim: int, action_dim: int, seed: int = 0, **kwargs
+) -> SJFPOJaxPolicy:
     """Fresh policy + frozen behavior twin (same init, like torch deepcopy)."""
     policy = SJFPOJaxPolicy(obs_dim, action_dim, rngs=nnx.Rngs(seed), **kwargs)
     behavior = SJFPOJaxPolicy(obs_dim, action_dim, rngs=nnx.Rngs(seed), **kwargs)
@@ -99,6 +109,7 @@ def snapshot_behavior_policy(policy: SJFPOJaxPolicy, behavior: SJFPOJaxPolicy) -
 # ---------------------------------------------------------------------------
 # Optimizer / mask helpers (unchanged semantics)
 # ---------------------------------------------------------------------------
+
 
 def _path_names(path) -> list[str]:
     names = []
@@ -118,8 +129,7 @@ def _decide_decay(path) -> bool:
     if not parts or parts[0] != "actor":
         return True
     return not (
-        any("adaLN" in n for n in parts)
-        or (len(parts) > 1 and parts[1] == "out")
+        any("adaLN" in n for n in parts) or (len(parts) > 1 and parts[1] == "out")
     )
 
 
@@ -157,8 +167,10 @@ def update_normalizer(policy: SJFPOJaxPolicy, states: jax.Array) -> None:
 # Batch preparation: everything that depends only on frozen state + CRN draws
 # ---------------------------------------------------------------------------
 
-def _spectral_token_count(action_horizon: int, top_p_spectral_tokens: float,
-                          use_dct_transform: bool) -> int:
+
+def _spectral_token_count(
+    action_horizon: int, top_p_spectral_tokens: float, use_dct_transform: bool
+) -> int:
     if not use_dct_transform:
         return action_horizon
     return max(1, round(top_p_spectral_tokens * action_horizon))
@@ -190,7 +202,9 @@ def prepare_batch(
     # Note: full proposed chunk used; action_is_pad ignored for CFM (fix 10/11 mirror).
     actions = batch["action"].astype(jnp.float32)
     if states.shape[-2] != n_obs_steps:
-        raise ValueError(f"state length {states.shape[-2]} != n_obs_steps {n_obs_steps}")
+        raise ValueError(
+            f"state length {states.shape[-2]} != n_obs_steps {n_obs_steps}"
+        )
     if actions.shape[-2] != action_horizon:
         raise ValueError(f"action horizon {actions.shape[-2]} != {action_horizon}")
 
@@ -198,8 +212,9 @@ def prepare_batch(
     states_n = policy.normalizer(states)
 
     # --- Spectral / raw tokens ---
-    token_dim = _spectral_token_count(action_horizon, top_p_spectral_tokens,
-                                      use_dct_transform)
+    token_dim = _spectral_token_count(
+        action_horizon, top_p_spectral_tokens, use_dct_transform
+    )
     if use_dct_transform:
         spec_tokens = dct(actions, dim=1)[:, :token_dim]
     else:
@@ -249,6 +264,7 @@ def prepare_batch(
 # Loss on the live params only
 # ---------------------------------------------------------------------------
 
+
 def compute_loss(
     policy: SJFPOJaxPolicy,
     batch: dict[str, jax.Array],
@@ -280,10 +296,10 @@ def compute_loss(
     flow_shape = tuple(v_star.shape[2:])
 
     # --- Live conditioner + actor ---
-    cond = policy.conditioner(states_n)                 # [n, hidden]
-    cond_flat = jnp.broadcast_to(
-        cond[:, None, :], (n, num_mc, cond.shape[-1])
-    ).reshape(n * num_mc, -1)
+    cond = policy.conditioner(states_n)  # [n, hidden]
+    cond_flat = jnp.broadcast_to(cond[:, None, :], (n, num_mc, cond.shape[-1])).reshape(
+        n * num_mc, -1
+    )
 
     # Stats-return path off by default: 4–16 fewer reductions per forward.
     v_new = policy.actor(x_t, tau_bn, cond_flat, return_stats=False)
@@ -292,7 +308,9 @@ def compute_loss(
     l_new = fpo_jax.compute_cfm_loss(v_new_r, v_star, "sample", cfm_clamp=cfm_clamp)
 
     # --- ASPO ratio + surrogate (all fp32; l_old is constant w.r.t. live params) ---
-    rho = fpo_jax.compute_policy_ratio(l_old, l_new, cfm_clamp=cfm_clamp, cap=log_ratio_cap)
+    rho = fpo_jax.compute_policy_ratio(
+        l_old, l_new, cfm_clamp=cfm_clamp, cap=log_ratio_cap
+    )
     adv_mc = advantages[:, None]
     psi = fpo_jax.compute_aspo_surrogate(
         rho, adv_mc, epsilon_clip, symmetrical_ppo=not use_aspo
@@ -304,12 +322,18 @@ def compute_loss(
     v_pred_raw = policy.critic(states_n).astype(jnp.float32)
     # Note: CFM ratio uses safe FP32 clamp in fpo (fix 7 mirror); value shape validated above (fix 3).
     # Note: advantage validation applied in training loop (fix 5 mirror).
-    v_pred = v_pred_raw.squeeze(-1) if v_pred_raw.dim() > 1 and v_pred_raw.shape[-1] == 1 else v_pred_raw
+    v_pred = (
+        v_pred_raw.squeeze(-1)
+        if v_pred_raw.dim() > 1 and v_pred_raw.shape[-1] == 1
+        else v_pred_raw
+    )
     # Fix 4 mirror: Huber/smooth_l1 for bounded gradient (see compute_loss).
     se = jnp.square(v_pred - returns)
     if use_clipped_value_loss and "values" in batch:
         old_values = batch["values"].astype(jnp.float32)
-        v_clipped = old_values + jnp.clip(v_pred - old_values, -epsilon_clip, epsilon_clip)
+        v_clipped = old_values + jnp.clip(
+            v_pred - old_values, -epsilon_clip, epsilon_clip
+        )
         value_per_chunk = jnp.maximum(se, jnp.square(v_clipped - returns))
     else:
         value_per_chunk = se
@@ -335,6 +359,7 @@ def compute_loss(
 # ---------------------------------------------------------------------------
 # Jitted update
 # ---------------------------------------------------------------------------
+
 
 def _make_train_step(loss_kwargs: dict):
     """Build the jitted step once per distinct ``loss_kwargs``."""
@@ -375,6 +400,7 @@ def train_step(
 # ---------------------------------------------------------------------------
 # Inference
 # ---------------------------------------------------------------------------
+
 
 def predict_action_chunk(
     policy: SJFPOJaxPolicy,

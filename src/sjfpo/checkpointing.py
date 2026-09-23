@@ -25,6 +25,7 @@ from pathlib import Path
 import torch
 from huggingface_hub.constants import CONFIG_NAME, SAFETENSORS_SINGLE_FILE
 from sjfpo.modeling_sjfpo import SJFPOPolicy  # lazy: import-light module
+
 OPTIMIZER_FILE = "optimizer.pt"
 COUNTERS_FILE = "counters.json"
 RNG_FILE = "rng.pt"
@@ -38,7 +39,10 @@ class ResumeError(RuntimeError):
 # torch.compile unwrapping
 # ---------------------------------------------------------------------------
 
-def _iter_compiled_children(policy) -> list[tuple[str, torch.nn.Module, torch.nn.Module]]:
+
+def _iter_compiled_children(
+    policy,
+) -> list[tuple[str, torch.nn.Module, torch.nn.Module]]:
     """Return ``(name, compiled_module, inner_module)`` for every top-level
     submodule of ``policy`` wrapped by ``torch.compile``.
 
@@ -75,6 +79,7 @@ def unwrapped_policy(policy):
 # Atomic write helpers
 # ---------------------------------------------------------------------------
 
+
 def _atomic_write_bytes(path: Path, data: bytes) -> None:
     with tempfile.NamedTemporaryFile(
         mode="wb", dir=path.parent, prefix=f".{path.name}.", delete=False
@@ -103,6 +108,7 @@ def _atomic_torch_save(path: Path, obj) -> None:
 # ---------------------------------------------------------------------------
 # Save
 # ---------------------------------------------------------------------------
+
 
 def save_policy_checkpoint(
     dir_path: str | os.PathLike,
@@ -160,6 +166,7 @@ def save_policy_checkpoint(
 # Load
 # ---------------------------------------------------------------------------
 
+
 def _load_optimizer(policy, d: Path) -> torch.optim.Optimizer:
     """Rebuild the optimizer with the current config and load saved state.
 
@@ -192,9 +199,7 @@ def _load_optimizer(policy, d: Path) -> torch.optim.Optimizer:
     try:
         optimizer.load_state_dict(opt_state)
     except Exception as e:
-        raise ResumeError(
-            f"optimizer.load_state_dict failed: {e}"
-        ) from e
+        raise ResumeError(f"optimizer.load_state_dict failed: {e}") from e
     return optimizer
 
 

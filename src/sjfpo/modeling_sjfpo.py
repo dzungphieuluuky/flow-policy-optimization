@@ -76,6 +76,7 @@ class SJFPOAborted(RuntimeError):
 # Small helpers (avoid repeating shape arithmetic)
 # ---------------------------------------------------------------------------
 
+
 def _token_dim(cfg: SJFPOConfig) -> int:
     """Number of spectral (or raw) tokens per action chunk."""
     if cfg.use_dct_transform:
@@ -93,8 +94,11 @@ def _sample_spectral_eps(
     if cfg.use_dct_transform:
         M_modes = max(1, cfg.action_horizon - 1)
         eps = sample_freq_weighted_noise(
-            M=M_modes, d=action_dim, T=1.0,
-            B=n * cfg.num_mc_samples, sigma=1.0,
+            M=M_modes,
+            d=action_dim,
+            T=1.0,
+            B=n * cfg.num_mc_samples,
+            sigma=1.0,
         )
         return eps.reshape(n, cfg.num_mc_samples, M_modes + 1, action_dim).to(device)
     return sample_noise(
@@ -105,9 +109,7 @@ def _sample_spectral_eps(
 def _actor_call(actor, x_t, tau, cond, *, use_ckpt: bool):
     """Actor forward, optionally under gradient checkpointing."""
     if use_ckpt:
-        return cp.checkpoint(
-            actor, x_t, tau, cond, use_reentrant=False
-        )
+        return cp.checkpoint(actor, x_t, tau, cond, use_reentrant=False)
     return actor(x_t, tau, cond)
 
 
@@ -115,11 +117,14 @@ def _actor_call(actor, x_t, tau, cond, *, use_ckpt: bool):
 # Policy
 # ---------------------------------------------------------------------------
 
+
 class SJFPOPolicy(PreTrainedPolicy):
     config_class = SJFPOConfig
     name = "sjfpo"
 
-    def __init__(self, config: SJFPOConfig, dataset_stats: dict[str, Any] | None = None):
+    def __init__(
+        self, config: SJFPOConfig, dataset_stats: dict[str, Any] | None = None
+    ):
         super().__init__(config, dataset_stats)
         config.validate_features()
         obs_dim = int(config.robot_state_feature.shape[0])
@@ -141,7 +146,9 @@ class SJFPOPolicy(PreTrainedPolicy):
 
         # Frozen behavior snapshot (PPO π_old); refreshed per collection round.
         self.old_actor = copy.deepcopy(self.actor).requires_grad_(False).eval()
-        self.old_conditioner = copy.deepcopy(self.conditioner).requires_grad_(False).eval()
+        self.old_conditioner = (
+            copy.deepcopy(self.conditioner).requires_grad_(False).eval()
+        )
 
         self._frame_buffer: deque[torch.Tensor] = deque(maxlen=config.n_obs_steps)
         self._action_buffer: deque[torch.Tensor] = deque()
@@ -322,7 +329,11 @@ class SJFPOPolicy(PreTrainedPolicy):
         env_name = resolve_env_name(env)
         if want_mjx():
             chunks = mjx_collect_chunks(
-                self, env_name, total_steps, action_low, action_high,
+                self,
+                env_name,
+                total_steps,
+                action_low,
+                action_high,
                 n_obs_steps=cfg.n_obs_steps,
                 n_action_steps=cfg.action_horizon,
                 num_envs=cfg.num_envs,
@@ -330,13 +341,23 @@ class SJFPOPolicy(PreTrainedPolicy):
             )
         elif int(getattr(env, "num_envs", 1)) > 1:
             chunks = collect_chunks_vec(
-                env, propose_batch, total_steps, action_low, action_high,
-                n_obs_steps=cfg.n_obs_steps, n_action_steps=cfg.action_horizon,
+                env,
+                propose_batch,
+                total_steps,
+                action_low,
+                action_high,
+                n_obs_steps=cfg.n_obs_steps,
+                n_action_steps=cfg.action_horizon,
             )
         else:
             chunks = collect_chunks(
-                env, propose, total_steps, action_low, action_high,
-                n_obs_steps=cfg.n_obs_steps, n_action_steps=cfg.action_horizon,
+                env,
+                propose,
+                total_steps,
+                action_low,
+                action_high,
+                n_obs_steps=cfg.n_obs_steps,
+                n_action_steps=cfg.action_horizon,
             )
 
         n_chunks = len(chunks)
@@ -346,7 +367,8 @@ class SJFPOPolicy(PreTrainedPolicy):
         # Stack once, reuse everywhere.
         lengths = torch.as_tensor(
             [int(c["executed_n_action_steps"]) for c in chunks],
-            dtype=torch.long, device=device,
+            dtype=torch.long,
+            device=device,
         )
         states = to_device_async(torch.stack([c[OBS_STATE] for c in chunks]), device)
         next_states = to_device_async(
@@ -360,7 +382,10 @@ class SJFPOPolicy(PreTrainedPolicy):
             [bool(c[TRUNCATED]) for c in chunks], dtype=torch.bool, device=device
         )
         all_rewards = torch.cat(
-            [c[REWARD].reshape(-1).to(device=device, dtype=torch.float32) for c in chunks]
+            [
+                c[REWARD].reshape(-1).to(device=device, dtype=torch.float32)
+                for c in chunks
+            ]
         )
 
         # Sanity: chunk shape.
@@ -393,10 +418,9 @@ class SJFPOPolicy(PreTrainedPolicy):
         advantages = advantages.to(STORAGE_DTYPE)
         returns = returns.to(STORAGE_DTYPE)
 
-        is_pad = (
-            torch.arange(cfg.action_horizon, device=device).unsqueeze(0)
-            >= lengths.unsqueeze(1)
-        )
+        is_pad = torch.arange(cfg.action_horizon, device=device).unsqueeze(
+            0
+        ) >= lengths.unsqueeze(1)
 
         tau = sample_timesteps(
             cfg.num_mc_samples, (cfg.min_timestep, cfg.max_timestep), device=device
@@ -430,7 +454,9 @@ class SJFPOPolicy(PreTrainedPolicy):
         cfg = self.config
         device = next(self.parameters()).device
 
-        states = to_device_async(to_tensor(batch[OBS_STATE], dtype=STORAGE_DTYPE), device)
+        states = to_device_async(
+            to_tensor(batch[OBS_STATE], dtype=STORAGE_DTYPE), device
+        )
         actions = to_device_async(to_tensor(batch[ACTION], dtype=STORAGE_DTYPE), device)
         advantages = to_tensor(batch["advantages"], dtype=STORAGE_DTYPE).to(device)
         returns = to_tensor(batch["returns"], dtype=STORAGE_DTYPE).to(device)
@@ -452,9 +478,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         action_dim = actions.shape[-1]
 
         spectral_action_tokens = (
-            extract_dct_coeffs(actions, M=M_modes)
-            if cfg.use_dct_transform
-            else actions
+            extract_dct_coeffs(actions, M=M_modes) if cfg.use_dct_transform else actions
         )
 
         # Reuse stored CRN draws if present, else sample fresh ones.
@@ -464,9 +488,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             eps = to_tensor(batch["eps"], dtype=STORAGE_DTYPE, device=device)
             expected = (n, cfg.num_mc_samples, token_dim, action_dim)
             if tuple(eps.shape) != expected:
-                raise ValueError(
-                    f"stored eps shape {tuple(eps.shape)} != {expected}"
-                )
+                raise ValueError(f"stored eps shape {tuple(eps.shape)} != {expected}")
         else:
             tau = sample_timesteps(
                 cfg.num_mc_samples, (cfg.min_timestep, cfg.max_timestep), device=device
@@ -495,17 +517,21 @@ class SJFPOPolicy(PreTrainedPolicy):
 
         with autocast_context(device):
             # Stats return path — no more self.actor.last_cond_stats mutation.
-            v_new, cond_stats = _actor_call(
-                self.actor,
-                x_t_flat,
-                tau_bn,
-                cond_flat,
-                use_ckpt=cfg.use_gradient_checkpointing,
-            ) if not cfg.use_gradient_checkpointing else (
-                # checkpoint() returns only the output; split the stats
-                # request into a separate non-checkpointed call for logging.
-                _actor_call(self.actor, x_t_flat, tau_bn, cond_flat, use_ckpt=True),
-                None,
+            v_new, cond_stats = (
+                _actor_call(
+                    self.actor,
+                    x_t_flat,
+                    tau_bn,
+                    cond_flat,
+                    use_ckpt=cfg.use_gradient_checkpointing,
+                )
+                if not cfg.use_gradient_checkpointing
+                else (
+                    # checkpoint() returns only the output; split the stats
+                    # request into a separate non-checkpointed call for logging.
+                    _actor_call(self.actor, x_t_flat, tau_bn, cond_flat, use_ckpt=True),
+                    None,
+                )
             )
             v_new = v_new.float()
 
@@ -588,10 +614,17 @@ class SJFPOPolicy(PreTrainedPolicy):
             )
 
         info = self._compute_info(
-            l_old=l_old, l_new=l_new, rho=rho, rho_bin=rho_bin,
-            v_star_f=v_star_f, v_pred=v_pred, returns_d=returns_d,
-            policy_per_chunk=policy_per_chunk, value_per_chunk=value_per_chunk,
-            cond_stats=cond_stats, cfg=cfg,
+            l_old=l_old,
+            l_new=l_new,
+            rho=rho,
+            rho_bin=rho_bin,
+            v_star_f=v_star_f,
+            v_pred=v_pred,
+            returns_d=returns_d,
+            policy_per_chunk=policy_per_chunk,
+            value_per_chunk=value_per_chunk,
+            cond_stats=cond_stats,
+            cfg=cfg,
         )
         return loss, info
 
@@ -601,10 +634,17 @@ class SJFPOPolicy(PreTrainedPolicy):
     def _compute_info(
         self,
         *,
-        l_old, l_new, rho, rho_bin,
-        v_star_f, v_pred, returns_d,
-        policy_per_chunk, value_per_chunk,
-        cond_stats, cfg,
+        l_old,
+        l_new,
+        rho,
+        rho_bin,
+        v_star_f,
+        v_pred,
+        returns_d,
+        policy_per_chunk,
+        value_per_chunk,
+        cond_stats,
+        cfg,
     ) -> dict[str, float]:
         """All diagnostic reductions in one go, batched into a single sync.
 
@@ -632,11 +672,10 @@ class SJFPOPolicy(PreTrainedPolicy):
         )
         rho_bin_outside = (
             ((rho_bin < 1.0 - cfg.epsilon_clip) | (rho_bin > 1.0 + cfg.epsilon_clip))
-            .float().mean()
+            .float()
+            .mean()
         )
-        eps_low = (
-            cfg.epsilon_clip_lowfreq if cfg.use_per_bin_clip else cfg.epsilon_clip
-        )
+        eps_low = cfg.epsilon_clip_lowfreq if cfg.use_per_bin_clip else cfg.epsilon_clip
         eps_high = (
             cfg.epsilon_clip_highfreq if cfg.use_per_bin_clip else cfg.epsilon_clip
         )
@@ -648,7 +687,8 @@ class SJFPOPolicy(PreTrainedPolicy):
             high_slice = rho_bin[..., split:]
             rho_bin_high_outside = (
                 ((high_slice < 1.0 - eps_high) | (high_slice > 1.0 + eps_high))
-                .float().mean()
+                .float()
+                .mean()
             )
         else:
             rho_bin_high_outside = rho_bin_low_outside
@@ -666,11 +706,10 @@ class SJFPOPolicy(PreTrainedPolicy):
         # -- Concrete diagnostics (Step 3) --
         l_old_std = l_old.std(correction=0)
         l_new_std = l_new.std(correction=0)
-        corr_denom = (l_old_std * l_new_std + 1e-8)
+        corr_denom = l_old_std * l_new_std + 1e-8
         l_old_new_corr = (
-            ((l_old - l_old.mean()) * (l_new - l_new.mean()))
-            .mean() / corr_denom
-        )
+            (l_old - l_old.mean()) * (l_new - l_new.mean())
+        ).mean() / corr_denom
         # -- pack into one tensor and transfer once --
         cond_keys = list(cond_stats.keys()) if cond_stats else []
         scalars = [
@@ -692,27 +731,51 @@ class SJFPOPolicy(PreTrainedPolicy):
             rho_bin_low_outside,
             rho_bin_high_outside,
             v_star_rms,
-            float(l_old.mean()), float(l_new.mean()),
-            float(l_old_std), float(l_new_std), float(l_old_new_corr),
-            float(advantages.abs().mean()), float(returns_d.std(correction=0)), float(v_pred.std(correction=0)),
+            float(l_old.mean()),
+            float(l_new.mean()),
+            float(l_old_std),
+            float(l_new_std),
+            float(l_old_new_corr),
+            float(advantages.abs().mean()),
+            float(returns_d.std(correction=0)),
+            float(v_pred.std(correction=0)),
         ]
-        scalars.extend(cond_stats[k].detach() if torch.is_tensor(cond_stats[k])
-                       else torch.tensor(float(cond_stats[k]), device=delta.device)
-                       for k in cond_keys)
+        scalars.extend(
+            cond_stats[k].detach()
+            if torch.is_tensor(cond_stats[k])
+            else torch.tensor(float(cond_stats[k]), device=delta.device)
+            for k in cond_keys
+        )
         packed = torch.stack([s.detach().reshape(()) for s in scalars]).float().cpu()
         vals = packed.tolist()
 
         keys = [
-            "policy_loss", "value_loss", "explained_var", "mean_log_ratio",
-            "log_rho_max", "log_rho_clip_frac",
-            "value_error_max", "value_pred_max", "return_max",
-            "flow_rho_mean", "flow_rho_std",
-            "flow_rho_bin_range", "flow_rho_bin_lowfreq", "flow_rho_bin_highfreq",
-            "flow_rho_bin_outside_frac", "flow_rho_bin_low_outside_frac",
-            "flow_rho_bin_high_outside_frac", "flow_v_star_rms",
-            "train/l_old_mean", "train/l_new_mean",
-            "train/l_old_std", "train/l_new_std", "train/l_old_new_corr",
-            "train/adv_mean_abs", "train/value_target_std", "train/value_pred_std",
+            "policy_loss",
+            "value_loss",
+            "explained_var",
+            "mean_log_ratio",
+            "log_rho_max",
+            "log_rho_clip_frac",
+            "value_error_max",
+            "value_pred_max",
+            "return_max",
+            "flow_rho_mean",
+            "flow_rho_std",
+            "flow_rho_bin_range",
+            "flow_rho_bin_lowfreq",
+            "flow_rho_bin_highfreq",
+            "flow_rho_bin_outside_frac",
+            "flow_rho_bin_low_outside_frac",
+            "flow_rho_bin_high_outside_frac",
+            "flow_v_star_rms",
+            "train/l_old_mean",
+            "train/l_new_mean",
+            "train/l_old_std",
+            "train/l_new_std",
+            "train/l_old_new_corr",
+            "train/adv_mean_abs",
+            "train/value_target_std",
+            "train/value_pred_std",
         ]
         info = dict(zip(keys, vals))
         for i, k in enumerate(cond_keys):

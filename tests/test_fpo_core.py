@@ -152,16 +152,16 @@ def test_fitted_loss_below_shuffled_targets():
         x_t = (1.0 - t) * eps_ev + t * fixtures.unsqueeze(1)  # [40, 256, 1]
         v_star = SJFPOPolicy.compute_target_velocity(fixtures, eps_ev)
         l_fit = fpo_core.compute_cfm_loss(
-            net_fit(
-                x_t.reshape(40 * 256, 1), tau_ev.reshape(40 * 256), None
-            ).reshape(40, 256, 1),
+            net_fit(x_t.reshape(40 * 256, 1), tau_ev.reshape(40 * 256), None).reshape(
+                40, 256, 1
+            ),
             v_star,
             reduce_mode="sample",
         )
         l_shuf = fpo_core.compute_cfm_loss(
-            net_shuf(
-                x_t.reshape(40 * 256, 1), tau_ev.reshape(40 * 256), None
-            ).reshape(40, 256, 1),
+            net_shuf(x_t.reshape(40 * 256, 1), tau_ev.reshape(40 * 256), None).reshape(
+                40, 256, 1
+            ),
             v_star,
             reduce_mode="sample",
         )
@@ -204,16 +204,16 @@ def test_ratio_shape_and_degeneracy_guard():
         x_t = (1.0 - t) * eps_ev + t * a.unsqueeze(1)  # [4, m, 8, 3]
         v_star = SJFPOPolicy.compute_target_velocity(a, eps_ev)
         l_old = fpo_core.compute_cfm_loss(
-            net_old(
-                x_t.reshape(4 * m, 8, 3), tau_ev.reshape(4 * m), None
-            ).reshape(4, m, 8, 3),
+            net_old(x_t.reshape(4 * m, 8, 3), tau_ev.reshape(4 * m), None).reshape(
+                4, m, 8, 3
+            ),
             v_star,
             reduce_mode="sample",
         )
         l_new = fpo_core.compute_cfm_loss(
-            net_new(
-                x_t.reshape(4 * m, 8, 3), tau_ev.reshape(4 * m), None
-            ).reshape(4, m, 8, 3),
+            net_new(x_t.reshape(4 * m, 8, 3), tau_ev.reshape(4 * m), None).reshape(
+                4, m, 8, 3
+            ),
             v_star,
             reduce_mode="sample",
         )
@@ -235,14 +235,10 @@ def test_aspo_surrogate_hand_computed():
     )
     assert psi_ppo.item() == pytest.approx(1.02, abs=1e-3)
     # Above the upper bound: clipped to 1 + eps.
-    psi_hi = fpo_core.compute_aspo_surrogate(
-        torch.tensor(1.3), torch.tensor(1.0), eps
-    )
+    psi_hi = fpo_core.compute_aspo_surrogate(torch.tensor(1.3), torch.tensor(1.0), eps)
     assert psi_hi.item() == pytest.approx(1.0 + eps, abs=1e-3)
     # Below the lower bound: min picks the unclipped (smaller) value.
-    psi_lo = fpo_core.compute_aspo_surrogate(
-        torch.tensor(0.7), torch.tensor(1.0), eps
-    )
+    psi_lo = fpo_core.compute_aspo_surrogate(torch.tensor(0.7), torch.tensor(1.0), eps)
     assert psi_lo.item() == pytest.approx(0.7, abs=1e-3)
     # Negative advantage: SPO branch  rho*A - (|A|/(2*eps))*(rho-1)^2.
     psi_spo = fpo_core.compute_aspo_surrogate(
@@ -286,7 +282,9 @@ def test_symmetric_cfm_clamp_applies_to_both():
     l_old = torch.full((2,), 100.0)
     l_new = torch.zeros(2)
     rho = fpo_core.compute_policy_ratio(l_old, l_new)
-    assert rho.tolist() == pytest.approx([math.exp(10.0)] * 2, rel=1e-5)  # (20-0)->STE 10
+    assert rho.tolist() == pytest.approx(
+        [math.exp(10.0)] * 2, rel=1e-5
+    )  # (20-0)->STE 10
 
     # (g) Finite-difference gradient check of the policy loss w.r.t. one
     #     velocity-net weight (rel. error < 5%).
@@ -352,7 +350,11 @@ def test_euler_sampler_grid_update_and_zero_noise():
             return net(x_t, t, condition)
 
     out = fpo_core.sample_action(
-        Probe(), (5, 1), None, num_inference_steps=64, generator=torch.Generator().manual_seed(42)
+        Probe(),
+        (5, 1),
+        None,
+        num_inference_steps=64,
+        generator=torch.Generator().manual_seed(42),
     )
 
     grid = torch.linspace(0.0, 1.0, 65)  # 65 nodes -> 64 ascending intervals
@@ -371,8 +373,12 @@ def test_euler_sampler_grid_update_and_zero_noise():
     assert torch.allclose(out, x, atol=1e-6), "sampler deviates from x <- x + dt*v_hat"
 
     # Zero-sampling path (eps = 0) is deterministic given the weights.
-    z1 = fpo_core.sample_action(net, (5, 1), None, num_inference_steps=16, eps=torch.zeros(5, 1))
-    z2 = fpo_core.sample_action(net, (5, 1), None, num_inference_steps=16, eps=torch.zeros(5, 1))
+    z1 = fpo_core.sample_action(
+        net, (5, 1), None, num_inference_steps=16, eps=torch.zeros(5, 1)
+    )
+    z2 = fpo_core.sample_action(
+        net, (5, 1), None, num_inference_steps=16, eps=torch.zeros(5, 1)
+    )
     assert torch.equal(z1, z2)
 
     # (i) SPACE-CONSISTENCY gate: sample action chunks in DCT coefficient space,

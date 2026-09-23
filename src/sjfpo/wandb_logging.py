@@ -50,6 +50,7 @@ def wandb_disabled() -> bool:
 # Run-name helpers
 # ---------------------------------------------------------------------------
 
+
 def compact_value(v) -> str:
     """Short wandb-safe rendering: ints plain, floats via ``:g``."""
     if isinstance(v, bool):
@@ -102,6 +103,7 @@ def build_run_name(method: str, env_name: str, seed: int, cfg_dict: dict) -> str
 # Run lifecycle
 # ---------------------------------------------------------------------------
 
+
 def init_wandb_run_for_method(
     *,
     method: str,
@@ -148,6 +150,7 @@ def finish_run(exit_code: int = 0) -> None:
 # ---------------------------------------------------------------------------
 # Metric logging
 # ---------------------------------------------------------------------------
+
 
 def log_metrics(data: dict, step: int) -> None:
     """Log a dict at a global step; no-op when disabled."""
@@ -217,8 +220,16 @@ def log_eval_summary(
     if eval_results:
         data["eval/episodes"] = _wandb.Table(
             columns=["episode", "return", "length", "success", "jerk"],
-            data=[[r["episode"], r["return"], r["length"], r.get("success"), r.get("jerk")]
-                  for r in eval_results],
+            data=[
+                [
+                    r["episode"],
+                    r["return"],
+                    r["length"],
+                    r.get("success"),
+                    r.get("jerk"),
+                ]
+                for r in eval_results
+            ],
         )
 
     log_metrics(data, step=global_step)

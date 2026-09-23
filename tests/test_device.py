@@ -45,9 +45,7 @@ def test_build_policy_cpu_fp32_inference(monkeypatch):
     assert isinstance(policy.actor, SJFPOFlowModel)
     assert all(p.dtype == torch.float32 for p in policy.parameters())
     assert policy.obs_normalizer.mean.dtype == torch.float32
-    actions = policy.predict_action_chunk(
-        {"observation.state": torch.randn(1, 16, 4)}
-    )
+    actions = policy.predict_action_chunk({"observation.state": torch.randn(1, 16, 4)})
     assert actions.shape == (1, 16, 2)
     assert torch.isfinite(actions).all()
 

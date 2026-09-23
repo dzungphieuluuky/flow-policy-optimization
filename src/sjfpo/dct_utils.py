@@ -46,9 +46,7 @@ def _build_dct_basis_f32(n: int, device: torch.device) -> torch.Tensor:
     """
     k = torch.arange(n, dtype=torch.float32, device=device).unsqueeze(1)
     t = torch.arange(n, dtype=torch.float32, device=device).unsqueeze(0)
-    m = math.sqrt(2.0 / n) * torch.cos(
-        math.pi * (2.0 * t + 1.0) * k / (2.0 * n)
-    )
+    m = math.sqrt(2.0 / n) * torch.cos(math.pi * (2.0 * t + 1.0) * k / (2.0 * n))
     m[0] *= _INV_SQRT2  # sqrt(2/n) · 1/sqrt(2) = sqrt(1/n)
     return m
 
@@ -75,7 +73,9 @@ def dct_basis_matrix(n: int) -> torch.Tensor:
 # ---------------------------------------------------------------------------
 
 # Analysis: [M+1, K] basis + [M+1] norm, keyed by (K, M, device).
-_ANALYSIS_BASIS_CACHE: dict[tuple[int, int, str], tuple[torch.Tensor, torch.Tensor]] = {}
+_ANALYSIS_BASIS_CACHE: dict[
+    tuple[int, int, str], tuple[torch.Tensor, torch.Tensor]
+] = {}
 
 
 def _get_analysis_basis(
@@ -139,8 +139,9 @@ def _get_synth_norm(
     if cached is not None:
         return cached
     k = torch.arange(M + 1, dtype=torch.float32, device=device)
-    norm = torch.full((M + 1,), math.sqrt(2.0 / K_original),
-                      dtype=torch.float32, device=device)
+    norm = torch.full(
+        (M + 1,), math.sqrt(2.0 / K_original), dtype=torch.float32, device=device
+    )
     norm[0] *= _INV_SQRT2
     cached = (k, norm)
     _SYNTH_NORM_CACHE[key] = cached
@@ -175,9 +176,7 @@ def decode_coeffs_to_velocity(
     elif tau.dim() == 2:
         tau_query = tau
     else:
-        raise ValueError(
-            f"tau must be 1D (N,) or 2D (B, N), got shape {tau.shape}"
-        )
+        raise ValueError(f"tau must be 1D (N,) or 2D (B, N), got shape {tau.shape}")
 
     j_indices = tau_query.to(torch.float32) * (K_original / T)
     # [B, M+1, N] basis — depends on tau, cannot be cached.
@@ -203,6 +202,7 @@ def decode_coeffs_to_velocity(
 # Noise sampling
 # ---------------------------------------------------------------------------
 
+
 def sample_freq_weighted_noise(
     M: int,
     d: int,
@@ -221,7 +221,7 @@ def sample_freq_weighted_noise(
     device = torch.device(device) if device is not None else torch.device("cpu")
     k_idx = torch.arange(M + 1, dtype=torch.float32, device=device)
     omega_k = k_idx * (math.pi / T)
-    std_k = sigma / torch.sqrt(1.0 + omega_k ** 2)      # [M+1]
+    std_k = sigma / torch.sqrt(1.0 + omega_k**2)  # [M+1]
 
     if key is not None:
         gen = torch.Generator(device=device).manual_seed(int(key))
@@ -235,6 +235,7 @@ def sample_freq_weighted_noise(
 # ---------------------------------------------------------------------------
 # Dataset-driven M selection
 # ---------------------------------------------------------------------------
+
 
 def estimate_M_from_dataset(dataset, energy_threshold: float = 0.95) -> int:
     """Smallest ``M`` whose first ``M+1`` DCT coefficients capture
@@ -256,15 +257,15 @@ def estimate_M_from_dataset(dataset, energy_threshold: float = 0.95) -> int:
     if any(a.shape[0] != K for a in arrays):
         raise ValueError("All dataset items must share the same time dimension")
 
-    stacked = np.stack(arrays, axis=0)                      # [N, K, d]
+    stacked = np.stack(arrays, axis=0)  # [N, K, d]
     # Orthonormal DCT along the time axis via the cached basis.
     basis = _get_dct_basis_f32(K, torch.device("cpu")).numpy()  # [K, K]
-    coeffs = np.einsum("kj,njd->nkd", basis, stacked)           # [N, K, d]
+    coeffs = np.einsum("kj,njd->nkd", basis, stacked)  # [N, K, d]
 
-    energy = (coeffs ** 2).sum(axis=-1)                     # [N, K]
-    total = energy.sum(axis=-1, keepdims=True)              # [N, 1]
-    cumsum = np.cumsum(energy, axis=-1) / total             # [N, K]
-    mean_cumsum = cumsum.mean(axis=0)                       # [K]
+    energy = (coeffs**2).sum(axis=-1)  # [N, K]
+    total = energy.sum(axis=-1, keepdims=True)  # [N, 1]
+    cumsum = np.cumsum(energy, axis=-1) / total  # [N, K]
+    mean_cumsum = cumsum.mean(axis=0)  # [K]
 
     # First index where the mean cumulative energy reaches the threshold.
     idx = np.searchsorted(mean_cumsum, energy_threshold, side="left")
@@ -277,6 +278,7 @@ def estimate_M_from_dataset(dataset, energy_threshold: float = 0.95) -> int:
 # ---------------------------------------------------------------------------
 # Matrix application / DCT / IDCT
 # ---------------------------------------------------------------------------
+
 
 def apply_matrix_along_dim(
     x: torch.Tensor, dim: int, mat: torch.Tensor

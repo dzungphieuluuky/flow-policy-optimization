@@ -70,11 +70,7 @@ def spec_dims(env_name: str) -> tuple[int, int]:
 
     spec = get_spec(env_name)
     xml = (
-        Path(gym.__file__).resolve().parent
-        / "envs"
-        / "mujoco"
-        / "assets"
-        / spec["xml"]
+        Path(gym.__file__).resolve().parent / "envs" / "mujoco" / "assets" / spec["xml"]
     )
     model = mujoco.MjModel.from_xml_path(str(xml))
     return int(_obs_dim_fn(spec, model.nq, model.nv, model.nbody)), int(model.nu)
@@ -83,8 +79,9 @@ def spec_dims(env_name: str) -> tuple[int, int]:
 class _ChunkEvalPolicy:
     """Single-action eval adapter: replan a chunk, drain it open-loop."""
 
-    def __init__(self, policy, key, n_obs_steps=16, n_action_steps=8,
-                 num_inference_steps=16):
+    def __init__(
+        self, policy, key, n_obs_steps=16, n_action_steps=8, num_inference_steps=16
+    ):
         self.policy = policy
         self.key = key
         self.n_obs_steps = n_obs_steps
@@ -108,11 +105,16 @@ class _ChunkEvalPolicy:
             window = jnp.asarray(np.stack(self._frames)[None])
             self.key, sub = jax.random.split(self.key)
             chunk = jpol.predict_action_chunk(
-                self.policy, window, sub, noise=False,
+                self.policy,
+                window,
+                sub,
+                noise=False,
                 num_inference_steps=self.num_inference_steps,
             )
             n_execute = max(1, min(self.n_action_steps, int(chunk.shape[1])))
-            self._buffer = [np.asarray(chunk[0, i]) for i in range(n_execute - 1, -1, -1)]
+            self._buffer = [
+                np.asarray(chunk[0, i]) for i in range(n_execute - 1, -1, -1)
+            ]
         return self._buffer.pop()
 
 
@@ -162,33 +164,52 @@ def train_jax_run(
     obs_dim, action_dim = spec_dims(env_name)
     key = jax.random.PRNGKey(int(seed))
     policy, behavior = jpol.build_policy(
-        obs_dim, action_dim, seed=int(seed), hidden_dim=hidden_dim,
-        dit_depth=dit_depth, dit_heads=dit_heads, dit_mlp_ratio=dit_mlp_ratio,
-        dit_time_dim=dit_time_dim, n_obs_steps=n_obs_steps,
+        obs_dim,
+        action_dim,
+        seed=int(seed),
+        hidden_dim=hidden_dim,
+        dit_depth=dit_depth,
+        dit_heads=dit_heads,
+        dit_mlp_ratio=dit_mlp_ratio,
+        dit_time_dim=dit_time_dim,
+        n_obs_steps=n_obs_steps,
     )
     action_low = np.atleast_1d(np.asarray(eval_env.action_space.low, dtype=np.float32))
-    action_high = np.atleast_1d(np.asarray(eval_env.action_space.high, dtype=np.float32))
+    action_high = np.atleast_1d(
+        np.asarray(eval_env.action_space.high, dtype=np.float32)
+    )
     policy.set_action_bounds(jnp.asarray(action_low), jnp.asarray(action_high))
     behavior.set_action_bounds(jnp.asarray(action_low), jnp.asarray(action_high))
     optimizer = jpol.build_optimizer(
-        policy, lr=optimizer_lr, weight_decay=optimizer_weight_decay,
+        policy,
+        lr=optimizer_lr,
+        weight_decay=optimizer_weight_decay,
         grad_clip_norm=grad_clip_norm,
     )
     n_action_steps = max(1, round(executed_vs_predicted_ratio * action_horizon))
     evaluator = Evaluator(eval_env, eval_seed=10000 + seed, max_episodes=eval_episodes)
     eval_policy = _ChunkEvalPolicy(
-        policy, key, n_obs_steps=n_obs_steps, n_action_steps=n_action_steps,
+        policy,
+        key,
+        n_obs_steps=n_obs_steps,
+        n_action_steps=n_action_steps,
         num_inference_steps=num_inference_steps,
     )
-    results = evaluator.evaluate(lambda obs: eval_env.action_space.sample(), out_dir=None)
+    results = evaluator.evaluate(
+        lambda obs: eval_env.action_space.sample(), out_dir=None
+    )
     r_rand = float(np.mean([r["return"] for r in results])) if results else 1.0
     r_rand = r_rand or 1.0
     wandb_enabled = init_wandb_run(
-        method="sjfpo_jax", env_name=env_name, seed=seed, total_steps=total_steps,
+        method="sjfpo_jax",
+        env_name=env_name,
+        seed=seed,
+        total_steps=total_steps,
         cfg_dict={"hidden_dim": hidden_dim, "optimizer_lr": optimizer_lr},
     )
     prepare_kwargs = {
-        "n_obs_steps": n_obs_steps, "action_horizon": action_horizon,
+        "n_obs_steps": n_obs_steps,
+        "action_horizon": action_horizon,
         "top_p_spectral_tokens": top_p_spectral_tokens,
         "num_mc_samples": num_mc_samples,
     }
@@ -216,12 +237,21 @@ def train_jax_run(
             with jax.profiler.StepTraceAnnotation("train", step_num=global_step):
                 with jax.profiler.TraceAnnotation("collect"):
                     batch = generate_batch(
-                        policy, env_name, collect_steps, jnp.asarray(action_low),
-                        jnp.asarray(action_high), sub, n_obs_steps=n_obs_steps,
-                        action_horizon=action_horizon, num_envs=num_envs, seed=int(sub[0]),
+                        policy,
+                        env_name,
+                        collect_steps,
+                        jnp.asarray(action_low),
+                        jnp.asarray(action_high),
+                        sub,
+                        n_obs_steps=n_obs_steps,
+                        action_horizon=action_horizon,
+                        num_envs=num_envs,
+                        seed=int(sub[0]),
                         num_mc_samples=num_mc_samples,
                         top_p_spectral_tokens=top_p_spectral_tokens,
-                        num_euler_steps=num_euler_steps, gamma=gamma, gae_lambda=gae_lambda,
+                        num_euler_steps=num_euler_steps,
+                        gamma=gamma,
+                        gae_lambda=gae_lambda,
                         vec_factory=vec_factory,
                     )
                 jax.block_until_ready(batch["advantages"])
@@ -237,14 +267,20 @@ def train_jax_run(
                         key, sub = jax.random.split(key)
                         perm = jax.random.permutation(sub, n_chunks)
                         for i in range(n_mb):
-                            idx = perm[(i * n_chunks) // n_mb:((i + 1) * n_chunks) // n_mb]
+                            idx = perm[
+                                (i * n_chunks) // n_mb : ((i + 1) * n_chunks) // n_mb
+                            ]
                             mb = _slice_prepared(prep, idx, num_mc_samples)
-                            _, info = jpol.train_step(policy, optimizer, mb, loss_kwargs)
+                            _, info = jpol.train_step(
+                                policy, optimizer, mb, loss_kwargs
+                            )
                             infos.append(info)
                 jax.block_until_ready(jax.tree.leaves(nnx.state(policy, nnx.Param))[0])
             info = {k: sum(d[k] for d in infos) / len(infos) for k in infos[0]}
             if wandb_enabled:
-                log_metrics({f"train/{k}": v for k, v in info.items()}, step=global_step)
+                log_metrics(
+                    {f"train/{k}": v for k, v in info.items()}, step=global_step
+                )
             diverged_now = False
             if global_step % eval_steps < action_horizon or global_step >= total_steps:
                 eval_policy.reset()
@@ -256,8 +292,13 @@ def train_jax_run(
                     best_return = mean_return
                     steps_to_best = global_step
                 if wandb_enabled:
-                    log_eval_summary(mean_return, eval_results, all_eval_returns,
-                                     eval_count, global_step)
+                    log_eval_summary(
+                        mean_return,
+                        eval_results,
+                        all_eval_returns,
+                        eval_count,
+                        global_step,
+                    )
                 consecutive_below, diverged_now = check_divergence(
                     mean_return, r_rand, consecutive_below
                 )
@@ -266,8 +307,11 @@ def train_jax_run(
                 break
             if global_step % save_steps < action_horizon or global_step >= total_steps:
                 ckpt = save_checkpoint(
-                    out_dir / f"checkpoint_{global_step}", policy=policy,
-                    optimizer=optimizer, global_step=global_step, env_name=env_name,
+                    out_dir / f"checkpoint_{global_step}",
+                    policy=policy,
+                    optimizer=optimizer,
+                    global_step=global_step,
+                    env_name=env_name,
                     behavior=behavior,
                 )
                 artifacts.append(str(Path(ckpt["dir"]) / "arrays"))
@@ -275,15 +319,21 @@ def train_jax_run(
         elapsed = time.time() - t_start
         fps = global_step / max(elapsed, 1e-6)
         if wandb_enabled:
-            log_metrics({"timing/fps": fps, "timing/elapsed_s": elapsed}, step=global_step)
+            log_metrics(
+                {"timing/fps": fps, "timing/elapsed_s": elapsed}, step=global_step
+            )
     finally:
         if trace_dir is not None:
             jax.profiler.stop_trace()
         if wandb_enabled:
             finish_run(exit_code=1 if diverged else 0)
     ckpt = save_checkpoint(
-        out_dir / "checkpoint_final", policy=policy, optimizer=optimizer,
-        global_step=global_step, env_name=env_name, behavior=behavior,
+        out_dir / "checkpoint_final",
+        policy=policy,
+        optimizer=optimizer,
+        global_step=global_step,
+        env_name=env_name,
+        behavior=behavior,
     )
     artifacts.append(str(Path(ckpt["dir"]) / "arrays"))
     artifacts.append(ckpt["model"])

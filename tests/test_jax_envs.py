@@ -34,8 +34,13 @@ def _forward_before(env, env_name):
     d = env.unwrapped.data
     if env_name == "Ant-v5":
         return float(d.body("torso").xpos[0])
-    if env_name in ("HalfCheetah-v5", "Hopper-v5", "Walker2d-v5",
-                    "Swimmer-v5", "InvertedDoublePendulum-v5"):
+    if env_name in (
+        "HalfCheetah-v5",
+        "Hopper-v5",
+        "Walker2d-v5",
+        "Swimmer-v5",
+        "InvertedDoublePendulum-v5",
+    ):
         return float(d.qpos[0])
     return 0.0  # unused by this env's reward (reacher/pusher/pendulum)
 
@@ -48,7 +53,11 @@ def _extras(env, spec):
     """Sensor extras from live mujoco data (mirror of the MJX rollout dict)."""
     d = env.unwrapped.data
     extra = {}
-    if spec["obs_kind"] == "ant" or spec["reward_kind"] == "locomotion" and spec.get("contact_weight"):
+    if (
+        spec["obs_kind"] == "ant"
+        or spec["reward_kind"] == "locomotion"
+        and spec.get("contact_weight")
+    ):
         extra["cfrc_ext"] = np.asarray(d.cfrc_ext)
     if spec["obs_kind"] == "double_pendulum":
         extra["qfrc_constraint"] = np.asarray(d.qfrc_constraint)
@@ -82,7 +91,9 @@ def test_semantics_match_live_gym(env_name):
         d = env.unwrapped.data
         np.testing.assert_allclose(
             obs(spec, d.qpos, d.qvel, _extras(env, spec)),
-            np.asarray(obs0, dtype=np.float64), rtol=1e-5, atol=1e-5,
+            np.asarray(obs0, dtype=np.float64),
+            rtol=1e-5,
+            atol=1e-5,
         )
         rng = np.random.default_rng(1)
         action = rng.uniform(-1, 1, env.action_space.shape).astype(np.float64)
@@ -100,7 +111,9 @@ def test_semantics_match_live_gym(env_name):
         )
         np.testing.assert_allclose(
             obs(spec, d2.qpos, d2.qvel, extra2),
-            np.asarray(o, dtype=np.float64), rtol=1e-5, atol=1e-5,
+            np.asarray(o, dtype=np.float64),
+            rtol=1e-5,
+            atol=1e-5,
         )
         # Registry dims match the mirrored obs (configs/envs.yaml gate).
         with open(Path(__file__).resolve().parents[1] / "configs" / "envs.yaml") as fh:
@@ -136,7 +149,9 @@ def test_forced_unhealthy_terminates():
             kw = _health_kwargs(env, spec, o)
             d2 = env.unwrapped.data
             assert term is True
-            assert terminated(spec, is_healthy(spec, d2.qpos, d2.qvel, **kw), **kw) is True
+            assert (
+                terminated(spec, is_healthy(spec, d2.qpos, d2.qvel, **kw), **kw) is True
+            )
         finally:
             env.close()
 
@@ -163,8 +178,13 @@ def test_reset_sampler_properties():
 
 def test_mjx_unsupported_raises_loudly():
     assert set(MJX_UNSUPPORTED) >= {
-        "CartPole-v1", "Pendulum-v1", "MountainCar-v0", "Humanoid-v5",
-        "AdroitHandDoor-v1", "AdroitHandPen-v1", "AdroitHandHammer-v1",
+        "CartPole-v1",
+        "Pendulum-v1",
+        "MountainCar-v0",
+        "Humanoid-v5",
+        "AdroitHandDoor-v1",
+        "AdroitHandPen-v1",
+        "AdroitHandHammer-v1",
     }
     for env_name in MJX_UNSUPPORTED:
         with pytest.raises(RuntimeError, match="no MJX path"):
@@ -191,7 +211,9 @@ class StubVec:
         term = self.ep >= 5
         trunc = self.ep >= 1000
         done = term | trunc
-        obs = jnp.ones((self.num_envs, self.obs_dim)) * self.ep[:, None].astype(jnp.float32)
+        obs = jnp.ones((self.num_envs, self.obs_dim)) * self.ep[:, None].astype(
+            jnp.float32
+        )
         if bool(jnp.any(done)):
             self.ep = jnp.where(done, 0, self.ep)
             obs = jnp.zeros((self.num_envs, self.obs_dim))
@@ -201,9 +223,18 @@ class StubVec:
 def test_generate_batch_on_stub():
     pj, _ = jpol.build_policy(6, 2, seed=0, hidden_dim=8, dit_depth=1, dit_heads=2)
     batch = jroll.generate_batch(
-        pj, "HalfCheetah-v5", 40, jnp.full((2,), -1.0), jnp.full((2,), 1.0),
-        jax.random.PRNGKey(0), n_obs_steps=4, action_horizon=8, num_envs=2,
-        num_mc_samples=2, top_p_spectral_tokens=1.0, num_euler_steps=2,
+        pj,
+        "HalfCheetah-v5",
+        40,
+        jnp.full((2,), -1.0),
+        jnp.full((2,), 1.0),
+        jax.random.PRNGKey(0),
+        n_obs_steps=4,
+        action_horizon=8,
+        num_envs=2,
+        num_mc_samples=2,
+        top_p_spectral_tokens=1.0,
+        num_euler_steps=2,
         vec_factory=StubVec,
     )
     n = batch["advantages"].shape[0]

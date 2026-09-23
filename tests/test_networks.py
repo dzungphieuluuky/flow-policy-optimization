@@ -48,7 +48,9 @@ def test_self_attention_matches_math_reference():
         def heads(t):
             return t.view(3, 9, 4, 8).transpose(1, 2)
 
-        ref = torch.softmax(heads(q) @ heads(k).transpose(-1, -2) / math.sqrt(8), dim=-1)
+        ref = torch.softmax(
+            heads(q) @ heads(k).transpose(-1, -2) / math.sqrt(8), dim=-1
+        )
         ref = attn.out((ref @ heads(v)).transpose(1, 2).reshape(3, 9, 32))
     got = attn(x)
     assert torch.allclose(got, ref, atol=1e-5)
@@ -173,8 +175,7 @@ def test_policy_flow_head_tensor_t_and_grad():
     assert v.shape == (8, CHUNK, 3)
     v.sum().backward()
     assert all(
-        p.grad is not None and torch.isfinite(p.grad).all()
-        for p in policy.parameters()
+        p.grad is not None and torch.isfinite(p.grad).all() for p in policy.parameters()
     )
 
 
@@ -190,8 +191,7 @@ def test_policy_flow_head_cond_from_conditioner():
     assert v.shape == (8, CHUNK, 7)
     v.sum().backward()
     assert all(
-        p.grad is not None and torch.isfinite(p.grad).all()
-        for p in policy.parameters()
+        p.grad is not None and torch.isfinite(p.grad).all() for p in policy.parameters()
     )
 
     # DiT blocks (adaLN-Zero identity init + finite time embeddings)
@@ -237,7 +237,6 @@ def test_policy_dit_zero_velocity_at_init():
     assert torch.isfinite(v).all()
     assert float(v.abs().mean()) == pytest.approx(0.0, abs=1e-5)
 
-
     # Critic (PPO state-value baseline V(s))
 
 
@@ -274,8 +273,7 @@ def test_value_critic_gradient_flows():
     vc = nets.Critic(OBS)
     vc(torch.randn(4, STATE_T, OBS)).sum().backward()
     assert all(
-        p.grad is not None and torch.isfinite(p.grad).all()
-        for p in vc.parameters()
+        p.grad is not None and torch.isfinite(p.grad).all() for p in vc.parameters()
     )
 
     # global hygiene: fp32-only, no BatchNorm / Dropout

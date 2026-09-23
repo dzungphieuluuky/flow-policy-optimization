@@ -56,6 +56,7 @@ __all__ = [
 # Cached constant helpers
 # ---------------------------------------------------------------------------
 
+
 def _sinusoidal_freqs(dim_half: int) -> jax.Array:
     """Standard transformer frequency table, computed once and reused."""
     if dim_half <= 0:
@@ -68,6 +69,7 @@ def _sinusoidal_freqs(dim_half: int) -> jax.Array:
 # Primitives
 # ---------------------------------------------------------------------------
 
+
 class SwiGLU(nnx.Module):
     """Gated SiLU feedforward: down(silu(gate(x)) * up(x)).
 
@@ -75,10 +77,19 @@ class SwiGLU(nnx.Module):
     forward pass issues one GEMM instead of two.
     """
 
-    def __init__(self, in_dim: int, hidden_dim: int, out_dim: int, *, rngs: nnx.Rngs,
-                 param_dtype: jnp.dtype | None = None):
+    def __init__(
+        self,
+        in_dim: int,
+        hidden_dim: int,
+        out_dim: int,
+        *,
+        rngs: nnx.Rngs,
+        param_dtype: jnp.dtype | None = None,
+    ):
         param_dtype = resolve_param_dtype() if param_dtype is None else param_dtype
-        self.gate_up = nnx.Linear(in_dim, 2 * hidden_dim, rngs=rngs, param_dtype=param_dtype)
+        self.gate_up = nnx.Linear(
+            in_dim, 2 * hidden_dim, rngs=rngs, param_dtype=param_dtype
+        )
         self.down = nnx.Linear(hidden_dim, out_dim, rngs=rngs, param_dtype=param_dtype)
 
     def __call__(self, x: jax.Array) -> jax.Array:
@@ -89,8 +100,15 @@ class SwiGLU(nnx.Module):
 class CondMLP(nnx.Module):
     """SiLU MLP for conditioning regression (DiT canon)."""
 
-    def __init__(self, in_dim: int, hidden_dim: int, out_dim: int, *, rngs: nnx.Rngs,
-                 param_dtype: jnp.dtype | None = None):
+    def __init__(
+        self,
+        in_dim: int,
+        hidden_dim: int,
+        out_dim: int,
+        *,
+        rngs: nnx.Rngs,
+        param_dtype: jnp.dtype | None = None,
+    ):
         param_dtype = resolve_param_dtype() if param_dtype is None else param_dtype
         self.fc1 = nnx.Linear(in_dim, hidden_dim, rngs=rngs, param_dtype=param_dtype)
         self.fc2 = nnx.Linear(hidden_dim, out_dim, rngs=rngs, param_dtype=param_dtype)
@@ -122,18 +140,22 @@ class SinusoidalEncoding(nnx.Module):
         ang = pos[:, None] * self.frequencies(self.dim // 2)
         pe = jnp.concatenate([jnp.sin(ang), jnp.cos(ang)], axis=-1)
         if pe.shape[-1] < self.dim:
-            pe = jnp.pad(pe, ((0, 0),) * (pe.ndim - 1) + ((0, self.dim - pe.shape[-1]),))
+            pe = jnp.pad(
+                pe, ((0, 0),) * (pe.ndim - 1) + ((0, self.dim - pe.shape[-1]),)
+            )
         return pe
 
     # -- API ----------------------------------------------------------------
 
     def add_to(self, x: jax.Array, positions: jax.Array) -> jax.Array:
-        ang = (positions.astype(jnp.float32) * self.scale)[..., None] * self.frequencies(
-            self.dim // 2
-        )
+        ang = (positions.astype(jnp.float32) * self.scale)[
+            ..., None
+        ] * self.frequencies(self.dim // 2)
         pe = jnp.concatenate([jnp.sin(ang), jnp.cos(ang)], axis=-1)
         if pe.shape[-1] < self.dim:
-            pe = jnp.pad(pe, ((0, 0),) * (pe.ndim - 1) + ((0, self.dim - pe.shape[-1]),))
+            pe = jnp.pad(
+                pe, ((0, 0),) * (pe.ndim - 1) + ((0, self.dim - pe.shape[-1]),)
+            )
         return x + pe.astype(x.dtype)
 
     def encode_times(self, t: jax.Array) -> jax.Array:
@@ -155,8 +177,14 @@ class SinusoidalEncoding(nnx.Module):
 class RMSNorm(nnx.Module):
     """x / sqrt(mean(x²) + eps) * weight (matches ``nn.RMSNorm``)."""
 
-    def __init__(self, hidden_dim: int, eps: float = 1e-6, *, rngs: nnx.Rngs,
-                 param_dtype: jnp.dtype | None = None):
+    def __init__(
+        self,
+        hidden_dim: int,
+        eps: float = 1e-6,
+        *,
+        rngs: nnx.Rngs,
+        param_dtype: jnp.dtype | None = None,
+    ):
         param_dtype = resolve_param_dtype() if param_dtype is None else param_dtype
         self.weight = nnx.Param(jnp.ones((hidden_dim,), dtype=param_dtype))
         self.eps = eps
@@ -167,21 +195,35 @@ class RMSNorm(nnx.Module):
         x32 = x.astype(jnp.float32)
         inv = jax.lax.rsqrt(jnp.mean(x32 * x32, axis=-1, keepdims=True) + self.eps)
         y = x32 * inv
-        return (y.astype(x.dtype) * self.weight[...]) if x.dtype != jnp.float32 else (y * self.weight[...])
+        return (
+            (y.astype(x.dtype) * self.weight[...])
+            if x.dtype != jnp.float32
+            else (y * self.weight[...])
+        )
 
 
 class SelfAttention(nnx.Module):
     """Multi-head self-attention using fused SDPA when available."""
 
-    def __init__(self, hidden_dim: int, n_heads: int = 4, *, rngs: nnx.Rngs,
-                 param_dtype: jnp.dtype | None = None):
+    def __init__(
+        self,
+        hidden_dim: int,
+        n_heads: int = 4,
+        *,
+        rngs: nnx.Rngs,
+        param_dtype: jnp.dtype | None = None,
+    ):
         if hidden_dim % n_heads != 0:
             raise ValueError(f"hidden_dim={hidden_dim} must split over {n_heads} heads")
         param_dtype = resolve_param_dtype() if param_dtype is None else param_dtype
         self.n_heads = n_heads
         self.head_dim = hidden_dim // n_heads
-        self.qkv = nnx.Linear(hidden_dim, 3 * hidden_dim, rngs=rngs, param_dtype=param_dtype)
-        self.out = nnx.Linear(hidden_dim, hidden_dim, rngs=rngs, param_dtype=param_dtype)
+        self.qkv = nnx.Linear(
+            hidden_dim, 3 * hidden_dim, rngs=rngs, param_dtype=param_dtype
+        )
+        self.out = nnx.Linear(
+            hidden_dim, hidden_dim, rngs=rngs, param_dtype=param_dtype
+        )
 
     def _manual_attention(self, q, k, v, scores_mask):
         scores = q @ k.swapaxes(-1, -2) / math.sqrt(self.head_dim)
@@ -236,13 +278,22 @@ class WindowEncoder(nnx.Module):
         mlp_ratio = 4.0 if mlp_ratio is None else float(mlp_ratio)
         param_dtype = resolve_param_dtype() if param_dtype is None else param_dtype
         del n_obs_steps  # accepted for call-site compat
-        self.frame_proj = nnx.Linear(in_dim, hidden_dim, rngs=rngs, param_dtype=param_dtype)
+        self.frame_proj = nnx.Linear(
+            in_dim, hidden_dim, rngs=rngs, param_dtype=param_dtype
+        )
         self.pos_encoding = SinusoidalEncoding(hidden_dim)
         self.norm1 = RMSNorm(hidden_dim, eps=1e-6, rngs=rngs, param_dtype=param_dtype)
-        self.attn1 = SelfAttention(hidden_dim, n_heads, rngs=rngs, param_dtype=param_dtype)
+        self.attn1 = SelfAttention(
+            hidden_dim, n_heads, rngs=rngs, param_dtype=param_dtype
+        )
         self.norm2 = RMSNorm(hidden_dim, eps=1e-6, rngs=rngs, param_dtype=param_dtype)
-        self.mlp1 = SwiGLU(hidden_dim, int(hidden_dim * mlp_ratio), hidden_dim, rngs=rngs,
-                            param_dtype=param_dtype)
+        self.mlp1 = SwiGLU(
+            hidden_dim,
+            int(hidden_dim * mlp_ratio),
+            hidden_dim,
+            rngs=rngs,
+            param_dtype=param_dtype,
+        )
 
     def __call__(self, x: jax.Array, key_mask: jax.Array | None = None) -> jax.Array:
         h = self.pos_encoding(self.frame_proj(x))
@@ -300,16 +351,28 @@ class DiTBlock(nnx.Module):
     the output tensor so no diagnostic reductions run during training.
     """
 
-    def __init__(self, hidden_dim: int, n_heads: int, mlp_ratio: float, *, rngs: nnx.Rngs,
-                 param_dtype: jnp.dtype | None = None):
+    def __init__(
+        self,
+        hidden_dim: int,
+        n_heads: int,
+        mlp_ratio: float,
+        *,
+        rngs: nnx.Rngs,
+        param_dtype: jnp.dtype | None = None,
+    ):
         param_dtype = resolve_param_dtype() if param_dtype is None else param_dtype
         self.norm1 = RMSNorm(hidden_dim, rngs=rngs, param_dtype=param_dtype)
-        self.attn = SelfAttention(hidden_dim, n_heads, rngs=rngs, param_dtype=param_dtype)
+        self.attn = SelfAttention(
+            hidden_dim, n_heads, rngs=rngs, param_dtype=param_dtype
+        )
         self.norm2 = RMSNorm(hidden_dim, rngs=rngs, param_dtype=param_dtype)
         mlp_hidden = int(hidden_dim * mlp_ratio)
-        self.mlp = SwiGLU(hidden_dim, mlp_hidden, hidden_dim, rngs=rngs, param_dtype=param_dtype)
-        self.adaLN = CondMLP(hidden_dim, hidden_dim, 6 * hidden_dim, rngs=rngs,
-                              param_dtype=param_dtype)
+        self.mlp = SwiGLU(
+            hidden_dim, mlp_hidden, hidden_dim, rngs=rngs, param_dtype=param_dtype
+        )
+        self.adaLN = CondMLP(
+            hidden_dim, hidden_dim, 6 * hidden_dim, rngs=rngs, param_dtype=param_dtype
+        )
         # Zero-init the modulation head: block starts as identity.
         self.adaLN.fc2.kernel[...] = jnp.zeros_like(self.adaLN.fc2.kernel[...])
         self.adaLN.fc2.bias[...] = jnp.zeros_like(self.adaLN.fc2.bias[...])
@@ -343,20 +406,32 @@ class DiTBlock(nnx.Module):
 class StateConditioner(nnx.Module):
     """Fuse raw state window + DCT bins into one [B, D] vector."""
 
-    def __init__(self, obs_dim: int, hidden_dim: int | None = None, n_heads: int = 4, *,
-                 rngs: nnx.Rngs, param_dtype: jnp.dtype | None = None):
+    def __init__(
+        self,
+        obs_dim: int,
+        hidden_dim: int | None = None,
+        n_heads: int = 4,
+        *,
+        rngs: nnx.Rngs,
+        param_dtype: jnp.dtype | None = None,
+    ):
         if obs_dim <= 0:
             raise ValueError("obs_dim must be positive")
         hidden_dim = 128 if hidden_dim is None else int(hidden_dim)
         param_dtype = resolve_param_dtype() if param_dtype is None else param_dtype
         del n_heads  # accepted for call-site compat; fusion is linear
         self.obs_dim = obs_dim
-        self.state_encoder = WindowEncoder(obs_dim, hidden_dim=hidden_dim, rngs=rngs,
-                                           param_dtype=param_dtype)
+        self.state_encoder = WindowEncoder(
+            obs_dim, hidden_dim=hidden_dim, rngs=rngs, param_dtype=param_dtype
+        )
         self.bin_norm = RMSNorm(obs_dim, rngs=rngs, param_dtype=param_dtype)
         self.bin_encoding = SinusoidalEncoding(obs_dim)
-        self.key_proj = nnx.Linear(obs_dim, hidden_dim, rngs=rngs, param_dtype=param_dtype)
-        self.fuse = nnx.Linear(2 * hidden_dim, hidden_dim, rngs=rngs, param_dtype=param_dtype)
+        self.key_proj = nnx.Linear(
+            obs_dim, hidden_dim, rngs=rngs, param_dtype=param_dtype
+        )
+        self.fuse = nnx.Linear(
+            2 * hidden_dim, hidden_dim, rngs=rngs, param_dtype=param_dtype
+        )
 
     def __call__(self, states: jax.Array) -> jax.Array:
         from sjfpo_jax.dct import dct
@@ -364,7 +439,9 @@ class StateConditioner(nnx.Module):
         raw = self.state_encoder(states).mean(axis=1)
         # Time-axis DCT-II via the cached basis in dct.py (identical math to
         # torch; a local matmul here contracted the wrong axes for obs != T).
-        spec = self.key_proj(self.bin_encoding(self.bin_norm(dct(states, dim=1)))).mean(axis=1)
+        spec = self.key_proj(self.bin_encoding(self.bin_norm(dct(states, dim=1)))).mean(
+            axis=1
+        )
         return self.fuse(jnp.concatenate([raw, spec], axis=-1))
 
 
@@ -392,25 +469,44 @@ class SJFPOFlowModel(nnx.Module):
         param_dtype = resolve_param_dtype() if param_dtype is None else param_dtype
         self.time_dim = dit_time_dim
         self.timestep_embedder = SinusoidalEncoding(self.time_dim, scale=timestep_scale)
-        self.in_proj = nnx.Linear(action_dim, hidden_dim, rngs=rngs, param_dtype=param_dtype)
+        self.in_proj = nnx.Linear(
+            action_dim, hidden_dim, rngs=rngs, param_dtype=param_dtype
+        )
         self.bin_encoding = SinusoidalEncoding(hidden_dim)
-        self.time_mlp = CondMLP(dit_time_dim, 4 * hidden_dim, hidden_dim, rngs=rngs,
-                                param_dtype=param_dtype)
+        self.time_mlp = CondMLP(
+            dit_time_dim, 4 * hidden_dim, hidden_dim, rngs=rngs, param_dtype=param_dtype
+        )
         _List = getattr(nnx, "List", list)
         self.blocks = _List(
-            [DiTBlock(hidden_dim, dit_heads, dit_mlp_ratio, rngs=rngs, param_dtype=param_dtype)
-             for _ in range(dit_depth)]
+            [
+                DiTBlock(
+                    hidden_dim,
+                    dit_heads,
+                    dit_mlp_ratio,
+                    rngs=rngs,
+                    param_dtype=param_dtype,
+                )
+                for _ in range(dit_depth)
+            ]
         )
         self.norm_out = RMSNorm(hidden_dim, rngs=rngs, param_dtype=param_dtype)
-        self.adaLN_out = nnx.Linear(hidden_dim, 2 * hidden_dim, rngs=rngs, param_dtype=param_dtype)
+        self.adaLN_out = nnx.Linear(
+            hidden_dim, 2 * hidden_dim, rngs=rngs, param_dtype=param_dtype
+        )
         self.adaLN_out.kernel[...] = jnp.zeros_like(self.adaLN_out.kernel[...])
         self.adaLN_out.bias[...] = jnp.zeros_like(self.adaLN_out.bias[...])
-        self.out = nnx.Linear(hidden_dim, action_dim, rngs=rngs, param_dtype=param_dtype)
+        self.out = nnx.Linear(
+            hidden_dim, action_dim, rngs=rngs, param_dtype=param_dtype
+        )
         self.out.kernel[...] = jnp.zeros_like(self.out.kernel[...])
         self.out.bias[...] = jnp.zeros_like(self.out.bias[...])
 
     def __call__(
-        self, x_t: jax.Array, t: jax.Array, condition: jax.Array, return_stats: bool = False
+        self,
+        x_t: jax.Array,
+        t: jax.Array,
+        condition: jax.Array,
+        return_stats: bool = False,
     ):
         temb = self.timestep_embedder.encode_times(t).astype(x_t.dtype)
         if temb.ndim == 1:
@@ -448,8 +544,15 @@ class SJFPOFlowModel(nnx.Module):
 class Critic(nnx.Module):
     """V(s) MLP on the current frame: [B, T, obs] -> [B]."""
 
-    def __init__(self, obs_dim: int, hidden_dim: int | None = None, n_obs_steps: int | None = None, *,
-                 rngs: nnx.Rngs, param_dtype: jnp.dtype | None = None):
+    def __init__(
+        self,
+        obs_dim: int,
+        hidden_dim: int | None = None,
+        n_obs_steps: int | None = None,
+        *,
+        rngs: nnx.Rngs,
+        param_dtype: jnp.dtype | None = None,
+    ):
         if obs_dim <= 0:
             raise ValueError("obs_dim must be positive")
         hidden_dim = 128 if hidden_dim is None else int(hidden_dim)
@@ -464,6 +567,7 @@ class Critic(nnx.Module):
 # ---------------------------------------------------------------------------
 # Weight loading
 # ---------------------------------------------------------------------------
+
 
 def load_torch_weights(nnx_model: nnx.Module, torch_state: dict) -> None:
     """Copy a torch state_dict into an NNX model.

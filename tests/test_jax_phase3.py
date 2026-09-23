@@ -43,8 +43,14 @@ def _jax_pair(tpol):
     # NOTE: SJFPOPolicy forwards only hidden_dim; dit_* resolve to bare
     # SJFPOConfig defaults (depth=4, heads=4, ratio=4.0, time_dim=128).
     pj, bj = jpol.build_policy(
-        OBS, ACT, seed=0, hidden_dim=8, dit_depth=4, dit_heads=4,
-        dit_mlp_ratio=4.0, dit_time_dim=128,
+        OBS,
+        ACT,
+        seed=0,
+        hidden_dim=8,
+        dit_depth=4,
+        dit_heads=4,
+        dit_mlp_ratio=4.0,
+        dit_time_dim=128,
     )
     for name in ("actor", "conditioner", "critic"):
         load_torch_weights(getattr(pj, name), getattr(tpol, name).state_dict())
@@ -90,8 +96,13 @@ def test_loss_matches_torch_forward():
         tpol.eval()
         t_loss, t_info = tpol(tb)
     prep = jpol.prepare_batch(
-        pj, bj, jb, n_obs_steps=T, action_horizon=H,
-        top_p_spectral_tokens=1.0, num_mc_samples=M,
+        pj,
+        bj,
+        jb,
+        n_obs_steps=T,
+        action_horizon=H,
+        top_p_spectral_tokens=1.0,
+        num_mc_samples=M,
     )
     j_loss, j_info = jpol.compute_loss(pj, prep)
     assert float(t_loss) == float(t_loss)  # finite torch side
@@ -110,17 +121,32 @@ def test_train_step_updates_live_freezes_snapshot():
     tb = _batch()
     jb = _aligned(tpol, pj, bj, tb)
     opt = jpol.build_optimizer(pj)
-    before = jnp.concatenate([v.reshape(-1) for v in jax.tree.leaves(nnx.state(pj, nnx.Param))])
-    old_before = jnp.concatenate([v.reshape(-1) for v in jax.tree.leaves(nnx.state(bj, nnx.Param))])
+    before = jnp.concatenate(
+        [v.reshape(-1) for v in jax.tree.leaves(nnx.state(pj, nnx.Param))]
+    )
+    old_before = jnp.concatenate(
+        [v.reshape(-1) for v in jax.tree.leaves(nnx.state(bj, nnx.Param))]
+    )
     prep = jpol.prepare_batch(
-        pj, bj, jb, n_obs_steps=T, action_horizon=H, num_mc_samples=M,
+        pj,
+        bj,
+        jb,
+        n_obs_steps=T,
+        action_horizon=H,
+        num_mc_samples=M,
     )
     loss, info = jpol.train_step(pj, opt, prep)
     assert np.isfinite(float(loss))
-    after = jnp.concatenate([v.reshape(-1) for v in jax.tree.leaves(nnx.state(pj, nnx.Param))])
-    old_after = jnp.concatenate([v.reshape(-1) for v in jax.tree.leaves(nnx.state(bj, nnx.Param))])
+    after = jnp.concatenate(
+        [v.reshape(-1) for v in jax.tree.leaves(nnx.state(pj, nnx.Param))]
+    )
+    old_after = jnp.concatenate(
+        [v.reshape(-1) for v in jax.tree.leaves(nnx.state(bj, nnx.Param))]
+    )
     assert not np.allclose(np.asarray(after), np.asarray(before))  # live moved
-    np.testing.assert_array_equal(np.asarray(old_after), np.asarray(old_before))  # frozen
+    np.testing.assert_array_equal(
+        np.asarray(old_after), np.asarray(old_before)
+    )  # frozen
     assert set(info) >= {"policy_loss", "value_loss", "explained_var"}
 
 
@@ -138,8 +164,7 @@ def test_decay_mask_structure():
     assert out and not any(bool(pairs[k]) for k in out)
     # Conditioner attn out-projections still decay (torch parity).
     cond_attn_out = [
-        k for k in pairs
-        if "conditioner" in names_of(k) and "out" in names_of(k)
+        k for k in pairs if "conditioner" in names_of(k) and "out" in names_of(k)
     ]
     assert cond_attn_out and all(bool(pairs[k]) for k in cond_attn_out)
     live = [k for k in pairs if "conditioner" in _path_names(k)]
@@ -155,8 +180,13 @@ def test_predict_chunk_matches_torch():
     with torch.inference_mode():
         t_chunk = tpol.predict_action_chunk({"observation.state": states}, noise=False)
     j_chunk = jpol.predict_action_chunk(
-        pj, jnp.asarray(states.numpy()), jax.random.PRNGKey(0),
-        action_horizon=H, num_euler_steps=2, num_inference_steps=2, noise=False,
+        pj,
+        jnp.asarray(states.numpy()),
+        jax.random.PRNGKey(0),
+        action_horizon=H,
+        num_euler_steps=2,
+        num_inference_steps=2,
+        noise=False,
     )
     np.testing.assert_allclose(
         np.asarray(j_chunk), t_chunk.numpy(), rtol=1e-4, atol=1e-4

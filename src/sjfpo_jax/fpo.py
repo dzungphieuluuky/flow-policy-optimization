@@ -39,6 +39,7 @@ __all__ = [
 # Sampling
 # ---------------------------------------------------------------------------
 
+
 def sample_timesteps(
     key: jax.Array,
     num_samples: int,
@@ -52,9 +53,7 @@ def sample_timesteps(
         tau = jax.random.uniform(sub, (num_samples,)) * (hi - lo) + lo
     elif mode == "normal":
         mid, std = 0.5 * (lo + hi), 0.25 * (hi - lo)
-        tau = jnp.clip(
-            jax.random.normal(sub, (num_samples,)) * std + mid, lo, hi
-        )
+        tau = jnp.clip(jax.random.normal(sub, (num_samples,)) * std + mid, lo, hi)
     else:
         raise ValueError(f"mode={mode!r} unknown; expected 'uniform' or 'normal'")
     return key, tau
@@ -78,6 +77,7 @@ def sample_noise(
 # ---------------------------------------------------------------------------
 # Monte-Carlo simulation
 # ---------------------------------------------------------------------------
+
 
 def run_mc_simulation(
     a: jax.Array, eps: jax.Array, tau: jax.Array
@@ -112,6 +112,7 @@ def run_mc_simulation(
 # ---------------------------------------------------------------------------
 # CFM loss
 # ---------------------------------------------------------------------------
+
 
 def compute_cfm_loss(
     v_hat: jax.Array,
@@ -150,6 +151,7 @@ def compute_cfm_loss(
 # ---------------------------------------------------------------------------
 # ASPO surrogate / policy objective
 # ---------------------------------------------------------------------------
+
 
 def compute_aspo_surrogate(
     rho: jax.Array,
@@ -203,6 +205,7 @@ def compute_policy_loss(
 # Inference
 # ---------------------------------------------------------------------------
 
+
 def sample_action(
     predict_velocity: Callable[[jax.Array, jax.Array, Any], jax.Array],
     shape: tuple[int, ...],
@@ -225,8 +228,8 @@ def sample_action(
         _, eps = sample_noise(key, shape)
 
     grid = jnp.linspace(0.0, 1.0, num_inference_steps + 1)
-    ts = grid[:-1]                # t_i
-    dts = jnp.diff(grid)          # t_{i+1} - t_i
+    ts = grid[:-1]  # t_i
+    dts = jnp.diff(grid)  # t_{i+1} - t_i
 
     def body(x, td):
         t, dt = td

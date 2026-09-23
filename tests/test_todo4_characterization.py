@@ -93,7 +93,9 @@ class TestTrainerGolden:
             input_features={
                 "observation.state": PolicyFeature(FeatureType.STATE, (obs_dim,))
             },
-            output_features={"action": PolicyFeature(FeatureType.ACTION, (action_dim,))},
+            output_features={
+                "action": PolicyFeature(FeatureType.ACTION, (action_dim,))
+            },
         )
         return SJFPOPolicy(cfg), cfg, obs_dim, action_dim
 
@@ -165,14 +167,22 @@ class TestTrainerGolden:
         policy, cfg, obs_dim, action_dim = self.policy()
         device = next(policy.parameters()).device
         torch.manual_seed(1)
-        top_k_spectral_action_tokens = max(1, round(cfg.top_p_spectral_tokens * cfg.action_horizon))
-        x_t = torch.randn(4 * cfg.num_mc_samples, top_k_spectral_action_tokens, action_dim).to(device)
+        top_k_spectral_action_tokens = max(
+            1, round(cfg.top_p_spectral_tokens * cfg.action_horizon)
+        )
+        x_t = torch.randn(
+            4 * cfg.num_mc_samples, top_k_spectral_action_tokens, action_dim
+        ).to(device)
         tau = torch.rand(4 * cfg.num_mc_samples, device=device)
         states = torch.randn(4 * cfg.num_mc_samples, cfg.n_obs_steps, obs_dim).to(
             device
         )
         v = policy.compute_predicted_velocity(x_t, tau, states)
-        assert v.shape == (4 * cfg.num_mc_samples, top_k_spectral_action_tokens, action_dim)
+        assert v.shape == (
+            4 * cfg.num_mc_samples,
+            top_k_spectral_action_tokens,
+            action_dim,
+        )
         assert torch.isfinite(v).all()
 
 

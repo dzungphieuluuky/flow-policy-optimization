@@ -198,7 +198,9 @@ def build_offline_notebook():
 
 def parse_build_args() -> argparse.Namespace:
     """Parse the notebook-builder CLI flags."""
-    parser = argparse.ArgumentParser(description="Build the standalone offline Colab notebook")
+    parser = argparse.ArgumentParser(
+        description="Build the standalone offline Colab notebook"
+    )
     parser.add_argument(
         "--output",
         "-o",
@@ -211,7 +213,11 @@ def parse_build_args() -> argparse.Namespace:
 def check_notebook(nb) -> None:
     """Structural gate: md/md/code×N order, writefile cells cover every runtime file."""
     kinds = [c["cell_type"] for c in nb.cells]
-    if len(kinds) < 3 or kinds[:2] != ["markdown", "markdown"] or set(kinds[2:]) != {"code"}:
+    if (
+        len(kinds) < 3
+        or kinds[:2] != ["markdown", "markdown"]
+        or set(kinds[2:]) != {"code"}
+    ):
         raise ValueError(f"unexpected cell order: {kinds}")
     sources = [str(c["source"]) for c in nb.cells if c["cell_type"] == "code"]
     for p in embedded_files():

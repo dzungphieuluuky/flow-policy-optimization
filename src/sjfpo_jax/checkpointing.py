@@ -56,7 +56,8 @@ def save_checkpoint(
     with ocp.StandardCheckpointer() as ckptr:
         ckptr.save(ckpt_dir / "arrays", state)
     export_safetensors(
-        policy, ckpt_dir / "model.safetensors",
+        policy,
+        ckpt_dir / "model.safetensors",
         metadata={
             "global_step": str(int(global_step)),
             "env_name": env_name,
@@ -73,9 +74,7 @@ def save_checkpoint(
     }
 
 
-def load_checkpoint(
-    ckpt_dir: str | Path, *, policy, optimizer
-) -> dict[str, Any]:
+def load_checkpoint(ckpt_dir: str | Path, *, policy, optimizer) -> dict[str, Any]:
     """Restore into live objects; returns the saved meta (KeyError if absent)."""
     ckpt_dir = Path(ckpt_dir)
     meta = json.loads((ckpt_dir / "meta.json").read_text(encoding="utf-8"))
@@ -148,8 +147,9 @@ def to_torch_dict(policy, behavior=None) -> dict[str, np.ndarray]:
     return out
 
 
-def export_safetensors(policy, path: str | Path, metadata: dict[str, str] | None = None,
-                       behavior=None) -> str:
+def export_safetensors(
+    policy, path: str | Path, metadata: dict[str, str] | None = None, behavior=None
+) -> str:
     """Write policy weights as ``model.safetensors`` (torch-loadable)."""
     from safetensors.flax import save_file
 
@@ -184,20 +184,28 @@ def load_safetensors(policy, path: str | Path) -> list[str]:
                 gk, uk = base + ".gate" + suffix, base + ".up" + suffix
                 for req in (gk, uk):
                     if req not in flat:
-                        raise KeyError(f"safetensors file is missing expected tensor {req!r}")
+                        raise KeyError(
+                            f"safetensors file is missing expected tensor {req!r}"
+                        )
                 g, u = flat[gk], flat[uk]
                 if names[-1] == "kernel":
                     arr = np.concatenate([g, u], axis=0).T
                 else:
                     arr = np.concatenate([g, u], axis=0)
                 if arr.shape != want:
-                    raise ValueError(f"shape mismatch for {base}.gate_up: file {arr.shape} vs model {want}")
+                    raise ValueError(
+                        f"shape mismatch for {base}.gate_up: file {arr.shape} vs model {want}"
+                    )
                 leaf[...] = jnp.asarray(_contig(arr), dtype=want_dtype)
                 loaded.extend([gk, uk])
                 continue
-            key = ".".join(names[:-1]) + ".weight" if names[-1] == "kernel" else ".".join(names)
+            key = (
+                ".".join(names[:-1]) + ".weight"
+                if names[-1] == "kernel"
+                else ".".join(names)
+            )
             if key.startswith("normalizer."):
-                key = "obs_normalizer." + key[len("normalizer."):]
+                key = "obs_normalizer." + key[len("normalizer.") :]
             if key not in flat:
                 raise KeyError(f"safetensors file is missing expected tensor {key!r}")
             arr = flat[key]

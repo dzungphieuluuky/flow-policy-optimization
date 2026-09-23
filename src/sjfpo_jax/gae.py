@@ -56,20 +56,18 @@ def compute_advantages(
     )
 
     # --- Precompute scalar logs (compile-time constants under jit) ---
-    log_gamma = math.log(gamma)              # log γ
-    log_gamma_lam = math.log(gamma * lam)    # log(γλ)
+    log_gamma = math.log(gamma)  # log γ
+    log_gamma_lam = math.log(gamma * lam)  # log(γλ)
 
     len_f = lengths.astype(jnp.float32)
-    gamma_len = jnp.exp(len_f * log_gamma)          # γ^{L_k}
+    gamma_len = jnp.exp(len_f * log_gamma)  # γ^{L_k}
     gamma_lam_len = jnp.exp(len_f * log_gamma_lam)  # (γλ)^{L_k}
 
     # --- Intra-chunk discounted rewards (static-shape segment sums) ---
     # chunk_ids[j] = index of the chunk that step j belongs to.
     # searchsorted (not repeat): repeat needs static repeat counts, which
     # traced lengths cannot provide under jit.
-    offsets = jnp.concatenate(
-        [jnp.zeros((1,), dtype=jnp.int32), jnp.cumsum(lengths)]
-    )
+    offsets = jnp.concatenate([jnp.zeros((1,), dtype=jnp.int32), jnp.cumsum(lengths)])
     step_ids = jnp.arange(rewards_1d.shape[0], dtype=jnp.int32)
     chunk_ids = jnp.searchsorted(offsets[1:], step_ids, side="right").astype(jnp.int32)
     pos = (step_ids - offsets[chunk_ids]).astype(jnp.float32)

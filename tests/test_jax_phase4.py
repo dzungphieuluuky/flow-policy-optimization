@@ -39,11 +39,21 @@ def test_roundtrip_restores_params_and_counters(tmp_path):
         "eps": jnp.zeros((2, 2, 8, 3)),
     }
     _prep = jpol.prepare_batch(
-        pj, bj, _batch, n_obs_steps=4, action_horizon=8, num_mc_samples=2,
+        pj,
+        bj,
+        _batch,
+        n_obs_steps=4,
+        action_horizon=8,
+        num_mc_samples=2,
     )
     jpol.train_step(pj, opt, _prep)
-    out = save_checkpoint(tmp_path / "ckpt_10", policy=pj, optimizer=opt,
-                          global_step=10, env_name="HalfCheetah-v5")
+    out = save_checkpoint(
+        tmp_path / "ckpt_10",
+        policy=pj,
+        optimizer=opt,
+        global_step=10,
+        env_name="HalfCheetah-v5",
+    )
     assert Path(out["meta"]).exists()
     # Restore into differently-initialized objects; everything must match.
     fresh, _ = jpol.build_policy(6, 3, seed=999, hidden_dim=8, dit_depth=1, dit_heads=2)
@@ -96,16 +106,18 @@ def test_safetensors_jax_to_torch_strict(tmp_path):
     pj, bj = jpol.build_policy(6, 3, seed=0, hidden_dim=8)
     path = export_safetensors(pj, tmp_path / "model.safetensors", behavior=bj)
     tpol = _torch_policy_6x3()
-    tpol.load_state_dict({k: torch.as_tensor(v) for k, v in torch_load(path).items()},
-                         strict=True)
+    tpol.load_state_dict(
+        {k: torch.as_tensor(v) for k, v in torch_load(path).items()}, strict=True
+    )
     x = torch.randn(2, 8, 3)
     t = torch.rand(2)
     c = torch.randn(2, 8)
     tpol.eval()
     with torch.no_grad():
         expected = tpol.actor(x, t, c).detach().numpy()
-    got = pj.actor(jnp.asarray(x.numpy()), jnp.asarray(t.numpy()),
-                       jnp.asarray(c.numpy()))
+    got = pj.actor(
+        jnp.asarray(x.numpy()), jnp.asarray(t.numpy()), jnp.asarray(c.numpy())
+    )
     np.testing.assert_allclose(np.asarray(got), expected, rtol=1e-5, atol=1e-5)
 
 
@@ -125,8 +137,9 @@ def test_safetensors_torch_to_jax(tmp_path):
     tpol.eval()
     with torch.no_grad():
         expected = tpol.actor(x, t, c).detach().numpy()
-    got = pj.actor(jnp.asarray(x.numpy()), jnp.asarray(t.numpy()),
-                       jnp.asarray(c.numpy()))
+    got = pj.actor(
+        jnp.asarray(x.numpy()), jnp.asarray(t.numpy()), jnp.asarray(c.numpy())
+    )
     np.testing.assert_allclose(np.asarray(got), expected, rtol=1e-5, atol=1e-5)
 
 

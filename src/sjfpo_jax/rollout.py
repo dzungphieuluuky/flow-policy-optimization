@@ -71,6 +71,7 @@ def _require_rollout():
 # MjxVec
 # ---------------------------------------------------------------------------
 
+
 class MjxVec:
     """Batched MJX env with autoreset; jnp in/out, all on device."""
 
@@ -158,11 +159,15 @@ class MjxVec:
             raise ValueError(f"reset_kind={kind!r} is not jit-able")
         s = self.spec.get("reset_noise_scale", 0.0)
         rng, k1, k2 = jax.random.split(rng, 3)
-        qpos = self._init_qpos + jax.random.uniform(k1, (n, self.nq), minval=-s, maxval=s)
+        qpos = self._init_qpos + jax.random.uniform(
+            k1, (n, self.nq), minval=-s, maxval=s
+        )
         if self.spec.get("qvel_dist", "uniform") == "normal":
             qvel = self._init_qvel + s * jax.random.normal(k2, (n, self.nv))
         else:
-            qvel = self._init_qvel + jax.random.uniform(k2, (n, self.nv), minval=-s, maxval=s)
+            qvel = self._init_qvel + jax.random.uniform(
+                k2, (n, self.nv), minval=-s, maxval=s
+            )
         return qpos.astype(jnp.float32), qvel.astype(jnp.float32)
 
     def _sample_state(self, rng, n: int):
@@ -181,7 +186,9 @@ class MjxVec:
                 )
                 while True:
                     rng, kg = jax.random.split(rng)
-                    goal = np.asarray(jax.random.uniform(kg, (2,), minval=-0.2, maxval=0.2))
+                    goal = np.asarray(
+                        jax.random.uniform(kg, (2,), minval=-0.2, maxval=0.2)
+                    )
                     if np.linalg.norm(goal) < 0.2:
                         break
                 qpos[i, -2:] = goal
@@ -189,7 +196,9 @@ class MjxVec:
                     jax.random.uniform(k2, (self.nv,), minval=-0.005, maxval=0.005)
                 )
                 qvel[i, -2:] = 0
-            return jnp.asarray(qpos, dtype=jnp.float32), jnp.asarray(qvel, dtype=jnp.float32)
+            return jnp.asarray(qpos, dtype=jnp.float32), jnp.asarray(
+                qvel, dtype=jnp.float32
+            )
         if kind == "pusher":
             qpos = np.zeros((n, self.nq))
             qvel = np.zeros((n, self.nv))
@@ -199,10 +208,16 @@ class MjxVec:
                 goal = np.zeros(2)
                 while True:
                     rng, kg1, kg2 = jax.random.split(rng, 3)
-                    cyl = np.concatenate([
-                        np.asarray(jax.random.uniform(kg1, (1,), minval=-0.3, maxval=0)),
-                        np.asarray(jax.random.uniform(kg2, (1,), minval=-0.2, maxval=0.2)),
-                    ])
+                    cyl = np.concatenate(
+                        [
+                            np.asarray(
+                                jax.random.uniform(kg1, (1,), minval=-0.3, maxval=0)
+                            ),
+                            np.asarray(
+                                jax.random.uniform(kg2, (1,), minval=-0.2, maxval=0.2)
+                            ),
+                        ]
+                    )
                     if np.linalg.norm(cyl - goal) > 0.17:
                         break
                 qpos[i, -4:-2] = cyl
@@ -211,7 +226,9 @@ class MjxVec:
                     jax.random.uniform(k2, (self.nv,), minval=-0.005, maxval=0.005)
                 )
                 qvel[i, -4:] = 0
-            return jnp.asarray(qpos, dtype=jnp.float32), jnp.asarray(qvel, dtype=jnp.float32)
+            return jnp.asarray(qpos, dtype=jnp.float32), jnp.asarray(
+                qvel, dtype=jnp.float32
+            )
         raise ValueError(f"reset_kind={kind!r} unknown")
 
     # ------------------------------------------------------------------
@@ -232,7 +249,7 @@ class MjxVec:
     def _obs_jax(self, dx):
         kind = self.spec["obs_kind"]
         if kind == "qpos_qvel":
-            qpos = dx.qpos[:, self.spec["obs_drop"]:]
+            qpos = dx.qpos[:, self.spec["obs_drop"] :]
             qvel = dx.qvel
             if self.spec["qvel_clip"] is not None:
                 qvel = jnp.clip(qvel, -self.spec["qvel_clip"], self.spec["qvel_clip"])
@@ -240,29 +257,46 @@ class MjxVec:
         if kind == "full":
             return jnp.concatenate([dx.qpos, dx.qvel], axis=1)
         if kind == "ant":
-            qpos = dx.qpos[:, self.spec["obs_drop"]:]
+            qpos = dx.qpos[:, self.spec["obs_drop"] :]
             lo, hi = self.spec["contact_force_range"]
             cfrc = jnp.clip(dx.cfrc_ext, lo, hi)[:, 1:].reshape(dx.qpos.shape[0], -1)
             return jnp.concatenate([qpos, dx.qvel, cfrc], axis=1)
         if kind == "reacher":
             theta = dx.qpos[:, :2]
             extra = self._extras_jax(dx)
-            return jnp.concatenate([
-                jnp.cos(theta), jnp.sin(theta), dx.qpos[:, 2:], dx.qvel[:, :2],
-                (extra["fingertip"] - extra["target"])[:, :2],
-            ], axis=1)
+            return jnp.concatenate(
+                [
+                    jnp.cos(theta),
+                    jnp.sin(theta),
+                    dx.qpos[:, 2:],
+                    dx.qvel[:, :2],
+                    (extra["fingertip"] - extra["target"])[:, :2],
+                ],
+                axis=1,
+            )
         if kind == "double_pendulum":
-            return jnp.concatenate([
-                dx.qpos[:, :1], jnp.sin(dx.qpos[:, 1:]), jnp.cos(dx.qpos[:, 1:]),
-                jnp.clip(dx.qvel, -10, 10),
-                jnp.clip(dx.qfrc_constraint, -10, 10)[:, :1],
-            ], axis=1)
+            return jnp.concatenate(
+                [
+                    dx.qpos[:, :1],
+                    jnp.sin(dx.qpos[:, 1:]),
+                    jnp.cos(dx.qpos[:, 1:]),
+                    jnp.clip(dx.qvel, -10, 10),
+                    jnp.clip(dx.qfrc_constraint, -10, 10)[:, :1],
+                ],
+                axis=1,
+            )
         if kind == "pusher":
             extra = self._extras_jax(dx)
-            return jnp.concatenate([
-                dx.qpos[:, :7], dx.qvel[:, :7],
-                extra["tips_arm"], extra["object"], extra["goal"],
-            ], axis=1)
+            return jnp.concatenate(
+                [
+                    dx.qpos[:, :7],
+                    dx.qvel[:, :7],
+                    extra["tips_arm"],
+                    extra["object"],
+                    extra["goal"],
+                ],
+                axis=1,
+            )
         raise ValueError(f"obs_kind={kind!r} unknown")
 
     def _healthy_jax(self, dx, obs):
@@ -271,8 +305,14 @@ class MjxVec:
             return jnp.ones((dx.qpos.shape[0],), dtype=bool)
         if kind == "healthy":
             z, angle = dx.qpos[:, 1], dx.qpos[:, 2]
-            ok = (self.spec["healthy_z_range"][0] < z) & (z < self.spec["healthy_z_range"][1])
-            ok = ok & (self.spec["healthy_angle_range"][0] < angle) & (angle < self.spec["healthy_angle_range"][1])
+            ok = (self.spec["healthy_z_range"][0] < z) & (
+                z < self.spec["healthy_z_range"][1]
+            )
+            ok = (
+                ok
+                & (self.spec["healthy_angle_range"][0] < angle)
+                & (angle < self.spec["healthy_angle_range"][1])
+            )
             if self.spec.get("healthy_state_range") is not None:
                 s_lo, s_hi = self.spec["healthy_state_range"]
                 state = jnp.concatenate([dx.qpos, dx.qvel], axis=1)[:, 2:]
@@ -281,7 +321,11 @@ class MjxVec:
         if kind == "ant":
             state = jnp.concatenate([dx.qpos, dx.qvel], axis=1)
             z_lo, z_hi = self.spec["healthy_z_range"]
-            return jnp.isfinite(state).all(axis=1) & (z_lo <= state[:, 2]) & (state[:, 2] <= z_hi)
+            return (
+                jnp.isfinite(state).all(axis=1)
+                & (z_lo <= state[:, 2])
+                & (state[:, 2] <= z_hi)
+            )
         if kind == "pole":
             return jnp.isfinite(obs).all(axis=1) & (jnp.abs(obs[:, 1]) <= 0.2)
         if kind == "site_y":
@@ -306,7 +350,9 @@ class MjxVec:
             if self.spec["contact_weight"]:
                 lo, hi = self.spec["contact_force_range"]
                 cfrc = jnp.clip(dx.cfrc_ext, lo, hi)
-                contact = self.spec["contact_weight"] * jnp.sum(jnp.square(cfrc), axis=(1, 2))
+                contact = self.spec["contact_weight"] * jnp.sum(
+                    jnp.square(cfrc), axis=(1, 2)
+                )
             else:
                 contact = jnp.zeros_like(fwd)
             return (fwd + survive - ctrl_cost - contact).astype(jnp.float32)
@@ -317,17 +363,29 @@ class MjxVec:
             site = dx.site_xpos[:, self.spec.get("site_index", 0)]
             dist = 0.01 * jnp.square(site[:, 0]) + jnp.square(site[:, 2] - 2)
             vel = 1e-3 * jnp.square(v1) + 5e-3 * jnp.square(v2)
-            return (self.spec["healthy_reward"] * healthy.astype(jnp.float32) - dist - vel).astype(jnp.float32)
+            return (
+                self.spec["healthy_reward"] * healthy.astype(jnp.float32) - dist - vel
+            ).astype(jnp.float32)
         if rk == "reacher":
             extra = self._extras_jax(dx)
             vec = extra["fingertip"] - extra["target"]
-            return (-jnp.linalg.norm(vec, axis=1) * self.spec["reward_dist_weight"]
-                    - jnp.sum(jnp.square(ctrl), axis=1) * self.spec["reward_control_weight"]).astype(jnp.float32)
+            return (
+                -jnp.linalg.norm(vec, axis=1) * self.spec["reward_dist_weight"]
+                - jnp.sum(jnp.square(ctrl), axis=1) * self.spec["reward_control_weight"]
+            ).astype(jnp.float32)
         if rk == "pusher":
             extra = self._extras_jax(dx)
-            near = -jnp.linalg.norm(extra["object"] - extra["tips_arm"], axis=1) * self.spec["reward_near_weight"]
-            dist = -jnp.linalg.norm(extra["object"] - extra["goal"], axis=1) * self.spec["reward_dist_weight"]
-            ctrl_cost = jnp.sum(jnp.square(ctrl), axis=1) * self.spec["reward_control_weight"]
+            near = (
+                -jnp.linalg.norm(extra["object"] - extra["tips_arm"], axis=1)
+                * self.spec["reward_near_weight"]
+            )
+            dist = (
+                -jnp.linalg.norm(extra["object"] - extra["goal"], axis=1)
+                * self.spec["reward_dist_weight"]
+            )
+            ctrl_cost = (
+                jnp.sum(jnp.square(ctrl), axis=1) * self.spec["reward_control_weight"]
+            )
             return (dist - ctrl_cost + near).astype(jnp.float32)
         raise ValueError(f"reward_kind={rk!r} unknown")
 
@@ -365,8 +423,11 @@ class MjxVec:
             fresh = self._fwd_fn(self.mx, self._template.replace(qpos=qpos, qvel=qvel))
             take = done[:, None] if fresh.qpos.ndim == 2 else done
             new_dx = jax.tree.map(
-                lambda new, old: jnp.where(take, new, old) if getattr(new, "ndim", 0) == 2 else old,
-                fresh, dx,
+                lambda new, old: (
+                    jnp.where(take, new, old) if getattr(new, "ndim", 0) == 2 else old
+                ),
+                fresh,
+                dx,
             )
             return new_dx, jnp.where(done, 0, ep_len)
 
@@ -395,7 +456,10 @@ class MjxVec:
             self._rng, sub = jax.random.split(self._rng)
             do_reset = self._make_reset_branch(sub, done)
             self._dx, self._ep_len = jax.lax.cond(
-                jnp.any(done), do_reset, lambda s: s, (self._dx, ep_next),
+                jnp.any(done),
+                do_reset,
+                lambda s: s,
+                (self._dx, ep_next),
             )
             obs = self._obs_jax(self._dx)
         else:
@@ -404,12 +468,18 @@ class MjxVec:
             if bool(jnp.any(done)):
                 self._rng, sub = jax.random.split(self._rng)
                 qpos, qvel = self._sample_state(sub, self.num_envs)
-                fresh = self._fwd_fn(self.mx, self._template.replace(qpos=qpos, qvel=qvel))
+                fresh = self._fwd_fn(
+                    self.mx, self._template.replace(qpos=qpos, qvel=qvel)
+                )
                 take = done[:, None] if fresh.qpos.ndim == 2 else done
                 self._dx = jax.tree.map(
-                    lambda new, old: jnp.where(take, new, old)
-                    if getattr(new, "ndim", 0) == 2 else old,
-                    fresh, self._dx,
+                    lambda new, old: (
+                        jnp.where(take, new, old)
+                        if getattr(new, "ndim", 0) == 2
+                        else old
+                    ),
+                    fresh,
+                    self._dx,
                 )
                 self._ep_len = jnp.where(done, 0, self._ep_len)
                 obs = self._obs_jax(self._dx)
@@ -420,6 +490,7 @@ class MjxVec:
 # ---------------------------------------------------------------------------
 # Rollout -> loss-ready batch
 # ---------------------------------------------------------------------------
+
 
 def generate_batch(
     policy,
@@ -478,9 +549,13 @@ def generate_batch(
 
         key, sub = jax.random.split(key)
         proposed = jpol.predict_action_chunk(
-            policy, states, sub, action_horizon=action_horizon,
+            policy,
+            states,
+            sub,
+            action_horizon=action_horizon,
             top_p_spectral_tokens=top_p_spectral_tokens,
-            num_euler_steps=num_euler_steps, noise=True,
+            num_euler_steps=num_euler_steps,
+            noise=True,
         )
         executed = jnp.clip(proposed, device_low, device_high)
         scaled = 2.0 * (executed - device_low) / scale - 1.0  # [n_need, H, act]
@@ -493,14 +568,15 @@ def generate_batch(
 
         for _ in range(action_horizon):
             active_k = [
-                k for k in range(n_need)
+                k
+                for k in range(n_need)
                 if live[k] and executed_total[need[k]] + pos[k] < target
             ]
             if not active_k:
                 break
 
             active_arr = jnp.asarray(active_k, dtype=jnp.int32)
-            active_envs = need_arr[active_arr]                   # [n_active]
+            active_envs = need_arr[active_arr]  # [n_active]
             active_pos = jnp.asarray([pos[k] for k in active_k], dtype=jnp.int32)
 
             # Single scatter for all active envs.
@@ -526,17 +602,13 @@ def generate_batch(
                     live[k] = False
 
             # Vectorized window update for all active envs.
-            aw = windows[active_envs]                            # [n_act, T, D]
-            rolled = jnp.concatenate(
-                [aw[:, 1:], obs[active_envs][:, None, :]], axis=1
-            )
+            aw = windows[active_envs]  # [n_act, T, D]
+            rolled = jnp.concatenate([aw[:, 1:], obs[active_envs][:, None, :]], axis=1)
             fresh = jnp.broadcast_to(
                 obs[active_envs][:, None, :],
                 (len(active_k), n_obs_steps, obs.shape[-1]),
             )
-            done_list = [
-                bool(term_np[need[k]] or trunc_np[need[k]]) for k in active_k
-            ]
+            done_list = [bool(term_np[need[k]] or trunc_np[need[k]]) for k in active_k]
             done_mask = jnp.asarray(done_list)[:, None, None]
             windows = windows.at[active_envs].set(jnp.where(done_mask, fresh, rolled))
 
@@ -587,8 +659,15 @@ def generate_batch(
     next_values = jnp.where(terminated_b, 0.0, v_next_all)
 
     advantages, returns = compute_advantages(
-        all_rew, values, next_values, lengths, terminated_b,
-        gamma=gamma, lam=gae_lambda, normalize=True, truncated=truncated_b,
+        all_rew,
+        values,
+        next_values,
+        lengths,
+        terminated_b,
+        gamma=gamma,
+        lam=gae_lambda,
+        normalize=True,
+        truncated=truncated_b,
     )
 
     key, k1, k2 = jax.random.split(key, 3)

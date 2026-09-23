@@ -150,7 +150,11 @@ def test_compiled_policy_saves_eager_keys_and_loads_cross_mode(tmp_path):
 
     loaded, _, _ = load_policy_checkpoint(d)
     assert not hasattr(loaded.actor, "_orig_mod")  # from_pretrained builds eager
-    orig_state = policy.actor._orig_mod.state_dict() if is_compiled else policy.actor.state_dict()
+    orig_state = (
+        policy.actor._orig_mod.state_dict()
+        if is_compiled
+        else policy.actor.state_dict()
+    )
     for (kn, vn), (kl, vl) in zip(
         sorted(orig_state.items()),
         sorted(loaded.actor.state_dict().items()),

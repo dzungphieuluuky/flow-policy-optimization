@@ -11,8 +11,16 @@ from __future__ import annotations
 import numpy as np
 
 __all__ = [
-    "ENV_SPECS", "MJX_UNSUPPORTED", "get_spec", "zero_extras", "obs_dim",
-    "obs", "is_healthy", "reward", "terminated", "reset_state",
+    "ENV_SPECS",
+    "MJX_UNSUPPORTED",
+    "get_spec",
+    "zero_extras",
+    "obs_dim",
+    "obs",
+    "is_healthy",
+    "reward",
+    "terminated",
+    "reset_state",
 ]
 
 
@@ -32,86 +40,134 @@ MJX_UNSUPPORTED = {
 
 ENV_SPECS: dict[str, dict] = {
     "HalfCheetah-v5": {
-        "xml": "half_cheetah.xml", "frame_skip": 5,
-        "obs_kind": "qpos_qvel", "obs_drop": 1, "qvel_clip": None,
-        "reward_kind": "locomotion", "forward_weight": 1.0, "ctrl_weight": 0.1,
-        "healthy_reward": 0.0, "contact_weight": 0.0,
-        "done_kind": "never", "terminate_when_unhealthy": False,
-        "reset_kind": "uniform_normal", "reset_noise_scale": 0.1,
+        "xml": "half_cheetah.xml",
+        "frame_skip": 5,
+        "obs_kind": "qpos_qvel",
+        "obs_drop": 1,
+        "qvel_clip": None,
+        "reward_kind": "locomotion",
+        "forward_weight": 1.0,
+        "ctrl_weight": 0.1,
+        "healthy_reward": 0.0,
+        "contact_weight": 0.0,
+        "done_kind": "never",
+        "terminate_when_unhealthy": False,
+        "reset_kind": "uniform_normal",
+        "reset_noise_scale": 0.1,
         "forward_source": "qpos_x",
         "max_episode_steps": 1000,
     },
     "Hopper-v5": {
-        "xml": "hopper.xml", "frame_skip": 4,
-        "obs_kind": "qpos_qvel", "obs_drop": 1, "qvel_clip": 10.0,
-        "reward_kind": "locomotion", "forward_weight": 1.0, "ctrl_weight": 1e-3,
-        "healthy_reward": 1.0, "contact_weight": 0.0,
-        "done_kind": "healthy", "terminate_when_unhealthy": True,
+        "xml": "hopper.xml",
+        "frame_skip": 4,
+        "obs_kind": "qpos_qvel",
+        "obs_drop": 1,
+        "qvel_clip": 10.0,
+        "reward_kind": "locomotion",
+        "forward_weight": 1.0,
+        "ctrl_weight": 1e-3,
+        "healthy_reward": 1.0,
+        "contact_weight": 0.0,
+        "done_kind": "healthy",
+        "terminate_when_unhealthy": True,
         "healthy_z_range": (0.7, float("inf")),
         "healthy_angle_range": (-0.2, 0.2),
         "healthy_state_range": (-100.0, 100.0),
-        "reset_kind": "uniform_uniform", "reset_noise_scale": 5e-3,
+        "reset_kind": "uniform_uniform",
+        "reset_noise_scale": 5e-3,
         "forward_source": "qpos_x",
         "max_episode_steps": 1000,
     },
     "Walker2d-v5": {
-        "xml": "walker2d_v5.xml", "frame_skip": 4,
-        "obs_kind": "qpos_qvel", "obs_drop": 1, "qvel_clip": 10.0,
-        "reward_kind": "locomotion", "forward_weight": 1.0, "ctrl_weight": 1e-3,
-        "healthy_reward": 1.0, "contact_weight": 0.0,
-        "done_kind": "healthy", "terminate_when_unhealthy": True,
+        "xml": "walker2d_v5.xml",
+        "frame_skip": 4,
+        "obs_kind": "qpos_qvel",
+        "obs_drop": 1,
+        "qvel_clip": 10.0,
+        "reward_kind": "locomotion",
+        "forward_weight": 1.0,
+        "ctrl_weight": 1e-3,
+        "healthy_reward": 1.0,
+        "contact_weight": 0.0,
+        "done_kind": "healthy",
+        "terminate_when_unhealthy": True,
         "healthy_z_range": (0.8, 2.0),
         "healthy_angle_range": (-1.0, 1.0),
         "healthy_state_range": None,  # walker checks z/angle only
-        "reset_kind": "uniform_uniform", "reset_noise_scale": 5e-3,
+        "reset_kind": "uniform_uniform",
+        "reset_noise_scale": 5e-3,
         "forward_source": "qpos_x",
         "max_episode_steps": 1000,
     },
     "Swimmer-v5": {
-        "xml": "swimmer.xml", "frame_skip": 4,
-        "obs_kind": "qpos_qvel", "obs_drop": 2, "qvel_clip": None,
-        "reward_kind": "locomotion", "forward_weight": 1.0, "ctrl_weight": 1e-4,
-        "healthy_reward": 0.0, "contact_weight": 0.0,
-        "done_kind": "never", "terminate_when_unhealthy": False,
-        "reset_kind": "uniform_uniform", "reset_noise_scale": 0.1,
+        "xml": "swimmer.xml",
+        "frame_skip": 4,
+        "obs_kind": "qpos_qvel",
+        "obs_drop": 2,
+        "qvel_clip": None,
+        "reward_kind": "locomotion",
+        "forward_weight": 1.0,
+        "ctrl_weight": 1e-4,
+        "healthy_reward": 0.0,
+        "contact_weight": 0.0,
+        "done_kind": "never",
+        "terminate_when_unhealthy": False,
+        "reset_kind": "uniform_uniform",
+        "reset_noise_scale": 0.1,
         "forward_source": "qpos_x",
         "max_episode_steps": 1000,
     },
     "Ant-v5": {
-        "xml": "ant.xml", "frame_skip": 5,
-        "obs_kind": "ant", "obs_drop": 2, "qvel_clip": None,
+        "xml": "ant.xml",
+        "frame_skip": 5,
+        "obs_kind": "ant",
+        "obs_drop": 2,
+        "qvel_clip": None,
         "contact_force_range": (-1.0, 1.0),
-        "reward_kind": "locomotion", "forward_weight": 1.0, "ctrl_weight": 0.5,
-        "healthy_reward": 1.0, "contact_weight": 5e-4,
-        "done_kind": "ant", "terminate_when_unhealthy": True,
+        "reward_kind": "locomotion",
+        "forward_weight": 1.0,
+        "ctrl_weight": 0.5,
+        "healthy_reward": 1.0,
+        "contact_weight": 5e-4,
+        "done_kind": "ant",
+        "terminate_when_unhealthy": True,
         "healthy_z_range": (0.2, 1.0),
-        "reset_kind": "uniform_normal", "reset_noise_scale": 0.1,
+        "reset_kind": "uniform_normal",
+        "reset_noise_scale": 0.1,
         "main_body": "torso",
         "forward_source": "body_x",
         "max_episode_steps": 1000,
     },
     "InvertedPendulum-v5": {
-        "xml": "inverted_pendulum.xml", "frame_skip": 2,
+        "xml": "inverted_pendulum.xml",
+        "frame_skip": 2,
         "obs_kind": "full",
         "reward_kind": "survive",
         "done_kind": "pole",
-        "reset_kind": "uniform_uniform", "reset_noise_scale": 0.01,
+        "reset_kind": "uniform_uniform",
+        "reset_noise_scale": 0.01,
         "forward_source": "none",
         "max_episode_steps": 1000,
     },
     "InvertedDoublePendulum-v5": {
-        "xml": "inverted_double_pendulum.xml", "frame_skip": 5,
+        "xml": "inverted_double_pendulum.xml",
+        "frame_skip": 5,
         "obs_kind": "double_pendulum",
-        "reward_kind": "double_pendulum", "healthy_reward": 10.0,
+        "reward_kind": "double_pendulum",
+        "healthy_reward": 10.0,
         "done_kind": "site_y",
-        "reset_kind": "uniform_normal", "reset_noise_scale": 0.1,
-        "forward_source": "none", "site_index": 0,
+        "reset_kind": "uniform_normal",
+        "reset_noise_scale": 0.1,
+        "forward_source": "none",
+        "site_index": 0,
         "max_episode_steps": 1000,
     },
     "Reacher-v5": {
-        "xml": "reacher.xml", "frame_skip": 2,
+        "xml": "reacher.xml",
+        "frame_skip": 2,
         "obs_kind": "reacher",
-        "reward_kind": "reacher", "reward_dist_weight": 1.0,
+        "reward_kind": "reacher",
+        "reward_dist_weight": 1.0,
         "reward_control_weight": 1.0,
         "done_kind": "never",
         "reset_kind": "reacher",
@@ -120,10 +176,13 @@ ENV_SPECS: dict[str, dict] = {
         "max_episode_steps": 1000,
     },
     "Pusher-v5": {
-        "xml": "pusher.xml", "frame_skip": 5,
+        "xml": "pusher.xml",
+        "frame_skip": 5,
         "obs_kind": "pusher",
-        "reward_kind": "pusher", "reward_near_weight": 0.5,
-        "reward_dist_weight": 1.0, "reward_control_weight": 0.1,
+        "reward_kind": "pusher",
+        "reward_near_weight": 0.5,
+        "reward_dist_weight": 1.0,
+        "reward_control_weight": 0.1,
         "done_kind": "never",
         "reset_kind": "pusher",
         "forward_source": "none",
@@ -161,48 +220,67 @@ def get_spec(env_name: str) -> dict:
     raise KeyError(f"MJX rollout supports {sorted(ENV_SPECS)}, got {env_name!r}")
 
 
-def obs(spec: dict, qpos: np.ndarray, qvel: np.ndarray,
-        extra: dict | None = None) -> np.ndarray:
+def obs(
+    spec: dict, qpos: np.ndarray, qvel: np.ndarray, extra: dict | None = None
+) -> np.ndarray:
     """Observation; ``extra`` carries cfrc_ext/site/body frames for exotics."""
     extra = extra or {}
     kind = spec["obs_kind"]
     qpos = np.asarray(qpos, dtype=np.float32).ravel()
     qvel = np.asarray(qvel, dtype=np.float32).ravel()
     if kind == "qpos_qvel":
-        position = qpos[spec["obs_drop"]:]
+        position = qpos[spec["obs_drop"] :]
         if spec["qvel_clip"] is not None:
             qvel = np.clip(qvel, -spec["qvel_clip"], spec["qvel_clip"])
         return np.concatenate([position, qvel])
     if kind == "full":
         return np.concatenate([qpos, qvel])
     if kind == "ant":
-        position = qpos[spec["obs_drop"]:]
+        position = qpos[spec["obs_drop"] :]
         lo, hi = spec["contact_force_range"]
         cfrc = np.clip(np.asarray(extra["cfrc_ext"], dtype=np.float32), lo, hi)
         return np.concatenate([position, qvel, cfrc[1:].flatten()])
     if kind == "reacher":
         theta = qpos[:2]
-        return np.concatenate([
-            np.cos(theta), np.sin(theta), qpos[2:], qvel[:2],
-            (np.asarray(extra["fingertip"]) - np.asarray(extra["target"]))[:2],
-        ])
+        return np.concatenate(
+            [
+                np.cos(theta),
+                np.sin(theta),
+                qpos[2:],
+                qvel[:2],
+                (np.asarray(extra["fingertip"]) - np.asarray(extra["target"]))[:2],
+            ]
+        )
     if kind == "double_pendulum":
-        return np.concatenate([
-            qpos[:1], np.sin(qpos[1:]), np.cos(qpos[1:]),
-            np.clip(qvel, -10, 10),
-            np.clip(np.asarray(extra["qfrc_constraint"]), -10, 10)[:1],
-        ]).ravel()
+        return np.concatenate(
+            [
+                qpos[:1],
+                np.sin(qpos[1:]),
+                np.cos(qpos[1:]),
+                np.clip(qvel, -10, 10),
+                np.clip(np.asarray(extra["qfrc_constraint"]), -10, 10)[:1],
+            ]
+        ).ravel()
     if kind == "pusher":
-        return np.concatenate([
-            qpos[:7], qvel[:7],
-            np.asarray(extra["tips_arm"]), np.asarray(extra["object"]),
-            np.asarray(extra["goal"]),
-        ])
+        return np.concatenate(
+            [
+                qpos[:7],
+                qvel[:7],
+                np.asarray(extra["tips_arm"]),
+                np.asarray(extra["object"]),
+                np.asarray(extra["goal"]),
+            ]
+        )
     raise ValueError(f"obs_kind={kind!r} unknown")
 
 
-def is_healthy(spec: dict, qpos: np.ndarray, qvel: np.ndarray,
-               obs: np.ndarray | None = None, site_y: float | None = None) -> bool:
+def is_healthy(
+    spec: dict,
+    qpos: np.ndarray,
+    qvel: np.ndarray,
+    obs: np.ndarray | None = None,
+    site_y: float | None = None,
+) -> bool:
     """Post-step health ( locomotion z/angle/state, ant z, pole, site_y)."""
     kind = spec["done_kind"]
     if kind == "never":
@@ -236,8 +314,15 @@ def is_healthy(spec: dict, qpos: np.ndarray, qvel: np.ndarray,
     raise ValueError(f"done_kind={kind!r} unknown")
 
 
-def reward(spec: dict, x_before: float, x_after: float, dt: float,
-           action: np.ndarray, healthy: bool, extra: dict | None = None) -> float:
+def reward(
+    spec: dict,
+    x_before: float,
+    x_after: float,
+    dt: float,
+    action: np.ndarray,
+    healthy: bool,
+    extra: dict | None = None,
+) -> float:
     """Step reward (healthy/dist terms read POST-step state, like gymnasium)."""
     extra = extra or {}
     kind = spec["reward_kind"]
@@ -274,8 +359,12 @@ def reward(spec: dict, x_before: float, x_after: float, dt: float,
     raise ValueError(f"reward_kind={kind!r} unknown")
 
 
-def terminated(spec: dict, healthy: bool, obs: np.ndarray | None = None,
-               site_y: float | None = None) -> bool:
+def terminated(
+    spec: dict,
+    healthy: bool,
+    obs: np.ndarray | None = None,
+    site_y: float | None = None,
+) -> bool:
     """Episode end (truncation is a step-count concern, handled by rollout)."""
     # Every terminating family defines healthy == True  <=>  not done.
     if spec["done_kind"] == "never":
@@ -283,8 +372,9 @@ def terminated(spec: dict, healthy: bool, obs: np.ndarray | None = None,
     return not healthy
 
 
-def reset_state(spec: dict, rng: np.random.Generator,
-                init_qpos: np.ndarray, init_qvel: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def reset_state(
+    spec: dict, rng: np.random.Generator, init_qpos: np.ndarray, init_qvel: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
     """Initial (qpos, qvel) with per-env noise and goal sampling."""
     kind = spec["reset_kind"]
     s = spec.get("reset_noise_scale", 0.0)
@@ -308,10 +398,12 @@ def reset_state(spec: dict, rng: np.random.Generator,
         qpos = np.asarray(init_qpos, dtype=np.float32)
         goal = np.zeros(2)
         while True:
-            cyl = np.concatenate([
-                rng.uniform(low=-0.3, high=0, size=1),
-                rng.uniform(low=-0.2, high=0.2, size=1),
-            ])
+            cyl = np.concatenate(
+                [
+                    rng.uniform(low=-0.3, high=0, size=1),
+                    rng.uniform(low=-0.2, high=0.2, size=1),
+                ]
+            )
             if np.linalg.norm(cyl - goal) > 0.17:
                 break
         qpos[-4:-2] = cyl

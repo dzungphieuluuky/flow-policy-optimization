@@ -28,9 +28,7 @@ def test_registry_names():
 
 
 def test_action_unnormalize_math():
-    post = SJFPOActionPostprocessorStep(
-        torch.full((2,), -3.0), torch.full((2,), 3.0)
-    )
+    post = SJFPOActionPostprocessorStep(torch.full((2,), -3.0), torch.full((2,), 3.0))
     out = post.unnormalize(torch.tensor([[-1.0, 0.0], [0.5, 1.0]]))
     assert torch.allclose(out, torch.tensor([[-3.0, 0.0], [1.5, 3.0]]))
     batch = post({"action": torch.zeros(2, 4, 2)})
@@ -69,11 +67,7 @@ def test_policy_pair_shares_live_state():
     assert post.action_low is policy.action_low  # bounds stay visible to the step
     assert policy.preprocessor.normalizer is policy.obs_normalizer
     # Custom bounds flow through predict without touching the policy.
-    policy.set_action_bounds(
-        torch.full((2,), -2.0), torch.full((2,), 2.0)
-    )
-    chunk = policy.predict_action_chunk(
-        {"observation.state": torch.randn(2, 16, 4)}
-    )
+    policy.set_action_bounds(torch.full((2,), -2.0), torch.full((2,), 2.0))
+    chunk = policy.predict_action_chunk({"observation.state": torch.randn(2, 16, 4)})
     assert chunk.shape == (2, 16, 2)
     assert (chunk <= 2.0).all() and (chunk >= -2.0).all()

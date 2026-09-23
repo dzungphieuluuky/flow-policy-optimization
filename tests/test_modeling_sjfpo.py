@@ -174,7 +174,9 @@ def test_snapshot_refresh_tracks_live_weights():
 
 def test_forward_per_bin_clip_finite_and_binds_per_group():
     policy = SJFPOPolicy(
-        make_config(use_per_bin_clip=True, epsilon_clip_lowfreq=0.02, epsilon_clip_highfreq=0.10)
+        make_config(
+            use_per_bin_clip=True, epsilon_clip_lowfreq=0.02, epsilon_clip_highfreq=0.10
+        )
     )
     policy.train()
     batch = make_batch()
@@ -193,7 +195,9 @@ def test_forward_per_bin_clip_finite_and_binds_per_group():
 def test_forward_per_bin_uniform_eps_matches_scalar_reduction_order():
     # low == high isolates the reduction-order change (mean-of-psi over bins
     # vs psi of the summed loss) from the trust-region change.
-    cfg = dict(use_per_bin_clip=True, epsilon_clip_lowfreq=0.05, epsilon_clip_highfreq=0.05)
+    cfg = dict(
+        use_per_bin_clip=True, epsilon_clip_lowfreq=0.05, epsilon_clip_highfreq=0.05
+    )
     torch.manual_seed(0)
     policy = SJFPOPolicy(make_config(**cfg))
     policy.train()

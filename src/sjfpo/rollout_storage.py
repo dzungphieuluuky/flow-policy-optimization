@@ -1,4 +1,5 @@
 """Chunk-level rollout storage (rsl-rl style)."""
+
 from __future__ import annotations
 
 import torch
@@ -37,17 +38,32 @@ class RolloutStorage:
             max_chunks, num_envs, n_obs_steps, obs_dim, device=self.device, dtype=dtype
         )
         self.actions = torch.zeros(
-            max_chunks, num_envs, action_horizon, action_dim, device=self.device, dtype=dtype
+            max_chunks,
+            num_envs,
+            action_horizon,
+            action_dim,
+            device=self.device,
+            dtype=dtype,
         )
         self.rewards = torch.zeros(
             max_chunks, num_envs, action_horizon, device=self.device, dtype=dtype
         )
-        self.lengths = torch.zeros(max_chunks, num_envs, device=self.device, dtype=torch.long)
-        self.dones = torch.zeros(max_chunks, num_envs, device=self.device, dtype=torch.bool)
-        self.truncated = torch.zeros(max_chunks, num_envs, device=self.device, dtype=torch.bool)
+        self.lengths = torch.zeros(
+            max_chunks, num_envs, device=self.device, dtype=torch.long
+        )
+        self.dones = torch.zeros(
+            max_chunks, num_envs, device=self.device, dtype=torch.bool
+        )
+        self.truncated = torch.zeros(
+            max_chunks, num_envs, device=self.device, dtype=torch.bool
+        )
         self.values = torch.zeros(max_chunks, num_envs, device=self.device, dtype=dtype)
-        self.returns = torch.zeros(max_chunks, num_envs, device=self.device, dtype=dtype)
-        self.advantages = torch.zeros(max_chunks, num_envs, device=self.device, dtype=dtype)
+        self.returns = torch.zeros(
+            max_chunks, num_envs, device=self.device, dtype=dtype
+        )
+        self.advantages = torch.zeros(
+            max_chunks, num_envs, device=self.device, dtype=dtype
+        )
         self.cursor = torch.zeros(num_envs, dtype=torch.long)
         self.count = 0
 
@@ -72,12 +88,22 @@ class RolloutStorage:
                 advantage = 0.0
                 for step in reversed(range(L)):
                     if step == L - 1:
-                        next_values = last_values[e, 0] if last_values.dim() > 1 else last_values[e]
+                        next_values = (
+                            last_values[e, 0]
+                            if last_values.dim() > 1
+                            else last_values[e]
+                        )
                     else:
                         # Approximate: use chunk value for intermediate steps
                         next_values = self.values[c, e]
-                    next_is_not_terminal = 1.0 - float(self.dones[c, e].item()) if step == L - 1 else 1.0
-                    delta = float(self.rewards[c, e, step].item()) + next_is_not_terminal * gamma * float(next_values) - float(self.values[c, e].item())
+                    next_is_not_terminal = (
+                        1.0 - float(self.dones[c, e].item()) if step == L - 1 else 1.0
+                    )
+                    delta = (
+                        float(self.rewards[c, e, step].item())
+                        + next_is_not_terminal * gamma * float(next_values)
+                        - float(self.values[c, e].item())
+                    )
                     advantage = delta + next_is_not_terminal * gamma * lam * advantage
                 # Amazon exact: write after full chunk recursion
                 self.advantages[c, e] = float(advantage)
@@ -108,13 +134,17 @@ class RolloutStorage:
         if isinstance(rewards_1d, torch.Tensor):
             r = rewards_1d.detach().to(device=self.device, dtype=self.dtype).reshape(-1)
         else:
-            r = torch.as_tensor(rewards_1d, device=self.device, dtype=self.dtype).reshape(-1)
+            r = torch.as_tensor(
+                rewards_1d, device=self.device, dtype=self.dtype
+            ).reshape(-1)
         length = int(r.numel())
         if not 1 <= length <= self.action_horizon:
             raise ValueError(f"chunk must execute 1..H steps, got {length}")
         self.states[c, env_idx].copy_(state.to(device=self.device, dtype=self.dtype))
         self.actions[c, env_idx].copy_(action.to(device=self.device, dtype=self.dtype))
-        self.next_states[c, env_idx].copy_(next_state.to(device=self.device, dtype=self.dtype))
+        self.next_states[c, env_idx].copy_(
+            next_state.to(device=self.device, dtype=self.dtype)
+        )
         self.rewards[c, env_idx].zero_()
         self.rewards[c, env_idx, :length].copy_(r)
         self.lengths[c, env_idx] = length
@@ -126,6 +156,7 @@ class RolloutStorage:
     def to_transition_list(self) -> list[dict]:
         from lerobot.processor.converters import to_tensor
         from lerobot.utils.constants import DONE, OBS_STATE, REWARD, TRUNCATED
+
         out: list[dict] = []
         for e in range(self.num_envs):
             for c in range(int(self.cursor[e].item())):
@@ -140,7 +171,9 @@ class RolloutStorage:
                         REWARD: to_tensor(
                             self.rewards[c, e, :length].detach().cpu(), dtype=self.dtype
                         ),
-                        DONE: to_tensor(bool(self.dones[c, e].item()), dtype=torch.bool),
+                        DONE: to_tensor(
+                            bool(self.dones[c, e].item()), dtype=torch.bool
+                        ),
                         TRUNCATED: to_tensor(
                             bool(self.truncated[c, e].item()), dtype=torch.bool
                         ),

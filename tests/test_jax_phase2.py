@@ -36,7 +36,9 @@ def test_window_encoder_matches():
     mask = torch.tensor([[False] * T, [True] + [False] * (T - 1)])
     np.testing.assert_allclose(
         np.asarray(jm(xj, jnp.asarray(mask.numpy()))),
-        tm(x, mask).detach().numpy(), rtol=1e-5, atol=1e-5,
+        tm(x, mask).detach().numpy(),
+        rtol=1e-5,
+        atol=1e-5,
     )
 
 
@@ -48,8 +50,10 @@ def test_running_mean_std_matches():
     jm.update(jnp.asarray(data.numpy()))
     x = torch.randn(2, T, OBS)
     np.testing.assert_allclose(
-        np.asarray(jm(jnp.asarray(x.numpy()))), tm(x).detach().numpy(),
-        rtol=1e-5, atol=1e-5,
+        np.asarray(jm(jnp.asarray(x.numpy()))),
+        tm(x).detach().numpy(),
+        rtol=1e-5,
+        atol=1e-5,
     )
     np.testing.assert_allclose(np.asarray(jm.mean[...]), tm.mean.numpy(), atol=1e-6)
     np.testing.assert_allclose(np.asarray(jm.var[...]), tm.var.numpy(), atol=1e-6)
@@ -61,8 +65,10 @@ def test_conditioner_matches():
     _load(tm, jm)
     x = torch.randn(2, T, OBS)
     np.testing.assert_allclose(
-        np.asarray(jm(jnp.asarray(x.numpy()))), tm(x).detach().numpy(),
-        rtol=1e-5, atol=1e-5,
+        np.asarray(jm(jnp.asarray(x.numpy()))),
+        tm(x).detach().numpy(),
+        rtol=1e-5,
+        atol=1e-5,
     )
 
 
@@ -73,14 +79,17 @@ def test_conditioner_nonsquare_time_vs_obs():
     _load(tm, jm)
     x = torch.randn(2, 6, 11)
     np.testing.assert_allclose(
-        np.asarray(jm(jnp.asarray(x.numpy()))), tm(x).detach().numpy(),
-        rtol=1e-5, atol=1e-5,
+        np.asarray(jm(jnp.asarray(x.numpy()))),
+        tm(x).detach().numpy(),
+        rtol=1e-5,
+        atol=1e-5,
     )
 
 
 def test_flow_model_matches():
-    kwargs = dict(hidden_dim=H, dit_depth=1, dit_heads=N_HEADS,
-                  dit_mlp_ratio=2.0, dit_time_dim=H)
+    kwargs = dict(
+        hidden_dim=H, dit_depth=1, dit_heads=N_HEADS, dit_mlp_ratio=2.0, dit_time_dim=H
+    )
     tm = torch_nets.SJFPOFlowModel(ACT, **kwargs).eval()
     jm = jax_nets.SJFPOFlowModel(ACT, **kwargs, rngs=nnx.Rngs(0))
     _load(tm, jm)
@@ -88,8 +97,9 @@ def test_flow_model_matches():
     t = torch.rand(2)
     c = torch.randn(2, H)
     out_t = tm(x, t, c).detach().numpy()
-    out_j = np.asarray(jm(jnp.asarray(x.numpy()), jnp.asarray(t.numpy()),
-                          jnp.asarray(c.numpy())))
+    out_j = np.asarray(
+        jm(jnp.asarray(x.numpy()), jnp.asarray(t.numpy()), jnp.asarray(c.numpy()))
+    )
     np.testing.assert_allclose(out_j, out_t, rtol=1e-5, atol=1e-5)
     # Zero-init: untrained velocity is ~0.
     assert abs(out_j).max() < 1e-4
@@ -101,15 +111,22 @@ def test_critic_matches():
     _load(tm, jm)
     x = torch.randn(2, T, OBS)
     np.testing.assert_allclose(
-        np.asarray(jm(jnp.asarray(x.numpy()))), tm(x).detach().numpy(),
-        rtol=1e-5, atol=1e-5,
+        np.asarray(jm(jnp.asarray(x.numpy()))),
+        tm(x).detach().numpy(),
+        rtol=1e-5,
+        atol=1e-5,
     )
 
 
 def test_zero_init_preserved():
     jm = jax_nets.SJFPOFlowModel(
-        ACT, hidden_dim=H, dit_depth=1, dit_heads=N_HEADS,
-        dit_mlp_ratio=2.0, dit_time_dim=H, rngs=nnx.Rngs(0),
+        ACT,
+        hidden_dim=H,
+        dit_depth=1,
+        dit_heads=N_HEADS,
+        dit_mlp_ratio=2.0,
+        dit_time_dim=H,
+        rngs=nnx.Rngs(0),
     )
     assert float(jnp.abs(jm.out.kernel[...]).max()) == 0.0
     assert float(jnp.abs(jm.adaLN_out.kernel[...]).max()) == 0.0

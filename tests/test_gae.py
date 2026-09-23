@@ -46,7 +46,13 @@ LAM = 0.95
 
 
 def oracle_returns(
-    per_step_rewards, values, final_value, executed_n_action_steps, terminated, gamma, lam
+    per_step_rewards,
+    values,
+    final_value,
+    executed_n_action_steps,
+    terminated,
+    gamma,
+    lam,
 ):
     """Explicitly-unrolled return computation over semi-MDP epochs."""
     n = len(values)
@@ -95,7 +101,9 @@ def random_stream(seed=7, n_chunks=40):
     terminated = [False] * n_chunks
     executed_n_action_steps[17] = 3
     terminated[17] = True  # mid-chunk DEATH: only 3 executed steps
-    executed_n_action_steps[23] = 5  # mid-chunk TimeLimit truncation, bootstrap-eligible
+    executed_n_action_steps[23] = (
+        5  # mid-chunk TimeLimit truncation, bootstrap-eligible
+    )
     terminated[39] = True  # final chunk terminates the stream
     rewards = rng.normal(0.0, 1.0, size=sum(executed_n_action_steps))
     values = rng.uniform(-1.0, 2.0, size=n_chunks)
@@ -105,7 +113,9 @@ def random_stream(seed=7, n_chunks=40):
 
 def test_bruteforce_mc_equality_random_stream():
     """Chunk-GAE output == explicitly-unrolled return computation (<1e-6)."""
-    rewards, values, final_value, executed_n_action_steps, terminated = random_stream(seed=7)
+    rewards, values, final_value, executed_n_action_steps, terminated = random_stream(
+        seed=7
+    )
 
     advantage, ret = compute_advantages(
         rewards,
@@ -290,7 +300,9 @@ def test_truncated_bootstraps_terminated_does_not():
 def test_advantages_centered_afterward():
     """Advantages are standardized (mean ~= 0, std ~= 1) by default;
     returns are unaffected by normalization."""
-    rewards, values, final_value, executed_n_action_steps, terminated = random_stream(seed=3)
+    rewards, values, final_value, executed_n_action_steps, terminated = random_stream(
+        seed=3
+    )
 
     adv_c, ret_c = compute_advantages(
         rewards,

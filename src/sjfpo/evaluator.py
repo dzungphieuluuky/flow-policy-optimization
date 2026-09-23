@@ -27,6 +27,7 @@ CSV_FIELDS = ["episode", "return", "length", "success", "jerk"]
 # CSV IO
 # ---------------------------------------------------------------------------
 
+
 def write_eval_csv(
     results: list[dict[str, Any]],
     out_dir: str | Path,
@@ -54,6 +55,7 @@ def write_eval_csv(
 # ---------------------------------------------------------------------------
 # Diagnostics
 # ---------------------------------------------------------------------------
+
 
 def action_jerk(actions: np.ndarray) -> float | None:
     """Mean squared second-difference of actions ``[T, D]``; ``None`` when T < 3.
@@ -125,6 +127,7 @@ def check_divergence(
 # Frame rendering
 # ---------------------------------------------------------------------------
 
+
 def render_episode_frames(
     env_id: str,
     policy: Callable[[np.ndarray], np.ndarray],
@@ -156,6 +159,7 @@ def render_episode_frames(
 # ---------------------------------------------------------------------------
 # Random baseline
 # ---------------------------------------------------------------------------
+
 
 def _fresh_env_from(template):
     """Best-effort reconstruction of a fresh env from an existing one."""
@@ -215,6 +219,7 @@ def compute_random_baseline(
 # ---------------------------------------------------------------------------
 # Evaluator
 # ---------------------------------------------------------------------------
+
 
 class Evaluator:
     """Deterministic evaluator for flat-observation (MuJoCo) environments."""
@@ -305,9 +310,7 @@ class Evaluator:
             if self.max_steps is not None and total_steps >= self.max_steps:
                 break
             seed = int(rng.integers(0, 2**31))
-            budget = (
-                None if self.max_steps is None else self.max_steps - total_steps
-            )
+            budget = None if self.max_steps is None else self.max_steps - total_steps
             result, taken = self.rollout_single_episode(policy, seed, ep, budget)
             results.append(result)
             total_steps += taken

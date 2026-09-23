@@ -261,7 +261,6 @@ class FrameStackWrapper(gym.ObservationWrapper):
 
 @dataclasses.dataclass
 class BaselineLoopState:
-
     t_start: float
     global_step: int = 0
     eval_count: int = 0
@@ -671,7 +670,9 @@ def ppo_train_run(
     cfg = cfg or PPOConfig()
     out_dir = Path(out_dir)
     device = str(resolve_device())
-    wrapped_env, skrl_env, obs_dim, action_dim = seed_and_wrap_env(env, seed, n_obs_steps)
+    wrapped_env, skrl_env, obs_dim, action_dim = seed_and_wrap_env(
+        env, seed, n_obs_steps
+    )
     policy = maybe_compile(PPOPolicy(obs_dim, action_dim, cfg.hidden))
     value = maybe_compile(PPOValue(obs_dim, cfg.hidden))
     memory = RandomMemory_cls(memory_size=cfg.rollouts, num_envs=1, device=device)
@@ -764,7 +765,9 @@ def sac_train_run(
     cfg = cfg or SACConfig()
     out_dir = Path(out_dir)
     device = str(resolve_device())
-    wrapped_env, skrl_env, obs_dim, action_dim = seed_and_wrap_env(env, seed, n_obs_steps)
+    wrapped_env, skrl_env, obs_dim, action_dim = seed_and_wrap_env(
+        env, seed, n_obs_steps
+    )
     policy = maybe_compile(SACPolicy(obs_dim, action_dim, cfg.hidden))
     critic_1 = maybe_compile(SACCritic(obs_dim, action_dim, cfg.hidden))
     critic_2 = maybe_compile(SACCritic(obs_dim, action_dim, cfg.hidden))

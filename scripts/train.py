@@ -23,6 +23,8 @@ Exit codes: 0 success, 1 usage error, 2 runtime/divergence abort,
 
 from __future__ import annotations
 
+import traceback  # local debugging traceback
+
 import dataclasses
 import json
 import math
@@ -34,6 +36,7 @@ from typing import Literal
 import draccus
 import torch  # noqa: E402
 import os
+
 if torch.cuda.is_available():
     torch.backends.cuda.matmul.fp32_precision = "ieee"
     torch.backends.cudnn.fp32_precision = "ieee"
@@ -41,7 +44,9 @@ if torch.cuda.is_available():
     torch.backends.cudnn.rnn.fp32_precision = "tf32"
     torch.backends.cudnn.benchmark = True
     # Set memory allocation configuration
-    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:128,expandable_segments:True"
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = (
+        "max_split_size_mb:128,expandable_segments:True"
+    )
 
 # Ensure src/ is importable
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -126,13 +131,18 @@ def apply_flat_yaml(method_cfg, yaml_dict: dict):
 
 def select_method_cfg(args: TrainConfig, yaml_dict: dict):
     """Nested draccus sub-config for the method, overlaid with flat YAML."""
-    method_cfg = {"sjfpo": args.sjfpo, "ppo": args.ppo, "sac": args.sac,
-                  "sjfpo_jax": args.sjfpo}[args.method]
+    method_cfg = {
+        "sjfpo": args.sjfpo,
+        "ppo": args.ppo,
+        "sac": args.sac,
+        "sjfpo_jax": args.sjfpo,
+    }[args.method]
     return apply_flat_yaml(method_cfg, yaml_dict)
 
 
-def default_intervals(total: int, args_val: int | None, yaml_dict: dict,
-                      key: str, cap: int) -> int:
+def default_intervals(
+    total: int, args_val: int | None, yaml_dict: dict, key: str, cap: int
+) -> int:
     """CLI > YAML > capped default (the cap keeps smoke runs sane)."""
     if args_val:
         return args_val
@@ -163,7 +173,9 @@ def resumed_cfg_overrides(cfg) -> list[str]:
     return sorted(touched)
 
 
-def resolve_run_dir(out_base: str | Path, method: str, env: str, seed: int, resume: str | None) -> Path:
+def resolve_run_dir(
+    out_base: str | Path, method: str, env: str, seed: int, resume: str | None
+) -> Path:
     """Run dir for one invocation; resumed runs get a fresh suffixed dir.
 
     ``<method>_<env>_seed<seed>`` normally, else the first free
@@ -239,8 +251,9 @@ def run_single(
                 total_steps=total_steps,
                 eval_steps=eval_steps,
                 save_steps=save_steps,
-                num_envs=(cfg.num_envs if cfg.num_envs != SJFPOConfig().num_envs
-                          else None),
+                num_envs=(
+                    cfg.num_envs if cfg.num_envs != SJFPOConfig().num_envs else None
+                ),
                 n_obs_steps=cfg.n_obs_steps,
                 action_horizon=cfg.action_horizon,
                 hidden_dim=cfg.hidden_dim,
@@ -265,7 +278,14 @@ def run_single(
                 executed_vs_predicted_ratio=cfg.executed_vs_predicted_ratio,
             )
         runners = {
-            "sjfpo": (train_sjfpo_run, {"obs_dim": obs_dim, "action_dim": action_dim, "resume_from_checkpoint": resume_from_checkpoint}),
+            "sjfpo": (
+                train_sjfpo_run,
+                {
+                    "obs_dim": obs_dim,
+                    "action_dim": action_dim,
+                    "resume_from_checkpoint": resume_from_checkpoint,
+                },
+            ),
             "ppo": (ppo_train_run, {"n_obs_steps": n_obs_steps}),
             "sac": (sac_train_run, {"n_obs_steps": n_obs_steps}),
         }
@@ -305,14 +325,19 @@ def main(argv: list[str] | None = None) -> int:
     total = args.total_steps or int(yaml_dict.get("total_steps", 2000))
     # JAX eval is 12 full episodes: sparse defaults (capped by total for smokes).
     is_jax = args.method == "sjfpo_jax"
-    eval_s = default_intervals(total, args.eval_steps, yaml_dict, "eval_steps",
-                               20000 if is_jax else 1000)
-    ckpt_i = default_intervals(total, args.save_steps, yaml_dict, "save_steps",
-                               25000 if is_jax else 1000)
+    eval_s = default_intervals(
+        total, args.eval_steps, yaml_dict, "eval_steps", 20000 if is_jax else 1000
+    )
+    ckpt_i = default_intervals(
+        total, args.save_steps, yaml_dict, "save_steps", 25000 if is_jax else 1000
+    )
     n_obs_steps = int(yaml_dict.get("n_obs_steps", 16))
     cfg = select_method_cfg(args, yaml_dict)
     if args.resume and args.method != "sjfpo":
-        print(f"ERROR: --resume is sjfpo-only, got --method {args.method!r}", file=sys.stderr)
+        print(
+            f"ERROR: --resume is sjfpo-only, got --method {args.method!r}",
+            file=sys.stderr,
+        )
         return 1
     if args.resume and not Path(args.resume).is_dir():
         print(f"ERROR: --resume dir not found: {args.resume}", file=sys.stderr)
@@ -327,7 +352,9 @@ def main(argv: list[str] | None = None) -> int:
             )
     # Same layout the old matrix used (sweep.format_run_directory_name),
     # suffixed when resuming so the source run is never overwritten.
-    run_dir = resolve_run_dir(args.out_dir, args.method, args.env, args.seed, args.resume)
+    run_dir = resolve_run_dir(
+        args.out_dir, args.method, args.env, args.seed, args.resume
+    )
     run_dir.mkdir(parents=True, exist_ok=True)
     try:
         result = run_single(
@@ -345,6 +372,7 @@ def main(argv: list[str] | None = None) -> int:
             args.resume,
         )
     except Exception as exc:
+        traceback.print_exc(file=sys.stderr)
         print(
             json.dumps(
                 {

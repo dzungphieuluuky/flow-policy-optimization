@@ -32,7 +32,9 @@ class StubVec17:
         term = self.ep >= 5
         trunc = self.ep >= 1000
         done = term | trunc
-        obs = jnp.ones((self.num_envs, self.obs_dim)) * self.ep[:, None].astype(jnp.float32)
+        obs = jnp.ones((self.num_envs, self.obs_dim)) * self.ep[:, None].astype(
+            jnp.float32
+        )
         if bool(jnp.any(done)):
             self.ep = jnp.where(done, 0, self.ep)
             obs = jnp.zeros((self.num_envs, self.obs_dim))
@@ -45,13 +47,29 @@ def _tiny_run(out_dir, **overrides):
     os.environ["SJFPO_DISABLE_WANDB"] = "1"
     eval_env = gym.make("HalfCheetah-v5")
     kwargs = dict(
-        env_name="HalfCheetah-v5", eval_env=eval_env,
-        out_dir=out_dir, seed=0, total_steps=16,
-        eval_steps=16, save_steps=16, num_envs=1, n_obs_steps=4,
-        action_horizon=8, hidden_dim=8, dit_depth=1, dit_heads=2,
-        dit_mlp_ratio=2.0, dit_time_dim=8, num_epochs=1, num_minibatches=1,
-        chunks_per_update=2, num_mc_samples=2, num_euler_steps=2,
-        num_inference_steps=2, eval_episodes=1, vec_factory=StubVec17,
+        env_name="HalfCheetah-v5",
+        eval_env=eval_env,
+        out_dir=out_dir,
+        seed=0,
+        total_steps=16,
+        eval_steps=16,
+        save_steps=16,
+        num_envs=1,
+        n_obs_steps=4,
+        action_horizon=8,
+        hidden_dim=8,
+        dit_depth=1,
+        dit_heads=2,
+        dit_mlp_ratio=2.0,
+        dit_time_dim=8,
+        num_epochs=1,
+        num_minibatches=1,
+        chunks_per_update=2,
+        num_mc_samples=2,
+        num_euler_steps=2,
+        num_inference_steps=2,
+        eval_episodes=1,
+        vec_factory=StubVec17,
     )
     kwargs.update(overrides)
     try:
@@ -99,13 +117,29 @@ def test_none_num_envs_means_jax_default(tmp_path):
     eval_env = gym.make("HalfCheetah-v5")
     try:
         train_jax_run(
-            env_name="HalfCheetah-v5", eval_env=eval_env,
-            out_dir=tmp_path / "run", seed=0, total_steps=8,
-            eval_steps=8, save_steps=8, num_envs=None, n_obs_steps=4,
-            action_horizon=8, hidden_dim=8, dit_depth=1, dit_heads=2,
-            dit_mlp_ratio=2.0, dit_time_dim=8, num_epochs=1, num_minibatches=1,
-            chunks_per_update=1, num_mc_samples=2, num_euler_steps=2,
-            num_inference_steps=2, eval_episodes=1, vec_factory=RecordingVec,
+            env_name="HalfCheetah-v5",
+            eval_env=eval_env,
+            out_dir=tmp_path / "run",
+            seed=0,
+            total_steps=8,
+            eval_steps=8,
+            save_steps=8,
+            num_envs=None,
+            n_obs_steps=4,
+            action_horizon=8,
+            hidden_dim=8,
+            dit_depth=1,
+            dit_heads=2,
+            dit_mlp_ratio=2.0,
+            dit_time_dim=8,
+            num_epochs=1,
+            num_minibatches=1,
+            chunks_per_update=1,
+            num_mc_samples=2,
+            num_euler_steps=2,
+            num_inference_steps=2,
+            eval_episodes=1,
+            vec_factory=RecordingVec,
         )
     finally:
         eval_env.close()
@@ -119,13 +153,29 @@ def test_train_jax_run_smoke(tmp_path):
     eval_env = gym.make("HalfCheetah-v5")
     try:
         result = train_jax_run(
-            env_name="HalfCheetah-v5", eval_env=eval_env,
-            out_dir=tmp_path / "run", seed=0, total_steps=64,
-            eval_steps=64, save_steps=64, num_envs=1, n_obs_steps=4,
-            action_horizon=8, hidden_dim=8, dit_depth=1, dit_heads=2,
-            dit_mlp_ratio=2.0, dit_time_dim=8, num_epochs=1, num_minibatches=2,
-            chunks_per_update=4, num_mc_samples=2, num_euler_steps=2,
-            num_inference_steps=2, eval_episodes=1, vec_factory=StubVec17,
+            env_name="HalfCheetah-v5",
+            eval_env=eval_env,
+            out_dir=tmp_path / "run",
+            seed=0,
+            total_steps=64,
+            eval_steps=64,
+            save_steps=64,
+            num_envs=1,
+            n_obs_steps=4,
+            action_horizon=8,
+            hidden_dim=8,
+            dit_depth=1,
+            dit_heads=2,
+            dit_mlp_ratio=2.0,
+            dit_time_dim=8,
+            num_epochs=1,
+            num_minibatches=2,
+            chunks_per_update=4,
+            num_mc_samples=2,
+            num_euler_steps=2,
+            num_inference_steps=2,
+            eval_episodes=1,
+            vec_factory=StubVec17,
         )
     finally:
         eval_env.close()

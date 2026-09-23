@@ -144,7 +144,6 @@ def load_eval_histories(run_dir: Path, *, eval_steps: int) -> list[dict[str, Any
 
 @dataclass(frozen=True)
 class AnalysisReport:
-
     per_env_curves: dict[str, Path]
     aggregate_png: Path
     summary_csv: Path

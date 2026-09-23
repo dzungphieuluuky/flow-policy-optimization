@@ -92,7 +92,9 @@ class SJFPOPolicyAdapter:
         with torch.no_grad():
             condition = self.conditioner(state)  # [1, D] fused outside the head
             # Policy model (zero noise via eps=zeros for deterministic eval)
-            top_k_spectral_action_tokens = max(1, round(self.cfg.top_p_spectral_tokens * self.cfg.action_horizon))
+            top_k_spectral_action_tokens = max(
+                1, round(self.cfg.top_p_spectral_tokens * self.cfg.action_horizon)
+            )
             chunk = sample_action(
                 lambda x, t, c: self.policy_head(x, t, c),
                 (1, top_k_spectral_action_tokens, self.action_dim),

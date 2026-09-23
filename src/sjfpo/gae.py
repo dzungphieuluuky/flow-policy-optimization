@@ -77,19 +77,18 @@ def compute_advantages_torch(
 
     # γ^pos = exp(pos · log γ); log γ is a Python float (compile-time).
     import math
+
     log_gamma = math.log(gamma)
     r_chunk = torch.zeros(n, device=device, dtype=dtype)
-    r_chunk.index_add_(
-        0, chunk_ids, rewards * torch.exp(pos * log_gamma)
-    )
+    r_chunk.index_add_(0, chunk_ids, rewards * torch.exp(pos * log_gamma))
 
     # --- Precompute per-chunk continuation factors ---
     len_f = lengths.to(dtype)
-    gamma_len = torch.exp(len_f * log_gamma)                     # γ^{L_k}
+    gamma_len = torch.exp(len_f * log_gamma)  # γ^{L_k}
     gamma_lam_log = math.log(gamma * lam)
-    gamma_lam_len = torch.exp(len_f * gamma_lam_log)             # (γλ)^{L_k}
+    gamma_lam_len = torch.exp(len_f * gamma_lam_log)  # (γλ)^{L_k}
 
-    done = terminated | truncated                                # [N]
+    done = terminated | truncated  # [N]
 
     # --- Backward recursion over chunks (still a Python loop, but no syncs) ---
     # lengths / done / gamma_len / gamma_lam_len are all on-device tensors;
@@ -109,8 +108,11 @@ def compute_advantages_torch(
         delta = (
             r_rev[k]
             - v_rev[k]
-            + torch.where(done_rev[k], torch.zeros((), device=device, dtype=dtype),
-                          gl_rev[k] * nv_rev[k])
+            + torch.where(
+                done_rev[k],
+                torch.zeros((), device=device, dtype=dtype),
+                gl_rev[k] * nv_rev[k],
+            )
         )
         continuation = torch.where(
             done_rev[k], torch.zeros((), device=device, dtype=dtype), gll_rev[k]
@@ -121,7 +123,9 @@ def compute_advantages_torch(
     returns = advantages + values
 
     if normalize:
-        advantages = (advantages - advantages.mean()) / (advantages.std(unbiased=False) + 1e-8)
+        advantages = (advantages - advantages.mean()) / (
+            advantages.std(unbiased=False) + 1e-8
+        )
         if clamp is not None:
             advantages = advantages.clamp(-clamp, clamp)
 

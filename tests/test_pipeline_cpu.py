@@ -85,7 +85,9 @@ def test_sjfpo_train_run_writes_5col_csv(tmp_path):
     with open(csv_path, newline="") as f:
         reader = csv.reader(f)
         header = next(reader)
-        assert header == ["episode", "return", "length", "success", "jerk"], f"header mismatch: {header}"
+        assert header == ["episode", "return", "length", "success", "jerk"], (
+            f"header mismatch: {header}"
+        )
         rows = list(reader)
         assert len(rows) >= 1
         for r in rows:

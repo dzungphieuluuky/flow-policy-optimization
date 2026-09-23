@@ -30,6 +30,7 @@ def _defaults() -> SJFPOConfig:
 # Sampling
 # ---------------------------------------------------------------------------
 
+
 def sample_timesteps(
     num_samples: int,
     tau_range=None,
@@ -46,11 +47,11 @@ def sample_timesteps(
     (lerobot openpi Beta(alpha, beta) scaled to [lo, hi]).
     """
     cfg = _defaults()
-    lo, hi = (
-        (cfg.min_timestep, cfg.max_timestep) if tau_range is None else tau_range
-    )
+    lo, hi = (cfg.min_timestep, cfg.max_timestep) if tau_range is None else tau_range
     if mode == "uniform":
-        return torch.rand(num_samples, device=device, generator=generator) * (hi - lo) + lo
+        return (
+            torch.rand(num_samples, device=device, generator=generator) * (hi - lo) + lo
+        )
     if mode == "normal":
         mid = 0.5 * (lo + hi)
         std = 0.25 * (hi - lo)
@@ -62,8 +63,12 @@ def sample_timesteps(
         from lerobot.policies.common.flow_matching import sample_time_beta
 
         return sample_time_beta(
-            num_samples, device, alpha=alpha, beta=beta,
-            scale=hi - lo, offset=lo,
+            num_samples,
+            device,
+            alpha=alpha,
+            beta=beta,
+            scale=hi - lo,
+            offset=lo,
         )
     raise ValueError(f"mode={mode!r} unknown; expected 'uniform', 'normal' or 'beta'")
 
@@ -96,9 +101,7 @@ def run_mc_simulation(
     b, num_mc = eps.shape[0], eps.shape[1]
     flow_shape = tuple(a.shape[1:])
     if tuple(eps.shape) != (b, num_mc, *flow_shape):
-        raise ValueError(
-            f"eps shape {tuple(eps.shape)} != {(b, num_mc, *flow_shape)}"
-        )
+        raise ValueError(f"eps shape {tuple(eps.shape)} != {(b, num_mc, *flow_shape)}")
 
     # Coerce tau to a device-matched tensor without a silent CPU hop.
     if isinstance(tau, torch.Tensor):
@@ -111,8 +114,7 @@ def run_mc_simulation(
     elif t.dim() == 1:
         if t.numel() != num_mc:
             raise ValueError(
-                f"tau vector must have num_mc_samples={num_mc} entries, "
-                f"got {t.numel()}"
+                f"tau vector must have num_mc_samples={num_mc} entries, got {t.numel()}"
             )
         t = t.expand(b, num_mc)
     elif tuple(t.shape) != (b, num_mc):
@@ -134,6 +136,7 @@ def run_mc_simulation(
 # ---------------------------------------------------------------------------
 # CFM loss
 # ---------------------------------------------------------------------------
+
 
 def compute_cfm_loss(
     v_hat: torch.Tensor,
@@ -175,6 +178,7 @@ def compute_cfm_loss(
 # ---------------------------------------------------------------------------
 # ASPO surrogate / policy ratio / policy loss
 # ---------------------------------------------------------------------------
+
 
 def compute_aspo_surrogate(
     rho: torch.Tensor,
@@ -244,6 +248,7 @@ def compute_policy_loss(
 # Inference
 # ---------------------------------------------------------------------------
 
+
 def sample_action(
     predict_velocity: Callable[[torch.Tensor, torch.Tensor, Any], torch.Tensor],
     shape,
@@ -267,8 +272,11 @@ def sample_action(
         device = condition.device if isinstance(condition, torch.Tensor) else None
 
     grid = torch.linspace(
-        0.0, 1.0, num_inference_steps + 1,
-        device=device, dtype=torch.float32,
+        0.0,
+        1.0,
+        num_inference_steps + 1,
+        device=device,
+        dtype=torch.float32,
     )
 
     if eps is None:
@@ -279,7 +287,7 @@ def sample_action(
     x = eps
     with torch.inference_mode():
         # Precompute dt once; XLA/torch compile friendly.
-        dts = grid[1:] - grid[:-1]                 # [steps]
+        dts = grid[1:] - grid[:-1]  # [steps]
         for i in range(num_inference_steps):
             v_hat = predict_velocity(x, grid[i], condition)
             x = x + dts[i] * v_hat

@@ -18,6 +18,7 @@ from lerobot.processor.converters import from_tensor_to_numpy, to_tensor
 # Runtime probes (lazy, cached)
 # ---------------------------------------------------------------------------
 
+
 @lru_cache(maxsize=1)
 def cuda_available() -> bool:
     """Whether CUDA is usable. Cached — first call triggers CUDA init."""
@@ -44,6 +45,7 @@ def _colab_drive_present() -> bool:
 # ---------------------------------------------------------------------------
 # Device / dtype resolution
 # ---------------------------------------------------------------------------
+
 
 def resolve_device() -> torch.device:
     """CUDA when available, else CPU. ``SJFPO_DEVICE`` ∈ {auto, cpu, cuda}."""
@@ -102,6 +104,7 @@ def autocast_context(device=None):
 # torch.compile wrapper
 # ---------------------------------------------------------------------------
 
+
 def maybe_compile(module: torch.nn.Module) -> torch.nn.Module:
     """Compile with inductor after build, before train/infer.
 
@@ -128,6 +131,7 @@ def maybe_compile(module: torch.nn.Module) -> torch.nn.Module:
 # ---------------------------------------------------------------------------
 # Environment / path discovery
 # ---------------------------------------------------------------------------
+
 
 def detect_runtime_env() -> str:
     """``kaggle`` | ``colab`` | ``local`` (env vars win over path probes)."""
@@ -192,6 +196,7 @@ def default_smoke_dir(runtime: str | None = None) -> Path:
 # Tensor / array interop
 # ---------------------------------------------------------------------------
 
+
 def to_device_async(x: torch.Tensor, device) -> torch.Tensor:
     """Host-to-device move that overlaps with CPU work on CUDA.
 
@@ -211,9 +216,7 @@ def to_device_async(x: torch.Tensor, device) -> torch.Tensor:
 def filter_low_freq(x: torch.Tensor, k: int, dim: int = 1) -> torch.Tensor:
     """Keep only the ``k`` lowest-frequency bins along ``dim``."""
     if k < 1 or k > x.shape[dim]:
-        raise ValueError(
-            f"k={k} out of range for dim {dim} with size {x.shape[dim]}"
-        )
+        raise ValueError(f"k={k} out of range for dim {dim} with size {x.shape[dim]}")
     s = [slice(None)] * x.dim()
     s[dim] = slice(None, k)
     return x[tuple(s)]

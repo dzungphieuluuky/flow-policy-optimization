@@ -148,7 +148,11 @@ def test_a_exact_chunk_count_and_replan_every_n_steps():
     # 3 replans, no tail proposal (V(s) bootstraps from the next window).
     assert len(policy.states) == 3, "3 replans, no extra proposal"
     assert len(env.applied_actions) == 20
-    assert [int(r["executed_n_action_steps"]) for r in records] == [8, 8, 4]  # ceil budget split
+    assert [int(r["executed_n_action_steps"]) for r in records] == [
+        8,
+        8,
+        4,
+    ]  # ceil budget split
     assert all(is_continue(r) for r in records)
     assert all(r["action"].shape == (ACTION_HORIZON, ACT_DIM) for r in records)
 
