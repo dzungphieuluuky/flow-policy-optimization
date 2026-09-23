@@ -88,7 +88,7 @@ class SJFPOConfig(PreTrainedConfig):
     # -- Training loop -----------------------------------------------------
     # Random-policy environment steps collected before live optimization.
     # Stats (RunningMeanStd) are initialized after this many steps.
-    random_rollout_steps: int = 100_000
+    random_rollout_steps: int = 10_000  # default warm-up budget
 
     # -- Blackwell / GPU memory --------------------------------------------
     use_gradient_checkpointing: bool = True
