@@ -733,14 +733,14 @@ class SJFPOPolicy(PreTrainedPolicy):
             rho_bin_low_outside,
             rho_bin_high_outside,
             v_star_rms,
-            float(l_old.mean()),
-            float(l_new.mean()),
-            float(l_old_std),
-            float(l_new_std),
-            float(l_old_new_corr),
-            float(advantages.abs().mean()),
-            float(returns_d.std(correction=0)),
-            float(v_pred.std(correction=0)),
+            l_old.mean(),
+            l_new.mean(),
+            l_old_std,
+            l_new_std,
+            l_old_new_corr,
+            advantages.abs().mean(),
+            returns_d.std(correction=0),
+            v_pred.std(correction=0),
         ]
         scalars.extend(
             cond_stats[k].detach()
