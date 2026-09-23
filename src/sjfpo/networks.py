@@ -450,7 +450,12 @@ class SJFPOFlowModel(nn.Module):
             self.time_dim, scale=float(resolve_config_value("timestep_scale", None))
         )
         self.in_proj = nn.Linear(action_dim, hidden_dim)
-        self.bin_encoding = SinusoidalEncoding(hidden_dim)
+        # Learned positional embedding (replaces sinusoidal codes; avoids
+        # recomputing sin/cos per forward; parameter count: 1 * token_dim * hidden_dim ~ 2k).
+        # Since the token axis length equals action_horizon (or spectral bin count),
+        # we fix it at the standard chunk length (16) and rely on broadcasting.
+        self.token_pos = nn.Parameter(torch.zeros(1, 16, hidden_dim))
+        nn.init.normal_(self.token_pos, std=0.02)
         self.time_mlp = CondMLP(dit_time_dim, 4 * hidden_dim, hidden_dim)
         self.blocks = nn.ModuleList(
             DiTBlock(hidden_dim, dit_heads, dit_mlp_ratio) for _ in range(dit_depth)
@@ -482,7 +487,7 @@ class SJFPOFlowModel(nn.Module):
         # No explicit expand: nn.Linear and the add below both broadcast.
         c = self.time_mlp(temb) + condition.to(device=x_t.device, dtype=x_t.dtype)
 
-        h = self.bin_encoding(self.in_proj(x_t))
+        h = self.in_proj(x_t) + self.token_pos.to(x_t.device, x_t.dtype).expand(x_t.shape[0], -1, -1)
 
         if not return_stats:
             for block in self.blocks:
