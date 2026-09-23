@@ -17,9 +17,8 @@ class SJFPOConfig(PreTrainedConfig):
 
     Notes
     -----
-    * ``n_action_steps`` is derived from ``action_horizon * executed_vs_predicted_ratio``
-      at construction and stored explicitly for consumers that read it directly.
-      Set ``n_action_steps`` only when you want to override the derived value.
+    # ``n_action_steps`` must be set explicitly; ``action_horizon`` controls
+      the full predicted chunk length (training) and the executed prefix length (eval).
     * ``num_inference_steps`` is used when sampling with ``noise=False``;
       ``num_euler_steps`` is used when sampling with ``noise=True``.
     """
@@ -27,16 +26,15 @@ class SJFPOConfig(PreTrainedConfig):
     # -- Observation / action geometry -------------------------------------
     n_obs_steps: int = 16
     action_horizon: int = 16
-    # None -> derived from action_horizon * executed_vs_predicted_ratio.
-    n_action_steps: int | None = None
+    n_action_steps: int  # must be set explicitly; no derived value
     hidden_dim: int = 128
 
     # -- Monte-Carlo / rollout ---------------------------------------------
     num_mc_samples: int = 16
-    num_euler_steps: int = 16
+    num_euler_steps: int = 8
     num_inference_steps: int = 16
     chunks_per_update: int = 256
-    num_epochs: int = 16
+    num_epochs: int = 4
     num_minibatches: int = 4
     num_envs: int = 64
 
@@ -67,12 +65,11 @@ class SJFPOConfig(PreTrainedConfig):
     timestep_scale: float = 1000.0
 
     # -- Losses / optimization --------------------------------------------
-    vf_coef: float = 0.01
+    vf_coef: float = 1.0  # skrl PPO default; 0.5 was too weak for critic
     grad_clip_norm: float = 0.5  # skrl PPO default; 1.0 was too loose
 
     # -- Chunk selection ---------------------------------------------------
-    top_p_spectral_tokens: float = 1.0
-    executed_vs_predicted_ratio: float = 0.5
+    top_p_spectral_tokens: float = 0.5
 
     # -- Optimizer ---------------------------------------------------------
     policy_lr: float = 3e-4
@@ -84,7 +81,7 @@ class SJFPOConfig(PreTrainedConfig):
     # No separate warm-up phase; stats initialize naturally during first rollout.
     # -- Blackwell / GPU memory --------------------------------------------
     use_gradient_checkpointing: bool = False
-    grad_accum_steps: int = 4
+    grad_accum_steps: int = 1  # skrl PPO default; >1 reduces GPU memory at cost of speed
 
     # ----------------------------------------------------------------------
     # Validation
@@ -99,11 +96,9 @@ class SJFPOConfig(PreTrainedConfig):
         self._validate_flags()
 
     def _resolve_n_action_steps(self) -> None:
-        """If ``n_action_steps`` is None, derive it from the ratio."""
+        """If ``n_action_steps`` is None, use a safe default (half of action_horizon)."""
         if self.n_action_steps is None:
-            derived = max(
-                1, round(self.action_horizon * self.executed_vs_predicted_ratio)
-            )
+            derived = max(1, self.action_horizon // 2)
             self.n_action_steps = min(derived, self.action_horizon)
 
     def _validate_geometry(self) -> None:
@@ -202,9 +197,6 @@ class SJFPOConfig(PreTrainedConfig):
             raise ValueError(
                 f"num_inference_steps={self.num_inference_steps} must be >= 1"
             )
-        r = self.executed_vs_predicted_ratio
-        if not 0.0 < r <= 1.0:
-            raise ValueError(f"executed_vs_predicted_ratio={r} must satisfy 0 < r <= 1")
         p = self.top_p_spectral_tokens
         if not 0.0 < p <= 1.0:
             raise ValueError(f"top_p_spectral_tokens={p} must satisfy 0 < p <= 1")

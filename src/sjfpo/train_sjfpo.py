@@ -86,7 +86,7 @@ def build_policy(
         },
         output_features={"action": PolicyFeature(FeatureType.ACTION, (action_dim,))},
         n_action_steps=max(
-            1, round(cfg.executed_vs_predicted_ratio * cfg.action_horizon)
+            1, max(1, cfg.action_horizon // 2)
         ),
     )
     policy = SJFPOPolicy(policy_cfg).to(device)
