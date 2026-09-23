@@ -35,7 +35,7 @@ class SJFPOConfig(PreTrainedConfig):
     hidden_dim: int = 128
 
     # -- Monte-Carlo / rollout ---------------------------------------------
-    num_mc_samples: int = 16
+    num_mc_samples: int = 64  # raised from 16: halves ratio noise (1/sqrt(M))
     num_euler_steps: int = 16
     num_inference_steps: int = 16
     chunks_per_update: int = 128
@@ -46,10 +46,10 @@ class SJFPOConfig(PreTrainedConfig):
     # -- Optimization ------------------------------------------------------
     gamma: float = 0.999
     gae_lambda: float = 0.995
-    epsilon_clip: float = 0.05
+    epsilon_clip: float = 0.10  # widened: 5% was inside ratio noise floor
     use_dct_transform: bool = True    # spectral chunk encoding; False = raw action chunk
     use_coeff_space: bool = False     # coefficient-based flow; False = discrete token flow
-    use_aspo: bool = True             # piecewise ASPO (positive PPO / negative SPO)
+    use_aspo: bool = False  # disabled for discriminator run; re-enable once confirmed             # piecewise ASPO (positive PPO / negative SPO)
     use_per_bin_clip: bool = False    # two-group epsilon over DCT bins
     epsilon_clip_lowfreq: float = 0.02   # tight: low bins carry task intent
     epsilon_clip_highfreq: float = 0.10  # loose: high bins are detail/exploration
@@ -71,7 +71,7 @@ class SJFPOConfig(PreTrainedConfig):
     timestep_scale: float = 1000.0
 
     # -- Losses / optimization --------------------------------------------
-    vf_coef: float = 0.01
+    vf_coef: float = 1.0  # raised: critic needs equal footing; lower to 0.1 once explained_var > 0.3
     grad_clip_norm: float = 1.0
 
     # -- Chunk selection ---------------------------------------------------

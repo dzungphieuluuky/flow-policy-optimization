@@ -216,25 +216,75 @@ def train_sjfpo_run(
         file=sys.stderr,
     )
 
-    # -- Warm-up: accumulate running stats over `random_rollout_steps` env steps. --
-    warmup_done = 0
+    # -- True random rollout (not policy-driven): accumulate running stats --
+    random_rollout_done = 0
     if cfg.random_rollout_steps > 0 and total_steps >= cfg.random_rollout_steps:
-        warmup_target = min(cfg.random_rollout_steps, total_steps)
-        batch_steps = max(1, cfg.chunks_per_update * cfg.action_horizon)
-        while warmup_done < warmup_target:
-            collect = min(batch_steps, warmup_target - warmup_done)
+        random_rollout_target = min(cfg.random_rollout_steps, total_steps)
+        # Actual uniform-random policy, not untrained flow (avoids wrong-state normalizer bias)
+        def random_policy(obs):
+            return train_env.action_space.sample()
+        # Manual step loop; collect observations directly
+        obs, _ = train_env.reset(seed=seed + 999)
+        if hasattr(policy, "reset"):
+            policy.reset()
+        steps_collected = 0
+        while steps_collected < random_rollout_target:
+            action = train_env.action_space.sample()
+            next_obs, _, term, trunc, _ = train_env.step(action)
+            # Accumulate raw observation windows for stat initialization
+            # For simplicity, stack single-frame observations (running stats handle windows)
+            policy.preprocessor.update_stats({"observation.state": np.atleast_2d(np.array(obs, dtype=np.float32))})
+            steps_collected += 1
+            obs = next_obs
+            if term or trunc:
+                obs, _ = train_env.reset(seed=seed + 999 + steps_collected)
+                if hasattr(policy, "reset"):
+                    policy.reset()
+        random_rollout_done = steps_collected
+        print(
+            f"True random rollout initialized: {random_rollout_done} env steps; stats frozen.",
+            file=sys.stderr,
+        )
+
+    # -- Critic-only warm-up (~50k steps): freeze actor/conditioner, train critic only --
+    critic_warmup_steps = cfg.random_rollout_steps  # use same budget
+    if cfg.random_rollout_steps > 0:
+        for step in range(min(critic_warmup_steps, max(1, int(cfg.random_rollout_steps)))):
+            collect = min(cfg.chunks_per_update * cfg.action_horizon,
+                          max(1, cfg.chunks_per_update * cfg.action_horizon))
+            policy.actor.requires_grad_(False)
+            policy.old_actor.requires_grad_(False)
+            policy.conditioner.requires_grad_(False)
+            policy.old_conditioner.requires_grad_(False)
+            policy.critic.requires_grad_(True)
+
             wb = policy.generate_rollout(
                 train_env, collect,
                 action_low=action_low, action_high=action_high,
             )
             if wb.get("observation.state") is None:
                 break
-            policy.preprocessor.update_stats(wb["observation.state"])
-            warmup_done += int((~wb["action_is_pad"]).sum())
-        print(
-            f"Warm-up initialized: {warmup_done} env steps; stats frozen.",
-            file=sys.stderr,
-        )
+            states_n = policy.preprocessor({OBS_STATE: wb["observation.state"]})[OBS_STATE]
+            v_pred = policy.critic(states_n).float()
+            target_approx = wb.get("returns")
+            if target_approx is not None:
+                target = target_approx.reshape(-1)
+            else:
+                target = torch.zeros_like(v_pred.squeeze(-1))
+            loss = torch.nn.functional.smooth_l1_loss(
+                v_pred.squeeze(-1), target.to(device=v_pred.device, dtype=STORAGE_DTYPE),
+                beta=1.0,
+            )
+            # Filter optimizer params to critic only
+            optimizer.param_groups[0]["params"] = list(policy.critic.parameters())
+            optimizer.zero_grad(set_to_none=True)
+            loss.backward()
+            optimizer.step()
+        policy.actor.requires_grad_(True)
+        policy.conditioner.requires_grad_(True)
+        policy.old_actor.requires_grad_(False)
+        policy.old_conditioner.requires_grad_(False)
+        print("Critic warm-up done; explained_var check recommended.", file=sys.stderr)
 
     # -- Eval / checkpoint infrastructure -----------------------------------
     evaluator = Evaluator(env, eval_seed=10000 + seed, max_episodes=12)
