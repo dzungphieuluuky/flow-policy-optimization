@@ -224,95 +224,105 @@ def train_sjfpo_run(
     )
 
     # -- True random rollout (not policy-driven): accumulate running stats --
+    # -- Warm-up: rollout from the untrained policy for stats + critic regression --
+    #
+    # At init the flow head is zero-initialized, so `predict_action_chunk`
+    # returns essentially `idct(clip(eps))` — near-random behavior without
+    # needing a separate uniform-random rollout path. We collect batches via
+    # `generate_rollout` (which already computes GAE returns), fold obs into
+    # the running stats, and regress the critic on those returns. The actor
+    # and conditioner stay frozen for this whole phase.
     random_rollout_done = 0
-    if cfg.random_rollout_steps > 0 and total_steps >= cfg.random_rollout_steps:
+    critic_warmup_grad_steps = 0
+    if cfg.random_rollout_steps > 0 and total_steps > 0:
         random_rollout_target = min(cfg.random_rollout_steps, total_steps)
-        # Manual step loop; collect observations directly
-        obs, _ = train_env.reset(seed=seed + 999)
-        if hasattr(policy, "reset"):
-            policy.reset()
-        steps_collected = 0
-        while steps_collected < random_rollout_target:
-            action = train_env.action_space.sample()
-            next_obs, _, term, trunc, _ = train_env.step(action)
-            # Update running stats with the current single observation
-            # RunningMeanStd handles any [*, obs_dim] shape via reshape
-            raw_obs = torch.as_tensor(np.array(obs, dtype=np.float32), dtype=torch.float32)
-            if raw_obs.dim() == 1:
-                raw_obs = raw_obs.unsqueeze(0).unsqueeze(0)  # [1, 1, D] for window stats
-            else:
-                raw_obs = raw_obs.unsqueeze(0)  # [1, ...]
-            policy.preprocessor.update_stats(raw_obs)
-            steps_collected += 1
-            obs = next_obs
-            if bool(np.any(term) if hasattr(term, 'any') else term) or bool(np.any(trunc) if hasattr(trunc, 'any') else trunc):
-                obs, _ = train_env.reset(seed=seed + 999 + steps_collected)
-                if hasattr(policy, "reset"):
-                    policy.reset()
-        random_rollout_done = steps_collected
-        print(
-            f"True random rollout initialized: {random_rollout_done} env steps; stats frozen.",
-            file=sys.stderr,
+        batch_steps = max(1, cfg.chunks_per_update * cfg.action_horizon)
+
+        # Separate critic optimizer: mutating the main optimizer's
+        # param_groups mid-run would orphan Adam state keys.
+        critic_params = list(policy.critic.parameters())
+        critic_optimizer = torch.optim.AdamW(
+            critic_params,
+            lr=cfg.optimizer_lr,
+            weight_decay=cfg.optimizer_weight_decay,
+            fused=device.type == "cuda",
         )
 
-    # -- Critic-only warm-up (~50k steps): freeze actor/conditioner, train critic only --
-    critic_warmup_steps = cfg.random_rollout_steps  # use same budget
-    if cfg.random_rollout_steps > 0:
-        for step in tqdm(
-            range(min(critic_warmup_steps, max(1, int(cfg.random_rollout_steps)))),
-            desc="Critic warm-up",
+        # Freeze everything except the critic for the warm-up phase.
+        for module in (policy.actor, policy.old_actor,
+                       policy.conditioner, policy.old_conditioner):
+            module.requires_grad_(False)
+        policy.critic.requires_grad_(True)
+
+        warmup_bar = tqdm(
+            total=random_rollout_target,
+            desc="Warm-up (stats + critic)",
             file=sys.stderr,
             leave=False,
-        ):
-            collect = min(
-                cfg.chunks_per_update * cfg.action_horizon,
-                max(1, cfg.chunks_per_update * cfg.action_horizon),
-            )
-            policy.actor.requires_grad_(False)
+            unit="step",
+            unit_scale=True,
+        )
+        try:
+            while random_rollout_done < random_rollout_target:
+                collect = min(batch_steps, random_rollout_target - random_rollout_done)
+                wb = policy.generate_rollout(
+                    train_env,
+                    collect,
+                    action_low=action_low,
+                    action_high=action_high,
+                )
+                executed = int((~wb["action_is_pad"]).sum())
+                if executed <= 0:
+                    break
+
+                # 1) Fold observed states into the running normalizer stats.
+                policy.preprocessor.update_stats(wb[OBS_STATE])
+
+                # 2) Regress the critic on the batch's GAE returns. Same
+                #    preprocessor pipeline as training so the critic sees
+                #    identically-normalized inputs.
+                states_n = policy.preprocessor(
+                    {OBS_STATE: wb[OBS_STATE].to(device)}
+                )[OBS_STATE]
+                v_pred = policy.critic(states_n).float().squeeze(-1)
+                returns_d = (
+                    wb["returns"].to(device=device, dtype=torch.float32).reshape(-1)
+                )
+                if v_pred.shape != returns_d.shape:
+                    raise RuntimeError(
+                        "critic warm-up shape mismatch: "
+                        f"v_pred={tuple(v_pred.shape)} "
+                        f"vs returns={tuple(returns_d.shape)}"
+                    )
+
+                loss = torch.nn.functional.smooth_l1_loss(
+                    v_pred, returns_d, beta=1.0
+                )
+                critic_optimizer.zero_grad(set_to_none=True)
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(critic_params, cfg.grad_clip_norm)
+                critic_optimizer.step()
+
+                critic_warmup_grad_steps += 1
+                random_rollout_done += executed
+                warmup_bar.update(executed)
+                warmup_bar.set_postfix(
+                    critic_loss=f"{float(loss.detach()):.4f}",
+                    grad_steps=critic_warmup_grad_steps,
+                )
+        finally:
+            warmup_bar.close()
+            # Restore flags: live actor + conditioner trainable, snapshots frozen.
+            policy.actor.requires_grad_(True)
+            policy.conditioner.requires_grad_(True)
             policy.old_actor.requires_grad_(False)
-            policy.conditioner.requires_grad_(False)
             policy.old_conditioner.requires_grad_(False)
-            policy.critic.requires_grad_(True)
 
-            # True uniform-random rollout for critic warm-up (not untrained flow)
-            warm_obs, _ = train_env.reset(seed=seed + 10000 + step)
-            warm_steps = 0
-            warm_states_list = []
-            warm_rewards_list = []
-            while warm_steps < collect:
-                action = train_env.action_space.sample()
-                next_warm_obs, rew, term_w, trunc_w, _ = train_env.step(action)
-                warm_states_list.append(np.array(warm_obs, dtype=np.float32))
-                # Vectorized env: rew may be array; extract scalar safely
-                warm_rewards_list.append(float(np.array(rew).item() if hasattr(np.array(rew), 'item') else float(rew)))
-                warm_steps += 1
-                warm_obs = next_warm_obs
-                if term_w or trunc_w:
-                    warm_obs, _ = train_env.reset(seed=seed + 10000 + step + warm_steps)
-            warm_states_tensor = torch.as_tensor(
-                np.stack(warm_states_list), dtype=torch.float32, device=device
-            )
-            states_n = policy.preprocessor({OBS_STATE: warm_states_tensor})[OBS_STATE]
-            v_pred = policy.critic(states_n).float()
-            target = torch.full_like(
-                v_pred.squeeze(-1), float(np.mean(warm_rewards_list)) if warm_rewards_list else 0.0
-            )
-            loss = torch.nn.functional.smooth_l1_loss(
-                v_pred.squeeze(-1),
-                target.to(device=v_pred.device, dtype=STORAGE_DTYPE),
-                beta=1.0,
-            )
-            # Filter optimizer params to critic only
-            optimizer.param_groups[0]["params"] = list(policy.critic.parameters())
-            optimizer.zero_grad(set_to_none=True)
-            loss.backward()
-            optimizer.step()
-        policy.actor.requires_grad_(True)
-        policy.conditioner.requires_grad_(True)
-        policy.old_actor.requires_grad_(False)
-        policy.old_conditioner.requires_grad_(False)
-        print("Critic warm-up done; explained_var check recommended.", file=sys.stderr)
-
+        print(
+            f"Warm-up: {random_rollout_done} env steps, "
+            f"{critic_warmup_grad_steps} critic grad steps; stats frozen.",
+            file=sys.stderr,
+        )
     # -- Eval / checkpoint infrastructure -----------------------------------
     evaluator = Evaluator(env, eval_seed=10000 + seed, max_episodes=12)
     eval_policy = _EvalPolicy(policy)
