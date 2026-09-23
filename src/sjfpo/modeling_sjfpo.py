@@ -663,6 +663,14 @@ class SJFPOPolicy(PreTrainedPolicy):
         return_max = returns_d.abs().max()
         v_star_rms = v_star_f.pow(2).mean().sqrt()
 
+        # -- Concrete diagnostics (Step 3) --
+        l_old_std = l_old.std(correction=0)
+        l_new_std = l_new.std(correction=0)
+        corr_denom = (l_old_std * l_new_std + 1e-8)
+        l_old_new_corr = (
+            ((l_old - l_old.mean()) * (l_new - l_new.mean()))
+            .mean() / corr_denom
+        )
         # -- pack into one tensor and transfer once --
         cond_keys = list(cond_stats.keys()) if cond_stats else []
         scalars = [
@@ -684,6 +692,9 @@ class SJFPOPolicy(PreTrainedPolicy):
             rho_bin_low_outside,
             rho_bin_high_outside,
             v_star_rms,
+            float(l_old.mean()), float(l_new.mean()),
+            float(l_old_std), float(l_new_std), float(l_old_new_corr),
+            float(advantages.abs().mean()), float(returns_d.std(correction=0)), float(v_pred.std(correction=0)),
         ]
         scalars.extend(cond_stats[k].detach() if torch.is_tensor(cond_stats[k])
                        else torch.tensor(float(cond_stats[k]), device=delta.device)
@@ -699,6 +710,9 @@ class SJFPOPolicy(PreTrainedPolicy):
             "flow_rho_bin_range", "flow_rho_bin_lowfreq", "flow_rho_bin_highfreq",
             "flow_rho_bin_outside_frac", "flow_rho_bin_low_outside_frac",
             "flow_rho_bin_high_outside_frac", "flow_v_star_rms",
+            "train/l_old_mean", "train/l_new_mean",
+            "train/l_old_std", "train/l_new_std", "train/l_old_new_corr",
+            "train/adv_mean_abs", "train/value_target_std", "train/value_pred_std",
         ]
         info = dict(zip(keys, vals))
         for i, k in enumerate(cond_keys):
