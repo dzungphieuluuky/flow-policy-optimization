@@ -48,7 +48,6 @@ class SJFPOConfig(PreTrainedConfig):
     gae_lambda: float = 0.995
     epsilon_clip: float = 0.05
     use_dct_transform: bool = True  # spectral chunk encoding; False = raw action chunk
-    use_coeff_space: bool = False  # coefficient-based flow; False = discrete token flow
     use_aspo: bool = True
     use_per_bin_clip: bool = False  # two-group epsilon over DCT bins
     epsilon_clip_lowfreq: float = 0.02  # tight: low bins carry task intent
@@ -216,11 +215,6 @@ class SJFPOConfig(PreTrainedConfig):
         p = self.top_p_spectral_tokens
         if not 0.0 < p <= 1.0:
             raise ValueError(f"top_p_spectral_tokens={p} must satisfy 0 < p <= 1")
-        if self.use_coeff_space and not self.use_dct_transform:
-            raise ValueError(
-                "use_coeff_space=True requires use_dct_transform=True "
-                "(coefficient flow consumes DCT coefficients)"
-            )
         if self.use_per_bin_clip and not self.use_dct_transform:
             raise ValueError(
                 "use_per_bin_clip=True requires use_dct_transform=True "

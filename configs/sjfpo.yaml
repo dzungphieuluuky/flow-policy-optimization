@@ -21,7 +21,6 @@ gamma: 0.999
 gae_lambda: 0.995
 epsilon_clip: 0.10  # widened: 5% was inside ratio noise floor
 use_dct_transform: true  # spectral chunk encoding; False = raw action chunk
-use_coeff_space: false  # coefficient-based flow; False = discrete token flow
 use_aspo: false  # disabled for discriminator run; re-enable once confirmed
 use_per_bin_clip: false  # two-group epsilon over DCT bins
 epsilon_clip_lowfreq: 0.02  # tight: low bins carry task intent

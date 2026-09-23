@@ -223,31 +223,21 @@ def train_sjfpo_run(
         file=sys.stderr,
     )
     random_rollout_done = 0
-    critic_warmup_grad_steps = 0
     if cfg.random_rollout_steps > 0 and total_steps >= cfg.random_rollout_steps:
         target_steps = min(cfg.random_rollout_steps, total_steps)
-        n_obs = cfg.n_obs_steps
-        gamma = cfg.gamma
 
-        # Fresh optimizer for the critic only.
-        critic_params = list(policy.critic.parameters())
-        critic_optimizer = torch.optim.AdamW(
-            critic_params,
-            lr=cfg.optimizer_lr,
-            weight_decay=cfg.optimizer_weight_decay,
-            fused=(device.type == "cuda"),
-        )
+        # Step the single env with uniform-random actions. Stats updates are
+        # batched every `_STATS_BATCH` steps to keep the per-step Python
+        # overhead down without changing the numerics (Welford merge is
+        # order-independent).
+        _STATS_BATCH = 1024
+        obs_buf: list[np.ndarray] = []
+        rng = np.random.default_rng(seed + 10_000)
 
-        # Freeze everything except the critic for the duration of warm-up.
-        for m in (policy.actor, policy.old_actor,
-                  policy.conditioner, policy.old_conditioner):
-            m.requires_grad_(False)
-        policy.critic.requires_grad_(True)
-
-        warmup_rng = np.random.default_rng(seed + 10_000)
+        raw_obs, _ = env.reset(seed=int(rng.integers(0, 2**31)))
         warmup_bar = tqdm(
             total=target_steps,
-            desc="Warm-up (random policy)",
+            desc="Warm-up (random policy, stats only)",
             file=sys.stderr,
             leave=False,
             unit="step",
@@ -255,88 +245,40 @@ def train_sjfpo_run(
         )
         try:
             while random_rollout_done < target_steps:
-                # ---- one uniform-random-policy episode ----
-                ep_seed = int(warmup_rng.integers(0, 2**31))
-                raw_obs, _ = env.reset(seed=ep_seed)
-                obs_seq = [np.asarray(raw_obs, dtype=np.float32)]
-                rew_seq: list[float] = []
-                while True:
-                    action = env.action_space.sample()
-                    raw_obs, rew, term, trunc, _ = env.step(action)
-                    obs_seq.append(np.asarray(raw_obs, dtype=np.float32))
-                    rew_seq.append(float(rew))
-                    if bool(term) or bool(trunc):
-                        break
+                action = env.action_space.sample()
+                raw_obs, _rew, term, trunc, _ = env.step(action)
+                obs_buf.append(np.asarray(raw_obs, dtype=np.float32))
+                random_rollout_done += 1
+                warmup_bar.update(1)
 
-                T = len(rew_seq)
-                if T == 0:
-                    continue
-                obs_arr = np.stack(obs_seq)  # [T+1, obs_dim]
+                if len(obs_buf) >= _STATS_BATCH:
+                    policy.preprocessor.update_stats(
+                        torch.as_tensor(
+                            np.stack(obs_buf),
+                            device=device,
+                            dtype=torch.float32,
+                        )
+                    )
+                    obs_buf.clear()
 
-                # ---- normalizer stats: healthy obs only (exclude terminal) ----
-                # For Hopper the terminal obs has z < 0.7, far from the
-                # healthy regime. Including it would skew mean/std away from
-                # the training distribution the critic will actually see.
-                policy.preprocessor.update_stats(
-                    torch.as_tensor(obs_arr[:-1], device=device, dtype=torch.float32)
-                )
-
-                # ---- Monte-Carlo return-to-go (discounted) ----
-                rtg = np.empty(T, dtype=np.float32)
-                running = 0.0
-                for t in range(T - 1, -1, -1):
-                    running = rew_seq[t] + gamma * running
-                    rtg[t] = running
-
-                # ---- build [T, n_obs_steps, obs_dim] windows ----
-                # The training contract always feeds windows of n_obs_steps
-                # frames; the first few steps of an episode get left-padded
-                # with the initial obs (same convention as the collector).
-                windows = np.empty((T, n_obs, obs_arr.shape[-1]), dtype=np.float32)
-                first = obs_arr[0]
-                for t in range(T):
-                    start = t + 1 - n_obs
-                    if start >= 0:
-                        windows[t] = obs_arr[start:t + 1]
-                    else:
-                        n_pad = -start
-                        windows[t, :n_pad] = first
-                        windows[t, n_pad:] = obs_arr[:t + 1]
-
-                W = torch.as_tensor(windows, device=device)
-                R = torch.as_tensor(rtg, device=device)
-
-                # Normalize with frozen stats; no grad on the preprocessor.
-                with torch.no_grad():
-                    W_norm = policy.preprocessor({OBS_STATE: W})[OBS_STATE]
-
-                v_pred = policy.critic(W_norm).float().squeeze(-1)
-                loss = torch.nn.functional.smooth_l1_loss(v_pred, R, beta=1.0)
-
-                critic_optimizer.zero_grad(set_to_none=True)
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(critic_params, cfg.grad_clip_norm)
-                critic_optimizer.step()
-
-                critic_warmup_grad_steps += 1
-                random_rollout_done += T
-                warmup_bar.update(T)
-                warmup_bar.set_postfix(
-                    critic_loss=f"{float(loss.detach()):.4f}",
-                    ep_len=T,
-                    grad_steps=critic_warmup_grad_steps,
-                )
+                if bool(term) or bool(trunc):
+                    raw_obs, _ = env.reset(seed=int(rng.integers(0, 2**31)))
         finally:
             warmup_bar.close()
-            # Restore flags for the training loop.
-            policy.actor.requires_grad_(True)
-            policy.conditioner.requires_grad_(True)
-            policy.old_actor.requires_grad_(False)
-            policy.old_conditioner.requires_grad_(False)
+            # Flush any remaining observations.
+            if obs_buf:
+                policy.preprocessor.update_stats(
+                    torch.as_tensor(
+                        np.stack(obs_buf),
+                        device=device,
+                        dtype=torch.float32,
+                    )
+                )
+                obs_buf.clear()
 
         print(
-            f"Warm-up: {random_rollout_done} random-policy env steps, "
-            f"{critic_warmup_grad_steps} critic grad steps; stats frozen.",
+            f"Warm-up: {random_rollout_done} random-policy env steps; "
+            f"normalizer stats frozen.",
             file=sys.stderr,
         )
 

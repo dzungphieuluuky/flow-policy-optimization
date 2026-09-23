@@ -543,7 +543,7 @@ class SJFPOPolicy(PreTrainedPolicy):
                     x_t_flat[:1], tau_bn[:1], cond_flat[:1], return_stats=True
                 )
 
-        # -- CFM losses under target velocities (fp32 for stability) --
+# Do: CFM losses under target velocities (fp32 for stability)
         with torch.autocast(device_type=device.type, enabled=False):
             v_star_f = self.compute_target_velocity(spectral_action_tokens, eps).float()
             v_old_r_f = v_old.reshape(n, num_mc, *flow_shape)
@@ -572,7 +572,7 @@ class SJFPOPolicy(PreTrainedPolicy):
                 psi = compute_aspo_surrogate(rho, adv_mc, cfg.epsilon_clip)
                 policy_per_chunk = -psi.mean(dim=1)
 
-        # -- Value loss (Huber) --
+# Do: Value loss (Huber)
         with autocast_context(device):
             v_pred_raw = self.critic(states).float()
         v_pred = v_pred_raw.squeeze(-1)
@@ -653,17 +653,17 @@ class SJFPOPolicy(PreTrainedPolicy):
         Every field is a Python float, but the device↔host transfer happens
         exactly once (via a single ``.tolist()`` at the end).
         """
-        # -- log-ratio on raw delta (never clamped-then-checked) --
+# Do: log-ratio on raw delta (never clamped-then-checked)
         delta = l_old - l_new
         log_rho_abs = delta.abs()
         log_rho_max = log_rho_abs.max()
         log_rho_clip_frac = (log_rho_abs > cfg.log_ratio_cap).float().mean()
 
-        # -- rho stats --
+# Do: rho stats
         rho_mean = rho.mean()
         rho_std = rho.std(correction=0)
 
-        # -- per-bin rho --
+# Do: per-bin rho
         rho_bin_mean = rho_bin.mean(dim=(0, 1))
         n_bins = rho_bin_mean.numel()
         split = max(1, n_bins // 2)
@@ -695,7 +695,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         else:
             rho_bin_high_outside = rho_bin_low_outside
 
-        # -- value-health stats --
+# Do: value-health stats
         returns_var = returns_d.var(correction=0).clamp_min(1e-8)
         explained_var = 1.0 - (returns_d - v_pred).var(correction=0) / returns_var
         value_error_max = torch.nn.functional.smooth_l1_loss(
@@ -705,14 +705,14 @@ class SJFPOPolicy(PreTrainedPolicy):
         return_max = returns_d.abs().max()
         v_star_rms = v_star_f.pow(2).mean().sqrt()
 
-        # -- Concrete diagnostics (Step 3) --
+# Do: Concrete diagnostics (Step 3)
         l_old_std = l_old.std(correction=0)
         l_new_std = l_new.std(correction=0)
         corr_denom = l_old_std * l_new_std + 1e-8
         l_old_new_corr = (
             (l_old - l_old.mean()) * (l_new - l_new.mean())
         ).mean() / corr_denom
-        # -- pack into one tensor and transfer once --
+# Do: pack into one tensor and transfer once
         cond_keys = list(cond_stats.keys()) if cond_stats else []
         scalars = [
             policy_per_chunk.mean(),
@@ -770,14 +770,14 @@ class SJFPOPolicy(PreTrainedPolicy):
             "flow_rho_bin_low_outside_frac",
             "flow_rho_bin_high_outside_frac",
             "flow_v_star_rms",
-            "train/l_old_mean",
-            "train/l_new_mean",
-            "train/l_old_std",
-            "train/l_new_std",
-            "train/l_old_new_corr",
-            "train/adv_mean_abs",
-            "train/value_target_std",
-            "train/value_pred_std",
+            "l_old_mean",
+            "l_new_mean",
+            "l_old_std",
+            "l_new_std",
+            "l_old_new_corr",
+            "adv_mean_abs",
+            "value_target_std",
+            "value_pred_std",
         ]
         info = dict(zip(keys, vals))
         for i, k in enumerate(cond_keys):
