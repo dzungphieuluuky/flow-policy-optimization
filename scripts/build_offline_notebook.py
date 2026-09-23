@@ -92,7 +92,7 @@ def load_secret(key_name):
 WANDB_CELL = """\
 # wandb login from secret store (runs before any training cell).
 _wandb_key = load_secret("WANDB_API_KEY")
-if _wandb_key:
+ifwandb_key:
     !wandb login $_wandb_key
 else:
     print("WANDB_API_KEY not found; training will run without wandb sync.")
