@@ -239,11 +239,14 @@ def train_sjfpo_run(
         while steps_collected < random_rollout_target:
             action = train_env.action_space.sample()
             next_obs, _, term, trunc, _ = train_env.step(action)
-            # Accumulate raw observation windows for stat initialization
-            # For simplicity, stack single-frame observations (running stats handle windows)
-            policy.preprocessor.update_stats(
-                {"observation.state": np.atleast_2d(np.array(obs, dtype=np.float32))}
-            )
+            # Update running stats with the current single observation
+            # RunningMeanStd handles any [*, obs_dim] shape via reshape
+            raw_obs = torch.as_tensor(np.array(obs, dtype=np.float32), dtype=torch.float32)
+            if raw_obs.dim() == 1:
+                raw_obs = raw_obs.unsqueeze(0).unsqueeze(0)  # [1, 1, D] for window stats
+            else:
+                raw_obs = raw_obs.unsqueeze(0)  # [1, ...]
+            policy.preprocessor.update_stats(raw_obs)
             steps_collected += 1
             obs = next_obs
             if term or trunc:
