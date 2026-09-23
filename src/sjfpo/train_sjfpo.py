@@ -23,6 +23,7 @@ import json
 import sys
 import time
 from collections import deque
+from tqdm import tqdm
 from pathlib import Path
 from typing import Any
 
@@ -226,11 +227,6 @@ def train_sjfpo_run(
     random_rollout_done = 0
     if cfg.random_rollout_steps > 0 and total_steps >= cfg.random_rollout_steps:
         random_rollout_target = min(cfg.random_rollout_steps, total_steps)
-
-        # Actual uniform-random policy, not untrained flow (avoids wrong-state normalizer bias)
-        def random_policy(obs):
-            return train_env.action_space.sample()
-
         # Manual step loop; collect observations directly
         obs, _ = train_env.reset(seed=seed + 999)
         if hasattr(policy, "reset"):
@@ -262,8 +258,11 @@ def train_sjfpo_run(
     # -- Critic-only warm-up (~50k steps): freeze actor/conditioner, train critic only --
     critic_warmup_steps = cfg.random_rollout_steps  # use same budget
     if cfg.random_rollout_steps > 0:
-        for step in range(
-            min(critic_warmup_steps, max(1, int(cfg.random_rollout_steps)))
+        for step in tqdm(
+            range(min(critic_warmup_steps, max(1, int(cfg.random_rollout_steps)))),
+            desc="Critic warm-up",
+            file=sys.stderr,
+            leave=False,
         ):
             collect = min(
                 cfg.chunks_per_update * cfg.action_horizon,
@@ -275,23 +274,28 @@ def train_sjfpo_run(
             policy.old_conditioner.requires_grad_(False)
             policy.critic.requires_grad_(True)
 
-            wb = policy.generate_rollout(
-                train_env,
-                collect,
-                action_low=action_low,
-                action_high=action_high,
+            # True uniform-random rollout for critic warm-up (not untrained flow)
+            warm_obs, _ = train_env.reset(seed=seed + 10000 + step)
+            warm_steps = 0
+            warm_states_list = []
+            warm_rewards_list = []
+            while warm_steps < collect:
+                action = train_env.action_space.sample()
+                next_warm_obs, rew, term_w, trunc_w, _ = train_env.step(action)
+                warm_states_list.append(np.array(warm_obs, dtype=np.float32))
+                warm_rewards_list.append(float(rew))
+                warm_steps += 1
+                warm_obs = next_warm_obs
+                if term_w or trunc_w:
+                    warm_obs, _ = train_env.reset(seed=seed + 10000 + step + warm_steps)
+            warm_states_tensor = torch.as_tensor(
+                np.stack(warm_states_list), dtype=torch.float32, device=device
             )
-            if wb.get("observation.state") is None:
-                break
-            states_n = policy.preprocessor({OBS_STATE: wb["observation.state"]})[
-                OBS_STATE
-            ]
+            states_n = policy.preprocessor({OBS_STATE: warm_states_tensor})[OBS_STATE]
             v_pred = policy.critic(states_n).float()
-            target_approx = wb.get("returns")
-            if target_approx is not None:
-                target = target_approx.reshape(-1)
-            else:
-                target = torch.zeros_like(v_pred.squeeze(-1))
+            target = torch.full_like(
+                v_pred.squeeze(-1), float(np.mean(warm_rewards_list)) if warm_rewards_list else 0.0
+            )
             loss = torch.nn.functional.smooth_l1_loss(
                 v_pred.squeeze(-1),
                 target.to(device=v_pred.device, dtype=STORAGE_DTYPE),
