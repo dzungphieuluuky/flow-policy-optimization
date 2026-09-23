@@ -44,7 +44,7 @@ def build_run_name(method: str, env_name: str, seed: int, cfg_dict: dict) -> str
         tags.append(f"d{v}x{d}")
     if (v := get("num_epochs", get("learning_epochs"))) is not None:
         tags.append(f"ep{v}")
-    if (v := get("optimizer_lr", get("lr"))) is not None:
+    if (v := get("policy_lr", get("lr"))) is not None:
         tags.append(f"lr{v:g}" if isinstance(v, float) else f"lr{v}")
     if (v := get("epsilon_clip", get("ratio_clip"))) is not None:
         tags.append(f"eps{compact_value(v)}")

@@ -102,7 +102,7 @@ def build_optimizer(policy: SJFPOPolicy, cfg: SJFPOConfig):
     if cfg.optimizer_8bit:
         import bitsandbytes as bnb
         return bnb.optim.AdamW8bit(
-            params, lr=cfg.optimizer_lr, weight_decay=cfg.optimizer_weight_decay
+            params, lr=cfg.policy_lr, weight_decay=cfg.optimizer_weight_decay
         )
     kwargs = dataclasses.asdict(cfg.get_optimizer_preset())
     kwargs.pop("grad_clip_norm", None)  # applied manually after backward
