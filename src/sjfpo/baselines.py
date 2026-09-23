@@ -15,6 +15,9 @@ import einx
 import torch
 import torch.nn as nn
 
+# Standard checkpoint naming (lerobot.utils.constants reference)
+from lerobot.utils.constants import CHECKPOINTS_DIR
+
 from sjfpo.config import PPOConfig, SACConfig
 from sjfpo.evaluator import Evaluator, check_divergence, compute_random_baseline
 from lerobot.utils.random_utils import set_seed
@@ -423,7 +426,7 @@ def write_baseline_checkpoint(
     agent, out_dir, method_name, global_step, seed, artifacts, complete=False
 ):
     ckpt_dir = out_dir / (
-        "checkpoint_final" if complete else f"checkpoint_{global_step}"
+        CHECKPOINTS_DIR / ("final" if complete else f"step_{global_step}")
     )
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     agent.save(str(ckpt_dir / "skrl_agent.pt"))

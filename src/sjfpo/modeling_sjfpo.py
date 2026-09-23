@@ -623,6 +623,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             returns_d=returns_d,
             policy_per_chunk=policy_per_chunk,
             value_per_chunk=value_per_chunk,
+            advantages=advantages,
             cond_stats=cond_stats,
             cfg=cfg,
         )
@@ -643,6 +644,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         returns_d,
         policy_per_chunk,
         value_per_chunk,
+        advantages,
         cond_stats,
         cfg,
     ) -> dict[str, float]:

@@ -24,6 +24,7 @@ from pathlib import Path
 
 import torch
 from huggingface_hub.constants import CONFIG_NAME, SAFETENSORS_SINGLE_FILE
+from lerobot.utils.constants import CHECKPOINTS_DIR
 from sjfpo.modeling_sjfpo import SJFPOPolicy  # lazy: import-light module
 
 OPTIMIZER_FILE = "optimizer.pt"

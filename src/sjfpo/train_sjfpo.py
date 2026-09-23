@@ -36,6 +36,8 @@ from sjfpo.checkpointing import load_policy_checkpoint, save_policy_checkpoint
 from sjfpo.configuration_sjfpo import SJFPOConfig
 from sjfpo.evaluator import Evaluator, check_divergence, mean_chunk_jerk
 from sjfpo.modeling_sjfpo import SJFPOPolicy, STORAGE_DTYPE
+# Standard checkpoint naming (lerobot.utils.constants)
+from lerobot.utils.constants import CHECKPOINTS_DIR
 from sjfpo.rollout_storage import mini_batch_indices
 from sjfpo.utils import maybe_compile, resolve_device, to_numpy_1d
 from sjfpo.wandb_logging import (
@@ -467,7 +469,7 @@ def train_sjfpo_run(
 
             # -- Periodic checkpoint ------------------------------------
             if global_step >= next_save or global_step >= total_steps:
-                ckpt_dir = out_dir / f"checkpoint_{global_step}"
+                ckpt_dir = out_dir / CHECKPOINTS_DIR / f"step_{global_step}"
                 save_policy_checkpoint(
                     ckpt_dir,
                     policy=policy,
@@ -490,7 +492,7 @@ def train_sjfpo_run(
         if wandb_enabled:
             finish_run(exit_code=1 if diverged else 0)
 
-    ckpt_dir = out_dir / "checkpoint_final"
+    ckpt_dir = out_dir / CHECKPOINTS_DIR / "final"
     save_policy_checkpoint(
         ckpt_dir,
         policy=policy,
