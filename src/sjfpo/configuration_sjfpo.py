@@ -26,7 +26,7 @@ class SJFPOConfig(PreTrainedConfig):
     # -- Observation / action geometry -------------------------------------
     n_obs_steps: int = 16
     action_horizon: int = 16
-    n_action_steps: int  # must be set explicitly; no derived value
+    n_action_steps: int = 8  # must be set explicitly; no derived value
     hidden_dim: int = 128
 
     # -- Monte-Carlo / rollout ---------------------------------------------
