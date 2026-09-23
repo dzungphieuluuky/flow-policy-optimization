@@ -77,11 +77,9 @@ class SJFPOAborted(RuntimeError):
 # ---------------------------------------------------------------------------
 
 
-def _token_dim(cfg: SJFPOConfig) -> int:
-    """Number of spectral (or raw) tokens per action chunk."""
-    if cfg.use_dct_transform:
-        return max(1, cfg.action_horizon - 1) + 1
-    return cfg.action_horizon
+def _num_spectral_tokens_kept(cfg: SJFPOConfig) -> int:
+    """Number of spectral tokens kept per action chunk."""
+    return max(1, round(cfg.top_p_spectral_tokens * cfg.action_horizon)) if cfg.use_dct_transform else cfg.action_horizon
 
 
 def _sample_spectral_eps(
@@ -268,12 +266,12 @@ class SJFPOPolicy(PreTrainedPolicy):
         states = to_device_async(states, device)
         states = self.preprocessor({OBS_STATE: states})[OBS_STATE]
 
-        token_dim = _token_dim(cfg)
+        num_spectral_tokens_kept = _num_spectral_tokens_kept(cfg)
         action_dim = int(self.config.action_feature.shape[0])
 
         with torch.inference_mode(), autocast_context(device):
             condition = self.conditioner(states)
-            shape = (states.shape[0], token_dim, action_dim)
+            shape = (states.shape[0], num_spectral_tokens_kept, action_dim)
             eps = None if noise else torch.zeros(*shape, device=device)
             num_steps = cfg.num_euler_steps if noise else cfg.num_inference_steps
             x0 = sample_action(
@@ -386,7 +384,7 @@ class SJFPOPolicy(PreTrainedPolicy):
 
         n_chunks = len(chunks)
         action_dim = int(self.config.action_feature.shape[0])
-        token_dim = _token_dim(cfg)
+        num_spectral_tokens_kept = _num_spectral_tokens_kept(cfg)
 
         # Stack once, reuse everywhere.
         lengths = torch.as_tensor(
@@ -452,7 +450,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         eps = _sample_spectral_eps(cfg, n_chunks, action_dim, device)
 
         # Single shape check against the layout that will actually be used.
-        expected_eps_shape = (n_chunks, cfg.num_mc_samples, token_dim, action_dim)
+        expected_eps_shape = (n_chunks, cfg.num_mc_samples, num_spectral_tokens_kept, action_dim)
         if tuple(eps.shape) != expected_eps_shape:
             raise ValueError(
                 f"CRN eps shape {tuple(eps.shape)} != expected {expected_eps_shape}"
@@ -508,7 +506,8 @@ class SJFPOPolicy(PreTrainedPolicy):
         states = self.preprocessor({OBS_STATE: states})[OBS_STATE]
 
         M_modes = max(1, cfg.action_horizon - 1)
-        token_dim = M_modes + 1 if cfg.use_dct_transform else cfg.action_horizon
+        num_spectral_tokens_kept = _num_spectral_tokens_kept(cfg)
+        # Spectral encoding: first M+1 DCT bins (low frequency) kept; token count = M+1 (derived from top_p * H).
         n = states.shape[0]
         action_dim = actions.shape[-1]
 
@@ -523,7 +522,7 @@ class SJFPOPolicy(PreTrainedPolicy):
                 # Legacy [N, num_mc] layout: rows are identical by construction.
                 tau = tau[0]
             eps = to_tensor(batch["eps"], dtype=STORAGE_DTYPE, device=device)
-            expected = (n, cfg.num_mc_samples, token_dim, action_dim)
+            expected = (n, cfg.num_mc_samples, num_spectral_tokens_kept, action_dim)
             if tuple(eps.shape) != expected:
                 raise ValueError(f"stored eps shape {tuple(eps.shape)} != {expected}")
         else:

@@ -389,25 +389,29 @@ class DiTBlock(nn.Module):
 
 
 class StateConditioner(nn.Module):
-    """Fuse raw state window + DCT bins into ``[B, D]``.
+    """Fuse a mean-pooled per-frame state summary with DCT-bin features.
 
-    The window is never padded in this codebase; ``key_mask`` is not
-    forwarded to the inner encoder.
+    The raw path uses a per-frame MLP + mean-pool rather than an attention
+    block: the spectral branch already encodes temporal structure explicitly,
+    so the attention block is redundant for the chunk-level conditioning
+    vector (the caller mean-pools the result anyway).
     """
 
     def __init__(
         self,
         obs_dim: int,
         hidden_dim: int | None = None,
-        n_heads: int = 4,
+        n_heads: int = 4,  # retained for call-site compat; unused
     ):
         super().__init__()
         if obs_dim <= 0:
             raise ValueError("obs_dim must be positive")
         hidden_dim = int(resolve_config_value("hidden_dim", hidden_dim))
-        self.state_encoder = WindowEncoder(
-            obs_dim, hidden_dim=hidden_dim, n_heads=n_heads
-        )
+        del n_heads  # no attention in this conditioner
+        # Raw path: per-frame MLP then mean-pool (replaces full attention window).
+        self.frame_proj = nn.Linear(obs_dim, hidden_dim)
+        self.frame_mlp = SwiGLU(hidden_dim, 4 * hidden_dim, hidden_dim)
+        # Spectral path: unchanged.
         self.bin_norm = _rms_norm(obs_dim)
         self.bin_encoding = SinusoidalEncoding(obs_dim)
         self.key_proj = nn.Linear(obs_dim, hidden_dim)
@@ -415,7 +419,7 @@ class StateConditioner(nn.Module):
 
     def forward(self, states: torch.Tensor) -> torch.Tensor:
         """[B, T, obs] -> [B, D]."""
-        raw = self.state_encoder(states).mean(dim=1)
+        raw = self.frame_mlp(self.frame_proj(states)).mean(dim=1)
         spec = self.key_proj(self.bin_encoding(self.bin_norm(dct(states, dim=1)))).mean(
             dim=1
         )
