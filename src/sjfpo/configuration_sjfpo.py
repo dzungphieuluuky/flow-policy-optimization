@@ -20,9 +20,6 @@ class SJFPOConfig(PreTrainedConfig):
     * ``n_action_steps`` is derived from ``action_horizon * executed_vs_predicted_ratio``
       at construction and stored explicitly for consumers that read it directly.
       Set ``n_action_steps`` only when you want to override the derived value.
-    * ``random_rollout_steps`` (formerly ``random_rollout_steps``) is the number of
-      random-policy environment steps collected **before** live optimization
-      starts. It is *not* LR warmup.
     * ``num_inference_steps`` is used when sampling with ``noise=False``;
       ``num_euler_steps`` is used when sampling with ``noise=True``.
     """
@@ -84,10 +81,7 @@ class SJFPOConfig(PreTrainedConfig):
     optimizer_8bit: bool = False
 
     # -- Training loop -----------------------------------------------------
-    # Random-policy environment steps collected before live optimization.
-    # Stats (RunningMeanStd) are initialized after this many steps.
-    random_rollout_steps: int = 100_000
-
+    # No separate warm-up phase; stats initialize naturally during first rollout.
     # -- Blackwell / GPU memory --------------------------------------------
     use_gradient_checkpointing: bool = True
     grad_accum_steps: int = 4
@@ -198,10 +192,6 @@ class SJFPOConfig(PreTrainedConfig):
             raise ValueError(f"num_epochs={self.num_epochs} must be >= 1")
         if self.num_envs < 1:
             raise ValueError(f"num_envs={self.num_envs} must be >= 1")
-        if self.random_rollout_steps < 0:
-            raise ValueError(
-                f"random_rollout_steps={self.random_rollout_steps} must be >= 0"
-            )
         if self.num_mc_samples < 1:
             raise ValueError(f"num_mc_samples={self.num_mc_samples} must be >= 1")
 

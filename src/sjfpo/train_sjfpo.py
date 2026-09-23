@@ -10,8 +10,6 @@ Performance notes
 * ``zero_grad(set_to_none=True)`` frees grad buffers between minibatches.
 * Eval and checkpoint are triggered by explicit step counters, so no eval or
   save is skipped when ``collect_steps`` overshoots the boundary.
-* Warm-up actually runs ``cfg.random_rollout_steps`` env steps (in batches of
-  ``chunks_per_update * action_horizon``) and updates running stats on each.
 * A resume re-applies ``maybe_compile`` so the freshly-loaded policy is
   compiled like a fresh one.
 """
