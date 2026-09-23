@@ -249,7 +249,7 @@ def train_sjfpo_run(
             policy.preprocessor.update_stats(raw_obs)
             steps_collected += 1
             obs = next_obs
-            if term or trunc:
+            if bool(np.any(term) if hasattr(term, 'any') else term) or bool(np.any(trunc) if hasattr(trunc, 'any') else trunc):
                 obs, _ = train_env.reset(seed=seed + 999 + steps_collected)
                 if hasattr(policy, "reset"):
                     policy.reset()
