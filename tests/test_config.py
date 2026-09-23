@@ -117,7 +117,7 @@ def test_sjfpo_config_documented_ranges():
     assert c.num_inference_steps >= 1
     assert c.chunks_per_update >= 1
     assert c.num_epochs >= 1
-    assert c.optimizer_lr > 0
+    assert c.policy_lr > 0
     assert c.optimizer_weight_decay >= 0
     assert 0 < c.gamma < 1
     assert 0 < c.gae_lambda < 1

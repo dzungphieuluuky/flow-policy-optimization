@@ -24,7 +24,7 @@ def test_canonical_defaults():
     assert cfg.n_action_steps == round(
         cfg.executed_vs_predicted_ratio * cfg.action_horizon
     )
-    assert (cfg.optimizer_lr, cfg.optimizer_weight_decay) == (1e-4, 1e-4)
+    assert (cfg.policy_lr, cfg.optimizer_weight_decay) == (1e-4, 1e-4)
     assert cfg.grad_clip_norm == 1.0
     assert cfg.num_epochs == 16
     assert cfg.chunks_per_update == 128
@@ -52,7 +52,7 @@ def test_optimizer_preset_and_no_scheduler():
     cfg = SJFPOConfig()
     opt = cfg.get_optimizer_preset()
     assert (opt.lr, opt.weight_decay, opt.grad_clip_norm) == (
-        cfg.optimizer_lr,
+        cfg.policy_lr,
         cfg.optimizer_weight_decay,
         cfg.grad_clip_norm,
     )
@@ -70,8 +70,8 @@ def test_validate_features_needs_state_and_action():
 
 
 def test_post_init_rejects_bad_optimizer():
-    with pytest.raises(ValueError, match="optimizer_lr"):
-        SJFPOConfig(optimizer_lr=0.0)
+    with pytest.raises(ValueError, match="policy_lr"):
+        SJFPOConfig(policy_lr=0.0)
 
 
 def test_post_init_rejects_bad_timestep_range():

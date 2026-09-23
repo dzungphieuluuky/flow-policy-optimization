@@ -155,7 +155,7 @@ class TestInitWandbRunForMethod:
                     "hidden_dim": 128,
                     "dit_depth": 8,
                     "num_epochs": 16,
-                    "optimizer_lr": 1e-4,
+                    "policy_lr": 1e-4,
                     "epsilon_clip": 0.05,
                     "num_mc_samples": 16,
                 },

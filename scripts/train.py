@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""Single-run training CLI for SJFPO/PPO/SAC (MuJoCo-only, CUDA-default, fp32).
+"""Single-run training CLI for SJFPO / PPO / SAC (PyTorch) and SJFPO (JAX).
 
 One run per invocation; draccus builds the run config (singular values only).
 Sweeps live in scripts/sweep.sh: one call here per method x env x seed.
 
-    python scripts/train.py --method sjfpo --env Hopper-v5 --seed 0 --total_steps 2000
-    python scripts/train.py --method sjfpo --env Hopper-v5 --sjfpo.optimizer_lr 3e-4
+    python scripts/train.py --method sjfpo      --env Hopper-v5 --seed 0 --total_steps 2000
+    python scripts/train.py --method sjfpo_jax  --env Hopper-v5 --seed 0 --total_steps 2000
+    python scripts/train.py --method sjfpo --env Hopper-v5 --sjfpo.policy_lr 3e-4
     python scripts/train.py --method sjfpo --env Hopper-v5 --seed 0 \
         --resume outputs/sjfpo_Hopper-v5_seed0/checkpoint_1000 \
         --total_steps 4000
-    METHODS="sjfpo ppo" ENVS=Hopper-v5 SEEDS="0 1" scripts/sweep.sh
 
 Flags use underscores (draccus convention, same as lerobot-train).
 
@@ -23,32 +23,19 @@ Exit codes: 0 success, 1 usage error, 2 runtime/divergence abort,
 
 from __future__ import annotations
 
-import traceback  # local debugging traceback
-
 import dataclasses
 import json
 import math
+import os
 import sys
+import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
 import draccus
-import torch  # noqa: E402
-import os
 
-if torch.cuda.is_available():
-    torch.backends.cuda.matmul.fp32_precision = "ieee"
-    torch.backends.cudnn.fp32_precision = "ieee"
-    torch.backends.cudnn.conv.fp32_precision = "tf32"
-    torch.backends.cudnn.rnn.fp32_precision = "tf32"
-    torch.backends.cudnn.benchmark = True
-    # Set memory allocation configuration
-    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = (
-        "max_split_size_mb:128,expandable_segments:True"
-    )
-
-# Ensure src/ is importable
+# Make src/ importable before any sjfpo.* import.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from sjfpo.config import (  # noqa: E402
@@ -59,7 +46,46 @@ from sjfpo.config import (  # noqa: E402
 )
 from sjfpo.configuration_sjfpo import SJFPOConfig  # noqa: E402
 
+
 VALID_ENVS = KNOWN_ENVS
+
+
+# ---------------------------------------------------------------------------
+# Torch CUDA tuning (skipped when torch is not installed — JAX-only installs)
+# ---------------------------------------------------------------------------
+
+
+def configure_torch_cuda() -> bool:
+    """Apply torch CUDA tuning when torch is importable and CUDA is present.
+
+    Returns True when torch is usable. Never raises: a JAX-only environment
+    simply skips this. Importing torch is deferred to this function so the
+    JAX path doesn't pay the import cost.
+    """
+    try:
+        import torch  # noqa: F401
+    except ImportError:
+        return False
+    if not torch.cuda.is_available():
+        return False
+    torch.backends.cuda.matmul.fp32_precision = "ieee"
+    torch.backends.cudnn.fp32_precision = "ieee"
+    torch.backends.cudnn.conv.fp32_precision = "tf32"
+    torch.backends.cudnn.rnn.fp32_precision = "tf32"
+    torch.backends.cudnn.benchmark = True
+    # TF32 for leftover fp32 GEMMs; autocast still handles bf16 matmuls.
+    torch.set_float32_matmul_precision("high")
+    # Memory allocation hint (harmless if already set by user env).
+    os.environ.setdefault(
+        "PYTORCH_CUDA_ALLOC_CONF",
+        "max_split_size_mb:128,expandable_segments:True",
+    )
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Config
+# ---------------------------------------------------------------------------
 
 
 @dataclass
@@ -79,13 +105,20 @@ class TrainConfig:
     wandb_enabled: bool = True
     wandb_run_name: str | None = None
     config: str | None = None  # legacy flat YAML overlay for the method config
-    # Resume an sjfpo checkpoint dir (checkpoint_<step>/ or checkpoint_final/):
-    # continues policy + optimizer + counters into a FRESH run dir
-    # (<base>_resume[/2...]). total_steps stays an absolute env-step budget.
+    # Resume an sjfpo / sjfpo_jax checkpoint dir (checkpoint_<step>/ or
+    # checkpoint_final/): continues policy + optimizer + counters into a FRESH
+    # run dir (<base>_resume[/2...]). total_steps stays an absolute env-step
+    # budget. sjfpo_jax resume requires a JAX-side checkpoint (see
+    # sjfpo_jax.checkpointing).
     resume: str | None = None
     sjfpo: SJFPOConfig = field(default_factory=SJFPOConfig)
     ppo: PPOConfig = field(default_factory=PPOConfig)
     sac: SACConfig = field(default_factory=SACConfig)
+
+
+# ---------------------------------------------------------------------------
+# YAML overlay + helpers
+# ---------------------------------------------------------------------------
 
 
 def load_yaml_dict(path: str | Path) -> dict:
@@ -106,6 +139,7 @@ def load_yaml_dict(path: str | Path) -> dict:
 
 
 def coerce_value(cfg_cls: type, raw: dict) -> dict:
+    """Keep only fields the target dataclass knows; coerce list->tuple."""
     fields = {f.name for f in dataclasses.fields(cfg_cls)}
     out = {k: v for k, v in raw.items() if k in fields}
     for key in ("hidden",):
@@ -130,7 +164,11 @@ def apply_flat_yaml(method_cfg, yaml_dict: dict):
 
 
 def select_method_cfg(args: TrainConfig, yaml_dict: dict):
-    """Nested draccus sub-config for the method, overlaid with flat YAML."""
+    """Nested draccus sub-config for the method, overlaid with flat YAML.
+
+    ``sjfpo_jax`` reuses the sjfpo hyperparameter block (identical fields,
+    identical semantics; only the execution backend differs).
+    """
     method_cfg = {
         "sjfpo": args.sjfpo,
         "ppo": args.ppo,
@@ -193,6 +231,11 @@ def resolve_run_dir(
     return candidate
 
 
+# ---------------------------------------------------------------------------
+# Run dispatch
+# ---------------------------------------------------------------------------
+
+
 def run_single(
     method: str,
     env_id: str,
@@ -207,7 +250,7 @@ def run_single(
     n_obs_steps: int = 16,
     resume_from_checkpoint: str | None = None,
 ) -> dict:
-    """Dispatch one run to train_sjfpo_run/ppo_train_run/sac_train_run."""
+    """Dispatch one run to the matching backend's training entry."""
     import gymnasium as gym
 
     if env_id.startswith("AdroitHand"):
@@ -217,6 +260,7 @@ def run_single(
             raise RuntimeError(
                 f"{env_id} needs gymnasium-robotics (pip install gymnasium-robotics)"
             )
+
     env = gym.make(env_id)
     try:
         # Registry fills unset dims; the live space is ground truth on mismatch.
@@ -235,48 +279,32 @@ def run_single(
                 f"requested dims {(obs_dim, action_dim)} != live {env_id} dims "
                 f"{(live_obs, live_act)}"
             )
-        from sjfpo.baselines import ppo_train_run, sac_train_run
-        from sjfpo.train_sjfpo import train_sjfpo_run
 
+        # ---- JAX path -----------------------------------------------------
         if method == "sjfpo_jax":
-            # JAX port (parallel tree): hyperparams ride the sjfpo config.
-            # GPU default 128 envs; an explicit --sjfpo.num_envs always wins.
-            from sjfpo_jax.training import train_jax_run
+            # Lazy import so torch-only users don't pay the JAX import cost.
+            from sjfpo_jax.train_sjfpo import train_sjfpo_run as train_jax_run
 
             return train_jax_run(
-                env_name=env_id,
-                eval_env=env,
+                env=env,
                 out_dir=out_dir,
+                cfg=cfg,
                 seed=seed,
                 total_steps=total_steps,
                 eval_steps=eval_steps,
                 save_steps=save_steps,
-                num_envs=(
-                    cfg.num_envs if cfg.num_envs != SJFPOConfig().num_envs else None
-                ),
-                n_obs_steps=cfg.n_obs_steps,
-                action_horizon=cfg.action_horizon,
-                hidden_dim=cfg.hidden_dim,
-                dit_depth=cfg.dit_depth,
-                dit_heads=cfg.dit_heads,
-                dit_mlp_ratio=cfg.dit_mlp_ratio,
-                dit_time_dim=cfg.dit_time_dim,
-                optimizer_lr=cfg.optimizer_lr,
-                optimizer_weight_decay=cfg.optimizer_weight_decay,
-                grad_clip_norm=cfg.grad_clip_norm,
-                gamma=cfg.gamma,
-                gae_lambda=cfg.gae_lambda,
-                epsilon_clip=cfg.epsilon_clip,
-                vf_coef=cfg.vf_coef,
-                num_epochs=cfg.num_epochs,
-                num_minibatches=cfg.num_minibatches,
-                chunks_per_update=cfg.chunks_per_update,
-                num_mc_samples=cfg.num_mc_samples,
-                num_euler_steps=cfg.num_euler_steps,
-                num_inference_steps=cfg.num_inference_steps,
-                top_p_spectral_tokens=cfg.top_p_spectral_tokens,
-                executed_vs_predicted_ratio=cfg.executed_vs_predicted_ratio,
+                obs_dim=obs_dim,
+                action_dim=action_dim,
+                resume_from_checkpoint=resume_from_checkpoint,
             )
+
+        # ---- Torch paths --------------------------------------------------
+        from sjfpo.baselines import ppo_train_run, sac_train_run
+        from sjfpo.train_sjfpo import train_sjfpo_run
+
+        if resume_from_checkpoint is not None and method != "sjfpo":
+            raise ValueError(f"--resume is sjfpo-only, got method={method!r}")
+
         runners = {
             "sjfpo": (
                 train_sjfpo_run,
@@ -289,8 +317,6 @@ def run_single(
             "ppo": (ppo_train_run, {"n_obs_steps": n_obs_steps}),
             "sac": (sac_train_run, {"n_obs_steps": n_obs_steps}),
         }
-        if resume_from_checkpoint is not None and method != "sjfpo":
-            raise ValueError(f"--resume is sjfpo-only, got method={method!r}")
         run_fn, extra = runners[method]
         return run_fn(
             env=env,
@@ -306,11 +332,16 @@ def run_single(
         env.close()
 
 
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+
 def main(argv: list[str] | None = None) -> int:
-    # Tensor-core fp32 matmuls (TF32) for leftover fp32 GEMMs; autocast still
-    # handles bf16. Precision impact is far below the numeric gates.
-    if torch.cuda.is_available():
-        torch.set_float32_matmul_precision("high")
+    # Torch CUDA tuning is a no-op (and torch is not imported) if torch is
+    # unavailable — the sjfpo_jax path works in a JAX-only install.
+    configure_torch_cuda()
+
     args = draccus.parse(config_class=TrainConfig, args=argv)
     if not args.env:
         print("ERROR: --env is required", file=sys.stderr)
@@ -321,8 +352,10 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 1
+
     yaml_dict: dict = load_yaml_dict(args.config) if args.config else {}
     total = args.total_steps or int(yaml_dict.get("total_steps", 2000))
+
     # JAX eval is 12 full episodes: sparse defaults (capped by total for smokes).
     is_jax = args.method == "sjfpo_jax"
     eval_s = default_intervals(
@@ -333,7 +366,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     n_obs_steps = int(yaml_dict.get("n_obs_steps", 16))
     cfg = select_method_cfg(args, yaml_dict)
-    if args.resume and args.method != "sjfpo":
+
+    if args.resume and args.method not in ("sjfpo", "sjfpo_jax"):
         print(
             f"ERROR: --resume is sjfpo-only, got --method {args.method!r}",
             file=sys.stderr,
@@ -350,12 +384,14 @@ def main(argv: list[str] | None = None) -> int:
                 f"CLI overrides ignored for: {', '.join(overridden)}",
                 file=sys.stderr,
             )
+
     # Same layout the old matrix used (sweep.format_run_directory_name),
     # suffixed when resuming so the source run is never overwritten.
     run_dir = resolve_run_dir(
         args.out_dir, args.method, args.env, args.seed, args.resume
     )
     run_dir.mkdir(parents=True, exist_ok=True)
+
     try:
         result = run_single(
             args.method,
@@ -384,6 +420,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
         return 2
+
     for artifact in result.get("artifacts", []):
         if not Path(artifact).exists():
             print(f"MISSING ARTIFACT: {artifact}", file=sys.stderr)
