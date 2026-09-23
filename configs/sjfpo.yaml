@@ -3,7 +3,7 @@
 num_mc_samples: 8
 num_euler_steps: 8
 num_inference_steps: 16
-chunks_per_update: 128
+chunks_per_update: 256
 num_epochs: 4
 optimizer_lr: 0.0003
 optimizer_weight_decay: 0.0001
