@@ -283,7 +283,8 @@ def train_sjfpo_run(
                 action = train_env.action_space.sample()
                 next_warm_obs, rew, term_w, trunc_w, _ = train_env.step(action)
                 warm_states_list.append(np.array(warm_obs, dtype=np.float32))
-                warm_rewards_list.append(float(rew))
+                # Vectorized env: rew may be array; extract scalar safely
+                warm_rewards_list.append(float(np.array(rew).item() if hasattr(np.array(rew), 'item') else float(rew)))
                 warm_steps += 1
                 warm_obs = next_warm_obs
                 if term_w or trunc_w:
