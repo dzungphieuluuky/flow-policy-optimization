@@ -216,66 +216,6 @@ def train_sjfpo_run(
         f"params={sum(p.numel() for p in policy.parameters()):,}",
         file=sys.stderr,
     )
-    random_rollout_done = 0
-    if cfg.random_rollout_steps > 0 and total_steps >= cfg.random_rollout_steps:
-        target_steps = min(cfg.random_rollout_steps, total_steps)
-
-        # Step the single env with uniform-random actions. Stats updates are
-        # batched every `_STATS_BATCH` steps to keep the per-step Python
-        # overhead down without changing the numerics (Welford merge is
-        # order-independent).
-        _STATS_BATCH = 1024
-        obs_buf: list[np.ndarray] = []
-        rng = np.random.default_rng(seed + 10_000)
-
-        raw_obs, _ = env.reset(seed=int(rng.integers(0, 2**31)))
-        warmup_bar = tqdm(
-            total=target_steps,
-            desc="Warm-up (random policy, stats only)",
-            file=sys.stderr,
-            leave=False,
-            unit="step",
-            unit_scale=True,
-        )
-        try:
-            while random_rollout_done < target_steps:
-                action = env.action_space.sample()
-                raw_obs, _rew, term, trunc, _ = env.step(action)
-                obs_buf.append(np.asarray(raw_obs, dtype=np.float32))
-                random_rollout_done += 1
-                warmup_bar.update(1)
-
-                if len(obs_buf) >= _STATS_BATCH:
-                    policy.preprocessor.update_stats(
-                        torch.as_tensor(
-                            np.stack(obs_buf),
-                            device=device,
-                            dtype=torch.float32,
-                        )
-                    )
-                    obs_buf.clear()
-
-                if bool(term) or bool(trunc):
-                    raw_obs, _ = env.reset(seed=int(rng.integers(0, 2**31)))
-        finally:
-            warmup_bar.close()
-            # Flush any remaining observations.
-            if obs_buf:
-                policy.preprocessor.update_stats(
-                    torch.as_tensor(
-                        np.stack(obs_buf),
-                        device=device,
-                        dtype=torch.float32,
-                    )
-                )
-                obs_buf.clear()
-
-        print(
-            f"Warm-up: {random_rollout_done} random-policy env steps; "
-            f"normalizer stats frozen.",
-            file=sys.stderr,
-        )
-
     # -- Eval / checkpoint infrastructure -----------------------------------
     evaluator = Evaluator(env, eval_seed=10000 + seed, max_episodes=12)
     eval_policy = _EvalPolicy(policy)
