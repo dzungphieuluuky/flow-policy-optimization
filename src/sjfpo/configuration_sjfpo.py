@@ -68,7 +68,7 @@ class SJFPOConfig(PreTrainedConfig):
 
     # -- Losses / optimization --------------------------------------------
     vf_coef: float = 0.01
-    grad_clip_norm: float = 1.0
+    grad_clip_norm: float = 0.5  # skrl PPO default; 1.0 was too loose
 
     # -- Chunk selection ---------------------------------------------------
     top_p_spectral_tokens: float = 1.0
@@ -77,7 +77,7 @@ class SJFPOConfig(PreTrainedConfig):
     # -- Optimizer ---------------------------------------------------------
     policy_lr: float = 3e-4
     critic_lr: float = 9e-4  # 3x policy_lr for faster value tracking
-    optimizer_weight_decay: float = 1e-4
+    optimizer_weight_decay: float = 1e-2  # skrl AdamWConfig default; 1e-4 too weak for critic
     optimizer_8bit: bool = False
 
     # -- Training loop -----------------------------------------------------
