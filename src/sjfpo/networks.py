@@ -458,7 +458,7 @@ class SJFPOFlowModel(nn.Module):
         # recomputing sin/cos per forward; parameter count: 1 * token_dim * hidden_dim ~ 2k).
         # Since the token axis length equals action_horizon (or spectral bin count),
         # we fix it at the standard chunk length (16) and rely on broadcasting.
-        self.token_pos = nn.Parameter(torch.zeros(1, 16, hidden_dim))
+        self.token_pos = nn.Parameter(torch.zeros(1, 1, hidden_dim))
         nn.init.normal_(self.token_pos, std=0.02)
         self.time_mlp = CondMLP(dit_time_dim, 4 * hidden_dim, hidden_dim)
         self.blocks = nn.ModuleList(

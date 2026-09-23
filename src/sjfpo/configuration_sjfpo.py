@@ -26,12 +26,12 @@ class SJFPOConfig(PreTrainedConfig):
     # -- Observation / action geometry -------------------------------------
     n_obs_steps: int = 16
     action_horizon: int = 16
-    n_action_steps: int = 8  # must be set explicitly; no derived value
+    n_action_steps: int = 16  # must be set explicitly; no derived value
     hidden_dim: int = 128
 
     # -- Monte-Carlo / rollout ---------------------------------------------
     num_mc_samples: int = 16
-    num_euler_steps: int = 8
+    num_euler_steps: int = 16
     num_inference_steps: int = 16
     chunks_per_update: int = 256
     num_epochs: int = 4
@@ -69,7 +69,7 @@ class SJFPOConfig(PreTrainedConfig):
     grad_clip_norm: float = 0.5  # skrl PPO default; 1.0 was too loose
 
     # -- Chunk selection ---------------------------------------------------
-    top_p_spectral_tokens: float = 0.5
+    top_p_spectral_tokens: float = 1.0
 
     # -- Optimizer ---------------------------------------------------------
     policy_lr: float = 3e-4

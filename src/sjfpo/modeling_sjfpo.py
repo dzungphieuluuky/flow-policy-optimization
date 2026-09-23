@@ -90,7 +90,8 @@ def _sample_spectral_eps(
 ) -> torch.Tensor:
     """Draw MC noise matching the token layout (DCT or raw), on ``device``."""
     if cfg.use_dct_transform:
-        M_modes = max(1, cfg.action_horizon - 1)
+        Ka = _num_spectral_tokens_kept(cfg)
+        M_modes = max(1, Ka - 1) if Ka > 1 else 0
         eps = sample_freq_weighted_noise(
             M=M_modes,
             d=action_dim,
@@ -99,7 +100,7 @@ def _sample_spectral_eps(
             sigma=1.0,
             device=device,
         )
-        return eps.reshape(n, cfg.num_mc_samples, M_modes + 1, action_dim)
+        return eps.reshape(n, cfg.num_mc_samples, Ka, action_dim)
     return sample_noise(
         (n, cfg.num_mc_samples, cfg.action_horizon, action_dim), device=device
     )
