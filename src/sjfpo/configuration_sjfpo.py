@@ -83,7 +83,7 @@ class SJFPOConfig(PreTrainedConfig):
     # -- Training loop -----------------------------------------------------
     # No separate warm-up phase; stats initialize naturally during first rollout.
     # -- Blackwell / GPU memory --------------------------------------------
-    use_gradient_checkpointing: bool = True
+    use_gradient_checkpointing: bool = False
     grad_accum_steps: int = 4
 
     # ----------------------------------------------------------------------

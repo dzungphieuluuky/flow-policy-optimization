@@ -5,13 +5,15 @@ only steps the optimizer, evaluates, and checkpoints.
 
 Performance notes
 -----------------
-* Grad-norm-after-clip is derived analytically (``min(pre, clip_val)``) instead
-  of looping over parameters with ``.item()`` — no per-parameter device syncs.
+* Vectorized training envs use ``AsyncVectorEnv`` (parallel worker processes)
+  when available; falls back to ``SyncVectorEnv`` on pickling failures.
+* Grad-norm-after-clip is derived analytically (``min(pre, clip_val)``);
+  pre-clip norms are accumulated on device and converted to a Python float
+  once per rollout, not once per minibatch.
 * ``zero_grad(set_to_none=True)`` frees grad buffers between minibatches.
+* The ``forward`` diagnostic pass is requested only when wandb will consume it.
 * Eval and checkpoint are triggered by explicit step counters, so no eval or
   save is skipped when ``collect_steps`` overshoots the boundary.
-* A resume re-applies ``maybe_compile`` so the freshly-loaded policy is
-  compiled like a fresh one.
 """
 
 from __future__ import annotations
@@ -112,8 +114,18 @@ def build_optimizer(policy: SJFPOPolicy, cfg: SJFPOConfig):
 def sample_minibatch(
     batch: dict[str, torch.Tensor], indices: torch.Tensor
 ) -> dict[str, torch.Tensor]:
-    """Slice dim-0 rows; every batch value is a ``[B, ...]`` tensor."""
-    return {k: v[indices] for k, v in batch.items()}
+    """Slice dim-0 rows; every per-chunk batch value is ``[B, ...]``.
+
+    ``tau`` is stored 1-D ``[num_mc]`` and broadcast over chunks inside
+    ``forward``, so it must be passed through without indexing.
+    """
+    out: dict[str, torch.Tensor] = {}
+    for k, v in batch.items():
+        if k == "tau" and v.dim() == 1:
+            out[k] = v
+        else:
+            out[k] = v[indices]
+    return out
 
 
 def random_baseline(evaluator: Evaluator, env: Any) -> float:
@@ -126,6 +138,23 @@ def random_baseline(evaluator: Evaluator, env: Any) -> float:
     if not results:
         return 1.0
     return float(np.mean([r["return"] for r in results]))
+
+
+def _make_vec_env(env_name: str, num_envs: int):
+    """Build a vectorized training env, preferring async workers.
+
+    ``AsyncVectorEnv`` parallelizes env stepping across worker processes —
+    the single biggest rollout-throughput win for ``num_envs > 1``. Falls
+    back to ``SyncVectorEnv`` if the async path is unavailable in the
+    current runtime (e.g. no /dev/shm, pickling of the env factory fails).
+    """
+    import gymnasium as gym
+
+    env_fns = [lambda: gym.make(env_name) for _ in range(num_envs)]
+    try:
+        return gym.vector.AsyncVectorEnv(env_fns)
+    except Exception:
+        return gym.vector.SyncVectorEnv(env_fns)
 
 
 # ---------------------------------------------------------------------------
@@ -146,12 +175,7 @@ def train_sjfpo_run(
     action_dim: int | None = None,
     resume_from_checkpoint: str | Path | None = None,
 ) -> dict[str, Any]:
-    """Run a single SJFPO training run, returning a summary with artifacts.
-
-    Plain single-process PyTorch (``PYTHONPATH=src python scripts/train.py``).
-    Mixed precision auto-detects (bf16 autocast when supported, fp32
-    otherwise; Blackwell uses bf16 storage + fp8 matmuls).
-    """
+    """Run a single SJFPO training run, returning a summary with artifacts."""
     cfg = cfg or SJFPOConfig()
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -170,11 +194,7 @@ def train_sjfpo_run(
     # inherit the parent's CUDA context (CleanRL / SB3 ordering).
     train_env = env
     if cfg.num_envs > 1 and env_name != "unknown":
-        import gymnasium as gym
-
-        train_env = gym.vector.SyncVectorEnv(
-            [lambda: gym.make(env_name) for _ in range(cfg.num_envs)]
-        )
+        train_env = _make_vec_env(env_name, cfg.num_envs)
 
     action_low = np.atleast_1d(np.asarray(env.action_space.low, dtype=np.float32))
     action_high = np.atleast_1d(np.asarray(env.action_space.high, dtype=np.float32))
@@ -242,6 +262,10 @@ def train_sjfpo_run(
     fps = 0.0
     t_start = time.time()
 
+    # Hoisted once — indexing the optimizer's param groups every minibatch is
+    # pure Python overhead on the critical path.
+    all_params = [p for group in optimizer.param_groups for p in group["params"]]
+
     try:
         while global_step < total_steps:
             steps_to_go = total_steps - global_step
@@ -278,7 +302,8 @@ def train_sjfpo_run(
             policy.snapshot_behavior_policy()
 
             infos: list[dict[str, float]] = []
-            grad_norm_pre: list[float] = []
+            # Accumulate pre-clip norms on device; convert to Python once.
+            pre_norms: list[torch.Tensor] = []
             n_chunks = batch["advantages"].shape[0]
             for mb_idx in mini_batch_indices(
                 n_chunks,
@@ -287,31 +312,35 @@ def train_sjfpo_run(
                 num_epochs=cfg.num_epochs,
             ):
                 optimizer.zero_grad(set_to_none=True)
-                loss, epoch_info = policy(sample_minibatch(batch, mb_idx))
+                loss, epoch_info = policy(
+                    sample_minibatch(batch, mb_idx),
+                    compute_info=wandb_enabled,
+                )
                 if loss.dim() != 0:
                     raise ValueError(
                         f"Loss must be scalar before backward; got {tuple(loss.shape)}."
                     )
                 loss.backward()
-                all_params = [
-                    p for group in optimizer.param_groups for p in group["params"]
-                ]
                 # `clip_grad_norm_` returns the pre-clip total norm; post-clip
                 # is min(pre, max_norm) because clipping is a uniform scale.
                 pre = torch.nn.utils.clip_grad_norm_(all_params, cfg.grad_clip_norm)
-                grad_norm_pre.append(float(pre))
+                pre_norms.append(pre.detach())
                 optimizer.step()
                 policy.step_count += 1
-                infos.append(epoch_info)
+                if epoch_info is not None:
+                    infos.append(epoch_info)
 
             # Aggregate across epochs/minibatches.
-            info = {k: sum(d[k] for d in infos) / len(infos) for k in infos[0]}
+            if infos:
+                info = {k: sum(d[k] for d in infos) / len(infos) for k in infos[0]}
+            else:
+                info = None
             grad_norm_mean_pre = (
-                sum(grad_norm_pre) / len(grad_norm_pre) if grad_norm_pre else 0.0
+                float(torch.stack(pre_norms).mean()) if pre_norms else 0.0
             )
             grad_norm_mean_post = min(grad_norm_mean_pre, cfg.grad_clip_norm)
 
-            if wandb_enabled:
+            if wandb_enabled and info is not None:
                 data = {f"train/{k}": v for k, v in info.items()}
                 data["train/grad_norm_preclip"] = grad_norm_mean_pre
                 data["train/grad_norm_after_clip"] = grad_norm_mean_post

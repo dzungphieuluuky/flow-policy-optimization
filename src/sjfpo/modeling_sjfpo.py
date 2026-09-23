@@ -6,13 +6,13 @@ frozen GAE advantages/returns from the rollout.
 Performance notes
 -----------------
 * Diagnostics returned by ``forward`` are batched into a single device→host
-  transfer (one ``.tolist()``) instead of ~20 ``float()`` syncs per call.
+  transfer (one ``.tolist()``) instead of ~20 ``float()`` syncs per call, and
+  the whole diagnostic pass is gated on ``compute_info=True``.
 * ``rho_bin`` is computed once per forward, not once per branch.
-* Gradient checkpointing actually wraps the actor call, gated on
-  ``config.use_gradient_checkpointing``.
-* ``compute_predicted_velocity`` is only invoked when the caller requests
-  frozen-snapshot velocities via ``return_stats=True`` (they're still needed
-  for the CFM comparison; the note above documents the intent).
+* Gradient checkpointing is off by default for shallow DiT stacks; when on,
+  it actually wraps the actor call.
+* ``snapshot_behavior_policy`` copies weights in-place into the frozen
+  snapshot instead of ``copy.deepcopy``-ing a ``torch.compile`` wrapper.
 """
 
 from __future__ import annotations
@@ -90,7 +90,7 @@ def _sample_spectral_eps(
     action_dim: int,
     device: torch.device,
 ) -> torch.Tensor:
-    """Draw MC noise matching the token layout (DCT or raw)."""
+    """Draw MC noise matching the token layout (DCT or raw), on ``device``."""
     if cfg.use_dct_transform:
         M_modes = max(1, cfg.action_horizon - 1)
         eps = sample_freq_weighted_noise(
@@ -99,8 +99,9 @@ def _sample_spectral_eps(
             T=1.0,
             B=n * cfg.num_mc_samples,
             sigma=1.0,
+            device=device,
         )
-        return eps.reshape(n, cfg.num_mc_samples, M_modes + 1, action_dim).to(device)
+        return eps.reshape(n, cfg.num_mc_samples, M_modes + 1, action_dim)
     return sample_noise(
         (n, cfg.num_mc_samples, cfg.action_horizon, action_dim), device=device
     )
@@ -111,6 +112,11 @@ def _actor_call(actor, x_t, tau, cond, *, use_ckpt: bool):
     if use_ckpt:
         return cp.checkpoint(actor, x_t, tau, cond, use_reentrant=False)
     return actor(x_t, tau, cond)
+
+
+def _unwrap_compiled(m: torch.nn.Module) -> torch.nn.Module:
+    """Return the eager module behind a ``torch.compile`` wrapper, if any."""
+    return getattr(m, "_orig_mod", m)
 
 
 # ---------------------------------------------------------------------------
@@ -181,10 +187,25 @@ class SJFPOPolicy(PreTrainedPolicy):
         )
 
     def snapshot_behavior_policy(self) -> None:
-        self.old_actor = copy.deepcopy(self.actor)
+        """Refresh the frozen π_old snapshot in place.
+
+        Avoids ``copy.deepcopy`` on ``torch.compile`` wrappers
+        (``OptimizedModule``), which clones the FX graph + guards and forces a
+        fresh compile warmup on the snapshot every rollout. Copying weights
+        into the existing modules instead keeps the compiled graph intact.
+        """
+        actor_old = _unwrap_compiled(self.old_actor)
+        actor_live = _unwrap_compiled(self.actor)
+        actor_old.load_state_dict(actor_live.state_dict())
+
+        cond_old = _unwrap_compiled(self.old_conditioner)
+        cond_live = _unwrap_compiled(self.conditioner)
+        cond_old.load_state_dict(cond_live.state_dict())
+
         self.old_actor.requires_grad_(False)
-        self.old_conditioner = copy.deepcopy(self.conditioner)
+        self.old_actor.eval()
         self.old_conditioner.requires_grad_(False)
+        self.old_conditioner.eval()
 
     def get_optim_params(self) -> dict:
         decay, no_decay = [], []
@@ -416,7 +437,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             lam=cfg.gae_lambda,
             normalize=True,
             truncated=truncated,
-            clamp=cfg.advantage_clamp,  # was silently defaulted before
+            clamp=cfg.advantage_clamp,
         )
         advantages = advantages.to(STORAGE_DTYPE)
         returns = returns.to(STORAGE_DTYPE)
@@ -444,16 +465,27 @@ class SJFPOPolicy(PreTrainedPolicy):
             "advantages": advantages,
             "returns": returns,
             "values": values.detach(),
-            "tau": tau.unsqueeze(0).expand(n_chunks, -1).contiguous(),
+            # 1-D [num_mc]; broadcast over chunks in ``forward``. Storing the
+            # expanded [N, num_mc] form would materialize N identical rows.
+            "tau": tau,
             "eps": eps,
         }
 
     # -- training forward ---------------------------------------------
 
     def forward(
-        self, batch: dict[str, torch.Tensor], reduction: str = "mean"
+        self,
+        batch: dict[str, torch.Tensor],
+        reduction: str = "mean",
+        compute_info: bool = True,
     ) -> tuple[torch.Tensor, dict | None]:
-        """Combined ASPO policy + value loss from a ``generate_rollout`` batch."""
+        """Combined ASPO policy + value loss from a ``generate_rollout`` batch.
+
+        When ``compute_info=False`` the diagnostic reductions are skipped
+        entirely; the returned info is ``None``. Training runs without wandb
+        should pass ``compute_info=False`` — the info pass is ~25 small
+        reductions per minibatch that would otherwise be discarded.
+        """
         cfg = self.config
         device = next(self.parameters()).device
 
@@ -487,7 +519,9 @@ class SJFPOPolicy(PreTrainedPolicy):
         # Reuse stored CRN draws if present, else sample fresh ones.
         if "tau" in batch and "eps" in batch:
             tau = to_tensor(batch["tau"], dtype=STORAGE_DTYPE, device=device)
-            tau = tau[0] if tau.dim() == 2 else tau
+            if tau.dim() == 2:
+                # Legacy [N, num_mc] layout: rows are identical by construction.
+                tau = tau[0]
             eps = to_tensor(batch["eps"], dtype=STORAGE_DTYPE, device=device)
             expected = (n, cfg.num_mc_samples, token_dim, action_dim)
             if tuple(eps.shape) != expected:
@@ -519,34 +553,24 @@ class SJFPOPolicy(PreTrainedPolicy):
             v_old = self.old_actor(x_t_flat, tau_bn, old_cond_flat).float()
 
         with autocast_context(device):
-            # Stats return path — no more self.actor.last_cond_stats mutation.
-            v_new, cond_stats = (
-                _actor_call(
-                    self.actor,
-                    x_t_flat,
-                    tau_bn,
-                    cond_flat,
-                    use_ckpt=cfg.use_gradient_checkpointing,
+            if cfg.use_gradient_checkpointing:
+                v_new = _actor_call(
+                    self.actor, x_t_flat, tau_bn, cond_flat, use_ckpt=True
                 )
-                if not cfg.use_gradient_checkpointing
-                else (
-                    # checkpoint() returns only the output; split the stats
-                    # request into a separate non-checkpointed call for logging.
-                    _actor_call(self.actor, x_t_flat, tau_bn, cond_flat, use_ckpt=True),
-                    None,
-                )
-            )
+            else:
+                v_new = self.actor(x_t_flat, tau_bn, cond_flat)
             v_new = v_new.float()
 
-        # When checkpointing, re-run just the modulation MLPs to grab stats —
-        # cheap relative to attention, and only on steps that log.
-        if cond_stats is None:
+        cond_stats = None
+        if compute_info:
+            # Re-run just the modulation MLPs on one row to grab stats —
+            # cheap relative to attention, and only on info-requesting steps.
             with torch.inference_mode():
                 _, cond_stats = self.actor(
                     x_t_flat[:1], tau_bn[:1], cond_flat[:1], return_stats=True
                 )
 
-# Do: CFM losses under target velocities (fp32 for stability)
+        # CFM losses under target velocities (fp32 for stability).
         with torch.autocast(device_type=device.type, enabled=False):
             v_star_f = self.compute_target_velocity(spectral_action_tokens, eps).float()
             v_old_r_f = v_old.reshape(n, num_mc, *flow_shape)
@@ -575,7 +599,7 @@ class SJFPOPolicy(PreTrainedPolicy):
                 psi = compute_aspo_surrogate(rho, adv_mc, cfg.epsilon_clip)
                 policy_per_chunk = -psi.mean(dim=1)
 
-# Do: Value loss (Huber)
+        # Value loss (Huber).
         with autocast_context(device):
             v_pred_raw = self.critic(states).float()
         v_pred = v_pred_raw.squeeze(-1)
@@ -616,6 +640,9 @@ class SJFPOPolicy(PreTrainedPolicy):
                 f"value_loss={float(value_per_chunk.mean().detach())}"
             )
 
+        if not compute_info:
+            return loss, None
+
         info = self._compute_info(
             l_old=l_old,
             l_new=l_new,
@@ -653,20 +680,20 @@ class SJFPOPolicy(PreTrainedPolicy):
     ) -> dict[str, float]:
         """All diagnostic reductions in one go, batched into a single sync.
 
-        Every field is a Python float, but the device↔host transfer happens
-        exactly once (via a single ``.tolist()`` at the end).
+        Only called when ``forward(compute_info=True)``; the training loop
+        can skip it entirely when nothing will consume the result.
         """
-# Do: log-ratio on raw delta (never clamped-then-checked)
+        # Log-ratio on raw delta (never clamped-then-checked).
         delta = l_old - l_new
         log_rho_abs = delta.abs()
         log_rho_max = log_rho_abs.max()
         log_rho_clip_frac = (log_rho_abs > cfg.log_ratio_cap).float().mean()
 
-# Do: rho stats
+        # rho stats
         rho_mean = rho.mean()
         rho_std = rho.std(correction=0)
 
-# Do: per-bin rho
+        # per-bin rho
         rho_bin_mean = rho_bin.mean(dim=(0, 1))
         n_bins = rho_bin_mean.numel()
         split = max(1, n_bins // 2)
@@ -698,7 +725,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         else:
             rho_bin_high_outside = rho_bin_low_outside
 
-# Do: value-health stats
+        # value-health stats
         returns_var = returns_d.var(correction=0).clamp_min(1e-8)
         explained_var = 1.0 - (returns_d - v_pred).var(correction=0) / returns_var
         value_error_max = torch.nn.functional.smooth_l1_loss(
@@ -708,14 +735,15 @@ class SJFPOPolicy(PreTrainedPolicy):
         return_max = returns_d.abs().max()
         v_star_rms = v_star_f.pow(2).mean().sqrt()
 
-# Do: Concrete diagnostics (Step 3)
+        # Concrete diagnostics (Step 3)
         l_old_std = l_old.std(correction=0)
         l_new_std = l_new.std(correction=0)
         corr_denom = l_old_std * l_new_std + 1e-8
         l_old_new_corr = (
             (l_old - l_old.mean()) * (l_new - l_new.mean())
         ).mean() / corr_denom
-# Do: pack into one tensor and transfer once
+
+        # Pack into one tensor and transfer once.
         cond_keys = list(cond_stats.keys()) if cond_stats else []
         scalars = [
             policy_per_chunk.mean(),
