@@ -1,33 +1,33 @@
 # SJFPO defaults — mirrors src/sjfpo/configuration_sjfpo.py:SJFPOConfig.
-# fp32 storage (bf16 autocast matmuls on CUDA; torch.compile on, SJFPO_COMPILE=0 off).
-num_mc_samples: 8
-num_euler_steps: 8
+# Updated to match current research settings (online RL, spectral-flow, chunk GAE).
+
+# -- Observation / action geometry -------------------------------------
+n_obs_steps: 16
+action_horizon: 16
+n_action_steps: 8  # derived from action_horizon * executed_vs_predicted_ratio = 0.5
+hidden_dim: 128
+
+# -- Monte-Carlo / rollout ---------------------------------------------
+num_mc_samples: 64  # raised from 16: halves ratio noise (1/sqrt(M))
+num_euler_steps: 16
 num_inference_steps: 16
-chunks_per_update: 256
-num_epochs: 4
-optimizer_lr: 0.0003
-optimizer_weight_decay: 0.0001
+chunks_per_update: 128
+num_epochs: 16
+num_minibatches: 4
+num_envs: 2  # low for 8 GB Blackwell mobile VRAM
+
+# -- Optimization ------------------------------------------------------
 gamma: 0.999
 gae_lambda: 0.995
-epsilon_clip: 0.05
-use_per_bin_clip: false
-epsilon_clip_lowfreq: 0.02
-epsilon_clip_highfreq: 0.10
+epsilon_clip: 0.10  # widened: 5% was inside ratio noise floor
+use_dct_transform: true  # spectral chunk encoding; False = raw action chunk
+use_coeff_space: false  # coefficient-based flow; False = discrete token flow
+use_aspo: false  # disabled for discriminator run; re-enable once confirmed
+use_per_bin_clip: false  # two-group epsilon over DCT bins
+epsilon_clip_lowfreq: 0.02  # tight: low bins carry task intent
+epsilon_clip_highfreq: 0.10  # loose: high bins are detail/exploration
 cfm_clamp: 20.0
 log_ratio_cap: 10.0
 advantage_clamp: 100.0
 use_clipped_value_loss: true
-min_timestep: 0.005
-max_timestep: 0.995
-dit_depth: 4
-dit_heads: 4
-dit_mlp_ratio: 4.0
-dit_time_dim: 128
-timestep_scale: 1000.0
-vf_coef: 0.01
-grad_clip_norm: 1.0
-n_obs_steps: 16
-action_horizon: 16
-executed_vs_predicted_ratio: 0.5
-top_p_spectral_tokens: 1.0
-hidden_dim: 128
+dit_depth: 4  # aligned to SJFPOConfig default (was 4 in original YAML)
