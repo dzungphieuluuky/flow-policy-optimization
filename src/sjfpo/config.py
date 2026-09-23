@@ -43,12 +43,12 @@ class PPOConfig:
     learning_epochs: int = 10
     mini_batches: int = 8
     lr: float = 3e-4
-    kl_threshold: float = 0.01  # KLAdaptiveLR
-    grad_norm_clip: float = 1.0
+    kl_threshold: float = 0.0  # reference default (no KL early stop)
+    grad_norm_clip: float = 0.5
     discount: float = 0.99
     gae_lambda: float = 0.95
     ratio_clip: float = 0.2
-    value_loss_scale: float = 1.0
+    value_loss_scale: float = 2.5
     hidden: tuple[int, ...] = (256, 256, 256)
 
 

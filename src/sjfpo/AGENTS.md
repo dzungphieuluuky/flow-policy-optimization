@@ -70,3 +70,44 @@ PYTHONPATH=src .venv/bin/python scripts/train.py --method sjfpo --env Hopper-v5 
 ## Notes
 - One `WindowEncoder` class serves all time windows (conditioner state branch, critic state encoder), each owned by its model; ASPO grads land on the policy head (incl. conditioner)
 - `compute_chunk_values` bootstraps truncated chunks from the full next window
+
+---
+
+# Optimization Reference (from current code audit)
+
+Write these as tips when implementing new modules.
+
+## Networks
+- Use `SwiGLU` (fused gate+up GEMM) instead of 2 separate Linears.
+- Cache sinusoidal freq tables (device-keyed dict); never rebuild `exp` per call.
+- Use branchless `RunningMeanStd.forward`; avoid `int(self.count)` host sync.
+- `SelfAttention`: `view`/`transpose` only; cache SDPA mask when standard (identity/causal).
+- `RMSNorm`: store weights in `STORAGE_DTYPE`; cast input only when `dtype != weight.dtype`.
+
+## Flow / Sampling
+- `run_mc_simulation`: broadcast `(a, eps, tau)` onto flat `[B*m, ...]` once; no per-sample loops.
+- `compute_policy_ratio`: STE cap (`clamp` forward, `detach` backward) — never break gradient.
+- `compute_cfm_loss`: prefer `reduce_mode="bin"` (`sum/sqrt(D)`) over `mean` for variance stability.
+- `sample_action`: precompute `dts` grid; resolve device once; no per-step sync.
+
+## Policy / Training Loop
+- Batch diagnostics into one `.tolist()` device→host transfer; no `float()` syncs per stat.
+- `snapshot_behavior_policy`: `deepcopy` + `.eval()`; frozen in train mode.
+- Gradient checkpointing: gate with `cfg.use_gradient_checkpointing`; wrap actor call only.
+- `zero_grad(set_to_none=True)` between minibatches; `fused=True` AdamW on CUDA.
+- Analytical grad-clip (`min(pre, max_norm)`) — no `.item()` per parameter.
+
+## DCT / Spectral
+- Cache `DCT` basis matrices per `(n, device)` in fp32; cast at use site.
+- `extract_dct_coeffs` / `decode_coeffs_to_velocity`: share `k`/norm computation.
+- `sample_freq_weighted_noise`: local `Generator`; never touch global RNG.
+
+## Processor / Data Path
+- `ObservationProcessor`: hold live reference to `policy.obs_normalizer` (not a copy).
+- `ActionPostprocessor`: per-`(device, dtype)` affine coeff cache (`_scale_cache`); avoid `.to()` per chunk.
+
+## Compile / Autocast / Device
+- `autocast_context`: `bf16` only on CUDA+bf16-supported; else `nullcontext`.
+- `maybe_compile`: `torch.compile(dynamic=True, scalar_capture=True)`; only if CUDA+bf16/Blackwell; disable with `SJFPO_COMPILE=0`.
+- `to_device_async`: `pin_memory()` + `non_blocking=True` for DMA overlap.
+- `resolve_storage_dtype`: `bf16` on Blackwell, `fp32` elsewhere; `resolve_compute_dtype`: same.
