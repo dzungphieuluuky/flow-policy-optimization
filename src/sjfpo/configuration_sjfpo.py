@@ -96,10 +96,9 @@ class SJFPOConfig(PreTrainedConfig):
         self._validate_flags()
 
     def _resolve_n_action_steps(self) -> None:
-        """If ``n_action_steps`` is None, use a safe default (half of action_horizon)."""
+        """If ``n_action_steps`` is None, use ``action_horizon`` as the default."""
         if self.n_action_steps is None:
-            derived = max(1, self.action_horizon // 2)
-            self.n_action_steps = min(derived, self.action_horizon)
+            self.n_action_steps = self.action_horizon
 
     def _validate_geometry(self) -> None:
         if self.n_obs_steps < 1:
