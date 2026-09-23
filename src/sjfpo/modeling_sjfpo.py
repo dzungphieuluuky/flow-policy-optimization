@@ -194,12 +194,15 @@ class SJFPOPolicy(PreTrainedPolicy):
                 no_decay.append(p)
             else:
                 decay.append(p)
+        # Separate LR for critic: 3x the policy LR for faster value tracking.
+        policy_lr = self.config.policy_lr
+        critic_lr = policy_lr * 3.0
         return {
             "params": [
-                {"params": decay},
-                {"params": no_decay, "weight_decay": 0.0},
-                {"params": list(self.conditioner.parameters())},
-                {"params": list(self.critic.parameters())},
+                {"params": decay, "lr": policy_lr},
+                {"params": no_decay, "weight_decay": 0.0, "lr": policy_lr},
+                {"params": list(self.conditioner.parameters()), "lr": policy_lr},
+                {"params": list(self.critic.parameters()), "lr": critic_lr},
             ]
         }
 
