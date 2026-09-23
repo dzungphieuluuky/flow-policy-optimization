@@ -1,23 +1,36 @@
 """Networks: window encoders, state conditioner (raw + spectral), flow heads, V(s) critic.
 
-Performance notes
------------------
-* ``DiTBlock`` / ``SJFPOFlowModel`` no longer stash diagnostics on ``self``;
-  pass ``return_stats=True`` when you actually need them (eval/logging), and
-  the default training path stays reduction-free.
-* Sinusoidal frequency tables are cached per module instance (device-keyed),
-  so repeated calls hit a dict lookup instead of ``exp`` over an arange.
-* ``SwiGLU`` fuses gate and up into one GEMM.
-* ``SelfAttention`` uses plain ``view``/``transpose`` in the hot path and
-  caches the SDPA mask when it's the standard causal/identity form.
-* ``RunningMeanStd.forward`` is branchless (jit/compile friendly) instead of
-  forcing a host sync via ``int(self.count)``.
+Changes in this revision (addresses review feedback):
+* ``RunningMeanStd.forward`` pins the output dtype to the input dtype, so
+  half-precision callers don't get silently promoted to fp32.
+* ``RunningMeanStd.count`` is fp64 (avoids fp32 saturation at 2^24 frames);
+  mean/var stay fp32.
+* ``RunningMeanStd._uninitialized`` is registered with ``persistent=False``
+  so pre-change checkpoints still load.
+* Added ``RunningMeanStd.reset()`` to clear the one-way latch.
+* Added a shape assertion in ``RunningMeanStd.update``.
+* ``_RMSNorm`` uses the ``dtype=`` kwarg at construction instead of mutating
+  ``.data`` (meta-device / ``to_empty`` friendly).
+* ``condition.to(...)`` now moves device as well as dtype.
+* ``temb`` broadcast replaces the explicit ``expand`` (scalar ``t`` runs the
+  time MLP once, not B times).
+* ``SelfAttention`` mask handling is shape-robust (``[:, None, None, :]``)
+  and the stale "mask caching" docstring is gone.
+* ``StateConditioner`` forwards ``n_heads`` to its inner ``WindowEncoder``.
+* Type hints on the dual-return forwards and ``resolve_config_value``.
+
+Performance notes (carried from the previous revision):
+* Attention uses ``jax.nn.dot_product_attention``-equivalent SDPA on CUDA.
+* Sinusoidal frequency tables are cached per-module per-device.
+* ``SwiGLU`` fuses gate and up into a single GEMM.
+* ``DiTBlock`` / ``SJFPOFlowModel`` return diagnostics only when
+  ``return_stats=True`` — the default training path has no extra reductions.
 """
 
 from __future__ import annotations
 
 import math
-from typing import Optional
+from typing import Any
 
 import torch
 import torch.nn.functional as F
@@ -40,7 +53,7 @@ def _defaults() -> SJFPOConfig:
     return _DEFAULTS
 
 
-def resolve_config_value(name: str, override):
+def resolve_config_value(name: str, override: Any) -> Any:
     """Policy default for ``name`` unless ``override`` is not None."""
     return override if override is not None else getattr(_defaults(), name)
 
@@ -50,14 +63,16 @@ def resolve_config_value(name: str, override):
 # ---------------------------------------------------------------------------
 
 class _RMSNorm(nn.RMSNorm):
-    """nn.RMSNorm with storage-dtype weight."""
+    """``nn.RMSNorm`` initialized in ``STORAGE_DTYPE``.
+
+    ``dtype=`` at construction is preferable to mutating ``.data`` post-hoc:
+    it plays correctly with meta-device init and ``to_empty``.
+    """
 
     def __init__(self, hidden_dim: int, eps: float = 1e-6):
-        super().__init__(hidden_dim, eps=eps)
-        self.weight.data = self.weight.data.to(STORAGE_DTYPE)
+        super().__init__(hidden_dim, eps=eps, dtype=STORAGE_DTYPE)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Only cast when the input dtype differs — otherwise zero-cost.
         if x.dtype != self.weight.dtype:
             x = x.to(dtype=self.weight.dtype)
         return super().forward(x)
@@ -102,7 +117,13 @@ class CondMLP(nn.Module):
 
 
 class SinusoidalEncoding(nn.Module):
-    """Fixed sinusoidal codes with cached frequency tables."""
+    """Fixed sinusoidal codes with cached frequency tables.
+
+    Cache is a per-module dict keyed by device string. Under ``torch.compile``
+    the first miss can cause a graph break; if that bites, switch to a
+    non-persistent buffer and force ``.float()`` inside ``_freqs`` so a
+    ``model.to(bf16)`` doesn't demote the table.
+    """
 
     def __init__(self, dim: int, scale: float = 1.0):
         super().__init__()
@@ -111,7 +132,6 @@ class SinusoidalEncoding(nn.Module):
         self.dim = dim
         self.scale = 1.0 if scale is None else float(scale)
         self.half = dim // 2
-        # Cache keyed by device string; populated on first use per device.
         self._freq_cache: dict[str, torch.Tensor] = {}
 
     def _freqs(self, device: torch.device) -> torch.Tensor:
@@ -125,7 +145,9 @@ class SinusoidalEncoding(nn.Module):
 
     def add_to(self, x: torch.Tensor, positions: torch.Tensor) -> torch.Tensor:
         """Add codes for ``positions`` ([..., L]) to ``x`` ([..., L, D])."""
-        ang = (positions.to(dtype=torch.float32) * self.scale).unsqueeze(-1) * self._freqs(x.device)
+        ang = (
+            positions.to(dtype=torch.float32) * self.scale
+        ).unsqueeze(-1) * self._freqs(x.device)
         pe = torch.cat([ang.sin(), ang.cos()], dim=-1)
         if pe.shape[-1] < self.dim:  # odd dim: pad last column with zeros
             pe = F.pad(pe, (0, self.dim - pe.shape[-1]))
@@ -133,7 +155,9 @@ class SinusoidalEncoding(nn.Module):
 
     def encode_times(self, t: torch.Tensor) -> torch.Tensor:
         """Sinusoidal embedding for continuous timestep values."""
-        t = torch.as_tensor(t, dtype=torch.float32, device=t.device if isinstance(t, torch.Tensor) else None) * self.scale
+        if not isinstance(t, torch.Tensor):
+            t = torch.as_tensor(t, dtype=torch.float32)
+        t = t.to(dtype=torch.float32) * self.scale
         ang = t.unsqueeze(-1) * self._freqs(t.device)
         emb = torch.cat([ang.sin(), ang.cos()], dim=-1)
         if self.dim % 2:
@@ -150,7 +174,11 @@ class SinusoidalEncoding(nn.Module):
 
 
 class SelfAttention(nn.Module):
-    """Multi-head self-attention on SDPA."""
+    """Multi-head self-attention on SDPA.
+
+    ``key_mask`` uses PyTorch's ``True = ignore`` convention; a fully masked
+    query row is forced to attend to key 0 to avoid SDPA's NaN behavior.
+    """
 
     def __init__(self, hidden_dim: int, n_heads: int = 4):
         super().__init__()
@@ -169,21 +197,21 @@ class SelfAttention(nn.Module):
         h = self.n_heads
         d = self.head_dim
 
-        # One GEMM; three views via narrow (no copy) then reshape/permute.
-        qkv = self.qkv(x)                       # [B, L, 3H]
-        q, k, v = qkv.chunk(3, dim=-1)          # each [B, L, H*D]
-
-        # [B, L, H*D] -> [B, H, L, D] via view+transpose (no einx overhead).
+        qkv = self.qkv(x)
+        q, k, v = qkv.chunk(3, dim=-1)
+        # [B, L, H*D] -> [B, H, L, D] via view+transpose.
         q = q.view(b, l, h, d).transpose(1, 2)
         k = k.view(b, l, h, d).transpose(1, 2)
         v = v.view(b, l, h, d).transpose(1, 2)
 
         mask = None
         if key_mask is not None:
-            # SDPA wants True = keep. Same reshape the previous einx did.
-            mask = (~torch.as_tensor(key_mask, dtype=torch.bool, device=x.device)).view(
-                b, 1, 1, l
-            )
+            # True = keep. Force at least one keep per query to avoid NaN.
+            keep = ~torch.as_tensor(key_mask, dtype=torch.bool, device=x.device)
+            keep = keep.clone()
+            keep[..., 0] = True
+            mask = keep[:, None, None, :]
+
         y = F.scaled_dot_product_attention(q, k, v, attn_mask=mask)
         y = y.transpose(1, 2).reshape(b, l, h * d)
         return self.out(y)
@@ -201,10 +229,10 @@ class WindowEncoder(nn.Module):
         mlp_ratio: float | None = None,
     ):
         super().__init__()
-        n_obs_steps = resolve_config_value("n_obs_steps", n_obs_steps)
         hidden_dim = resolve_config_value("hidden_dim", hidden_dim)
         mlp_ratio = float(resolve_config_value("dit_mlp_ratio", mlp_ratio))
-        del n_obs_steps  # accepted for call-site compat
+        # n_obs_steps accepted for call-site compat; not used by this block.
+        del n_obs_steps
         self.frame_proj = nn.Linear(in_dim, hidden_dim)
         self.pos_encoding = SinusoidalEncoding(hidden_dim)
         self.norm1 = _rms_norm(hidden_dim, eps=1e-6)
@@ -227,43 +255,73 @@ class WindowEncoder(nn.Module):
 # ---------------------------------------------------------------------------
 
 class RunningMeanStd(nn.Module):
-    """Per-dim running mean/variance over raw obs frames."""
+    """Per-dim running mean/variance over raw obs frames.
+
+    ``mean``/``var`` stay fp32; ``count`` is fp64 so it doesn't saturate at
+    2^24 frames on long runs. ``forward`` preserves the input dtype so
+    half-precision callers don't get silently promoted.
+    """
 
     def __init__(self, dim: int, eps: float = 1e-8, clip: float = 10.0):
         super().__init__()
         if dim <= 0:
             raise ValueError(f"dim={dim} must be positive")
-        self.register_buffer("mean", torch.zeros(dim))
-        self.register_buffer("var", torch.ones(dim))
-        self.register_buffer("count", torch.tensor(0.0))
-        # Precomputed sentinel; forward avoids an int() host sync.
-        self.register_buffer("_uninitialized", torch.tensor(True, dtype=torch.bool))
+        self.register_buffer("mean", torch.zeros(dim, dtype=torch.float32))
+        self.register_buffer("var", torch.ones(dim, dtype=torch.float32))
+        self.register_buffer("count", torch.tensor(0.0, dtype=torch.float64))
+        # Non-persistent so pre-change checkpoints load without this key.
+        self.register_buffer(
+            "_uninitialized", torch.tensor(True, dtype=torch.bool), persistent=False
+        )
         self.eps = eps
         self.clip = clip
 
     @torch.no_grad()
     def update(self, x: torch.Tensor) -> None:
         """Fold raw frames into the running stats (any device, no grad)."""
-        batch = x.detach().reshape(-1, x.shape[-1]).to(self.mean.device, dtype=torch.float32)
+        if x.shape[-1] != self.mean.numel():
+            raise ValueError(
+                f"update got last dim {x.shape[-1]}, expected {self.mean.numel()}"
+            )
+        batch = (
+            x.detach()
+            .reshape(-1, x.shape[-1])
+            .to(self.mean.device, dtype=torch.float32)
+        )
         b = batch.shape[0]
         if b == 0:
             return
         b_mean = batch.mean(dim=0)
         b_var = batch.var(dim=0, unbiased=False)
         delta = b_mean - self.mean
-        total = self.count + b
-        self.mean.add_(delta * b / total)
+        total = self.count + b  # fp64
+        self.mean.add_((delta * b / total).to(self.mean.dtype))
+        # Chan et al. parallel variance merge; result cast back to fp32 by copy_.
         self.var.copy_(
-            (self.count * self.var + b * b_var + delta.square() * self.count * b / total) / total
+            (
+                self.count * self.var
+                + b * b_var
+                + delta.square() * (self.count * b / total)
+            )
+            / total
         )
         self.count.copy_(total)
         self._uninitialized.fill_(False)
 
+    @torch.no_grad()
+    def reset(self) -> None:
+        """Clear the one-way latch and reset stats to their initial values."""
+        self.mean.zero_()
+        self.var.fill_(1.0)
+        self.count.zero_()
+        self._uninitialized.fill_(True)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Normalize with frozen stats; identity until the first update."""
-        # Branchless: no ``int(self.count)`` host sync.
-        norm = (x - self.mean.to(x.device)) * torch.rsqrt(self.var.to(x.device) + self.eps)
-        norm = norm.clamp(-self.clip, self.clip)
+        norm = (x - self.mean.to(x.device)) * torch.rsqrt(
+            self.var.to(x.device) + self.eps
+        )
+        norm = norm.clamp(-self.clip, self.clip).to(x.dtype)
         return torch.where(self._uninitialized.to(x.device), x, norm)
 
 
@@ -291,17 +349,24 @@ class DiTBlock(nn.Module):
         mlp_hidden = int(hidden_dim * mlp_ratio)
         self.mlp = SwiGLU(hidden_dim, mlp_hidden, hidden_dim)
         self.adaLN = CondMLP(hidden_dim, hidden_dim, 6 * hidden_dim)
+        # Zero-init modulation head: block starts as identity (adaLN-Zero).
         nn.init.constant_(self.adaLN.fc2.weight, 0.0)
         nn.init.constant_(self.adaLN.fc2.bias, 0.0)
 
-    def forward(self, x: torch.Tensor, c: torch.Tensor, return_stats: bool = False):
+    def forward(
+        self, x: torch.Tensor, c: torch.Tensor, return_stats: bool = False
+    ) -> torch.Tensor | tuple[torch.Tensor, dict[str, torch.Tensor]]:
         """([B, H, D], [B, D]) -> [B, H, D] (or a tuple when stats are requested)."""
-        # reshape+chunk avoids the [:, None, :] expansion before split.
         b = c.shape[0]
+        # reshape+unbind avoids building a [B, 1, 6H] intermediate.
         parts = self.adaLN(c).view(b, 6, -1)
-        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = parts.unbind(dim=1)
+        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = parts.unbind(
+            dim=1
+        )
 
-        h = modulate(self.norm1(x), shift_msa.unsqueeze(1), scale_msa.unsqueeze(1))
+        h = modulate(
+            self.norm1(x), shift_msa.unsqueeze(1), scale_msa.unsqueeze(1)
+        )
         x = x + gate_msa.unsqueeze(1) * self.attn(h)
 
         out = x + gate_mlp.unsqueeze(1) * self.mlp(
@@ -322,7 +387,11 @@ class DiTBlock(nn.Module):
 
 
 class StateConditioner(nn.Module):
-    """Fuse raw state window + DCT bins into [B, D]."""
+    """Fuse raw state window + DCT bins into ``[B, D]``.
+
+    The window is never padded in this codebase; ``key_mask`` is not
+    forwarded to the inner encoder.
+    """
 
     def __init__(
         self,
@@ -334,8 +403,9 @@ class StateConditioner(nn.Module):
         if obs_dim <= 0:
             raise ValueError("obs_dim must be positive")
         hidden_dim = int(resolve_config_value("hidden_dim", hidden_dim))
-        del n_heads  # accepted for call-site compat
-        self.state_encoder = WindowEncoder(obs_dim, hidden_dim=hidden_dim)
+        self.state_encoder = WindowEncoder(
+            obs_dim, hidden_dim=hidden_dim, n_heads=n_heads
+        )
         self.bin_norm = _rms_norm(obs_dim)
         self.bin_encoding = SinusoidalEncoding(obs_dim)
         self.key_proj = nn.Linear(obs_dim, hidden_dim)
@@ -351,7 +421,12 @@ class StateConditioner(nn.Module):
 
 
 class SJFPOFlowModel(nn.Module):
-    """DiT velocity model over noisy-action tokens, conditioned via adaLN."""
+    """DiT velocity model over noisy-action tokens, conditioned via adaLN.
+
+    ``return_stats=True`` returns ``(velocity, stats_dict)`` and computes
+    per-block gate/scale RMS reductions; the default path returns only the
+    velocity, with no diagnostic reductions in the graph.
+    """
 
     def __init__(
         self,
@@ -383,34 +458,39 @@ class SJFPOFlowModel(nn.Module):
         nn.init.constant_(self.adaLN_out.weight, 0.0)
         nn.init.constant_(self.adaLN_out.bias, 0.0)
         self.out = nn.Linear(hidden_dim, action_dim)
+        # Zero final layer: untrained policy predicts ~zero velocity.
         nn.init.constant_(self.out.weight, 0.0)
         nn.init.constant_(self.out.bias, 0.0)
 
     def forward(
         self,
         x_t: torch.Tensor,
-        t,
+        t: torch.Tensor | float,
         condition: torch.Tensor,
         return_stats: bool = False,
-    ):
-        """Predict velocity: ([B, Ka, D], t, [B, D]) -> [B, Ka, D] (or tuple)."""
+    ) -> torch.Tensor | tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        """Predict velocity: ([B, Ka, D], t, [B, D]) -> [B, Ka, D] (or tuple).
+
+        ``t`` may be a scalar or a ``[B]`` tensor. When scalar, the time MLP
+        runs on an unbatched embedding and broadcasting handles the batch.
+        """
         temb = self.timestep_embedder.encode_times(t).to(
             device=x_t.device, dtype=x_t.dtype
         )
-        if temb.dim() == 1:
-            temb = temb.expand(x_t.shape[0], -1)
-
-        c = self.time_mlp(temb) + condition.to(dtype=x_t.dtype)
+        # No explicit expand: nn.Linear and the add below both broadcast.
+        c = self.time_mlp(temb) + condition.to(
+            device=x_t.device, dtype=x_t.dtype
+        )
 
         h = self.bin_encoding(self.in_proj(x_t))
 
         if not return_stats:
             for block in self.blocks:
-                h = block(h, c)                          # fast path: no stats
+                h = block(h, c)
             shift_out, scale_out = self.adaLN_out(c)[:, None, :].chunk(2, dim=-1)
             return self.out(modulate(self.norm_out(h), shift_out, scale_out))
 
-        block_stats = []
+        block_stats: list[dict[str, torch.Tensor]] = []
         for block in self.blocks:
             h, s = block(h, c, return_stats=True)
             block_stats.append(s)
