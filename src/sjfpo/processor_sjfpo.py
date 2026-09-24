@@ -54,14 +54,24 @@ class SJFPOObservationProcessorStep(ProcessorStep):
 class SJFPOActionPostprocessorStep(ProcessorStep):
     """Unscale policy action chunks from [-1, 1] to real env bounds.
 
-    Bounds are stored as plain tensors (``ProcessorStep`` is not a
-    ``torch.nn.Module``, so ``register_buffer`` is unavailable). A tiny
+    Bounds are updated atomically by ``set_action_bounds()``. A tiny
     per-``(device, dtype)`` cache keeps the pre-computed affine coefficients
     ``_scale`` / ``_bias`` local to whatever device the incoming chunk is on,
-    so ``unnormalize`` is a single FMA with no per-call ``.to()``.
+    so ``unnormalize`` is a single FMA with no per-call ``.to()``. Updating
+    bounds clears both caches.
     """
 
     def __init__(self, action_low: torch.Tensor, action_high: torch.Tensor):
+        self._scale_cache: dict[tuple[str, torch.dtype], torch.Tensor] = {}
+        self._bias_cache: dict[tuple[str, torch.dtype], torch.Tensor] = {}
+        self.set_action_bounds(action_low, action_high)
+
+    def set_action_bounds(
+        self,
+        action_low: torch.Tensor,
+        action_high: torch.Tensor,
+    ) -> None:
+        """Atomically replace bounds and invalidate cached affine coefficients."""
         low = torch.as_tensor(action_low, dtype=torch.float32).reshape(-1).clone()
         high = torch.as_tensor(action_high, dtype=torch.float32).reshape(-1).clone()
         if low.shape != high.shape:
@@ -77,16 +87,10 @@ class SJFPOActionPostprocessorStep(ProcessorStep):
 
         # Affine form: y = _scale * s + _bias
         #   = 0.5 (high - low) * s + 0.5 (high + low)
-        scale_cpu = 0.5 * (high - low)
-        bias_cpu = 0.5 * (high + low)
-
-        # Cache keyed by (device string, dtype); populated lazily on first use
-        # per target. Since there is typically one device per run, the cache
-        # has exactly one entry in steady state.
-        self._scale_cpu = scale_cpu
-        self._bias_cpu = bias_cpu
-        self._scale_cache: dict[tuple[str, torch.dtype], torch.Tensor] = {}
-        self._bias_cache: dict[tuple[str, torch.dtype], torch.Tensor] = {}
+        self._scale_cpu = 0.5 * (high - low)
+        self._bias_cpu = 0.5 * (high + low)
+        self._scale_cache.clear()
+        self._bias_cache.clear()
 
     def _coefs_for(self, ref: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         key = (str(ref.device), ref.dtype)
@@ -140,11 +144,11 @@ class SJFPOActionPostprocessorStep(ProcessorStep):
 def make_sjfpo_pre_post_processors(
     policy,
 ) -> tuple[SJFPOObservationProcessorStep, SJFPOActionPostprocessorStep]:
-    """Build the (preprocessor, postprocessor) pair sharing the policy's live state.
+    """Build the pre/post pair; policy setter synchronizes action bounds.
 
-    Both steps hold references, not copies: the observation step reads and
-    updates the policy's ``obs_normalizer`` buffers in place, and the action
-    step snapshots the policy's current action bounds as plain tensors.
+    The observation step reads and updates the policy's ``obs_normalizer``
+    buffers in place. The action step owns its validated affine cache, and
+    ``SJFPOPolicy.set_action_bounds()`` updates it atomically.
     """
     return (
         SJFPOObservationProcessorStep(policy.obs_normalizer),

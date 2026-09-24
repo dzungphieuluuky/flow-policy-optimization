@@ -35,6 +35,20 @@ def test_action_unnormalize_math():
     assert torch.equal(batch["action"], torch.zeros(2, 4, 2))  # ±3 midpoint is 0
 
 
+def test_action_bound_update_invalidates_affine_cache():
+    post = SJFPOActionPostprocessorStep(
+        torch.full((2,), -1.0), torch.full((2,), 1.0)
+    )
+    zeros = torch.zeros(1, 2)
+    post.unnormalize(zeros)  # populate the old-bound cache
+
+    post.set_action_bounds(torch.zeros(2), torch.tensor([2.0, 4.0]))
+    torch.testing.assert_close(post.unnormalize(zeros), torch.tensor([[1.0, 2.0]]))
+
+    post.set_action_bounds(torch.full((2,), -2.0), torch.full((2,), 2.0))
+    torch.testing.assert_close(post.unnormalize(zeros), torch.zeros(1, 2))
+
+
 def test_obs_normalize_identity_then_stats():
     from sjfpo.networks import RunningMeanStd
 
@@ -62,12 +76,16 @@ def test_policy_pair_shares_live_state():
     )
     cfg = dataclasses.replace(cfg, num_mc_samples=2, dit_depth=2)
     policy = SJFPOPolicy(cfg)
-    pre, post = make_sjfpo_pre_post_processors(policy)
+    pre, post = policy.preprocessor, policy.postprocessor
     assert pre.normalizer is policy.obs_normalizer
-    assert post.action_low is policy.action_low  # bounds stay visible to the step
+    assert torch.equal(post.action_low, policy.action_low)
     assert policy.preprocessor.normalizer is policy.obs_normalizer
-    # Custom bounds flow through predict without touching the policy.
+    # Custom bounds flow through both the policy and its postprocessor.
     policy.set_action_bounds(torch.full((2,), -2.0), torch.full((2,), 2.0))
+    assert torch.equal(post.action_low, policy.action_low)
+    torch.testing.assert_close(
+        post.unnormalize(torch.zeros(1, 2)), torch.zeros(1, 2)
+    )
     chunk = policy.predict_action_chunk({"observation.state": torch.randn(2, 16, 4)})
     assert chunk.shape == (2, 16, 2)
     assert (chunk <= 2.0).all() and (chunk >= -2.0).all()

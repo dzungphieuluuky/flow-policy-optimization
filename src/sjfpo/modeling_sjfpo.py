@@ -178,12 +178,26 @@ class SJFPOPolicy(PreTrainedPolicy):
         low: np.ndarray | torch.Tensor,
         high: np.ndarray | torch.Tensor,
     ) -> None:
-        self.action_low.copy_(
-            to_tensor_1d(low, dtype=STORAGE_DTYPE, device=self.action_low.device)
-        )
-        self.action_high.copy_(
-            to_tensor_1d(high, dtype=STORAGE_DTYPE, device=self.action_high.device)
-        )
+        low_t = to_tensor_1d(
+            low, dtype=STORAGE_DTYPE, device=self.action_low.device
+        ).reshape(-1)
+        high_t = to_tensor_1d(
+            high, dtype=STORAGE_DTYPE, device=self.action_high.device
+        ).reshape(-1)
+        if (
+            low_t.shape != self.action_low.shape
+            or high_t.shape != self.action_high.shape
+        ):
+            raise ValueError(
+                f"action bounds must match action_dim={self.action_low.numel()}: "
+                f"low={tuple(low_t.shape)}, high={tuple(high_t.shape)}"
+            )
+        if not bool((high_t >= low_t).all()):
+            raise ValueError("action_high must be elementwise >= action_low")
+
+        self.action_low.copy_(low_t)
+        self.action_high.copy_(high_t)
+        self.postprocessor.set_action_bounds(self.action_low, self.action_high)
 
     def snapshot_behavior_policy(self) -> None:
         """Refresh the frozen π_old snapshot in place.

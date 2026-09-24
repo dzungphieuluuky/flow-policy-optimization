@@ -94,7 +94,7 @@ The rollout already stores `v_next_all`; the GAE implementation must use it for 
 
 ## 2. Policy action bounds do not update the actual postprocessor
 
-**Status:** Confirmed runtime bug
+**Status:** Resolved in the active Torch path
 **Files:**
 
 - `src/sjfpo/modeling_sjfpo.py:145-186`
@@ -118,9 +118,9 @@ The postprocessor therefore continues converting normalized actions using the `[
 
 This produces incorrectly scaled actions for any environment whose action range is not exactly `[-1, 1]`, especially positive-only action spaces.
 
-### Minimal fix
+### Implemented fix
 
-Make the postprocessor read the policy's live bound buffers, or add an atomic `set_action_bounds()` method that updates its bounds and invalidates its cached scale/bias values.
+`SJFPOPolicy.set_action_bounds()` now validates the new bounds, updates the policy buffers, and calls the postprocessor's atomic setter. The postprocessor recomputes its affine scale/bias and clears both device/dtype caches, so repeated bound changes cannot reuse stale coefficients.
 
 ---
 
