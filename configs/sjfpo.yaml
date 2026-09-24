@@ -1,32 +1,55 @@
-# SJFPO defaults — mirrors src/sjfpo/configuration_sjfpo.py:SJFPOConfig.
-# Updated to match current research settings (online RL, spectral-flow, chunk GAE).
+# SJFPO configuration. Keep values aligned with SJFPOConfig.
+# Runtime overrides may come from CLI flags; this file is the experiment YAML source.
 
 # -- Observation / action geometry -------------------------------------
 n_obs_steps: 16
 action_horizon: 16
-n_action_steps: 8  # set explicitly (no derived ratio)
+n_action_steps: 16
 hidden_dim: 128
 
 # -- Monte-Carlo / rollout ---------------------------------------------
-num_mc_samples: 64  # raised from 16: halves ratio noise (1/sqrt(M))
+num_mc_samples: 16
 num_euler_steps: 16
 num_inference_steps: 16
-chunks_per_update: 128
-num_epochs: 16
+chunks_per_update: 256
+num_epochs: 4
 num_minibatches: 4
-num_envs: 2  # low for 8 GB Blackwell mobile VRAM
+num_envs: 64
 
 # -- Optimization ------------------------------------------------------
 gamma: 0.999
 gae_lambda: 0.995
-epsilon_clip: 0.10  # widened: 5% was inside ratio noise floor
-use_dct_transform: true  # spectral chunk encoding; False = raw action chunk
-use_aspo: false  # disabled for discriminator run; re-enable once confirmed
-use_per_bin_clip: false  # two-group epsilon over DCT bins
-epsilon_clip_lowfreq: 0.02  # tight: low bins carry task intent
-epsilon_clip_highfreq: 0.10  # loose: high bins are detail/exploration
+epsilon_clip: 0.05
+use_dct_transform: false
+use_aspo: false
+use_per_bin_clip: false
+epsilon_clip_lowfreq: 0.02
+epsilon_clip_highfreq: 0.10
 cfm_clamp: 20.0
 log_ratio_cap: 10.0
 advantage_clamp: 100.0
-use_clipped_value_loss: true
-dit_depth: 4  # aligned to SJFPOConfig default (was 4 in original YAML)
+use_clipped_value_loss: false
+min_timestep: 0.005
+max_timestep: 0.995
+timestep_sampling_mode: uniform
+noise_sampling_mode: normal
+timestep_beta_alpha: 2.0
+timestep_beta_beta: 2.0
+
+# -- DiT backbone ------------------------------------------------------
+dit_depth: 4
+dit_heads: 4
+dit_mlp_ratio: 4.0
+dit_time_dim: 128
+timestep_scale: 1000.0
+
+# -- Losses / optimization --------------------------------------------
+vf_coef: 1.0
+grad_clip_norm: 0.5
+top_p_spectral_tokens: 1.0
+policy_lr: 3.0e-4
+critic_lr: 9.0e-4
+optimizer_weight_decay: 1.0e-2
+optimizer_8bit: false
+use_gradient_checkpointing: false
+grad_accum_steps: 1

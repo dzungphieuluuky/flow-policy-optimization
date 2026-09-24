@@ -69,6 +69,23 @@ def make_batch(n: int = 2, h: int = 16, pad_tail: int = 0) -> dict:
     }
 
 
+def test_actor_architecture_uses_policy_config():
+    cfg = make_config(
+        hidden_dim=64,
+        dit_depth=1,
+        dit_heads=2,
+        dit_mlp_ratio=2.0,
+        dit_time_dim=32,
+        timestep_scale=10.0,
+    )
+    policy = SJFPOPolicy(cfg)
+    assert policy.actor.time_dim == 32
+    assert policy.actor.timestep_embedder.scale == 10.0
+    assert len(policy.actor.blocks) == 1
+    assert policy.actor.blocks[0].attn.n_heads == 2
+    assert policy.actor.in_proj.out_features == 64
+
+
 def test_name_and_config_class_and_modules():
     policy = SJFPOPolicy(make_config())
     assert policy.name == "sjfpo"

@@ -21,13 +21,11 @@ def test_registered_as_sjfpo_choice():
 def test_canonical_defaults():
     cfg = SJFPOConfig()
     assert (cfg.n_obs_steps, cfg.action_horizon, cfg.hidden_dim) == (16, 16, 128)
-    assert cfg.n_action_steps == round(
-        cfg.executed_vs_predicted_ratio * cfg.action_horizon
-    )
-    assert (cfg.policy_lr, cfg.optimizer_weight_decay) == (1e-4, 1e-4)
-    assert cfg.grad_clip_norm == 1.0
-    assert cfg.num_epochs == 16
-    assert cfg.chunks_per_update == 128
+    assert cfg.n_action_steps == cfg.action_horizon
+    assert (cfg.policy_lr, cfg.optimizer_weight_decay) == (3e-4, 1e-2)
+    assert cfg.grad_clip_norm == 0.5
+    assert cfg.num_epochs == 4
+    assert cfg.chunks_per_update == 256
 
 
 def test_post_init_rejects_bad_geometry():
@@ -35,8 +33,8 @@ def test_post_init_rejects_bad_geometry():
         SJFPOConfig(n_action_steps=17)
     with pytest.raises(ValueError, match="n_action_steps"):
         SJFPOConfig(n_action_steps=0)
-    with pytest.raises(ValueError, match="executed_vs_predicted_ratio"):
-        SJFPOConfig(executed_vs_predicted_ratio=1.5)
+    with pytest.raises(ValueError, match="top_p_spectral_tokens"):
+        SJFPOConfig(top_p_spectral_tokens=1.5)
     with pytest.raises(ValueError, match="top_p_spectral_tokens"):
         SJFPOConfig(top_p_spectral_tokens=0.0)
 
@@ -92,9 +90,23 @@ def test_per_bin_clip_defaults_off_and_validated():
     assert cfg.use_per_bin_clip is False
     assert (cfg.epsilon_clip_lowfreq, cfg.epsilon_clip_highfreq) == (0.02, 0.10)
     with pytest.raises(ValueError, match="epsilon_clip_lowfreq"):
-        SJFPOConfig(epsilon_clip_lowfreq=0.0)
+        SJFPOConfig(
+            use_dct_transform=True, use_per_bin_clip=True, epsilon_clip_lowfreq=0.0
+        )
     with pytest.raises(ValueError, match="epsilon_clip_lowfreq"):
-        SJFPOConfig(epsilon_clip_lowfreq=0.2, epsilon_clip_highfreq=0.1)
+        SJFPOConfig(
+            use_dct_transform=True,
+            use_per_bin_clip=True,
+            epsilon_clip_lowfreq=0.2,
+            epsilon_clip_highfreq=0.1,
+        )
     with pytest.raises(ValueError, match="epsilon_clip_highfreq"):
-        SJFPOConfig(epsilon_clip_highfreq=1.0)
-    assert SJFPOConfig(epsilon_clip_lowfreq=0.05, epsilon_clip_highfreq=0.05)
+        SJFPOConfig(
+            use_dct_transform=True, use_per_bin_clip=True, epsilon_clip_highfreq=1.0
+        )
+    assert SJFPOConfig(
+        use_dct_transform=True,
+        use_per_bin_clip=True,
+        epsilon_clip_lowfreq=0.05,
+        epsilon_clip_highfreq=0.05,
+    )

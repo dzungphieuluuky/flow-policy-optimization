@@ -9,6 +9,7 @@ from __future__ import annotations
 import copy
 import math
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -27,6 +28,69 @@ from sjfpo.modeling_sjfpo import SJFPOPolicy  # noqa: E402 (velocity helpers und
 from sjfpo import fpo_core  # noqa: E402  (RED until implemented)
 
 TAU_LO, TAU_HI = _DEFAULTS.min_timestep, _DEFAULTS.max_timestep
+
+
+def _cfg(**overrides):
+    return replace(_DEFAULTS, **overrides)
+
+
+def compute_cfm_loss(v_hat, v_star, reduce_mode="scalar", clamp=None):
+    cfg = _DEFAULTS if clamp is None else _cfg(cfm_clamp=clamp)
+    return fpo_core.compute_cfm_loss(v_hat, v_star, cfg, reduce_mode)
+
+
+def compute_aspo_surrogate(rho, advantage, epsilon_clip=None):
+    epsilon = _DEFAULTS.epsilon_clip if epsilon_clip is None else epsilon_clip
+    return fpo_core.compute_aspo_surrogate(rho, advantage, _cfg(use_aspo=True), epsilon)
+
+
+def compute_policy_ratio(l_old, l_new, cfm_clamp=None, cap=None):
+    cfg = _DEFAULTS
+    if cfm_clamp is not None:
+        cfg = _cfg(cfm_clamp=cfm_clamp)
+    if cap is not None:
+        cfg = _cfg(log_ratio_cap=cap, cfm_clamp=cfg.cfm_clamp)
+    return fpo_core.compute_policy_ratio(l_old, l_new, cfg)
+
+
+def compute_policy_loss(l_old, l_new, advantage, epsilon_clip=None):
+    return fpo_core.compute_policy_loss(l_old, l_new, advantage, _DEFAULTS)
+
+
+def sample_timesteps(num_samples, tau_range=None, device=None, mode="uniform", **kwargs):
+    cfg = _cfg(timestep_sampling_mode=mode)
+    if tau_range is not None:
+        cfg = _cfg(
+            timestep_sampling_mode=mode,
+            min_timestep=tau_range[0],
+            max_timestep=tau_range[1],
+        )
+    return fpo_core.sample_timesteps(
+        num_samples, cfg, torch.device("cpu") if device is None else device, None
+    )
+
+
+def sample_noise(shape, device=None, mode="normal", **kwargs):
+    cfg = _cfg(noise_sampling_mode=mode)
+    return fpo_core.sample_noise(
+        shape, cfg, torch.device("cpu") if device is None else device, None
+    )
+
+
+def sample_action(
+    predict_velocity,
+    shape,
+    condition,
+    num_inference_steps,
+    eps=None,
+    generator=None,
+    device=None,
+):
+    if device is None:
+        device = condition.device if isinstance(condition, torch.Tensor) else "cpu"
+    return fpo_core.sample_action(
+        predict_velocity, shape, condition, num_inference_steps, eps, generator, device
+    )
 
 
 class VelocityMLP(nn.Module):
@@ -81,7 +145,7 @@ def test_toy_gaussian_reference_gate(capsys):
             4000, 1, 1
         )
         v_star = SJFPOPolicy.compute_target_velocity(data, eps)  # [4000, 1, 1]
-        loss = fpo_core.compute_cfm_loss(v_hat, v_star)
+        loss = compute_cfm_loss(v_hat, v_star)
         opt.zero_grad()
         loss.backward()
         opt.step()
@@ -89,7 +153,7 @@ def test_toy_gaussian_reference_gate(capsys):
     with torch.no_grad():
         # 256 steps: coarse Euler (64) contracts variance by ~6% through any
         # imperfect field, which would confound this field-correctness gate.
-        samples = fpo_core.sample_action(
+        samples = sample_action(
             lambda x, t, c: net(x, t, c),
             (4000, 1),
             condition=None,
@@ -151,14 +215,14 @@ def test_fitted_loss_below_shuffled_targets():
         t = tau_ev.unsqueeze(-1)  # [40, 256, 1]
         x_t = (1.0 - t) * eps_ev + t * fixtures.unsqueeze(1)  # [40, 256, 1]
         v_star = SJFPOPolicy.compute_target_velocity(fixtures, eps_ev)
-        l_fit = fpo_core.compute_cfm_loss(
+        l_fit = compute_cfm_loss(
             net_fit(x_t.reshape(40 * 256, 1), tau_ev.reshape(40 * 256), None).reshape(
                 40, 256, 1
             ),
             v_star,
             reduce_mode="sample",
         )
-        l_shuf = fpo_core.compute_cfm_loss(
+        l_shuf = compute_cfm_loss(
             net_shuf(x_t.reshape(40 * 256, 1), tau_ev.reshape(40 * 256), None).reshape(
                 40, 256, 1
             ),
@@ -187,7 +251,7 @@ def test_ratio_shape_and_degeneracy_guard():
     t = tau_tr.unsqueeze(-1).unsqueeze(-1)  # [4, m, 1, 1]
     x_t = (1.0 - t) * eps_tr + t * a.unsqueeze(1)  # [4, m, 8, 3]
     v_star_tr = SJFPOPolicy.compute_target_velocity(a, eps_tr)
-    loss = fpo_core.compute_cfm_loss(
+    loss = compute_cfm_loss(
         net_new(x_t.reshape(4 * m, 8, 3), tau_tr.reshape(4 * m), None).reshape(
             4, m, 8, 3
         ),
@@ -203,21 +267,21 @@ def test_ratio_shape_and_degeneracy_guard():
         t = tau_ev.unsqueeze(-1).unsqueeze(-1)  # [4, m, 1, 1]
         x_t = (1.0 - t) * eps_ev + t * a.unsqueeze(1)  # [4, m, 8, 3]
         v_star = SJFPOPolicy.compute_target_velocity(a, eps_ev)
-        l_old = fpo_core.compute_cfm_loss(
+        l_old = compute_cfm_loss(
             net_old(x_t.reshape(4 * m, 8, 3), tau_ev.reshape(4 * m), None).reshape(
                 4, m, 8, 3
             ),
             v_star,
             reduce_mode="sample",
         )
-        l_new = fpo_core.compute_cfm_loss(
+        l_new = compute_cfm_loss(
             net_new(x_t.reshape(4 * m, 8, 3), tau_ev.reshape(4 * m), None).reshape(
                 4, m, 8, 3
             ),
             v_star,
             reduce_mode="sample",
         )
-        rho = fpo_core.compute_policy_ratio(l_old, l_new)
+        rho = compute_policy_ratio(l_old, l_new)
 
     assert rho.shape == (4, _DEFAULTS.num_mc_samples)
     log_rho = torch.log(rho)
@@ -230,18 +294,18 @@ def test_ratio_shape_and_degeneracy_guard():
 def test_aspo_surrogate_hand_computed():
     eps = _DEFAULTS.epsilon_clip  # 0.05, single paper-original parameter
     # Positive advantage inside bounds: PPO-clip branch is the identity.
-    psi_ppo = fpo_core.compute_aspo_surrogate(
+    psi_ppo = compute_aspo_surrogate(
         torch.tensor(1.02), torch.tensor(1.0), eps
     )
     assert psi_ppo.item() == pytest.approx(1.02, abs=1e-3)
     # Above the upper bound: clipped to 1 + eps.
-    psi_hi = fpo_core.compute_aspo_surrogate(torch.tensor(1.3), torch.tensor(1.0), eps)
+    psi_hi = compute_aspo_surrogate(torch.tensor(1.3), torch.tensor(1.0), eps)
     assert psi_hi.item() == pytest.approx(1.0 + eps, abs=1e-3)
     # Below the lower bound: min picks the unclipped (smaller) value.
-    psi_lo = fpo_core.compute_aspo_surrogate(torch.tensor(0.7), torch.tensor(1.0), eps)
+    psi_lo = compute_aspo_surrogate(torch.tensor(0.7), torch.tensor(1.0), eps)
     assert psi_lo.item() == pytest.approx(0.7, abs=1e-3)
     # Negative advantage: SPO branch  rho*A - (|A|/(2*eps))*(rho-1)^2.
-    psi_spo = fpo_core.compute_aspo_surrogate(
+    psi_spo = compute_aspo_surrogate(
         torch.tensor(1.02), torch.tensor(-1.0), eps
     )
     expected = -1.02 - (1.0 / (2 * eps)) * 0.02**2
@@ -249,19 +313,31 @@ def test_aspo_surrogate_hand_computed():
     # Mixed batch routes each element through its own branch.
     rho = torch.tensor([1.3, 1.02])
     advantage = torch.tensor([1.0, -1.0])
-    mixed = fpo_core.compute_aspo_surrogate(rho, advantage, eps)
+    mixed = compute_aspo_surrogate(rho, advantage, eps)
     assert mixed[0].item() == pytest.approx(1.0 + eps, abs=1e-3)
     assert mixed[1].item() == pytest.approx(expected, abs=1e-3)
     # OFF boundary: zero advantage routes through SPO but both branches are 0.
-    zero = fpo_core.compute_aspo_surrogate(torch.tensor(1.5), torch.tensor(0.0), eps)
+    zero = compute_aspo_surrogate(torch.tensor(1.5), torch.tensor(0.0), eps)
     assert zero.item() == pytest.approx(0.0, abs=1e-9)
+
+
+def test_fpo_helpers_use_explicit_policy_config():
+    cfg = _cfg(use_aspo=True, cfm_clamp=1.0, log_ratio_cap=0.5, epsilon_clip=0.1)
+    rho = fpo_core.compute_policy_ratio(
+        torch.tensor([2.0]), torch.tensor([0.0]), cfg
+    )
+    assert rho.item() == pytest.approx(math.exp(0.5), rel=1e-6)
+    aspo = fpo_core.compute_aspo_surrogate(
+        torch.tensor(1.02), torch.tensor(-1.0), cfg, cfg.epsilon_clip
+    )
+    assert aspo.item() < -1.02
 
 
 def test_policy_ratio_ste_cap_value_and_gradient():
     # OFF cfm_diff_clamp_max=10: Delta=50 -> exp(10) forward, gradient flows.
     l_old = torch.tensor([60.0])
     l_new = torch.tensor([10.0], requires_grad=True)
-    rho = fpo_core.compute_policy_ratio(l_old, l_new)
+    rho = compute_policy_ratio(l_old, l_new)
     assert rho.item() == pytest.approx(math.exp(10.0), rel=1e-5)
     rho.backward()
     assert l_new.grad is not None
@@ -269,19 +345,18 @@ def test_policy_ratio_ste_cap_value_and_gradient():
 
 
 def test_large_loss_clamped_for_negative_advantage():
-    # l_new=100 -> max-clamped to cfm_clamp=20, so rho = exp(-20) even for Â<0
-    # (the symmetric clamp covers OFF's neg-advantage max: single knob).
+    # l_new=100 -> max-clamped to cfm_clamp=20, then log-ratio STE-capped at 10.
     l_old = torch.zeros(1)
     l_new = torch.full((1,), 100.0)
-    rho = fpo_core.compute_policy_ratio(l_old, l_new)
-    assert rho.item() == pytest.approx(math.exp(-20.0), rel=1e-6)
+    rho = compute_policy_ratio(l_old, l_new)
+    assert rho.item() == pytest.approx(math.exp(-10.0), rel=1e-6)
 
 
 def test_symmetric_cfm_clamp_applies_to_both():
     # OFF cfm_loss_clamp=20 binds old and new alike.
     l_old = torch.full((2,), 100.0)
     l_new = torch.zeros(2)
-    rho = fpo_core.compute_policy_ratio(l_old, l_new)
+    rho = compute_policy_ratio(l_old, l_new)
     assert rho.tolist() == pytest.approx(
         [math.exp(10.0)] * 2, rel=1e-5
     )  # (20-0)->STE 10
@@ -309,11 +384,11 @@ def test_policy_loss_fd_gradient():
         return net_(x_t_flat, tau_flat, None).reshape(1, m, 8, 1)
 
     with torch.no_grad():
-        l_old = fpo_core.compute_cfm_loss(v_hat_of(net), v_star, reduce_mode="sample")
+        l_old = compute_cfm_loss(v_hat_of(net), v_star, reduce_mode="sample")
 
     def policy_loss_value() -> torch.Tensor:
-        l_new = fpo_core.compute_cfm_loss(v_hat_of(net), v_star, reduce_mode="sample")
-        return fpo_core.compute_policy_loss(l_old.detach(), l_new, advantage)
+        l_new = compute_cfm_loss(v_hat_of(net), v_star, reduce_mode="sample")
+        return compute_policy_loss(l_old.detach(), l_new, advantage)
 
     policy_loss_value().backward()
     param = net.net[-1].weight  # last Linear, direct path to the loss
@@ -349,7 +424,7 @@ def test_euler_sampler_grid_update_and_zero_noise():
             seen_ts.append(float(t))
             return net(x_t, t, condition)
 
-    out = fpo_core.sample_action(
+    out = sample_action(
         Probe(),
         (5, 1),
         None,
@@ -373,10 +448,10 @@ def test_euler_sampler_grid_update_and_zero_noise():
     assert torch.allclose(out, x, atol=1e-6), "sampler deviates from x <- x + dt*v_hat"
 
     # Zero-sampling path (eps = 0) is deterministic given the weights.
-    z1 = fpo_core.sample_action(
+    z1 = sample_action(
         net, (5, 1), None, num_inference_steps=16, eps=torch.zeros(5, 1)
     )
-    z2 = fpo_core.sample_action(
+    z2 = sample_action(
         net, (5, 1), None, num_inference_steps=16, eps=torch.zeros(5, 1)
     )
     assert torch.equal(z1, z2)
@@ -387,10 +462,19 @@ def test_euler_sampler_grid_update_and_zero_noise():
 
 def test_space_consistency_dct_pipeline():
     torch.manual_seed(51)
-    policy = SJFPOFlowModel(action_dim=3)
+    policy = SJFPOFlowModel(
+        action_dim=3,
+        action_horizon=_DEFAULTS.action_horizon,
+        hidden_dim=_DEFAULTS.hidden_dim,
+        dit_depth=_DEFAULTS.dit_depth,
+        dit_heads=_DEFAULTS.dit_heads,
+        dit_mlp_ratio=_DEFAULTS.dit_mlp_ratio,
+        dit_time_dim=_DEFAULTS.dit_time_dim,
+        timestep_scale=_DEFAULTS.timestep_scale,
+    )
     condition = torch.zeros(4, _DEFAULTS.hidden_dim)  # pre-fused state vector
     with torch.no_grad():
-        coeffs = fpo_core.sample_action(
+        coeffs = sample_action(
             policy,
             (4, 8, 3),
             condition,
@@ -420,9 +504,9 @@ def test_compute_cfm_loss_reduce_mode_contract():
     torch.manual_seed(61)
     v_hat = torch.randn(2, 4, 3)
     v_star = torch.randn(2, 4, 3)
-    scalar = fpo_core.compute_cfm_loss(v_hat, v_star)
+    scalar = compute_cfm_loss(v_hat, v_star)
     assert scalar.dim() == 0
-    per_sample = fpo_core.compute_cfm_loss(v_hat, v_star, reduce_mode="sample")
+    per_sample = compute_cfm_loss(v_hat, v_star, reduce_mode="sample")
     assert per_sample.shape == (2, 4)
     # OFF sqrt convention: sample = sum/sqrt(D); mean over draws recovers the
     # scalar mean up to sqrt(D_flat).
@@ -430,11 +514,9 @@ def test_compute_cfm_loss_reduce_mode_contract():
         scalar.item() * math.sqrt(3), rel=1e-5
     )
     with pytest.raises(ValueError, match="reduce_mode"):
-        fpo_core.compute_cfm_loss(v_hat, v_star, reduce_mode="mean")
-    with pytest.raises(ValueError, match="clamp"):
-        fpo_core.compute_cfm_loss(v_hat, v_star, clamp=1.0)
+        compute_cfm_loss(v_hat, v_star, reduce_mode="mean")
     with pytest.raises(ValueError, match="shape"):
-        fpo_core.compute_cfm_loss(v_hat, v_star[..., :2])
+        compute_cfm_loss(v_hat, v_star[..., :2])
 
 
 def test_compute_cfm_loss_bin_mode_parity():
@@ -443,47 +525,45 @@ def test_compute_cfm_loss_bin_mode_parity():
     # Small errors so the clamp never binds on either path.
     v_hat = torch.randn(2, 4, 5, 3) * 0.1
     v_star = torch.randn(2, 4, 5, 3) * 0.1
-    per_bin = fpo_core.compute_cfm_loss(v_hat, v_star, reduce_mode="bin")
+    per_bin = compute_cfm_loss(v_hat, v_star, reduce_mode="bin")
     assert per_bin.shape == (2, 4, 5)
-    per_sample = fpo_core.compute_cfm_loss(v_hat, v_star, reduce_mode="sample")
+    per_sample = compute_cfm_loss(v_hat, v_star, reduce_mode="sample")
     # bin_k = sum_D/sqrt(D); sample = sum/sqrt(K*D) = bin.mean * sqrt(K).
     torch.testing.assert_close(per_bin.mean(dim=-1) * math.sqrt(5), per_sample)
     # Clamp binds on both paths (OFF cfm_loss_clamp).
-    big = fpo_core.compute_cfm_loss(
+    big = compute_cfm_loss(
         torch.zeros(1, 1, 2, 2), torch.ones(1, 1, 2, 2) * 10.0, reduce_mode="bin"
     )
-    assert bool((big == fpo_core._DEFAULTS.cfm_clamp).all())
+    assert bool((big == _DEFAULTS.cfm_clamp).all())
 
 
 def test_sample_timesteps_modes_and_contract():
-    assert fpo_core.sample_timesteps(16).shape == (16,)
+    assert sample_timesteps(16).shape == (16,)
     for mode in ("uniform", "normal"):
-        t = fpo_core.sample_timesteps(4096, (TAU_LO, TAU_HI), mode=mode)
+        t = sample_timesteps(4096, (TAU_LO, TAU_HI), mode=mode)
         assert t.shape == (4096,) and t.dtype == torch.float32
         assert bool(((t >= TAU_LO) & (t <= TAU_HI)).all()), mode
-    u = fpo_core.sample_timesteps(4096, mode="uniform")
+    u = sample_timesteps(4096, mode="uniform")
     assert u.mean().item() == pytest.approx(0.5 * (TAU_LO + TAU_HI), abs=0.03)
-    g = fpo_core.sample_timesteps(4096, mode="normal")
+    g = sample_timesteps(4096, mode="normal")
     assert g.std().item() < u.std().item(), "normal should concentrate mid-window"
-    b = fpo_core.sample_timesteps(
+    b = sample_timesteps(
         4096, (TAU_LO, TAU_HI), mode="beta", alpha=1.5, beta=1.0
     )
     assert b.shape == (4096,) and b.dtype == torch.float32
     assert bool(((b >= TAU_LO) & (b <= TAU_HI)).all()), "beta scaled to [lo, hi]"
-    with pytest.raises(ValueError, match="alpha"):
-        fpo_core.sample_timesteps(4, mode="beta")
     with pytest.raises(ValueError, match="mode"):
-        fpo_core.sample_timesteps(4, mode="logit-normal")
+        sample_timesteps(4, mode="logit-normal")
 
 
 def test_sample_noise_modes_and_contract():
-    assert fpo_core.sample_noise((2, 4, 3)).shape == (2, 4, 3)
+    assert sample_noise((2, 4, 3)).shape == (2, 4, 3)
     torch.manual_seed(7)
-    z = fpo_core.sample_noise((2, 16, 8, 3), mode="normal")
+    z = sample_noise((2, 16, 8, 3), mode="normal")
     assert z.mean().item() == pytest.approx(0.0, abs=0.05)
     assert z.var().item() == pytest.approx(1.0, rel=0.1)
-    w = fpo_core.sample_noise((2, 16, 8, 3), mode="uniform")
+    w = sample_noise((2, 16, 8, 3), mode="uniform")
     assert bool(((w >= -math.sqrt(3)) & (w <= math.sqrt(3))).all())
     assert w.var().item() == pytest.approx(1.0, rel=0.1)
     with pytest.raises(ValueError, match="mode"):
-        fpo_core.sample_noise((4,), mode="cauchy")
+        sample_noise((4,), mode="cauchy")

@@ -53,6 +53,10 @@ class SJFPOConfig(PreTrainedConfig):
     use_clipped_value_loss: bool = False
     min_timestep: float = 0.005
     max_timestep: float = 0.995
+    timestep_sampling_mode: str = "uniform"
+    noise_sampling_mode: str = "normal"
+    timestep_beta_alpha: float = 2.0
+    timestep_beta_beta: float = 2.0
 
     # -- DiT backbone ------------------------------------------------------
     dit_depth: int = 4
@@ -157,6 +161,14 @@ class SJFPOConfig(PreTrainedConfig):
                 "require 0 <= min_timestep < max_timestep <= 1, got "
                 f"({self.min_timestep}, {self.max_timestep})"
             )
+        if self.timestep_sampling_mode not in {"uniform", "normal", "beta"}:
+            raise ValueError(
+                "timestep_sampling_mode must be 'uniform', 'normal', or 'beta'"
+            )
+        if self.noise_sampling_mode not in {"normal", "uniform"}:
+            raise ValueError("noise_sampling_mode must be 'normal' or 'uniform'")
+        if self.timestep_beta_alpha <= 0 or self.timestep_beta_beta <= 0:
+            raise ValueError("timestep beta alpha/beta must be > 0")
         if self.vf_coef < 0:
             raise ValueError(f"vf_coef={self.vf_coef} must be >= 0")
 

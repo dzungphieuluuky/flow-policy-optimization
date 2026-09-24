@@ -27,6 +27,19 @@ from sjfpo.networks import SJFPOFlowModel, StateConditioner
 from sjfpo.fpo_core import sample_action
 from sjfpo.evaluator import Evaluator
 
+
+def make_flow(action_dim, cfg):
+    return SJFPOFlowModel(
+        action_dim,
+        action_horizon=cfg.action_horizon,
+        hidden_dim=cfg.hidden_dim,
+        dit_depth=cfg.dit_depth,
+        dit_heads=cfg.dit_heads,
+        dit_mlp_ratio=cfg.dit_mlp_ratio,
+        dit_time_dim=cfg.dit_time_dim,
+        timestep_scale=cfg.timestep_scale,
+    )
+
 # Fake environment
 
 
@@ -101,6 +114,8 @@ class SJFPOPolicyAdapter:
                 condition,
                 num_inference_steps=self.cfg.num_inference_steps,
                 eps=torch.zeros(1, top_k_spectral_action_tokens, self.action_dim),
+                generator=None,
+                device=condition.device,
             )  # [1, Ka, action_dim]
             chunk = torch.nn.functional.pad(
                 chunk, (0, 0, 0, self.cfg.action_horizon - top_k_spectral_action_tokens)
@@ -167,7 +182,7 @@ class TestPolicyKinds:
 
     def test_sjfpo_zero_noise(self):
         cfg = SJFPOConfig()
-        policy_head = SJFPOFlowModel(4, hidden_dim=cfg.hidden_dim)
+        policy_head = make_flow(4, cfg)
         conditioner = StateConditioner(17, hidden_dim=cfg.hidden_dim)
 
         env = FakeEnv(obs_dim=17, action_dim=4)
@@ -233,7 +248,7 @@ class TestDeterminism:
 class TestBatchSizeOne:
     def test_b1_no_calibration_needed(self):
         cfg = SJFPOConfig()
-        policy_head = SJFPOFlowModel(4, hidden_dim=cfg.hidden_dim)
+        policy_head = make_flow(4, cfg)
         conditioner = StateConditioner(17, hidden_dim=cfg.hidden_dim)
 
         env = FakeEnv(obs_dim=17, action_dim=4)

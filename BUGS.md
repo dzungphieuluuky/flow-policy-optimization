@@ -144,7 +144,7 @@ DCT also mixes the time axis, so a simple post-DCT mask is not sufficient: the v
 
 ## 4. Vector collector can execute beyond the requested step budget
 
-**Status:** Confirmed runtime bug
+**Status:** Resolved in the active Torch path
 **File:** `src/sjfpo/collector.py:290-316,347-390`
 
 The collector computes a per-environment target, but when executing an open-loop chunk it does not cap the chunk to the remaining budget.
@@ -162,28 +162,29 @@ executed steps:  32
 
 Runs with non-divisible step budgets execute too many simulator steps, distorting intended sample counts, evaluation schedules, and throughput measurements.
 
-### Minimal fix
+### Implemented fix
 
-Calculate the remaining budget per environment and execute no more than:
+The vector collector now distributes the requested global budget exactly across environments using quotient/remainder targets, and stores a per-environment execution limit:
 
 ```python
-min(n_action_steps, target - executed_total[i])
+targets = [base_target + int(i < remainder) for i in range(n)]
+execution_limit = min(n_action_steps, targets[i] - executed_total[i])
 ```
 
-Ensure final transition lengths and chunk padding use the capped execution length.
+It closes the transition at that limit, so final transition lengths, rewards, stored post-step windows, and `executed_total` all use the capped execution length.
 
 ---
 
 ## 5. Custom actor architecture configuration is ignored
 
-**Status:** Confirmed runtime bug
+**Status:** Resolved in the active Torch path
 **Files:**
 
-- `src/sjfpo/modeling_sjfpo.py:138`
-- `src/sjfpo/networks.py:56-59,437-455`
+- `src/sjfpo/modeling_sjfpo.py:138-151`
+- `src/sjfpo/networks.py:398-439`
 - `src/sjfpo/train_sjfpo.py:81-93`
 
-`SJFPOPolicy` passes only `hidden_dim` to `SJFPOFlowModel`. Other actor settings are resolved through a module-global default `SJFPOConfig`, not the policy's actual configuration.
+Before the fix, `SJFPOPolicy` passed only `hidden_dim` to `SJFPOFlowModel`. Other actor settings were resolved through a module-global default `SJFPOConfig`, not the policy's actual configuration.
 
 Ignored settings include:
 
@@ -216,21 +217,21 @@ timestep_scale=1000
 
 Debug runs, small-resource runs, and benchmark configurations can silently instantiate a different architecture from the one requested.
 
-### Minimal fix
+### Implemented fix
 
-Pass all actor configuration values explicitly from the policy configuration into `SJFPOFlowModel`. Remove the module-global fallback from the instantiated-policy path.
+`SJFPOPolicy` now passes `hidden_dim`, `dit_depth`, `dit_heads`, `dit_mlp_ratio`, `dit_time_dim`, and `timestep_scale` explicitly to `SJFPOFlowModel`. The Torch network constructors no longer resolve actor settings from a module-global configuration, and `build_policy()` no longer derives an overriding `n_action_steps` value. The canonical values are defined by `SJFPOConfig` and mirrored in `configs/sjfpo.yaml`.
 
 ---
 
 ## 6. FPO math uses global defaults instead of the policy configuration
 
-**Status:** Confirmed runtime bug for non-default configurations
+**Status:** Resolved in the active Torch path
 **Files:**
 
-- `src/sjfpo/fpo_core.py:17-26,173-175,194-198,223-225`
-- `src/sjfpo/modeling_sjfpo.py:375,660-685`
+- `src/sjfpo/fpo_core.py:22-224`
+- `src/sjfpo/modeling_sjfpo.py:104-109,395-399,565-775`
 
-`fpo_core.py` has its own global default configuration. Policy-specific values can therefore be ignored for:
+Before the fix, `fpo_core.py` had its own global default configuration. Policy-specific values could therefore be ignored for:
 
 - `cfm_clamp`
 - `log_ratio_cap`
@@ -241,9 +242,9 @@ Pass all actor configuration values explicitly from the policy configuration int
 
 Changing policy configuration can produce policy ratios and surrogate losses that do not match the requested algorithm.
 
-### Minimal fix
+### Implemented fix
 
-Pass explicit configuration values into the FPO helpers, or pass the complete policy configuration into the computation functions. The global fallback should not be used by active policy training.
+The active Torch FPO helpers now require an explicit `SJFPOConfig` (and explicit reduction/device/generator arguments where applicable). `SJFPOPolicy` passes its live configuration through timestep sampling, noise sampling, CFM loss, policy-ratio, and surrogate-loss calls. The global lazy fallback and per-call actor/FPO defaults were removed; sampling modes and Beta parameters are dataclass/YAML-backed.
 
 ---
 

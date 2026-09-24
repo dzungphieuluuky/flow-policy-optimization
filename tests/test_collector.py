@@ -449,6 +449,17 @@ def test_collect_chunks_vec_budget_and_shapes():
         assert len(r["next.reward"]) == int(r["executed_n_action_steps"])
 
 
+def test_collect_chunks_vec_caps_open_loop_to_budget():
+    records = vec_records(n_envs=4, total=4)
+    assert sum(int(r["executed_n_action_steps"]) for r in records) == 4
+    assert all(int(r["executed_n_action_steps"]) == 1 for r in records)
+
+
+def test_collect_chunks_vec_distributes_indivisible_budget_exactly():
+    records = vec_records(n_envs=3, total=5)
+    assert sum(int(r["executed_n_action_steps"]) for r in records) == 5
+
+
 def test_collect_chunks_vec_keeps_trajectories_separate_for_gae():
     records = vec_records(total=64)
     assert [bool(r["next.truncated"]) for r in records] == [False, True, False, True]

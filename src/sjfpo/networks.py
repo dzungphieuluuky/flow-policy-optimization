@@ -17,7 +17,7 @@ Changes in this revision (addresses review feedback):
 * ``SelfAttention`` mask handling is shape-robust (``[:, None, None, :]``)
   and the stale "mask caching" docstring is gone.
 * ``StateConditioner`` forwards ``n_heads`` to its inner ``WindowEncoder``.
-* Type hints on the dual-return forwards and ``resolve_config_value``.
+* Type hints on the dual-return forwards.
 
 Performance notes (carried from the previous revision):
 * Attention uses ``jax.nn.dot_product_attention``-equivalent SDPA on CUDA.
@@ -30,33 +30,14 @@ Performance notes (carried from the previous revision):
 from __future__ import annotations
 
 import math
-from typing import Any
-
 import torch
 import torch.nn.functional as F
 from torch import nn
 
-from sjfpo.configuration_sjfpo import SJFPOConfig
 from sjfpo.dct_utils import dct
 from sjfpo.utils import resolve_storage_dtype
 
 STORAGE_DTYPE = resolve_storage_dtype()
-
-# Lazy config: only constructed on first ``resolve_config_value`` call.
-_DEFAULTS: SJFPOConfig | None = None
-
-
-def _defaults() -> SJFPOConfig:
-    global _DEFAULTS
-    if _DEFAULTS is None:
-        _DEFAULTS = SJFPOConfig()
-    return _DEFAULTS
-
-
-def resolve_config_value(name: str, override: Any) -> Any:
-    """Policy default for ``name`` unless ``override`` is not None."""
-    return override if override is not None else getattr(_defaults(), name)
-
 
 # ---------------------------------------------------------------------------
 # Norm
@@ -182,7 +163,7 @@ class SelfAttention(nn.Module):
     query row is forced to attend to key 0 to avoid SDPA's NaN behavior.
     """
 
-    def __init__(self, hidden_dim: int, n_heads: int = 4):
+    def __init__(self, hidden_dim: int, n_heads: int):
         super().__init__()
         if hidden_dim % n_heads != 0:
             raise ValueError(f"hidden_dim={hidden_dim} must split over {n_heads} heads")
@@ -225,16 +206,11 @@ class WindowEncoder(nn.Module):
     def __init__(
         self,
         in_dim: int,
-        n_obs_steps: int | None = None,
-        hidden_dim: int | None = None,
-        n_heads: int = 4,
-        mlp_ratio: float | None = None,
+        hidden_dim: int,
+        n_heads: int,
+        mlp_ratio: float,
     ):
         super().__init__()
-        hidden_dim = resolve_config_value("hidden_dim", hidden_dim)
-        mlp_ratio = float(resolve_config_value("dit_mlp_ratio", mlp_ratio))
-        # n_obs_steps accepted for call-site compat; not used by this block.
-        del n_obs_steps
         self.frame_proj = nn.Linear(in_dim, hidden_dim)
         self.pos_encoding = SinusoidalEncoding(hidden_dim)
         self.norm1 = _rms_norm(hidden_dim, eps=1e-6)
@@ -319,6 +295,10 @@ class RunningMeanStd(nn.Module):
         self.count.zero_()
         self._uninitialized.fill_(True)
 
+    def _load_from_state_dict(self, *args, **kwargs):
+        super()._load_from_state_dict(*args, **kwargs)
+        self._uninitialized.copy_(self.count.eq(0))
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Normalize with frozen stats; identity until the first update."""
         norm = (x - self.mean.to(x.device)) * torch.rsqrt(
@@ -397,17 +377,10 @@ class StateConditioner(nn.Module):
     vector (the caller mean-pools the result anyway).
     """
 
-    def __init__(
-        self,
-        obs_dim: int,
-        hidden_dim: int | None = None,
-        n_heads: int = 4,  # retained for call-site compat; unused
-    ):
+    def __init__(self, obs_dim: int, hidden_dim: int):
         super().__init__()
         if obs_dim <= 0:
             raise ValueError("obs_dim must be positive")
-        hidden_dim = int(resolve_config_value("hidden_dim", hidden_dim))
-        del n_heads  # no attention in this conditioner
         # Raw path: per-frame MLP then mean-pool (replaces full attention window).
         self.frame_proj = nn.Linear(obs_dim, hidden_dim)
         self.frame_mlp = SwiGLU(hidden_dim, 4 * hidden_dim, hidden_dim)
@@ -437,28 +410,28 @@ class SJFPOFlowModel(nn.Module):
     def __init__(
         self,
         action_dim: int,
-        hidden_dim: int | None = None,
-        dit_depth: int | None = None,
-        dit_heads: int | None = None,
-        dit_mlp_ratio: float | None = None,
-        dit_time_dim: int | None = None,
+        action_horizon: int,
+        hidden_dim: int,
+        dit_depth: int,
+        dit_heads: int,
+        dit_mlp_ratio: float,
+        dit_time_dim: int,
+        timestep_scale: float,
     ):
         super().__init__()
-        hidden_dim = int(resolve_config_value("hidden_dim", hidden_dim))
-        dit_depth = int(resolve_config_value("dit_depth", dit_depth))
-        dit_heads = int(resolve_config_value("dit_heads", dit_heads))
-        dit_mlp_ratio = float(resolve_config_value("dit_mlp_ratio", dit_mlp_ratio))
-        dit_time_dim = int(resolve_config_value("dit_time_dim", dit_time_dim))
+        if action_horizon < 1:
+            raise ValueError("action_horizon must be positive")
+        self.action_horizon = action_horizon
         self.time_dim = dit_time_dim
         self.timestep_embedder = SinusoidalEncoding(
-            self.time_dim, scale=float(resolve_config_value("timestep_scale", None))
+            self.time_dim, scale=timestep_scale
         )
         self.in_proj = nn.Linear(action_dim, hidden_dim)
         # Learned positional embedding (replaces sinusoidal codes; avoids
         # recomputing sin/cos per forward; parameter count: 1 * token_dim * hidden_dim ~ 2k).
         # Since the token axis length equals action_horizon (or spectral bin count),
         # we fix it at the standard chunk length (16) and rely on broadcasting.
-        self.token_pos = nn.Parameter(torch.zeros(1, 1, hidden_dim))
+        self.token_pos = nn.Parameter(torch.zeros(1, action_horizon, hidden_dim))
         nn.init.normal_(self.token_pos, std=0.02)
         self.time_mlp = CondMLP(dit_time_dim, 4 * hidden_dim, hidden_dim)
         self.blocks = nn.ModuleList(
@@ -489,10 +462,18 @@ class SJFPOFlowModel(nn.Module):
         temb = self.timestep_embedder.encode_times(t).to(
             device=x_t.device, dtype=x_t.dtype
         )
-        # No explicit expand: nn.Linear and the add below both broadcast.
+        # Broadcast the configured per-token positions across the batch.
         c = self.time_mlp(temb) + condition.to(device=x_t.device, dtype=x_t.dtype)
 
-        h = self.in_proj(x_t) + self.token_pos.to(x_t.device, x_t.dtype).expand(x_t.shape[0], -1, -1)
+        if x_t.shape[1] > self.action_horizon:
+            raise ValueError(
+                f"action token count {x_t.shape[1]} exceeds action_horizon "
+                f"{self.action_horizon}"
+            )
+        token_pos = self.token_pos[:, : x_t.shape[1], :].to(
+            device=x_t.device, dtype=x_t.dtype
+        )
+        h = self.in_proj(x_t) + token_pos
 
         if not return_stats:
             for block in self.blocks:
@@ -522,17 +503,10 @@ class SJFPOFlowModel(nn.Module):
 class Critic(nn.Module):
     """State-value baseline V(s): MLP on current frame."""
 
-    def __init__(
-        self,
-        obs_dim: int,
-        hidden_dim: int | None = None,
-        n_obs_steps: int | None = None,
-    ):
+    def __init__(self, obs_dim: int, hidden_dim: int):
         super().__init__()
         if obs_dim <= 0:
             raise ValueError("obs_dim must be positive")
-        hidden_dim = resolve_config_value("hidden_dim", hidden_dim)
-        del n_obs_steps  # accepted for call-site compat; only the last frame scores
         self.mlp = CondMLP(obs_dim, hidden_dim, 1)
 
     def forward(self, states: torch.Tensor) -> torch.Tensor:

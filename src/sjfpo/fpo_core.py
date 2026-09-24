@@ -14,18 +14,6 @@ from sjfpo.utils import resolve_storage_dtype
 STORAGE_DTYPE = resolve_storage_dtype()
 
 
-# Lazily materialized config: keeps import cheap and lets callers override
-# before the first use via `_defaults()`.
-_DEFAULT_CFG: SJFPOConfig | None = None
-
-
-def _defaults() -> SJFPOConfig:
-    global _DEFAULT_CFG
-    if _DEFAULT_CFG is None:
-        _DEFAULT_CFG = SJFPOConfig()
-    return _DEFAULT_CFG
-
-
 # ---------------------------------------------------------------------------
 # Sampling
 # ---------------------------------------------------------------------------
@@ -33,21 +21,13 @@ def _defaults() -> SJFPOConfig:
 
 def sample_timesteps(
     num_samples: int,
-    tau_range=None,
-    device=None,
-    mode="uniform",
-    *,
-    alpha=None,
-    beta=None,
-    generator: torch.Generator | None = None,
+    cfg: SJFPOConfig,
+    device: torch.device | str,
+    generator: torch.Generator | None,
 ):
-    """Flow times τ [num_samples] in [lo, hi].
-
-    ``mode``: ``"uniform"`` | ``"normal"`` (mid-weighted) | ``"beta"``
-    (lerobot openpi Beta(alpha, beta) scaled to [lo, hi]).
-    """
-    cfg = _defaults()
-    lo, hi = (cfg.min_timestep, cfg.max_timestep) if tau_range is None else tau_range
+    """Flow times τ [num_samples] using the explicit configuration."""
+    lo, hi = cfg.min_timestep, cfg.max_timestep
+    mode = cfg.timestep_sampling_mode
     if mode == "uniform":
         return (
             torch.rand(num_samples, device=device, generator=generator) * (hi - lo) + lo
@@ -58,15 +38,13 @@ def sample_timesteps(
         z = torch.randn(num_samples, device=device, generator=generator)
         return (z * std + mid).clamp(lo, hi)
     if mode == "beta":
-        if alpha is None or beta is None:
-            raise ValueError("mode='beta' needs alpha= and beta= kwargs")
         from lerobot.policies.common.flow_matching import sample_time_beta
 
         return sample_time_beta(
             num_samples,
             device,
-            alpha=alpha,
-            beta=beta,
+            alpha=cfg.timestep_beta_alpha,
+            beta=cfg.timestep_beta_beta,
             scale=hi - lo,
             offset=lo,
         )
@@ -75,14 +53,12 @@ def sample_timesteps(
 
 def sample_noise(
     shape,
-    device=None,
-    mode="normal",
-    generator: torch.Generator | None = None,
+    cfg: SJFPOConfig,
+    device: torch.device | str,
+    generator: torch.Generator | None,
 ):
-    """MC noise ε of shape ``[*shape]``.
-
-    ``mode``: ``"normal"`` = N(0, I); ``"uniform"`` = U[-√3, √3] (unit variance).
-    """
+    """MC noise ε of shape ``[*shape]`` using the explicit configuration."""
+    mode = cfg.noise_sampling_mode
     if mode == "normal":
         return torch.randn(*shape, device=device, generator=generator)
     if mode == "uniform":
@@ -141,8 +117,8 @@ def run_mc_simulation(
 def compute_cfm_loss(
     v_hat: torch.Tensor,
     v_star: torch.Tensor,
-    reduce_mode: str = "scalar",
-    clamp: float | None = None,
+    cfg: SJFPOConfig,
+    reduce_mode: str,
 ) -> torch.Tensor:
     """CFM squared-velocity loss (paper Eq.7-8).
 
@@ -156,8 +132,6 @@ def compute_cfm_loss(
     sq = torch.square(v_hat - v_star)
 
     if reduce_mode == "scalar":
-        if clamp is not None:
-            raise ValueError("clamp applies to reduce_mode='sample'/'bin' only")
         return sq.mean()
 
     if reduce_mode == "sample":
@@ -170,9 +144,7 @@ def compute_cfm_loss(
             f"reduce_mode={reduce_mode!r} must be 'scalar', 'sample', or 'bin'"
         )
 
-    cfg = _defaults()
-    clamp = cfg.cfm_clamp if clamp is None else clamp
-    return torch.clamp(reduced, max=clamp)
+    return torch.clamp(reduced, max=cfg.cfm_clamp)
 
 
 # ---------------------------------------------------------------------------
@@ -183,20 +155,15 @@ def compute_cfm_loss(
 def compute_aspo_surrogate(
     rho: torch.Tensor,
     advantage: torch.Tensor,
-    epsilon_clip: float | None = None,
-    symmetrical_ppo: bool | None = None,
+    cfg: SJFPOConfig,
+    epsilon_clip: float | torch.Tensor,
 ) -> torch.Tensor:
     """ASPO piecewise trust region ψ(ρ, Â) (paper Eq.12) or PPO clip.
 
     Hoists ``rho * advantage`` and the clipped ratio so neither is computed
     twice on the non-symmetric branch.
     """
-    cfg = _defaults()
-    if epsilon_clip is None:
-        epsilon_clip = cfg.epsilon_clip
-    if symmetrical_ppo is None:
-        symmetrical_ppo = not cfg.use_aspo
-
+    symmetrical_ppo = not cfg.use_aspo
     rho_adv = rho * advantage
     rho_clipped = torch.clamp(rho, 1.0 - epsilon_clip, 1.0 + epsilon_clip)
     pos = torch.min(rho_adv, rho_clipped * advantage)
@@ -211,8 +178,7 @@ def compute_aspo_surrogate(
 def compute_policy_ratio(
     l_old: torch.Tensor,
     l_new: torch.Tensor,
-    cfm_clamp: float | None = None,
-    cap: float | None = None,
+    cfg: SJFPOConfig,
 ) -> torch.Tensor:
     """Per-sample importance ratios ρ_i = exp(ℓ_old,i − ℓ_new,i) with OFF clamps.
 
@@ -220,14 +186,12 @@ def compute_policy_ratio(
     STE cap on the log-ratio (``cfm_diff_clamp_max``) — forward clamped,
     gradient flows.
     """
-    cfg = _defaults()
-    cfm_clamp = cfg.cfm_clamp if cfm_clamp is None else cfm_clamp
-    cap = cfg.log_ratio_cap if cap is None else cap
-
-    delta = torch.clamp(l_old, max=cfm_clamp) - torch.clamp(l_new, max=cfm_clamp)
-    safe_delta = delta.clamp(-cap, cap)
+    delta = torch.clamp(l_old, max=cfg.cfm_clamp) - torch.clamp(
+        l_new, max=cfg.cfm_clamp
+    )
+    safe_delta = delta.clamp(-cfg.log_ratio_cap, cfg.log_ratio_cap)
     # STE: forward uses clamped delta, backward flows through the unclamped delta.
-    delta_st = safe_delta + (delta - safe_delta).detach()
+    delta_st = safe_delta.detach() + delta - delta.detach()
     return torch.exp(delta_st)
 
 
@@ -235,13 +199,11 @@ def compute_policy_loss(
     l_old: torch.Tensor,
     l_new: torch.Tensor,
     advantage: torch.Tensor,
-    epsilon_clip: float | None = None,
-    cfm_clamp: float | None = None,
-    cap: float | None = None,
+    cfg: SJFPOConfig,
 ) -> torch.Tensor:
     """Scalar FPO++ policy objective: MEAN over i of ψ per chunk (Eq.13)."""
-    rho = compute_policy_ratio(l_old, l_new, cfm_clamp=cfm_clamp, cap=cap)
-    return compute_aspo_surrogate(rho, advantage, epsilon_clip).mean()
+    rho = compute_policy_ratio(l_old, l_new, cfg)
+    return compute_aspo_surrogate(rho, advantage, cfg, cfg.epsilon_clip).mean()
 
 
 # ---------------------------------------------------------------------------
@@ -254,22 +216,13 @@ def sample_action(
     shape,
     condition,
     num_inference_steps: int,
-    eps: torch.Tensor | None = None,
-    generator: torch.Generator | None = None,
-    device=None,
-    mode: str = "euler",
+    eps: torch.Tensor | None,
+    generator: torch.Generator | None,
+    device: torch.device | str,
 ) -> torch.Tensor:
-    """Sample the learned flow t=0 (noise) → t=1 (data); Euler by default.
-
-    The grid and the initial noise are placed on ``device`` (defaults to
-    ``condition.device``), so no per-step CPU↔GPU syncs occur.
-    """
-    if mode != "euler":
-        raise ValueError(f"mode={mode!r} unknown; expected 'euler'")
-
-    # Resolve device from the condition when the caller didn't specify one.
+    """Sample the learned flow t=0 (noise) → t=1 (data) with Euler steps."""
     if device is None:
-        device = condition.device if isinstance(condition, torch.Tensor) else None
+        raise ValueError("device must be provided explicitly")
 
     grid = torch.linspace(
         0.0,

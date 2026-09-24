@@ -88,9 +88,14 @@ def test_conditioner_nonsquare_time_vs_obs():
 
 def test_flow_model_matches():
     kwargs = dict(
-        hidden_dim=H, dit_depth=1, dit_heads=N_HEADS, dit_mlp_ratio=2.0, dit_time_dim=H
+        hidden_dim=H,
+        dit_depth=1,
+        dit_heads=N_HEADS,
+        dit_mlp_ratio=2.0,
+        dit_time_dim=H,
+        timestep_scale=1.0,
     )
-    tm = torch_nets.SJFPOFlowModel(ACT, **kwargs).eval()
+    tm = torch_nets.SJFPOFlowModel(ACT, action_horizon=T, **kwargs).eval()
     jm = jax_nets.SJFPOFlowModel(ACT, **kwargs, rngs=nnx.Rngs(0))
     _load(tm, jm)
     x = torch.randn(2, K, ACT)

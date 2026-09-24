@@ -33,6 +33,36 @@ def make_nets():
 
     return nets
 
+
+def make_flow(nets, action_dim):
+    return nets.SJFPOFlowModel(
+        action_dim,
+        action_horizon=_DEFAULTS.action_horizon,
+        hidden_dim=_DEFAULTS.hidden_dim,
+        dit_depth=_DEFAULTS.dit_depth,
+        dit_heads=_DEFAULTS.dit_heads,
+        dit_mlp_ratio=_DEFAULTS.dit_mlp_ratio,
+        dit_time_dim=_DEFAULTS.dit_time_dim,
+        timestep_scale=_DEFAULTS.timestep_scale,
+    )
+
+
+def make_window(nets, in_dim):
+    return nets.WindowEncoder(
+        in_dim,
+        hidden_dim=_DEFAULTS.hidden_dim,
+        n_heads=_DEFAULTS.dit_heads,
+        mlp_ratio=_DEFAULTS.dit_mlp_ratio,
+    )
+
+
+def make_conditioner(nets, obs_dim):
+    return nets.StateConditioner(obs_dim, hidden_dim=_DEFAULTS.hidden_dim)
+
+
+def make_critic(nets, obs_dim):
+    return nets.Critic(obs_dim, hidden_dim=_DEFAULTS.hidden_dim)
+
     # StateEncoder
 
 
@@ -73,7 +103,7 @@ def test_self_attention_mask_hides_keys():
 def test_window_encoder_shape_dtype_finite():
     nets = make_nets()
     torch.manual_seed(0)
-    encoder = nets.WindowEncoder(in_dim=11)
+    encoder = make_window(nets, 11)
     assert next(encoder.parameters()).dtype == torch.float32
     x = torch.randn(32, STATE_T, 11)
     z = encoder(x)
@@ -85,7 +115,7 @@ def test_window_encoder_shape_dtype_finite():
 def test_window_encoder_gradient_flows():
     nets = make_nets()
     torch.manual_seed(1)
-    encoder = nets.WindowEncoder(in_dim=5)
+    encoder = make_window(nets, 5)
     z = encoder(torch.randn(4, STATE_T, 5))
     z.sum().backward()
     grads = [p.grad for p in encoder.parameters()]
@@ -132,8 +162,8 @@ def test_action_low_freq_filter_keeps_ka_bins():
     from sjfpo.dct_utils import dct
     from sjfpo.utils import filter_low_freq
 
-    ka = max(1, round(_DEFAULTS.top_p_spectral_tokens * CHUNK))  # 5
-    assert ka == 5
+    ka = max(1, round(_DEFAULTS.top_p_spectral_tokens * CHUNK))
+    assert ka == CHUNK
     a = torch.randn(2, CHUNK, 3)
     out = filter_low_freq(dct(a, dim=1), ka, dim=1)
     assert out.shape == (2, ka, 3)
@@ -155,7 +185,7 @@ def test_timestep_embedder_sin_cos_values():
 def test_policy_flow_head_shape_scalar_t():
     nets = make_nets()
     torch.manual_seed(11)
-    policy = nets.SJFPOFlowModel(action_dim=7)
+    policy = make_flow(nets, 7)
     assert next(policy.parameters()).dtype == torch.float32
     x_t = torch.randn(32, CHUNK, 7)  # DCT-coefficient space per Scope
     condition = torch.randn(32, ZD)  # pre-fused state vector [B, D]
@@ -167,7 +197,7 @@ def test_policy_flow_head_shape_scalar_t():
 def test_policy_flow_head_tensor_t_and_grad():
     nets = make_nets()
     torch.manual_seed(12)
-    policy = nets.SJFPOFlowModel(action_dim=3)
+    policy = make_flow(nets, 3)
     x_t = torch.randn(8, CHUNK, 3)
     t = torch.rand(8)
     condition = torch.randn(8, ZD)  # pre-fused state vector [B, D]
@@ -183,8 +213,8 @@ def test_policy_flow_head_cond_from_conditioner():
     """Conditioner output plugs straight into the flow head [B, D]."""
     nets = make_nets()
     torch.manual_seed(18)
-    policy = nets.SJFPOFlowModel(action_dim=7)
-    conditioner = nets.StateConditioner(OBS)
+    policy = make_flow(nets, 7)
+    conditioner = make_conditioner(nets, OBS)
     fused = conditioner(torch.randn(8, STATE_T, OBS))
     assert fused.shape == (8, ZD)
     v = policy(torch.randn(8, CHUNK, 7), 0.5, fused)
@@ -227,7 +257,7 @@ def test_timestep_embedder_finite_256():
 def test_policy_dit_zero_velocity_at_init():
     nets = make_nets()
     torch.manual_seed(20)
-    policy = nets.SJFPOFlowModel(action_dim=3)
+    policy = make_flow(nets, 3)
     v = policy(
         torch.randn(4, CHUNK, 3),
         0.5,
@@ -243,7 +273,7 @@ def test_policy_dit_zero_velocity_at_init():
 def test_value_critic_shape():
     nets = make_nets()
     torch.manual_seed(14)
-    vc = nets.Critic(OBS)
+    vc = make_critic(nets, OBS)
     assert next(vc.parameters()).dtype == torch.float32
     v = vc(torch.randn(32, STATE_T, OBS))
     assert v.shape == (32,)
@@ -254,14 +284,14 @@ def test_value_critic_shape():
 def test_value_critic_requires_obs_dim():
     nets = make_nets()
     with pytest.raises(ValueError, match="obs_dim"):
-        nets.Critic(0)
+        nets.Critic(0, hidden_dim=ZD)
 
 
 def test_value_critic_follows_state():
     """V(s) must change when the state changes (state conditioning live)."""
     nets = make_nets()
     torch.manual_seed(14)
-    vc = nets.Critic(OBS)
+    vc = make_critic(nets, OBS)
     v1 = vc(torch.zeros(8, STATE_T, OBS))
     v2 = vc(torch.ones(8, STATE_T, OBS))
     assert not torch.equal(v1, v2)
@@ -270,7 +300,7 @@ def test_value_critic_follows_state():
 def test_value_critic_gradient_flows():
     nets = make_nets()
     torch.manual_seed(15)
-    vc = nets.Critic(OBS)
+    vc = make_critic(nets, OBS)
     vc(torch.randn(4, STATE_T, OBS)).sum().backward()
     assert all(
         p.grad is not None and torch.isfinite(p.grad).all() for p in vc.parameters()
@@ -283,10 +313,11 @@ def test_no_batchnorm_no_dropout_fp32_everywhere():
     nets = make_nets()
     torch.manual_seed(17)
     modules = [
-        nets.WindowEncoder(in_dim=9),
-        nets.StateConditioner(9),
-        nets.SJFPOFlowModel(action_dim=7),
-        nets.Critic(9),
+        make_window(nets, 9),
+        make_conditioner(nets, 9),
+        make_flow(nets, 7),
+            make_critic(nets, 9),
+
     ]
     for mod in modules:
         for name, sub in mod.named_modules():
@@ -316,7 +347,7 @@ def test_window_encoder_position_sensitive():
     """Identical frames still map to distinct latents per position (PE lock)."""
     nets = make_nets()
     torch.manual_seed(2)
-    encoder = nets.WindowEncoder(in_dim=6)
+    encoder = make_window(nets, 6)
     x = torch.ones(2, STATE_T, 6)  # no order info in the input itself
     z = encoder(x)
     assert not torch.allclose(z[:, 0, :], z[:, 1, :], atol=1e-6)
@@ -326,7 +357,7 @@ def test_window_encoder_mask_hides_tails():
     """Garbage tails cannot move real rows: masked as attention keys."""
     nets = make_nets()
     torch.manual_seed(20)
-    enc = nets.WindowEncoder(in_dim=6)
+    enc = make_window(nets, 6)
     x = torch.randn(2, STATE_T, 6)
     garb = x.clone()
     garb[:, 8:, :] = 100.0
@@ -340,7 +371,7 @@ def test_critic_state_order_sensitive():
     """Flipped state order changes V(s) (state PE lock: mean would hide it)."""
     nets = make_nets()
     torch.manual_seed(21)
-    critic = nets.Critic(OBS)
+    critic = make_critic(nets, OBS)
     s = torch.randn(2, STATE_T, OBS)
     v1 = critic(s)
     v2 = critic(s.flip(dims=(1,)))
@@ -362,11 +393,12 @@ def test_policy_bin_order_sensitive():
     encoding breaks the symmetry so inter-row relations are addressable."""
     nets = make_nets()
     torch.manual_seed(32)
-    policy = nets.SJFPOFlowModel(action_dim=3)
+    policy = make_flow(nets, 3)
     # Wake the zero-init (adaLN gates + final out) so inputs matter.
     with torch.no_grad():
         for block in policy.blocks:
             block.adaLN.fc2.weight.normal_(std=0.1)
+        policy.adaLN_out.weight.normal_(std=0.1)
         policy.out.weight.normal_(std=0.1)
     ka = max(1, round(0.3 * CHUNK))  # 5
     x_t = torch.ones(2, ka, 3)  # no order info in the input itself
@@ -379,8 +411,8 @@ def test_policy_reads_fused_state():
     """DiT output changes with the fused state vector (conditioning live)."""
     nets = make_nets()
     torch.manual_seed(30)
-    policy = nets.SJFPOFlowModel(action_dim=3)
-    conditioner = nets.StateConditioner(OBS)
+    policy = make_flow(nets, 3)
+    conditioner = make_conditioner(nets, OBS)
     # Wake the zero-init (adaLN gates + final out) so inputs matter.
     with torch.no_grad():
         for block in policy.blocks:
@@ -398,7 +430,7 @@ def test_state_conditioner_shape_and_grad():
     """[B, T, obs] -> [B, D], finite, grads reach every parameter."""
     nets = make_nets()
     torch.manual_seed(33)
-    conditioner = nets.StateConditioner(OBS)
+    conditioner = make_conditioner(nets, OBS)
     assert next(conditioner.parameters()).dtype == torch.float32
     out = conditioner(torch.randn(4, STATE_T, OBS))
     assert out.shape == (4, ZD)
@@ -414,7 +446,7 @@ def test_state_conditioner_sees_bin_order():
     """Permuting state rows changes the fused vector (order-sensitive)."""
     nets = make_nets()
     torch.manual_seed(34)
-    conditioner = nets.StateConditioner(OBS)
+    conditioner = make_conditioner(nets, OBS)
     s = torch.randn(2, STATE_T, OBS)
     v1 = conditioner(s)
     v2 = conditioner(s.flip(dims=(1,)))
@@ -425,7 +457,7 @@ def test_policy_forward_truncated_coeff_space():
     """DiT denoises Ka=top-p rows; zero-pad restores full H (shape lock)."""
     nets = make_nets()
     torch.manual_seed(31)
-    policy = nets.SJFPOFlowModel(action_dim=3)
+    policy = make_flow(nets, 3)
     ka = max(1, round(0.3 * CHUNK))  # 5
     v = policy(
         torch.randn(4, ka, 3),

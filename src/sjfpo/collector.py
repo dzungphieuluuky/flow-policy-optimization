@@ -308,7 +308,8 @@ def collect_chunks_vec(
     chunk_size = cfg.action_horizon
 
     n = int(envs.num_envs)
-    target = -(-total_steps // n)  # ceil per-env budget
+    base_target, remainder = divmod(total_steps, n)
+    targets = [base_target + int(i < remainder) for i in range(n)]
 
     low, range_ = _bounds_to_tensor(action_low, action_high)
 
@@ -334,11 +335,15 @@ def collect_chunks_vec(
         awaiting = [False] * n
         records: list[list[Transition]] = [[] for _ in range(n)]
 
-        while any(e < target for e in executed_total):
+        while any(executed_total[i] < targets[i] for i in range(n)):
             need = [
                 i
                 for i in range(n)
-                if cur[i] is None and not awaiting[i] and executed_total[i] < target
+                if (
+                    cur[i] is None
+                    and not awaiting[i]
+                    and executed_total[i] < targets[i]
+                )
             ]
             if need:
                 states = torch.stack(
@@ -349,7 +354,16 @@ def collect_chunks_vec(
                     executed, scaled, clip_count = scale_and_clip_chunk(
                         proposed[k], low, range_
                     )
-                    cur[i] = (executed, scaled, clip_count, states[k])
+                    execution_limit = min(
+                        n_action_steps, targets[i] - executed_total[i]
+                    )
+                    cur[i] = (
+                        executed,
+                        scaled,
+                        clip_count,
+                        states[k],
+                        execution_limit,
+                    )
                     pos[i] = 0
                     rewards[i] = []
                     step_states[i] = []
@@ -385,8 +399,9 @@ def collect_chunks_vec(
                 windows[i].append(as_float_tensor(obs[i]))
                 step_states[i].append(torch.stack(tuple(windows[i]), dim=0))
                 pos[i] += 1
-                if done_np[i] or pos[i] >= n_action_steps:
-                    _executed, scaled, clip_count, replan = cur[i]
+                execution_limit = cur[i][4]
+                if done_np[i] or pos[i] >= execution_limit:
+                    _executed, scaled, clip_count, replan, _limit = cur[i]
                     n_exec = pos[i]
                     if term_np[i]:
                         done_kind = "terminated"
@@ -403,7 +418,7 @@ def collect_chunks_vec(
                         done_kind,
                         clip_count,
                         chunk_size,
-                        n_action_steps,
+                        execution_limit,
                         torch.stack(step_states[i], dim=0),
                     )
                     executed_total[i] += n_exec

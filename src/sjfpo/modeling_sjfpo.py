@@ -102,7 +102,10 @@ def _sample_spectral_eps(
         )
         return eps.reshape(n, cfg.num_mc_samples, Ka, action_dim)
     return sample_noise(
-        (n, cfg.num_mc_samples, cfg.action_horizon, action_dim), device=device
+        (n, cfg.num_mc_samples, cfg.action_horizon, action_dim),
+        cfg,
+        device,
+        None,
     )
 
 
@@ -135,11 +138,18 @@ class SJFPOPolicy(PreTrainedPolicy):
         obs_dim = int(config.robot_state_feature.shape[0])
         action_dim = int(config.action_feature.shape[0])
 
-        self.actor = SJFPOFlowModel(action_dim, hidden_dim=config.hidden_dim)
-        self.conditioner = StateConditioner(obs_dim, hidden_dim=config.hidden_dim)
-        self.critic = Critic(
-            obs_dim, hidden_dim=config.hidden_dim, n_obs_steps=config.n_obs_steps
+        self.actor = SJFPOFlowModel(
+            action_dim,
+            config.action_horizon,
+            config.hidden_dim,
+            config.dit_depth,
+            config.dit_heads,
+            config.dit_mlp_ratio,
+            config.dit_time_dim,
+            config.timestep_scale,
         )
+        self.conditioner = StateConditioner(obs_dim, config.hidden_dim)
+        self.critic = Critic(obs_dim, config.hidden_dim)
         self.obs_normalizer = RunningMeanStd(obs_dim)
 
         self.register_buffer(
@@ -312,6 +322,7 @@ class SJFPOPolicy(PreTrainedPolicy):
                 condition,
                 num_inference_steps=num_steps,
                 eps=eps,
+                generator=None,
                 device=device,
             ).float()
 
@@ -385,8 +396,8 @@ class SJFPOPolicy(PreTrainedPolicy):
                 eps.shape[0], num_mc, *flow_shape
             )
             return (
-                compute_cfm_loss(v_initial, v_star, reduce_mode="sample"),
-                compute_cfm_loss(v_initial, v_star, reduce_mode="bin"),
+                compute_cfm_loss(v_initial, v_star, cfg, "sample"),
+                compute_cfm_loss(v_initial, v_star, cfg, "bin"),
             )
 
     def generate_rollout(
@@ -555,9 +566,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             0
         ) >= lengths.unsqueeze(1)
 
-        tau = sample_timesteps(
-            cfg.num_mc_samples, (cfg.min_timestep, cfg.max_timestep), device=device
-        )
+        tau = sample_timesteps(cfg.num_mc_samples, cfg, device, None)
         eps = _sample_spectral_eps(cfg, n_chunks, action_dim, device)
 
         # Single shape check against the layout that will actually be used.
@@ -673,9 +682,7 @@ class SJFPOPolicy(PreTrainedPolicy):
                     f"stored shared MC noise shape {tuple(eps.shape)} != {expected}"
                 )
         else:
-            tau = sample_timesteps(
-                cfg.num_mc_samples, (cfg.min_timestep, cfg.max_timestep), device=device
-            )
+            tau = sample_timesteps(cfg.num_mc_samples, cfg, device, None)
             eps = _sample_spectral_eps(cfg, n, action_dim, device)
 
         # Noisy anchors.
@@ -742,17 +749,13 @@ class SJFPOPolicy(PreTrainedPolicy):
 
             if not stored_l_old:
                 v_old_r_f = v_old.reshape(n, num_mc, *flow_shape)
-                l_old_bin = compute_cfm_loss(
-                    v_old_r_f, v_star_f, reduce_mode="bin"
-                )
-                l_old = compute_cfm_loss(
-                    v_old_r_f, v_star_f, reduce_mode="sample"
-                )
-            l_new_bin = compute_cfm_loss(v_new_r_f, v_star_f, reduce_mode="bin")
-            rho_bin = compute_policy_ratio(l_old_bin, l_new_bin)  # computed once
+                l_old_bin = compute_cfm_loss(v_old_r_f, v_star_f, cfg, "bin")
+                l_old = compute_cfm_loss(v_old_r_f, v_star_f, cfg, "sample")
+            l_new_bin = compute_cfm_loss(v_new_r_f, v_star_f, cfg, "bin")
+            rho_bin = compute_policy_ratio(l_old_bin, l_new_bin, cfg)  # computed once
 
-            l_new = compute_cfm_loss(v_new_r_f, v_star_f, reduce_mode="sample")
-            rho = compute_policy_ratio(l_old, l_new)
+            l_new = compute_cfm_loss(v_new_r_f, v_star_f, cfg, "sample")
+            rho = compute_policy_ratio(l_old, l_new, cfg)
 
             adv_mc = advantages.float().unsqueeze(1)
 
@@ -763,10 +766,12 @@ class SJFPOPolicy(PreTrainedPolicy):
                     (n_bins,), cfg.epsilon_clip_highfreq, device=device
                 )
                 eps_bin[:split] = cfg.epsilon_clip_lowfreq
-                psi = compute_aspo_surrogate(rho_bin, adv_mc.unsqueeze(-1), eps_bin)
+                psi = compute_aspo_surrogate(
+                    rho_bin, adv_mc.unsqueeze(-1), cfg, eps_bin
+                )
                 policy_per_chunk = -psi.mean(dim=(1, 2))
             else:
-                psi = compute_aspo_surrogate(rho, adv_mc, cfg.epsilon_clip)
+                psi = compute_aspo_surrogate(rho, adv_mc, cfg, cfg.epsilon_clip)
                 policy_per_chunk = -psi.mean(dim=1)
 
         # Value loss (Huber).
