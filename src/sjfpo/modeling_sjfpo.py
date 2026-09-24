@@ -666,11 +666,13 @@ class SJFPOPolicy(PreTrainedPolicy):
                 f"{(states.shape[0], cfg.action_horizon)}"
             )
 
-        # A chunk with an unexecuted suffix contributes to the value target,
-        # but not to the policy loss: its spectral action target is not a
-        # completed environment action. Keep the mask at chunk granularity
-        # because DCT mixes the time axis.
-        policy_valid = ~action_is_pad.any(dim=1)
+        # Treat each selected action chunk as one macro-action for the policy
+        # loss. The unexecuted suffix is still part of the chunk selected by
+        # the behavior policy, so it must contribute to the FPO ratio when
+        # receding-horizon execution is enabled. ``action_is_pad`` records
+        # execution bookkeeping; only chunks with no executed action are
+        # invalid for the policy update.
+        policy_valid = ~action_is_pad.all(dim=1)
 
         states = self.preprocessor({OBS_STATE: states})[OBS_STATE]
 

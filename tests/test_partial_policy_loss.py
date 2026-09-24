@@ -1,4 +1,4 @@
-"""Regression tests for excluding partial action chunks from policy loss."""
+"""Regression tests for action-chunk validity in receding-horizon training."""
 
 import sys
 from pathlib import Path
@@ -56,7 +56,7 @@ def make_batch(all_partial: bool) -> dict[str, torch.Tensor]:
 
 
 @pytest.mark.parametrize("use_dct", [False, True])
-def test_partial_chunks_do_not_receive_policy_gradient(use_dct: bool):
+def test_empty_action_chunks_do_not_receive_policy_gradient(use_dct: bool):
     policy = make_policy(use_dct, vf_coef=1.0)
     loss, _ = policy(make_batch(all_partial=True), compute_info=False)
     loss.backward()
@@ -70,10 +70,10 @@ def test_partial_chunks_do_not_receive_policy_gradient(use_dct: bool):
     )
 
 
-def test_mixed_batch_masks_only_partial_policy_term():
+def test_receding_horizon_chunks_receive_policy_gradient():
     policy = make_policy(use_dct=True, vf_coef=0.0)
     loss_vector, _ = policy(
         make_batch(all_partial=False), reduction="none", compute_info=False
     )
     assert loss_vector[0].abs() > 0.0
-    assert loss_vector[1].item() == 0.0
+    assert loss_vector[1].abs() > 0.0

@@ -87,7 +87,7 @@ def test_actor_architecture_uses_policy_config():
 
 
 def test_rollout_uses_configured_action_execution_length():
-    policy = SJFPOPolicy(make_config(n_action_steps=4))
+    policy = SJFPOPolicy(make_config(n_action_steps=4, vf_coef=0.0))
     env = FakeGymEnv(obs_dim=OBS_DIM, action_dim=ACT_DIM, max_steps=20)
 
     batch = policy.generate_rollout(env, total_steps=8, noisy=False)
@@ -95,6 +95,12 @@ def test_rollout_uses_configured_action_execution_length():
     assert batch["action"].shape[1] == 16
     assert batch["action_is_pad"].shape[0] == 2
     assert batch["action_is_pad"].sum(dim=1).tolist() == [12, 12]
+
+    # The selected macro-action still contributes to the policy update even
+    # though only its 4-step prefix was executed.
+    loss, _ = policy(batch, compute_info=False)
+    assert torch.isfinite(loss)
+    assert loss.abs() > 0.0
 
 
 def test_rollout_normalizer_observations_are_executed_post_step_frames():
