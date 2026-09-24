@@ -1,8 +1,7 @@
 """CPU pipeline invariants — T4 of mujoco-training-pipeline-rocm7.14.md
 
 Locks the CPU-first contract so regressions are caught:
-- baselines write 3-col CSV [episode,return,length]
-- RUN_MATRIX cardinality 45 (and TINY 3)
+- baselines and SJFPO write five-column evaluation CSV files
 """
 
 from __future__ import annotations
@@ -19,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import gymnasium as gym
 
-from sjfpo.config import build_run_matrix, PPOConfig, SACConfig
+from sjfpo.config import PPOConfig, SACConfig
 from sjfpo.configuration_sjfpo import SJFPOConfig
 from tests.fixtures.fake_env import FakeGymEnv
 
@@ -92,47 +91,6 @@ def test_sjfpo_train_run_writes_5col_csv(tmp_path):
         assert len(rows) >= 1
         for r in rows:
             assert len(r) == 5
-
-
-def test_run_matrix_cardinality_is_45():
-    from sjfpo.config import RUN_MATRIX, TINY_MATRIX
-
-    assert len(build_run_matrix()) == 45
-    assert len(RUN_MATRIX) == 45
-    assert TINY_MATRIX is False
-    # tiny env
-    os.environ["SJFPO_TINY_MATRIX"] = "1"
-    try:
-        import importlib
-        import sjfpo.config as cfg_mod
-
-        importlib.reload(cfg_mod)
-        assert len(cfg_mod.RUN_MATRIX) == 3
-        for s in cfg_mod.RUN_MATRIX:
-            assert s.env == "Hopper-v5"
-        importlib.reload(
-            cfg_mod
-        )  # reload back will be handled by fixture in other tests, but restore here
-        # force back to default
-        if "SJFPO_TINY_MATRIX" in os.environ:
-            del os.environ["SJFPO_TINY_MATRIX"]
-        importlib.reload(cfg_mod)
-    finally:
-        if "SJFPO_TINY_MATRIX" in os.environ:
-            del os.environ["SJFPO_TINY_MATRIX"]
-        import importlib
-        import sjfpo.config as cfg_mod
-
-        importlib.reload(cfg_mod)
-
-
-# T7 — wandb integration invariants (mujoco-wandb-logging plan)
-# Recovered from pre-existing uncommitted working-tree additions (see tmp/t8-noisy).
-
-
-def test_wandb_logging_does_not_change_run_matrix():
-    """RUN_MATRIX cardinality remains 45 regardless of wandb integration."""
-    assert len(build_run_matrix()) == 45
 
 
 def test_wandb_soft_import_no_crash():

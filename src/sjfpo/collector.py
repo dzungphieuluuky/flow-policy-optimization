@@ -5,9 +5,9 @@ Performance notes
 * Actions are transferred host-side **once per step** (batched over envs) rather
   than once per env per step. The per-step `.numpy()` sync is the single
   biggest cost in the vec collector.
-* Observation windows and rewards stay in **fp32** end-to-end; only parameters
-  and stored policy outputs use ``STORAGE_DTYPE``. bf16 rewards corrupt the
-  GAE target.
+* Observation windows and rewards stay in **fp32** end-to-end; policy data
+  follows the execution-device dtype policy. bf16 rewards corrupt the GAE
+  target.
 * Bounds are validated once per collector call and reduced to
   ``(low, range)``; ``scale_and_clip_chunk`` no longer re-validates.
 * Warmup windows share one clone (deque holds N references to the same
@@ -46,7 +46,7 @@ def _defaults() -> SJFPOConfig:
 
 
 # Dtypes: observations and rewards are fp32 end-to-end. Only policy outputs
-# and stored params use STORAGE_DTYPE (bf16 on Blackwell).
+# and policy data use the execution-device dtype policy.
 _OBS_DTYPE = torch.float32
 _REWARD_DTYPE = torch.float32
 _INDEX_DTYPE = torch.int64
@@ -299,13 +299,14 @@ def collect_chunks_vec(
     *,
     n_obs_steps: int | None = None,
     n_action_steps: int,
+    chunk_size: int | None = None,
     seed: int | None = None,
     on_error_flush: Callable[[], None] | None = None,
 ) -> list[Transition]:
     """Vector twin of :func:`collect_chunks` — same records, same chaining."""
     cfg = _defaults()
     n_obs_steps = cfg.n_obs_steps if n_obs_steps is None else n_obs_steps
-    chunk_size = cfg.action_horizon
+    chunk_size = cfg.action_horizon if chunk_size is None else int(chunk_size)
 
     n = int(envs.num_envs)
     base_target, remainder = divmod(total_steps, n)
@@ -454,11 +455,12 @@ def collect_chunks(
     *,
     n_obs_steps: int | None = None,
     n_action_steps: int,
+    chunk_size: int | None = None,
     on_error_flush: Callable[[], None] | None = None,
 ) -> list[Transition]:
     cfg = _defaults()
     n_obs_steps = cfg.n_obs_steps if n_obs_steps is None else n_obs_steps
-    chunk_size = cfg.action_horizon
+    chunk_size = cfg.action_horizon if chunk_size is None else int(chunk_size)
 
     low, range_ = _bounds_to_tensor(action_low, action_high)
 

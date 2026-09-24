@@ -86,6 +86,17 @@ def test_actor_architecture_uses_policy_config():
     assert policy.actor.in_proj.out_features == 64
 
 
+def test_rollout_uses_configured_action_execution_length():
+    policy = SJFPOPolicy(make_config(n_action_steps=4))
+    env = FakeGymEnv(obs_dim=OBS_DIM, action_dim=ACT_DIM, max_steps=20)
+
+    batch = policy.generate_rollout(env, total_steps=8, noisy=False)
+
+    assert batch["action"].shape[1] == 16
+    assert batch["action_is_pad"].shape[0] == 2
+    assert batch["action_is_pad"].sum(dim=1).tolist() == [12, 12]
+
+
 def test_rollout_normalizer_observations_are_executed_post_step_frames():
     policy = SJFPOPolicy(make_config())
     env = FakeGymEnv(obs_dim=OBS_DIM, action_dim=ACT_DIM, max_steps=20)

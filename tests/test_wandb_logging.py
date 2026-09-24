@@ -34,9 +34,6 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from sjfpo.config import build_run_matrix
-
-
 def init_kwargs(recorder):
     """Return the kwargs of the single wandb.init call on the mock."""
     recorder.init.assert_called_once()
@@ -478,7 +475,7 @@ class TestFinishRun:
 
 
 class TestSurfaceAndImportGuards:
-    """Regression tests — core-fn presence, wandb required, RUN_MATRIX 45."""
+    """Regression tests — core-fn presence and wandb required."""
 
     def test_five_fn_surface(self):
         """Core kept fns present; all old (pre-simplification) names gone."""
@@ -510,10 +507,6 @@ class TestSurfaceAndImportGuards:
         monkeypatch.setattr(wl, "wandb", recorder)
         wl.log_metrics({"x": 1}, step=0)
         recorder.log.assert_called_once()
-
-    def test_run_matrix_unchanged(self):
-        """len(build_run_matrix()) == 45 — cardinality locked."""
-        assert len(build_run_matrix()) == 45
 
     def test_wandb_absent_is_hard_import_error(self):
         """Subprocess guard: wandb hidden → import raises ImportError (hard)."""

@@ -75,7 +75,6 @@ class SJFPOConfig(PreTrainedConfig):
     policy_lr: float = 3e-4
     critic_lr: float = 9e-4  # 3x policy_lr for faster value tracking
     optimizer_weight_decay: float = 1e-2  # skrl AdamWConfig default; 1e-4 too weak for critic
-    optimizer_8bit: bool = False
 
     # -- Training loop -----------------------------------------------------
     # No separate warm-up phase; stats initialize naturally during first rollout.
@@ -217,28 +216,12 @@ class SJFPOConfig(PreTrainedConfig):
             raise ValueError("SJFPO requires 'action' in output_features.")
 
     def get_optimizer_preset(self) -> AdamWConfig:
-        """AdamW preset, honoring ``optimizer_8bit`` when set.
-
-        ``AdamWConfig`` in recent LeRobot exposes ``use_8bit``; if the installed
-        version doesn't, this falls back to a plain fp32 AdamW and warns.
-        """
+        """Return the standard FP32/bf16-compatible AdamW preset."""
         kwargs = dict(
             lr=self.policy_lr,
             weight_decay=self.optimizer_weight_decay,
             grad_clip_norm=self.grad_clip_norm,
         )
-        if self.optimizer_8bit:
-            if "use_8bit" in AdamWConfig.__dataclass_fields__:
-                kwargs["use_8bit"] = True
-            else:
-                import warnings
-
-                warnings.warn(
-                    "optimizer_8bit=True requested but AdamWConfig does not "
-                    "expose 'use_8bit'; falling back to fp32 AdamW.",
-                    RuntimeWarning,
-                    stacklevel=2,
-                )
         return AdamWConfig(**kwargs)
 
     def get_scheduler_preset(self):

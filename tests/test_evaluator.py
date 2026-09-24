@@ -193,6 +193,16 @@ class TestPolicyKinds:
         results = evaluator.evaluate(adapter)
         assert len(results) == 2
 
+    def test_csv_append_preserves_previous_evaluations(self, tmp_path):
+        evaluator = Evaluator(FakeEnv(), eval_seed=42, max_episodes=2)
+        evaluator.evaluate(callable_policy, out_dir=tmp_path, append_csv=True)
+        evaluator.evaluate(callable_policy, out_dir=tmp_path, append_csv=True)
+
+        with open(tmp_path / "eval_history.csv", newline="", encoding="utf-8") as f:
+            rows = list(csv.DictReader(f))
+        assert len(rows) == 4
+        assert [int(row["episode"]) for row in rows] == [0, 1, 0, 1]
+
     def test_csv_schema(self):
         env = FakeEnv()
         evaluator = Evaluator(env, eval_seed=42, max_episodes=2)

@@ -148,8 +148,10 @@ def coerce_value(cfg_cls: type, raw: dict) -> dict:
     return out
 
 
-def apply_flat_yaml(method_cfg, yaml_dict: dict):
-    """Legacy flat --config YAML fills method fields the CLI left at defaults."""
+def apply_flat_yaml(
+    method_cfg, yaml_dict: dict, cli_fields: set[str] | None = None
+):
+    """Apply flat YAML after the dataclass defaults and before CLI overrides."""
     raw = coerce_value(type(method_cfg), yaml_dict)
     if not raw:
         return method_cfg
@@ -159,11 +161,27 @@ def apply_flat_yaml(method_cfg, yaml_dict: dict):
         for f in dataclasses.fields(method_cfg)
         if getattr(method_cfg, f.name) != getattr(fresh, f.name)
     }
+    cli_touched.update(cli_fields or ())
     overrides = {k: v for k, v in raw.items() if k not in cli_touched}
     return dataclasses.replace(method_cfg, **overrides) if overrides else method_cfg
 
 
-def select_method_cfg(args: TrainConfig, yaml_dict: dict):
+def _sjfpo_cli_fields(argv: list[str]) -> set[str]:
+    """Return SJFPO config fields explicitly present on the command line."""
+    fields: set[str] = set()
+    prefix = "--sjfpo."
+    for index, token in enumerate(argv):
+        if not token.startswith(prefix):
+            continue
+        name = token[len(prefix) :].split("=", 1)[0]
+        if name:
+            fields.add(name)
+    return fields
+
+
+def select_method_cfg(
+    args: TrainConfig, yaml_dict: dict, cli_fields: set[str] | None = None
+):
     """Nested draccus sub-config for the method, overlaid with flat YAML.
 
     ``sjfpo_jax`` reuses the sjfpo hyperparameter block (identical fields,
@@ -175,7 +193,7 @@ def select_method_cfg(args: TrainConfig, yaml_dict: dict):
         "sac": args.sac,
         "sjfpo_jax": args.sjfpo,
     }[args.method]
-    return apply_flat_yaml(method_cfg, yaml_dict)
+    return apply_flat_yaml(method_cfg, yaml_dict, cli_fields=cli_fields)
 
 
 def default_intervals(
@@ -345,6 +363,7 @@ def main(argv: list[str] | None = None) -> int:
     # unavailable — the sjfpo_jax path works in a JAX-only install.
     configure_torch_cuda()
 
+    argv = list(sys.argv[1:] if argv is None else argv)
     args = draccus.parse(config_class=TrainConfig, args=argv)
     if not args.env:
         print("ERROR: --env is required", file=sys.stderr)
@@ -368,7 +387,7 @@ def main(argv: list[str] | None = None) -> int:
         total, args.save_steps, yaml_dict, "save_steps", 25000 if is_jax else 1000
     )
     n_obs_steps = int(yaml_dict.get("n_obs_steps", 16))
-    cfg = select_method_cfg(args, yaml_dict)
+    cfg = select_method_cfg(args, yaml_dict, _sjfpo_cli_fields(argv))
 
     if args.resume and args.method not in ("sjfpo", "sjfpo_jax"):
         print(

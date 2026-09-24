@@ -11,8 +11,6 @@ import torch
 from sjfpo.configuration_sjfpo import SJFPOConfig
 from sjfpo.utils import resolve_storage_dtype
 
-STORAGE_DTYPE = resolve_storage_dtype()
-
 
 # ---------------------------------------------------------------------------
 # Sampling
@@ -80,10 +78,11 @@ def run_mc_simulation(
         raise ValueError(f"eps shape {tuple(eps.shape)} != {(b, num_mc, *flow_shape)}")
 
     # Coerce tau to a device-matched tensor without a silent CPU hop.
+    storage_dtype = resolve_storage_dtype(eps.device)
     if isinstance(tau, torch.Tensor):
-        t = tau.to(device=eps.device, dtype=STORAGE_DTYPE)
+        t = tau.to(device=eps.device, dtype=storage_dtype)
     else:
-        t = torch.as_tensor(tau, dtype=STORAGE_DTYPE, device=eps.device)
+        t = torch.as_tensor(tau, dtype=storage_dtype, device=eps.device)
 
     if t.dim() == 0:
         t = t.expand(b, num_mc)

@@ -88,7 +88,17 @@ def test_roundtrip_restores_weights_optimizer_and_counters(tmp_path):
     assert loaded.config.action_horizon == 16 and loaded.config.type == "sjfpo"
     for (n1, p1), (n2, p2) in zip(policy.named_parameters(), loaded.named_parameters()):
         assert n1 == n2
+        if n1.startswith(("old_actor.", "old_conditioner.")):
+            continue
         assert torch.equal(p1, p2), n1
+    for p_old, p_live in zip(
+        loaded.old_actor.parameters(), loaded.actor.parameters()
+    ):
+        assert torch.equal(p_old, p_live)
+    for p_old, p_live in zip(
+        loaded.old_conditioner.parameters(), loaded.conditioner.parameters()
+    ):
+        assert torch.equal(p_old, p_live)
     live_state, loaded_state = opt.state_dict(), loaded_opt.state_dict()
     assert live_state["param_groups"] == loaded_state["param_groups"]
     assert set(live_state["state"]) == set(loaded_state["state"])
@@ -192,6 +202,8 @@ def test_compiled_policy_saves_eager_keys_and_loads_cross_mode(tmp_path):
     assert keys, "empty safetensors"
     assert all(not k.startswith("_orig_mod.") for k in keys), "wrapper leaked to disk"
     assert any(k.startswith("actor.") for k in keys)
+    assert not any(k.startswith("old_actor.") for k in keys)
+    assert not any(k.startswith("old_conditioner.") for k in keys)
 
     loaded, _, _ = load_policy_checkpoint(d)
     assert not hasattr(loaded.actor, "_orig_mod")  # from_pretrained builds eager

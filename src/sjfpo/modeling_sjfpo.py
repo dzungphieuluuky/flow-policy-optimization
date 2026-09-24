@@ -61,9 +61,6 @@ from sjfpo.utils import (
     to_tensor_1d,
 )
 
-STORAGE_DTYPE = resolve_storage_dtype()
-
-
 class SJFPOAborted(RuntimeError):
     """Non-finite training loss (message names the offending term)."""
 
@@ -201,11 +198,12 @@ class SJFPOPolicy(PreTrainedPolicy):
         low: np.ndarray | torch.Tensor,
         high: np.ndarray | torch.Tensor,
     ) -> None:
+        storage_dtype = resolve_storage_dtype(self.action_low.device)
         low_t = to_tensor_1d(
-            low, dtype=STORAGE_DTYPE, device=self.action_low.device
+            low, dtype=storage_dtype, device=self.action_low.device
         ).reshape(-1)
         high_t = to_tensor_1d(
-            high, dtype=STORAGE_DTYPE, device=self.action_high.device
+            high, dtype=storage_dtype, device=self.action_high.device
         ).reshape(-1)
         if (
             low_t.shape != self.action_low.shape
@@ -294,7 +292,8 @@ class SJFPOPolicy(PreTrainedPolicy):
     # -- observation coercion ------------------------------------------
 
     def standardize_obs_tensor(self, states: torch.Tensor) -> torch.Tensor:
-        states = to_tensor(states, dtype=STORAGE_DTYPE)
+        states = to_tensor(states)
+        states = states.to(dtype=resolve_storage_dtype(states.device))
         if states.dim() == 3:
             return states
         if states.dim() == 2:
@@ -352,7 +351,8 @@ class SJFPOPolicy(PreTrainedPolicy):
         return self.postprocessor({ACTION: scaled})[ACTION]
 
     def select_action(self, batch: dict[str, torch.Tensor], **kwargs) -> torch.Tensor:
-        obs = to_tensor(batch[OBS_STATE], dtype=STORAGE_DTYPE)
+        obs = to_tensor(batch[OBS_STATE])
+        obs = obs.to(dtype=resolve_storage_dtype(obs.device))
         if obs.dim() == 1:
             if not self._frame_buffer:
                 for _ in range(self.config.n_obs_steps):
@@ -427,6 +427,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             raise ValueError(f"total_steps={total_steps} must be positive")
         cfg = self.config
         device = next(self.parameters()).device
+        storage_dtype = resolve_storage_dtype(device)
 
         def propose(state: torch.Tensor) -> torch.Tensor:
             chunk = self.predict_action_chunk(
@@ -448,7 +449,8 @@ class SJFPOPolicy(PreTrainedPolicy):
                 action_low,
                 action_high,
                 n_obs_steps=cfg.n_obs_steps,
-                n_action_steps=cfg.action_horizon,
+                n_action_steps=cfg.n_action_steps,
+                chunk_size=cfg.action_horizon,
             )
         else:
             chunks = collect_chunks(
@@ -458,7 +460,8 @@ class SJFPOPolicy(PreTrainedPolicy):
                 action_low,
                 action_high,
                 n_obs_steps=cfg.n_obs_steps,
-                n_action_steps=cfg.action_horizon,
+                n_action_steps=cfg.n_action_steps,
+                chunk_size=cfg.action_horizon,
             )
 
         n_chunks = len(chunks)
@@ -572,8 +575,8 @@ class SJFPOPolicy(PreTrainedPolicy):
                 advantages = advantages.clamp(
                     -cfg.advantage_clamp, cfg.advantage_clamp
                 )
-        advantages = advantages.to(STORAGE_DTYPE)
-        returns = returns.to(STORAGE_DTYPE)
+        advantages = advantages.to(storage_dtype)
+        returns = returns.to(storage_dtype)
 
         is_pad = torch.arange(cfg.action_horizon, device=device).unsqueeze(
             0
@@ -631,13 +634,18 @@ class SJFPOPolicy(PreTrainedPolicy):
         """
         cfg = self.config
         device = next(self.parameters()).device
+        storage_dtype = resolve_storage_dtype(device)
 
         states = to_device_async(
-            to_tensor(batch[OBS_STATE], dtype=STORAGE_DTYPE), device
+            to_tensor(batch[OBS_STATE]), device
+        ).to(dtype=storage_dtype)
+        actions = to_device_async(to_tensor(batch[ACTION]), device).to(
+            dtype=storage_dtype
         )
-        actions = to_device_async(to_tensor(batch[ACTION], dtype=STORAGE_DTYPE), device)
-        advantages = to_tensor(batch["advantages"], dtype=STORAGE_DTYPE).to(device)
-        returns = to_tensor(batch["returns"], dtype=STORAGE_DTYPE).to(device)
+        advantages = to_tensor(batch["advantages"]).to(
+            device=device, dtype=storage_dtype
+        )
+        returns = to_tensor(batch["returns"]).to(device=device, dtype=storage_dtype)
         action_is_pad = to_tensor(
             batch["action_is_pad"], dtype=torch.bool, device=device
         )
@@ -684,7 +692,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             )
         if has_shared_tau:
             tau = to_tensor(
-                batch["shared_mc_tau"], dtype=STORAGE_DTYPE, device=device
+                batch["shared_mc_tau"], dtype=storage_dtype, device=device
             )
             if tau.shape != (cfg.num_mc_samples,):
                 raise ValueError(
@@ -692,7 +700,7 @@ class SJFPOPolicy(PreTrainedPolicy):
                     f"{(cfg.num_mc_samples,)}"
                 )
             eps = to_tensor(
-                batch["shared_mc_eps"], dtype=STORAGE_DTYPE, device=device
+                batch["shared_mc_eps"], dtype=storage_dtype, device=device
             )
             expected = (n, cfg.num_mc_samples, num_spectral_tokens_kept, action_dim)
             if tuple(eps.shape) != expected:
@@ -805,7 +813,9 @@ class SJFPOPolicy(PreTrainedPolicy):
             v_pred, returns_d, reduction="none", beta=1.0
         )
         if cfg.use_clipped_value_loss and "values" in batch:
-            old_values = to_tensor(batch["values"], dtype=STORAGE_DTYPE, device=device)
+            old_values = to_tensor(
+                batch["values"], dtype=storage_dtype, device=device
+            )
             v_clipped = old_values + (v_pred - old_values).clamp(
                 -cfg.epsilon_clip, cfg.epsilon_clip
             )

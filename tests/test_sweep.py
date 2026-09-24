@@ -19,7 +19,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from sjfpo.config import RunSpec, RUN_MATRIX  # noqa: E402
+from sjfpo.config import RunSpec  # noqa: E402
 
 # Helpers
 
@@ -150,7 +150,7 @@ class TestScanRuns:
         assert result.diverged[0].method == "sjfpo"
 
     def test_deterministic_ordering(self, tmp_path):
-        """Pending runs sorted by (method, env, seed) lexicographic, then RUN_MATRIX index."""
+        """Pending runs sorted by (method, env, seed) lexicographically."""
         from sjfpo.sweep import scan_runs
 
         # Create 6 runs with varying completeness - only some will be pending

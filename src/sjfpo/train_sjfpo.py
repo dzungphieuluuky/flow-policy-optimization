@@ -36,9 +36,8 @@ from lerobot.utils.random_utils import set_seed
 from sjfpo.checkpointing import load_policy_checkpoint, save_policy_checkpoint
 from sjfpo.configuration_sjfpo import SJFPOConfig
 from sjfpo.evaluator import Evaluator, check_divergence, mean_chunk_jerk
-from sjfpo.modeling_sjfpo import SJFPOPolicy, STORAGE_DTYPE
+from sjfpo.modeling_sjfpo import SJFPOPolicy
 from lerobot.utils.constants import CHECKPOINTS_DIR
-from sjfpo.rollout_storage import mini_batch_indices
 from sjfpo.utils import maybe_compile, resolve_device, to_numpy_1d
 from sjfpo.wandb_logging import (
     finish_run,
@@ -46,6 +45,25 @@ from sjfpo.wandb_logging import (
     log_eval_summary,
     log_metrics,
 )
+
+
+def mini_batch_indices(
+    n: int,
+    num_minibatches: int,
+    device: torch.device | str,
+    num_epochs: int = 1,
+):
+    """Yield shuffled minibatch indices for each epoch."""
+    if n < 1:
+        raise ValueError(f"n={n} must be >= 1")
+    n_mb = max(1, min(int(num_minibatches), n))
+    device = torch.device(device)
+    for _ in range(max(1, int(num_epochs))):
+        perm = torch.randperm(n, device=device)
+        for i in range(n_mb):
+            start = (i * n) // n_mb
+            stop = ((i + 1) * n) // n_mb
+            yield perm[start:stop]
 
 
 class _EvalPolicy:
@@ -63,10 +81,11 @@ class _EvalPolicy:
 
 
 def _compile_in_place(policy: SJFPOPolicy) -> None:
-    """Apply ``maybe_compile`` to every submodule the training path touches."""
-    policy.actor = maybe_compile(policy.actor)
-    policy.old_actor = maybe_compile(policy.old_actor)
-    policy.critic = maybe_compile(policy.critic)
+    """Apply ``maybe_compile`` to CUDA submodules the training path touches."""
+    device = next(policy.parameters()).device
+    policy.actor = maybe_compile(policy.actor, device=device)
+    policy.old_actor = maybe_compile(policy.old_actor, device=device)
+    policy.critic = maybe_compile(policy.critic, device=device)
 
 
 def build_policy(
@@ -96,11 +115,6 @@ def build_policy(
 def _build_optimizer(
     policy: SJFPOPolicy, cfg: SJFPOConfig, params: list[dict], lr: float
 ):
-    if cfg.optimizer_8bit:
-        import bitsandbytes as bnb
-        return bnb.optim.AdamW8bit(
-            params, lr=lr, weight_decay=cfg.optimizer_weight_decay
-        )
     kwargs = dataclasses.asdict(cfg.get_optimizer_preset(lr=lr))
     kwargs.pop("grad_clip_norm", None)  # applied manually after backward
     if next(policy.parameters()).is_cuda:
@@ -134,11 +148,15 @@ def sample_minibatch(
     """Slice dim-0 rows; every per-chunk batch value is ``[B, ...]``.
 
     ``shared_mc_tau`` is stored 1-D ``[num_mc]`` and broadcast over chunks
-    inside ``forward``, so it must be passed through without indexing.
+    inside ``forward``. ``normalizer_observations`` is also passed through
+    because it is one row per executed environment step, not per chunk.
     """
     out: dict[str, torch.Tensor] = {}
     for k, v in batch.items():
         if k == "shared_mc_tau" and v.dim() == 1:
+            out[k] = v
+        elif k == "normalizer_observations":
+            # The normalizer is updated once from the complete rollout batch.
             out[k] = v
         else:
             out[k] = v[indices]
@@ -346,14 +364,23 @@ def train_sjfpo_run(
             actor_pre_norms: list[torch.Tensor] = []
             critic_pre_norms: list[torch.Tensor] = []
             n_chunks = batch["advantages"].shape[0]
-            for mb_idx in mini_batch_indices(
-                n_chunks,
-                cfg.num_minibatches,
-                batch["advantages"].device,
-                num_epochs=cfg.num_epochs,
-            ):
-                actor_optimizer.zero_grad(set_to_none=True)
-                critic_optimizer.zero_grad(set_to_none=True)
+            # Match Accelerate's accumulation contract: backward on every
+            # microbatch, synchronize/step only at the accumulation boundary,
+            # and always flush a final partial accumulation group.
+            microbatches = list(
+                mini_batch_indices(
+                    n_chunks,
+                    cfg.num_minibatches,
+                    batch["advantages"].device,
+                    num_epochs=cfg.num_epochs,
+                )
+            )
+            accumulation_steps = cfg.grad_accum_steps
+            actor_optimizer.zero_grad(set_to_none=True)
+            critic_optimizer.zero_grad(set_to_none=True)
+            for micro_step, mb_idx in enumerate(microbatches):
+                group_start = micro_step - (micro_step % accumulation_steps)
+                group_size = min(accumulation_steps, len(microbatches) - group_start)
                 loss, epoch_info = policy(
                     sample_minibatch(batch, mb_idx),
                     compute_info=wandb_enabled,
@@ -362,18 +389,25 @@ def train_sjfpo_run(
                     raise ValueError(
                         f"Loss must be scalar before backward; got {tuple(loss.shape)}."
                     )
-                loss.backward()
-                actor_pre = torch.nn.utils.clip_grad_norm_(
-                    actor_params, cfg.grad_clip_norm
+                (loss / group_size).backward()
+                is_boundary = (
+                    (micro_step + 1) % accumulation_steps == 0
+                    or micro_step + 1 == len(microbatches)
                 )
-                critic_pre = torch.nn.utils.clip_grad_norm_(
-                    critic_params, cfg.grad_clip_norm
-                )
-                actor_pre_norms.append(actor_pre.detach())
-                critic_pre_norms.append(critic_pre.detach())
-                actor_optimizer.step()
-                critic_optimizer.step()
-                policy.step_count += 1
+                if is_boundary:
+                    actor_pre = torch.nn.utils.clip_grad_norm_(
+                        actor_params, cfg.grad_clip_norm
+                    )
+                    critic_pre = torch.nn.utils.clip_grad_norm_(
+                        critic_params, cfg.grad_clip_norm
+                    )
+                    actor_pre_norms.append(actor_pre.detach())
+                    critic_pre_norms.append(critic_pre.detach())
+                    actor_optimizer.step()
+                    critic_optimizer.step()
+                    actor_optimizer.zero_grad(set_to_none=True)
+                    critic_optimizer.zero_grad(set_to_none=True)
+                    policy.step_count += 1
                 if epoch_info is not None:
                     infos.append(epoch_info)
 
@@ -416,7 +450,9 @@ def train_sjfpo_run(
             diverged_now = False
             diverge_msg = ""
             if global_step >= next_eval or global_step >= total_steps:
-                eval_results = evaluator.evaluate(eval_policy, out_dir=out_dir)
+                eval_results = evaluator.evaluate(
+                    eval_policy, out_dir=out_dir, append_csv=True
+                )
                 mean_return = float(np.mean([r["return"] for r in eval_results]))
                 all_eval_returns.append(mean_return)
                 recent_eval_returns.append(mean_return)

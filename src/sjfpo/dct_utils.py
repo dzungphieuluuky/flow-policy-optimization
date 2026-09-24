@@ -24,8 +24,6 @@ import torch
 
 from sjfpo.utils import resolve_storage_dtype
 
-STORAGE_DTYPE = resolve_storage_dtype()
-
 # sqrt(0.5), used to orthonormalize the DC row of every basis matrix.
 _INV_SQRT2 = math.sqrt(0.5)
 
@@ -60,12 +58,15 @@ def _get_dct_basis_f32(n: int, device: torch.device) -> torch.Tensor:
     return mat
 
 
-def dct_basis_matrix(n: int) -> torch.Tensor:
-    """Orthonormal DCT-II matrix of size ``n`` in ``STORAGE_DTYPE``.
+def dct_basis_matrix(
+    n: int, device: torch.device | str | None = None
+) -> torch.Tensor:
+    """Orthonormal DCT-II matrix for ``device`` in its storage dtype.
 
     Returns a cached tensor; callers must not mutate it in place.
     """
-    return _get_dct_basis_f32(n, torch.device("cpu")).to(STORAGE_DTYPE)
+    target = torch.device("cpu") if device is None else torch.device(device)
+    return _get_dct_basis_f32(n, target).to(resolve_storage_dtype(target))
 
 
 # ---------------------------------------------------------------------------

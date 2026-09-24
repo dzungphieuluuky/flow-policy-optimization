@@ -87,14 +87,14 @@ def test_self_attention_matches_math_reference():
 
 
 def test_self_attention_mask_hides_keys():
-    """key_mask=True rows are ignored (key_padding_mask convention)."""
+    """attention_mask=True rows are valid; False rows are ignored."""
     nets = make_nets()
     torch.manual_seed(41)
     attn = nets.SelfAttention(32, n_heads=4)
     x = torch.randn(2, 9, 32)
     garb = x.clone()
     garb[:, 5:, :] = 100.0
-    mask = torch.arange(9).unsqueeze(0) >= torch.tensor([5, 5]).unsqueeze(1)
+    mask = torch.arange(9).unsqueeze(0) < torch.tensor([5, 5]).unsqueeze(1)
     z1 = attn(x, mask)
     z2 = attn(garb, mask)
     assert torch.allclose(z1[:, :5, :], z2[:, :5, :], atol=1e-4)
@@ -361,9 +361,9 @@ def test_window_encoder_mask_hides_tails():
     x = torch.randn(2, STATE_T, 6)
     garb = x.clone()
     garb[:, 8:, :] = 100.0
-    key_mask = torch.arange(STATE_T).unsqueeze(0) >= torch.tensor([8, 8]).unsqueeze(1)
-    z1 = enc(x, key_mask)
-    z2 = enc(garb, key_mask)
+    attention_mask = torch.arange(STATE_T).unsqueeze(0) < torch.tensor([8, 8]).unsqueeze(1)
+    z1 = enc(x, attention_mask)
+    z2 = enc(garb, attention_mask)
     assert torch.allclose(z1[:, :8, :], z2[:, :8, :], atol=1e-6)
 
 
@@ -405,6 +405,17 @@ def test_policy_bin_order_sensitive():
     v = policy(x_t, 0.5, torch.randn(2, ZD))
     assert v.shape == (2, ka, 3)
     assert not torch.allclose(v[:, 0, :], v[:, 1, :], atol=1e-6)
+
+
+def test_policy_rejects_more_tokens_than_action_horizon():
+    nets = make_nets()
+    policy = make_flow(nets, 3)
+    with pytest.raises(ValueError, match="action token count"):
+        policy(
+            torch.randn(1, _DEFAULTS.action_horizon + 1, 3),
+            0.5,
+            torch.randn(1, ZD),
+        )
 
 
 def test_policy_reads_fused_state():

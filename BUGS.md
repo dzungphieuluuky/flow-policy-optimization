@@ -314,185 +314,107 @@ The policy checkpoint roundtrip now verifies that nonzero running statistics res
 
 ## 10. Blackwell CPU execution can use BF16 inputs with FP32 parameters
 
-**Status:** Confirmed hardware-conditional runtime bug
+**Status:** Resolved in the active Torch path
 **Files:**
 
-- `src/sjfpo/utils.py:64-67`
-- `src/sjfpo/modeling_sjfpo.py:552-568,688-690`
-- `src/sjfpo/networks.py:66-79`
+- `src/sjfpo/utils.py:64-93`
+- `src/sjfpo/modeling_sjfpo.py:196-223,293-304,416-430,633-650`
+- `src/sjfpo/networks.py:47-61`
+- `src/sjfpo/fpo_core.py:82-89`
 
-`STORAGE_DTYPE` is selected from GPU hardware presence, not the actual policy device. On Blackwell, selecting CPU leaves parameters FP32 while rollout tensors can be BF16. CPU autocast is intentionally a no-op.
-
-### Impact
-
-CPU runs on a Blackwell machine can fail with BF16-input/FP32-weight `Linear` errors or silently incur an unintended precision path.
-
-### Minimal fix
-
-Resolve storage dtype using the actual execution device. Force FP32 storage when the execution device is CPU.
+Storage dtype is now resolved from the actual execution device. CPU always uses FP32, including on Blackwell hosts; CUDA Blackwell uses BF16 storage when enabled. Model parameters and RMS normalization remain FP32-safe while runtime data follows the device policy.
 
 ---
 
 ## 11. `SJFPO_DTYPE=fp32` is ignored on Blackwell
 
-**Status:** Confirmed configuration contradiction
-**File:** `src/sjfpo/utils.py:70-88`
+**Status:** Resolved in the active Torch path
+**File:** `src/sjfpo/utils.py:70-93`
 
-The Blackwell early return occurs before `SJFPO_DTYPE` is read.
-
-### Impact
-
-The environment variable does not provide the expected FP32 override on Blackwell.
-
-### Minimal fix
-
-Read and validate `SJFPO_DTYPE` before applying the Blackwell default, or explicitly document Blackwell as a forced-BF16 exception.
+`SJFPO_DTYPE` is now parsed and validated before the Blackwell default is applied. `SJFPO_DTYPE=fp32` therefore overrides Blackwell BF16, while `bf16` is selected only when CUDA supports it.
 
 ---
 
 ## 12. MJX truncation finding — removed from the active Torch path
 
-**Status:** Historical finding; active code removed
+**Status:** Removed by policy decision
 **Original file:** `src/sjfpo/mjx_env.py` (deleted)
 
-The former MJX collector autoreset completed environments and returned the reset observation as the transition's next state. That could have made truncation bootstrapping incorrect.
-
-This is no longer an active Torch bug: `src/sjfpo/mjx_env.py` and the `SJFPO_MJX` branch in `SJFPOPolicy.generate_rollout()` were removed. No repair is required for the current Torch package.
-
-## 13. 8-bit optimizer configuration is not preserved on resume
-
-**Status:** Confirmed optimizer/resume inconsistency
-**Files:**
-
-- `src/sjfpo/train_sjfpo.py:99-124`
-- `src/sjfpo/checkpointing.py:221-253`
-
-Fresh training can construct `bitsandbytes.AdamW8bit`, but checkpoint loading always uses the normal optimizer preset builder.
-
-### Impact
-
-A resumed 8-bit run may use a different optimizer class and state semantics than the original run. Fused AdamW behavior is also not preserved consistently.
-
-### Minimal fix
-
-Centralize optimizer construction and use the same helper for fresh runs and resume, including 8-bit and fused settings.
-
----
+The former MJX collector autoreset completed environments and returned the reset observation as the transition's next state. The stale `SJFPO_MJX` test and Torch integration were removed; training always uses the Gymnasium Torch path. The separate `src/sjfpo_jax/` backend remains outside this Torch-specific removal.
 
 # P2 — Reliability, logging, and precision issues
 
 ## 14. MJX reward precision finding — removed from the active Torch path
 
-**Status:** Historical finding; active code removed
+**Status:** Removed by policy decision
 **Original file:** `src/sjfpo/mjx_env.py` (deleted)
 
-The former MJX rollout path used `STORAGE_DTYPE` for rollout storage, which could quantize rewards to BF16 on Blackwell before GAE converted them back to FP32.
-
-This is no longer an active Torch bug: the MJX implementation and its dedicated test were removed. The separate `src/sjfpo_jax/` backend is outside the active Torch scope of this audit.
+The former MJX rollout path and its stale test were removed. The active Torch training path uses Gymnasium only; the separate `src/sjfpo_jax/` backend remains outside this Torch-specific removal.
 
 ## 15. `grad_accum_steps` has no effect
 
-**Status:** Confirmed dead configuration
+**Status:** Resolved in the active Torch path
 **Files:**
 
-- `src/sjfpo/configuration_sjfpo.py:83-84,174-175`
-- `src/sjfpo/train_sjfpo.py:347-373`
+- `src/sjfpo/configuration_sjfpo.py:83-87,174-186`
+- `src/sjfpo/train_sjfpo.py:341-399`
 
-The option is validated, but every minibatch performs:
-
-```python
-loss.backward()
-clip_grad_norm_()
-optimizer.step()
-```
-
-No accumulation counter, loss scaling, or delayed step exists.
-
-### Minimal fix
-
-Implement accumulation or remove the option. A real implementation must scale losses, delay optimizer steps, and clip only at the accumulation boundary.
+The training loop now follows Accelerate's accumulation contract: every microbatch performs a scaled backward pass, gradients and diagnostics are clipped only at the accumulation boundary, optimizer steps occur only at boundaries, and a final partial group is flushed. This is the single-process equivalent of `Accelerator.accumulate`; distributed `no_sync` behavior is not needed by the current non-distributed Torch trainer.
 
 ---
 
 ## 16. `n_action_steps` is contradictory between training and evaluation
 
-**Status:** Confirmed configuration/behavior mismatch
+**Status:** Resolved in the active Torch path
 **Files:**
 
-- `src/sjfpo/train_sjfpo.py:81-93`
-- `src/sjfpo/modeling_sjfpo.py:331-335,415-428`
-- `src/sjfpo/configuration_sjfpo.py:20-30`
+- `src/sjfpo/configuration_sjfpo.py:26-30,101-115`
+- `src/sjfpo/modeling_sjfpo.py:416-464`
+- `src/sjfpo/collector.py:293-318,448-478`
+- `scripts/train.py:141-178,343-372`
 
-`build_policy()` overwrites the configured value with half the action horizon. Training rollouts ignore it and use the full horizon, while evaluation uses it.
-
-### Impact
-
-The same policy collects and evaluates with different action execution lengths, making evaluation behavior unlike training behavior and making the setting misleading.
-
-### Minimal fix
-
-Use one explicit execution-length contract for collection and evaluation, or add a clearly named separate training/evaluation setting.
+`n_action_steps` is loaded from `SJFPOConfig`, overlaid by `--config` YAML, and preserved when an explicit `--sjfpo.n_action_steps` CLI field is present. Both single-env and vector collection now pass the configured execution length, while evaluation already uses the same policy configuration. The collector also receives the configured action horizon explicitly instead of resolving it from a module-global config.
 
 ---
 
 ## 17. Periodic evaluation overwrites `eval_history.csv`
 
-**Status:** Confirmed logging bug
+**Status:** Resolved in the active Torch path
 **Files:**
 
-- `src/sjfpo/train_sjfpo.py:412-414`
-- `src/sjfpo/evaluator.py:299-320`
-- `src/sjfpo/evaluator.py:31-52`
-- `src/sjfpo/baselines.py:389-394`
+- `src/sjfpo/train_sjfpo.py:411-416`
+- `src/sjfpo/baselines.py:389-395`
+- `src/sjfpo/evaluator.py:31-52,299-320`
 
-The evaluator defaults to `append_csv=False`, and the live training loop does not enable appending. Every evaluation rewrites the file.
-
-### Impact
-
-The file named `eval_history.csv` contains only the most recent evaluation batch, making training curves and final reporting incorrect.
-
-### Minimal fix
-
-Append after the first evaluation, or accumulate all evaluation rows and rewrite the complete history atomically.
+Periodic SJFPO and baseline evaluations now pass `append_csv=True`. The evaluator writes the header only for a new file and preserves all prior evaluation rows, so `eval_history.csv` remains a complete run history.
 
 ---
 
 ## 18. Actor positional embedding is identical for every action token
 
-**Status:** Confirmed architecture defect
-**File:** `src/sjfpo/networks.py:457-462,495`
+**Status:** Resolved in the active Torch path
+**File:** `src/sjfpo/networks.py:399-473`
 
-The token positional parameter has shape:
+`SJFPOFlowModel` now stores a learned positional table with shape:
 
 ```python
-(1, 1, hidden_dim)
+(1, action_horizon, hidden_dim)
 ```
 
-and is expanded over the token axis. Every action token receives the same embedding.
-
-### Impact
-
-The actor cannot distinguish token positions through this parameter. The comment describes a learned positional embedding, but the implementation is only a shared learned vector.
-
-### Minimal fix
-
-Use a token-length dimension and slice/interpolate it to the current token count, including the reduced DCT token count.
+The forward pass slices the table to the current token count, so reduced DCT token counts retain distinct positions. Inputs exceeding `action_horizon` fail explicitly. Checkpoints are intentionally not backward-compatible with the old shared-position shape because training will restart from scratch.
 
 ---
 
 ## 19. Checkpoints include frozen behavior-policy duplicates
 
-**Status:** Confirmed inefficient/dead checkpoint state
+**Status:** Resolved in the active Torch path
 **Files:**
 
-- `src/sjfpo/modeling_sjfpo.py:152-156`
-- `src/sjfpo/checkpointing.py:147-149`
+- `src/sjfpo/modeling_sjfpo.py:162-169`
+- `src/sjfpo/checkpointing.py:147-158,294-306`
+- `tests/test_policy_checkpoint.py:122-163`
 
-`old_actor` and `old_conditioner` are registered child modules and are likely included in `state_dict()`, although they are refreshed at the next rollout and are not needed for live optimizer state.
-
-### Minimal fix
-
-Exclude frozen snapshot modules from persisted state where compatible, or document that they are intentionally persisted.
+Frozen `old_actor` and `old_conditioner` snapshots remain available in memory for behavior-policy ratios, but are filtered out of `model.safetensors`. On resume they are reconstructed from the loaded live modules before training continues, so no optimizer or rollout behavior is lost.
 
 ---
 
@@ -501,41 +423,41 @@ Exclude frozen snapshot modules from persisted state where compatible, or docume
 ## 20. Legacy chunk storage removed
 
 **Status:** Resolved
-**File:** `src/sjfpo/rollout_storage.py`
+**Files:**
 
-The inactive chunk-level storage and GAE implementation were removed. The active pipeline now uses `sjfpo.gae.compute_step_advantages_torch()` over stored post-step windows; `rollout_storage.py` retains only the active minibatch-index helper.
+- `src/sjfpo/rollout_storage.py` (deleted)
+- `src/sjfpo/train_sjfpo.py`
+
+The inactive chunk-level storage and GAE implementation were removed. The active pipeline uses `sjfpo.gae.compute_step_advantages_torch()` over stored post-step windows; the remaining minibatch-index helper now lives directly in the Torch training entrypoint.
 
 ### Verification
 
-The legacy storage class is no longer present:
+The legacy storage module is no longer present:
 
 ```text
-hasattr(sjfpo.rollout_storage, "RolloutStorage") == False
+Path("src/sjfpo/rollout_storage.py").exists() == False
 ```
 
 ---
 
 ## 21. Self-attention key-mask documentation contradicts implementation
 
-**File:** `src/sjfpo/networks.py:180-217`
+**Status:** Resolved in the active Torch path
+**Files:**
 
-The docstring says `True` means ignore, while the implementation comment and `keep = ~key_mask` use `True` as keep. There are currently no active callers passing the mask.
+- `src/sjfpo/networks.py:156-240`
+- `tests/test_networks.py:59-71`
 
-### Recommended action
-
-Correct the documentation and add a direct unit test before enabling the API.
+`SelfAttention` and `WindowEncoder` now use the Hugging Face convention: `1`/`True` marks a valid key and `0`/`False` marks an ignored key. The mask is passed directly to SDPA, with the first key restored as a valid fallback for fully masked rows. The unit test now expresses the same valid/ignored convention.
 
 ---
 
 ## 22. Environment matrix comments have stale run counts
 
-**File:** `src/sjfpo/config.py:83-102`
+**Status:** Removed by policy decision
+**File:** `src/sjfpo/config.py`
 
-The current four core environments with three methods and five seeds produce 60 runs, but comments still describe 45.
-
-### Recommended action
-
-Update comments or derive the count from the registry.
+The automatic `RUN_MATRIX`, `TINY_MATRIX`, method/seed expansion, and matrix validation code were removed. Training configurations are now selected manually through the CLI/config path; `config.py` only retains environment lookup, baseline dataclasses, and `RunSpec` for callers that explicitly manage their own runs.
 
 ---
 
@@ -558,19 +480,16 @@ Synchronize documentation with executable source.
 
 ## 24. Checkpoint atomicity documentation is too strong
 
-**File:** `src/sjfpo/checkpointing.py:12-14`
+**Status:** Resolved by documentation correction
+**File:** `src/sjfpo/checkpointing.py:12-15`
 
-The module says all writes are atomic, but the policy model is written directly through `save_pretrained(d)`, while optimizer, counters, and RNG use temporary-file helpers.
-
-### Recommended action
-
-Implement a complete temporary-directory/replacement flow or narrow the claim to the files actually protected by the helpers.
+The module now documents the actual guarantee: optimizer, counters, and RNG files use temporary-file replacement, while model/config serialization follows the LeRobot/Hugging Face `save_pretrained` path. It no longer claims that the complete multi-file checkpoint is atomic.
 
 ---
 
 # Verification summary
 
-The highest-impact findings were reproduced in the active code:
+The highest-impact findings were reproduced before their fixes:
 
 ```text
 truncated GAE:                 observed advantage=1, expected=10
@@ -580,7 +499,7 @@ normalizer after rollout:      count=0, uninitialized=True
 custom actor config:           requested depth=1, actual depth=4
 ```
 
-No changes are required for the historical MJX findings in the current Torch package. The remaining recommended repair order is:
+The active Torch path now uses Gymnasium only, has device-aware BF16/FP32 resolution, and no longer exposes the removed 8-bit optimizer configuration. The remaining repair order is:
 
 ```text
 1. Truncated GAE

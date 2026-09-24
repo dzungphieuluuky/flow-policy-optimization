@@ -46,7 +46,6 @@ beautifulsoup4==4.13.5
 betterproto==2.0.0b6
 bigframes==2.39.0
 bigquery-magics==0.14.0
-bitsandbytes==0.50.2
 black==26.5.1
 blake3==1.0.9
 bleach==6.3.0

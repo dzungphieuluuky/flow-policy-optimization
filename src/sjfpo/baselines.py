@@ -390,7 +390,9 @@ def run_baseline_eval(
     agent, evaluator, eval_policy_fn, out_dir, state, divergence_baseline=None
 ):
     agent.enable_training_mode(False)
-    eval_results = evaluator.evaluate(eval_policy_fn, out_dir=out_dir)
+    eval_results = evaluator.evaluate(
+        eval_policy_fn, out_dir=out_dir, append_csv=True
+    )
     agent.enable_training_mode(True)
     mean_return = np.mean([r["return"] for r in eval_results]) if eval_results else 0.0
     state.all_eval_returns.append(mean_return)

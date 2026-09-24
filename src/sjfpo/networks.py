@@ -35,9 +35,6 @@ import torch.nn.functional as F
 from torch import nn
 
 from sjfpo.dct_utils import dct
-from sjfpo.utils import resolve_storage_dtype
-
-STORAGE_DTYPE = resolve_storage_dtype()
 
 # ---------------------------------------------------------------------------
 # Norm
@@ -45,14 +42,14 @@ STORAGE_DTYPE = resolve_storage_dtype()
 
 
 class _RMSNorm(nn.RMSNorm):
-    """``nn.RMSNorm`` initialized in ``STORAGE_DTYPE``.
+    """FP32 ``nn.RMSNorm`` with input casting for mixed precision.
 
     ``dtype=`` at construction is preferable to mutating ``.data`` post-hoc:
     it plays correctly with meta-device init and ``to_empty``.
     """
 
     def __init__(self, hidden_dim: int, eps: float = 1e-6):
-        super().__init__(hidden_dim, eps=eps, dtype=STORAGE_DTYPE)
+        super().__init__(hidden_dim, eps=eps, dtype=torch.float32)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if x.dtype != self.weight.dtype:
@@ -159,8 +156,9 @@ class SinusoidalEncoding(nn.Module):
 class SelfAttention(nn.Module):
     """Multi-head self-attention on SDPA.
 
-    ``key_mask`` uses PyTorch's ``True = ignore`` convention; a fully masked
-    query row is forced to attend to key 0 to avoid SDPA's NaN behavior.
+    ``attention_mask`` follows the Hugging Face convention: 1/True marks a
+    valid key and 0/False marks a masked key. A fully masked query row is
+    forced to attend to key 0 to avoid SDPA's NaN behavior.
     """
 
     def __init__(self, hidden_dim: int, n_heads: int):
@@ -173,9 +171,15 @@ class SelfAttention(nn.Module):
         self.out = nn.Linear(hidden_dim, hidden_dim)
 
     def forward(
-        self, x: torch.Tensor, key_mask: torch.Tensor | None = None
+        self,
+        x: torch.Tensor,
+        attention_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """[B, L, D] -> [B, L, D]. ``key_mask`` uses True = ignore."""
+        """[B, L, D] -> [B, L, D].
+
+        ``attention_mask`` follows Hugging Face semantics: 1/True is valid and
+        0/False is ignored.
+        """
         b, l, _ = x.shape
         h = self.n_heads
         d = self.head_dim
@@ -188,10 +192,13 @@ class SelfAttention(nn.Module):
         v = v.view(b, l, h, d).transpose(1, 2)
 
         mask = None
-        if key_mask is not None:
-            # True = keep. Force at least one keep per query to avoid NaN.
-            keep = ~torch.as_tensor(key_mask, dtype=torch.bool, device=x.device)
-            keep = keep.clone()
+        if attention_mask is not None:
+            # Hugging Face convention: 1/True is a valid key; 0/False is
+            # ignored. PyTorch SDPA boolean masks use True to allow attention.
+            keep = torch.as_tensor(
+                attention_mask, dtype=torch.bool, device=x.device
+            ).clone()
+            # Ensure a fully masked row has one valid key to avoid NaNs.
             keep[..., 0] = True
             mask = keep[:, None, None, :]
 
@@ -220,11 +227,17 @@ class WindowEncoder(nn.Module):
         self.mlp1 = SwiGLU(hidden_dim, mlp_hidden, hidden_dim)
 
     def forward(
-        self, x: torch.Tensor, key_mask: torch.Tensor | None = None
+        self,
+        x: torch.Tensor,
+        attention_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """[B, L, in_dim] -> [B, L, hidden_dim]; pad rows masked as keys when given."""
+        """[B, L, in_dim] -> [B, L, hidden_dim].
+
+        ``attention_mask`` follows Hugging Face semantics: 1/True is valid and
+        0/False is ignored.
+        """
         h = self.pos_encoding(self.frame_proj(x))
-        h = h + self.attn1(self.norm1(h), key_mask)
+        h = h + self.attn1(self.norm1(h), attention_mask)
         return h + self.mlp1(self.norm2(h))
 
 
@@ -427,10 +440,8 @@ class SJFPOFlowModel(nn.Module):
             self.time_dim, scale=timestep_scale
         )
         self.in_proj = nn.Linear(action_dim, hidden_dim)
-        # Learned positional embedding (replaces sinusoidal codes; avoids
-        # recomputing sin/cos per forward; parameter count: 1 * token_dim * hidden_dim ~ 2k).
-        # Since the token axis length equals action_horizon (or spectral bin count),
-        # we fix it at the standard chunk length (16) and rely on broadcasting.
+        # Learned positional embedding with one row per configured action
+        # position. Reduced DCT token counts slice this table to their length.
         self.token_pos = nn.Parameter(torch.zeros(1, action_horizon, hidden_dim))
         nn.init.normal_(self.token_pos, std=0.02)
         self.time_mlp = CondMLP(dit_time_dim, 4 * hidden_dim, hidden_dim)

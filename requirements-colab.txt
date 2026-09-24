@@ -10,7 +10,6 @@ diffusers
 datasets
 huggingface-hub
 safetensors
-bitsandbytes
 einops
 einx
 

@@ -9,9 +9,10 @@ Layout of a saved checkpoint directory:
 * ``rng.pt``                     — torch / cuda RNG state (optional, when
                                     ``save_rng=True``)
 
-All file writes are atomic within the destination directory: temp files are
-written first, then renamed into place, so a crash mid-save cannot leave a
-half-written checkpoint that ``load_policy_checkpoint`` would accept.
+Optimizer, counters, and RNG files use temporary files followed by atomic
+replacement. Policy model/config serialization follows the LeRobot/Hugging
+Face ``save_pretrained`` path and is not claimed to be atomic as a complete
+multi-file checkpoint generation.
 """
 
 from __future__ import annotations
@@ -145,8 +146,15 @@ def save_policy_checkpoint(
     d.mkdir(parents=True, exist_ok=True)
 
     # 1) Weights (through LeRobot; unwrapped so keys match a fresh policy).
+    # The frozen behavior snapshots are runtime-only and are refreshed before
+    # the next rollout, so do not persist their duplicate parameters.
     with unwrapped_policy(policy):
-        policy.save_pretrained(d)
+        state_dict = {
+            name: tensor
+            for name, tensor in policy.state_dict().items()
+            if not name.startswith(("old_actor.", "old_conditioner."))
+        }
+        policy.save_pretrained(d, state_dict=state_dict)
 
     # 2) Optimizer state (pickled, weights-only safe on load).
     if actor_optimizer is not None:
@@ -299,6 +307,9 @@ def load_policy_checkpoint(
     policy = SJFPOPolicy.from_pretrained(d)
     if device is not None:
         policy.to(device)
+    # Frozen snapshots are intentionally omitted from model.safetensors;
+    # reconstruct them from the loaded live modules before resuming.
+    policy.snapshot_behavior_policy()
     if (action_low is None) != (action_high is None):
         raise ValueError("action_low and action_high must be provided together")
     if action_low is not None:

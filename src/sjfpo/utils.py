@@ -61,30 +61,38 @@ def resolve_device() -> torch.device:
     return torch.device("cuda") if cuda_available() else torch.device("cpu")
 
 
-def resolve_storage_dtype() -> torch.dtype:
-    """Param/checkpoint storage dtype: bf16 on RTX PRO 1000 Blackwell (halves
-    memory), fp32 everywhere else."""
+def resolve_storage_dtype(
+    device: str | torch.device | None = None,
+) -> torch.dtype:
+    """Storage dtype for the actual execution device.
+
+    CPU always uses FP32. RTX PRO 1000 Blackwell uses BF16 storage when the
+    execution device is CUDA; all other devices use FP32.
+    """
+    if device is not None and torch.device(device).type == "cpu":
+        return torch.float32
     return torch.bfloat16 if is_rtx_1000_pro_blackwell() else torch.float32
 
 
 def resolve_compute_dtype() -> torch.dtype:
-    """Matmul/autocast dtype: bf16 when the GPU supports it, else fp32.
+    """Matmul/autocast dtype with explicit environment override.
 
-    ``SJFPO_DTYPE`` overrides with ``fp32`` or ``bf16``.
+    ``SJFPO_DTYPE`` is parsed before the Blackwell fast path so ``fp32`` is
+    honored there as well. BF16 is only selected when CUDA supports it.
     """
-    if is_rtx_1000_pro_blackwell():
-        return torch.bfloat16
-    if not cuda_available():
-        return torch.float32
     want = os.environ.get("SJFPO_DTYPE", "auto").lower()
-    if want == "fp32":
-        return torch.float32
-    if want == "bf16":
-        return torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float32
-    if want != "auto":
+    if want not in {"auto", "fp32", "bf16"}:
         raise ValueError(
             f"SJFPO_DTYPE={want!r} unknown; expected 'auto', 'fp32', or 'bf16'"
         )
+    if want == "fp32":
+        return torch.float32
+    if not cuda_available():
+        return torch.float32
+    if want == "bf16":
+        return torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float32
+    if is_rtx_1000_pro_blackwell():
+        return torch.bfloat16
     return torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float32
 
 
@@ -105,16 +113,23 @@ def autocast_context(device=None):
 # ---------------------------------------------------------------------------
 
 
-def maybe_compile(module: torch.nn.Module) -> torch.nn.Module:
+def maybe_compile(
+    module: torch.nn.Module, device: str | torch.device | None = None
+) -> torch.nn.Module:
     """Compile with inductor after build, before train/infer.
 
-    On by default. ``SJFPO_COMPILE=0`` opts out (e.g., for debugging or
+    On CUDA by default. ``SJFPO_COMPILE=0`` opts out (e.g., for debugging or
     when the module is called with a fresh shape per iteration and the
     recompile cost dominates).
     """
     if os.environ.get("SJFPO_COMPILE", "1") == "0":
         return module
-    if not cuda_available():
+    target = (
+        next(module.parameters()).device
+        if device is None
+        else torch.device(device)
+    )
+    if target.type != "cuda" or not cuda_available():
         return module
     # bf16 support is a proxy for "worth compiling"; Blackwell always qualifies.
     if not torch.cuda.is_bf16_supported() and not is_rtx_1000_pro_blackwell():

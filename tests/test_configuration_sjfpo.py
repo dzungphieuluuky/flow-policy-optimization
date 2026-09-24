@@ -26,6 +26,7 @@ def test_canonical_defaults():
     assert cfg.grad_clip_norm == 0.5
     assert cfg.num_epochs == 4
     assert cfg.chunks_per_update == 256
+    assert not hasattr(cfg, "optimizer_8bit")
 
 
 def test_post_init_rejects_bad_geometry():

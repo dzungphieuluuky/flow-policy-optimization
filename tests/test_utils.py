@@ -5,6 +5,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from sjfpo.utils import (  # noqa: E402
@@ -12,8 +14,8 @@ from sjfpo.utils import (  # noqa: E402
     default_runs_base,
     default_smoke_dir,
     detect_runtime_env,
-    is_bf16_available,
     resolve_compute_dtype,
+    resolve_storage_dtype,
 )
 
 
@@ -114,9 +116,39 @@ class TestBf16AutoDetect:
     def test_detector_agrees_with_dtype(self):
         import torch
 
-        avail = is_bf16_available()
+        avail = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
         assert isinstance(avail, bool)
         assert resolve_compute_dtype() == (torch.bfloat16 if avail else torch.float32)
+
+
+class TestDtypeResolution:
+    def test_cpu_storage_is_fp32_even_on_blackwell(self, monkeypatch):
+        import torch
+        import sjfpo.utils as utils
+
+        monkeypatch.setattr(utils, "is_rtx_1000_pro_blackwell", lambda: True)
+        assert utils.resolve_storage_dtype("cpu") == torch.float32
+        assert utils.resolve_storage_dtype("cuda") == torch.bfloat16
+
+    def test_dtype_override_precedes_blackwell_default(self, monkeypatch):
+        import torch
+        import sjfpo.utils as utils
+
+        monkeypatch.setattr(utils, "cuda_available", lambda: True)
+        monkeypatch.setattr(utils, "is_rtx_1000_pro_blackwell", lambda: True)
+        monkeypatch.setenv("SJFPO_DTYPE", "fp32")
+        assert utils.resolve_compute_dtype() == torch.float32
+
+        monkeypatch.setenv("SJFPO_DTYPE", "bf16")
+        monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda: True)
+        assert utils.resolve_compute_dtype() == torch.bfloat16
+
+    def test_invalid_dtype_override_fails_before_device_probe(self, monkeypatch):
+        import sjfpo.utils as utils
+
+        monkeypatch.setenv("SJFPO_DTYPE", "fp16")
+        with pytest.raises(ValueError, match="SJFPO_DTYPE"):
+            utils.resolve_compute_dtype()
 
 
 class TestMaybeCompile:
@@ -128,17 +160,17 @@ class TestMaybeCompile:
         m = torch.nn.Linear(4, 4)
         assert maybe_compile(m) is m
 
-    def test_default_wraps_without_running(self, monkeypatch):
+    def test_cpu_device_is_not_compiled_even_when_cuda_is_available(
+        self, monkeypatch
+    ):
         import torch
         from sjfpo.utils import maybe_compile
 
         monkeypatch.delenv("SJFPO_COMPILE", raising=False)
         monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
         m = torch.nn.Linear(4, 4)
-        out = maybe_compile(m)
-        assert out is not m  # lazy wrapper; no graph compiled until first call
-        stripped = {k.removeprefix("_orig_mod.") for k in out.state_dict()}
-        assert stripped == set(m.state_dict())
+        assert maybe_compile(m) is m
+        assert maybe_compile(m, device=torch.device("cpu")) is m
 
     def test_auto_disables_on_cpu_without_cuda(self, monkeypatch):
         import torch

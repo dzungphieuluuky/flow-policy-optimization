@@ -10,7 +10,6 @@ diffusers
 datasets
 huggingface-hub
 safetensors
-bitsandbytes
 einops
 einx
 
@@ -19,7 +18,6 @@ gymnasium
 gymnasium-robotics
 pettingzoo
 mujoco
-mujoco-mjx
 mujoco-warp
 skrl
 lerobot
