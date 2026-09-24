@@ -280,35 +280,35 @@ The training loop now updates the live normalizer once after each completed roll
 
 ## 8. Checkpoint resume loses action bounds
 
-**Status:** Confirmed resume correctness bug
+**Status:** Resolved in the active Torch path
 **Files:**
 
-- `src/sjfpo/modeling_sjfpo.py:145-150`
-- `src/sjfpo/train_sjfpo.py:234-246`
-- `src/sjfpo/checkpointing.py:294-321`
+- `src/sjfpo/modeling_sjfpo.py:145-150,199-223`
+- `src/sjfpo/train_sjfpo.py:231-248`
+- `src/sjfpo/checkpointing.py:271-307`
 
-Action bounds use `persistent=False`, and resume does not reapply environment bounds after loading.
+Action bounds are runtime environment state. Resume now accepts the current environment bounds, reapplies them through `set_action_bounds()`, and synchronizes the action postprocessor immediately after loading.
 
 ### Impact
 
 A resumed policy can revert to `[-1, 1]` postprocessing even when the original environment used different bounds. Resumed and uninterrupted runs are not equivalent.
 
-### Minimal fix
+### Implemented fix
 
-Persist the bounds or call `set_action_bounds()` immediately after loading, including updating the postprocessor.
+`load_policy_checkpoint()` now accepts optional `action_low` and `action_high` values, validates that they are supplied together, and reapplies them before returning the policy. The Torch training resume path passes the current environment bounds into the loader, ensuring the policy buffers and postprocessor use the resumed environment's mapping.
 
 ---
 
 ## 9. Checkpoint resume loses normalizer initialization state
 
-**Status:** Confirmed resume correctness bug
-**File:** `src/sjfpo/networks.py:272-278`
+**Status:** Resolved in the active Torch path
+**File:** `src/sjfpo/networks.py:236-309`
 
-`RunningMeanStd._uninitialized` is not persistent. A resumed policy can load nonzero statistics while retaining `_uninitialized=True`, causing those statistics to be ignored.
+`RunningMeanStd._uninitialized` remains non-persistent for checkpoint backward compatibility, but it is reconstructed from the persisted `count` during `load_state_dict`. A resumed policy with nonzero statistics therefore no longer ignores those statistics.
 
-### Minimal fix
+### Implemented fix
 
-Persist `_uninitialized`, or reconstruct it from `count > 0` after loading.
+The policy checkpoint roundtrip now verifies that nonzero running statistics resume with `_uninitialized=False` and produce the same normalized outputs as the pre-checkpoint policy. Existing standalone `RunningMeanStd` state-dict coverage remains in place.
 
 ---
 

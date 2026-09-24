@@ -273,10 +273,14 @@ def load_policy_checkpoint(
     *,
     device: str | torch.device | None = None,
     restore_rng: bool = True,
+    action_low=None,
+    action_high=None,
 ):
     """Load a checkpoint written by :func:`save_policy_checkpoint`.
 
     Rebuilds every component from ``config.json`` — no caller-supplied dims.
+    Environment action bounds are runtime state; pass both ``action_low`` and
+    ``action_high`` to restore the current postprocessor mapping.
     New split checkpoints return ``(policy, actor_optimizer, critic_optimizer,
     counters)``; legacy checkpoints return ``(policy, optimizer, counters)``.
     """
@@ -295,6 +299,10 @@ def load_policy_checkpoint(
     policy = SJFPOPolicy.from_pretrained(d)
     if device is not None:
         policy.to(device)
+    if (action_low is None) != (action_high is None):
+        raise ValueError("action_low and action_high must be provided together")
+    if action_low is not None:
+        policy.set_action_bounds(action_low, action_high)
 
     # 2) Optimizer state (split format for new checkpoints; legacy stays supported).
     actor_optimizer, critic_optimizer = _load_optimizer_pair(policy, d)

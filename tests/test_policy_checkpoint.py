@@ -101,6 +101,51 @@ def test_roundtrip_restores_weights_optimizer_and_counters(tmp_path):
                 assert v == w, (k, sk)
 
 
+def test_resume_reapplies_runtime_action_bounds(tmp_path):
+    policy = make_policy()
+    low = torch.tensor([-2.0, -3.0])
+    high = torch.tensor([4.0, 5.0])
+    policy.set_action_bounds(low, high)
+    opt = policy.config.get_optimizer_preset().build(
+        policy.get_optim_params()["params"]
+    )
+    d = tmp_path / "ckpt"
+    save_policy_checkpoint(d, policy=policy, optimizer=opt, global_step=4)
+
+    loaded, _, _ = load_policy_checkpoint(
+        d,
+        action_low=low,
+        action_high=high,
+    )
+
+    assert torch.equal(loaded.action_low.cpu(), low)
+    assert torch.equal(loaded.action_high.cpu(), high)
+    assert torch.equal(loaded.postprocessor.action_low, low)
+    assert torch.equal(loaded.postprocessor.action_high, high)
+
+    with pytest.raises(ValueError, match="provided together"):
+        load_policy_checkpoint(d, action_low=low)
+
+
+def test_resume_reconstructs_normalizer_initialization_state(tmp_path):
+    torch.manual_seed(12)
+    policy = make_policy()
+    raw = torch.randn(64, OBS_DIM) * 3.0 + 2.0
+    policy.update_observation_stats(raw)
+    expected = policy.obs_normalizer(raw)
+    opt = policy.config.get_optimizer_preset().build(
+        policy.get_optim_params()["params"]
+    )
+    d = tmp_path / "ckpt"
+    save_policy_checkpoint(d, policy=policy, optimizer=opt, global_step=8)
+
+    loaded, _, _ = load_policy_checkpoint(d)
+
+    assert float(loaded.obs_normalizer.count.item()) == 64.0
+    assert not bool(loaded.obs_normalizer._uninitialized.item())
+    assert torch.allclose(loaded.obs_normalizer(raw), expected)
+
+
 def test_load_missing_or_partial_dir_raises(tmp_path):
     with pytest.raises(ResumeError, match="missing"):
         load_policy_checkpoint(tmp_path / "absent")

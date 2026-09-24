@@ -229,7 +229,12 @@ def train_sjfpo_run(
 
     global_step = 0
     if resume_from_checkpoint is not None:
-        loaded = load_policy_checkpoint(resume_from_checkpoint, device=device)
+        loaded = load_policy_checkpoint(
+            resume_from_checkpoint,
+            device=device,
+            action_low=action_low,
+            action_high=action_high,
+        )
         if len(loaded) == 4:
             policy, actor_optimizer, critic_optimizer, counters = loaded
         else:
