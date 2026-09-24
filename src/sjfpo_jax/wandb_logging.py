@@ -8,9 +8,8 @@ import numpy as np
 import wandb
 
 
-# Direct wandb usage (library installed and enabled by default)
-# Disabled when SJFPO_DISABLE_WANDB=1/true/yes/on (case-insensitive).
-_SJFPO_DISABLE_WANDB = os.environ.get("SJFPO_DISABLE_WANDB", "").strip().lower() in {"1", "true", "yes", "on", "t", "y"}
+# Direct wandb usage (library installed and enabled).
+# Enabled only when the caller passes ``wandb_enabled=True``.
 
 
 # ---------------------------------------------------------------------------
@@ -71,8 +70,9 @@ def init_wandb_run_for_method(
     seed: int,
     total_steps: int,
     cfg_dict: dict,
+    wandb_enabled: bool = True,
 ) -> bool:
-    if _SJFPO_DISABLE_WANDB:
+    if not wandb_enabled:
         return False
     wandb.init(
         project=method,
@@ -88,8 +88,6 @@ def init_wandb_run_for_method(
 
 
 def finish_run(exit_code: int = 0) -> None:
-    if _SJFPO_DISABLE_WANDB:
-        return
     wandb.finish(exit_code=exit_code)
 
 
@@ -99,8 +97,6 @@ def finish_run(exit_code: int = 0) -> None:
 
 
 def log_metrics(data: dict, step: int) -> None:
-    if _SJFPO_DISABLE_WANDB:
-        return
     wandb.log(data, step=step)
 
 
@@ -116,8 +112,6 @@ def log_eval_summary(
     best_return: float | None = None,
     steps_to_best: int | None = None,
 ) -> None:
-    if _SJFPO_DISABLE_WANDB:
-        return
     returns = [r["return"] for r in eval_results]
     lengths = [r["length"] for r in eval_results]
     successes = [r["success"] for r in eval_results if r.get("success") is not None]
@@ -127,30 +121,35 @@ def log_eval_summary(
         "eval/min_return": float(np.min(returns)) if returns else 0.0,
         "eval/max_return": float(np.max(returns)) if returns else 0.0,
         "eval/std_return": float(np.std(returns)) if returns else 0.0,
-        "eval/mean_length": float(np.mean(lengths)) if lengths else 0.0,
-        "eval/max_length": float(np.max(lengths)) if lengths else 0.0,
-        "eval/std_length": float(np.std(lengths)) if lengths else 0.0,
-        "eval/episode_count": int(eval_count),
     }
-    if successes:
-        data["eval/success_rate"] = float(np.mean(successes))
-    if jerks:
-        data["eval/mean_jerk"] = float(np.mean(jerks)) if jerks else 0.0
-        data["eval/max_jerk"] = float(np.max(jerks)) if jerks else 0.0
     if best_return is not None:
         data["eval/best_mean_return"] = float(best_return)
     if steps_to_best is not None:
         data["eval/steps_to_best"] = int(steps_to_best)
     if r_rand is not None:
         data["eval/random_baseline"] = float(r_rand)
-    if consecutive_below is not None:
-        data["eval/consecutive_below"] = int(consecutive_below)
     if len(all_eval_returns) >= 2 and all_eval_returns[-1] == mean_return:
         prev = all_eval_returns[-2]
         data["eval/reward_improvement"] = float(mean_return - prev)
         data["eval/reward_improvement_pct"] = float(
             (mean_return - prev) / max(abs(prev), 1e-8)
         )
+    if consecutive_below is not None:
+        data["eval/consecutive_below"] = int(consecutive_below)
+
+    data.update(
+        {
+            "eval/mean_length": float(np.mean(lengths)) if lengths else 0.0,
+            "eval/max_length": float(np.max(lengths)) if lengths else 0.0,
+            "eval/std_length": float(np.std(lengths)) if lengths else 0.0,
+            "eval/episode_count": int(eval_count),
+        }
+    )
+    if successes:
+        data["eval/success_rate"] = float(np.mean(successes))
+    if jerks:
+        data["eval/mean_jerk"] = float(np.mean(jerks)) if jerks else 0.0
+        data["eval/max_jerk"] = float(np.max(jerks)) if jerks else 0.0
     if eval_results:
         data["eval/episodes"] = wandb.Table(
             columns=["episode", "return", "length", "success", "jerk"],
@@ -161,7 +160,7 @@ def log_eval_summary(
 
 
 def log_eval_video(frames: list, global_step: int, *, fps: int = 30) -> None:
-    if _SJFPO_DISABLE_WANDB or not frames:
+    if not frames:
         return
     try:
         video = np.stack([np.asarray(f, dtype=np.uint8) for f in frames])

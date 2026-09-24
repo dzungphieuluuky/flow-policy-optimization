@@ -82,6 +82,13 @@ def _num_spectral_tokens_kept(cfg: SJFPOConfig) -> int:
     return cfg.action_horizon
 
 
+def _raise_if_nonfinite(loss, policy_loss, value_loss):
+    if not np.isfinite(loss):
+        raise SJFPOAborted(
+            f"Non-finite loss: policy={float(policy_loss)}, value={float(value_loss)}"
+        )
+
+
 def _sample_spectral_eps(cfg, n, action_dim, key):
     if cfg.use_dct_transform:
         Ka = _num_spectral_tokens_kept(cfg)
@@ -448,8 +455,8 @@ class SJFPOPolicy:
         # Normalize states before conditioning / critic.
         states = normalize_with_stats(states, self.params.obs_stats)
 
-        M_modes = max(1, cfg.action_horizon - 1)
         Ka = _num_spectral_tokens_kept(cfg)
+        M_modes = Ka - 1
         n = states.shape[0]
         action_dim = actions.shape[-1]
 
@@ -543,8 +550,7 @@ class SJFPOPolicy:
         value_loss = value_per_chunk.mean()
         loss = policy_loss + cfg.vf_coef * value_loss
 
-        # Skip boolean conversion on traced scalar: defensive check skipped
-        # for JIT compatibility (direct debugging preferred over silent defense).
+        jax.debug.callback(_raise_if_nonfinite, loss, policy_loss, value_loss)
 
         if not compute_info:
             return loss, None

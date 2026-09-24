@@ -184,7 +184,7 @@ def compute_random_baseline(
     seed: int,
     n_obs_steps: int,
     *,
-    max_episodes: int = 12,
+    max_episodes: int = 30,
 ) -> float:
     """Random-policy baseline return for divergence detection.
 
@@ -230,6 +230,7 @@ class Evaluator:
         eval_seed: int = 0,
         max_episodes: int = 12,
         max_steps: int | None = None,
+
     ):
         if env is None:
             raise ValueError("Evaluator requires a non-None env")

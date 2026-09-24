@@ -1,13 +1,12 @@
 """DCT-II utilities for the JAX SJFPO port.
 
-Basis matrices are cached on the host keyed by ``(n,)``; the values are
-``jnp.ndarray`` and are safely shared across devices.
+Basis matrices are constructed from concrete dimensions and remain pure JAX
+operations, so they are safe to call inside transformed functions.
 """
 
 from __future__ import annotations
 
 import math
-from functools import lru_cache
 
 import jax
 import jax.numpy as jnp
@@ -24,15 +23,8 @@ _INV_SQRT2 = math.sqrt(0.5)
 # ---------------------------------------------------------------------------
 
 
-@lru_cache(maxsize=64)
 def _build_dct_basis_f32(n: int) -> jnp.ndarray:
-    """Orthonormal DCT-II matrix ``D[k, j]`` of shape ``[n, n]``, fp32.
-
-    Not jitted: ``n`` must stay a concrete Python int so ``jnp.arange`` can
-    shape the result, and ``lru_cache`` already makes this run once per
-    distinct length. Wrapping in ``jax.jit`` lifts ``n`` to a tracer and
-    raises ``ConcretizationTypeError`` at the ``jnp.arange`` call site.
-    """
+    """Orthonormal DCT-II matrix ``D[k, j]`` of shape ``[n, n]``, fp32."""
     k = jnp.arange(n, dtype=jnp.float32)[:, None]
     t = jnp.arange(n, dtype=jnp.float32)[None, :]
     m = math.sqrt(2.0 / n) * jnp.cos(math.pi * (2.0 * t + 1.0) * k / (2.0 * n))
@@ -40,7 +32,7 @@ def _build_dct_basis_f32(n: int) -> jnp.ndarray:
 
 
 def _dct_basis_f32(n: int) -> jnp.ndarray:
-    """Concrete-``n`` getter, still cached (see ``_build_dct_basis_f32``)."""
+    """Concrete-``n`` getter for the orthonormal DCT-II matrix."""
     return _build_dct_basis_f32(n)
 
 
@@ -52,7 +44,6 @@ def dct_basis_matrix(n: int) -> jnp.ndarray:
 # ---------------------------------------------------------------------------
 
 
-@lru_cache(maxsize=64)
 def _analysis_basis(K: int, M: int) -> tuple[jnp.ndarray, jnp.ndarray]:
     j = jnp.arange(K, dtype=jnp.float32)
     k = jnp.arange(M + 1, dtype=jnp.float32)
@@ -82,7 +73,6 @@ def extract_dct_coeffs(v_star, M: int) -> jnp.ndarray:
     return coeffs[0] if squeeze else coeffs
 
 
-@lru_cache(maxsize=64)
 def _synth_norm(M: int, K_original: int) -> tuple[jnp.ndarray, jnp.ndarray]:
     k = jnp.arange(M + 1, dtype=jnp.float32)
     norm = jnp.full((M + 1,), math.sqrt(2.0 / K_original), dtype=jnp.float32)

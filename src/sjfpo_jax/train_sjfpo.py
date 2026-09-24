@@ -131,7 +131,7 @@ def _make_vec_env(env_name, num_envs):
     import gymnasium as gym
     env_fns = [lambda: gym.make(env_name) for _ in range(num_envs)]
     try:
-        return gym.vector.AsyncVectorEnv(env_fns)
+        return gym.vector.AsyncVectorEnv(env_fns, context="spawn")
     except Exception:
         return gym.vector.SyncVectorEnv(env_fns)
 
@@ -153,6 +153,7 @@ def train_sjfpo_run(
     obs_dim: int | None = None,
     action_dim: int | None = None,
     resume_from_checkpoint: str | Path | None = None,
+    wandb_enabled: bool = True,
 ) -> dict[str, Any]:
     cfg = cfg or SJFPOConfig()
     out_dir = Path(out_dir)
@@ -197,6 +198,7 @@ def train_sjfpo_run(
     wandb_enabled = init_wandb_run_for_method(
         method="sjfpo", env_name=env_name, seed=seed,
         total_steps=total_steps, cfg_dict=dataclasses.asdict(cfg),
+        wandb_enabled=wandb_enabled,
     )
 
     next_eval, next_save = eval_steps, save_steps
@@ -262,7 +264,13 @@ def train_sjfpo_run(
                 policy.step_count += 1
                 
             if wandb_enabled:
-                log_metrics({"train/loss": float(loss)}, step=global_step)
+                log_metrics(
+                    {
+                        "train/loss": float(loss),
+                        "train/action_magnitude": float(jnp.mean(jnp.abs(batch[ACTION]))),
+                    },
+                    step=global_step,
+                )
 
             # Eval
             if global_step >= next_eval or global_step >= total_steps:
@@ -313,7 +321,7 @@ def train_sjfpo_run(
     artifacts.append(str(ckpt_dir))
 
     return {
-        "method": "sjfpo",
+        "method": "sjfpo_jax",
         "env_name": env_name,
         "seed": seed,
         "reward_mean_last10": (
