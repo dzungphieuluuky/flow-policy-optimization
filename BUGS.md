@@ -20,7 +20,7 @@ The nested `spectral-joint-policy/` checkout was excluded. This document records
 
 ## 1. Truncated GAE drops the bootstrap value
 
-**Status:** Confirmed runtime bug  
+**Status:** Confirmed runtime bug
 **File:** `src/sjfpo/gae.py:91-120`
 
 The GAE implementation uses:
@@ -94,7 +94,7 @@ The rollout already stores `v_next_all`; the GAE implementation must use it for 
 
 ## 2. Policy action bounds do not update the actual postprocessor
 
-**Status:** Confirmed runtime bug  
+**Status:** Confirmed runtime bug
 **Files:**
 
 - `src/sjfpo/modeling_sjfpo.py:145-186`
@@ -126,7 +126,7 @@ Make the postprocessor read the policy's live bound buffers, or add an atomic `s
 
 ## 3. Unexecuted action suffixes still contribute to training loss
 
-**Status:** Confirmed implementation-contract mismatch; likely correctness bug  
+**Status:** Confirmed implementation-contract mismatch; likely correctness bug
 **Files:**
 
 - `src/sjfpo/collector.py:245-250,375-384`
@@ -158,7 +158,7 @@ Either:
 
 ## 4. Vector collector can execute beyond the requested step budget
 
-**Status:** Confirmed runtime bug  
+**Status:** Confirmed runtime bug
 **File:** `src/sjfpo/collector.py:290-316,347-390`
 
 The collector computes a per-environment target, but when executing an open-loop chunk it does not cap the chunk to the remaining budget.
@@ -190,7 +190,7 @@ Ensure final transition lengths and chunk padding use the capped execution lengt
 
 ## 5. Custom actor architecture configuration is ignored
 
-**Status:** Confirmed runtime bug  
+**Status:** Confirmed runtime bug
 **Files:**
 
 - `src/sjfpo/modeling_sjfpo.py:138`
@@ -238,7 +238,7 @@ Pass all actor configuration values explicitly from the policy configuration int
 
 ## 6. FPO math uses global defaults instead of the policy configuration
 
-**Status:** Confirmed runtime bug for non-default configurations  
+**Status:** Confirmed runtime bug for non-default configurations
 **Files:**
 
 - `src/sjfpo/fpo_core.py:17-26,173-175,194-198,223-225`
@@ -263,7 +263,7 @@ Pass explicit configuration values into the FPO helpers, or pass the complete po
 
 ## 7. Running observation statistics are never updated
 
-**Status:** Confirmed dead/inert implementation  
+**Status:** Confirmed dead/inert implementation
 **Files:**
 
 - `src/sjfpo/networks.py:282-328`
@@ -293,7 +293,7 @@ Update statistics from raw training observations at a controlled cadence, before
 
 ## 8. Checkpoint resume loses action bounds
 
-**Status:** Confirmed resume correctness bug  
+**Status:** Confirmed resume correctness bug
 **Files:**
 
 - `src/sjfpo/modeling_sjfpo.py:145-150`
@@ -314,7 +314,7 @@ Persist the bounds or call `set_action_bounds()` immediately after loading, incl
 
 ## 9. Checkpoint resume loses normalizer initialization state
 
-**Status:** Confirmed resume correctness bug  
+**Status:** Confirmed resume correctness bug
 **File:** `src/sjfpo/networks.py:272-278`
 
 `RunningMeanStd._uninitialized` is not persistent. A resumed policy can load nonzero statistics while retaining `_uninitialized=True`, causing those statistics to be ignored.
@@ -327,7 +327,7 @@ Persist `_uninitialized`, or reconstruct it from `count > 0` after loading.
 
 ## 10. Blackwell CPU execution can use BF16 inputs with FP32 parameters
 
-**Status:** Confirmed hardware-conditional runtime bug  
+**Status:** Confirmed hardware-conditional runtime bug
 **Files:**
 
 - `src/sjfpo/utils.py:64-67`
@@ -348,7 +348,7 @@ Resolve storage dtype using the actual execution device. Force FP32 storage when
 
 ## 11. `SJFPO_DTYPE=fp32` is ignored on Blackwell
 
-**Status:** Confirmed configuration contradiction  
+**Status:** Confirmed configuration contradiction
 **File:** `src/sjfpo/utils.py:70-88`
 
 The Blackwell early return occurs before `SJFPO_DTYPE` is read.
@@ -365,7 +365,7 @@ Read and validate `SJFPO_DTYPE` before applying the Blackwell default, or explic
 
 ## 12. MJX truncation finding — removed from the active Torch path
 
-**Status:** Historical finding; active code removed  
+**Status:** Historical finding; active code removed
 **Original file:** `src/sjfpo/mjx_env.py` (deleted)
 
 The former MJX collector autoreset completed environments and returned the reset observation as the transition's next state. That could have made truncation bootstrapping incorrect.
@@ -374,7 +374,7 @@ This is no longer an active Torch bug: `src/sjfpo/mjx_env.py` and the `SJFPO_MJX
 
 ## 13. 8-bit optimizer configuration is not preserved on resume
 
-**Status:** Confirmed optimizer/resume inconsistency  
+**Status:** Confirmed optimizer/resume inconsistency
 **Files:**
 
 - `src/sjfpo/train_sjfpo.py:99-124`
@@ -396,7 +396,7 @@ Centralize optimizer construction and use the same helper for fresh runs and res
 
 ## 14. MJX reward precision finding — removed from the active Torch path
 
-**Status:** Historical finding; active code removed  
+**Status:** Historical finding; active code removed
 **Original file:** `src/sjfpo/mjx_env.py` (deleted)
 
 The former MJX rollout path used `STORAGE_DTYPE` for rollout storage, which could quantize rewards to BF16 on Blackwell before GAE converted them back to FP32.
@@ -405,7 +405,7 @@ This is no longer an active Torch bug: the MJX implementation and its dedicated 
 
 ## 15. `grad_accum_steps` has no effect
 
-**Status:** Confirmed dead configuration  
+**Status:** Confirmed dead configuration
 **Files:**
 
 - `src/sjfpo/configuration_sjfpo.py:83-84,174-175`
@@ -429,7 +429,7 @@ Implement accumulation or remove the option. A real implementation must scale lo
 
 ## 16. `n_action_steps` is contradictory between training and evaluation
 
-**Status:** Confirmed configuration/behavior mismatch  
+**Status:** Confirmed configuration/behavior mismatch
 **Files:**
 
 - `src/sjfpo/train_sjfpo.py:81-93`
@@ -450,7 +450,7 @@ Use one explicit execution-length contract for collection and evaluation, or add
 
 ## 17. Periodic evaluation overwrites `eval_history.csv`
 
-**Status:** Confirmed logging bug  
+**Status:** Confirmed logging bug
 **Files:**
 
 - `src/sjfpo/train_sjfpo.py:412-414`
@@ -472,7 +472,7 @@ Append after the first evaluation, or accumulate all evaluation rows and rewrite
 
 ## 18. Actor positional embedding is identical for every action token
 
-**Status:** Confirmed architecture defect  
+**Status:** Confirmed architecture defect
 **File:** `src/sjfpo/networks.py:457-462,495`
 
 The token positional parameter has shape:
@@ -495,7 +495,7 @@ Use a token-length dimension and slice/interpolate it to the current token count
 
 ## 19. Checkpoints include frozen behavior-policy duplicates
 
-**Status:** Confirmed inefficient/dead checkpoint state  
+**Status:** Confirmed inefficient/dead checkpoint state
 **Files:**
 
 - `src/sjfpo/modeling_sjfpo.py:152-156`
@@ -513,7 +513,7 @@ Exclude frozen snapshot modules from persisted state where compatible, or docume
 
 ## 20. `RolloutStorage.compute_returns()` removed
 
-**Status:** Resolved  
+**Status:** Resolved
 **File:** `src/sjfpo/rollout_storage.py`
 
 The inactive, approximate GAE implementation was deleted rather than replaced. The active pipeline continues to use `sjfpo.gae.compute_advantages_torch()`; `RolloutStorage` now only handles rollout storage, conversion, clearing, and minibatch indexing.
