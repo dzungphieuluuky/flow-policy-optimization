@@ -372,6 +372,10 @@ def train_sjfpo_run(
                 if epoch_info is not None:
                     infos.append(epoch_info)
 
+            # Update once per collected rollout, after the policy/value update.
+            # These are raw post-step frames, not overlapping warmup windows.
+            policy.update_observation_stats(batch["normalizer_observations"])
+
             # Aggregate across epochs/minibatches.
             if infos:
                 info = {k: sum(d[k] for d in infos) / len(infos) for k in infos[0]}

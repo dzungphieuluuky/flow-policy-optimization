@@ -86,6 +86,34 @@ def test_actor_architecture_uses_policy_config():
     assert policy.actor.in_proj.out_features == 64
 
 
+def test_rollout_normalizer_observations_are_executed_post_step_frames():
+    policy = SJFPOPolicy(make_config())
+    env = FakeGymEnv(obs_dim=OBS_DIM, action_dim=ACT_DIM, max_steps=20)
+
+    batch = policy.generate_rollout(env, total_steps=8, noisy=False)
+    raw_observations = batch["normalizer_observations"]
+    executed_steps = int((~batch["action_is_pad"]).sum())
+
+    assert raw_observations.shape == (executed_steps, OBS_DIM)
+    assert executed_steps == 8
+    assert float(policy.obs_normalizer.count.item()) == 0.0
+    assert bool(policy.obs_normalizer._uninitialized.item())
+
+    # Inference must not update statistics.
+    policy.predict_action_chunk({"observation.state": torch.randn(1, 16, OBS_DIM)})
+    assert float(policy.obs_normalizer.count.item()) == 0.0
+
+    policy.update_observation_stats(raw_observations)
+    assert float(policy.obs_normalizer.count.item()) == float(executed_steps)
+    assert not bool(policy.obs_normalizer._uninitialized.item())
+
+
+def test_update_observation_stats_rejects_wrong_shape():
+    policy = SJFPOPolicy(make_config())
+    with pytest.raises(ValueError, match="shape"):
+        policy.update_observation_stats(torch.randn(1, 1, 16, OBS_DIM))
+
+
 def test_name_and_config_class_and_modules():
     policy = SJFPOPolicy(make_config())
     assert policy.name == "sjfpo"

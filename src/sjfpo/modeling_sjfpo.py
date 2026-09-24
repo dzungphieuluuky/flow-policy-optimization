@@ -183,6 +183,19 @@ class SJFPOPolicy(PreTrainedPolicy):
         self._frame_buffer.clear()
         self._action_buffer.clear()
 
+    @torch.no_grad()
+    def update_observation_stats(self, observations: torch.Tensor) -> None:
+        """Update the live running statistics from raw post-step observations."""
+        if (
+            observations.ndim != 2
+            or observations.shape[-1] != self.obs_normalizer.mean.numel()
+        ):
+            raise ValueError(
+                "observations must have shape [N, observation_dim], got "
+                f"{tuple(observations.shape)}"
+            )
+        self.obs_normalizer.update(observations)
+
     def set_action_bounds(
         self,
         low: np.ndarray | torch.Tensor,
@@ -588,6 +601,11 @@ class SJFPOPolicy(PreTrainedPolicy):
             "advantages": advantages,
             "returns": returns,
             "values": values.detach(),
+            # One raw post-step frame per executed environment step. The
+            # training loop folds these into the live normalizer after the
+            # update; keeping them separate avoids counting warmup/history
+            # frames from the overlapping observation windows.
+            "normalizer_observations": step_next_states[:, -1, :].detach(),
             # 1-D [num_mc]; broadcast over chunks in ``forward``. Storing the
             # expanded [N, num_mc] form would materialize N identical rows.
             "shared_mc_tau": tau,

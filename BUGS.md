@@ -250,14 +250,14 @@ The active Torch FPO helpers now require an explicit `SJFPOConfig` (and explicit
 
 ## 7. Running observation statistics are never updated
 
-**Status:** Confirmed dead/inert implementation
+**Status:** Resolved in the active Torch path
 **Files:**
 
-- `src/sjfpo/networks.py:282-328`
-- `src/sjfpo/processor_sjfpo.py:32-45`
-- `src/sjfpo/modeling_sjfpo.py:476-480`
+- `src/sjfpo/modeling_sjfpo.py:186-196,584-604`
+- `src/sjfpo/train_sjfpo.py:375-379`
+- `src/sjfpo/networks.py:236-309`
 
-`RunningMeanStd.update_stats()` exists, but no active training-loop call updates it. Its `_uninitialized` latch remains true, so normalization is effectively identity throughout training.
+`RunningMeanStd.update()` exists, but no active training-loop call updated it. Its `_uninitialized` latch therefore remained true, so normalization was effectively identity throughout training.
 
 ### Reproduction
 
@@ -272,9 +272,9 @@ uninitialized = True
 
 The implementation claims running observation normalization but does not perform it. This changes the intended input distribution and invalidates reproducibility expectations.
 
-### Minimal fix
+### Implemented fix
 
-Update statistics from raw training observations at a controlled cadence, before preprocessing. Ensure duplicated warmup frames are not counted accidentally.
+The training loop now updates the live normalizer once after each completed rollout and optimizer update. The policy exposes the exact raw post-step frame for every executed environment step; using `step_next_states[:, -1, :]` avoids counting overlapping warmup/history frames. Evaluation and rollout inference remain read-only, and the next rollout uses the updated statistics.
 
 ---
 
