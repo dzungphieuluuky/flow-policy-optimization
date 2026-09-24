@@ -249,6 +249,7 @@ def run_single(
     action_dim: int | None,
     n_obs_steps: int = 16,
     resume_from_checkpoint: str | None = None,
+    wandb_enabled: bool = True,
 ) -> dict:
     """Dispatch one run to the matching backend's training entry."""
     import gymnasium as gym
@@ -296,6 +297,7 @@ def run_single(
                 obs_dim=obs_dim,
                 action_dim=action_dim,
                 resume_from_checkpoint=resume_from_checkpoint,
+                wandb_enabled=wandb_enabled,
             )
 
         # ---- Torch paths --------------------------------------------------
@@ -312,10 +314,11 @@ def run_single(
                     "obs_dim": obs_dim,
                     "action_dim": action_dim,
                     "resume_from_checkpoint": resume_from_checkpoint,
+                    "wandb_enabled": wandb_enabled,
                 },
             ),
-            "ppo": (ppo_train_run, {"n_obs_steps": n_obs_steps}),
-            "sac": (sac_train_run, {"n_obs_steps": n_obs_steps}),
+            "ppo": (ppo_train_run, {"n_obs_steps": n_obs_steps, "wandb_enabled": wandb_enabled}),
+            "sac": (sac_train_run, {"n_obs_steps": n_obs_steps, "wandb_enabled": wandb_enabled}),
         }
         run_fn, extra = runners[method]
         return run_fn(
@@ -406,6 +409,7 @@ def main(argv: list[str] | None = None) -> int:
             args.action_dim,
             n_obs_steps,
             args.resume,
+            args.wandb_enabled,
         )
     except Exception as exc:
         traceback.print_exc(file=sys.stderr)

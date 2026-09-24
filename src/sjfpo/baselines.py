@@ -275,7 +275,7 @@ class BaselineLoopState:
     artifacts: list = dataclasses.field(default_factory=list)
 
 
-def init_baseline_run(env, eval_env, out_dir, method_name, seed, total_steps, cfg_dict):
+def init_baseline_run(env, eval_env, out_dir, method_name, seed, total_steps, cfg_dict, wandb_enabled=True):
     out_dir.mkdir(parents=True, exist_ok=True)
     evaluator = Evaluator(eval_env, eval_seed=10000 + seed, max_episodes=12)
     env_unwrapped = getattr(env, "unwrapped", env)
@@ -283,15 +283,16 @@ def init_baseline_run(env, eval_env, out_dir, method_name, seed, total_steps, cf
     env_name_str = (
         getattr(env_spec, "id", "unknown") if env_spec is not None else "unknown"
     )
-    wandb_enabled: bool = init_wandb_run_for_method(
+    enabled: bool = init_wandb_run_for_method(
         method=method_name,
         env_name=env_name_str,
         seed=seed,
         total_steps=total_steps,
         cfg_dict=cfg_dict or {},
+        wandb_enabled=wandb_enabled,
     )
     state = BaselineLoopState(
-        t_start=time.time(), wandb_enabled=wandb_enabled, env_name=env_name_str
+        t_start=time.time(), wandb_enabled=enabled, env_name=env_name_str
     )
     return evaluator, state
 
@@ -542,10 +543,11 @@ def baseline_train_loop(
     eval_policy_fn,
     divergence_baseline=1.0,
     cfg_dict=None,
+    wandb_enabled=True,
 ):
     """Run the skrl agent through a standard act→step→record→post_interaction loop.      Returns the standard result dict (meth"""
     evaluator, state = init_baseline_run(
-        env, eval_env, out_dir, method_name, seed, total_steps, cfg_dict
+        env, eval_env, out_dir, method_name, seed, total_steps, cfg_dict, wandb_enabled=wandb_enabled
     )
     agent.init()
     eval_policy_fn = resolve_eval_policy(agent, eval_policy_fn)
@@ -639,6 +641,7 @@ def launch_baseline_loop(
     eval_policy,
     r_rand,
     cfg,
+    wandb_enabled=True,
 ):
     return baseline_train_loop(
         skrl_env,
@@ -653,6 +656,7 @@ def launch_baseline_loop(
         eval_policy_fn=eval_policy,
         divergence_baseline=r_rand,
         cfg_dict=dataclasses.asdict(cfg),
+        wandb_enabled=wandb_enabled,
     )
 
 
@@ -666,6 +670,7 @@ def ppo_train_run(
     eval_steps: int = 1000,
     save_steps: int = 1000,
     n_obs_steps: int = 16,
+    wandb_enabled: bool = True,
 ) -> dict[str, Any]:
     """Run a single PPO training run using skrl 2.1.0.      Returns the standard result dict (method, reward_mean_last10, artif"""
     import_skrl_dependencies()
@@ -696,6 +701,7 @@ def ppo_train_run(
         eval_policy,
         r_rand,
         cfg,
+        wandb_enabled=wandb_enabled,
     )
 
 
@@ -761,6 +767,7 @@ def sac_train_run(
     eval_steps: int = 1000,
     save_steps: int = 1000,
     n_obs_steps: int = 16,
+    wandb_enabled: bool = True,
 ) -> dict[str, Any]:
     """Run a single SAC training run using skrl 2.1.0.      Returns the standard result dict (method, reward_mean_last10, artif"""
     import_skrl_dependencies()
@@ -804,4 +811,5 @@ def sac_train_run(
         eval_policy,
         r_rand,
         cfg,
+        wandb_enabled=wandb_enabled,
     )
