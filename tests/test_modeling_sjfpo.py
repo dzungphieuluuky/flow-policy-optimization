@@ -236,8 +236,8 @@ def test_forward_per_bin_clip_finite_and_binds_per_group():
     )
     policy.train()
     batch = make_batch()
-    batch["shared_mc_tau"] = torch.rand(2)
-    batch["shared_mc_eps"] = torch.randn(2, 2, 16, ACT_DIM)
+    batch["mc_tau"] = torch.rand(2, 2, 1)
+    batch["mc_eps"] = torch.randn(2, 2, 16, ACT_DIM)
     loss, info = policy(batch)
     assert loss.dim() == 0 and torch.isfinite(loss)
     assert set(info) == INFO_KEYS
@@ -245,7 +245,7 @@ def test_forward_per_bin_clip_finite_and_binds_per_group():
     assert 0.0 <= info["flow_rho_bin_high_outside_frac"] <= 1.0
     loss.backward()  # per-bin psi graph reaches the live actor
     assert any(p.grad is not None for p in policy.actor.parameters())
-    loss2, _ = policy(batch)  # shared MC timesteps/noise reused: deterministic
+    loss2, _ = policy(batch)  # stored MC timesteps/noise reused: deterministic
     assert torch.equal(loss, loss2)
 
 
@@ -259,8 +259,8 @@ def test_forward_per_bin_uniform_eps_matches_scalar_reduction_order():
     policy = SJFPOPolicy(make_config(**cfg))
     policy.train()
     batch = make_batch()
-    batch["shared_mc_tau"] = torch.rand(2)
-    batch["shared_mc_eps"] = torch.randn(2, 2, 16, ACT_DIM)
+    batch["mc_tau"] = torch.rand(2, 2, 1)
+    batch["mc_eps"] = torch.randn(2, 2, 16, ACT_DIM)
     loss_bin, _ = policy(batch)
     assert torch.isfinite(loss_bin)
 
@@ -338,14 +338,14 @@ def test_forward_ignores_values_without_clip_flag():
     assert info_far["value_loss"] == info_plain["value_loss"]
 
 
-def test_rollout_stores_shared_mc_draws():
+def test_rollout_stores_per_chunk_mc_draws():
     torch.manual_seed(0)
     policy = SJFPOPolicy(make_config())
     env = FakeGymEnv(obs_dim=OBS_DIM, action_dim=ACT_DIM, max_steps=20)
     batch = policy.generate_rollout(env, total_steps=32)
     n = batch["observation.state"].shape[0]
-    assert batch["shared_mc_tau"].shape == (policy.config.num_mc_samples,)
-    assert batch["shared_mc_eps"].shape[0] == n
+    assert batch["mc_tau"].shape == (n, policy.config.num_mc_samples, 1)
+    assert batch["mc_eps"].shape[0] == n
     # Same stored draws reused: repeated forwards agree exactly (eval mode
     # freezes obs stats, so only the MC draws can move the ratios)...
     policy.eval()
@@ -356,9 +356,9 @@ def test_rollout_stores_shared_mc_draws():
     _, info1 = policy(batch)
     _, info2 = policy(batch)
     assert info1["mean_log_ratio"] == info2["mean_log_ratio"]
-    # ...while fresh draws would not (shared MC draws pin the noise and timesteps per round).
+    # ...while fresh draws would not (stored MC draws pin noise and timesteps per round).
     other = dict(batch)
-    other["shared_mc_eps"] = torch.randn_like(batch["shared_mc_eps"])
+    other["mc_eps"] = torch.randn_like(batch["mc_eps"])
     _, info3 = policy(other)
     assert info3["mean_log_ratio"] != info1["mean_log_ratio"]
 

@@ -53,8 +53,9 @@ class SJFPOConfig(PreTrainedConfig):
     use_clipped_value_loss: bool = False
     min_timestep: float = 0.005
     max_timestep: float = 0.995
-    timestep_sampling_mode: str = "uniform"
+    timestep_sampling_mode: str = "fpo_beta"
     noise_sampling_mode: str = "normal"
+    timestep_inverse_cdf_beta: float = 1.0
     timestep_beta_alpha: float = 2.0
     timestep_beta_beta: float = 2.0
 
@@ -160,12 +161,20 @@ class SJFPOConfig(PreTrainedConfig):
                 "require 0 <= min_timestep < max_timestep <= 1, got "
                 f"({self.min_timestep}, {self.max_timestep})"
             )
-        if self.timestep_sampling_mode not in {"uniform", "normal", "beta"}:
+        if self.timestep_sampling_mode not in {
+            "uniform",
+            "normal",
+            "beta",
+            "fpo_beta",
+        }:
             raise ValueError(
-                "timestep_sampling_mode must be 'uniform', 'normal', or 'beta'"
+                "timestep_sampling_mode must be 'uniform', 'normal', 'beta', "
+                "or 'fpo_beta'"
             )
         if self.noise_sampling_mode not in {"normal", "uniform"}:
             raise ValueError("noise_sampling_mode must be 'normal' or 'uniform'")
+        if self.timestep_inverse_cdf_beta <= 0:
+            raise ValueError("timestep_inverse_cdf_beta must be > 0")
         if self.timestep_beta_alpha <= 0 or self.timestep_beta_beta <= 0:
             raise ValueError("timestep beta alpha/beta must be > 0")
         if self.vf_coef < 0:

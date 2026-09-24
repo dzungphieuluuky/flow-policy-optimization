@@ -23,7 +23,7 @@ def sample_timesteps(
     device: torch.device | str,
     generator: torch.Generator | None,
 ):
-    """Flow times τ [num_samples] using the explicit configuration."""
+    """Flow times using the explicit configuration and sample shape."""
     lo, hi = cfg.min_timestep, cfg.max_timestep
     mode = cfg.timestep_sampling_mode
     if mode == "uniform":
@@ -35,6 +35,12 @@ def sample_timesteps(
         std = 0.25 * (hi - lo)
         z = torch.randn(num_samples, device=device, generator=generator)
         return (z * std + mid).clamp(lo, hi)
+    if mode == "fpo_beta":
+        u = torch.rand(num_samples, device=device, generator=generator)
+        beta = cfg.timestep_inverse_cdf_beta
+        return lo + (hi - lo) * (
+            1.0 - torch.pow(1.0 - u, 1.0 / beta)
+        )
     if mode == "beta":
         from lerobot.policies.common.flow_matching import sample_time_beta
 
@@ -46,7 +52,9 @@ def sample_timesteps(
             scale=hi - lo,
             offset=lo,
         )
-    raise ValueError(f"mode={mode!r} unknown; expected 'uniform', 'normal' or 'beta'")
+    raise ValueError(
+        f"mode={mode!r} unknown; expected 'uniform', 'normal', 'beta', or 'fpo_beta'"
+    )
 
 
 def sample_noise(
@@ -86,6 +94,8 @@ def run_mc_simulation(
 
     if t.dim() == 0:
         t = t.expand(b, num_mc)
+    elif t.dim() == 3 and tuple(t.shape) == (b, num_mc, 1):
+        t = t.squeeze(-1)
     elif t.dim() == 1:
         if t.numel() != num_mc:
             raise ValueError(
@@ -94,7 +104,8 @@ def run_mc_simulation(
         t = t.expand(b, num_mc)
     elif tuple(t.shape) != (b, num_mc):
         raise ValueError(
-            f"tau shape {tuple(t.shape)} must be scalar, [num_mc_samples] or [B, num_mc_samples]"
+            f"tau shape {tuple(t.shape)} must be scalar, [num_mc_samples], "
+            f"[B, num_mc_samples], or [B, num_mc_samples, 1]"
         )
 
     d = a.numel() // b

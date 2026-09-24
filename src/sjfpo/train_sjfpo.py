@@ -147,15 +147,13 @@ def sample_minibatch(
 ) -> dict[str, torch.Tensor]:
     """Slice dim-0 rows; every per-chunk batch value is ``[B, ...]``.
 
-    ``shared_mc_tau`` is stored 1-D ``[num_mc]`` and broadcast over chunks
-    inside ``forward``. ``normalizer_observations`` is also passed through
-    because it is one row per executed environment step, not per chunk.
+    ``mc_tau`` and ``mc_eps`` are stored per chunk/MC draw and are sliced
+    with the minibatch. ``normalizer_observations`` is passed through because
+    it is one row per executed environment step, not per chunk.
     """
     out: dict[str, torch.Tensor] = {}
     for k, v in batch.items():
-        if k == "shared_mc_tau" and v.dim() == 1:
-            out[k] = v
-        elif k == "normalizer_observations":
+        if k == "normalizer_observations":
             # The normalizer is updated once from the complete rollout batch.
             out[k] = v
         else:

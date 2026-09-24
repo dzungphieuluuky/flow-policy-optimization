@@ -582,14 +582,16 @@ class SJFPOPolicy(PreTrainedPolicy):
             0
         ) >= lengths.unsqueeze(1)
 
-        tau = sample_timesteps(cfg.num_mc_samples, cfg, device, None)
+        tau = sample_timesteps(
+            (n_chunks, cfg.num_mc_samples), cfg, device, None
+        ).unsqueeze(-1)
         eps = _sample_spectral_eps(cfg, n_chunks, action_dim, device)
 
         # Single shape check against the layout that will actually be used.
         expected_eps_shape = (n_chunks, cfg.num_mc_samples, num_spectral_tokens_kept, action_dim)
         if tuple(eps.shape) != expected_eps_shape:
             raise ValueError(
-                f"shared MC noise shape {tuple(eps.shape)} != expected "
+                f"MC noise shape {tuple(eps.shape)} != expected "
                 f"{expected_eps_shape}"
             )
 
@@ -609,10 +611,9 @@ class SJFPOPolicy(PreTrainedPolicy):
             # update; keeping them separate avoids counting warmup/history
             # frames from the overlapping observation windows.
             "normalizer_observations": step_next_states[:, -1, :].detach(),
-            # 1-D [num_mc]; broadcast over chunks in ``forward``. Storing the
-            # expanded [N, num_mc] form would materialize N identical rows.
-            "shared_mc_tau": tau,
-            "shared_mc_eps": eps,
+            # Independent per-chunk/MC CFM draws, reused for old/new losses.
+            "mc_tau": tau,
+            "mc_eps": eps,
             "initial_cfm_loss": initial_cfm_loss,
             "initial_cfm_loss_bin": initial_cfm_loss_bin,
         }
@@ -683,32 +684,28 @@ class SJFPOPolicy(PreTrainedPolicy):
             extract_dct_coeffs(actions, M=M_modes) if cfg.use_dct_transform else actions
         )
 
-        # Reuse stored shared MC timesteps/noise if present, else sample fresh ones.
-        has_shared_tau = "shared_mc_tau" in batch
-        has_shared_eps = "shared_mc_eps" in batch
-        if has_shared_tau != has_shared_eps:
-            raise ValueError(
-                "shared_mc_tau and shared_mc_eps must be provided together"
-            )
-        if has_shared_tau:
-            tau = to_tensor(
-                batch["shared_mc_tau"], dtype=storage_dtype, device=device
-            )
-            if tau.shape != (cfg.num_mc_samples,):
+        # Reuse the per-chunk/MC CFM draws stored during rollout.
+        has_mc_tau = "mc_tau" in batch
+        has_mc_eps = "mc_eps" in batch
+        if has_mc_tau != has_mc_eps:
+            raise ValueError("mc_tau and mc_eps must be provided together")
+        if has_mc_tau:
+            tau = to_tensor(batch["mc_tau"], dtype=storage_dtype, device=device)
+            expected_tau = (n, cfg.num_mc_samples, 1)
+            if tuple(tau.shape) != expected_tau:
                 raise ValueError(
-                    f"shared_mc_tau shape {tuple(tau.shape)} != "
-                    f"{(cfg.num_mc_samples,)}"
+                    f"mc_tau shape {tuple(tau.shape)} != {expected_tau}"
                 )
-            eps = to_tensor(
-                batch["shared_mc_eps"], dtype=storage_dtype, device=device
-            )
-            expected = (n, cfg.num_mc_samples, num_spectral_tokens_kept, action_dim)
-            if tuple(eps.shape) != expected:
+            eps = to_tensor(batch["mc_eps"], dtype=storage_dtype, device=device)
+            expected_eps = (n, cfg.num_mc_samples, num_spectral_tokens_kept, action_dim)
+            if tuple(eps.shape) != expected_eps:
                 raise ValueError(
-                    f"stored shared MC noise shape {tuple(eps.shape)} != {expected}"
+                    f"stored MC noise shape {tuple(eps.shape)} != {expected_eps}"
                 )
         else:
-            tau = sample_timesteps(cfg.num_mc_samples, cfg, device, None)
+            tau = sample_timesteps(
+                (n, cfg.num_mc_samples), cfg, device, None
+            ).unsqueeze(-1)
             eps = _sample_spectral_eps(cfg, n, action_dim, device)
 
         # Noisy anchors.

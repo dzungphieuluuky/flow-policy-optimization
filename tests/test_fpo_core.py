@@ -556,6 +556,35 @@ def test_sample_timesteps_modes_and_contract():
         sample_timesteps(4, mode="logit-normal")
 
 
+def test_fpo_beta_timesteps_are_independent_per_chunk_and_match_reference():
+    cfg = _cfg(timestep_sampling_mode="fpo_beta", timestep_inverse_cdf_beta=2.0)
+    generator = torch.Generator().manual_seed(123)
+    values = fpo_core.sample_timesteps((32, 16), cfg, "cpu", generator)
+
+    assert values.shape == (32, 16)
+    assert torch.isfinite(values).all()
+    assert bool(((values >= cfg.min_timestep) & (values <= cfg.max_timestep)).all())
+    assert not torch.equal(values[0], values[1])
+    expected_mean = cfg.min_timestep + (cfg.max_timestep - cfg.min_timestep) / 3.0
+    assert values.mean().item() == pytest.approx(expected_mean, abs=0.01)
+
+
+def test_run_mc_accepts_per_chunk_timestep_shape():
+    generator = torch.Generator().manual_seed(4)
+    actions = torch.randn(3, 2, 4, generator=generator)
+    eps = torch.randn(3, 5, 2, 4, generator=generator)
+    tau = torch.rand(3, 5, 1, generator=generator)
+    tau_bn, eps_flat, action_rep, flow_shape, num_mc = fpo_core.run_mc_simulation(
+        actions, eps, tau
+    )
+
+    assert tau_bn.shape == (15,)
+    assert eps_flat.shape == (15, 8)
+    assert action_rep.shape == (15, 8)
+    assert flow_shape == (2, 4)
+    assert num_mc == 5
+
+
 def test_sample_noise_modes_and_contract():
     assert sample_noise((2, 4, 3)).shape == (2, 4, 3)
     torch.manual_seed(7)
