@@ -136,12 +136,12 @@ def sample_minibatch(
 ) -> dict[str, torch.Tensor]:
     """Slice dim-0 rows; every per-chunk batch value is ``[B, ...]``.
 
-    ``tau`` is stored 1-D ``[num_mc]`` and broadcast over chunks inside
-    ``forward``, so it must be passed through without indexing.
+    ``shared_mc_tau`` is stored 1-D ``[num_mc]`` and broadcast over chunks
+    inside ``forward``, so it must be passed through without indexing.
     """
     out: dict[str, torch.Tensor] = {}
     for k, v in batch.items():
-        if k == "tau" and v.dim() == 1:
+        if k == "shared_mc_tau" and v.dim() == 1:
             out[k] = v
         else:
             out[k] = v[indices]

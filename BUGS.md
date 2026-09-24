@@ -20,7 +20,7 @@ The nested `spectral-joint-policy/` checkout was excluded. This document records
 
 ## 1. Truncated GAE drops the bootstrap value
 
-**Status:** Confirmed runtime bug
+**Status:** Resolved in the active Torch path
 **File:** `src/sjfpo/gae.py:91-120`
 
 The GAE implementation uses:
@@ -68,27 +68,16 @@ return = 10
 
 Humanoid and other time-limited environments will systematically lose terminal-state value at truncation boundaries. This biases advantages and returns.
 
-### Minimal fix
+### Implemented fix
 
-Use separate masks:
+The active Torch path now uses separate masks in the single step-level GAE helper:
 
 ```python
 cut_recursion = terminated | truncated
 bootstrap = terminated
-
-delta = r - v + torch.where(
-    bootstrap,
-    torch.zeros((), device=device, dtype=dtype),
-    gamma_len * nv_rev[k],
-)
-continuation = torch.where(
-    cut_recursion,
-    torch.zeros((), device=device, dtype=dtype),
-    gamma_lambda_len,
-)
 ```
 
-The rollout already stores `v_next_all`; the GAE implementation must use it for truncation.
+A terminated step masks the next-state bootstrap and cuts recursion. A truncated step keeps the next-state bootstrap but cuts recursion. The active Torch path evaluates step-level GAE over stored post-step observation windows and selects the first executed step's target for each action chunk.
 
 ---
 
@@ -126,7 +115,7 @@ This produces incorrectly scaled actions for any environment whose action range 
 
 ## 3. Unexecuted action suffixes still contribute to training loss
 
-**Status:** Confirmed implementation-contract mismatch; likely correctness bug
+**Status:** Resolved in the active Torch path
 **Files:**
 
 - `src/sjfpo/collector.py:245-250,375-384`
@@ -145,12 +134,9 @@ Training learns from action coordinates that were never sent to the simulator. T
 
 DCT also mixes the time axis, so a simple post-DCT mask is not sufficient: the valid-prefix boundary must be handled before or during spectral transformation.
 
-### Minimal fix
+### Implemented fix
 
-Either:
-
-1. make `action_is_pad` an explicit loss mask, including a mask-aware DCT representation; or
-2. store and train a clearly defined completed action target for the whole chunk, and stop describing `action_is_pad` as training padding.
+`SJFPOPolicy.forward()` now treats `action_is_pad` as a chunk-level policy-loss eligibility mask. Full chunks contribute to the policy loss; chunks with an unexecuted suffix contribute only to the critic/value loss. This is necessary because the DCT mixes the time axis, so a post-DCT suffix mask would not correspond to the executed action prefix.
 
 ---
 
@@ -511,19 +497,19 @@ Exclude frozen snapshot modules from persisted state where compatible, or docume
 
 # P3 — Dead or misleading code/documentation
 
-## 20. `RolloutStorage.compute_returns()` removed
+## 20. Legacy chunk storage removed
 
 **Status:** Resolved
 **File:** `src/sjfpo/rollout_storage.py`
 
-The inactive, approximate GAE implementation was deleted rather than replaced. The active pipeline continues to use `sjfpo.gae.compute_advantages_torch()`; `RolloutStorage` now only handles rollout storage, conversion, clearing, and minibatch indexing.
+The inactive chunk-level storage and GAE implementation were removed. The active pipeline now uses `sjfpo.gae.compute_step_advantages_torch()` over stored post-step windows; `rollout_storage.py` retains only the active minibatch-index helper.
 
 ### Verification
 
-The method is no longer present:
+The legacy storage class is no longer present:
 
 ```text
-hasattr(RolloutStorage, "compute_returns") == False
+hasattr(sjfpo.rollout_storage, "RolloutStorage") == False
 ```
 
 ---

@@ -15,7 +15,9 @@
 - **Single-chunk critic updates:** Removed a duplicate squeeze that reduced a one-element critic prediction to a scalar and caused value/return shape errors.
 - **Random baseline evaluation:** Increased random-policy baseline evaluation from 12 to 30 episodes while keeping regular policy evaluation at 12 episodes.
 - **Metric organization:** Grouped related return, length, success, jerk, and baseline metrics consistently in Torch and JAX W&B logging.
-- **CRN flow updates:** Rollouts now retain the exact `tau`/`eps` draws and initial behavior CFM losses; minibatch updates reuse those losses instead of recomputing the frozen actor loss.
+- **Shared MC flow updates:** Rollouts now retain the exact shared MC timesteps/noise and initial behavior CFM losses; minibatch updates reuse those losses instead of recomputing the frozen actor loss.
+- **Partial chunk policy loss:** Chunks with an unexecuted action suffix no longer contribute to the policy loss; their valid initial-state value target still trains the critic.
+- **Explicit shared MC keys:** Torch rollout batches now use `shared_mc_tau` and `shared_mc_eps` instead of ambiguous `tau`/`eps` batch keys.
 - **Split optimizers:** Actor/conditioner and critic now use separate AdamW instances, with checkpoints storing both optimizer states in a versioned payload.
 - **Action diagnostics:** Added `train/action_magnitude` logging to Torch and JAX training paths.
 
@@ -31,5 +33,5 @@
 - Torch low-frequency DCT smoke passed with `H=16`, `Ka=8`, `top_p_spectral_tokens=0.5`, and wandb disabled.
 - JAX CPU smokes passed for 32 and 128 training steps, including evaluation and checkpoint writing.
 - JAX two-environment spawn smoke passed without the `os.fork()` warning.
-- CRN initial-loss, split-optimizer, low-frequency DCT, and split-checkpoint roundtrip tests passed.
+- Shared MC initial-loss, split-optimizer, low-frequency DCT, and split-checkpoint roundtrip tests passed.
 - Focused network, modeling, evaluator, and W&B checks were run; the repository still has pre-existing test drift, including stale diagnostic-key expectations and JAX test imports.

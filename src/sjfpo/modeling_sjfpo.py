@@ -564,7 +564,8 @@ class SJFPOPolicy(PreTrainedPolicy):
         expected_eps_shape = (n_chunks, cfg.num_mc_samples, num_spectral_tokens_kept, action_dim)
         if tuple(eps.shape) != expected_eps_shape:
             raise ValueError(
-                f"CRN eps shape {tuple(eps.shape)} != expected {expected_eps_shape}"
+                f"shared MC noise shape {tuple(eps.shape)} != expected "
+                f"{expected_eps_shape}"
             )
 
         initial_cfm_loss, initial_cfm_loss_bin = self._initial_cfm_losses(
@@ -580,8 +581,8 @@ class SJFPOPolicy(PreTrainedPolicy):
             "values": values.detach(),
             # 1-D [num_mc]; broadcast over chunks in ``forward``. Storing the
             # expanded [N, num_mc] form would materialize N identical rows.
-            "tau": tau,
-            "eps": eps,
+            "shared_mc_tau": tau,
+            "shared_mc_eps": eps,
             "initial_cfm_loss": initial_cfm_loss,
             "initial_cfm_loss_bin": initial_cfm_loss_bin,
         }
@@ -610,6 +611,9 @@ class SJFPOPolicy(PreTrainedPolicy):
         actions = to_device_async(to_tensor(batch[ACTION], dtype=STORAGE_DTYPE), device)
         advantages = to_tensor(batch["advantages"], dtype=STORAGE_DTYPE).to(device)
         returns = to_tensor(batch["returns"], dtype=STORAGE_DTYPE).to(device)
+        action_is_pad = to_tensor(
+            batch["action_is_pad"], dtype=torch.bool, device=device
+        )
 
         if states.shape[-2] != cfg.n_obs_steps:
             raise ValueError(
@@ -619,6 +623,18 @@ class SJFPOPolicy(PreTrainedPolicy):
             raise ValueError(
                 f"action horizon {actions.shape[-2]} != action_horizon {cfg.action_horizon}"
             )
+        expected_action_mask_shape = (states.shape[0], cfg.action_horizon)
+        if tuple(action_is_pad.shape) != expected_action_mask_shape:
+            raise ValueError(
+                f"action_is_pad shape {tuple(action_is_pad.shape)} != "
+                f"{(states.shape[0], cfg.action_horizon)}"
+            )
+
+        # A chunk with an unexecuted suffix contributes to the value target,
+        # but not to the policy loss: its spectral action target is not a
+        # completed environment action. Keep the mask at chunk granularity
+        # because DCT mixes the time axis.
+        policy_valid = ~action_is_pad.any(dim=1)
 
         states = self.preprocessor({OBS_STATE: states})[OBS_STATE]
 
@@ -632,16 +648,30 @@ class SJFPOPolicy(PreTrainedPolicy):
             extract_dct_coeffs(actions, M=M_modes) if cfg.use_dct_transform else actions
         )
 
-        # Reuse stored CRN draws if present, else sample fresh ones.
-        if "tau" in batch and "eps" in batch:
-            tau = to_tensor(batch["tau"], dtype=STORAGE_DTYPE, device=device)
-            if tau.dim() == 2:
-                # Legacy [N, num_mc] layout: rows are identical by construction.
-                tau = tau[0]
-            eps = to_tensor(batch["eps"], dtype=STORAGE_DTYPE, device=device)
+        # Reuse stored shared MC timesteps/noise if present, else sample fresh ones.
+        has_shared_tau = "shared_mc_tau" in batch
+        has_shared_eps = "shared_mc_eps" in batch
+        if has_shared_tau != has_shared_eps:
+            raise ValueError(
+                "shared_mc_tau and shared_mc_eps must be provided together"
+            )
+        if has_shared_tau:
+            tau = to_tensor(
+                batch["shared_mc_tau"], dtype=STORAGE_DTYPE, device=device
+            )
+            if tau.shape != (cfg.num_mc_samples,):
+                raise ValueError(
+                    f"shared_mc_tau shape {tuple(tau.shape)} != "
+                    f"{(cfg.num_mc_samples,)}"
+                )
+            eps = to_tensor(
+                batch["shared_mc_eps"], dtype=STORAGE_DTYPE, device=device
+            )
             expected = (n, cfg.num_mc_samples, num_spectral_tokens_kept, action_dim)
             if tuple(eps.shape) != expected:
-                raise ValueError(f"stored eps shape {tuple(eps.shape)} != {expected}")
+                raise ValueError(
+                    f"stored shared MC noise shape {tuple(eps.shape)} != {expected}"
+                )
         else:
             tau = sample_timesteps(
                 cfg.num_mc_samples, (cfg.min_timestep, cfg.max_timestep), device=device
@@ -763,12 +793,16 @@ class SJFPOPolicy(PreTrainedPolicy):
         else:
             value_per_chunk = se
 
+        policy_valid = policy_valid.to(policy_per_chunk.dtype)
+        masked_policy_per_chunk = policy_per_chunk * policy_valid
+        valid_policy_count = policy_valid.sum().clamp_min(1)
+
         if reduction == "mean":
-            policy_loss = policy_per_chunk.mean()
+            policy_loss = masked_policy_per_chunk.sum() / valid_policy_count
             value_loss = value_per_chunk.mean()
             loss = policy_loss + cfg.vf_coef * value_loss
         elif reduction == "none":
-            loss = policy_per_chunk + cfg.vf_coef * value_per_chunk
+            loss = masked_policy_per_chunk + cfg.vf_coef * value_per_chunk
         else:
             raise ValueError(f"reduction={reduction!r} must be 'mean' or 'none'")
 

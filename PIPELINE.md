@@ -89,14 +89,36 @@ The snapshot is held fixed for all minibatches and epochs belonging to that roll
 
 ## 6. GAE and value targets
 
-The collector returns raw observations and rewards. The critic evaluates the initial and next observation windows. Chunk-level semi-MDP GAE then computes:
+The collector stores the post-step observation window for every executed action. The critic evaluates both sides of every executed transition in one batch. Step-level GAE then computes:
 
 ```text
-advantages  [N]
-returns     [N]
+step_advantages  [sum(L_k)]
+step_returns     [sum(L_k)]
 ```
 
-GAE discounts rewards within a chunk, handles termination/truncation, and optionally standardizes and clamps advantages. Rewards and observations remain FP32 in the collector; storage dtype is used later for training tensors.
+For each executed transition:
+
+```text
+delta_t = reward_t - V(s_t)
+          + gamma * (1 - terminated_t) * V(s_{t+1})
+A_t     = delta_t
+          + gamma * lambda
+            * (1 - terminated_t)
+            * (1 - truncated_t)
+            * A_{t+1}
+```
+
+A terminated step masks the bootstrap and cuts recursion. A truncated step keeps the next-state bootstrap but cuts recursion. Recursion continues across normal action-chunk boundaries.
+
+The flow policy predicts one action chunk, so the active policy batch uses the first executed step's target for each chunk:
+
+```text
+advantages  [N] = step_advantages[chunk_start]
+returns     [N] = step_returns[chunk_start]
+values      [N] = V(s_{k,0})
+```
+
+This preserves the chunk-level policy-ratio and flow-loss contract while using step-level value targets. Chunks with an unexecuted suffix are excluded from the policy loss because their unexecuted action coordinates were never sent to the simulator; their initial-state value target still trains the critic. Rewards and observations remain FP32 in the collector; storage dtype is used later for training tensors.
 
 The batch returned by `generate_rollout()` contains:
 
@@ -107,35 +129,26 @@ action_is_pad       [N, H]
 advantages          [N]
 returns             [N]
 values              [N]
-tau                 [M]
-eps                 [N, M, Ka, action_dim]
+shared_mc_tau       [M]
+shared_mc_eps       [N, M, Ka, action_dim]
 initial_cfm_loss   [N, M]
 initial_cfm_loss_bin [N, M, Ka]
 ```
 
 `N` is the number of chunks, `M` is `num_mc_samples`, and `Ka` is the number of retained spectral tokens when DCT is enabled.
 
-## 7. CRN: Common Random Numbers
+## 7. Shared MC timesteps and noise
 
-CRN means **Common Random Numbers**.
-
-For each rollout, the sampler stores:
+For each rollout, the sampler stores one shared set of MC timesteps and noise:
 
 ```text
-tau: [M]
-eps: [N, M, Ka, action_dim]
+shared_mc_tau: [M]
+shared_mc_eps: [N, M, Ka, action_dim]
 ```
 
-The exact same values are reused for:
+The exact same values are reused for the rollout-time initial CFM loss, every minibatch, every epoch, and the old/current policy comparison. This makes the policy ratio meaningful because both policies are evaluated at exactly the same flow interpolation points with exactly the same noise.
 
-- the rollout-time initial CFM loss;
-- every minibatch;
-- every epoch;
-- the old/current policy comparison.
-
-This makes the policy ratio meaningful because both policies are evaluated at exactly the same flow interpolation points and with exactly the same noise.
-
-`tau` remains one-dimensional and is deliberately not sliced in `sample_minibatch`; all chunk-indexed tensors are sliced.
+`shared_mc_tau` remains one-dimensional and is deliberately not sliced in `sample_minibatch`; all chunk-indexed tensors are sliced.
 
 ## 8. DCT action representation
 
@@ -188,7 +201,7 @@ The actor predicts the velocity in spectral space.
 
 ## 10. Initial behavior CFM loss
 
-The rollout stores the behavior CFM loss once, using the exact CRN draws:
+The rollout stores the behavior CFM loss once, using the exact shared MC draws:
 
 ```text
 initial_cfm_loss     [N, M]
@@ -207,7 +220,7 @@ For a minibatch:
 
 1. Normalize observations.
 2. Apply the current conditioner.
-3. Build the current-policy flow input from the stored `tau` and `eps`.
+3. Build the current-policy flow input from the stored `shared_mc_tau` and `shared_mc_eps`.
 4. Run the current actor.
 5. Compute `l_new` and optional `l_new_bin` CFM losses.
 6. Combine stored `l_old` with `l_new` into the policy ratio.
@@ -240,11 +253,11 @@ The loss rejects non-finite values with `SJFPOAborted`.
 
 Within one rollout:
 
-- CRN `tau` and `eps` do not change.
+- The shared MC timesteps and noise do not change.
 - Stored initial CFM losses do not change.
 - The behavior snapshot does not change.
 - The live actor, conditioner, and critic update after each minibatch.
-- Multiple epochs reuse the same rollout data and CRN samples.
+- Multiple epochs reuse the same rollout data and shared MC draws.
 
 This is the main difference from collecting a new behavior snapshot after every individual epoch.
 
@@ -364,7 +377,7 @@ scripts/train.py
   -> sjfpo_jax.train_sjfpo.train_sjfpo_run
 ```
 
-It uses the same overall rollout/CRN/flow/loss concepts, but:
+It uses the same overall rollout/shared-MC/flow/loss concepts, but:
 
 - the loss and gradient update are wrapped with JAX JIT;
 - Optax handles parameter updates;
