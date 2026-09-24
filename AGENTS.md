@@ -1,51 +1,83 @@
-# AGENTS.md
+# Repository instructions
 
-## Active checkout
-- The active project is the outer directory `/home/vr-tts27/Downloads/spectral-joint-policy`; it owns `.venv/`, `outputs/`, and the files used by current tracebacks.
-- `spectral-joint-policy/` inside it is a separate older Git checkout with conflicting files. Exclude it from searches, edits, pytest discovery, and builds; do not accidentally commit it.
-- The outer tree is not a Git worktree. Do not rely on `git status` there.
-- Executable source wins over README/docs and the scoped `AGENTS.md` files, which contain stale architecture, defaults, test counts, and precision claims.
+## Source of truth
 
-## Runtime map
-- `scripts/train.py` is the single-run CLI. It dispatches `sjfpo` to `sjfpo.train_sjfpo.train_sjfpo_run`, `ppo`/`sac` to `sjfpo.baselines`, and `sjfpo_jax` to `sjfpo_jax.train_sjfpo.train_sjfpo_run`.
-- Torch SJFPO flow: rollout → chunk GAE → minibatch `SJFPOPolicy.forward` (flow/ASPO + critic) → backward/clip/AdamW → evaluation/checkpoint.
-- `src/sjfpo/` is the Torch production package; `src/sjfpo_jax/` is a separate JAX backend. Do not port changes between them unless requested.
-- `src/spectral_joint_policy/` is only the placeholder package used by the declared console script; it is not the training entrypoint.
-- `scripts/sweep.sh` calls `scripts/train.py` directly for each method/env/seed. It does not use `sjfpo.sweep` or `RUN_MATRIX`.
-- `scripts/play.py` evaluates checkpoints. `build_notebook.py` builds clone-based notebooks; only `build_offline_notebook.py` embeds source.
+- This is the active repository checkout. If a nested `spectral-joint-policy/` checkout appears, exclude it from searches, edits, pytest, builds, and commits.
+- Trust executable source, `pyproject.toml`, `scripts/`, and focused tests over README/docs or scoped `AGENTS.md` files; several historical docs are stale.
+- `src/sjfpo/` is the active Torch package. `src/sjfpo_jax/` is a separate JAX backend; do not port changes between them unless requested.
+- `src/spectral_joint_policy/` is only the console-script placeholder, not a training entrypoint.
 - `src/sjfpo/analysis.py` is analysis-only and is not imported by the training CLI.
+- Automatic `RUN_MATRIX`/`TINY_MATRIX` generation was removed from `src/sjfpo/config.py`; use explicit CLI/config runs or the shell sweep helper.
 
-## Setup and commands
-- Python 3.12+ is required. Reinstall with `.venv/bin/python -m pip install -e .`; `requirements-linux.txt` is the pinned Linux alternative. `python` is not on PATH here, so use `python3` or `.venv/bin/python`.
-- Do not use `scripts/verify_deps.sh` as a gate; it references a missing requirements file and obsolete version bounds.
-- Single run, without wandb:
+## Runtime and commands
+
+- Python 3.12+ is required. The working interpreter is `.venv/bin/python`; `python` may not be on PATH.
+- Install with:
   ```bash
-  PYTHONPATH=src .venv/bin/python scripts/train.py --method sjfpo --env Hopper-v5 --seed 0 --total_steps 2000 --wandb_enabled false
+  .venv/bin/python -m pip install -e .
   ```
-- Sweeps must explicitly select the interpreter in this environment:
+  or `.venv/bin/python -m pip install -r requirements-linux.txt`.
+- Single Torch run:
   ```bash
-  METHODS="sjfpo ppo sac" ENVS="Hopper-v5" SEEDS="0" TOTAL_STEPS=2000 bash scripts/sweep.sh --python .venv/bin/python
+  PYTHONPATH=src .venv/bin/python scripts/train.py \
+    --method sjfpo --env Hopper-v5 --seed 0 --total_steps 2000 \
+    --wandb_enabled false
   ```
-- Unit tests use the shared MuJoCo-free `tests/fixtures/fake_env.py` fixture:
+- Optional shell sweep (it calls `scripts/train.py` once per axis value; select the interpreter explicitly):
+  ```bash
+  METHODS="sjfpo ppo sac" ENVS="Hopper-v5" SEEDS="0" TOTAL_STEPS=2000 \
+    bash scripts/sweep.sh --python .venv/bin/python
+  ```
+- Rebuild notebooks with:
+  ```bash
+  PYTHONPATH=src .venv/bin/python scripts/build_notebook.py
+  ```
+  Notebooks clone the repository and call the scripts; do not hand-edit generated `.ipynb` files.
+- Fast syntax check for changed Python files:
+  ```bash
+  PYTHONPATH=src .venv/bin/python -m py_compile <files>
+  ```
+
+## Training architecture
+
+- `scripts/train.py` is the single-run CLI. `sjfpo` dispatches to `sjfpo.train_sjfpo.train_sjfpo_run`; `ppo`/`sac` dispatch to `sjfpo.baselines`; `sjfpo_jax` is separate.
+- Active Torch flow is rollout → step-level GAE → `SJFPOPolicy.forward` (flow/FPO loss + critic) → accumulated backward/clip/AdamW update → evaluation/checkpoint.
+- `SJFPOConfig` in `src/sjfpo/configuration_sjfpo.py` is the live SJFPO configuration source. CLI values override `--config` YAML values, which override dataclass defaults.
+- `n_action_steps` must be passed consistently to collection and evaluation; the collector also receives the configured action horizon explicitly.
+- `grad_accum_steps` follows the Accelerate accumulation pattern: every microbatch backwards, optimizer steps/clipping only at accumulation boundaries, including a final partial group.
+- Observation normalizer updates once per completed training rollout from raw post-step frames; evaluation/inference must not update it.
+- `old_actor` and `old_conditioner` are runtime-only frozen snapshots; they are reconstructed on checkpoint load and excluded from saved model tensors.
+
+## Precision and devices
+
+- `resolve_storage_dtype(device)` is device-aware: CPU is FP32; CUDA RTX PRO 1000 Blackwell may use BF16 storage. `resolve_compute_dtype()` honors `SJFPO_DTYPE=fp32|bf16|auto`.
+- Use `CUDA_VISIBLE_DEVICES=''` for CPU tests/smokes when CUDA is present but not intended.
+- `SJFPO_DEVICE=auto|cpu|cuda` selects execution device; `SJFPO_COMPILE=0` disables CUDA compilation.
+- FP32 `nn.Linear` calls receiving mixed-precision tensors must run inside `autocast_context(device)`; CPU autocast is intentionally a no-op.
+- The 8-bit optimizer path and bitsandbytes dependency were removed. Do not reintroduce them.
+- The active Torch path has no MJX rollout. Do not add `SJFPO_MJX` or MJX imports to the Torch package; keep any JAX backend changes isolated.
+
+## Testing
+
+- Always scope pytest to `tests`:
   ```bash
   PYTHONPATH=src .venv/bin/python -m pytest -q tests
-  PYTHONPATH=src .venv/bin/python -m pytest -q tests/test_modeling_sjfpo.py::test_forward_bfloat16_storage_and_compute
   ```
-- Always scope pytest to `tests`; unscoped discovery also collects the nested checkout and causes import-path conflicts.
-- There is no CI, configured lint command, or configured typecheck gate. `ruff` is not installed; `basedpyright` exists but currently reports extensive pre-existing errors and has no project config.
-- A fast syntax fallback for changed Python files is `PYTHONPATH=src .venv/bin/python -m py_compile <files>`.
+- Run focused regressions directly, for example:
+  ```bash
+  PYTHONPATH=src .venv/bin/python -m pytest -q tests/test_fpo_core.py
+  PYTHONPATH=src .venv/bin/python -m pytest -q tests/test_policy_checkpoint.py
+  PYTHONPATH=src .venv/bin/python -m pytest -q tests/test_modeling_sjfpo.py
+  ```
+- There is no configured CI, lint, or typecheck gate. Do not claim the full suite is green from documentation; report unrelated baseline failures and do not weaken assertions to hide them.
+- JAX tests require working `flax`/`optax` and may not collect in the Torch-oriented environment.
+- The shared `tests/fixtures/fake_env.py` is the preferred MuJoCo-free fixture for unit/smoke tests.
+- Evaluation CSV schema is five columns: `episode,return,length,success,jerk`.
 
-## High-risk gotchas
-- `STORAGE_DTYPE` is resolved once at import. On RTX PRO 1000 Blackwell it is BF16 even when tests or a manually constructed policy stay on CPU, while parameters remain FP32; this produces BF16/Float `Linear` errors. Start CPU test processes with `CUDA_VISIBLE_DEVICES=''` so storage resolves to FP32. Exercise real BF16 only on a CUDA model or with an explicit CPU-autocast regression.
-- Any FP32 `nn.Linear` called with `STORAGE_DTYPE` tensors must be inside `autocast_context(device)`. Autocast is intentionally a no-op on CPU.
-- `SJFPO_DEVICE=auto|cpu|cuda` controls device selection; `SJFPO_COMPILE=0` disables CUDA compilation. On Blackwell, `resolve_compute_dtype` returns BF16 before reading `SJFPO_DTYPE`, so that override does not disable Blackwell BF16.
-- wandb is enabled through `TrainConfig.wandb_enabled` / `--wandb_enabled`; `SJFPO_DISABLE_WANDB` is documented but not read by the current code. Keep direct wandb imports confined to `src/sjfpo/wandb_logging.py`.
-- `src/sjfpo/configuration_sjfpo.py::SJFPOConfig` is the live SJFPO default source. `configs/*.yaml` currently disagrees numerically with those defaults, and YAML parity tests check keys rather than values.
-- `RUN_MATRIX` currently contains four core envs from `configs/envs.yaml` (60 runs) despite its “45 runs” comment, while `sweep.sh` independently hard-codes three envs (45 runs). Do not treat either as synchronized.
-- Evaluation CSV is five columns: `episode,return,length,success,jerk`.
-- JAX tests require working `flax`/`optax`; do not assume the current Torch-oriented virtualenv can collect or run them.
+## Change discipline
 
-## Current test drift
-- Do not report the suite as green from the docs. `pytest -q tests` currently collects 313 tests with 10 collection errors, including missing/renamed symbols (`capture_env_fingerprint`, `compute_advantages`, `is_bf16_available`, `SpectralAttentionPool`) and JAX dependency gaps.
-- `tests/test_modeling_sjfpo.py` also has stale expectations around diagnostic keys, defaults, and rollout/shared-MC behavior. Run the exact regression first and report unrelated baseline failures instead of weakening assertions.
-- This is research code: prefer the smallest direct change, keep algorithm math explicit, and do not add infrastructure, config frameworks, or dependencies unless the requested behavior requires them.
+- Keep research-code changes direct and explicit; do not add config frameworks, dependencies, or infrastructure without a requested behavior change.
+- Preserve tensor-shape comments and `einx.id` reshape parity in collector/FPO/trainer/DCT code.
+- Do not import `wandb` outside `src/sjfpo/wandb_logging.py`.
+- Do not reintroduce EMA/target networks in the active SJFPO path; only the frozen rollout snapshots are used.
+- Do not touch analysis statistics/plotting without an explicit requested scope.
