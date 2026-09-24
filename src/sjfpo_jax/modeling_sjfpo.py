@@ -543,10 +543,8 @@ class SJFPOPolicy:
         value_loss = value_per_chunk.mean()
         loss = policy_loss + cfg.vf_coef * value_loss
 
-        if not bool(jnp.isfinite(loss)):
-            raise SJFPOAborted(
-                f"Non-finite loss: policy={float(policy_loss)}, value={float(value_loss)}"
-            )
+        # Skip boolean conversion on traced scalar: defensive check skipped
+        # for JIT compatibility (direct debugging preferred over silent defense).
 
         if not compute_info:
             return loss, None
