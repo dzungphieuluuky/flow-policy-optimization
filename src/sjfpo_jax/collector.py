@@ -198,7 +198,7 @@ def collect_chunks_vec(
 
     if key is None:
         key = jax.random.PRNGKey(0)
-    seed = int(jax.random.randint(key, (), 0, 2 ** 31))
+    seed = int(jax.random.randint(key, (), 0, 2 ** 31 - 1))
     act_dim = int(np.prod(envs.single_action_space.shape))
 
     obs, _ = envs.reset(seed=[seed + i for i in range(n)])
