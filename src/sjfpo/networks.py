@@ -482,9 +482,10 @@ class SJFPOFlowModel(nn.Module):
     ) -> torch.Tensor | tuple[torch.Tensor, dict[str, torch.Tensor]]:
         """Predict velocity: ([B, Ka, D], t, [B, D]) -> [B, Ka, D] (or tuple).
 
-        ``t`` may be a scalar or a ``[B]`` tensor. When scalar, the time MLP
-        runs on an unbatched embedding and broadcasting handles the batch.
+        ``t`` may be a scalar or a ``[B]`` tensor. Scalar timesteps are
+        broadcast to the actor batch size for stable compilation.
         """
+        t = torch.as_tensor(t, dtype=torch.float32, device=x_t.device).reshape(-1)
         temb = self.timestep_embedder.encode_times(t).to(
             device=x_t.device, dtype=x_t.dtype
         )

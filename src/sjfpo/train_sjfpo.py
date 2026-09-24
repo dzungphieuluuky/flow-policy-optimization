@@ -96,19 +96,39 @@ def build_policy(
     return policy
 
 
-def build_optimizer(policy: SJFPOPolicy, cfg: SJFPOConfig):
-    """Lerobot preset AdamW; bitsandbytes 8-bit AdamW when opted in."""
-    params = policy.get_optim_params()["params"]
+def _build_optimizer(
+    policy: SJFPOPolicy, cfg: SJFPOConfig, params: list[dict], lr: float
+):
     if cfg.optimizer_8bit:
         import bitsandbytes as bnb
         return bnb.optim.AdamW8bit(
-            params, lr=cfg.policy_lr, weight_decay=cfg.optimizer_weight_decay
+            params, lr=lr, weight_decay=cfg.optimizer_weight_decay
         )
-    kwargs = dataclasses.asdict(cfg.get_optimizer_preset())
+    kwargs = dataclasses.asdict(cfg.get_optimizer_preset(lr=lr))
     kwargs.pop("grad_clip_norm", None)  # applied manually after backward
     if next(policy.parameters()).is_cuda:
         kwargs["fused"] = True
     return torch.optim.AdamW(params, **kwargs)
+
+
+def build_optimizers(
+    policy: SJFPOPolicy, cfg: SJFPOConfig
+) -> tuple[torch.optim.Optimizer, torch.optim.Optimizer]:
+    """Build separate optimizer instances for actor/conditioner and critic."""
+    actor = _build_optimizer(
+        policy, cfg, policy.get_actor_optim_params()["params"], cfg.policy_lr
+    )
+    critic = _build_optimizer(
+        policy, cfg, policy.get_critic_optim_params()["params"], cfg.critic_lr
+    )
+    return actor, critic
+
+
+def build_optimizer(policy: SJFPOPolicy, cfg: SJFPOConfig):
+    """Backward-compatible combined optimizer for legacy callers."""
+    return _build_optimizer(
+        policy, cfg, policy.get_optim_params()["params"], cfg.policy_lr
+    )
 
 
 def sample_minibatch(
@@ -128,13 +148,23 @@ def sample_minibatch(
     return out
 
 
-def random_baseline(evaluator: Evaluator, env: Any) -> float:
-    """Mean random-policy return for divergence gating.
+def random_baseline(
+    evaluator: Evaluator, env: Any, max_episodes: int = 30
+) -> float:
+    """Mean random-policy return over 30 episodes for divergence gating.
 
     Returns ``0.0`` unchanged — callers gate on ``baseline > 0`` before
     treating the value as meaningful (see ``check_divergence``).
     """
-    results = evaluator.evaluate(lambda obs: env.action_space.sample(), out_dir=None)
+    baseline_evaluator = Evaluator(
+        env,
+        eval_seed=evaluator.eval_seed,
+        max_episodes=max_episodes,
+        max_steps=evaluator.max_steps,
+    )
+    results = baseline_evaluator.evaluate(
+        lambda obs: env.action_space.sample(), out_dir=None
+    )
     if not results:
         return 1.0
     return float(np.mean([r["return"] for r in results]))
@@ -174,6 +204,7 @@ def train_sjfpo_run(
     obs_dim: int | None = None,
     action_dim: int | None = None,
     resume_from_checkpoint: str | Path | None = None,
+    wandb_enabled: bool = True,
 ) -> dict[str, Any]:
     """Run a single SJFPO training run, returning a summary with artifacts."""
     cfg = cfg or SJFPOConfig()
@@ -201,9 +232,14 @@ def train_sjfpo_run(
 
     global_step = 0
     if resume_from_checkpoint is not None:
-        policy, optimizer, counters = load_policy_checkpoint(
-            resume_from_checkpoint, device=device
-        )
+        loaded = load_policy_checkpoint(resume_from_checkpoint, device=device)
+        if len(loaded) == 4:
+            policy, actor_optimizer, critic_optimizer, counters = loaded
+        else:
+            policy, _legacy_optimizer, counters = loaded
+            actor_optimizer, critic_optimizer = build_optimizers(
+                policy, policy.config
+            )
         global_step = int(counters["global_step"])
         policy.train()
         # Re-apply compilation — from_pretrained builds an eager policy.
@@ -227,7 +263,7 @@ def train_sjfpo_run(
             action_low=action_low,
             action_high=action_high,
         )
-        optimizer = build_optimizer(policy, cfg)
+        actor_optimizer, critic_optimizer = build_optimizers(policy, cfg)
 
     print(
         f"SJFPO policy: actor_depth={cfg.dit_depth} hidden={cfg.hidden_dim} "
@@ -244,6 +280,7 @@ def train_sjfpo_run(
         seed=seed,
         total_steps=total_steps,
         cfg_dict=dataclasses.asdict(cfg),
+        wandb_enabled=wandb_enabled,
     )
 
     # Next step at which each periodic action fires.
@@ -264,12 +301,14 @@ def train_sjfpo_run(
 
     # Hoisted once — indexing the optimizer's param groups every minibatch is
     # pure Python overhead on the critical path.
-    all_params = [p for group in optimizer.param_groups for p in group["params"]]
+    actor_params = [p for group in actor_optimizer.param_groups for p in group["params"]]
+    critic_params = [p for group in critic_optimizer.param_groups for p in group["params"]]
 
     try:
         while global_step < total_steps:
             steps_to_go = total_steps - global_step
             collect_steps = min(cfg.chunks_per_update * cfg.action_horizon, steps_to_go)
+            policy.snapshot_behavior_policy()
             batch = policy.generate_rollout(
                 train_env,
                 collect_steps,
@@ -292,6 +331,7 @@ def train_sjfpo_run(
                     batch["action_is_pad"].detach().cpu().numpy(),
                 )
             action_abs_max = float(batch["action"].abs().max())
+            action_magnitude = float(batch["action"].abs().mean())
             if action_abs_max > 1.05:
                 raise ValueError(
                     f"Unnormalized actions detected: max_abs={action_abs_max:.3f} "
@@ -299,11 +339,10 @@ def train_sjfpo_run(
                 )
 
             policy.train()
-            policy.snapshot_behavior_policy()
 
             infos: list[dict[str, float]] = []
-            # Accumulate pre-clip norms on device; convert to Python once.
-            pre_norms: list[torch.Tensor] = []
+            actor_pre_norms: list[torch.Tensor] = []
+            critic_pre_norms: list[torch.Tensor] = []
             n_chunks = batch["advantages"].shape[0]
             for mb_idx in mini_batch_indices(
                 n_chunks,
@@ -311,7 +350,8 @@ def train_sjfpo_run(
                 batch["advantages"].device,
                 num_epochs=cfg.num_epochs,
             ):
-                optimizer.zero_grad(set_to_none=True)
+                actor_optimizer.zero_grad(set_to_none=True)
+                critic_optimizer.zero_grad(set_to_none=True)
                 loss, epoch_info = policy(
                     sample_minibatch(batch, mb_idx),
                     compute_info=wandb_enabled,
@@ -321,11 +361,16 @@ def train_sjfpo_run(
                         f"Loss must be scalar before backward; got {tuple(loss.shape)}."
                     )
                 loss.backward()
-                # `clip_grad_norm_` returns the pre-clip total norm; post-clip
-                # is min(pre, max_norm) because clipping is a uniform scale.
-                pre = torch.nn.utils.clip_grad_norm_(all_params, cfg.grad_clip_norm)
-                pre_norms.append(pre.detach())
-                optimizer.step()
+                actor_pre = torch.nn.utils.clip_grad_norm_(
+                    actor_params, cfg.grad_clip_norm
+                )
+                critic_pre = torch.nn.utils.clip_grad_norm_(
+                    critic_params, cfg.grad_clip_norm
+                )
+                actor_pre_norms.append(actor_pre.detach())
+                critic_pre_norms.append(critic_pre.detach())
+                actor_optimizer.step()
+                critic_optimizer.step()
                 policy.step_count += 1
                 if epoch_info is not None:
                     infos.append(epoch_info)
@@ -335,8 +380,9 @@ def train_sjfpo_run(
                 info = {k: sum(d[k] for d in infos) / len(infos) for k in infos[0]}
             else:
                 info = None
+            all_pre_norms = actor_pre_norms + critic_pre_norms
             grad_norm_mean_pre = (
-                float(torch.stack(pre_norms).mean()) if pre_norms else 0.0
+                float(torch.stack(all_pre_norms).mean()) if all_pre_norms else 0.0
             )
             grad_norm_mean_post = min(grad_norm_mean_pre, cfg.grad_clip_norm)
 
@@ -346,6 +392,7 @@ def train_sjfpo_run(
                 data["train/grad_norm_after_clip"] = grad_norm_mean_post
                 if rollout_jerk is not None:
                     data["train/rollout_jerk"] = rollout_jerk
+                data["train/action_magnitude"] = action_magnitude
                 data["train/total_loss"] = (
                     info["policy_loss"] + cfg.vf_coef * info["value_loss"]
                 )
@@ -411,7 +458,8 @@ def train_sjfpo_run(
                 save_policy_checkpoint(
                     ckpt_dir,
                     policy=policy,
-                    optimizer=optimizer,
+                    actor_optimizer=actor_optimizer,
+                    critic_optimizer=critic_optimizer,
                     global_step=global_step,
                 )
                 artifacts.append(str(ckpt_dir / "model.safetensors"))
@@ -434,7 +482,8 @@ def train_sjfpo_run(
     save_policy_checkpoint(
         ckpt_dir,
         policy=policy,
-        optimizer=optimizer,
+        actor_optimizer=actor_optimizer,
+        critic_optimizer=critic_optimizer,
         global_step=global_step,
     )
     artifacts.append(str(ckpt_dir / "model.safetensors"))

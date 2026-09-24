@@ -289,6 +289,7 @@ def sample_action(
         # Precompute dt once; XLA/torch compile friendly.
         dts = grid[1:] - grid[:-1]  # [steps]
         for i in range(num_inference_steps):
-            v_hat = predict_velocity(x, grid[i], condition)
+            t_current = grid[i].reshape(1)
+            v_hat = predict_velocity(x, t_current, condition)
             x = x + dts[i] * v_hat
     return x

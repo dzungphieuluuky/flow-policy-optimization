@@ -42,15 +42,15 @@ class SJFPOConfig(PreTrainedConfig):
     gamma: float = 0.999
     gae_lambda: float = 0.995
     epsilon_clip: float = 0.05
-    use_dct_transform: bool = True  # spectral chunk encoding; False = raw action chunk
-    use_aspo: bool = True
+    use_dct_transform: bool = False  # spectral chunk encoding; False = raw action chunk
+    use_aspo: bool = False
     use_per_bin_clip: bool = False  # two-group epsilon over DCT bins
     epsilon_clip_lowfreq: float = 0.02  # tight: low bins carry task intent
     epsilon_clip_highfreq: float = 0.10  # loose: high bins are detail/exploration
     cfm_clamp: float = 20.0
     log_ratio_cap: float = 10.0
     advantage_clamp: float = 100.0
-    use_clipped_value_loss: bool = True
+    use_clipped_value_loss: bool = False
     min_timestep: float = 0.005
     max_timestep: float = 0.995
 
@@ -216,14 +216,14 @@ class SJFPOConfig(PreTrainedConfig):
         if self.action_feature is None:
             raise ValueError("SJFPO requires 'action' in output_features.")
 
-    def get_optimizer_preset(self) -> AdamWConfig:
+    def get_optimizer_preset(self, lr: float | None = None) -> AdamWConfig:
         """AdamW preset, honoring ``optimizer_8bit`` when set.
 
         ``AdamWConfig`` in recent LeRobot exposes ``use_8bit``; if the installed
         version doesn't, this falls back to a plain fp32 AdamW and warns.
         """
         kwargs = dict(
-            lr=self.policy_lr,
+            lr=self.policy_lr if lr is None else float(lr),
             weight_decay=self.optimizer_weight_decay,
             grad_clip_norm=self.grad_clip_norm,
         )

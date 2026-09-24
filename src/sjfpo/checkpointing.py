@@ -115,7 +115,9 @@ def save_policy_checkpoint(
     dir_path: str | os.PathLike,
     *,
     policy,
-    optimizer: torch.optim.Optimizer,
+    optimizer: torch.optim.Optimizer | None = None,
+    actor_optimizer: torch.optim.Optimizer | None = None,
+    critic_optimizer: torch.optim.Optimizer | None = None,
     global_step: int,
     save_rng: bool = True,
 ) -> None:
@@ -134,6 +136,10 @@ def save_policy_checkpoint(
         )
     if int(global_step) < 0:
         raise ValueError(f"global_step={global_step} must be >= 0")
+    if (actor_optimizer is None) != (critic_optimizer is None):
+        raise ValueError("actor_optimizer and critic_optimizer must be provided together")
+    if actor_optimizer is None and optimizer is None:
+        raise ValueError("provide actor/critic optimizers or legacy optimizer")
 
     d = Path(dir_path)
     d.mkdir(parents=True, exist_ok=True)
@@ -143,7 +149,15 @@ def save_policy_checkpoint(
         policy.save_pretrained(d)
 
     # 2) Optimizer state (pickled, weights-only safe on load).
-    _atomic_torch_save(d / OPTIMIZER_FILE, optimizer.state_dict())
+    if actor_optimizer is not None:
+        optimizer_state = {
+            "format": 2,
+            "actor": actor_optimizer.state_dict(),
+            "critic": critic_optimizer.state_dict(),
+        }
+    else:
+        optimizer_state = optimizer.state_dict()
+    _atomic_torch_save(d / OPTIMIZER_FILE, optimizer_state)
 
     # 3) Counters (atomic JSON).
     counters = {
@@ -204,6 +218,41 @@ def _load_optimizer(policy, d: Path) -> torch.optim.Optimizer:
     return optimizer
 
 
+def _load_optimizer_pair(policy, d: Path):
+    try:
+        payload = torch.load(
+            d / OPTIMIZER_FILE, map_location="cpu", weights_only=True
+        )
+    except Exception as e:
+        raise ResumeError(
+            f"failed to unpickle {d / OPTIMIZER_FILE}: {e}. "
+            "If the optimizer was subclassed with non-tensor state, re-save "
+            "with weights_only=False at your own risk."
+        ) from e
+
+    if not isinstance(payload, dict) or payload.get("format") != 2:
+        return _load_optimizer(policy, d), None
+
+    try:
+        actor_state = payload["actor"]
+        critic_state = payload["critic"]
+    except (KeyError, TypeError) as e:
+        raise ResumeError(f"malformed split optimizer payload in {d}: {e}") from e
+
+    actor = policy.config.get_optimizer_preset(lr=policy.config.policy_lr).build(
+        policy.get_actor_optim_params()["params"]
+    )
+    critic = policy.config.get_optimizer_preset(lr=policy.config.critic_lr).build(
+        policy.get_critic_optim_params()["params"]
+    )
+    try:
+        actor.load_state_dict(actor_state)
+        critic.load_state_dict(critic_state)
+    except Exception as e:
+        raise ResumeError(f"split optimizer load_state_dict failed: {e}") from e
+    return actor, critic
+
+
 def _load_rng(d: Path) -> None:
     """Restore torch/cuda RNG state if a saved RNG file exists. Best effort."""
     path = d / RNG_FILE
@@ -228,9 +277,10 @@ def load_policy_checkpoint(
     """Load a checkpoint written by :func:`save_policy_checkpoint`.
 
     Rebuilds every component from ``config.json`` — no caller-supplied dims.
-    Returns ``(policy, optimizer, counters)``.
+    New split checkpoints return ``(policy, actor_optimizer, critic_optimizer,
+    counters)``; legacy checkpoints return ``(policy, optimizer, counters)``.
     """
-    from sjfpo.modeling_sjfpo import SJFOPolicy  # lazy: import-light module
+    from sjfpo.modeling_sjfpo import SJFPOPolicy  # lazy: import-light module
 
     d = Path(dir_path)
     missing = [
@@ -246,8 +296,8 @@ def load_policy_checkpoint(
     if device is not None:
         policy.to(device)
 
-    # 2) Optimizer (built from current config, state from disk).
-    optimizer = _load_optimizer(policy, d)
+    # 2) Optimizer state (split format for new checkpoints; legacy stays supported).
+    actor_optimizer, critic_optimizer = _load_optimizer_pair(policy, d)
 
     # 3) Counters (validated).
     try:
@@ -270,4 +320,7 @@ def load_policy_checkpoint(
     if restore_rng:
         _load_rng(d)
 
-    return policy, optimizer, {"global_step": global_step, "step_count": step_count}
+    counters = {"global_step": global_step, "step_count": step_count}
+    if critic_optimizer is None:
+        return policy, actor_optimizer, counters
+    return policy, actor_optimizer, critic_optimizer, counters

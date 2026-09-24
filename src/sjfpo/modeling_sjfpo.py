@@ -206,7 +206,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         self.old_conditioner.requires_grad_(False)
         self.old_conditioner.eval()
 
-    def get_optim_params(self) -> dict:
+    def get_actor_optim_params(self) -> dict:
         decay, no_decay = [], []
         for name, p in self.actor.named_parameters():
             short = name.split("_orig_mod.")[-1]
@@ -214,15 +214,31 @@ class SJFPOPolicy(PreTrainedPolicy):
                 no_decay.append(p)
             else:
                 decay.append(p)
-        # Separate LR for critic: 3x the policy LR for faster value tracking.
         policy_lr = self.config.policy_lr
-        critic_lr = policy_lr * 3.0
         return {
             "params": [
                 {"params": decay, "lr": policy_lr},
                 {"params": no_decay, "weight_decay": 0.0, "lr": policy_lr},
                 {"params": list(self.conditioner.parameters()), "lr": policy_lr},
-                {"params": list(self.critic.parameters()), "lr": critic_lr},
+            ]
+        }
+
+    def get_critic_optim_params(self) -> dict:
+        return {
+            "params": [
+                {
+                    "params": list(self.critic.parameters()),
+                    "lr": self.config.critic_lr,
+                }
+            ]
+        }
+
+    def get_optim_params(self) -> dict:
+        """Compatibility view containing both optimizer ownership groups."""
+        return {
+            "params": [
+                *self.get_actor_optim_params()["params"],
+                *self.get_critic_optim_params()["params"],
             ]
         }
 
@@ -269,6 +285,7 @@ class SJFPOPolicy(PreTrainedPolicy):
 
         num_spectral_tokens_kept = _num_spectral_tokens_kept(cfg)
         action_dim = int(self.config.action_feature.shape[0])
+        actor = _unwrap_compiled(self.actor)
 
         with torch.inference_mode(), autocast_context(device):
             condition = self.conditioner(states)
@@ -276,7 +293,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             eps = None if noise else torch.zeros(*shape, device=device)
             num_steps = cfg.num_euler_steps if noise else cfg.num_inference_steps
             x0 = sample_action(
-                lambda x, t, c: self.actor(x, t, c),
+                lambda x, t, c: actor(x, t, c),
                 shape,
                 condition,
                 num_inference_steps=num_steps,
@@ -320,6 +337,44 @@ class SJFPOPolicy(PreTrainedPolicy):
 
     # -- rollout -------------------------------------------------------
 
+    def _initial_cfm_losses(
+        self,
+        states_n: torch.Tensor,
+        actions: torch.Tensor,
+        tau: torch.Tensor,
+        eps: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        cfg = self.config
+        token_count = eps.shape[2]
+        if cfg.use_dct_transform:
+            spectral_action = extract_dct_coeffs(actions, M=token_count - 1)
+        else:
+            spectral_action = actions
+        tau_bn, eps_flat, action_rep, flow_shape, num_mc = run_mc_simulation(
+            spectral_action, eps, tau
+        )
+        x_t = (
+            (1.0 - tau_bn[:, None]) * eps_flat
+            + tau_bn[:, None] * action_rep
+        ).reshape(-1, *flow_shape)
+        actor = _unwrap_compiled(self.actor)
+        conditioner = _unwrap_compiled(self.conditioner)
+        with torch.inference_mode(), autocast_context(actions.device):
+            condition = conditioner(states_n)
+            condition_flat = einx.id(
+                "n d -> n m d", condition, m=num_mc
+            ).reshape(num_mc * condition.shape[0], condition.shape[-1])
+            v_initial = actor(x_t, tau_bn, condition_flat).float()
+        with torch.autocast(device_type=actions.device.type, enabled=False):
+            v_star = (spectral_action[:, None] - eps).float()
+            v_initial = v_initial.reshape(
+                eps.shape[0], num_mc, *flow_shape
+            )
+            return (
+                compute_cfm_loss(v_initial, v_star, reduce_mode="sample"),
+                compute_cfm_loss(v_initial, v_star, reduce_mode="bin"),
+            )
+
     def generate_rollout(
         self,
         env,
@@ -347,22 +402,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             )
             return chunk.cpu()
 
-        from sjfpo.mjx_env import mjx_collect_chunks, resolve_env_name, want_mjx
-
-        env_name = resolve_env_name(env)
-        if want_mjx():
-            chunks = mjx_collect_chunks(
-                self,
-                env_name,
-                total_steps,
-                action_low,
-                action_high,
-                n_obs_steps=cfg.n_obs_steps,
-                n_action_steps=cfg.action_horizon,
-                num_envs=cfg.num_envs,
-                seed=int(torch.randint(0, 2**31, (1,)).item()),
-            )
-        elif int(getattr(env, "num_envs", 1)) > 1:
+        if int(getattr(env, "num_envs", 1)) > 1:
             chunks = collect_chunks_vec(
                 env,
                 propose_batch,
@@ -457,6 +497,10 @@ class SJFPOPolicy(PreTrainedPolicy):
                 f"CRN eps shape {tuple(eps.shape)} != expected {expected_eps_shape}"
             )
 
+        initial_cfm_loss, initial_cfm_loss_bin = self._initial_cfm_losses(
+            states_n, actions, tau, eps
+        )
+
         return {
             OBS_STATE: states,
             ACTION: actions,
@@ -468,6 +512,8 @@ class SJFPOPolicy(PreTrainedPolicy):
             # expanded [N, num_mc] form would materialize N identical rows.
             "tau": tau,
             "eps": eps,
+            "initial_cfm_loss": initial_cfm_loss,
+            "initial_cfm_loss_bin": initial_cfm_loss_bin,
         }
 
     # -- training forward ---------------------------------------------
@@ -506,8 +552,8 @@ class SJFPOPolicy(PreTrainedPolicy):
 
         states = self.preprocessor({OBS_STATE: states})[OBS_STATE]
 
-        M_modes = max(1, cfg.action_horizon - 1)
         num_spectral_tokens_kept = _num_spectral_tokens_kept(cfg)
+        M_modes = num_spectral_tokens_kept - 1
         # Spectral encoding: first M+1 DCT bins (low frequency) kept; token count = M+1 (derived from top_p * H).
         n = states.shape[0]
         action_dim = actions.shape[-1]
@@ -541,16 +587,35 @@ class SJFPOPolicy(PreTrainedPolicy):
         ).reshape(-1, *flow_shape)
 
         # Condition fusion: [n, D] -> [n*m, D].
-        cond_flat = einx.id(
-            "n m d -> (n m) d",
-            einx.id("n d -> n m d", self.conditioner(states), m=num_mc),
-        )
-        with torch.inference_mode(), autocast_context(device):
-            old_cond_flat = einx.id(
+        with autocast_context(device):
+            cond_flat = einx.id(
                 "n m d -> (n m) d",
-                einx.id("n d -> n m d", self.old_conditioner(states), m=num_mc),
+                einx.id("n d -> n m d", self.conditioner(states), m=num_mc),
             )
-            v_old = self.old_actor(x_t_flat, tau_bn, old_cond_flat).float()
+        stored_l_old = "initial_cfm_loss" in batch
+        if stored_l_old:
+            l_old = to_tensor(
+                batch["initial_cfm_loss"], dtype=torch.float32, device=device
+            )
+            l_old_bin = to_tensor(
+                batch["initial_cfm_loss_bin"], dtype=torch.float32, device=device
+            )
+            if tuple(l_old.shape) != (n, num_mc):
+                raise ValueError(
+                    f"initial_cfm_loss shape {tuple(l_old.shape)} != {(n, num_mc)}"
+                )
+            if tuple(l_old_bin.shape) != (n, num_mc, flow_shape[0]):
+                raise ValueError(
+                    f"initial_cfm_loss_bin shape {tuple(l_old_bin.shape)} != "
+                    f"{(n, num_mc, flow_shape[0])}"
+                )
+        else:
+            with torch.inference_mode(), autocast_context(device):
+                old_cond_flat = einx.id(
+                    "n m d -> (n m) d",
+                    einx.id("n d -> n m d", self.old_conditioner(states), m=num_mc),
+                )
+                v_old = self.old_actor(x_t_flat, tau_bn, old_cond_flat).float()
 
         with autocast_context(device):
             if cfg.use_gradient_checkpointing:
@@ -565,7 +630,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         if compute_info:
             # Re-run just the modulation MLPs on one row to grab stats —
             # cheap relative to attention, and only on info-requesting steps.
-            with torch.inference_mode():
+            with torch.inference_mode(), autocast_context(device):
                 _, cond_stats = self.actor(
                     x_t_flat[:1], tau_bn[:1], cond_flat[:1], return_stats=True
                 )
@@ -573,14 +638,19 @@ class SJFPOPolicy(PreTrainedPolicy):
         # CFM losses under target velocities (fp32 for stability).
         with torch.autocast(device_type=device.type, enabled=False):
             v_star_f = self.compute_target_velocity(spectral_action_tokens, eps).float()
-            v_old_r_f = v_old.reshape(n, num_mc, *flow_shape)
             v_new_r_f = v_new.reshape(n, num_mc, *flow_shape)
 
-            l_old_bin = compute_cfm_loss(v_old_r_f, v_star_f, reduce_mode="bin")
+            if not stored_l_old:
+                v_old_r_f = v_old.reshape(n, num_mc, *flow_shape)
+                l_old_bin = compute_cfm_loss(
+                    v_old_r_f, v_star_f, reduce_mode="bin"
+                )
+                l_old = compute_cfm_loss(
+                    v_old_r_f, v_star_f, reduce_mode="sample"
+                )
             l_new_bin = compute_cfm_loss(v_new_r_f, v_star_f, reduce_mode="bin")
             rho_bin = compute_policy_ratio(l_old_bin, l_new_bin)  # computed once
 
-            l_old = compute_cfm_loss(v_old_r_f, v_star_f, reduce_mode="sample")
             l_new = compute_cfm_loss(v_new_r_f, v_star_f, reduce_mode="sample")
             rho = compute_policy_ratio(l_old, l_new)
 
@@ -601,8 +671,7 @@ class SJFPOPolicy(PreTrainedPolicy):
 
         # Value loss (Huber).
         with autocast_context(device):
-            v_pred_raw = self.critic(states).float()
-        v_pred = v_pred_raw.squeeze(-1)
+            v_pred = self.critic(states).float()
         returns_d = returns.reshape(-1)
         if v_pred.shape != returns_d.shape:
             raise ValueError(
