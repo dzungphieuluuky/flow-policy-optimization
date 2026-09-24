@@ -67,6 +67,16 @@ Transition = TypedDict(
 )
 
 
+class _StepTransition(dict):
+    """Transition dict with post-step windows stored outside public keys."""
+
+    def __init__(self, record: Transition, step_next_states: torch.Tensor):
+        super().__init__(record)
+        # Keep the public eight-key Transition contract while retaining the
+        # state window after every executed action for step-level GAE.
+        self.step_next_states = step_next_states
+
+
 # ---------------------------------------------------------------------------
 # Conversions
 # ---------------------------------------------------------------------------
@@ -163,6 +173,7 @@ def finalize_transition(
     clip_count: int,
     chunk_size: int,
     n_action_steps: int,
+    step_next_states: torch.Tensor,
 ) -> Transition:
     if scaled.shape[0] != chunk_size:
         raise ValueError(
@@ -179,7 +190,12 @@ def finalize_transition(
         np.asarray(rewards, dtype=np.float32), dtype=_REWARD_DTYPE
     )
     n_executed = int(reward_t.shape[0])
-    return {
+    if step_next_states.shape != (n_executed, *next_state.shape):
+        raise ValueError(
+            f"step_next_states shape {tuple(step_next_states.shape)} != "
+            f"{(n_executed, *next_state.shape)}"
+        )
+    record: Transition = {
         OBS_STATE: state,
         "action": scaled,
         "next.observation.state": next_state,
@@ -189,6 +205,7 @@ def finalize_transition(
         "executed_n_action_steps": _int_tensor(n_executed),
         "clip_count": _int_tensor(clip_count),
     }
+    return _StepTransition(record, step_next_states)  # type: ignore[return-value]
 
 
 # ---------------------------------------------------------------------------
@@ -203,8 +220,9 @@ def execute_open_loop_steps(
     executed_total: int,
     total_steps: int,
     n_action_steps: int,
-) -> tuple[list[float], str]:
+) -> tuple[list[float], str, torch.Tensor]:
     rewards: list[float] = []
+    step_next_states: list[torch.Tensor] = []
     done_kind = "continue"
     for i in range(n_action_steps):
         if executed_total >= total_steps:
@@ -213,13 +231,14 @@ def execute_open_loop_steps(
         executed_total += 1
         rewards.append(float(reward))
         window.append(as_float_tensor(obs))
+        step_next_states.append(torch.stack(tuple(window), dim=0))
         if terminated:
             done_kind = "terminated"
             break
         if truncated:
             done_kind = "truncated"
             break
-    return rewards, done_kind
+    return rewards, done_kind, torch.stack(step_next_states, dim=0)
 
 
 def propose_and_execute_chunk(
@@ -238,7 +257,7 @@ def propose_and_execute_chunk(
     executed, scaled, clip_count = scale_and_clip_chunk(proposed, low, range_)
     # Single host transfer for the whole chunk, then index on CPU.
     executed_np = executed.detach().cpu().numpy()
-    rewards, done_kind = execute_open_loop_steps(
+    rewards, done_kind, step_next_states = execute_open_loop_steps(
         env, executed_np, window, executed_total, total_steps, n_action_steps
     )
     next_state = torch.stack(tuple(window), dim=0)
@@ -251,6 +270,7 @@ def propose_and_execute_chunk(
         clip_count,
         chunk_size,
         n_action_steps,
+        step_next_states,
     )
     return record, done_kind
 
@@ -307,6 +327,7 @@ def collect_chunks_vec(
         cur: list = [None] * n  # per-env in-flight chunk state
         pos = [0] * n
         rewards: list[list[float]] = [[] for _ in range(n)]
+        step_states: list[list[torch.Tensor]] = [[] for _ in range(n)]
         prev: list[Transition | None] = [None] * n
         prev_done = ["continue"] * n
         executed_total = [0] * n
@@ -331,6 +352,7 @@ def collect_chunks_vec(
                     cur[i] = (executed, scaled, clip_count, states[k])
                     pos[i] = 0
                     rewards[i] = []
+                    step_states[i] = []
 
             # Gather all active actions into a tensor, then ONE host transfer.
             actions_t = torch.zeros((n, act_dim), dtype=torch.float32)
@@ -361,6 +383,7 @@ def collect_chunks_vec(
                     continue
                 rewards[i].append(float(rew_np[i]))
                 windows[i].append(as_float_tensor(obs[i]))
+                step_states[i].append(torch.stack(tuple(windows[i]), dim=0))
                 pos[i] += 1
                 if done_np[i] or pos[i] >= n_action_steps:
                     _executed, scaled, clip_count, replan = cur[i]
@@ -381,6 +404,7 @@ def collect_chunks_vec(
                         clip_count,
                         chunk_size,
                         n_action_steps,
+                        torch.stack(step_states[i], dim=0),
                     )
                     executed_total[i] += n_exec
                     records[i].append(record)

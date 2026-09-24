@@ -1,7 +1,7 @@
 # AGENTS — src/sjfpo
 
 ## Overview
-MuJoCo-only hotspot — single live train path, chunked flow policy: Transition-dict rollout (H=16/n=8/T=16) → chunk GAE → ASPO + V(s) TD-critic; CUDA-default (CPU fallback) fp32, einx.id shapes (collector/fpo_core/trainer + dct_utils/baselines), RUN_MATRIX 45. analysis.py is notebook-invoked (train.py never imports it), everything else is live.
+MuJoCo-only hotspot — single live train path, chunked flow policy: Transition-dict rollout (H=16/n=8/T=16) → step-level GAE over executed prefixes → ASPO + V(s) TD-critic; CUDA-default (CPU fallback) fp32, einx.id shapes (collector/fpo_core/trainer + dct_utils/baselines), RUN_MATRIX 45. analysis.py is notebook-invoked (train.py never imports it), everything else is live.
 
 ## Structure
 ```
@@ -9,7 +9,7 @@ networks.py      WindowEncoder (shared; conditioner + critic own instances) + Ru
 modeling_sjfpo.py   SJFPOPolicy.forward: ASPO (truncated Ka coeffs, negated) + V(s) critic on raw GAE returns (0.5 factor, PPO-clipped) + running obs norm; optimizer = live policy weights; global grad-clip; NaN-guard aborts
 train_sjfpo.py    online train entry: generate_rollout → forward → AdamW step → eval → Hub ckpt
 collector.py      346L — Transition TypedDict (8 LeRobot keys); full-H open-loop chunks; real-space scaled action anchor [H,action_dim] (DCT downstream in forward); all chunks train (trainer zero-pads unexecuted tails)
-gae.py            123L — chunk semi-MDP GAE (R_k intradiscounted, γ^L bootstrap, (γλ)^L recursion); terminated cuts all, truncated bootstraps δ but cuts recursion; train advantages raw (ASPO sign)
+gae.py            step-level GAE over executed transitions; terminated masks bootstrap and cuts recursion, truncated keeps bootstrap and cuts recursion; first executed step supplies each chunk target
 fpo_core.py       230L — CFM/SQL-ℓ [N,m], STE-capped ρ, ASPO piecewise (PPO-clip Â>0 / SPO Â≤0), mean-of-ψ objective, sample(mode=euler) t:0→1; policy + vf_coef·value summed inline in forward
 dct_utils.py      orthonormal DCT-II/III [H,action_dim] action chunks + discounted_chunk_reward + einx.id (parity-guarded)
 config.py         flags + PPO/SAC dataclasses, RUN_MATRIX 45 (TINY 3) + build_run_matrix; SACConfig.polyak is skrl-boundary (keep). SJFPO hyperparams live ONLY in configuration_sjfpo.py::SJFPOConfig (H=16/T=16/top_p=0.3→K=5/D=128, DiT-8/4heads/mlp×4/t256)
@@ -26,7 +26,7 @@ utils.py          149L — shared pure helpers (device/dtype/compile), no sjfpo 
 - `collector.py:51` `Transition`: 8 LeRobot keys (`observation.state [T,obs_dim]`, real scaled `action [H,action_dim]`, `next.*`, `n_action_steps` i64, `clip_count` i64); `next.reward` is variable-length `[L_k]`
 - `modeling_sjfpo.py:forward`: stack (guards H/T) → StateConditioner fuses states to `condition [N,D]` → policy ℓ/ρ/ψ `[N,m]` → critic `V(s)` → clip → loss (stepped by the training loop)
 - `networks.py:StateConditioner`: raw window tokens query DCT-II bins (bin index = frequency order) in one cross-attn block, mean-pool → `[B,D]` (rFFT reserved for observation.image)
-- `gae.py:compute_advantages`: per-chunk `R_k`, `δ_k`, backward `(γλ)^L`; terminated cuts recursion, truncated bootstraps δ from last next-frame but cuts recursion
+- `gae.py:compute_step_advantages_torch`: per-step `δ_t`, backward `γλ`; terminated masks bootstrap and cuts recursion, truncated keeps bootstrap and cuts recursion
 - `runner.py:build_training_components`: policy/critic/conditioner (each model owns its state encoder, no target nets, no aux head); `compute_chunk_values` V(s) via Critic, bootstraps truncated only
 - trainer sums `policy + vf_coef·value` inline (no helper); `sweep.py:ScanResult(pending,skipped,diverged)` deterministic sort (method,env,seed)
 

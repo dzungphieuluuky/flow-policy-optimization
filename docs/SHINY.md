@@ -19,20 +19,23 @@ Two consequences:
   coefficient space is a Gaussian in action space and the CFM losses transfer
   without Jacobian corrections.
 
-## 2. Chunk-level semi-MDP GAE
+## 2. Step-level GAE for action chunks
 
-GAE rewritten for action-chunk decision epochs (`gae.compute_advantages`,
-numpy fp64). Per chunk `k` with executed length `L_k`:
+GAE runs over every executed environment transition
+(`gae.compute_step_advantages_torch`). The policy still predicts a full
+action chunk, so the first executed step's GAE target becomes that chunk's
+policy target.
 
-- `R_k = Σᵢ γⁱ·r_{k,i}` over executed steps only (intradiscounted),
-- `δ_k = R_k + γ^{L_k}·V_{k+1}·(1−terminated_k) − V_k`,
-- `A_k = δ_k + (γλ)^{L_k}·(1−terminated_k)·A_{k+1}`.
+For each executed transition `t`:
 
-Terminated chunks cut bootstrap and recursion; truncated (TimeLimit) chunks
-bootstrap `δ` from the pre-reset value but cut the λ-recursion into the
-post-reset episode. Variable executed lengths (mid-chunk death, step-budget
-cutoff) are handled by exponentiating with *that chunk's* length — the point
-most chunked-action treatments hand-wave.
+- `δ_t = r_t + γ·(1−terminated_t)·V(s_{t+1}) − V(s_t)`,
+- `A_t = δ_t + γλ·(1−terminated_t)·(1−truncated_t)·A_{t+1}`.
+
+Terminated transitions mask the bootstrap and cut recursion. Truncated
+transitions keep the next-state bootstrap but cut recursion into the new
+episode. Normal action-chunk boundaries recurse through the shared
+step-level stream. This handles variable executed prefixes directly, without
+a second chunk-level GAE implementation.
 
 ## 3. ASPO trust region on estimated likelihoods
 

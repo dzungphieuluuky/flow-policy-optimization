@@ -19,7 +19,7 @@ Inside `record_agent_transition()` we call `agent.post_interaction()`. That matc
 | `time_limit_bootstrap` | True (adaptation) | False | Our adaptation for truncated episodes |
 | `mixed_precision` | False (default) | False | Same |
 
-Misdoing: `value_loss_scale=1.0` vs reference `2.5`. With `hidden=(256,256,256)` our critic may under-train relative to policy, especially with GAE returns on chunk-level semi-MDP. Should align to `2.5` or document why 1.0.
+Misdoing: `value_loss_scale=1.0` vs reference `2.5`. With `hidden=(256,256,256)` our critic may under-train relative to policy, especially with step-level GAE returns over executed action prefixes. Should align to `2.5` or document why 1.0.
 
 ## 3. Config mismatches — SAC (`SACConfig` vs `SAC_CFG`)
 | Key | Our value | Reference default |

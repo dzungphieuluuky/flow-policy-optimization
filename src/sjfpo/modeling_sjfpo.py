@@ -46,7 +46,7 @@ from sjfpo.fpo_core import (
     sample_noise,
     sample_timesteps,
 )
-from sjfpo.gae import compute_advantages_torch
+from sjfpo.gae import compute_step_advantages_torch
 from sjfpo.networks import (
     Critic,
     RunningMeanStd,
@@ -427,28 +427,70 @@ class SJFPOPolicy(PreTrainedPolicy):
         action_dim = int(self.config.action_feature.shape[0])
         num_spectral_tokens_kept = _num_spectral_tokens_kept(cfg)
 
-        # Stack once, reuse everywhere.
-        lengths = torch.as_tensor(
-            [int(c["executed_n_action_steps"]) for c in chunks],
-            dtype=torch.long,
-            device=device,
-        )
+        # Stack chunk data and retain the post-step windows for step-level GAE.
+        lengths_cpu = [int(c["executed_n_action_steps"]) for c in chunks]
+        lengths = torch.as_tensor(lengths_cpu, dtype=torch.long, device=device)
         states = to_device_async(torch.stack([c[OBS_STATE] for c in chunks]), device)
-        next_states = to_device_async(
-            torch.stack([c["next.observation.state"] for c in chunks]), device
-        )
         actions = to_device_async(torch.stack([c["action"] for c in chunks]), device)
-        terminated = torch.as_tensor(
-            [bool(c[DONE]) for c in chunks], dtype=torch.bool, device=device
-        )
-        truncated = torch.as_tensor(
-            [bool(c[TRUNCATED]) for c in chunks], dtype=torch.bool, device=device
-        )
         all_rewards = torch.cat(
             [
                 c[REWARD].reshape(-1).to(device=device, dtype=torch.float32)
                 for c in chunks
             ]
+        )
+
+        step_next_chunks = []
+        for chunk, n_executed in zip(chunks, lengths_cpu, strict=True):
+            step_next = getattr(chunk, "step_next_states", None)
+            if step_next is None:
+                raise ValueError(
+                    "collector transition is missing step_next_states; "
+                    "step-level GAE requires every executed post-step window"
+                )
+            expected_shape = (
+                n_executed,
+                *tuple(chunk["next.observation.state"].shape),
+            )
+            if tuple(step_next.shape) != expected_shape:
+                raise ValueError(
+                    f"step_next_states shape {tuple(step_next.shape)} != "
+                    f"{expected_shape}"
+                )
+            step_next_chunks.append(step_next)
+        step_next_states = to_device_async(
+            torch.cat(step_next_chunks, dim=0), device
+        )
+
+        # Each executed step's current state is either a chunk start or the
+        # previous executed step's post-state. This preserves the exact window
+        # observed by the environment without changing the public Transition
+        # key contract.
+        step_states = []
+        chunk_starts_cpu = []
+        step_terminated = torch.zeros(
+            int(sum(lengths_cpu)), dtype=torch.bool, device=device
+        )
+        step_truncated = torch.zeros_like(step_terminated)
+        offset = 0
+        for chunk_index, (chunk, n_executed) in enumerate(
+            zip(chunks, lengths_cpu, strict=True)
+        ):
+            if n_executed <= 0:
+                raise ValueError("every chunk must execute at least one step")
+            chunk_starts_cpu.append(offset)
+            step_states.append(states[chunk_index : chunk_index + 1])
+            if n_executed > 1:
+                step_states.append(
+                    step_next_states[offset : offset + n_executed - 1]
+                )
+            if bool(chunk[DONE]):
+                step_terminated[offset + n_executed - 1] = True
+            if bool(chunk[TRUNCATED]):
+                step_truncated[offset + n_executed - 1] = True
+            offset += n_executed
+        step_states = to_device_async(torch.cat(step_states, dim=0), device)
+        chunk_starts = torch.tensor(
+            chunk_starts_cpu, dtype=torch.long, device=device
         )
 
         # Sanity: chunk shape.
@@ -459,25 +501,39 @@ class SJFPOPolicy(PreTrainedPolicy):
             )
 
         with torch.inference_mode():
-            states_n = self.preprocessor({OBS_STATE: states})[OBS_STATE]
-            next_states_n = self.preprocessor({OBS_STATE: next_states})[OBS_STATE]
+            # One batched critic pass for both sides of every executed step.
+            all_step_states_n = self.preprocessor(
+                {OBS_STATE: torch.cat([step_states, step_next_states], dim=0)}
+            )[OBS_STATE]
+            states_n = all_step_states_n.index_select(0, chunk_starts)
             with autocast_context(device):
-                values = self.critic(states_n).float()
-                v_next_all = self.critic(next_states_n).float()
-            next_values = torch.where(terminated, 0.0, v_next_all)
+                all_step_values = self.critic(all_step_states_n).float()
+            total_executed = int(sum(lengths_cpu))
+            step_values = all_step_values[:total_executed]
+            step_next_values = all_step_values[total_executed:]
+            values = step_values.index_select(0, chunk_starts)
 
-        advantages, returns = compute_advantages_torch(
+        step_advantages, step_returns = compute_step_advantages_torch(
             all_rewards,
-            values.detach(),
-            next_values.detach(),
-            lengths,
-            terminated,
+            step_values,
+            step_next_values,
+            step_terminated,
             gamma=cfg.gamma,
             lam=cfg.gae_lambda,
-            normalize=True,
-            truncated=truncated,
-            clamp=cfg.advantage_clamp,
+            truncated=step_truncated,
         )
+        # The policy predicts one action chunk, so expose the first executed
+        # step's step-GAE target as the chunk-level policy target.
+        advantages = step_advantages.index_select(0, chunk_starts)
+        returns = step_returns.index_select(0, chunk_starts)
+        if advantages.numel() > 0:
+            advantages = (advantages - advantages.mean()) / (
+                advantages.std(unbiased=False) + 1e-8
+            )
+            if cfg.advantage_clamp is not None:
+                advantages = advantages.clamp(
+                    -cfg.advantage_clamp, cfg.advantage_clamp
+                )
         advantages = advantages.to(STORAGE_DTYPE)
         returns = returns.to(STORAGE_DTYPE)
 

@@ -121,7 +121,8 @@ Framing per venue (same evidence, different lead):
 - CoRL: robotics story. Lead with spectral action generation + smoothness
   + locomotion results; ablations A1-A3 carry the contribution.
 - NeurIPS/ICML: method story. Lead with flow-matching policy gradients,
-  ASPO trust region for estimated likelihoods, chunk semi-MDP GAE; MuJoCo
+  ASPO trust region for estimated likelihoods, step-level GAE over executed
+  action prefixes; MuJoCo
   is the testbed. Ablations A1 (joint placement) and A4 (ASPO trust region)
   are the most important figures —
   without them "spectral smoothing" reads as incremental to an ML
@@ -131,7 +132,8 @@ Framing per venue (same evidence, different lead):
       1. Intro: flow policies are time-domain; spectrum gives smoothness
          + memory for free.
       2. Method: truncated-DCT flow (exact likelihoods via orthonormality),
-         chunk semi-MDP GAE, ASPO trust region, parameter-free conditioning.
+         step-level GAE over action prefixes, ASPO trust region,
+         parameter-free conditioning.
       3. Related: FAFM (2606.20135), FreqPolicy-AR (2506.01583),
          FreqPolicy-Flow (NeurIPS'25), FAST (2501.09747), sub-frequency
          diffusion (2605.27919), ABPolicy, MPD/ProDMP, SFP, RFMP,
@@ -140,7 +142,7 @@ Framing per venue (same evidence, different lead):
       4. Experiments: matrix + ablations + smoothness.
       5. Limitations: MuJoCo locomotion only, no vision, no real robot.
 - [ ] Math appendix: CFM loss in DCT space, Parseval bookkeeping, ASPO
-      piecewise derivation, chunk-GAE recursion with variable L_k.
+      piecewise derivation, step-GAE recursion over executed action prefixes.
 - [ ] Draft in figures-first order: figures/tables -> methods -> results
       -> intro -> abstract. Do not write the intro first.
 - [ ] Post to arXiv after the internal red-team pass (before or with

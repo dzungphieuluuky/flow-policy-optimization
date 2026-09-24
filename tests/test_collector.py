@@ -1,6 +1,6 @@
 """Unit tests for src/sjfpo/collector.py.
 
-Boundary semantics under test (plan Scope §Chunk-level semi-MDP GAE):
+Boundary semantics under test (step-level GAE over executed prefixes):
     terminated (anywhere)  -> stop executing, discard remaining actions,
                               next.done=True, bootstrap FORBIDDEN
     truncated (TimeLimit)  -> stop executing, next.done=False,

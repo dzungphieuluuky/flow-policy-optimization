@@ -12,7 +12,7 @@ Research code: correctness, clarity, reproducibility over infrastructure. See `A
 - Action chunk `[N,H=16,action_dim]` stored real-space scaled to [-1,1] (one row per predicted step). Flow (DiT-8, adaLN-Zero, `SJFPOFlowModel`) takes `(x_t, t, condition[B,D])` and predicts action velocities in DCT space over the `Ka` low-frequency rows (`Ka = round(top_p*H)`).
 - Pure-DiT conditioning: a single adaLN vector `c = time + condition`; the transformer sees action tokens only (sinusoidal slot codes on action rows). Sample with `fpo_core.sample_action` (mode="euler", ascending `t: 0→1`, `x ← x + δ·v̂`); decode with `predict_action_chunk` (pad → IDCT + single `clamp(-1,1)`). Training executes the full predicted chunk open-loop (`H=16`); inference/eval execute the `executed_vs_predicted_ratio=0.5` prefix (8 steps), then replan.
 - Update (`SJFPOPolicy.forward`): per-sample MC log-liks `[N,m=16]` → STE-capped ratios → ASPO surrogate (PPO-clip for `A≥0`, SPO penalty for `A<0`, mean-of-ψ) + `V(s)` critic on raw GAE returns (0.5 factor, PPO-clipped at policy epsilon). One AdamW optimizer over the policy's live weights (actor + conditioner + critic); global grad-clip; NaN aborts via `SJFPOAborted`.
-- Chunk rollout uses LeRobot-keyed `Transition` dicts; chunk-level semi-MDP GAE (`gae.compute_advantages`, numpy fp64, advantages standardized).
+- Chunk rollout uses LeRobot-keyed `Transition` dicts and stores post-step windows; step-level GAE (`gae.compute_step_advantages_torch`) supplies the first-step target for each action chunk.
 
 **Baselines:** skrl 2.1.0 PPO / SAC via shared `baseline_train_loop` (`src/sjfpo/baselines.py`). No spectral/flow code.
 
@@ -34,7 +34,7 @@ src/sjfpo/          # all production code (MuJoCo-only, fp32)
   networks.py       # WindowEncoder, StateConditioner, SJFPOFlowModel, V(s) Critic
   fpo_core.py       # CFM losses, compute_policy_ratio, compute_aspo_surrogate, compute_policy_loss, sample
   collector.py      # Transition dict (9 LeRobot keys), open-loop full-H chunks in training, next.action chaining
-  gae.py            # chunk semi-MDP GAE (R_k intradiscounted, γ^L bootstrap, (γλ)^L recursion)
+  gae.py            # step-level GAE over executed transitions; first-step chunk targets
   modeling_sjfpo.py  # SJFPOPolicy.forward (ASPO + V(s,a) on GAE returns)
   train_sjfpo.py    # online train entry: rollout → update → eval → ckpt via SJFPOPolicy
   baselines.py      # skrl PPO/SAC (FrameStackWrapper, baseline_train_loop)

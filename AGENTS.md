@@ -47,5 +47,5 @@
 
 ## Current test drift
 - Do not report the suite as green from the docs. `pytest -q tests` currently collects 313 tests with 10 collection errors, including missing/renamed symbols (`capture_env_fingerprint`, `compute_advantages`, `is_bf16_available`, `SpectralAttentionPool`) and JAX dependency gaps.
-- `tests/test_modeling_sjfpo.py` also has stale expectations around diagnostic keys, defaults, and rollout/CRN behavior. Run the exact regression first and report unrelated baseline failures instead of weakening assertions.
+- `tests/test_modeling_sjfpo.py` also has stale expectations around diagnostic keys, defaults, and rollout/shared-MC behavior. Run the exact regression first and report unrelated baseline failures instead of weakening assertions.
 - This is research code: prefer the smallest direct change, keep algorithm math explicit, and do not add infrastructure, config frameworks, or dependencies unless the requested behavior requires them.
