@@ -123,13 +123,13 @@ class SJFPOActionPostprocessorStep(ProcessorStep):
         self.action_high = self.action_high.to(device=device)
         return self
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def unnormalize(self, scaled: torch.Tensor) -> torch.Tensor:
         """Scaled chunk -> real env actions (identity when bounds are ±1)."""
         scale, bias = self._coefs_for(scaled)
         return torch.addcmul(bias, scale, scaled)
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def __call__(self, batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
         out = dict(batch)
         out[ACTION] = self.unnormalize(batch[ACTION])

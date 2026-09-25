@@ -316,7 +316,7 @@ class RunningMeanStd(nn.Module):
         self.eps = eps
         self.clip = clip
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def update(self, x: torch.Tensor) -> None:
         """Fold raw frames into the running stats (any device, no grad)."""
         if x.shape[-1] != self.mean.numel():
@@ -348,7 +348,7 @@ class RunningMeanStd(nn.Module):
         self.count.copy_(total)
         self._uninitialized.fill_(False)
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def reset(self) -> None:
         """Clear the one-way latch and reset stats to their initial values."""
         self.mean.zero_()
@@ -467,7 +467,7 @@ class DiTBlock(nn.Module):
         if not return_stats:
             return out
 
-        with torch.no_grad():
+        with torch.inference_mode():
             stats = {
                 "gate_msa": gate_msa.square().mean().sqrt(),
                 "gate_mlp": gate_mlp.square().mean().sqrt(),
@@ -673,7 +673,7 @@ class SJFPOFlowModel(nn.Module):
         for block in self.blocks:
             h, s = block(h, c, return_stats=True)
             block_stats.append(s)
-        with torch.no_grad():
+        with torch.inference_mode():
             stats = {
                 "temb": temb.square().mean().sqrt(),
                 "fused": condition.square().mean().sqrt(),

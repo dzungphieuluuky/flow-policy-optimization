@@ -208,7 +208,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         self._frame_buffer.clear()
         self._action_buffer.clear()
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def update_observation_stats(self, observations: torch.Tensor) -> None:
         """Update the live running statistics from raw post-step observations."""
         if (
@@ -269,7 +269,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         self.old_conditioner.requires_grad_(False)
         self.old_conditioner.eval()
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def update_ema(self, global_step: int) -> None:
         """Update the FPO++ actor EMA after an optimizer update."""
         decay = self.config.ema_decay
