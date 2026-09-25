@@ -707,6 +707,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         batch: dict[str, torch.Tensor],
         reduction: str = "mean",
         compute_info: bool = True,
+        check_finite: bool = True,
     ) -> tuple[torch.Tensor, dict | None]:
         """Combined ASPO policy + value loss from a ``generate_rollout`` batch.
 
@@ -732,6 +733,16 @@ class SJFPOPolicy(PreTrainedPolicy):
         action_is_pad = to_tensor(
             batch["action_is_pad"], dtype=torch.bool, device=device
         )
+        sample_mask = None
+        if "sample_mask" in batch:
+            sample_mask = to_tensor(
+                batch["sample_mask"], dtype=torch.bool, device=device
+            )
+            if sample_mask.shape != (states.shape[0],):
+                raise ValueError(
+                    f"sample_mask must have shape {(states.shape[0],)}, "
+                    f"got {tuple(sample_mask.shape)}"
+                )
 
         if states.shape[-2] != cfg.n_obs_steps:
             raise ValueError(
@@ -891,15 +902,27 @@ class SJFPOPolicy(PreTrainedPolicy):
             value_per_chunk = se
 
         if reduction == "mean":
-            policy_loss = policy_per_chunk.mean()
-            value_loss = value_per_chunk.mean()
+            if sample_mask is None:
+                policy_loss = policy_per_chunk.mean()
+                value_loss = value_per_chunk.mean()
+            else:
+                weight = sample_mask.to(policy_per_chunk.dtype)
+                count = weight.sum().clamp_min(1)
+                policy_loss = (policy_per_chunk * weight).sum() / count
+                value_loss = (value_per_chunk * weight).sum() / count
             loss = policy_loss + cfg.vf_coef * value_loss
         elif reduction == "none":
-            loss = policy_per_chunk + cfg.vf_coef * value_per_chunk
+            if sample_mask is None:
+                loss = policy_per_chunk + cfg.vf_coef * value_per_chunk
+            else:
+                weight = sample_mask.to(policy_per_chunk.dtype)
+                loss = weight * (
+                    policy_per_chunk + cfg.vf_coef * value_per_chunk
+                )
         else:
             raise ValueError(f"reduction={reduction!r} must be 'mean' or 'none'")
 
-        if not bool(torch.isfinite(loss).all()):
+        if check_finite and not bool(torch.isfinite(loss).all()):
             raise SJFPOAborted(
                 f"Non-finite loss: "
                 f"policy_loss={float(policy_per_chunk.mean().detach())}, "

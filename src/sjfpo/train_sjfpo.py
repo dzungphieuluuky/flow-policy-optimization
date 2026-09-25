@@ -36,7 +36,7 @@ from lerobot.utils.random_utils import set_seed
 from sjfpo.checkpointing import load_policy_checkpoint, save_policy_checkpoint
 from sjfpo.configuration_sjfpo import SJFPOConfig
 from sjfpo.evaluator import Evaluator, check_divergence, mean_chunk_jerk
-from sjfpo.modeling_sjfpo import SJFPOPolicy
+from sjfpo.modeling_sjfpo import SJFPOAborted, SJFPOPolicy
 from lerobot.utils.constants import CHECKPOINTS_DIR
 from sjfpo.utils import maybe_compile, resolve_device, to_numpy_1d
 from sjfpo.wandb_logging import (
@@ -58,8 +58,8 @@ def mini_batch_indices(
         raise ValueError(f"n={n} must be >= 1")
     n_mb = max(1, min(int(num_minibatches), n))
     device = torch.device(device)
+    perm = torch.randperm(n, device=device)
     for _ in range(max(1, int(num_epochs))):
-        perm = torch.randperm(n, device=device)
         for i in range(n_mb):
             start = (i * n) // n_mb
             stop = ((i + 1) * n) // n_mb
@@ -162,6 +162,22 @@ def sample_minibatch(
         else:
             out[k] = v[indices]
     return out
+
+
+def pad_minibatch_indices(
+    indices: torch.Tensor, size: int
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Pad a minibatch by repeating its last row and return a validity mask."""
+    valid = int(indices.numel())
+    if size < valid:
+        raise ValueError(f"compile batch size {size} is smaller than minibatch {valid}")
+    if valid == size:
+        mask = torch.ones(size, dtype=torch.bool, device=indices.device)
+        return indices, mask
+    padding = indices[-1:].expand(size - valid)
+    padded = torch.cat([indices, padding])
+    mask = torch.arange(size, device=indices.device) < valid
+    return padded, mask
 
 
 def random_baseline(
@@ -362,6 +378,21 @@ def train_sjfpo_run(
             actor_pre_norms: list[torch.Tensor] = []
             critic_pre_norms: list[torch.Tensor] = []
             n_chunks = batch["advantages"].shape[0]
+            n_minibatches = min(cfg.num_minibatches, n_chunks)
+            expected_chunks = (
+                cfg.chunks_per_update * cfg.action_horizon + cfg.n_action_steps - 1
+            ) // cfg.n_action_steps
+            if cfg.compile_batch_size > 0:
+                compile_batch_size = cfg.compile_batch_size
+            else:
+                compile_batch_size = max(
+                    1,
+                    (expected_chunks + n_minibatches - 1) // n_minibatches,
+                )
+            compile_batch_size = max(
+                compile_batch_size,
+                (n_chunks + n_minibatches - 1) // n_minibatches,
+            )
             # Match Accelerate's accumulation contract: backward on every
             # microbatch, synchronize/step only at the accumulation boundary,
             # and always flush a final partial accumulation group.
@@ -376,13 +407,24 @@ def train_sjfpo_run(
             accumulation_steps = cfg.grad_accum_steps
             optimizer.zero_grad(set_to_none=True)
             minibatch: dict[str, torch.Tensor] = {}
+            finite_error = torch.zeros(
+                (), device=batch["advantages"].device, dtype=torch.bool
+            )
             for micro_step, mb_idx in enumerate(microbatches):
                 group_start = micro_step - (micro_step % accumulation_steps)
                 group_size = min(accumulation_steps, len(microbatches) - group_start)
-                loss, epoch_info = policy(
-                    sample_minibatch(batch, mb_idx, minibatch),
-                    compute_info=wandb_enabled,
+                padded_indices, sample_mask = pad_minibatch_indices(
+                    mb_idx, compile_batch_size
                 )
+                padded = int(padded_indices.numel()) != int(mb_idx.numel())
+                minibatch = sample_minibatch(batch, padded_indices, minibatch)
+                minibatch["sample_mask"] = sample_mask
+                loss, epoch_info = policy(
+                    minibatch,
+                    compute_info=wandb_enabled and not padded,
+                    check_finite=False,
+                )
+                finite_error |= ~torch.isfinite(loss)
                 if loss.dim() != 0:
                     raise ValueError(
                         f"Loss must be scalar before backward; got {tuple(loss.shape)}."
@@ -393,6 +435,11 @@ def train_sjfpo_run(
                     or micro_step + 1 == len(microbatches)
                 )
                 if is_boundary:
+                    if bool(finite_error):
+                        raise SJFPOAborted(
+                            "Non-finite loss detected during gradient accumulation"
+                        )
+                    finite_error.zero_()
                     pre_clip = torch.nn.utils.clip_grad_norm_(
                         optim_params, cfg.grad_clip_norm
                     )
