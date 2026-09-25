@@ -142,7 +142,9 @@ def build_optimizer(policy: SJFPOPolicy, cfg: SJFPOConfig):
 
 
 def sample_minibatch(
-    batch: dict[str, torch.Tensor], indices: torch.Tensor
+    batch: dict[str, torch.Tensor],
+    indices: torch.Tensor,
+    out: dict[str, torch.Tensor] | None = None,
 ) -> dict[str, torch.Tensor]:
     """Slice dim-0 rows; every per-chunk batch value is ``[B, ...]``.
 
@@ -151,7 +153,8 @@ def sample_minibatch(
     is passed through because
     it is one row per executed environment step, not per chunk.
     """
-    out: dict[str, torch.Tensor] = {}
+    if out is None:
+        out = {}
     for k, v in batch.items():
         if k == "normalizer_observations":
             # The normalizer is updated once from the complete rollout batch.
@@ -372,11 +375,12 @@ def train_sjfpo_run(
             )
             accumulation_steps = cfg.grad_accum_steps
             optimizer.zero_grad(set_to_none=True)
+            minibatch: dict[str, torch.Tensor] = {}
             for micro_step, mb_idx in enumerate(microbatches):
                 group_start = micro_step - (micro_step % accumulation_steps)
                 group_size = min(accumulation_steps, len(microbatches) - group_start)
                 loss, epoch_info = policy(
-                    sample_minibatch(batch, mb_idx),
+                    sample_minibatch(batch, mb_idx, minibatch),
                     compute_info=wandb_enabled,
                 )
                 if loss.dim() != 0:

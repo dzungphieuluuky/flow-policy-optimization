@@ -24,6 +24,7 @@ from __future__ import annotations
 import math
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -31,7 +32,12 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from sjfpo.collector import Transition, collect_chunks, scale_and_clip_chunk  # noqa: E402, F401
+from sjfpo.collector import (  # noqa: E402, F401
+    RolloutBuffer,
+    Transition,
+    collect_chunks,
+    scale_and_clip_chunk,
+)
 from sjfpo.configuration_sjfpo import SJFPOConfig  # noqa: E402
 
 _DEFAULTS = SJFPOConfig()
@@ -127,6 +133,138 @@ def expected_window(markers: list[int], upto: int) -> torch.Tensor:
 
 def is_continue(t: Transition) -> bool:
     return not bool(t["next.done"]) and not bool(t["next.truncated"])
+
+
+class FakeVecEnv:
+    num_envs = 2
+    single_action_space = SimpleNamespace(shape=(ACT_DIM,))
+
+    def __init__(self):
+        self.step_count = 0
+
+    def reset(self, *, seed=None):
+        self.step_count = 0
+        return np.zeros((self.num_envs, OBS_DIM), dtype=np.float32), {}
+
+    def step(self, actions):
+        self.step_count += 1
+        obs = np.full(
+            (self.num_envs, OBS_DIM), self.step_count, dtype=np.float32
+        )
+        return (
+            obs,
+            np.ones(self.num_envs, dtype=np.float32),
+            np.zeros(self.num_envs, dtype=bool),
+            np.zeros(self.num_envs, dtype=bool),
+            {},
+        )
+
+
+def test_buffer_collection_matches_transition_collection():
+    legacy_env = FakeEnv(truncate_at=10)
+    legacy_policy = FakePolicy(torch.zeros(ACTION_HORIZON, ACT_DIM))
+    legacy = collect_chunks(
+        legacy_env,
+        legacy_policy,
+        total_steps=20,
+        action_low=-1.0,
+        action_high=1.0,
+        n_action_steps=N_STEPS,
+    )
+
+    buffer_env = FakeEnv(truncate_at=10)
+    buffer_policy = FakePolicy(torch.zeros(ACTION_HORIZON, ACT_DIM))
+    buffer = RolloutBuffer(
+        max_chunks=20,
+        max_steps=20,
+        obs_steps=STATE_T,
+        obs_dim=OBS_DIM,
+        action_horizon=ACTION_HORIZON,
+        action_dim=ACT_DIM,
+    )
+    collect_chunks(
+        buffer_env,
+        buffer_policy,
+        total_steps=20,
+        action_low=-1.0,
+        action_high=1.0,
+        n_action_steps=N_STEPS,
+        buffer=buffer,
+    )
+    active = buffer.active()
+    assert buffer.n_chunks == len(legacy)
+    for i, record in enumerate(legacy):
+        assert torch.equal(active["chunk_actions"][i], record["action"])
+        assert int(active["chunk_lengths"][i]) == int(record["executed_n_action_steps"])
+        start = int(active["chunk_starts"][i])
+        length = int(active["chunk_lengths"][i])
+        assert torch.equal(
+            active["step_next_states"][start : start + length],
+            record.step_next_states,
+        )
+        assert torch.equal(active["step_rewards"][start : start + length], record["next.reward"])
+    assert len(buffer_policy.states) == len(legacy_policy.states)
+
+
+def test_vector_buffer_collection_fills_expected_counts():
+    from sjfpo.collector import collect_chunks_vec
+
+    buffer = RolloutBuffer(
+        max_chunks=8,
+        max_steps=8,
+        obs_steps=STATE_T,
+        obs_dim=OBS_DIM,
+        action_horizon=ACTION_HORIZON,
+        action_dim=ACT_DIM,
+    )
+    env = FakeVecEnv()
+    collect_chunks_vec(
+        env,
+        lambda states: torch.zeros(states.shape[0], ACTION_HORIZON, ACT_DIM),
+        total_steps=8,
+        action_low=-1.0,
+        action_high=1.0,
+        n_obs_steps=STATE_T,
+        n_action_steps=4,
+        chunk_size=ACTION_HORIZON,
+        buffer=buffer,
+    )
+    assert buffer.n_steps == 8
+    assert buffer.n_chunks == 2
+    assert buffer.chunk_lengths[: buffer.n_chunks].tolist() == [4, 4]
+
+
+def test_rollout_buffer_writes_step_and_chunk_views():
+    buffer = RolloutBuffer(
+        max_chunks=2,
+        max_steps=3,
+        obs_steps=2,
+        obs_dim=1,
+        action_horizon=2,
+        action_dim=1,
+    )
+    state = torch.tensor([[1.0], [2.0]])
+    action = torch.zeros(2, 1)
+    next_states = torch.tensor([[[2.0], [3.0]], [[3.0], [4.0]]])
+    buffer.add_chunk(
+        state=state,
+        action=action,
+        rewards=torch.tensor([1.0, 2.0]),
+        step_next_states=next_states,
+        done=True,
+        truncated=False,
+        clip_count=0,
+    )
+    active = buffer.active()
+    assert buffer.n_chunks == 1 and buffer.n_steps == 2
+    assert torch.equal(active["step_states"][0], state)
+    assert torch.equal(active["step_states"][1], next_states[0])
+    assert torch.equal(active["step_next_states"], next_states)
+    assert torch.equal(active["step_rewards"], torch.tensor([1.0, 2.0]))
+    assert bool(active["step_terminated"][1])
+    assert active["chunk_lengths"].tolist() == [2]
+    buffer.reset()
+    assert buffer.n_chunks == 0 and buffer.n_steps == 0
 
     # (a) chunk counts + open-loop replan cadence (every N_STEPS)
 

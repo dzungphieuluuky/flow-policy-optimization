@@ -77,6 +77,172 @@ class _StepTransition(dict):
         self.step_next_states = step_next_states
 
 
+class RolloutBuffer:
+    """Fixed-capacity CPU storage for chunk and executed-step rollout data.
+
+    The active training path reuses one instance per capacity/device. Chunks
+    are written by the collector; ``SJFPOPolicy.generate_rollout`` reads views
+    of the used prefix and transfers those contiguous tensors to the device.
+    """
+
+    def __init__(
+        self,
+        *,
+        max_chunks: int,
+        max_steps: int,
+        obs_steps: int,
+        obs_dim: int,
+        action_horizon: int,
+        action_dim: int,
+        device: torch.device | str = "cpu",
+        pin_memory: bool = False,
+    ):
+        if max_chunks < 1 or max_steps < 1:
+            raise ValueError("max_chunks and max_steps must be positive")
+        if obs_steps < 1 or obs_dim < 1 or action_horizon < 1 or action_dim < 1:
+            raise ValueError("observation and action dimensions must be positive")
+        self.device = torch.device(device)
+        self.max_chunks = max_chunks
+        self.max_steps = max_steps
+        self.obs_steps = obs_steps
+        self.obs_dim = obs_dim
+        self.action_horizon = action_horizon
+        self.action_dim = action_dim
+        self.pin_memory = pin_memory
+
+        def zeros(shape, dtype):
+            return torch.zeros(
+                *shape, dtype=dtype, device=self.device, pin_memory=self.pin_memory
+            )
+
+        self.step_states = zeros((max_steps, obs_steps, obs_dim), _OBS_DTYPE)
+        self.step_next_states = zeros(
+            (max_steps, obs_steps, obs_dim), _OBS_DTYPE
+        )
+        self.step_rewards = zeros((max_steps,), _REWARD_DTYPE)
+        self.step_terminated = zeros((max_steps,), torch.bool)
+        self.step_truncated = zeros((max_steps,), torch.bool)
+
+        self.chunk_actions = zeros(
+            (max_chunks, action_horizon, action_dim), _OBS_DTYPE
+        )
+        self.chunk_starts = zeros((max_chunks,), _INDEX_DTYPE)
+        self.chunk_lengths = zeros((max_chunks,), _INDEX_DTYPE)
+        self.chunk_done = zeros((max_chunks,), torch.bool)
+        self.chunk_truncated = zeros((max_chunks,), torch.bool)
+        self.chunk_clip_counts = zeros((max_chunks,), _INDEX_DTYPE)
+        self.n_chunks = 0
+        self.n_steps = 0
+
+    def capacity_key(self) -> tuple[int, ...]:
+        return (
+            self.max_chunks,
+            self.max_steps,
+            self.obs_steps,
+            self.obs_dim,
+            self.action_horizon,
+            self.action_dim,
+            self.pin_memory,
+        )
+
+    def reset(self) -> None:
+        """Reset cursors without clearing the large storage tensors."""
+        self.n_chunks = 0
+        self.n_steps = 0
+
+    def add_chunk(
+        self,
+        *,
+        state: torch.Tensor,
+        action: torch.Tensor,
+        rewards: list[float] | np.ndarray | torch.Tensor,
+        step_next_states: torch.Tensor,
+        done: bool,
+        truncated: bool,
+        clip_count: int,
+    ) -> int:
+        if self.n_chunks >= self.max_chunks:
+            raise RuntimeError("RolloutBuffer chunk capacity exceeded")
+        reward_t = torch.as_tensor(rewards, dtype=_REWARD_DTYPE, device=self.device).reshape(-1)
+        n_exec = int(reward_t.numel())
+        if n_exec < 1 or self.n_steps + n_exec > self.max_steps:
+            raise RuntimeError("RolloutBuffer step capacity exceeded")
+        if state.shape != (self.obs_steps, self.obs_dim):
+            raise ValueError(f"state shape {tuple(state.shape)} does not fit buffer")
+        if action.shape != (self.action_horizon, self.action_dim):
+            raise ValueError(f"action shape {tuple(action.shape)} does not fit buffer")
+        if tuple(step_next_states.shape) != (n_exec, self.obs_steps, self.obs_dim):
+            raise ValueError(
+                f"step_next_states shape {tuple(step_next_states.shape)} does not fit buffer"
+            )
+
+        chunk_index = self.n_chunks
+        offset = self.n_steps
+        self.step_states[offset].copy_(state)
+        if n_exec > 1:
+            self.step_states[offset + 1 : offset + n_exec].copy_(step_next_states[:-1])
+        self.step_next_states[offset : offset + n_exec].copy_(step_next_states)
+        self.step_rewards[offset : offset + n_exec].copy_(reward_t)
+        self.chunk_actions[chunk_index].copy_(action)
+        self.chunk_starts[chunk_index] = offset
+        self.chunk_lengths[chunk_index] = n_exec
+        self.chunk_done[chunk_index] = done
+        self.chunk_truncated[chunk_index] = truncated
+        self.chunk_clip_counts[chunk_index] = int(clip_count)
+        self.step_terminated[offset + n_exec - 1] = done
+        self.step_truncated[offset + n_exec - 1] = truncated
+        self.n_chunks += 1
+        self.n_steps += n_exec
+        return chunk_index
+
+    def copy_to(self, other: "RolloutBuffer", *, non_blocking: bool = False) -> None:
+        """Copy the active prefix into another buffer on another device."""
+        if other.capacity_key()[:6] != self.capacity_key()[:6]:
+            raise ValueError("RolloutBuffer capacities do not match")
+        other.n_chunks = self.n_chunks
+        other.n_steps = self.n_steps
+        for name in (
+            "step_states",
+            "step_next_states",
+            "step_rewards",
+            "step_terminated",
+            "step_truncated",
+            "chunk_actions",
+            "chunk_starts",
+            "chunk_lengths",
+            "chunk_done",
+            "chunk_truncated",
+        ):
+            getattr(other, name)[: self.n_steps if name.startswith("step_") else self.n_chunks].copy_(
+                getattr(self, name)[: self.n_steps if name.startswith("step_") else self.n_chunks],
+                non_blocking=non_blocking,
+            )
+
+    def mark_truncated(self, chunk_index: int) -> None:
+        if not 0 <= chunk_index < self.n_chunks:
+            raise IndexError(f"chunk index {chunk_index} out of range")
+        self.chunk_truncated[chunk_index] = True
+        start = int(self.chunk_starts[chunk_index])
+        length = int(self.chunk_lengths[chunk_index])
+        self.step_truncated[start + length - 1] = True
+
+    def active(self) -> dict[str, torch.Tensor]:
+        """Return contiguous views of the populated buffer prefix."""
+        n_chunks, n_steps = self.n_chunks, self.n_steps
+        return {
+            "step_states": self.step_states[:n_steps],
+            "step_next_states": self.step_next_states[:n_steps],
+            "step_rewards": self.step_rewards[:n_steps],
+            "step_terminated": self.step_terminated[:n_steps],
+            "step_truncated": self.step_truncated[:n_steps],
+            "chunk_actions": self.chunk_actions[:n_chunks],
+            "chunk_starts": self.chunk_starts[:n_chunks],
+            "chunk_lengths": self.chunk_lengths[:n_chunks],
+            "chunk_done": self.chunk_done[:n_chunks],
+            "chunk_truncated": self.chunk_truncated[:n_chunks],
+        }
+
+
 # ---------------------------------------------------------------------------
 # Conversions
 # ---------------------------------------------------------------------------
@@ -241,6 +407,37 @@ def execute_open_loop_steps(
     return rewards, done_kind, torch.stack(step_next_states, dim=0)
 
 
+def execute_open_loop_steps_into(
+    env,
+    executed_np: np.ndarray,
+    window: torch.Tensor,
+    step_windows: torch.Tensor,
+    rewards: torch.Tensor,
+    executed_total: int,
+    total_steps: int,
+    n_action_steps: int,
+) -> tuple[int, str]:
+    """Execute one single-env chunk into preallocated window/reward storage."""
+    n_exec = 0
+    done_kind = "continue"
+    for i in range(n_action_steps):
+        if executed_total + n_exec >= total_steps:
+            break
+        obs, reward, terminated, truncated, _info = env.step(executed_np[i])
+        n_exec += 1
+        rewards[n_exec - 1] = reward
+        window[:-1].copy_(window[1:].clone())
+        window[-1].copy_(torch.as_tensor(np.asarray(obs, dtype=np.float32)))
+        step_windows[n_exec - 1].copy_(window)
+        if terminated:
+            done_kind = "terminated"
+            break
+        if truncated:
+            done_kind = "truncated"
+            break
+    return n_exec, done_kind
+
+
 def propose_and_execute_chunk(
     policy: Callable[[torch.Tensor], torch.Tensor],
     window: deque[torch.Tensor],
@@ -302,7 +499,8 @@ def collect_chunks_vec(
     chunk_size: int | None = None,
     seed: int | None = None,
     on_error_flush: Callable[[], None] | None = None,
-) -> list[Transition]:
+    buffer: RolloutBuffer | None = None,
+) -> list[Transition] | RolloutBuffer:
     """Vector twin of :func:`collect_chunks` — same records, same chaining."""
     cfg = _defaults()
     n_obs_steps = cfg.n_obs_steps if n_obs_steps is None else n_obs_steps
@@ -325,17 +523,33 @@ def collect_chunks_vec(
 
     try:
         obs, _ = envs.reset(seed=[seed + i for i in range(n)])
-        windows = [build_warmup_window(as_float_tensor(o), n_obs_steps) for o in obs]
+        if buffer is not None:
+            obs_dim = int(obs.shape[-1])
+            windows = torch.zeros(n, n_obs_steps, obs_dim, dtype=_OBS_DTYPE)
+            for i in range(n):
+                windows[i].copy_(as_float_tensor(obs[i]).expand_as(windows[i]))
+            reward_windows = torch.zeros(n, chunk_size, dtype=_REWARD_DTYPE)
+            step_windows = torch.zeros(n, chunk_size, n_obs_steps, obs_dim, dtype=_OBS_DTYPE)
+        else:
+            windows = [build_warmup_window(as_float_tensor(o), n_obs_steps) for o in obs]
+            reward_windows = None
+            step_windows = None
         cur: list = [None] * n  # per-env in-flight chunk state
         pos = [0] * n
-        rewards: list[list[float]] = [[] for _ in range(n)]
-        step_states: list[list[torch.Tensor]] = [[] for _ in range(n)]
+        rewards: list[list[float]] | None = None if buffer is not None else [[] for _ in range(n)]
+        step_states: list[list[torch.Tensor]] | None = (
+            None if buffer is not None else [[] for _ in range(n)]
+        )
         prev: list[Transition | None] = [None] * n
         prev_done = ["continue"] * n
         executed_total = [0] * n
         awaiting = [False] * n
-        records: list[list[Transition]] = [[] for _ in range(n)]
+        records: list[list[Transition]] | None = (
+            None if buffer is not None else [[] for _ in range(n)]
+        )
+        prev_chunk_indices: list[int | None] = [None] * n
 
+        actions_t = torch.zeros((n, act_dim), dtype=torch.float32)
         while any(executed_total[i] < targets[i] for i in range(n)):
             need = [
                 i
@@ -347,9 +561,12 @@ def collect_chunks_vec(
                 )
             ]
             if need:
-                states = torch.stack(
-                    [torch.stack(tuple(windows[i]), dim=0) for i in need]
-                )
+                if buffer is not None:
+                    states = windows[need].clone()
+                else:
+                    states = torch.stack(
+                        [torch.stack(tuple(windows[i]), dim=0) for i in need]
+                    )
                 proposed = as_float_tensor(policy(states))
                 for k, i in enumerate(need):
                     executed, scaled, clip_count = scale_and_clip_chunk(
@@ -366,11 +583,13 @@ def collect_chunks_vec(
                         execution_limit,
                     )
                     pos[i] = 0
-                    rewards[i] = []
-                    step_states[i] = []
+                    if rewards is not None:
+                        rewards[i] = []
+                    if step_states is not None:
+                        step_states[i] = []
 
             # Gather all active actions into a tensor, then ONE host transfer.
-            actions_t = torch.zeros((n, act_dim), dtype=torch.float32)
+            actions_t.zero_()
             any_active = False
             for i in range(n):
                 if cur[i] is not None:
@@ -389,16 +608,25 @@ def collect_chunks_vec(
 
             for i in range(n):
                 if awaiting[i]:
-                    windows[i] = build_warmup_window(
-                        as_float_tensor(obs[i]), n_obs_steps
-                    )
+                    if buffer is not None:
+                        windows[i].copy_(as_float_tensor(obs[i]).expand_as(windows[i]))
+                    else:
+                        windows[i] = build_warmup_window(
+                            as_float_tensor(obs[i]), n_obs_steps
+                        )
                     awaiting[i] = False
                     continue
                 if cur[i] is None:
                     continue
-                rewards[i].append(float(rew_np[i]))
-                windows[i].append(as_float_tensor(obs[i]))
-                step_states[i].append(torch.stack(tuple(windows[i]), dim=0))
+                if buffer is not None:
+                    reward_windows[i, pos[i]] = float(rew_np[i])
+                    windows[i, :-1].copy_(windows[i, 1:].clone())
+                    windows[i, -1].copy_(as_float_tensor(obs[i]))
+                    step_windows[i, pos[i]].copy_(windows[i])
+                else:
+                    rewards[i].append(float(rew_np[i]))
+                    windows[i].append(as_float_tensor(obs[i]))
+                    step_states[i].append(torch.stack(tuple(windows[i]), dim=0))
                 pos[i] += 1
                 execution_limit = cur[i][4]
                 if done_np[i] or pos[i] >= execution_limit:
@@ -410,31 +638,54 @@ def collect_chunks_vec(
                         done_kind = "truncated"
                     else:
                         done_kind = "continue"
-                    next_state = torch.stack(tuple(windows[i]), dim=0)
-                    record = finalize_transition(
-                        replan,
-                        next_state,
-                        scaled,
-                        rewards[i],
-                        done_kind,
-                        clip_count,
-                        chunk_size,
-                        execution_limit,
-                        torch.stack(step_states[i], dim=0),
+                    next_state = (
+                        windows[i]
+                        if buffer is not None
+                        else torch.stack(tuple(windows[i]), dim=0)
                     )
                     executed_total[i] += n_exec
-                    records[i].append(record)
-                    prev[i], prev_done[i] = record, done_kind
+                    if buffer is not None:
+                        prev_chunk_indices[i] = buffer.add_chunk(
+                            state=replan,
+                            action=scaled,
+                            rewards=reward_windows[i, :n_exec],
+                            step_next_states=step_windows[i, :n_exec],
+                            done=bool(term_np[i]),
+                            truncated=bool(trunc_np[i]),
+                            clip_count=clip_count,
+                        )
+                    else:
+                        record = finalize_transition(
+                            replan,
+                            next_state,
+                            scaled,
+                            rewards[i],
+                            done_kind,
+                            clip_count,
+                            chunk_size,
+                            execution_limit,
+                            torch.stack(step_states[i], dim=0),
+                        )
+                        records[i].append(record)
+                        prev[i] = record
+                    prev_done[i] = done_kind
                     cur[i] = None
                     if done_np[i]:
                         awaiting[i] = True
 
         # Budget-exhausted tails: mark as truncated so GAE bootstraps the cut.
         for i in range(n):
-            if prev[i] is not None and prev_done[i] == "continue":
-                prev[i][TRUNCATED].fill_(True)
+            if prev_done[i] == "continue" and (
+                prev[i] is not None or prev_chunk_indices[i] is not None
+            ):
+                if buffer is not None:
+                    buffer.mark_truncated(prev_chunk_indices[i])  # type: ignore[arg-type]
+                else:
+                    prev[i][TRUNCATED].fill_(True)  # type: ignore[index]
 
-        return [r for traj in records for r in traj]
+        if buffer is not None:
+            return buffer
+        return [r for traj in records for r in traj]  # type: ignore[union-attr]
 
     except Exception:
         flush_on_collection_error(on_error_flush)
@@ -457,7 +708,8 @@ def collect_chunks(
     n_action_steps: int,
     chunk_size: int | None = None,
     on_error_flush: Callable[[], None] | None = None,
-) -> list[Transition]:
+    buffer: RolloutBuffer | None = None,
+) -> list[Transition] | RolloutBuffer:
     cfg = _defaults()
     n_obs_steps = cfg.n_obs_steps if n_obs_steps is None else n_obs_steps
     chunk_size = cfg.action_horizon if chunk_size is None else int(chunk_size)
@@ -471,26 +723,65 @@ def collect_chunks(
         )
     try:
         obs, _ = env.reset()
-        window = build_warmup_window(as_float_tensor(obs), n_obs_steps)
-        records: list[Transition] = []
+        window_deque = build_warmup_window(as_float_tensor(obs), n_obs_steps)
+        if buffer is not None:
+            window = torch.stack(tuple(window_deque), dim=0)
+            step_windows = torch.zeros(chunk_size, n_obs_steps, int(window.shape[-1]))
+            reward_window = torch.zeros(chunk_size, dtype=_REWARD_DTYPE)
+        records: list[Transition] | None = [] if buffer is None else None
         executed_total = 0
         while executed_total < total_steps:
-            record, done_kind = propose_and_execute_chunk(
-                policy,
-                window,
-                low,
-                range_,
-                env,
-                executed_total,
-                total_steps,
-                chunk_size,
-                n_action_steps,
-            )
-            executed_total += int(record["executed_n_action_steps"])
-            records.append(record)
-            if done_kind != "continue":
-                window = reset_chunk_window(env, n_obs_steps)
-        return records
+            if buffer is not None:
+                state = window.clone()
+                proposed = as_float_tensor(policy(state))
+                executed, scaled, clip_count = scale_and_clip_chunk(proposed, low, range_)
+                executed_np = executed.detach().cpu().numpy()
+                n_exec, done_kind = execute_open_loop_steps_into(
+                    env,
+                    executed_np,
+                    window,
+                    step_windows,
+                    reward_window,
+                    executed_total,
+                    total_steps,
+                    n_action_steps,
+                )
+                if n_exec < 1:
+                    raise RuntimeError("buffer collection executed zero steps")
+                chunk_index = buffer.add_chunk(
+                    state=state,
+                    action=scaled,
+                    rewards=reward_window[:n_exec],
+                    step_next_states=step_windows[:n_exec],
+                    done=done_kind == "terminated",
+                    truncated=done_kind == "truncated",
+                    clip_count=clip_count,
+                )
+                if done_kind == "continue":
+                    buffer.mark_truncated(chunk_index)
+                executed_total += n_exec
+                if done_kind != "continue":
+                    obs, _ = env.reset()
+                    window.copy_(as_float_tensor(obs).expand_as(window))
+            else:
+                record, done_kind = propose_and_execute_chunk(
+                    policy,
+                    window_deque,
+                    low,
+                    range_,
+                    env,
+                    executed_total,
+                    total_steps,
+                    chunk_size,
+                    n_action_steps,
+                )
+                executed_total += int(record["executed_n_action_steps"])
+                records.append(record)  # type: ignore[union-attr]
+                if done_kind != "continue":
+                    window_deque = reset_chunk_window(env, n_obs_steps)
+        if buffer is not None:
+            return buffer
+        return records  # type: ignore[return-value]
     except Exception:
         flush_on_collection_error(on_error_flush)
         raise

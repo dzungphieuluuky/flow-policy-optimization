@@ -28,10 +28,10 @@ import torch.utils.checkpoint as cp
 
 from lerobot.policies import PreTrainedPolicy
 from lerobot.processor.converters import to_tensor
-from lerobot.utils.constants import ACTION, DONE, OBS_STATE, REWARD, TRUNCATED
+from lerobot.utils.constants import ACTION, OBS_STATE
 
 from sjfpo.configuration_sjfpo import SJFPOConfig
-from sjfpo.collector import collect_chunks, collect_chunks_vec
+from sjfpo.collector import RolloutBuffer, collect_chunks, collect_chunks_vec
 from sjfpo.dct_utils import (
     decode_coeffs_to_velocity,
     extract_dct_coeffs,
@@ -189,6 +189,9 @@ class SJFPOPolicy(PreTrainedPolicy):
         )
         self._ema_shadow: dict[str, torch.Tensor] = {}
         self._ema_initialized = False
+        self._rollout_buffer: RolloutBuffer | None = None
+        self._device_rollout_buffer: RolloutBuffer | None = None
+        self._rollout_h2d_event: torch.cuda.Event | None = None
 
         self._frame_buffer: deque[torch.Tensor] = deque(maxlen=config.n_obs_steps)
         self._action_buffer: deque[torch.Tensor] = deque()
@@ -521,8 +524,42 @@ class SJFPOPolicy(PreTrainedPolicy):
             )
             return chunk.cpu()
 
-        if int(getattr(env, "num_envs", 1)) > 1:
-            chunks = collect_chunks_vec(
+        if self._rollout_h2d_event is not None:
+            self._rollout_h2d_event.synchronize()
+            self._rollout_h2d_event = None
+
+        num_envs = int(getattr(env, "num_envs", 1))
+        action_dim = int(self.config.action_feature.shape[0])
+        obs_dim = int(self.config.robot_state_feature.shape[0])
+        # A chunk may execute only one step before termination, so the
+        # allocation-free upper bound is one chunk per requested step.
+        max_chunks = max(1, total_steps)
+        buffer_key = (
+            max_chunks,
+            total_steps,
+            cfg.n_obs_steps,
+            obs_dim,
+            cfg.action_horizon,
+            action_dim,
+        )
+        if (
+            self._rollout_buffer is None
+            or self._rollout_buffer.capacity_key() != buffer_key
+        ):
+            self._rollout_buffer = RolloutBuffer(
+                max_chunks=max_chunks,
+                max_steps=total_steps,
+                obs_steps=cfg.n_obs_steps,
+                obs_dim=obs_dim,
+                action_horizon=cfg.action_horizon,
+                action_dim=action_dim,
+                pin_memory=device.type == "cuda",
+            )
+        buffer = self._rollout_buffer
+        buffer.reset()
+
+        if num_envs > 1:
+            collect_chunks_vec(
                 env,
                 propose_batch,
                 total_steps,
@@ -531,9 +568,10 @@ class SJFPOPolicy(PreTrainedPolicy):
                 n_obs_steps=cfg.n_obs_steps,
                 n_action_steps=cfg.n_action_steps,
                 chunk_size=cfg.action_horizon,
+                buffer=buffer,
             )
         else:
-            chunks = collect_chunks(
+            collect_chunks(
                 env,
                 propose,
                 total_steps,
@@ -542,84 +580,42 @@ class SJFPOPolicy(PreTrainedPolicy):
                 n_obs_steps=cfg.n_obs_steps,
                 n_action_steps=cfg.n_action_steps,
                 chunk_size=cfg.action_horizon,
+                buffer=buffer,
             )
 
-        n_chunks = len(chunks)
-        action_dim = int(self.config.action_feature.shape[0])
+        if device.type == "cuda":
+            if (
+                self._device_rollout_buffer is None
+                or self._device_rollout_buffer.capacity_key()[:6] != buffer.capacity_key()[:6]
+            ):
+                self._device_rollout_buffer = RolloutBuffer(
+                    max_chunks=max_chunks,
+                    max_steps=total_steps,
+                    obs_steps=cfg.n_obs_steps,
+                    obs_dim=obs_dim,
+                    action_horizon=cfg.action_horizon,
+                    action_dim=action_dim,
+                    device=device,
+                )
+            buffer.copy_to(self._device_rollout_buffer, non_blocking=True)
+            self._rollout_h2d_event = torch.cuda.Event()
+            self._rollout_h2d_event.record()
+            active = self._device_rollout_buffer.active()
+        else:
+            active = buffer.active()
+        n_chunks = buffer.n_chunks
+        n_steps = buffer.n_steps
         num_spectral_tokens_kept = _num_spectral_tokens_kept(cfg)
 
-        # Stack chunk data and retain the post-step windows for step-level GAE.
-        lengths_cpu = [int(c["executed_n_action_steps"]) for c in chunks]
-        lengths = torch.as_tensor(lengths_cpu, dtype=torch.long, device=device)
-        states = to_device_async(torch.stack([c[OBS_STATE] for c in chunks]), device)
-        actions = to_device_async(torch.stack([c["action"] for c in chunks]), device)
-        all_rewards = torch.cat(
-            [
-                c[REWARD].reshape(-1).to(device=device, dtype=torch.float32)
-                for c in chunks
-            ]
-        )
-
-        step_next_chunks = []
-        for chunk, n_executed in zip(chunks, lengths_cpu, strict=True):
-            step_next = getattr(chunk, "step_next_states", None)
-            if step_next is None:
-                raise ValueError(
-                    "collector transition is missing step_next_states; "
-                    "step-level GAE requires every executed post-step window"
-                )
-            expected_shape = (
-                n_executed,
-                *tuple(chunk["next.observation.state"].shape),
-            )
-            if tuple(step_next.shape) != expected_shape:
-                raise ValueError(
-                    f"step_next_states shape {tuple(step_next.shape)} != "
-                    f"{expected_shape}"
-                )
-            step_next_chunks.append(step_next)
-        step_next_states = to_device_async(
-            torch.cat(step_next_chunks, dim=0), device
-        )
-
-        # Each executed step's current state is either a chunk start or the
-        # previous executed step's post-state. This preserves the exact window
-        # observed by the environment without changing the public Transition
-        # key contract.
-        step_states = []
-        chunk_starts_cpu = []
-        step_terminated = torch.zeros(
-            int(sum(lengths_cpu)), dtype=torch.bool, device=device
-        )
-        step_truncated = torch.zeros_like(step_terminated)
-        offset = 0
-        for chunk_index, (chunk, n_executed) in enumerate(
-            zip(chunks, lengths_cpu, strict=True)
-        ):
-            if n_executed <= 0:
-                raise ValueError("every chunk must execute at least one step")
-            chunk_starts_cpu.append(offset)
-            step_states.append(states[chunk_index : chunk_index + 1])
-            if n_executed > 1:
-                step_states.append(
-                    step_next_states[offset : offset + n_executed - 1]
-                )
-            if bool(chunk[DONE]):
-                step_terminated[offset + n_executed - 1] = True
-            if bool(chunk[TRUNCATED]):
-                step_truncated[offset + n_executed - 1] = True
-            offset += n_executed
-        step_states = to_device_async(torch.cat(step_states, dim=0), device)
-        chunk_starts = torch.tensor(
-            chunk_starts_cpu, dtype=torch.long, device=device
-        )
-
-        # Sanity: chunk shape.
-        if actions.dim() != 3 or actions.shape[1] != cfg.action_horizon:
-            raise ValueError(
-                f"chunk actions shape {tuple(actions.shape)} != expected "
-                f"[B, H={cfg.action_horizon}, D={action_dim}]"
-            )
+        lengths = active["chunk_lengths"]
+        chunk_starts = active["chunk_starts"]
+        step_states = active["step_states"]
+        step_next_states = active["step_next_states"]
+        all_rewards = active["step_rewards"]
+        actions = active["chunk_actions"]
+        step_terminated = active["step_terminated"]
+        step_truncated = active["step_truncated"]
+        states = step_states.index_select(0, chunk_starts)
 
         with torch.inference_mode():
             # One batched critic pass for both sides of every executed step.
@@ -629,7 +625,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             states_n = all_step_states_n.index_select(0, chunk_starts)
             with autocast_context(device):
                 all_step_values = self.critic(all_step_states_n).float()
-            total_executed = int(sum(lengths_cpu))
+            total_executed = n_steps
             step_values = all_step_values[:total_executed]
             step_next_values = all_step_values[total_executed:]
             values = step_values.index_select(0, chunk_starts)
