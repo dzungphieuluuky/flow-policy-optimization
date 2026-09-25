@@ -24,7 +24,7 @@ def test_canonical_defaults():
     assert cfg.n_action_steps == cfg.action_horizon
     assert (cfg.policy_lr, cfg.optimizer_weight_decay) == (1e-4, 1e-4)
     assert cfg.grad_clip_norm == 1.0
-    assert cfg.num_epochs == 4
+    assert cfg.num_epochs == 16
     assert cfg.chunks_per_update == 256
     assert cfg.timestep_sampling_mode == "fpo_beta"
     assert cfg.timestep_inverse_cdf_beta == 1.0

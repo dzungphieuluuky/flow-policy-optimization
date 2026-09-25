@@ -426,12 +426,11 @@ class SJFPOPolicy(PreTrainedPolicy):
         else:
             scaled = x0[:, : cfg.action_horizon, :].clamp(-1.0, 1.0)
 
-        actions = self.postprocessor({ACTION: scaled})[ACTION]
-        # Match FPO++ action perturbation: the stored/executed behavior action
-        # is perturbed only during training, after action postprocessing.
+        # Match FPO++ action perturbation before postprocessing, so the noise is
+        # applied in the policy's normalized action space.
         if self.training and cfg.action_perturb_std > 0:
-            actions = actions + cfg.action_perturb_std * torch.randn_like(actions)
-        return actions
+            scaled = scaled + cfg.action_perturb_std * torch.randn_like(scaled)
+        return self.postprocessor({ACTION: scaled})[ACTION]
 
     def select_action(self, batch: dict[str, torch.Tensor], **kwargs) -> torch.Tensor:
         obs = to_tensor(batch[OBS_STATE])
@@ -644,18 +643,21 @@ class SJFPOPolicy(PreTrainedPolicy):
             lam=cfg.gae_lambda,
             truncated=step_truncated,
         )
+        # Normalize over every executed environment-step advantage, matching
+        # rsl_rl/FPO++ storage semantics, before selecting chunk targets.
+        if cfg.normalize_advantage and step_advantages.numel() > 0:
+            step_advantages = (step_advantages - step_advantages.mean()) / (
+                step_advantages.std() + 1e-8
+            )
+        if step_advantages.numel() > 0 and cfg.advantage_clamp is not None:
+            step_advantages = step_advantages.clamp(
+                -cfg.advantage_clamp, cfg.advantage_clamp
+            )
+
         # The policy predicts one action chunk, so expose the first executed
         # step's step-GAE target as the chunk-level policy target.
         advantages = step_advantages.index_select(0, chunk_starts)
         returns = step_returns.index_select(0, chunk_starts)
-        if advantages.numel() > 0:
-            advantages = (advantages - advantages.mean()) / (
-                advantages.std(unbiased=False) + 1e-8
-            )
-            if cfg.advantage_clamp is not None:
-                advantages = advantages.clamp(
-                    -cfg.advantage_clamp, cfg.advantage_clamp
-                )
         advantages = advantages.to(storage_dtype)
         returns = returns.to(storage_dtype)
 

@@ -35,7 +35,7 @@ class SJFPOConfig(PreTrainedConfig):
     num_euler_steps: int = 16
     num_inference_steps: int = 16
     chunks_per_update: int = 256
-    num_epochs: int = 4
+    num_epochs: int = 16
     num_minibatches: int = 4
     num_envs: int = 64
 
@@ -55,6 +55,7 @@ class SJFPOConfig(PreTrainedConfig):
     cfm_loss_clamp_negative_advantages_max: float = 20.0
     log_ratio_cap: float = 10.0  # official cfm_diff_clamp_max (one-sided)
     advantage_clamp: float = 100.0
+    normalize_advantage: bool = True
     use_clipped_value_loss: bool = False
     min_timestep: float = 0.005
     max_timestep: float = 0.995
