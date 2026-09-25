@@ -14,9 +14,10 @@ Changes in this revision (addresses review feedback):
 * ``condition.to(...)`` now moves device as well as dtype.
 * ``temb`` broadcast replaces the explicit ``expand`` (scalar ``t`` runs the
   time MLP once, not B times).
-* ``SelfAttention`` mask handling is shape-robust (``[:, None, None, :]``)
-  and the stale "mask caching" docstring is gone.
-* ``StateConditioner`` forwards ``n_heads`` to its inner ``WindowEncoder``.
+* ``SelfAttention`` accepts an explicit ``[B, L]`` key-padding mask and
+  validates its shape before constructing the SDPA mask.
+* ``StateConditioner`` uses a per-frame raw-state MLP plus a temporal DCT
+  branch; it does not instantiate an inner ``WindowEncoder``.
 * Type hints on the dual-return forwards.
 
 Performance notes (carried from the previous revision):
@@ -30,6 +31,8 @@ Performance notes (carried from the previous revision):
 from __future__ import annotations
 
 import math
+from collections import OrderedDict
+
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -42,19 +45,28 @@ from sjfpo.dct_utils import dct
 
 
 class _RMSNorm(nn.RMSNorm):
-    """FP32 ``nn.RMSNorm`` with input casting for mixed precision.
+    """RMSNorm computed in FP32 with the input dtype preserved on output.
 
-    ``dtype=`` at construction is preferable to mutating ``.data`` post-hoc:
-    it plays correctly with meta-device init and ``to_empty``.
+    The normalization parameters are initialized in FP32. Activations may be
+    FP16/BF16 under autocast, but the result is always cast back to the input
+    activation dtype so normalization does not change the model-wide policy.
     """
 
     def __init__(self, hidden_dim: int, eps: float = 1e-6):
         super().__init__(hidden_dim, eps=eps, dtype=torch.float32)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if x.dtype != self.weight.dtype:
-            x = x.to(dtype=self.weight.dtype)
-        return super().forward(x)
+        input_dtype = x.dtype
+        with torch.autocast(device_type=x.device.type, enabled=False):
+            # Calling F.rms_norm directly also handles callers that converted
+            # the module to a lower parameter dtype with ``module.to``.
+            y = F.rms_norm(
+                x.to(dtype=torch.float32),
+                self.normalized_shape,
+                self.weight.to(dtype=torch.float32),
+                self.eps,
+            )
+        return y.to(dtype=input_dtype)
 
 
 def _rms_norm(hidden_dim: int, eps: float = 1e-6) -> nn.RMSNorm:
@@ -76,6 +88,8 @@ class SwiGLU(nn.Module):
 
     def __init__(self, in_dim: int, hidden_dim: int, out_dim: int):
         super().__init__()
+        if in_dim < 1 or hidden_dim < 1 or out_dim < 1:
+            raise ValueError("SwiGLU dimensions must be positive")
         self.gate_up = nn.Linear(in_dim, 2 * hidden_dim)
         self.down = nn.Linear(hidden_dim, out_dim)
 
@@ -89,6 +103,8 @@ class CondMLP(nn.Module):
 
     def __init__(self, in_dim: int, hidden_dim: int, out_dim: int):
         super().__init__()
+        if in_dim < 1 or hidden_dim < 1 or out_dim < 1:
+            raise ValueError("CondMLP dimensions must be positive")
         self.fc1 = nn.Linear(in_dim, hidden_dim)
         self.fc2 = nn.Linear(hidden_dim, out_dim)
 
@@ -99,29 +115,37 @@ class CondMLP(nn.Module):
 class SinusoidalEncoding(nn.Module):
     """Fixed sinusoidal codes with cached frequency tables.
 
-    Cache is a per-module dict keyed by device string. Under ``torch.compile``
-    the first miss can cause a graph break; if that bites, switch to a
-    non-persistent buffer and force ``.float()`` inside ``_freqs`` so a
-    ``model.to(bf16)`` doesn't demote the table.
+    Cache is a small per-module LRU keyed by ``torch.device``. Under
+    ``torch.compile`` the first miss can still cause a graph break; callers
+    that compile this module should warm the cache or move the table to a
+    non-persistent buffer in a future optimization.
     """
 
     def __init__(self, dim: int, scale: float = 1.0):
         super().__init__()
-        if dim <= 0:
-            raise ValueError(f"dim={dim} must be positive")
+        if dim < 2:
+            raise ValueError(f"SinusoidalEncoding dim must be >= 2, got {dim}")
         self.dim = dim
         self.scale = 1.0 if scale is None else float(scale)
         self.half = dim // 2
-        self._freq_cache: dict[str, torch.Tensor] = {}
+        self._freq_cache: OrderedDict[torch.device, torch.Tensor] = OrderedDict()
 
     def _freqs(self, device: torch.device) -> torch.Tensor:
-        key = str(device)
-        cached = self._freq_cache.get(key)
-        if cached is None:
-            i = torch.arange(self.half, device=device, dtype=torch.float32)
-            cached = torch.exp(-math.log(10000.0) * i / max(self.half - 1, 1))
-            self._freq_cache[key] = cached
+        device = torch.device(device)
+        cached = self._freq_cache.get(device)
+        if cached is not None:
+            self._freq_cache.move_to_end(device)
+            return cached
+        i = torch.arange(self.half, device=device, dtype=torch.float32)
+        cached = torch.exp(-math.log(10000.0) * i / max(self.half - 1, 1))
+        self._freq_cache[device] = cached
+        if len(self._freq_cache) > 4:
+            self._freq_cache.popitem(last=False)
         return cached
+
+    def clear_cache(self) -> None:
+        """Drop cached device-specific frequency tables."""
+        self._freq_cache.clear()
 
     def add_to(self, x: torch.Tensor, positions: torch.Tensor) -> torch.Tensor:
         """Add codes for ``positions`` ([..., L]) to ``x`` ([..., L, D])."""
@@ -156,13 +180,18 @@ class SinusoidalEncoding(nn.Module):
 class SelfAttention(nn.Module):
     """Multi-head self-attention on SDPA.
 
-    ``attention_mask`` follows the Hugging Face convention: 1/True marks a
-    valid key and 0/False marks a masked key. A fully masked query row is
-    forced to attend to key 0 to avoid SDPA's NaN behavior.
+    ``attention_mask`` is a key-padding mask with shape ``[B, L]``. A
+    True/1 entry marks a valid key and False/0 marks an ignored key. Every
+    batch item is forced to retain key 0 when its mask is otherwise empty so
+    SDPA cannot produce NaNs; arbitrary query/key masks are not supported.
     """
 
     def __init__(self, hidden_dim: int, n_heads: int):
         super().__init__()
+        if hidden_dim < 1:
+            raise ValueError(f"hidden_dim must be positive, got {hidden_dim}")
+        if n_heads < 1:
+            raise ValueError(f"n_heads must be positive, got {n_heads}")
         if hidden_dim % n_heads != 0:
             raise ValueError(f"hidden_dim={hidden_dim} must split over {n_heads} heads")
         self.n_heads = n_heads
@@ -177,10 +206,16 @@ class SelfAttention(nn.Module):
     ) -> torch.Tensor:
         """[B, L, D] -> [B, L, D].
 
-        ``attention_mask`` follows Hugging Face semantics: 1/True is valid and
-        0/False is ignored.
+        ``attention_mask`` is a boolean/0-1 key-padding mask with shape
+        ``[B, L]``; 1/True is valid and 0/False is ignored.
         """
+        if x.dim() != 3:
+            raise ValueError(f"x must have shape [B, L, D], got {tuple(x.shape)}")
         b, l, _ = x.shape
+        if b < 1 or l < 1:
+            raise ValueError(
+                f"x must have positive batch and sequence sizes, got {(b, l)}"
+            )
         h = self.n_heads
         d = self.head_dim
 
@@ -198,8 +233,13 @@ class SelfAttention(nn.Module):
             keep = torch.as_tensor(
                 attention_mask, dtype=torch.bool, device=x.device
             ).clone()
-            # Ensure a fully masked row has one valid key to avoid NaNs.
-            keep[..., 0] = True
+            if keep.shape != (b, l):
+                raise ValueError(
+                    f"attention_mask must have shape [B, L] = {(b, l)}, "
+                    f"got {tuple(keep.shape)}"
+                )
+            # Ensure every batch item has one valid key to avoid SDPA NaNs.
+            keep[:, 0] = True
             mask = keep[:, None, None, :]
 
         y = F.scaled_dot_product_attention(q, k, v, attn_mask=mask)
@@ -218,6 +258,14 @@ class WindowEncoder(nn.Module):
         mlp_ratio: float,
     ):
         super().__init__()
+        if in_dim < 1 or hidden_dim < 2:
+            raise ValueError("WindowEncoder dimensions must be positive")
+        if (
+            not math.isfinite(mlp_ratio)
+            or mlp_ratio <= 0
+            or int(hidden_dim * mlp_ratio) < 1
+        ):
+            raise ValueError("mlp_ratio must produce a positive hidden width")
         self.frame_proj = nn.Linear(in_dim, hidden_dim)
         self.pos_encoding = SinusoidalEncoding(hidden_dim)
         self.norm1 = _rms_norm(hidden_dim, eps=1e-6)
@@ -233,8 +281,8 @@ class WindowEncoder(nn.Module):
     ) -> torch.Tensor:
         """[B, L, in_dim] -> [B, L, hidden_dim].
 
-        ``attention_mask`` follows Hugging Face semantics: 1/True is valid and
-        0/False is ignored.
+        ``attention_mask`` is a boolean/0-1 key-padding mask with shape
+        ``[B, L]``; 1/True is valid and 0/False is ignored.
         """
         h = self.pos_encoding(self.frame_proj(x))
         h = h + self.attn1(self.norm1(h), attention_mask)
@@ -340,6 +388,14 @@ class DiTBlock(nn.Module):
 
     def __init__(self, hidden_dim: int, n_heads: int, mlp_ratio: float):
         super().__init__()
+        if hidden_dim < 2:
+            raise ValueError("hidden_dim must be at least 2")
+        if (
+            not math.isfinite(mlp_ratio)
+            or mlp_ratio <= 0
+            or int(hidden_dim * mlp_ratio) < 1
+        ):
+            raise ValueError("mlp_ratio must produce a positive hidden width")
         self.norm1 = _rms_norm(hidden_dim)
         self.attn = SelfAttention(hidden_dim, n_heads)
         self.norm2 = _rms_norm(hidden_dim)
@@ -387,13 +443,18 @@ class StateConditioner(nn.Module):
     The raw path uses a per-frame MLP + mean-pool rather than an attention
     block: the spectral branch already encodes temporal structure explicitly,
     so the attention block is redundant for the chunk-level conditioning
-    vector (the caller mean-pools the result anyway).
+    vector (the caller mean-pools the result anyway). ``bin_norm`` normalizes
+    each DCT frequency bin across the observation-feature dimension before
+    positional encoding and projection.
     """
 
     def __init__(self, obs_dim: int, hidden_dim: int):
         super().__init__()
-        if obs_dim <= 0:
-            raise ValueError("obs_dim must be positive")
+        if obs_dim < 2:
+            raise ValueError("StateConditioner obs_dim must be at least 2")
+        if hidden_dim < 2:
+            raise ValueError("hidden_dim must be at least 2")
+        self.obs_dim = obs_dim
         # Raw path: per-frame MLP then mean-pool (replaces full attention window).
         self.frame_proj = nn.Linear(obs_dim, hidden_dim)
         self.frame_mlp = SwiGLU(hidden_dim, 4 * hidden_dim, hidden_dim)
@@ -405,6 +466,16 @@ class StateConditioner(nn.Module):
 
     def forward(self, states: torch.Tensor) -> torch.Tensor:
         """[B, T, obs] -> [B, D]."""
+        if states.dim() != 3:
+            raise ValueError(
+                f"states must have shape [B, T, obs], got {tuple(states.shape)}"
+            )
+        if states.shape[0] < 1 or states.shape[1] < 1:
+            raise ValueError("states must have positive batch and time dimensions")
+        if states.shape[2] != self.obs_dim:
+            raise ValueError(
+                f"states feature dimension must be {self.obs_dim}, got {states.shape[2]}"
+            )
         raw = self.frame_mlp(self.frame_proj(states)).mean(dim=1)
         spec = self.key_proj(self.bin_encoding(self.bin_norm(dct(states, dim=1)))).mean(
             dim=1
@@ -432,8 +503,22 @@ class SJFPOFlowModel(nn.Module):
         timestep_scale: float,
     ):
         super().__init__()
+        if action_dim < 1 or hidden_dim < 2:
+            raise ValueError("action_dim must be positive and hidden_dim at least 2")
         if action_horizon < 1:
             raise ValueError("action_horizon must be positive")
+        if dit_depth < 1 or dit_heads < 1 or dit_time_dim < 2:
+            raise ValueError("dit_depth, dit_heads, and dit_time_dim must be positive")
+        if (
+            not math.isfinite(dit_mlp_ratio)
+            or dit_mlp_ratio <= 0
+            or int(hidden_dim * dit_mlp_ratio) < 1
+        ):
+            raise ValueError("dit_mlp_ratio must produce a positive hidden width")
+        if not math.isfinite(timestep_scale) or timestep_scale <= 0:
+            raise ValueError("timestep_scale must be finite and positive")
+        self.action_dim = action_dim
+        self.hidden_dim = hidden_dim
         self.action_horizon = action_horizon
         self.time_dim = dit_time_dim
         self.timestep_embedder = SinusoidalEncoding(
@@ -469,11 +554,37 @@ class SJFPOFlowModel(nn.Module):
         ``t`` may be a scalar or a ``[B]`` tensor. Scalar timesteps are
         broadcast to the actor batch size for stable compilation.
         """
-        t = torch.as_tensor(t, dtype=torch.float32, device=x_t.device).reshape(-1)
+        if x_t.dim() != 3:
+            raise ValueError(f"x_t must have shape [B, K, D], got {tuple(x_t.shape)}")
+        if x_t.shape[0] < 1 or x_t.shape[1] < 1:
+            raise ValueError("x_t must have positive batch and token dimensions")
+        if x_t.shape[2] != self.action_dim:
+            raise ValueError(
+                f"x_t feature dimension must be {self.action_dim}, got {x_t.shape[2]}"
+            )
+        if condition.dim() != 2 or condition.shape[0] != x_t.shape[0]:
+            raise ValueError(
+                f"condition must have shape [{x_t.shape[0]}, {self.hidden_dim}], "
+                f"got {tuple(condition.shape)}"
+            )
+        if condition.shape[1] != self.hidden_dim:
+            raise ValueError(
+                f"condition feature dimension must be {self.hidden_dim}, "
+                f"got {condition.shape[1]}"
+            )
+
+        t = torch.as_tensor(t, dtype=torch.float32, device=x_t.device)
+        if t.dim() > 1:
+            raise ValueError(f"t must be scalar or [B], got shape {tuple(t.shape)}")
+        t = t.reshape(-1)
+        if t.numel() not in (1, x_t.shape[0]):
+            raise ValueError(
+                f"t must contain 1 or {x_t.shape[0]} values, got {t.numel()}"
+            )
         temb = self.timestep_embedder.encode_times(t).to(
             device=x_t.device, dtype=x_t.dtype
         )
-        # Broadcast the configured per-token positions across the batch.
+        # A scalar t produces one conditioning vector and broadcasts across B.
         c = self.time_mlp(temb) + condition.to(device=x_t.device, dtype=x_t.dtype)
 
         if x_t.shape[1] > self.action_horizon:
@@ -518,8 +629,21 @@ class Critic(nn.Module):
         super().__init__()
         if obs_dim <= 0:
             raise ValueError("obs_dim must be positive")
+        if hidden_dim < 1:
+            raise ValueError("hidden_dim must be positive")
+        self.obs_dim = obs_dim
         self.mlp = CondMLP(obs_dim, hidden_dim, 1)
 
     def forward(self, states: torch.Tensor) -> torch.Tensor:
-        """[B, T, obs] -> [B]."""
+        """[B, T, obs] -> [B] using the current frame."""
+        if states.dim() != 3:
+            raise ValueError(
+                f"states must have shape [B, T, obs], got {tuple(states.shape)}"
+            )
+        if states.shape[0] < 1 or states.shape[1] < 1:
+            raise ValueError("states must have positive batch and time dimensions")
+        if states.shape[2] != self.obs_dim:
+            raise ValueError(
+                f"states feature dimension must be {self.obs_dim}, got {states.shape[2]}"
+            )
         return self.mlp(states[:, -1, :]).squeeze(-1)

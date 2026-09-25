@@ -10,7 +10,6 @@ import math
 
 import jax
 import jax.numpy as jnp
-import numpy as np
 
 from sjfpo_jax.utils import resolve_storage_dtype
 
@@ -175,36 +174,3 @@ def discounted_chunk_reward(rewards: jnp.ndarray, gamma: float) -> jnp.ndarray:
     pos = jnp.arange(n, dtype=jnp.float32)
     weights = jnp.exp(pos * log_gamma).astype(rewards.dtype)
     return (rewards * weights).sum(-1)
-
-
-# ---------------------------------------------------------------------------
-# Dataset-driven M
-# ---------------------------------------------------------------------------
-
-
-def estimate_M_from_dataset(dataset, energy_threshold: float = 0.95) -> int:
-    arrays: list[np.ndarray] = []
-    for item in dataset:
-        if isinstance(item, dict):
-            v = np.asarray(item.get("actions", item.get("action", item)))
-        else:
-            v = np.asarray(item)
-        if v.ndim != 2:
-            raise ValueError(f"Expected 2D, got {v.shape}")
-        arrays.append(v)
-    if not arrays:
-        raise ValueError("estimate_M_from_dataset received an empty dataset")
-    K = arrays[0].shape[0]
-    if any(a.shape[0] != K for a in arrays):
-        raise ValueError("All dataset items must share the same time dimension")
-    stacked = np.stack(arrays, axis=0)
-    basis = np.asarray(_dct_basis_f32(K))
-    coeffs = np.einsum("kj,njd->nkd", basis, stacked)
-    energy = (coeffs ** 2).sum(-1)
-    total = energy.sum(-1, keepdims=True)
-    cumsum = np.cumsum(energy, -1) / total
-    mean_cs = cumsum.mean(0)
-    idx = int(np.searchsorted(mean_cs, energy_threshold, side="left"))
-    if idx >= K:
-        idx = K - 1
-    return max(1, idx)

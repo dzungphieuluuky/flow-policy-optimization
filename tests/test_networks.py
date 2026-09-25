@@ -100,6 +100,25 @@ def test_self_attention_mask_hides_keys():
     assert torch.allclose(z1[:, :5, :], z2[:, :5, :], atol=1e-4)
 
 
+def test_self_attention_all_padding_is_finite_and_shape_is_enforced():
+    nets = make_nets()
+    attn = nets.SelfAttention(32, n_heads=4)
+    x = torch.randn(2, 9, 32)
+    output = attn(x, torch.zeros(2, 9, dtype=torch.bool))
+    assert output.shape == x.shape
+    assert torch.isfinite(output).all()
+    with pytest.raises(ValueError, match=r"attention_mask must have shape"):
+        attn(x, torch.ones(2, 8, dtype=torch.bool))
+    with pytest.raises(ValueError, match=r"attention_mask must have shape"):
+        attn(x, torch.ones(2, 9, 9, dtype=torch.bool))
+
+
+def test_self_attention_rejects_invalid_head_count():
+    nets = make_nets()
+    with pytest.raises(ValueError, match="n_heads must be positive"):
+        nets.SelfAttention(32, n_heads=0)
+
+
 def test_window_encoder_shape_dtype_finite():
     nets = make_nets()
     torch.manual_seed(0)
@@ -254,6 +273,29 @@ def test_timestep_embedder_finite_256():
     assert torch.isfinite(emb).all(), "256-dim ladder must stay finite in fp32"
 
 
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32])
+def test_rms_norm_preserves_input_dtype(dtype):
+    nets = make_nets()
+    norm = nets._rms_norm(8).to(dtype=dtype)
+    x = torch.randn(2, 3, 8, dtype=dtype, requires_grad=True)
+    output = norm(x)
+    assert output.dtype == dtype
+    output.square().mean().backward()
+    assert x.grad is not None and x.grad.dtype == dtype
+    assert torch.isfinite(x.grad).all()
+
+
+def test_sinusoidal_encoding_rejects_dim_one_and_clears_cache():
+    nets = make_nets()
+    with pytest.raises(ValueError, match="dim must be >= 2"):
+        nets.SinusoidalEncoding(1)
+    encoding = nets.SinusoidalEncoding(8)
+    encoding.encode_times(torch.zeros(2))
+    assert len(encoding._freq_cache) == 1
+    encoding.clear_cache()
+    assert not encoding._freq_cache
+
+
 def test_policy_dit_zero_velocity_at_init():
     nets = make_nets()
     torch.manual_seed(20)
@@ -266,6 +308,22 @@ def test_policy_dit_zero_velocity_at_init():
     assert v.shape == (4, CHUNK, 3)
     assert torch.isfinite(v).all()
     assert float(v.abs().mean()) == pytest.approx(0.0, abs=1e-5)
+
+
+def test_policy_first_backward_stages_zero_output_initialization():
+    nets = make_nets()
+    torch.manual_seed(21)
+    policy = make_flow(nets, 3)
+    policy(torch.randn(2, CHUNK, 3), 0.5, torch.randn(2, ZD)).sum().backward()
+    assert policy.out.weight.grad is not None
+    assert torch.count_nonzero(policy.out.weight.grad) > 0
+    assert policy.adaLN_out.weight.grad is None or torch.count_nonzero(
+        policy.adaLN_out.weight.grad
+    ) == 0
+    assert all(
+        parameter.grad is None or torch.count_nonzero(parameter.grad) == 0
+        for parameter in policy.blocks.parameters()
+    )
 
     # Critic (PPO state-value baseline V(s))
 
@@ -453,6 +511,17 @@ def test_state_conditioner_shape_and_grad():
     )
 
 
+def test_state_conditioner_rejects_invalid_state_shapes():
+    nets = make_nets()
+    conditioner = make_conditioner(nets, OBS)
+    with pytest.raises(ValueError, match="states must have shape"):
+        conditioner(torch.randn(4, OBS))
+    with pytest.raises(ValueError, match="positive batch and time"):
+        conditioner(torch.randn(4, 0, OBS))
+    with pytest.raises(ValueError, match="feature dimension"):
+        conditioner(torch.randn(4, STATE_T, OBS + 1))
+
+
 def test_state_conditioner_sees_bin_order():
     """Permuting state rows changes the fused vector (order-sensitive)."""
     nets = make_nets()
@@ -462,6 +531,21 @@ def test_state_conditioner_sees_bin_order():
     v1 = conditioner(s)
     v2 = conditioner(s.flip(dims=(1,)))
     assert not torch.allclose(v1, v2, atol=1e-6)
+
+
+def test_policy_validates_condition_and_timestep_shapes():
+    nets = make_nets()
+    policy = make_flow(nets, 3)
+    x_t = torch.randn(4, CHUNK, 3)
+    condition = torch.randn(4, ZD)
+    with pytest.raises(ValueError, match="condition must have shape"):
+        policy(x_t, 0.5, torch.randn(3, ZD))
+    with pytest.raises(ValueError, match="t must contain"):
+        policy(x_t, torch.rand(3), condition)
+    with pytest.raises(ValueError, match="t must be scalar"):
+        policy(x_t, torch.rand(4, 1), condition)
+    with pytest.raises(ValueError, match="x_t must have shape"):
+        policy(torch.randn(4, CHUNK), 0.5, condition)
 
 
 def test_policy_forward_truncated_coeff_space():

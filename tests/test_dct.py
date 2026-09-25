@@ -23,9 +23,13 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from sjfpo.dct_utils import (  # noqa: E402
+    decode_coeffs_to_velocity,
     dct,
+    dct_basis_matrix,
     discounted_chunk_reward,
+    extract_dct_coeffs,
     idct,
+    sample_freq_weighted_noise,
 )
 
 # Chunk length H=8 per plan; A_dim varies. Both plan-mandated shapes.
@@ -56,6 +60,14 @@ def test_roundtrip_random_last_axis():
     recon = idct(dct(x))
     err = (recon - x).abs().max().item()
     assert err < 1e-5, f"roundtrip max-abs err {err:.3e}"
+
+
+@pytest.mark.parametrize("n", [1, 2, 3, 8, 17])
+def test_dct_roundtrip_and_orthogonality_small_lengths(n):
+    x = rand((n, 2), seed=100 + n)
+    torch.testing.assert_close(idct(dct(x)), x, atol=1e-5, rtol=1e-5)
+    basis = dct_basis_matrix(n)
+    torch.testing.assert_close(basis.T @ basis, torch.eye(n), atol=1e-5, rtol=1e-5)
 
 
 def test_roundtrip_adversarial_constant_and_alternating():
@@ -153,6 +165,26 @@ def test_gradients_flow_through_idct():
     assert torch.isfinite(c.grad).all()
     assert c.grad.abs().sum().item() > 0.0
 
+
+@pytest.mark.parametrize(
+    ("dtype", "tolerance"),
+    [(torch.float16, 5e-3), (torch.bfloat16, 4e-2)],
+)
+def test_low_precision_transform_uses_fp32_contraction(dtype, tolerance):
+    """Half-precision roundtrips stay close to the fp32 transform."""
+    x = rand((2, 64, 2), seed=17)
+    actual = idct(dct(x.to(dtype))).float()
+    expected = idct(dct(x))
+    assert actual.dtype == torch.float32
+    assert (actual - expected).abs().max().item() < tolerance
+
+
+def test_public_basis_matrix_is_mutable_copy():
+    first = dct_basis_matrix(8)
+    first[0, 0] = 123.0
+    second = dct_basis_matrix(8)
+    assert second[0, 0].item() != 123.0
+
     # ---------------------------------------------------------------- (f) linearity
 
 
@@ -186,3 +218,62 @@ def test_discounted_chunk_reward_batched_shape():
     assert out.shape == (6,)
     manual_first = sum((0.99**t) * r[0, t].item() for t in range(8))
     assert abs(out[0].item() - manual_first) < 1e-5
+
+
+def test_discounted_chunk_reward_gamma_zero_one_and_invalid_gamma():
+    rewards = torch.arange(1.0, 5.0)
+    assert discounted_chunk_reward(rewards, gamma=0.0).item() == 1.0
+    assert discounted_chunk_reward(rewards, gamma=1.0).item() == 10.0
+    with pytest.raises(ValueError, match="gamma must be in"):
+        discounted_chunk_reward(rewards, gamma=-0.1)
+
+
+# ---------------------------------------------- FAFM coefficient/noise helpers
+
+
+def test_decode_batched_coeffs_broadcasts_1d_tau():
+    coeffs = rand((3, 4, 2), seed=21)
+    tau = torch.tensor([0.0, 0.2, 0.7])
+    actual = decode_coeffs_to_velocity(coeffs, tau, T=1.0, K_original=8)
+    repeated = decode_coeffs_to_velocity(
+        coeffs, tau.unsqueeze(0).expand(3, -1), T=1.0, K_original=8
+    )
+    assert actual.shape == (3, 3, 2)
+    assert torch.equal(actual, repeated)
+
+
+def test_decode_rejects_mismatched_2d_tau_batch():
+    coeffs = rand((3, 4, 2), seed=22)
+    with pytest.raises(ValueError, match="must match coeffs batch size"):
+        decode_coeffs_to_velocity(
+            coeffs, torch.zeros(2, 5), T=1.0, K_original=8
+        )
+
+
+def test_decode_rejects_invalid_query_time():
+    with pytest.raises(ValueError, match=r"tau must lie in \[0, T\]"):
+        decode_coeffs_to_velocity(
+            torch.ones(2, 3), torch.tensor([-0.1, 0.5]), T=1.0, K_original=8
+        )
+
+
+def test_extract_coeffs_keeps_output_dtype_and_validates_modes():
+    values = torch.randn(2, 8, 3, dtype=torch.float16)
+    actual = extract_dct_coeffs(values, M=3)
+    assert actual.shape == (2, 4, 3)
+    assert actual.dtype == torch.float16
+    with pytest.raises(ValueError, match="M must satisfy"):
+        extract_dct_coeffs(values, M=8)
+
+
+def test_frequency_noise_dtype_and_key_are_deterministic():
+    kwargs = dict(M=3, d=2, T=1.0, B=4, key=123, dtype=torch.float16)
+    first = sample_freq_weighted_noise(**kwargs)
+    second = sample_freq_weighted_noise(**kwargs)
+    assert first.shape == (4, 4, 2)
+    assert first.dtype == torch.float16
+    assert torch.equal(first, second)
+
+    state_before = torch.random.get_rng_state()
+    sample_freq_weighted_noise(**kwargs)
+    assert torch.equal(state_before, torch.random.get_rng_state())
