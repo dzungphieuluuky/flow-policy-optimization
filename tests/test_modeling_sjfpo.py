@@ -186,7 +186,7 @@ def test_forward_finite_loss_and_native_dict():
 def test_optim_params_exclude_snapshot():
     policy = SJFPOPolicy(make_config())
     groups = policy.get_optim_params()["params"]
-    assert len(groups) == 4  # actor decay / actor no-decay / conditioner / critic
+    assert len(groups) == 1  # one FPO++ optimizer group
     optim_ids = {id(p) for g in groups for p in g["params"]}
     live_ids = (
         {id(p) for p in policy.actor.parameters()}
@@ -298,6 +298,20 @@ def test_predict_noisy_kwarg_and_select_extra_kwargs():
     assert a.shape == (ACT_DIM,)
 
 
+def test_action_perturbation_is_training_only():
+    torch.manual_seed(0)
+    policy = SJFPOPolicy(make_config())
+    batch = {"observation.state": torch.randn(2, 16, OBS_DIM)}
+    policy.train()
+    a = policy.predict_action_chunk(batch)
+    b = policy.predict_action_chunk(batch)
+    assert not torch.equal(a, b)
+    policy.eval()
+    a = policy.predict_action_chunk(batch)
+    b = policy.predict_action_chunk(batch)
+    assert torch.equal(a, b)
+
+
 def test_forward_deterministic_same_input():
     torch.manual_seed(0)
     p1 = SJFPOPolicy(make_config())
@@ -405,13 +419,13 @@ def test_generate_rollout_returns_forward_ready_batch():
     assert set(info) == INFO_KEYS
 
 
-def test_optim_params_actor_critic_groups():
+def test_optim_params_single_fpo_group():
     policy = SJFPOPolicy(make_config())
     groups = policy.get_optim_params()["params"]
-    assert len(groups) == 4  # actor decay / no-decay / conditioner / critic
+    assert len(groups) == 1
     opt = policy.config.get_optimizer_preset().build(groups)
-    assert [g["lr"] for g in opt.param_groups] == [1e-4] * 4  # single LR
-    assert [g["weight_decay"] for g in opt.param_groups][1] == 0.0
+    assert [g["lr"] for g in opt.param_groups] == [1e-4]
+    assert [g["weight_decay"] for g in opt.param_groups] == [1e-4]
 
 
 def test_loss_contains_only_policy_and_value():

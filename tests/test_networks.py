@@ -333,6 +333,35 @@ def test_policy_dit_zero_velocity_at_init():
     assert float(v.abs().mean()) == pytest.approx(0.0, abs=1e-5)
 
 
+def test_actor_ema_warmup_and_update():
+    from sjfpo.configuration_sjfpo import SJFPOConfig
+    from sjfpo.modeling_sjfpo import SJFPOPolicy
+    from lerobot.configs.types import FeatureType, PolicyFeature
+
+    cfg = SJFPOConfig(
+        input_features={"observation.state": PolicyFeature(FeatureType.STATE, (4,))},
+        output_features={"action": PolicyFeature(FeatureType.ACTION, (2,))},
+        ema_decay=0.5,
+        ema_warmup_steps=2,
+    )
+    policy = SJFPOPolicy(cfg)
+    name, param = next(iter(policy.actor.named_parameters()))
+    initial = param.detach().clone()
+    policy.update_ema(1)
+    shadow = policy.ema_state_dict()["shadow_params"][name]
+    assert torch.equal(shadow, initial)
+    with torch.no_grad():
+        param.add_(1.0)
+    policy.update_ema(2)
+    shadow = policy.ema_state_dict()["shadow_params"][name]
+    assert torch.equal(shadow, param.detach())
+    with torch.no_grad():
+        param.add_(1.0)
+    policy.update_ema(3)
+    shadow = policy.ema_state_dict()["shadow_params"][name]
+    assert torch.allclose(shadow, param.detach() - 0.5)
+
+
 def test_policy_first_backward_stages_zero_output_initialization():
     nets = make_nets()
     torch.manual_seed(21)

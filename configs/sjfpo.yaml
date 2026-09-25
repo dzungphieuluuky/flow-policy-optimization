@@ -5,6 +5,7 @@
 n_obs_steps: 16
 action_horizon: 16
 n_action_steps: 16
+action_perturb_std: 0.02
 hidden_dim: 128
 
 # -- Monte-Carlo / rollout ---------------------------------------------
@@ -23,6 +24,8 @@ epsilon_clip: 0.05
 use_dct_transform: false
 trust_region_mode: aspo
 cfm_loss_reduction: sqrt
+ema_decay: 0.95
+ema_warmup_steps: 500
 use_per_bin_clip: false
 epsilon_clip_lowfreq: 0.02
 epsilon_clip_highfreq: 0.10

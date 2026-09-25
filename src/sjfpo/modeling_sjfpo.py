@@ -187,6 +187,8 @@ class SJFPOPolicy(PreTrainedPolicy):
         self.old_conditioner = (
             copy.deepcopy(self.conditioner).requires_grad_(False).eval()
         )
+        self._ema_shadow: dict[str, torch.Tensor] = {}
+        self._ema_initialized = False
 
         self._frame_buffer: deque[torch.Tensor] = deque(maxlen=config.n_obs_steps)
         self._action_buffer: deque[torch.Tensor] = deque()
@@ -267,6 +269,52 @@ class SJFPOPolicy(PreTrainedPolicy):
         self.old_conditioner.requires_grad_(False)
         self.old_conditioner.eval()
 
+    @torch.no_grad()
+    def update_ema(self, global_step: int) -> None:
+        """Update the FPO++ actor EMA after an optimizer update."""
+        decay = self.config.ema_decay
+        if decay <= 0:
+            return
+        actor = _unwrap_compiled(self.actor)
+        current = {
+            name: param
+            for name, param in actor.named_parameters()
+            if param.requires_grad
+        }
+        if not self._ema_shadow:
+            self._ema_shadow = {
+                name: param.detach().clone() for name, param in current.items()
+            }
+        if global_step == self.config.ema_warmup_steps:
+            for name, shadow in self._ema_shadow.items():
+                shadow.copy_(current[name].detach())
+            self._ema_initialized = True
+            return
+        if global_step > self.config.ema_warmup_steps:
+            for name, shadow in self._ema_shadow.items():
+                shadow.mul_(decay).add_(current[name].detach(), alpha=1.0 - decay)
+
+    def ema_ready(self, global_step: int) -> bool:
+        return (
+            self.config.ema_decay > 0
+            and self._ema_initialized
+            and global_step > self.config.ema_warmup_steps
+        )
+
+    def ema_state_dict(self) -> dict:
+        return {
+            "decay": self.config.ema_decay,
+            "initialized": self._ema_initialized,
+            "shadow_params": self._ema_shadow,
+        }
+
+    def load_ema_state_dict(self, state: dict) -> None:
+        self._ema_shadow = {
+            name: value.detach().clone()
+            for name, value in state["shadow_params"].items()
+        }
+        self._ema_initialized = bool(state.get("initialized", True))
+
     def get_actor_optim_params(self) -> dict:
         decay, no_decay = [], []
         for name, p in self.actor.named_parameters():
@@ -295,11 +343,15 @@ class SJFPOPolicy(PreTrainedPolicy):
         }
 
     def get_optim_params(self) -> dict:
-        """Compatibility view containing both optimizer ownership groups."""
+        """One FPO++-style optimizer group over all trainable policy weights."""
+        params = [p for p in self.parameters() if p.requires_grad]
         return {
             "params": [
-                *self.get_actor_optim_params()["params"],
-                *self.get_critic_optim_params()["params"],
+                {
+                    "params": params,
+                    "lr": self.config.policy_lr,
+                    "weight_decay": self.config.optimizer_weight_decay,
+                }
             ]
         }
 
@@ -374,7 +426,12 @@ class SJFPOPolicy(PreTrainedPolicy):
         else:
             scaled = x0[:, : cfg.action_horizon, :].clamp(-1.0, 1.0)
 
-        return self.postprocessor({ACTION: scaled})[ACTION]
+        actions = self.postprocessor({ACTION: scaled})[ACTION]
+        # Match FPO++ action perturbation: the stored/executed behavior action
+        # is perturbed only during training, after action postprocessing.
+        if self.training and cfg.action_perturb_std > 0:
+            actions = actions + cfg.action_perturb_std * torch.randn_like(actions)
+        return actions
 
     def select_action(self, batch: dict[str, torch.Tensor], **kwargs) -> torch.Tensor:
         obs = to_tensor(batch[OBS_STATE])

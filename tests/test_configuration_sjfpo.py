@@ -22,8 +22,8 @@ def test_canonical_defaults():
     cfg = SJFPOConfig()
     assert (cfg.n_obs_steps, cfg.action_horizon, cfg.hidden_dim) == (16, 16, 128)
     assert cfg.n_action_steps == cfg.action_horizon
-    assert (cfg.policy_lr, cfg.optimizer_weight_decay) == (3e-4, 1e-2)
-    assert cfg.grad_clip_norm == 0.5
+    assert (cfg.policy_lr, cfg.optimizer_weight_decay) == (1e-4, 1e-4)
+    assert cfg.grad_clip_norm == 1.0
     assert cfg.num_epochs == 4
     assert cfg.chunks_per_update == 256
     assert cfg.timestep_sampling_mode == "fpo_beta"

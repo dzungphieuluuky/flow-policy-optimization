@@ -11,10 +11,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from sjfpo.gae import compute_step_advantages_torch  # noqa: E402
 
 
-def test_truncated_step_bootstraps_but_stops_recursion():
+def test_truncated_step_uses_reward_adjustment_and_stops_recursion():
     advantages, returns = compute_step_advantages_torch(
         rewards_1d=torch.tensor([1.0]),
-        values=torch.tensor([0.0]),
+        values=torch.tensor([2.0]),
         next_values=torch.tensor([10.0]),
         terminated=torch.tensor([False]),
         truncated=torch.tensor([True]),
@@ -22,8 +22,10 @@ def test_truncated_step_bootstraps_but_stops_recursion():
         lam=1.0,
     )
 
-    torch.testing.assert_close(advantages, torch.tensor([10.0]))
-    torch.testing.assert_close(returns, torch.tensor([10.0]))
+    # r_adj = r + gamma * V(s_t); no V(s_{t+1}) bootstrap.
+    expected = 1.0 + 0.9 * 2.0 - 2.0
+    torch.testing.assert_close(advantages, torch.tensor([expected]))
+    torch.testing.assert_close(returns, torch.tensor([2.0 + expected]))
 
 
 def test_terminated_step_masks_bootstrap():
@@ -52,9 +54,9 @@ def test_truncated_step_cuts_only_future_recursion():
         lam=0.5,
     )
 
-    # The second step bootstraps and cuts off the third step, while the first
-    # step still recurses into the second.
-    torch.testing.assert_close(advantages, torch.tensor([19.0, 20.0, 30.0]))
+    # The second step uses the FPO++ reward adjustment and cuts off the third
+    # step; the first step still recurses into the second.
+    torch.testing.assert_close(advantages, torch.tensor([10.9, 2.0, 30.0]))
 
 
 def test_continuing_steps_share_one_recursion():

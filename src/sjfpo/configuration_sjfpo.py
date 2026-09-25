@@ -27,6 +27,7 @@ class SJFPOConfig(PreTrainedConfig):
     n_obs_steps: int = 16
     action_horizon: int = 16
     n_action_steps: int = 16  # must be set explicitly; no derived value
+    action_perturb_std: float = 0.02
     hidden_dim: int = 128
 
     # -- Monte-Carlo / rollout ---------------------------------------------
@@ -73,17 +74,21 @@ class SJFPOConfig(PreTrainedConfig):
     # angle <= 1 and t is nearly unresolvable.
     timestep_scale: float = 1000.0
 
+    # -- EMA actor ----------------------------------------------------------
+    ema_decay: float = 0.95
+    ema_warmup_steps: int = 500
+
     # -- Losses / optimization --------------------------------------------
     vf_coef: float = 1.0  # skrl PPO default; 0.5 was too weak for critic
-    grad_clip_norm: float = 0.5  # skrl PPO default; 1.0 was too loose
+    grad_clip_norm: float = 1.0
 
     # -- Chunk selection ---------------------------------------------------
     top_p_spectral_tokens: float = 1.0
 
     # -- Optimizer ---------------------------------------------------------
-    policy_lr: float = 3e-4
-    critic_lr: float = 9e-4  # 3x policy_lr for faster value tracking
-    optimizer_weight_decay: float = 1e-2  # skrl AdamWConfig default; 1e-4 too weak for critic
+    policy_lr: float = 1e-4
+    critic_lr: float = 1e-4  # legacy split-checkpoint compatibility
+    optimizer_weight_decay: float = 1e-4
 
     # -- Training loop -----------------------------------------------------
     # No separate warm-up phase; stats initialize naturally during first rollout.
@@ -120,6 +125,12 @@ class SJFPOConfig(PreTrainedConfig):
             )
         if self.hidden_dim < 1:
             raise ValueError(f"hidden_dim={self.hidden_dim} must be >= 1")
+        if self.action_perturb_std < 0:
+            raise ValueError("action_perturb_std must be >= 0")
+        if not 0.0 <= self.ema_decay < 1.0:
+            raise ValueError("ema_decay must be in [0, 1)")
+        if self.ema_warmup_steps < 0:
+            raise ValueError("ema_warmup_steps must be >= 0")
         if self.hidden_dim % self.dit_heads != 0:
             raise ValueError(
                 f"hidden_dim={self.hidden_dim} must be divisible by "

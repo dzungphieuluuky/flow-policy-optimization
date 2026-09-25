@@ -120,6 +120,7 @@ def save_policy_checkpoint(
     actor_optimizer: torch.optim.Optimizer | None = None,
     critic_optimizer: torch.optim.Optimizer | None = None,
     global_step: int,
+    ema_state: dict | None = None,
     save_rng: bool = True,
 ) -> None:
     """Save through LeRobot's ``HubMixin`` (+ optimizer.pt, counters.json).
@@ -154,7 +155,14 @@ def save_policy_checkpoint(
             for name, tensor in policy.state_dict().items()
             if not name.startswith(("old_actor.", "old_conditioner."))
         }
+        if ema_state is not None and policy.ema_ready(global_step):
+            for name, shadow in ema_state["shadow_params"].items():
+                full_name = f"actor.{name}"
+                if full_name in state_dict:
+                    state_dict[full_name] = shadow.detach().clone()
         policy.save_pretrained(d, state_dict=state_dict)
+    if ema_state is not None:
+        _atomic_torch_save(d / "ema.pt", ema_state)
 
     # 2) Optimizer state (pickled, weights-only safe on load).
     if actor_optimizer is not None:
@@ -317,6 +325,12 @@ def load_policy_checkpoint(
 
     # 2) Optimizer state (split format for new checkpoints; legacy stays supported).
     actor_optimizer, critic_optimizer = _load_optimizer_pair(policy, d)
+
+    ema_path = d / "ema.pt"
+    if ema_path.is_file():
+        policy.load_ema_state_dict(
+            torch.load(ema_path, map_location="cpu", weights_only=True)
+        )
 
     # 3) Counters (validated).
     try:

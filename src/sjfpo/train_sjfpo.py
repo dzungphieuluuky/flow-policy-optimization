@@ -76,7 +76,12 @@ class _EvalPolicy:
         self.policy.reset()
 
     def __call__(self, obs: np.ndarray) -> np.ndarray:
-        action = self.policy.select_action({"observation.state": obs})
+        was_training = self.policy.training
+        self.policy.eval()
+        try:
+            action = self.policy.select_action({"observation.state": obs})
+        finally:
+            self.policy.train(was_training)
         return to_numpy_1d(action)  # atleast_1d: 1-D envs must stay [1]
 
 
@@ -124,15 +129,9 @@ def _build_optimizer(
 
 def build_optimizers(
     policy: SJFPOPolicy, cfg: SJFPOConfig
-) -> tuple[torch.optim.Optimizer, torch.optim.Optimizer]:
-    """Build separate optimizer instances for actor/conditioner and critic."""
-    actor = _build_optimizer(
-        policy, cfg, policy.get_actor_optim_params()["params"], cfg.policy_lr
-    )
-    critic = _build_optimizer(
-        policy, cfg, policy.get_critic_optim_params()["params"], cfg.critic_lr
-    )
-    return actor, critic
+) -> tuple[torch.optim.Optimizer, None]:
+    """Compatibility wrapper returning the single FPO++ optimizer."""
+    return build_optimizer(policy, cfg), None
 
 
 def build_optimizer(policy: SJFPOPolicy, cfg: SJFPOConfig):
@@ -253,12 +252,10 @@ def train_sjfpo_run(
             action_high=action_high,
         )
         if len(loaded) == 4:
-            policy, actor_optimizer, critic_optimizer, counters = loaded
+            policy, _actor_optimizer, _critic_optimizer, counters = loaded
+            optimizer = build_optimizer(policy, policy.config)
         else:
-            policy, _legacy_optimizer, counters = loaded
-            actor_optimizer, critic_optimizer = build_optimizers(
-                policy, policy.config
-            )
+            policy, optimizer, counters = loaded
         global_step = int(counters["global_step"])
         policy.train()
         # Re-apply compilation — from_pretrained builds an eager policy.
@@ -282,7 +279,7 @@ def train_sjfpo_run(
             action_low=action_low,
             action_high=action_high,
         )
-        actor_optimizer, critic_optimizer = build_optimizers(policy, cfg)
+        optimizer = build_optimizer(policy, cfg)
 
     print(
         f"SJFPO policy: actor_depth={cfg.dit_depth} hidden={cfg.hidden_dim} "
@@ -320,8 +317,7 @@ def train_sjfpo_run(
 
     # Hoisted once — indexing the optimizer's param groups every minibatch is
     # pure Python overhead on the critical path.
-    actor_params = [p for group in actor_optimizer.param_groups for p in group["params"]]
-    critic_params = [p for group in critic_optimizer.param_groups for p in group["params"]]
+    optim_params = [p for group in optimizer.param_groups for p in group["params"]]
 
     try:
         while global_step < total_steps:
@@ -375,8 +371,7 @@ def train_sjfpo_run(
                 )
             )
             accumulation_steps = cfg.grad_accum_steps
-            actor_optimizer.zero_grad(set_to_none=True)
-            critic_optimizer.zero_grad(set_to_none=True)
+            optimizer.zero_grad(set_to_none=True)
             for micro_step, mb_idx in enumerate(microbatches):
                 group_start = micro_step - (micro_step % accumulation_steps)
                 group_size = min(accumulation_steps, len(microbatches) - group_start)
@@ -394,21 +389,17 @@ def train_sjfpo_run(
                     or micro_step + 1 == len(microbatches)
                 )
                 if is_boundary:
-                    actor_pre = torch.nn.utils.clip_grad_norm_(
-                        actor_params, cfg.grad_clip_norm
+                    pre_clip = torch.nn.utils.clip_grad_norm_(
+                        optim_params, cfg.grad_clip_norm
                     )
-                    critic_pre = torch.nn.utils.clip_grad_norm_(
-                        critic_params, cfg.grad_clip_norm
-                    )
-                    actor_pre_norms.append(actor_pre.detach())
-                    critic_pre_norms.append(critic_pre.detach())
-                    actor_optimizer.step()
-                    critic_optimizer.step()
-                    actor_optimizer.zero_grad(set_to_none=True)
-                    critic_optimizer.zero_grad(set_to_none=True)
+                    actor_pre_norms.append(pre_clip.detach())
+                    optimizer.step()
+                    optimizer.zero_grad(set_to_none=True)
                     policy.step_count += 1
                 if epoch_info is not None:
                     infos.append(epoch_info)
+
+            policy.update_ema(global_step)
 
             # Update once per collected rollout, after the policy/value update.
             # These are raw post-step frames, not overlapping warmup windows.
@@ -419,7 +410,7 @@ def train_sjfpo_run(
                 info = {k: sum(d[k] for d in infos) / len(infos) for k in infos[0]}
             else:
                 info = None
-            all_pre_norms = actor_pre_norms + critic_pre_norms
+            all_pre_norms = actor_pre_norms
             grad_norm_mean_pre = (
                 float(torch.stack(all_pre_norms).mean()) if all_pre_norms else 0.0
             )
@@ -499,9 +490,9 @@ def train_sjfpo_run(
                 save_policy_checkpoint(
                     ckpt_dir,
                     policy=policy,
-                    actor_optimizer=actor_optimizer,
-                    critic_optimizer=critic_optimizer,
+                    optimizer=optimizer,
                     global_step=global_step,
+                    ema_state=policy.ema_state_dict(),
                 )
                 artifacts.append(str(ckpt_dir / "model.safetensors"))
                 next_save = max(global_step + save_steps, next_save + save_steps)
@@ -523,9 +514,9 @@ def train_sjfpo_run(
     save_policy_checkpoint(
         ckpt_dir,
         policy=policy,
-        actor_optimizer=actor_optimizer,
-        critic_optimizer=critic_optimizer,
+        optimizer=optimizer,
         global_step=global_step,
+        ema_state=policy.ema_state_dict(),
     )
     artifacts.append(str(ckpt_dir / "model.safetensors"))
 
