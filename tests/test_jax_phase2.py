@@ -92,7 +92,7 @@ def test_flow_model_matches():
         dit_depth=1,
         dit_heads=N_HEADS,
         dit_mlp_ratio=2.0,
-        dit_time_dim=H,
+        time_embed_dim=H,
         timestep_scale=1.0,
     )
     tm = torch_nets.SJFPOFlowModel(ACT, action_horizon=T, **kwargs).eval()
@@ -130,7 +130,7 @@ def test_zero_init_preserved():
         dit_depth=1,
         dit_heads=N_HEADS,
         dit_mlp_ratio=2.0,
-        dit_time_dim=H,
+        time_embed_dim=H,
         rngs=nnx.Rngs(0),
     )
     assert float(jnp.abs(jm.out.kernel[...]).max()) == 0.0

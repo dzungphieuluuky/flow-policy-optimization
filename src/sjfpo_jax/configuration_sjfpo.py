@@ -58,7 +58,7 @@ class SJFPOConfig(PreTrainedConfig):
     dit_depth: int = 4
     dit_heads: int = 4
     dit_mlp_ratio: float = 4.0
-    dit_time_dim: int = 128
+    time_embed_dim: int = 128
     # Flow time t in [0, 1] is scaled by this before the DDPM sinusoidal ladder
     # (designed for integer steps 0–1000); without it every channel sits at
     # angle <= 1 and t is nearly unresolvable.
@@ -122,8 +122,8 @@ class SJFPOConfig(PreTrainedConfig):
             raise ValueError(f"dit_heads={self.dit_heads} must be >= 1")
         if self.dit_mlp_ratio <= 0:
             raise ValueError(f"dit_mlp_ratio={self.dit_mlp_ratio} must be > 0")
-        if self.dit_time_dim < 1:
-            raise ValueError(f"dit_time_dim={self.dit_time_dim} must be >= 1")
+        if self.time_embed_dim < 1:
+            raise ValueError(f"time_embed_dim={self.time_embed_dim} must be >= 1")
         if self.timestep_scale <= 0:
             raise ValueError(f"timestep_scale={self.timestep_scale} must be > 0")
 

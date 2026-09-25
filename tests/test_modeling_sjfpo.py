@@ -75,11 +75,11 @@ def test_actor_architecture_uses_policy_config():
         dit_depth=1,
         dit_heads=2,
         dit_mlp_ratio=2.0,
-        dit_time_dim=32,
+        time_embed_dim=32,
         timestep_scale=10.0,
     )
     policy = SJFPOPolicy(cfg)
-    assert policy.actor.time_dim == 32
+    assert policy.actor.time_embed_dim == 32
     assert policy.actor.timestep_embedder.scale == 10.0
     assert len(policy.actor.blocks) == 1
     assert policy.actor.blocks[0].attn.n_heads == 2
@@ -242,7 +242,7 @@ def test_forward_per_bin_clip_finite_and_binds_per_group():
     )
     policy.train()
     batch = make_batch()
-    batch["mc_tau"] = torch.rand(2, 2, 1)
+    batch["mc_tau"] = torch.rand(2, 2, 16, 1)
     batch["mc_eps"] = torch.randn(2, 2, 16, ACT_DIM)
     loss, info = policy(batch)
     assert loss.dim() == 0 and torch.isfinite(loss)
@@ -265,7 +265,7 @@ def test_forward_per_bin_uniform_eps_matches_scalar_reduction_order():
     policy = SJFPOPolicy(make_config(**cfg))
     policy.train()
     batch = make_batch()
-    batch["mc_tau"] = torch.rand(2, 2, 1)
+    batch["mc_tau"] = torch.rand(2, 2, 16, 1)
     batch["mc_eps"] = torch.randn(2, 2, 16, ACT_DIM)
     loss_bin, _ = policy(batch)
     assert torch.isfinite(loss_bin)
@@ -350,7 +350,12 @@ def test_rollout_stores_per_chunk_mc_draws():
     env = FakeGymEnv(obs_dim=OBS_DIM, action_dim=ACT_DIM, max_steps=20)
     batch = policy.generate_rollout(env, total_steps=32)
     n = batch["observation.state"].shape[0]
-    assert batch["mc_tau"].shape == (n, policy.config.num_mc_samples, 1)
+    assert batch["mc_tau"].shape == (
+        n,
+        policy.config.num_mc_samples,
+        policy.config.action_horizon,
+        1,
+    )
     assert batch["mc_eps"].shape[0] == n
     # Same stored draws reused: repeated forwards agree exactly (eval mode
     # freezes obs stats, so only the MC draws can move the ratios)...

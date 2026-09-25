@@ -134,7 +134,7 @@ def train_jax_run(
     dit_depth: int = 4,
     dit_heads: int = 4,
     dit_mlp_ratio: float = 4.0,
-    dit_time_dim: int = 128,
+    time_embed_dim: int = 128,
     optimizer_lr: float = 3e-4,
     optimizer_weight_decay: float = 1e-4,
     grad_clip_norm: float = 1.0,
@@ -165,7 +165,7 @@ def train_jax_run(
     policy, behavior = jpol.build_policy(
         obs_dim, action_dim, seed=int(seed), hidden_dim=hidden_dim,
         dit_depth=dit_depth, dit_heads=dit_heads, dit_mlp_ratio=dit_mlp_ratio,
-        dit_time_dim=dit_time_dim, n_obs_steps=n_obs_steps,
+        time_embed_dim=time_embed_dim, n_obs_steps=n_obs_steps,
     )
     action_low = np.atleast_1d(np.asarray(eval_env.action_space.low, dtype=np.float32))
     action_high = np.atleast_1d(np.asarray(eval_env.action_space.high, dtype=np.float32))

@@ -41,7 +41,9 @@ def compute_cfm_loss(v_hat, v_star, reduce_mode="scalar", clamp=None):
 
 def compute_aspo_surrogate(rho, advantage, epsilon_clip=None):
     epsilon = _DEFAULTS.epsilon_clip if epsilon_clip is None else epsilon_clip
-    return fpo_core.compute_aspo_surrogate(rho, advantage, _cfg(use_aspo=True), epsilon)
+    return fpo_core.compute_aspo_surrogate(
+        rho, advantage, _cfg(trust_region_mode="aspo"), epsilon
+    )
 
 
 def compute_policy_ratio(l_old, l_new, cfm_clamp=None, cap=None):
@@ -322,7 +324,12 @@ def test_aspo_surrogate_hand_computed():
 
 
 def test_fpo_helpers_use_explicit_policy_config():
-    cfg = _cfg(use_aspo=True, cfm_clamp=1.0, log_ratio_cap=0.5, epsilon_clip=0.1)
+    cfg = _cfg(
+        trust_region_mode="aspo",
+        cfm_clamp=1.0,
+        log_ratio_cap=0.5,
+        epsilon_clip=0.1,
+    )
     rho = fpo_core.compute_policy_ratio(
         torch.tensor([2.0]), torch.tensor([0.0]), cfg
     )
@@ -345,11 +352,12 @@ def test_policy_ratio_ste_cap_value_and_gradient():
 
 
 def test_large_loss_clamped_for_negative_advantage():
-    # l_new=100 -> max-clamped to cfm_clamp=20, then log-ratio STE-capped at 10.
+    # Official FPO++ clamps CFM losses from above, but caps the log-ratio only
+    # from above, so a large negative log-ratio remains exp(-20).
     l_old = torch.zeros(1)
     l_new = torch.full((1,), 100.0)
     rho = compute_policy_ratio(l_old, l_new)
-    assert rho.item() == pytest.approx(math.exp(-10.0), rel=1e-6)
+    assert rho.item() == pytest.approx(math.exp(-20.0), rel=1e-6)
 
 
 def test_symmetric_cfm_clamp_applies_to_both():
@@ -377,11 +385,11 @@ def test_policy_loss_fd_gradient():
     t = tau.unsqueeze(-1).unsqueeze(-1)  # [1, m, 1, 1]
     x_t = (1.0 - t) * eps + t * a.unsqueeze(1)  # [1, m, 8, 1]
     x_t_flat = x_t.reshape(m, 8, 1)
-    tau_flat = tau.reshape(m)
+    flatten_mc_timestep = tau.reshape(m)
     v_star = SJFPOPolicy.compute_target_velocity(a, eps)  # [1, m, 8, 1]
 
     def v_hat_of(net_) -> torch.Tensor:
-        return net_(x_t_flat, tau_flat, None).reshape(1, m, 8, 1)
+        return net_(x_t_flat, flatten_mc_timestep, None).reshape(1, m, 8, 1)
 
     with torch.no_grad():
         l_old = compute_cfm_loss(v_hat_of(net), v_star, reduce_mode="sample")
@@ -469,7 +477,7 @@ def test_space_consistency_dct_pipeline():
         dit_depth=_DEFAULTS.dit_depth,
         dit_heads=_DEFAULTS.dit_heads,
         dit_mlp_ratio=_DEFAULTS.dit_mlp_ratio,
-        dit_time_dim=_DEFAULTS.dit_time_dim,
+        time_embed_dim=_DEFAULTS.time_embed_dim,
         timestep_scale=_DEFAULTS.timestep_scale,
     )
     condition = torch.zeros(4, _DEFAULTS.hidden_dim)  # pre-fused state vector
@@ -530,11 +538,11 @@ def test_compute_cfm_loss_bin_mode_parity():
     per_sample = compute_cfm_loss(v_hat, v_star, reduce_mode="sample")
     # bin_k = sum_D/sqrt(D); sample = sum/sqrt(K*D) = bin.mean * sqrt(K).
     torch.testing.assert_close(per_bin.mean(dim=-1) * math.sqrt(5), per_sample)
-    # Clamp binds on both paths (OFF cfm_loss_clamp).
+    # CFM reduction itself is unclamped; FPO++ clamps losses in the ratio update.
     big = compute_cfm_loss(
         torch.zeros(1, 1, 2, 2), torch.ones(1, 1, 2, 2) * 10.0, reduce_mode="bin"
     )
-    assert bool((big == _DEFAULTS.cfm_clamp).all())
+    assert bool((big > _DEFAULTS.cfm_clamp).all())
 
 
 def test_sample_timesteps_modes_and_contract():
@@ -574,13 +582,29 @@ def test_run_mc_accepts_per_chunk_timestep_shape():
     actions = torch.randn(3, 2, 4, generator=generator)
     eps = torch.randn(3, 5, 2, 4, generator=generator)
     tau = torch.rand(3, 5, 1, generator=generator)
-    tau_bn, eps_flat, action_rep, flow_shape, num_mc = fpo_core.run_mc_simulation(
+    tau_bn, flatten_mc_noise, flatten_mc_action, flow_shape, num_mc = fpo_core.run_mc_simulation(
         actions, eps, tau
     )
 
     assert tau_bn.shape == (15,)
-    assert eps_flat.shape == (15, 8)
-    assert action_rep.shape == (15, 8)
+    assert flatten_mc_noise.shape == (15, 8)
+    assert flatten_mc_action.shape == (15, 8)
+    assert flow_shape == (2, 4)
+    assert num_mc == 5
+
+
+def test_run_mc_accepts_per_token_timestep_shape():
+    generator = torch.Generator().manual_seed(5)
+    actions = torch.randn(3, 2, 4, generator=generator)
+    eps = torch.randn(3, 5, 2, 4, generator=generator)
+    tau = torch.rand(3, 5, 2, 1, generator=generator)
+    tau_bn, flatten_mc_noise, flatten_mc_action, flow_shape, num_mc = fpo_core.run_mc_simulation(
+        actions, eps, tau
+    )
+
+    assert tau_bn.shape == (15, 2, 1)
+    assert flatten_mc_noise.shape == (15, 8)
+    assert flatten_mc_action.shape == (15, 8)
     assert flow_shape == (2, 4)
     assert num_mc == 5
 

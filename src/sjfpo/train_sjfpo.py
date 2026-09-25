@@ -147,8 +147,9 @@ def sample_minibatch(
 ) -> dict[str, torch.Tensor]:
     """Slice dim-0 rows; every per-chunk batch value is ``[B, ...]``.
 
-    ``mc_tau`` and ``mc_eps`` are stored per chunk/MC draw and are sliced
-    with the minibatch. ``normalizer_observations`` is passed through because
+    ``mc_tau`` ``[B,M,K,1]`` and ``mc_eps`` ``[B,M,K,d]`` are stored per
+    chunk/MC draw and are sliced with the minibatch. ``normalizer_observations``
+    is passed through because
     it is one row per executed environment step, not per chunk.
     """
     out: dict[str, torch.Tensor] = {}

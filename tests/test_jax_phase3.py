@@ -50,7 +50,7 @@ def _jax_pair(tpol):
         dit_depth=4,
         dit_heads=4,
         dit_mlp_ratio=4.0,
-        dit_time_dim=128,
+        time_embed_dim=128,
     )
     for name in ("actor", "conditioner", "critic"):
         load_torch_weights(getattr(pj, name), getattr(tpol, name).state_dict())

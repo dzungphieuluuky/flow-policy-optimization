@@ -76,9 +76,12 @@ def sample_noise(
 def run_mc_simulation(
     a: torch.Tensor, eps: torch.Tensor, tau
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, tuple[int, ...], int]:
-    """Broadcast (a, eps, tau) onto the shared ``[B*M]`` MC axis.
+    """Broadcast action, noise, and per-coordinate timesteps over MC.
 
-    Returns ``(tau_bn, eps_flat, a_rep, flow_shape, num_mc)``.
+    Legacy scalar/[M]/[B,M] tau inputs return ``flatten_mc_timestep`` with shape
+    ``[B*M]``. The training path uses per-token tau with shape
+    ``[B, M, K, 1]`` and receives ``[B*M, K, 1]``; each token timestep is shared
+    across that token's action dimensions.
     """
     b, num_mc = eps.shape[0], eps.shape[1]
     flow_shape = tuple(a.shape[1:])
@@ -92,7 +95,15 @@ def run_mc_simulation(
     else:
         t = torch.as_tensor(tau, dtype=storage_dtype, device=eps.device)
 
-    if t.dim() == 0:
+    tokenwise_tau = t.dim() == 4 and tuple(t.shape) == (
+        b,
+        num_mc,
+        flow_shape[0],
+        1,
+    )
+    if tokenwise_tau:
+        pass
+    elif t.dim() == 0:
         t = t.expand(b, num_mc)
     elif t.dim() == 3 and tuple(t.shape) == (b, num_mc, 1):
         t = t.squeeze(-1)
@@ -105,13 +116,18 @@ def run_mc_simulation(
     elif tuple(t.shape) != (b, num_mc):
         raise ValueError(
             f"tau shape {tuple(t.shape)} must be scalar, [num_mc_samples], "
-            f"[B, num_mc_samples], or [B, num_mc_samples, 1]"
+            f"[B, num_mc_samples], [B, num_mc_samples, 1], or "
+            f"[B, num_mc_samples, K, 1]"
         )
 
     d = a.numel() // b
     a_flat = a.reshape(b, 1, d).expand(b, num_mc, d).reshape(b * num_mc, d)
+    if tokenwise_tau:
+        flatten_mc_timestep = t.reshape(b * num_mc, flow_shape[0], 1)
+    else:
+        flatten_mc_timestep = t.reshape(b * num_mc)
     return (
-        t.reshape(b * num_mc),
+        flatten_mc_timestep,
         eps.reshape(b * num_mc, d),
         a_flat,
         flow_shape,
@@ -132,8 +148,9 @@ def compute_cfm_loss(
 ) -> torch.Tensor:
     """CFM squared-velocity loss (paper Eq.7-8).
 
-    ``sample``/``bin`` use ``sum / sqrt(D)`` — preserves variance across
-    action dims instead of shrinking log-ratios like a mean.
+    The active ``sample`` path follows FPO++'s configurable reduction over the
+    flattened action chunk (``mean``, ``sum``, or ``sqrt``; default ``sqrt``).
+    ``bin`` remains a legacy diagnostic reduction.
     """
     if v_hat.shape != v_star.shape:
         raise ValueError(
@@ -146,15 +163,17 @@ def compute_cfm_loss(
 
     if reduce_mode == "sample":
         flat = sq.flatten(2)
-        reduced = flat.sum(dim=-1) / math.sqrt(flat.shape[-1])
-    elif reduce_mode == "bin":
-        reduced = sq.sum(dim=-1) / math.sqrt(sq.shape[-1])
-    else:
-        raise ValueError(
-            f"reduce_mode={reduce_mode!r} must be 'scalar', 'sample', or 'bin'"
-        )
-
-    return torch.clamp(reduced, max=cfg.cfm_clamp)
+        if cfg.cfm_loss_reduction == "mean":
+            return flat.mean(dim=-1)
+        if cfg.cfm_loss_reduction == "sum":
+            return flat.sum(dim=-1)
+        return flat.sum(dim=-1) / math.sqrt(flat.shape[-1])
+    if reduce_mode == "bin":
+        # Legacy diagnostic reduction; the official FPO policy uses "sample".
+        return sq.sum(dim=-1) / math.sqrt(sq.shape[-1])
+    raise ValueError(
+        f"reduce_mode={reduce_mode!r} must be 'scalar', 'sample', or 'bin'"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -168,39 +187,45 @@ def compute_aspo_surrogate(
     cfg: SJFPOConfig,
     epsilon_clip: float | torch.Tensor,
 ) -> torch.Tensor:
-    """ASPO piecewise trust region ψ(ρ, Â) (paper Eq.12) or PPO clip.
+    """FPO++ trust region: PPO clipping, SPO, or asymmetric ASPO.
 
-    Hoists ``rho * advantage`` and the clipped ratio so neither is computed
-    twice on the non-symmetric branch.
+    ASPO uses PPO for positive advantages and SPO for negative advantages.
     """
-    symmetrical_ppo = not cfg.use_aspo
     rho_adv = rho * advantage
     rho_clipped = torch.clamp(rho, 1.0 - epsilon_clip, 1.0 + epsilon_clip)
-    pos = torch.min(rho_adv, rho_clipped * advantage)
+    ppo = torch.min(rho_adv, rho_clipped * advantage)
+    spo = rho_adv - (advantage.abs() / (2.0 * epsilon_clip)) * torch.square(rho - 1.0)
 
-    if symmetrical_ppo:
-        return pos
-
-    neg = rho_adv - (advantage.abs() / (2.0 * epsilon_clip)) * torch.square(rho - 1.0)
-    return torch.where(advantage > 0, pos, neg)
+    if cfg.trust_region_mode == "ppo":
+        return ppo
+    if cfg.trust_region_mode == "spo":
+        return spo
+    return torch.where(advantage > 0, ppo, spo)
 
 
 def compute_policy_ratio(
     l_old: torch.Tensor,
     l_new: torch.Tensor,
     cfg: SJFPOConfig,
+    advantage: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Per-sample importance ratios ρ_i = exp(ℓ_old,i − ℓ_new,i) with OFF clamps.
+    """Official FPO++ ratio exp(old CFM loss - new CFM loss).
 
-    Symmetric max-clamp on both losses (``cfm_loss_clamp``) and a symmetric
-    STE cap on the log-ratio (``cfm_diff_clamp_max``) — forward clamped,
-    gradient flows.
+    The official implementation clamps both CFM losses from above, optionally
+    clamps the new loss for negative-advantage samples, then applies a
+    one-sided STE cap to the log-ratio.
     """
-    delta = torch.clamp(l_old, max=cfg.cfm_clamp) - torch.clamp(
-        l_new, max=cfg.cfm_clamp
-    )
-    safe_delta = delta.clamp(-cfg.log_ratio_cap, cfg.log_ratio_cap)
-    # STE: forward uses clamped delta, backward flows through the unclamped delta.
+    old = torch.clamp(l_old, max=cfg.cfm_clamp)
+    new = torch.clamp(l_new, max=cfg.cfm_clamp)
+    if cfg.cfm_loss_clamp_negative_advantages and advantage is not None:
+        new = torch.where(
+            advantage < 0,
+            torch.clamp(new, max=cfg.cfm_loss_clamp_negative_advantages_max),
+            new,
+        )
+    delta = old - new
+    safe_delta = delta.clamp(max=cfg.log_ratio_cap)
+    # STE: forward uses the capped delta, backward flows through the original.
     delta_st = safe_delta.detach() + delta - delta.detach()
     return torch.exp(delta_st)
 
@@ -212,7 +237,7 @@ def compute_policy_loss(
     cfg: SJFPOConfig,
 ) -> torch.Tensor:
     """Scalar FPO++ policy objective: MEAN over i of ψ per chunk (Eq.13)."""
-    rho = compute_policy_ratio(l_old, l_new, cfg)
+    rho = compute_policy_ratio(l_old, l_new, cfg, advantage=advantage)
     return compute_aspo_surrogate(rho, advantage, cfg, cfg.epsilon_clip).mean()
 
 

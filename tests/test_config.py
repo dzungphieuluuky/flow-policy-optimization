@@ -124,7 +124,7 @@ def test_sjfpo_config_documented_ranges():
     assert c.dit_depth >= 1
     assert c.dit_heads >= 1
     assert c.dit_mlp_ratio > 0
-    assert c.dit_time_dim >= 8
+    assert c.time_embed_dim >= 8
     assert c.grad_clip_norm > 0
     assert c.n_obs_steps == 16
     assert c.action_horizon == 16

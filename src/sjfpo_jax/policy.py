@@ -56,7 +56,7 @@ class SJFPOJaxPolicy(nnx.Module):
         dit_depth: int = 4,
         dit_heads: int = 4,
         dit_mlp_ratio: float = 4.0,
-        dit_time_dim: int = 128,
+        time_embed_dim: int = 128,
         timestep_scale: float = 1000.0,
         n_obs_steps: int = 16,
         *,
@@ -65,7 +65,7 @@ class SJFPOJaxPolicy(nnx.Module):
     ):
         self.actor = SJFPOFlowModel(
             action_dim, hidden_dim, dit_depth, dit_heads,
-            dit_mlp_ratio, dit_time_dim, timestep_scale, rngs=rngs,
+            dit_mlp_ratio, time_embed_dim, timestep_scale, rngs=rngs,
             param_dtype=param_dtype,
         )
         self.conditioner = StateConditioner(obs_dim, hidden_dim, rngs=rngs,

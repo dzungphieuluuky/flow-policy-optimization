@@ -21,7 +21,8 @@ gamma: 0.999
 gae_lambda: 0.995
 epsilon_clip: 0.05
 use_dct_transform: false
-use_aspo: false
+trust_region_mode: aspo
+cfm_loss_reduction: sqrt
 use_per_bin_clip: false
 epsilon_clip_lowfreq: 0.02
 epsilon_clip_highfreq: 0.10
@@ -41,7 +42,7 @@ timestep_beta_beta: 2.0
 dit_depth: 4
 dit_heads: 4
 dit_mlp_ratio: 4.0
-dit_time_dim: 128
+time_embed_dim: 128
 timestep_scale: 1000.0
 
 # -- Losses / optimization --------------------------------------------

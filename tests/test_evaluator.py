@@ -36,7 +36,7 @@ def make_flow(action_dim, cfg):
         dit_depth=cfg.dit_depth,
         dit_heads=cfg.dit_heads,
         dit_mlp_ratio=cfg.dit_mlp_ratio,
-        dit_time_dim=cfg.dit_time_dim,
+        time_embed_dim=cfg.time_embed_dim,
         timestep_scale=cfg.timestep_scale,
     )
 

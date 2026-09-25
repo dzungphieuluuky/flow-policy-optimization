@@ -43,12 +43,16 @@ class SJFPOConfig(PreTrainedConfig):
     gae_lambda: float = 0.995
     epsilon_clip: float = 0.05
     use_dct_transform: bool = False  # spectral chunk encoding; False = raw action chunk
-    use_aspo: bool = False
-    use_per_bin_clip: bool = False  # two-group epsilon over DCT bins
+    # FPO++ trust region: ppo, spo, or aspo (official default).
+    trust_region_mode: str = "aspo"
+    use_per_bin_clip: bool = False  # legacy diagnostics-only bin clipping
     epsilon_clip_lowfreq: float = 0.02  # tight: low bins carry task intent
     epsilon_clip_highfreq: float = 0.10  # loose: high bins are detail/exploration
+    cfm_loss_reduction: str = "sqrt"  # mean | sum | sqrt, official default sqrt
     cfm_clamp: float = 20.0
-    log_ratio_cap: float = 10.0
+    cfm_loss_clamp_negative_advantages: bool = True
+    cfm_loss_clamp_negative_advantages_max: float = 20.0
+    log_ratio_cap: float = 10.0  # official cfm_diff_clamp_max (one-sided)
     advantage_clamp: float = 100.0
     use_clipped_value_loss: bool = False
     min_timestep: float = 0.005
@@ -63,7 +67,7 @@ class SJFPOConfig(PreTrainedConfig):
     dit_depth: int = 4
     dit_heads: int = 4
     dit_mlp_ratio: float = 4.0
-    dit_time_dim: int = 128
+    time_embed_dim: int = 128
     # Flow time t in [0, 1] is scaled by this before the DDPM sinusoidal ladder
     # (designed for integer steps 0–1000); without it every channel sits at
     # angle <= 1 and t is nearly unresolvable.
@@ -127,8 +131,8 @@ class SJFPOConfig(PreTrainedConfig):
             raise ValueError(f"dit_heads={self.dit_heads} must be >= 1")
         if self.dit_mlp_ratio <= 0:
             raise ValueError(f"dit_mlp_ratio={self.dit_mlp_ratio} must be > 0")
-        if self.dit_time_dim < 1:
-            raise ValueError(f"dit_time_dim={self.dit_time_dim} must be >= 1")
+        if self.time_embed_dim < 1:
+            raise ValueError(f"time_embed_dim={self.time_embed_dim} must be >= 1")
         if self.timestep_scale <= 0:
             raise ValueError(f"timestep_scale={self.timestep_scale} must be > 0")
 
@@ -150,8 +154,14 @@ class SJFPOConfig(PreTrainedConfig):
                     "require 0 < epsilon_clip_lowfreq <= epsilon_clip_highfreq < 1, "
                     f"got ({lo}, {hi})"
                 )
+        if self.trust_region_mode not in {"ppo", "spo", "aspo"}:
+            raise ValueError("trust_region_mode must be 'ppo', 'spo', or 'aspo'")
+        if self.cfm_loss_reduction not in {"mean", "sum", "sqrt"}:
+            raise ValueError("cfm_loss_reduction must be 'mean', 'sum', or 'sqrt'")
         if self.cfm_clamp <= 0:
             raise ValueError(f"cfm_clamp={self.cfm_clamp} must be > 0")
+        if self.cfm_loss_clamp_negative_advantages_max <= 0:
+            raise ValueError("cfm_loss_clamp_negative_advantages_max must be > 0")
         if self.log_ratio_cap <= 0:
             raise ValueError(f"log_ratio_cap={self.log_ratio_cap} must be > 0")
         if self.advantage_clamp <= 0:

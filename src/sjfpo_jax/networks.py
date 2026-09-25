@@ -275,7 +275,7 @@ class SJFPOFlowModel(nn.Module):
     dit_depth: int
     dit_heads: int
     dit_mlp_ratio: float
-    dit_time_dim: int
+    time_embed_dim: int
     timestep_scale: float
 
     @nn.compact
@@ -292,7 +292,7 @@ class SJFPOFlowModel(nn.Module):
         h = h + token_pos
 
         # Time embedding -> conditioning.
-        temb = SinusoidalEncoding(self.dit_time_dim, self.timestep_scale).encode_times(t)
+        temb = SinusoidalEncoding(self.time_embed_dim, self.timestep_scale).encode_times(t)
         c = CondMLP(4 * self.hidden_dim, self.hidden_dim)(temb) + condition
 
         blocks = [

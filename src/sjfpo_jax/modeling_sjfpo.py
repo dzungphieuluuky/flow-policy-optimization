@@ -171,7 +171,7 @@ class SJFPOPolicy:
             dit_depth=config.dit_depth,
             dit_heads=config.dit_heads,
             dit_mlp_ratio=config.dit_mlp_ratio,
-            dit_time_dim=config.dit_time_dim,
+            time_embed_dim=config.time_embed_dim,
             timestep_scale=config.timestep_scale,
         )
         conditioner = StateConditioner(obs_dim=obs_dim, hidden_dim=config.hidden_dim)

@@ -409,20 +409,60 @@ class DiTBlock(nn.Module):
     def forward(
         self, x: torch.Tensor, c: torch.Tensor, return_stats: bool = False
     ) -> torch.Tensor | tuple[torch.Tensor, dict[str, torch.Tensor]]:
-        """([B, H, D], [B, D]) -> [B, H, D] (or a tuple when stats are requested)."""
+        """Run DiT over ``[B,K,D]`` or coordinate-aware ``[B,K,D_a,H]``."""
+        coordinate_axis = x.dim() == 4
+        token_axis = not coordinate_axis and c.dim() == 3
         b = c.shape[0]
-        # reshape+unbind avoids building a [B, 1, 6H] intermediate.
-        parts = self.adaLN(c).view(b, 6, -1)
-        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = parts.unbind(
-            dim=1
-        )
-
-        h = modulate(self.norm1(x), shift_msa.unsqueeze(1), scale_msa.unsqueeze(1))
-        x = x + gate_msa.unsqueeze(1) * self.attn(h)
-
-        out = x + gate_mlp.unsqueeze(1) * self.mlp(
-            modulate(self.norm2(x), shift_mlp.unsqueeze(1), scale_mlp.unsqueeze(1))
-        )
+        if coordinate_axis:
+            _, k, action_axis, _ = x.shape
+            parts = self.adaLN(c).view(b, k, action_axis, 6, -1)
+            (
+                shift_msa,
+                scale_msa,
+                gate_msa,
+                shift_mlp,
+                scale_mlp,
+                gate_mlp,
+            ) = parts.unbind(dim=3)
+            h = modulate(self.norm1(x), shift_msa, scale_msa)
+            # Attention remains over the K action tokens, independently per
+            # action dimension; only the batch/attention axis is reshaped.
+            h_attn = h.permute(0, 2, 1, 3).reshape(
+                b * action_axis, k, h.shape[-1]
+            )
+            attn_out = self.attn(h_attn)
+            attn_out = attn_out.reshape(b, action_axis, k, -1).permute(0, 2, 1, 3)
+            x = x + gate_msa * attn_out
+            out = x + gate_mlp * self.mlp(
+                modulate(self.norm2(x), shift_mlp, scale_mlp)
+            )
+        elif token_axis:
+            _, k, _ = x.shape
+            parts = self.adaLN(c).view(b, k, 6, -1)
+            (
+                shift_msa,
+                scale_msa,
+                gate_msa,
+                shift_mlp,
+                scale_mlp,
+                gate_mlp,
+            ) = parts.unbind(dim=2)
+            h = modulate(self.norm1(x), shift_msa, scale_msa)
+            x = x + gate_msa * self.attn(h)
+            out = x + gate_mlp * self.mlp(
+                modulate(self.norm2(x), shift_mlp, scale_mlp)
+            )
+        else:
+            # reshape+unbind avoids building a [B, 1, 6H] intermediate.
+            parts = self.adaLN(c).view(b, 6, -1)
+            shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = parts.unbind(
+                dim=1
+            )
+            h = modulate(self.norm1(x), shift_msa.unsqueeze(1), scale_msa.unsqueeze(1))
+            x = x + gate_msa.unsqueeze(1) * self.attn(h)
+            out = x + gate_mlp.unsqueeze(1) * self.mlp(
+                modulate(self.norm2(x), shift_mlp.unsqueeze(1), scale_mlp.unsqueeze(1))
+            )
 
         if not return_stats:
             return out
@@ -499,7 +539,7 @@ class SJFPOFlowModel(nn.Module):
         dit_depth: int,
         dit_heads: int,
         dit_mlp_ratio: float,
-        dit_time_dim: int,
+        time_embed_dim: int,
         timestep_scale: float,
     ):
         super().__init__()
@@ -507,8 +547,8 @@ class SJFPOFlowModel(nn.Module):
             raise ValueError("action_dim must be positive and hidden_dim at least 2")
         if action_horizon < 1:
             raise ValueError("action_horizon must be positive")
-        if dit_depth < 1 or dit_heads < 1 or dit_time_dim < 2:
-            raise ValueError("dit_depth, dit_heads, and dit_time_dim must be positive")
+        if dit_depth < 1 or dit_heads < 1 or time_embed_dim < 2:
+            raise ValueError("dit_depth, dit_heads, and time_embed_dim must be positive")
         if (
             not math.isfinite(dit_mlp_ratio)
             or dit_mlp_ratio <= 0
@@ -520,16 +560,16 @@ class SJFPOFlowModel(nn.Module):
         self.action_dim = action_dim
         self.hidden_dim = hidden_dim
         self.action_horizon = action_horizon
-        self.time_dim = dit_time_dim
+        self.time_embed_dim = time_embed_dim
         self.timestep_embedder = SinusoidalEncoding(
-            self.time_dim, scale=timestep_scale
+            self.time_embed_dim, scale=timestep_scale
         )
         self.in_proj = nn.Linear(action_dim, hidden_dim)
         # Learned positional embedding with one row per configured action
         # position. Reduced DCT token counts slice this table to their length.
         self.token_pos = nn.Parameter(torch.zeros(1, action_horizon, hidden_dim))
         nn.init.normal_(self.token_pos, std=0.02)
-        self.time_mlp = CondMLP(dit_time_dim, 4 * hidden_dim, hidden_dim)
+        self.time_mlp = CondMLP(time_embed_dim, 4 * hidden_dim, hidden_dim)
         self.blocks = nn.ModuleList(
             DiTBlock(hidden_dim, dit_heads, dit_mlp_ratio) for _ in range(dit_depth)
         )
@@ -549,10 +589,11 @@ class SJFPOFlowModel(nn.Module):
         condition: torch.Tensor,
         return_stats: bool = False,
     ) -> torch.Tensor | tuple[torch.Tensor, dict[str, torch.Tensor]]:
-        """Predict velocity: ([B, Ka, D], t, [B, D]) -> [B, Ka, D] (or tuple).
+        """Predict velocity from token actions and shared-per-token times.
 
-        ``t`` may be a scalar or a ``[B]`` tensor. Scalar timesteps are
-        broadcast to the actor batch size for stable compilation.
+        ``t`` is either a scalar, ``[B]``, or ``[B, K, 1]``. The per-token
+        form gives each action token its own time, shared across its action
+        dimensions.
         """
         if x_t.dim() != 3:
             raise ValueError(f"x_t must have shape [B, K, D], got {tuple(x_t.shape)}")
@@ -572,34 +613,59 @@ class SJFPOFlowModel(nn.Module):
                 f"condition feature dimension must be {self.hidden_dim}, "
                 f"got {condition.shape[1]}"
             )
-
-        t = torch.as_tensor(t, dtype=torch.float32, device=x_t.device)
-        if t.dim() > 1:
-            raise ValueError(f"t must be scalar or [B], got shape {tuple(t.shape)}")
-        t = t.reshape(-1)
-        if t.numel() not in (1, x_t.shape[0]):
-            raise ValueError(
-                f"t must contain 1 or {x_t.shape[0]} values, got {t.numel()}"
-            )
-        temb = self.timestep_embedder.encode_times(t).to(
-            device=x_t.device, dtype=x_t.dtype
-        )
-        # A scalar t produces one conditioning vector and broadcasts across B.
-        c = self.time_mlp(temb) + condition.to(device=x_t.device, dtype=x_t.dtype)
-
         if x_t.shape[1] > self.action_horizon:
             raise ValueError(
                 f"action token count {x_t.shape[1]} exceeds action_horizon "
                 f"{self.action_horizon}"
             )
-        token_pos = self.token_pos[:, : x_t.shape[1], :].to(
-            device=x_t.device, dtype=x_t.dtype
-        )
-        h = self.in_proj(x_t) + token_pos
+
+        t = torch.as_tensor(t, dtype=torch.float32, device=x_t.device)
+        token_axis = t.dim() in (2, 3) and tuple(t.shape[:2]) == tuple(x_t.shape[:2])
+        if token_axis:
+            if t.dim() == 3:
+                if t.shape[-1] != 1:
+                    raise ValueError(
+                        f"t must end in a singleton action-dimension axis, got {tuple(t.shape)}"
+                    )
+                t = t.squeeze(-1)
+            temb = self.timestep_embedder.encode_times(t.reshape(-1))
+            temb = temb.reshape(x_t.shape[0], x_t.shape[1], -1).to(
+                device=x_t.device, dtype=x_t.dtype
+            )
+            c = self.time_mlp(temb) + condition.to(
+                device=x_t.device, dtype=x_t.dtype
+            )[:, None, :]
+            token_pos = self.token_pos[:, : x_t.shape[1], :].to(
+                device=x_t.device, dtype=x_t.dtype
+            )
+            h = self.in_proj(x_t) + token_pos
+        elif t.dim() <= 1:
+            t = t.reshape(-1)
+            if t.numel() not in (1, x_t.shape[0]):
+                raise ValueError(
+                    f"t must contain 1 or {x_t.shape[0]} values, got {t.numel()}"
+                )
+            temb = self.timestep_embedder.encode_times(t).to(
+                device=x_t.device, dtype=x_t.dtype
+            )
+            c = self.time_mlp(temb) + condition.to(
+                device=x_t.device, dtype=x_t.dtype
+            )
+            token_pos = self.token_pos[:, : x_t.shape[1], :].to(
+                device=x_t.device, dtype=x_t.dtype
+            )
+            h = self.in_proj(x_t) + token_pos
+        else:
+            raise ValueError(
+                f"t must be scalar, [B], or [B, K, 1], got {tuple(t.shape)}"
+            )
 
         if not return_stats:
             for block in self.blocks:
                 h = block(h, c)
+            if token_axis:
+                shift_out, scale_out = self.adaLN_out(c).chunk(2, dim=-1)
+                return self.out(modulate(self.norm_out(h), shift_out, scale_out))
             shift_out, scale_out = self.adaLN_out(c)[:, None, :].chunk(2, dim=-1)
             return self.out(modulate(self.norm_out(h), shift_out, scale_out))
 
@@ -617,8 +683,12 @@ class SJFPOFlowModel(nn.Module):
                     for k in ("gate_msa", "gate_mlp", "scale_msa", "scale_mlp")
                 },
             }
-        shift_out, scale_out = self.adaLN_out(c)[:, None, :].chunk(2, dim=-1)
-        out = self.out(modulate(self.norm_out(h), shift_out, scale_out))
+        if token_axis:
+            shift_out, scale_out = self.adaLN_out(c).chunk(2, dim=-1)
+            out = self.out(modulate(self.norm_out(h), shift_out, scale_out))
+        else:
+            shift_out, scale_out = self.adaLN_out(c)[:, None, :].chunk(2, dim=-1)
+            out = self.out(modulate(self.norm_out(h), shift_out, scale_out))
         return out, stats
 
 

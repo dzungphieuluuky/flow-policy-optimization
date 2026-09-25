@@ -35,7 +35,6 @@ from sjfpo.collector import collect_chunks, collect_chunks_vec
 from sjfpo.dct_utils import (
     decode_coeffs_to_velocity,
     extract_dct_coeffs,
-    sample_freq_weighted_noise,
 )
 from sjfpo.fpo_core import (
     compute_aspo_surrogate,
@@ -86,24 +85,51 @@ def _sample_spectral_eps(
     device: torch.device,
 ) -> torch.Tensor:
     """Draw MC noise matching the token layout (DCT or raw), on ``device``."""
-    if cfg.use_dct_transform:
-        Ka = _num_spectral_tokens_kept(cfg)
-        M_modes = max(1, Ka - 1) if Ka > 1 else 0
-        eps = sample_freq_weighted_noise(
-            M=M_modes,
-            d=action_dim,
-            T=1.0,
-            B=n * cfg.num_mc_samples,
-            sigma=1.0,
-            device=device,
-        )
-        return eps.reshape(n, cfg.num_mc_samples, Ka, action_dim)
-    return sample_noise(
-        (n, cfg.num_mc_samples, cfg.action_horizon, action_dim),
-        cfg,
-        device,
-        None,
+    shape = (
+        n,
+        cfg.num_mc_samples,
+        (
+            _num_spectral_tokens_kept(cfg)
+            if cfg.use_dct_transform
+            else cfg.action_horizon
+        ),
+        action_dim,
     )
+    return sample_noise(shape, cfg, device, None)
+
+
+def _mc_x_t(
+    flatten_mc_timestep: torch.Tensor,
+    flatten_mc_noise: torch.Tensor,
+    flatten_mc_action: torch.Tensor,
+    flow_shape: tuple[int, ...],
+) -> torch.Tensor:
+    if flatten_mc_timestep.dim() == 1:
+        flatten_mc_timestep = flatten_mc_timestep[:, None].expand(
+            -1, flatten_mc_noise.shape[-1]
+        )
+        flatten_mc_noise = flatten_mc_noise.reshape(flatten_mc_timestep.shape[0], -1)
+        flatten_mc_action = flatten_mc_action.reshape(flatten_mc_timestep.shape[0], -1)
+    else:
+        flatten_mc_timestep = flatten_mc_timestep.expand(-1, -1, flow_shape[-1])
+        flatten_mc_noise = flatten_mc_noise.reshape(
+            flatten_mc_timestep.shape[0], flow_shape[0], flow_shape[1]
+        )
+        flatten_mc_action = flatten_mc_action.reshape(
+            flatten_mc_timestep.shape[0], flow_shape[0], flow_shape[1]
+        )
+    return (
+        (1.0 - flatten_mc_timestep) * flatten_mc_noise
+        + flatten_mc_timestep * flatten_mc_action
+    ).reshape(-1, *flow_shape)
+
+
+def _actor_tau(
+    flatten_mc_timestep: torch.Tensor, flow_shape: tuple[int, ...]
+) -> torch.Tensor:
+    if flatten_mc_timestep.dim() == 1:
+        return flatten_mc_timestep
+    return flatten_mc_timestep.squeeze(-1)
 
 
 def _actor_call(actor, x_t, tau, cond, *, use_ckpt: bool):
@@ -142,7 +168,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             config.dit_depth,
             config.dit_heads,
             config.dit_mlp_ratio,
-            config.dit_time_dim,
+            config.time_embed_dim,
             config.timestep_scale,
         )
         self.conditioner = StateConditioner(obs_dim, config.hidden_dim)
@@ -388,13 +414,11 @@ class SJFPOPolicy(PreTrainedPolicy):
             spectral_action = extract_dct_coeffs(actions, M=token_count - 1)
         else:
             spectral_action = actions
-        tau_bn, eps_flat, action_rep, flow_shape, num_mc = run_mc_simulation(
+        tau_bn, flatten_mc_noise, flatten_mc_action, flow_shape, num_mc = run_mc_simulation(
             spectral_action, eps, tau
         )
-        x_t = (
-            (1.0 - tau_bn[:, None]) * eps_flat
-            + tau_bn[:, None] * action_rep
-        ).reshape(-1, *flow_shape)
+        x_t = _mc_x_t(tau_bn, flatten_mc_noise, flatten_mc_action, flow_shape)
+        actor_tau = _actor_tau(tau_bn, flow_shape)
         actor = _unwrap_compiled(self.actor)
         conditioner = _unwrap_compiled(self.conditioner)
         with torch.inference_mode(), autocast_context(actions.device):
@@ -402,7 +426,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             condition_flat = einx.id(
                 "n d -> n m d", condition, m=num_mc
             ).reshape(num_mc * condition.shape[0], condition.shape[-1])
-            v_initial = actor(x_t, tau_bn, condition_flat).float()
+            v_initial = actor(x_t, actor_tau, condition_flat).float()
         with torch.autocast(device_type=actions.device.type, enabled=False):
             v_star = (spectral_action[:, None] - eps).float()
             v_initial = v_initial.reshape(
@@ -583,7 +607,10 @@ class SJFPOPolicy(PreTrainedPolicy):
         ) >= lengths.unsqueeze(1)
 
         tau = sample_timesteps(
-            (n_chunks, cfg.num_mc_samples), cfg, device, None
+            (n_chunks, cfg.num_mc_samples, num_spectral_tokens_kept),
+            cfg,
+            device,
+            None,
         ).unsqueeze(-1)
         eps = _sample_spectral_eps(cfg, n_chunks, action_dim, device)
 
@@ -672,8 +699,6 @@ class SJFPOPolicy(PreTrainedPolicy):
         # receding-horizon execution is enabled. ``action_is_pad`` records
         # execution bookkeeping; only chunks with no executed action are
         # invalid for the policy update.
-        policy_valid = ~action_is_pad.all(dim=1)
-
         states = self.preprocessor({OBS_STATE: states})[OBS_STATE]
 
         num_spectral_tokens_kept = _num_spectral_tokens_kept(cfg)
@@ -693,7 +718,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             raise ValueError("mc_tau and mc_eps must be provided together")
         if has_mc_tau:
             tau = to_tensor(batch["mc_tau"], dtype=storage_dtype, device=device)
-            expected_tau = (n, cfg.num_mc_samples, 1)
+            expected_tau = (n, cfg.num_mc_samples, num_spectral_tokens_kept, 1)
             if tuple(tau.shape) != expected_tau:
                 raise ValueError(
                     f"mc_tau shape {tuple(tau.shape)} != {expected_tau}"
@@ -706,17 +731,19 @@ class SJFPOPolicy(PreTrainedPolicy):
                 )
         else:
             tau = sample_timesteps(
-                (n, cfg.num_mc_samples), cfg, device, None
+                (n, cfg.num_mc_samples, num_spectral_tokens_kept),
+                cfg,
+                device,
+                None,
             ).unsqueeze(-1)
             eps = _sample_spectral_eps(cfg, n, action_dim, device)
 
         # Noisy anchors.
-        tau_bn, eps_flat, a_rep, flow_shape, num_mc = run_mc_simulation(
+        tau_bn, flatten_mc_noise, flatten_mc_action, flow_shape, num_mc = run_mc_simulation(
             spectral_action_tokens, eps, tau
         )
-        x_t_flat = (
-            (1.0 - tau_bn[:, None]) * eps_flat + tau_bn[:, None] * a_rep
-        ).reshape(-1, *flow_shape)
+        x_t_flat = _mc_x_t(tau_bn, flatten_mc_noise, flatten_mc_action, flow_shape)
+        actor_tau = _actor_tau(tau_bn, flow_shape)
 
         # Condition fusion: [n, D] -> [n*m, D].
         with autocast_context(device):
@@ -747,15 +774,15 @@ class SJFPOPolicy(PreTrainedPolicy):
                     "n m d -> (n m) d",
                     einx.id("n d -> n m d", self.old_conditioner(states), m=num_mc),
                 )
-                v_old = self.old_actor(x_t_flat, tau_bn, old_cond_flat).float()
+                v_old = self.old_actor(x_t_flat, actor_tau, old_cond_flat).float()
 
         with autocast_context(device):
             if cfg.use_gradient_checkpointing:
                 v_new = _actor_call(
-                    self.actor, x_t_flat, tau_bn, cond_flat, use_ckpt=True
+                    self.actor, x_t_flat, actor_tau, cond_flat, use_ckpt=True
                 )
             else:
-                v_new = self.actor(x_t_flat, tau_bn, cond_flat)
+                v_new = self.actor(x_t_flat, actor_tau, cond_flat)
             v_new = v_new.float()
 
         cond_stats = None
@@ -764,7 +791,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             # cheap relative to attention, and only on info-requesting steps.
             with torch.inference_mode(), autocast_context(device):
                 _, cond_stats = self.actor(
-                    x_t_flat[:1], tau_bn[:1], cond_flat[:1], return_stats=True
+                    x_t_flat[:1], actor_tau[:1], cond_flat[:1], return_stats=True
                 )
 
         # CFM losses under target velocities (fp32 for stability).
@@ -776,30 +803,17 @@ class SJFPOPolicy(PreTrainedPolicy):
                 v_old_r_f = v_old.reshape(n, num_mc, *flow_shape)
                 l_old_bin = compute_cfm_loss(v_old_r_f, v_star_f, cfg, "bin")
                 l_old = compute_cfm_loss(v_old_r_f, v_star_f, cfg, "sample")
+            adv_mc = advantages.float().unsqueeze(1)
             l_new_bin = compute_cfm_loss(v_new_r_f, v_star_f, cfg, "bin")
-            rho_bin = compute_policy_ratio(l_old_bin, l_new_bin, cfg)  # computed once
+            rho_bin = compute_policy_ratio(l_old_bin, l_new_bin, cfg)  # diagnostics only
 
             l_new = compute_cfm_loss(v_new_r_f, v_star_f, cfg, "sample")
-            rho = compute_policy_ratio(l_old, l_new, cfg)
+            rho = compute_policy_ratio(l_old, l_new, cfg, advantage=adv_mc)
 
-            adv_mc = advantages.float().unsqueeze(1)
+            psi = compute_aspo_surrogate(rho, adv_mc, cfg, cfg.epsilon_clip)
+            policy_per_chunk = -psi.mean(dim=1)
 
-            if cfg.use_per_bin_clip:
-                n_bins = rho_bin.shape[-1]
-                split = max(1, n_bins // 2)
-                eps_bin = torch.full(
-                    (n_bins,), cfg.epsilon_clip_highfreq, device=device
-                )
-                eps_bin[:split] = cfg.epsilon_clip_lowfreq
-                psi = compute_aspo_surrogate(
-                    rho_bin, adv_mc.unsqueeze(-1), cfg, eps_bin
-                )
-                policy_per_chunk = -psi.mean(dim=(1, 2))
-            else:
-                psi = compute_aspo_surrogate(rho, adv_mc, cfg, cfg.epsilon_clip)
-                policy_per_chunk = -psi.mean(dim=1)
-
-        # Value loss (Huber).
+        # Value loss (official FPO++ uses mean squared error).
         with autocast_context(device):
             v_pred = self.critic(states).float()
         returns_d = returns.reshape(-1)
@@ -808,9 +822,7 @@ class SJFPOPolicy(PreTrainedPolicy):
                 f"value/return shape mismatch: v_pred={tuple(v_pred.shape)}, "
                 f"returns_d={tuple(returns_d.shape)}"
             )
-        se = torch.nn.functional.smooth_l1_loss(
-            v_pred, returns_d, reduction="none", beta=1.0
-        )
+        se = torch.square(v_pred - returns_d)
         if cfg.use_clipped_value_loss and "values" in batch:
             old_values = to_tensor(
                 batch["values"], dtype=storage_dtype, device=device
@@ -818,23 +830,17 @@ class SJFPOPolicy(PreTrainedPolicy):
             v_clipped = old_values + (v_pred - old_values).clamp(
                 -cfg.epsilon_clip, cfg.epsilon_clip
             )
-            clipped_se = torch.nn.functional.smooth_l1_loss(
-                v_clipped, returns_d, reduction="none", beta=1.0
-            )
+            clipped_se = torch.square(v_clipped - returns_d)
             value_per_chunk = torch.maximum(se, clipped_se)
         else:
             value_per_chunk = se
 
-        policy_valid = policy_valid.to(policy_per_chunk.dtype)
-        masked_policy_per_chunk = policy_per_chunk * policy_valid
-        valid_policy_count = policy_valid.sum().clamp_min(1)
-
         if reduction == "mean":
-            policy_loss = masked_policy_per_chunk.sum() / valid_policy_count
+            policy_loss = policy_per_chunk.mean()
             value_loss = value_per_chunk.mean()
             loss = policy_loss + cfg.vf_coef * value_loss
         elif reduction == "none":
-            loss = masked_policy_per_chunk + cfg.vf_coef * value_per_chunk
+            loss = policy_per_chunk + cfg.vf_coef * value_per_chunk
         else:
             raise ValueError(f"reduction={reduction!r} must be 'mean' or 'none'")
 

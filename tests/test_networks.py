@@ -42,7 +42,7 @@ def make_flow(nets, action_dim):
         dit_depth=_DEFAULTS.dit_depth,
         dit_heads=_DEFAULTS.dit_heads,
         dit_mlp_ratio=_DEFAULTS.dit_mlp_ratio,
-        dit_time_dim=_DEFAULTS.dit_time_dim,
+        time_embed_dim=_DEFAULTS.time_embed_dim,
         timestep_scale=_DEFAULTS.timestep_scale,
     )
 
@@ -226,6 +226,29 @@ def test_policy_flow_head_tensor_t_and_grad():
     assert all(
         p.grad is not None and torch.isfinite(p.grad).all() for p in policy.parameters()
     )
+
+
+def test_policy_flow_head_per_token_timesteps():
+    nets = make_nets()
+    torch.manual_seed(13)
+    policy = make_flow(nets, 3)
+    with torch.no_grad():
+        for block in policy.blocks:
+            block.adaLN.fc2.weight.normal_(std=0.1)
+        policy.adaLN_out.weight.normal_(std=0.1)
+        policy.out.weight.normal_(std=0.1)
+    x_t = torch.randn(2, CHUNK, 3)
+    condition = torch.randn(2, ZD)
+    t_a = torch.rand(2, CHUNK, 1)
+    t_b = t_a.clone()
+    t_b[:, 1, 0] += 0.25
+    v_a = policy(x_t, t_a, condition)
+    v_b = policy(x_t, t_b, condition)
+    assert v_a.shape == (2, CHUNK, 3)
+    assert v_b.shape == (2, CHUNK, 3)
+    assert not torch.allclose(v_a[:, 1], v_b[:, 1])
+    v_a.sum().backward()
+    assert policy.time_mlp.fc1.weight.grad is not None
 
 
 def test_policy_flow_head_cond_from_conditioner():
