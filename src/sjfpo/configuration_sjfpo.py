@@ -35,8 +35,6 @@ class SJFPOConfig(PreTrainedConfig):
     chunks_per_update: int = 256
     num_epochs: int = 16
     num_minibatches: int = 4
-    # 0 derives a stable capacity from chunks_per_update/n_action_steps.
-    compile_batch_size: int = 0
     num_envs: int = 64
 
     gamma: float = 0.999
@@ -230,8 +228,6 @@ class SJFPOConfig(PreTrainedConfig):
             raise ValueError(f"num_minibatches={self.num_minibatches} must be >= 1")
         if self.chunks_per_update < 1:
             raise ValueError(f"chunks_per_update={self.chunks_per_update} must be >= 1")
-        if self.compile_batch_size < 0:
-            raise ValueError("compile_batch_size must be >= 0")
         if self.chunks_per_update < self.num_minibatches:
             raise ValueError(
                 f"chunks_per_update={self.chunks_per_update} must be >= "

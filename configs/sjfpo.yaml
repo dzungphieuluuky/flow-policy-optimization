@@ -15,7 +15,6 @@ num_inference_steps: 16
 chunks_per_update: 256
 num_epochs: 16
 num_minibatches: 4
-compile_batch_size: 0
 num_envs: 64
 
 # -- Optimization ------------------------------------------------------
