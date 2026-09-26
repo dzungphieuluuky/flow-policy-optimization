@@ -42,7 +42,7 @@ from sjfpo.fpo_core import (
     sample_noise,
     sample_timesteps,
 )
-from sjfpo.gae import compute_step_advantages_torch
+from sjfpo.gae import compute_chunk_advantages
 from sjfpo.networks import (
     Critic,
     RunningMeanStd,
@@ -633,9 +633,10 @@ class SJFPOPolicy(PreTrainedPolicy):
 
         A chunk may execute only one step before termination, so the
         allocation-free upper bound on chunk count is one chunk per requested
-        step. Advantages are normalised over every executed environment step,
-        matching rsl_rl/FPO++ storage semantics, before the first executed
-        step's step-GAE target is exposed as the chunk-level policy target.
+        step. Each chunk is one macro-transition: the backup sums the rewards
+        of its executed steps, discounts by ``gamma ** h``, and the GAE
+        recursion runs between consecutive chunks of the same env (see
+        :mod:`sjfpo.gae`). Advantages are normalised over chunks.
 
         The batch carries one raw post-step frame per executed step, kept
         separate from the overlapping observation windows so the training loop
@@ -763,8 +764,6 @@ class SJFPOPolicy(PreTrainedPolicy):
         step_next_states = active["step_next_states"]
         all_rewards = active["step_rewards"]
         actions = active["chunk_actions"]
-        step_terminated = active["step_terminated"]
-        step_truncated = active["step_truncated"]
         states = step_states.index_select(0, chunk_starts)
 
         with torch.inference_mode():
@@ -779,21 +778,23 @@ class SJFPOPolicy(PreTrainedPolicy):
             step_next_values = all_step_values[total_executed:]
             values = step_values.index_select(0, chunk_starts)
 
-        step_advantages, step_returns = compute_step_advantages_torch(
+        # One chunk is one macro-transition, so the backup is taken at chunk
+        # granularity: reward summed over the chunk, discount gamma ** h.
+        advantages, returns = compute_chunk_advantages(
             all_rewards,
             step_values,
             step_next_values,
-            step_terminated,
+            chunk_starts,
+            lengths,
+            chunk_terminated=active["chunk_done"],
+            chunk_truncated=active["chunk_truncated"],
+            chunk_env_id=active["chunk_env_id"],
+            chunk_size=cfg.action_horizon,
             gamma=cfg.gamma,
             lam=cfg.gae_lambda,
-            truncated=step_truncated,
         )
-        if cfg.normalize_advantage and step_advantages.numel() > 0:
-            step_advantages = (step_advantages - step_advantages.mean()) / (
-                step_advantages.std() + 1e-8
-            )
-        advantages = step_advantages.index_select(0, chunk_starts)
-        returns = step_returns.index_select(0, chunk_starts)
+        if cfg.normalize_advantage and advantages.numel() > 0:
+            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
         advantages = advantages.to(storage_dtype)
         returns = returns.to(storage_dtype)
 
@@ -1048,11 +1049,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             value_per_chunk = se
 
         if reduction == "mean":
-            # Weight by executed steps so the update is a mean over environment
-            # steps, not over chunks: a chunk cut short by a termination would
-            # otherwise count as much as one that ran the full horizon.
-            step_weights = (~action_is_pad).sum(dim=1).to(policy_per_chunk.dtype)
-            policy_loss = (policy_per_chunk * step_weights).sum() / step_weights.sum()
+            policy_loss = policy_per_chunk.mean()
             value_loss = value_per_chunk.mean()
             loss = policy_loss + cfg.vf_coef * value_loss
         elif reduction == "none":

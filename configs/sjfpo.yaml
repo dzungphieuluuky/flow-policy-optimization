@@ -18,8 +18,8 @@ num_minibatches: 4
 num_envs: 64
 
 # -- Optimization ------------------------------------------------------
-gamma: 0.999
-gae_lambda: 0.995
+gamma: 0.99
+gae_lambda: 0.95
 epsilon_clip: 0.05
 use_dct_transform: false
 trust_region_mode: aspo

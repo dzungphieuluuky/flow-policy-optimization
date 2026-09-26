@@ -155,6 +155,7 @@ class RolloutBuffer:
         self.chunk_done = zeros((max_chunks,), torch.bool)
         self.chunk_truncated = zeros((max_chunks,), torch.bool)
         self.chunk_clip_counts = zeros((max_chunks,), _INDEX_DTYPE)
+        self.chunk_env_id = zeros((max_chunks,), torch.int16)
         self.n_chunks = 0
         self.n_steps = 0
 
@@ -192,6 +193,7 @@ class RolloutBuffer:
         done: bool,
         truncated: bool,
         clip_count: int,
+        env_id: int = 0,
     ) -> int:
         """Append one executed chunk to the buffer.
 
@@ -206,6 +208,10 @@ class RolloutBuffer:
             done: Whether the chunk ended in a true termination.
             truncated: Whether the chunk ended in a timeout or budget cut.
             clip_count: Number of action elements that hit a bound.
+            env_id: Index of the vec-env slot that produced the chunk. The
+                buffer appends chunks in wavefront order, so consecutive
+                entries usually belong to different envs; the chunk-level
+                backup uses this to find trajectory boundaries.
 
         Returns:
             Index of the chunk just written.
@@ -242,6 +248,7 @@ class RolloutBuffer:
         self.chunk_done[chunk_index] = done
         self.chunk_truncated[chunk_index] = truncated
         self.chunk_clip_counts[chunk_index] = int(clip_count)
+        self.chunk_env_id[chunk_index] = int(env_id)
         self.step_terminated[offset + n_exec - 1] = done
         self.step_truncated[offset + n_exec - 1] = truncated
         self.n_chunks += 1
@@ -276,6 +283,7 @@ class RolloutBuffer:
             "chunk_done",
             "chunk_truncated",
             "chunk_clip_counts",
+            "chunk_env_id",
         ):
             getattr(other, name)[: self.n_steps if name.startswith("step_") else self.n_chunks].copy_(
                 getattr(self, name)[: self.n_steps if name.startswith("step_") else self.n_chunks],
@@ -320,6 +328,7 @@ class RolloutBuffer:
             "chunk_done": self.chunk_done[:n_chunks],
             "chunk_truncated": self.chunk_truncated[:n_chunks],
             "chunk_clip_counts": self.chunk_clip_counts[:n_chunks],
+            "chunk_env_id": self.chunk_env_id[:n_chunks],
         }
 
 
@@ -914,6 +923,7 @@ def collect_chunks_vec(
                             done=bool(term_np[i]),
                             truncated=bool(trunc_np[i]),
                             clip_count=clip_count,
+                            env_id=i,
                         )
                     else:
                         record = finalize_transition(
