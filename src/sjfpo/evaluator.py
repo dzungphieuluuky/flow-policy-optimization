@@ -30,6 +30,14 @@ def write_eval_csv(
 
     When ``append=True``, existing rows are preserved and the header is
     only written if the file doesn't already exist.
+
+    Args:
+        results: Per-episode dicts matching :data:`CSV_FIELDS`.
+        out_dir: Directory the CSV is written to; created if absent.
+        append: Append to an existing file instead of overwriting it.
+
+    Returns:
+        Path to the written or extended ``eval_history.csv``.
     """
     out_path = Path(out_dir)
     out_path.mkdir(parents=True, exist_ok=True)
@@ -49,6 +57,13 @@ def action_jerk(actions: np.ndarray) -> float | None:
 
     Scale-free smoothness probe: constant or constant-velocity motion yields
     exactly ``0.0``; larger values indicate jitter between consecutive steps.
+
+    Args:
+        actions: Per-step actions of shape ``[T, action_dim]``.
+
+    Returns:
+        Mean squared second difference, or None when the input is not 2D or
+        has fewer than three steps.
     """
     a = np.asarray(actions, dtype=np.float32)
     if a.ndim != 2 or a.shape[0] < 3:
@@ -58,7 +73,15 @@ def action_jerk(actions: np.ndarray) -> float | None:
 
 
 def extract_success(info: dict) -> float | None:
-    """Env-reported task success (``info["success"]``); ``None`` when absent."""
+    """Read the env-reported task success flag out of an info dict.
+
+    Args:
+        info: Step info dict from the environment.
+
+    Returns:
+        1.0 or 0.0 for a reported success, or None when the environment does
+        not report one.
+    """
     if not isinstance(info, dict) or info.get("success") is None:
         return None
     return float(bool(info["success"]))
@@ -71,6 +94,16 @@ def mean_chunk_jerk(actions: np.ndarray, is_pad: np.ndarray) -> float | None:
     with True marking padding past the executed prefix. Chunks with fewer
     than 3 executed steps are skipped; returns ``None`` if no chunk
     qualifies.
+
+    Args:
+        actions: Action chunks of shape ``[N, H, action_dim]``.
+        is_pad: Padding mask of shape ``[N, H]``, True past the executed prefix.
+
+    Returns:
+        Mean jerk over the qualifying chunks, or None when none qualify.
+
+    Raises:
+        ValueError: If the shapes are not ``[N, H, D]`` and ``[N, H]``.
     """
     a = np.asarray(actions)
     pad = np.asarray(is_pad, dtype=bool)
@@ -102,6 +135,17 @@ def check_divergence(
     The baseline must be strictly positive for the check to apply — a
     non-positive baseline disables divergence detection and resets the
     counter.
+
+    Args:
+        mean_return: Mean return of the eval just completed.
+        baseline: Reference return the run must stay above.
+        consecutive: Sub-threshold streak carried in from the previous eval.
+        threshold_frac: Fraction of ``baseline`` that counts as sub-threshold.
+        patience: Consecutive sub-threshold evals required to declare
+            divergence.
+
+    Returns:
+        Tuple of the updated streak and whether divergence is now flagged.
     """
     if baseline > 0 and mean_return < threshold_frac * baseline:
         consecutive += 1
@@ -116,7 +160,18 @@ def render_episode_frames(
     seed: int = 0,
     max_steps: int = 1000,
 ) -> tuple[list[np.ndarray], float]:
-    """One deterministic episode's frames ``[T, H, W, C]`` uint8 + return."""
+    """Roll out one episode and collect its rendered frames.
+
+    Args:
+        env_id: Gymnasium environment id to render.
+        policy: Callable mapping an observation to an action. Called with
+            ``reset()`` first if it defines one.
+        seed: Reset seed, making the episode deterministic.
+        max_steps: Step budget for the episode.
+
+    Returns:
+        Tuple of the uint8 frames and the episode return.
+    """
     import gymnasium as gym
 
     env = gym.make(env_id, render_mode="rgb_array")
@@ -180,6 +235,16 @@ class Evaluator:
 
         ``step_budget`` (when set) caps the episode at that many steps;
         the returned length reflects the truncated count.
+
+        Args:
+            policy: Callable mapping an observation to an action. Called with
+                ``reset()`` first if it defines one.
+            seed: Reset seed, making the episode deterministic.
+            episode: Episode index recorded in the result.
+            step_budget: Optional cap on the number of steps in this episode.
+
+        Returns:
+            Tuple of the per-episode result dict and the steps taken.
         """
         obs, _ = self.env.reset(seed=seed)
         if hasattr(policy, "reset"):
@@ -200,7 +265,7 @@ class Evaluator:
             ep_actions.append(np.asarray(action, dtype=np.float32).reshape(-1))
             success = extract_success(info)
             if success is not None:
-                ep_success = success  # last report wins (terminal info)
+                ep_success = success
         jerk = action_jerk(np.stack(ep_actions)) if ep_actions else None
         return (
             {
@@ -220,7 +285,24 @@ class Evaluator:
         out_dir: str | Path | None = None,
         append_csv: bool = False,
     ) -> list[dict[str, Any]]:
-        """Run deterministic rollouts, optionally writing ``eval_history.csv``."""
+        """Run deterministic rollouts, optionally writing ``eval_history.csv``.
+
+        Each episode gets a seed drawn from a generator seeded by
+        ``self.eval_seed``, so repeated evaluations of the same policy are
+        identical but successive episodes differ. When ``self.max_steps`` is
+        set, the episode loop stops early once that step budget is spent.
+
+        Args:
+            policy: Callable mapping an observation to an action. Called with
+                ``reset()`` first if it defines one.
+            out_dir: Directory to write ``eval_history.csv`` to; no file is
+                written when omitted.
+            append_csv: Append to an existing CSV instead of overwriting it.
+
+        Returns:
+            One dict per evaluated episode, with the keys in
+            :data:`CSV_FIELDS`.
+        """
         rng = np.random.default_rng(self.eval_seed)
         results: list[dict[str, Any]] = []
         total_steps = 0

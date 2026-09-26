@@ -8,12 +8,18 @@ import numpy as np
 import wandb
 
 
-# Direct wandb usage (library installed and enabled).
-# Enabled only when the caller passes ``wandb_enabled=True``.
-
-
 def compact_value(v) -> str:
-    """Short wandb-safe rendering: ints plain, floats via ``:g``."""
+    """Render a metric compactly for a wandb run name.
+
+    Bools become plain ints, floats use ``:g``, and non-finite floats become
+    ``nan``/``inf``/``-inf`` rather than an empty or padded string.
+
+    Args:
+        v: Value of any type.
+
+    Returns:
+        Short string rendering of ``v``.
+    """
     if isinstance(v, bool):
         return str(int(v))
     if isinstance(v, int):
@@ -30,6 +36,20 @@ def compact_value(v) -> str:
 
 
 def build_run_name(method: str, env_name: str, seed: int, cfg_dict: dict) -> str:
+    """Compose a wandb run name from the method, env, seed, and key settings.
+
+    Only settings that meaningfully distinguish runs are appended, so a run
+    name stays short enough to read in the wandb UI.
+
+    Args:
+        method: Method name, used as the run prefix.
+        env_name: Environment id.
+        seed: Random seed.
+        cfg_dict: Flattened config used to derive distinguishing tags.
+
+    Returns:
+        Run name of the form ``method_env_sseed_tag_tag``.
+    """
     tags: list[str] = []
     get = cfg_dict.get
     if (v := get("top_p_spectral_tokens")) is not None:
@@ -62,6 +82,20 @@ def init_wandb_run_for_method(
     cfg_dict: dict,
     wandb_enabled: bool = True,
 ) -> bool:
+    """Initialise the wandb run for a training job.
+
+    Args:
+        method: Method name; also used as the wandb project.
+        env_name: Environment id, used in the run group.
+        seed: Random seed recorded in the run config.
+        total_steps: Environment-step budget, used to label short runs as
+            ``smoke``.
+        cfg_dict: Flattened config recorded alongside the run.
+        wandb_enabled: When false, wandb is skipped entirely.
+
+    Returns:
+        True if a run was started, False if logging was disabled.
+    """
     if not wandb_enabled:
         return False
     wandb.init(
@@ -78,10 +112,21 @@ def init_wandb_run_for_method(
 
 
 def finish_run(exit_code: int = 0) -> None:
+    """Close the active wandb run.
+
+    Args:
+        exit_code: Exit code recorded with the finished run.
+    """
     wandb.finish(exit_code=exit_code)
 
 
 def log_metrics(data: dict, step: int) -> None:
+    """Log a batch of scalars to the active wandb run.
+
+    Args:
+        data: Mapping of metric name to value.
+        step: Global step the metrics belong to.
+    """
     wandb.log(data, step=step)
 
 
@@ -97,6 +142,24 @@ def log_eval_summary(
     best_return: float | None = None,
     steps_to_best: int | None = None,
 ) -> None:
+    """Log the per-episode eval summary, plus history and health metrics.
+
+    Optional metrics are omitted entirely when their inputs are ``None``, and
+    the reward-improvement pair is only emitted on a new best return.
+
+    Args:
+        mean_return: Mean return across the evaluated episodes.
+        eval_results: Per-episode dicts with ``return``, ``length``, and
+            optionally ``success`` and ``jerk``.
+        all_eval_returns: Mean return from every eval so far, oldest first.
+        eval_count: Number of evals performed so far.
+        global_step: Global step the metrics belong to.
+        r_rand: Optional random-policy reference return.
+        consecutive_below: Optional count of consecutive evals below the
+            divergence threshold.
+        best_return: Optional best mean return seen so far.
+        steps_to_best: Optional global step at which the best return occurred.
+    """
     returns = [r["return"] for r in eval_results]
     lengths = [r["length"] for r in eval_results]
     successes = [r["success"] for r in eval_results if r.get("success") is not None]
@@ -145,6 +208,16 @@ def log_eval_summary(
 
 
 def log_eval_video(frames: list, global_step: int, *, fps: int = 30) -> None:
+    """Log the first eval episode as a wandb video, skipping unusable input.
+
+    Frame arrays that cannot be stacked into ``[T, H, W, C]``, and any wandb
+    encoding failure, are dropped silently so video logging never fails a run.
+
+    Args:
+        frames: Per-frame image arrays.
+        global_step: Global step the video belongs to.
+        fps: Playback frame rate of the encoded video.
+    """
     if not frames:
         return
     try:

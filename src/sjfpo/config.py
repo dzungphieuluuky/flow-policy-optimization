@@ -38,7 +38,17 @@ class RunSpec:
 
 
 def parse_version_tuple(version: str) -> tuple[int, ...]:
-    """Version string -> (major, minor, patch, ...) for comparison."""
+    """Parse a version string into a comparable integer tuple.
+
+    Non-numeric segments collapse to ``0``, so ``"1.0.0rc1"`` parses as
+    ``(1, 0, 0, 1)``.
+
+    Args:
+        version: Dotted version string.
+
+    Returns:
+        Tuple of integers ordered major, minor, patch, and any extras.
+    """
     parts: list[int] = []
     for part in version.split("."):
         digits = "".join(ch for ch in part if ch.isdigit())
@@ -47,7 +57,19 @@ def parse_version_tuple(version: str) -> tuple[int, ...]:
 
 
 def assert_runtime(allow_fp16: bool = False) -> None:
-    """Fail fast on dependency pins and unsupported precision flags.      bf16 *autocast* (fp32 storage, bf16 matmuls) is allow"""
+    """Fail fast on dependency pins and unsupported precision flags.
+
+    bf16 *autocast* (fp32 storage, bf16 matmuls) is allowed; fp16/bf16
+    *storage* is not, because flow-matching Euler rollouts and CFM losses
+    need fp32 to stay stable.
+
+    Args:
+        allow_fp16: True when the caller requested fp16/bf16 storage.
+
+    Raises:
+        RuntimeError: If gymnasium is older than 1.0, or if ``allow_fp16`` is
+            set.
+    """
     import importlib.metadata
 
     gym_version = importlib.metadata.version("gymnasium")
@@ -66,7 +88,18 @@ def assert_runtime(allow_fp16: bool = False) -> None:
 
 
 def lookup_env_dims(env_id: str) -> tuple[int, int]:
-    """(obs_dim, action_dim) from configs/envs.yaml; KeyError on unknown ids."""
+    """Look up observation and action dimensions from ``configs/envs.yaml``.
+
+    Args:
+        env_id: Gymnasium environment id, e.g. ``"Hopper-v5"``.
+
+    Returns:
+        Tuple of ``(obs_dim, action_dim)``.
+
+    Raises:
+        RuntimeError: If PyYAML is not installed.
+        KeyError: If ``env_id`` is absent from the registry.
+    """
     try:
         import yaml
     except ImportError:

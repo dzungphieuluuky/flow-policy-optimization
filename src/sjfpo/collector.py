@@ -39,6 +39,13 @@ _DEFAULT_CFG: SJFPOConfig | None = None
 
 
 def _defaults() -> SJFPOConfig:
+    """Return the lazily built default config singleton.
+
+    Constructed on first use so importing this module stays cheap.
+
+    Returns:
+        The shared default :class:`SJFPOConfig`.
+    """
     global _DEFAULT_CFG
     if _DEFAULT_CFG is None:
         _DEFAULT_CFG = SJFPOConfig()
@@ -135,6 +142,14 @@ class RolloutBuffer:
         self.n_steps = 0
 
     def capacity_key(self) -> tuple[int, ...]:
+        """Return the buffer's layout signature, excluding its device.
+
+        Two buffers may exchange data only when this matches, so the device is
+        deliberately left out.
+
+        Returns:
+            Tuple of capacities, dimensions, and the pin-memory flag.
+        """
         return (
             self.max_chunks,
             self.max_steps,
@@ -161,6 +176,27 @@ class RolloutBuffer:
         truncated: bool,
         clip_count: int,
     ) -> int:
+        """Append one executed chunk to the buffer.
+
+        The step-level observation window is chained across the chunk, so
+        ``step_next_states`` must be supplied for every executed step.
+
+        Args:
+            state: Observation window the chunk was proposed from.
+            action: Full action chunk in ``[-1, 1]``.
+            rewards: Per-executed-step rewards.
+            step_next_states: Observation after every executed step.
+            done: Whether the chunk ended in a true termination.
+            truncated: Whether the chunk ended in a timeout or budget cut.
+            clip_count: Number of action elements that hit a bound.
+
+        Returns:
+            Index of the chunk just written.
+
+        Raises:
+            RuntimeError: If the chunk or step capacity is exhausted.
+            ValueError: If any tensor shape does not match the buffer layout.
+        """
         if self.n_chunks >= self.max_chunks:
             raise RuntimeError("RolloutBuffer chunk capacity exceeded")
         reward_t = torch.as_tensor(rewards, dtype=_REWARD_DTYPE, device=self.device).reshape(-1)
@@ -196,7 +232,17 @@ class RolloutBuffer:
         return chunk_index
 
     def copy_to(self, other: "RolloutBuffer", *, non_blocking: bool = False) -> None:
-        """Copy the active prefix into another buffer on another device."""
+        """Copy the active prefix into a compatible buffer, e.g. onto a GPU.
+
+        Args:
+            other: Destination buffer, typically resident on another device.
+            non_blocking: Whether the device-to-device copies may overlap with
+                subsequent work.
+
+        Raises:
+            ValueError: If the two buffers have different capacities or
+                dimensions.
+        """
         if other.capacity_key()[:6] != self.capacity_key()[:6]:
             raise ValueError("RolloutBuffer capacities do not match")
         other.n_chunks = self.n_chunks
@@ -219,6 +265,17 @@ class RolloutBuffer:
             )
 
     def mark_truncated(self, chunk_index: int) -> None:
+        """Flag a chunk, and its final executed step, as truncated.
+
+        Used when the step budget cuts a chunk short, so GAE bootstraps the
+        cut instead of treating it as a terminal transition.
+
+        Args:
+            chunk_index: Index of the chunk to flag.
+
+        Raises:
+            IndexError: If ``chunk_index`` is outside the populated prefix.
+        """
         if not 0 <= chunk_index < self.n_chunks:
             raise IndexError(f"chunk index {chunk_index} out of range")
         self.chunk_truncated[chunk_index] = True
@@ -227,7 +284,11 @@ class RolloutBuffer:
         self.step_truncated[start + length - 1] = True
 
     def active(self) -> dict[str, torch.Tensor]:
-        """Return contiguous views of the populated buffer prefix."""
+        """Return contiguous views of the populated buffer prefix.
+
+        Returns:
+            Dict of buffer name to a view covering only the written region.
+        """
         n_chunks, n_steps = self.n_chunks, self.n_steps
         return {
             "step_states": self.step_states[:n_steps],
@@ -248,6 +309,12 @@ def as_float_tensor(x: object) -> torch.Tensor:
 
     A ``torch.Tensor`` input keeps its device (no implicit ``.cpu()``);
     numpy / Python inputs are lifted to a fresh CPU fp32 tensor.
+
+    Args:
+        x: Tensor, array, or scalar to coerce.
+
+    Returns:
+        An fp32 tensor on the input's own device.
     """
     if isinstance(x, torch.Tensor):
         return x.detach().to(_OBS_DTYPE)
@@ -258,7 +325,19 @@ def _bounds_to_tensor(
     low: float | np.ndarray | torch.Tensor,
     high: float | np.ndarray | torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Coerce, validate, and return ``(low, range = high - low)`` on fp32."""
+    """Coerce and validate env action bounds into fp32 tensors.
+
+    Args:
+        low: Per-dimension lower bounds.
+        high: Per-dimension upper bounds.
+
+    Returns:
+        Tuple of the low bounds and the precomputed ``high - low`` range.
+
+    Raises:
+        ValueError: If the bounds disagree in shape, or if any dimension fails
+            the ``high > low`` check.
+    """
     lo = torch.as_tensor(
         np.asarray(low, dtype=np.float32), dtype=torch.float32
     ).reshape(-1)
@@ -278,9 +357,19 @@ def _bounds_to_tensor(
 def scale_and_clip_chunk(
     proposed: torch.Tensor, low: torch.Tensor, range_: torch.Tensor
 ) -> tuple[torch.Tensor, torch.Tensor, int]:
-    """Clamp a proposal to bounds and rescale to [-1, 1]; count clipped elements.
+    """Clamp a proposed chunk to the env bounds and rescale it to ``[-1, 1]``.
 
-    ``range_`` is the precomputed ``high - low`` (see :func:`_bounds_to_tensor`).
+    ``range_`` is the precomputed ``high - low`` (see
+    :func:`_bounds_to_tensor`).
+
+    Args:
+        proposed: Proposed actions in real env units.
+        low: Per-dimension lower bounds.
+        range_: Per-dimension bound range.
+
+    Returns:
+        Tuple of the clipped actions, their ``[-1, 1]`` rescaling, and the
+        number of clipped elements.
     """
     clip_mask = (proposed < low) | (proposed > low + range_)
     clip_count = int(clip_mask.sum())
@@ -292,26 +381,58 @@ def scale_and_clip_chunk(
 def build_warmup_window(
     first_obs: torch.Tensor, n_obs_steps: int
 ) -> deque[torch.Tensor]:
-    """Deque of ``n_obs_steps`` identical frames.
+    """Build a warmup deque of ``n_obs_steps`` identical frames.
 
     Uses a single clone referenced N times — safe because the window is only
     read, never mutated in place. Appends past the initial fill replace the
     oldest reference, not the shared tensor.
+
+    Args:
+        first_obs: Frame to replicate.
+        n_obs_steps: Window length.
+
+    Returns:
+        A bounded deque holding the replicated frames.
     """
     shared = first_obs.detach().clone()
     return deque((shared for _ in range(n_obs_steps)), maxlen=n_obs_steps)
 
 
 def reset_chunk_window(env, n_obs_steps: int) -> deque[torch.Tensor]:
+    """Reset an environment and build its warmup observation window.
+
+    Args:
+        env: Environment to reset.
+        n_obs_steps: Window length.
+
+    Returns:
+        The warmup deque for the fresh observation.
+    """
     obs, _ = env.reset()
     return build_warmup_window(as_float_tensor(obs), n_obs_steps)
 
 
 def _bool_tensor(v: bool) -> torch.Tensor:
+    """Wrap a Python bool as a scalar bool tensor.
+
+    Args:
+        v: Value to wrap.
+
+    Returns:
+        A zero-dimensional bool tensor.
+    """
     return torch.tensor(v, dtype=torch.bool)
 
 
 def _int_tensor(v: int) -> torch.Tensor:
+    """Wrap a Python int as a scalar index tensor.
+
+    Args:
+        v: Value to wrap.
+
+    Returns:
+        A zero-dimensional int64 tensor.
+    """
     return torch.tensor(v, dtype=_INDEX_DTYPE)
 
 
@@ -326,6 +447,26 @@ def finalize_transition(
     n_action_steps: int,
     step_next_states: torch.Tensor,
 ) -> Transition:
+    """Assemble the transition record for one executed action chunk.
+
+    Args:
+        state: Stacked observation window the chunk was proposed from.
+        next_state: Observation after the final executed step.
+        scaled: Action chunk rescaled to ``[-1, 1]``.
+        rewards: Per-executed-step rewards.
+        done_kind: ``"terminated"``, ``"truncated"``, or ``"running"``.
+        clip_count: Number of action elements that hit a bound.
+        chunk_size: Full horizon of the proposed chunk.
+        n_action_steps: How many steps of the chunk were actually executed.
+        step_next_states: Observation after every executed step.
+
+    Returns:
+        The public eight-key transition record.
+
+    Raises:
+        ValueError: If the chunk, ``n_action_steps``, or ``step_next_states``
+            shape is inconsistent.
+    """
     if scaled.shape[0] != chunk_size:
         raise ValueError(
             f"proposed chunk has {scaled.shape[0]} rows, "
@@ -336,7 +477,6 @@ def finalize_transition(
             f"n_action_steps={n_action_steps} must satisfy "
             f"1 <= n <= chunk_size={chunk_size}"
         )
-    # Rewards land in fp32 — GAE targets must not be bf16-truncated.
     reward_t = torch.as_tensor(
         np.asarray(rewards, dtype=np.float32), dtype=_REWARD_DTYPE
     )
@@ -361,12 +501,30 @@ def finalize_transition(
 
 def execute_open_loop_steps(
     env,
-    executed_np: np.ndarray,  # [H, act_dim] on host — no per-step sync
+    executed_np: np.ndarray,
     window: deque[torch.Tensor],
     executed_total: int,
     total_steps: int,
     n_action_steps: int,
 ) -> tuple[list[float], str, torch.Tensor]:
+    """Execute the executed prefix of a chunk one env step at a time.
+
+    ``executed_np`` is kept on the host so stepping never forces a
+    device-to-host sync per step; the observation window is advanced after
+    every step and stopped at the step budget.
+
+    Args:
+        env: Environment to step.
+        executed_np: Executed actions of shape ``[H, action_dim]``, on host.
+        window: Observation window deque, mutated in place.
+        executed_total: Steps already executed across this collection.
+        total_steps: Overall environment-step budget.
+        n_action_steps: How many steps of the chunk to attempt.
+
+    Returns:
+        Tuple of the per-step rewards, the terminal kind, and the stacked
+        observation window after each executed step.
+    """
     rewards: list[float] = []
     step_next_states: list[torch.Tensor] = []
     done_kind = "continue"
@@ -397,7 +555,21 @@ def execute_open_loop_steps_into(
     total_steps: int,
     n_action_steps: int,
 ) -> tuple[int, str]:
-    """Execute one single-env chunk into preallocated window/reward storage."""
+    """Execute one chunk into preallocated window and reward storage.
+
+    Args:
+        env: Environment to step.
+        executed_np: Executed actions of shape ``[H, action_dim]``, on host.
+        window: Preallocated window storage, mutated in place.
+        step_windows: Preallocated per-step window storage, mutated in place.
+        rewards: Preallocated reward storage, mutated in place.
+        executed_total: Steps already executed across this collection.
+        total_steps: Overall environment-step budget.
+        n_action_steps: How many steps of the chunk to attempt.
+
+    Returns:
+        Tuple of the number of steps executed and the terminal kind.
+    """
     n_exec = 0
     done_kind = "continue"
     for i in range(n_action_steps):
@@ -429,10 +601,26 @@ def propose_and_execute_chunk(
     chunk_size: int,
     n_action_steps: int,
 ) -> tuple[Transition, str]:
+    """Propose one chunk from the current window and execute it open loop.
+
+    Args:
+        policy: Callable mapping a stacked observation window to an action
+            chunk.
+        window: Observation window deque, advanced as steps execute.
+        low: Per-dimension lower env action bounds.
+        range_: Per-dimension bound range.
+        env: Environment to step.
+        executed_total: Steps already executed across this collection.
+        total_steps: Overall environment-step budget.
+        chunk_size: Full horizon of the proposed chunk.
+        n_action_steps: How many steps of the chunk to execute.
+
+    Returns:
+        Tuple of the finalized transition and the terminal kind.
+    """
     state = torch.stack(tuple(window), dim=0)
     proposed = as_float_tensor(policy(state))
     executed, scaled, clip_count = scale_and_clip_chunk(proposed, low, range_)
-    # Single host transfer for the whole chunk, then index on CPU.
     executed_np = executed.detach().cpu().numpy()
     rewards, done_kind, step_next_states = execute_open_loop_steps(
         env, executed_np, window, executed_total, total_steps, n_action_steps
@@ -455,6 +643,14 @@ def propose_and_execute_chunk(
 def flush_on_collection_error(
     on_error_flush: Callable[[], None] | None,
 ) -> None:
+    """Invoke the error flush hook, swallowing any failure it raises.
+
+    The hook is best effort: a failing flush must not mask the collection
+    error that triggered it.
+
+    Args:
+        on_error_flush: Optional callback, invoked only when provided.
+    """
     if on_error_flush is not None:
         try:
             on_error_flush()
@@ -476,7 +672,39 @@ def collect_chunks_vec(
     on_error_flush: Callable[[], None] | None = None,
     buffer: RolloutBuffer | None = None,
 ) -> list[Transition] | RolloutBuffer:
-    """Vector twin of :func:`collect_chunks` — same records, same chaining."""
+    """Vectorised twin of :func:`collect_chunks` — same records, same chaining.
+
+    The step budget is split as evenly as possible across the environments,
+    with the remainder handed to the first environments. Budget-exhausted tails
+    are marked truncated so GAE bootstraps the cut. Each chunk is transferred
+    to the host in one copy before being indexed, and all still-active actions
+    are gathered into a single tensor per wavefront, so the loop performs one
+    device-to-host transfer per chunk rather than one per step.
+
+    Args:
+        envs: Vectorised environment.
+        policy: Callable mapping a stacked observation window to an action
+            chunk.
+        total_steps: Environment-step budget shared across all environments.
+        action_low: Per-dimension lower env action bounds.
+        action_high: Per-dimension upper env action bounds.
+        n_obs_steps: Observation window length; taken from the default config
+            when omitted.
+        n_action_steps: How many steps of each chunk to execute.
+        chunk_size: Full horizon of each proposed chunk; taken from the default
+            config when omitted.
+        seed: Base seed; drawn at random when omitted.
+        on_error_flush: Optional callback invoked if collection raises.
+        buffer: Optional preallocated buffer to write into.
+
+    Returns:
+        The transition records, or the populated buffer when one is supplied.
+
+    Raises:
+        ValueError: If ``n_action_steps`` exceeds ``chunk_size``, or if the
+            action bounds are invalid.
+        RuntimeError: If the vectorised loop executes zero steps.
+    """
     cfg = _defaults()
     n_obs_steps = cfg.n_obs_steps if n_obs_steps is None else n_obs_steps
     chunk_size = cfg.action_horizon if chunk_size is None else int(chunk_size)
@@ -509,7 +737,7 @@ def collect_chunks_vec(
             windows = [build_warmup_window(as_float_tensor(o), n_obs_steps) for o in obs]
             reward_windows = None
             step_windows = None
-        cur: list = [None] * n  # per-env in-flight chunk state
+        cur: list = [None] * n
         pos = [0] * n
         rewards: list[list[float]] | None = None if buffer is not None else [[] for _ in range(n)]
         step_states: list[list[torch.Tensor]] | None = (
@@ -563,7 +791,6 @@ def collect_chunks_vec(
                     if step_states is not None:
                         step_states[i] = []
 
-            # Gather all active actions into a tensor, then ONE host transfer.
             actions_t.zero_()
             any_active = False
             for i in range(n):
@@ -571,8 +798,7 @@ def collect_chunks_vec(
                     actions_t[i] = cur[i][0][pos[i]]
                     any_active = True
             if not any_active:
-                # All envs over budget or awaiting: nothing left to step.
-                break
+                    break
             actions_np = actions_t.cpu().numpy()
 
             obs, rew, term, trunc, _ = envs.step(actions_np)
@@ -648,7 +874,6 @@ def collect_chunks_vec(
                     if done_np[i]:
                         awaiting[i] = True
 
-        # Budget-exhausted tails: mark as truncated so GAE bootstraps the cut.
         for i in range(n):
             if prev_done[i] == "continue" and (
                 prev[i] is not None or prev_chunk_indices[i] is not None
@@ -680,6 +905,34 @@ def collect_chunks(
     on_error_flush: Callable[[], None] | None = None,
     buffer: RolloutBuffer | None = None,
 ) -> list[Transition] | RolloutBuffer:
+    """Collect executed action chunks from a single environment.
+
+    Chunks are proposed from the current observation window and executed open
+    loop, with the window chained across the steps of each chunk.
+
+    Args:
+        env: Environment to collect from.
+        policy: Callable mapping a stacked observation window to an action
+            chunk.
+        total_steps: Environment-step budget for this collection.
+        action_low: Per-dimension lower env action bounds.
+        action_high: Per-dimension upper env action bounds.
+        n_obs_steps: Observation window length; taken from the default config
+            when omitted.
+        n_action_steps: How many steps of each chunk to execute.
+        chunk_size: Full horizon of each proposed chunk; taken from the default
+            config when omitted.
+        on_error_flush: Optional callback invoked if collection raises.
+        buffer: Optional preallocated buffer to write into.
+
+    Returns:
+        The transition records, or the populated buffer when one is supplied.
+
+    Raises:
+        ValueError: If ``n_action_steps`` exceeds ``chunk_size``, or if the
+            action bounds are invalid.
+        RuntimeError: If the loop executes zero steps.
+    """
     cfg = _defaults()
     n_obs_steps = cfg.n_obs_steps if n_obs_steps is None else n_obs_steps
     chunk_size = cfg.action_horizon if chunk_size is None else int(chunk_size)

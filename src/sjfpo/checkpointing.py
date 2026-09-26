@@ -40,11 +40,16 @@ class ResumeError(RuntimeError):
 def _iter_compiled_children(
     policy,
 ) -> list[tuple[str, torch.nn.Module, torch.nn.Module]]:
-    """Return ``(name, compiled_module, inner_module)`` for every top-level
-    submodule of ``policy`` wrapped by ``torch.compile``.
+    """Find the top-level submodules of ``policy`` wrapped by ``torch.compile``.
 
     Only top-level children are inspected; ``torch.compile`` is applied
     per-module via ``maybe_compile`` and never nested in this codebase.
+
+    Args:
+        policy: Policy whose children are inspected.
+
+    Returns:
+        List of ``(name, compiled_module, inner_module)`` triples.
     """
     out = []
     for name, child in policy.named_children():
@@ -61,6 +66,12 @@ def unwrapped_policy(policy):
     Swaps every ``torch.compile`` wrapper (``X._orig_mod``) for its inner
     module so ``state_dict()`` emits unwrapped keys. Restores the wrappers on
     exit, even on exception.
+
+    Args:
+        policy: Policy whose compiled children are temporarily swapped out.
+
+    Yields:
+        The same policy, with eager submodules in place of the wrappers.
     """
     swapped = _iter_compiled_children(policy)
     for name, _compiled, inner in swapped:
@@ -73,6 +84,12 @@ def unwrapped_policy(policy):
 
 
 def _atomic_write_bytes(path: Path, data: bytes) -> None:
+    """Write bytes to a path atomically, durable across a crash.
+
+    Args:
+        path: Destination path.
+        data: Bytes to write.
+    """
     with tempfile.NamedTemporaryFile(
         mode="wb", dir=path.parent, prefix=f".{path.name}.", delete=False
     ) as tmp:
@@ -84,6 +101,15 @@ def _atomic_write_bytes(path: Path, data: bytes) -> None:
 
 
 def _atomic_torch_save(path: Path, obj) -> None:
+    """Pickle an object to a path atomically, cleaning up on failure.
+
+    Args:
+        path: Destination path.
+        obj: Object to serialise with ``torch.save``.
+
+    Raises:
+        Whatever ``torch.save`` raised, after removing the temporary file.
+    """
     with tempfile.NamedTemporaryFile(
         mode="wb", dir=path.parent, prefix=f".{path.name}.", delete=False
     ) as tmp:
@@ -114,6 +140,25 @@ def save_policy_checkpoint(
     wrappers are swapped out for the duration of ``save_pretrained``), so a
     fresh, uncompiled ``SJFPOFlowModel`` in :func:`load_policy_checkpoint`
     finds every key it expects.
+
+    The frozen behavior snapshots are runtime-only and are refreshed before the
+    next rollout, so their duplicate parameters are not persisted.
+
+    Args:
+        dir_path: Directory the checkpoint is written to; created if absent.
+        policy: The :class:`~sjfpo.modeling_sjfpo.SJFPOPolicy` to save.
+        optimizer: Legacy single optimizer, for checkpoints predating the
+            split.
+        actor_optimizer: Actor optimizer for the split format.
+        critic_optimizer: Critic optimizer for the split format; required
+            alongside ``actor_optimizer``.
+        global_step: Environment-step count recorded in the counters file.
+        ema_state: Optional EMA shadow state, saved once the warmup allows.
+        save_rng: Whether to persist torch and CUDA RNG states.
+
+    Raises:
+        ValueError: If ``policy`` is not an SJFPO policy, if ``global_step`` is
+            negative, or if the optimizer arguments are inconsistent.
     """
     from sjfpo.modeling_sjfpo import SJFPOPolicy  # lazy: import-light module
 
@@ -131,9 +176,6 @@ def save_policy_checkpoint(
     d = Path(dir_path)
     d.mkdir(parents=True, exist_ok=True)
 
-    # 1) Weights (through LeRobot; unwrapped so keys match a fresh policy).
-    # The frozen behavior snapshots are runtime-only and are refreshed before
-    # the next rollout, so do not persist their duplicate parameters.
     with unwrapped_policy(policy):
         state_dict = {
             name: tensor
@@ -149,7 +191,6 @@ def save_policy_checkpoint(
     if ema_state is not None:
         _atomic_torch_save(d / "ema.pt", ema_state)
 
-    # 2) Optimizer state (pickled, weights-only safe on load).
     if actor_optimizer is not None:
         optimizer_state = {
             "format": 2,
@@ -160,7 +201,6 @@ def save_policy_checkpoint(
         optimizer_state = optimizer.state_dict()
     _atomic_torch_save(d / OPTIMIZER_FILE, optimizer_state)
 
-    # 3) Counters (atomic JSON).
     counters = {
         "global_step": int(global_step),
         "step_count": int(getattr(policy, "step_count", 0)),
@@ -170,7 +210,6 @@ def save_policy_checkpoint(
         json.dumps(counters, indent=2).encode("utf-8"),
     )
 
-    # 4) RNG state (torch + cuda if available) — enables bit-reproducible resume.
     if save_rng:
         rng = {"torch": torch.get_rng_state()}
         if torch.cuda.is_available():
@@ -179,11 +218,22 @@ def save_policy_checkpoint(
 
 
 def _load_optimizer(policy, d: Path) -> torch.optim.Optimizer:
-    """Rebuild the optimizer with the current config and load saved state.
+    """Rebuild a single optimizer from the current config and load its state.
 
     Fails loudly on any structural mismatch (wrong number of param groups,
     wrong key set) rather than relying on ``load_state_dict``'s opaque
     error messages.
+
+    Args:
+        policy: Policy supplying the param groups and preset.
+        d: Checkpoint directory holding ``optimizer.pt``.
+
+    Returns:
+        The optimizer with its restored state.
+
+    Raises:
+        ResumeError: If the file cannot be unpickled or the state does not
+            match the current config.
     """
     groups = policy.get_optim_params()["params"]
     optimizer = policy.config.get_optimizer_preset().build(groups)
@@ -215,6 +265,20 @@ def _load_optimizer(policy, d: Path) -> torch.optim.Optimizer:
 
 
 def _load_optimizer_pair(policy, d: Path):
+    """Load the split actor/critic optimizers, falling back to the legacy format.
+
+    Args:
+        policy: Policy supplying the param groups and presets.
+        d: Checkpoint directory holding ``optimizer.pt``.
+
+    Returns:
+        Tuple of the actor optimizer and the critic optimizer, or the legacy
+        optimizer and None.
+
+    Raises:
+        ResumeError: If the file cannot be unpickled, is a split-format
+            payload with missing keys, or the state does not match the config.
+    """
     try:
         payload = torch.load(
             d / OPTIMIZER_FILE, map_location="cpu", weights_only=True
@@ -250,7 +314,14 @@ def _load_optimizer_pair(policy, d: Path):
 
 
 def _load_rng(d: Path) -> None:
-    """Restore torch/cuda RNG state if a saved RNG file exists. Best effort."""
+    """Restore torch and CUDA RNG state, best effort.
+
+    A missing or corrupt RNG file is ignored rather than raised on, since
+    losing bit-reproducibility should not block a resume.
+
+    Args:
+        d: Checkpoint directory that may hold ``rng.pt``.
+    """
     path = d / RNG_FILE
     if not path.is_file():
         return
@@ -279,6 +350,23 @@ def load_policy_checkpoint(
     ``action_high`` to restore the current postprocessor mapping.
     New split checkpoints return ``(policy, actor_optimizer, critic_optimizer,
     counters)``; legacy checkpoints return ``(policy, optimizer, counters)``.
+
+    Args:
+        dir_path: Checkpoint directory written by
+            :func:`save_policy_checkpoint`.
+        device: Device the loaded policy is moved to; left in place when
+            omitted.
+        restore_rng: Whether to restore the saved RNG state.
+        action_low: Per-dimension lower env action bounds.
+        action_high: Per-dimension upper env action bounds.
+
+    Returns:
+        The policy, its optimizers, and the restored counters.
+
+    Raises:
+        ResumeError: If the checkpoint is incomplete or any saved component is
+            corrupt or structurally mismatched.
+        ValueError: If only one of ``action_low`` and ``action_high`` is given.
     """
     from sjfpo.modeling_sjfpo import SJFPOPolicy  # lazy: import-light module
 
@@ -291,19 +379,15 @@ def load_policy_checkpoint(
     if missing:
         raise ResumeError(f"incomplete policy checkpoint in {d}: missing {missing}")
 
-    # 1) Policy (fresh, uncompiled — state_dict keys are unwrapped by save).
     policy = SJFPOPolicy.from_pretrained(d)
     if device is not None:
         policy.to(device)
-    # Frozen snapshots are intentionally omitted from model.safetensors;
-    # reconstruct them from the loaded live modules before resuming.
     policy.snapshot_behavior_policy()
     if (action_low is None) != (action_high is None):
         raise ValueError("action_low and action_high must be provided together")
     if action_low is not None:
         policy.set_action_bounds(action_low, action_high)
 
-    # 2) Optimizer state (split format for new checkpoints; legacy stays supported).
     actor_optimizer, critic_optimizer = _load_optimizer_pair(policy, d)
 
     ema_path = d / "ema.pt"
@@ -312,7 +396,6 @@ def load_policy_checkpoint(
             torch.load(ema_path, map_location="cpu", weights_only=True)
         )
 
-    # 3) Counters (validated).
     try:
         counters_raw = json.loads((d / COUNTERS_FILE).read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError) as e:
@@ -329,7 +412,6 @@ def load_policy_checkpoint(
         )
     policy.step_count = step_count
 
-    # 4) RNG state (best-effort).
     if restore_rng:
         _load_rng(d)
 

@@ -47,7 +47,11 @@ from sjfpo.wandb_logging import (
 )
 
 
-# Consecutive updates with most CFM samples above ``cfm_clamp`` before aborting.
+# Consecutive updates with most CFM samples above ``cfm_clamp`` before
+# aborting. clamp() has zero gradient above its max, so those samples
+# contribute nothing: rho stays exactly 1 and the policy receives no gradient
+# while the critic keeps training. Abort instead of burning a run that can only
+# plateau.
 ABOVE_CLAMP_ABORT_UPDATES = 5
 
 
@@ -57,7 +61,22 @@ def mini_batch_indices(
     device: torch.device | str,
     num_epochs: int = 1,
 ):
-    """Yield shuffled minibatch indices for each epoch."""
+    """Yield shuffled minibatch index tensors, one per epoch.
+
+    Every epoch reshuffles, so repeated epochs do not see the same order.
+
+    Args:
+        n: Total number of chunks to split.
+        num_minibatches: Number of minibatches per epoch.
+        device: Device the index tensors are created on.
+        num_epochs: Number of epochs to yield indices for.
+
+    Yields:
+        An index tensor per minibatch, reshuffled for every epoch.
+
+    Raises:
+        ValueError: If ``n`` is below one.
+    """
     if n < 1:
         raise ValueError(f"n={n} must be >= 1")
     n_mb = max(1, min(int(num_minibatches), n))
@@ -77,6 +96,7 @@ class _EvalPolicy:
         self.policy = policy
 
     def reset(self) -> None:
+        """Clear the policy's cached action-chunk state before a new episode."""
         self.policy.reset()
 
     def __call__(self, obs: np.ndarray) -> np.ndarray:
@@ -86,11 +106,16 @@ class _EvalPolicy:
             action = self.policy.select_action({"observation.state": obs})
         finally:
             self.policy.train(was_training)
-        return to_numpy_1d(action)  # atleast_1d: 1-D envs must stay [1]
+        return to_numpy_1d(action)
 
 
 def _compile_in_place(policy: SJFPOPolicy) -> None:
-    """Apply ``maybe_compile`` to CUDA submodules the training path touches."""
+    """Apply ``maybe_compile`` to the CUDA submodules training uses.
+
+    Args:
+        policy: Policy whose actor, critic, and conditioner are compiled in
+            place when applicable.
+    """
     device = next(policy.parameters()).device
     policy.actor = maybe_compile(policy.actor, device=device)
     policy.old_actor = maybe_compile(policy.old_actor, device=device)
@@ -105,7 +130,19 @@ def build_policy(
     action_low: np.ndarray | None = None,
     action_high: np.ndarray | None = None,
 ) -> SJFPOPolicy:
-    """Attach runtime observation/action features, then build the policy."""
+    """Attach runtime features, then build the policy.
+
+    Args:
+        obs_dim: Observation dimension.
+        action_dim: Action dimension.
+        cfg: Active configuration.
+        device: Device the policy is built on.
+        action_low: Per-dimension lower env action bounds.
+        action_high: Per-dimension upper env action bounds.
+
+    Returns:
+        The constructed policy.
+    """
     device = torch.device(device) if device is not None else resolve_device()
     policy_cfg = dataclasses.replace(
         cfg,
@@ -124,8 +161,19 @@ def build_policy(
 def _build_optimizer(
     policy: SJFPOPolicy, cfg: SJFPOConfig, params: list[dict], lr: float
 ):
+    """Build an optimizer over one param group at a fixed learning rate.
+
+    Args:
+        policy: Policy supplying the config preset.
+        cfg: Active configuration.
+        params: The single param group to optimize.
+        lr: Learning rate for this optimizer.
+
+    Returns:
+        The constructed optimizer.
+    """
     kwargs = dataclasses.asdict(cfg.get_optimizer_preset(lr=lr))
-    kwargs.pop("grad_clip_norm", None)  # applied manually after backward
+    kwargs.pop("grad_clip_norm", None)
     if next(policy.parameters()).is_cuda:
         kwargs["fused"] = True
     return torch.optim.AdamW(params, **kwargs)
@@ -134,11 +182,18 @@ def _build_optimizer(
 def build_optimizers(
     policy: SJFPOPolicy, cfg: SJFPOConfig
 ) -> tuple[torch.optim.Optimizer, torch.optim.Optimizer]:
-    """Actor and critic get separate optimizers, LRs and grad-norm clips.
+    """Build the separate actor and critic optimizers.
 
-    A single shared group lets the critic's value gradient (orders of magnitude
-    larger than the policy's) own the one grad-norm clip, so the policy step is
-    both clipped and outnumbered.
+    A single shared group would let the critic's value gradient (orders of
+    magnitude larger than the policy's) own the one grad-norm clip, so the
+    policy step is both clipped and outnumbered.
+
+    Args:
+        policy: Policy supplying the actor and critic param groups.
+        cfg: Active configuration supplying both learning rates.
+
+    Returns:
+        Tuple of the actor optimizer and the critic optimizer.
     """
     return (
         _build_optimizer(
@@ -155,18 +210,29 @@ def sample_minibatch(
     indices: torch.Tensor,
     out: dict[str, torch.Tensor] | None = None,
 ) -> dict[str, torch.Tensor]:
-    """Slice dim-0 rows; every per-chunk batch value is ``[B, ...]``.
+    """Slice the leading dimension of every per-chunk batch value.
 
-    ``mc_tau`` ``[B,M,K,1]`` and ``mc_eps`` ``[B,M,K,d]`` are stored per
-    chunk/MC draw and are sliced with the minibatch. ``normalizer_observations``
-    is passed through because
-    it is one row per executed environment step, not per chunk.
+    Every per-chunk batch value is ``[B, ...]``, so one index tensor slices
+    them all consistently. ``mc_tau`` ``[B,M,K,1]`` and ``mc_eps`` ``[B,M,K,d]``
+    are stored per chunk/MC draw and are sliced with the minibatch.
+
+    ``normalizer_observations`` is the one exception: it is passed through
+    unslided because it holds one row per executed environment step rather than
+    per chunk, and the normalizer is updated once from the complete rollout
+    batch.
+
+    Args:
+        batch: Batch of per-chunk tensors.
+        indices: Row indices to select.
+        out: Optional preallocated destination, written in place.
+
+    Returns:
+        The sliced batch, or ``out`` when one was supplied.
     """
     if out is None:
         out = {}
     for k, v in batch.items():
         if k == "normalizer_observations":
-            # The normalizer is updated once from the complete rollout batch.
             out[k] = v
         else:
             out[k] = v[indices]
@@ -176,7 +242,21 @@ def sample_minibatch(
 def pad_minibatch_indices(
     indices: torch.Tensor, size: int
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Pad a minibatch by repeating its last row and return a validity mask."""
+    """Pad a minibatch to a fixed size by repeating its last row.
+
+    Repeating keeps the compiled graph's batch dimension static, at the cost
+    of duplicated samples that the returned mask lets the loss ignore.
+
+    Args:
+        indices: Index tensor to pad.
+        size: Required number of rows.
+
+    Returns:
+        Tuple of the padded indices and a mask that is False on padded rows.
+
+    Raises:
+        ValueError: If ``size`` is smaller than the real minibatch.
+    """
     valid = int(indices.numel())
     if size < valid:
         raise ValueError(f"compile batch size {size} is smaller than minibatch {valid}")
@@ -192,7 +272,15 @@ def pad_minibatch_indices(
 def random_baseline(
     evaluator: Evaluator, env: Any, max_episodes: int = 30
 ) -> float:
-    """Mean random-policy return over 30 episodes for divergence gating.
+    """Measure the random-policy return used as the divergence reference.
+
+    Args:
+        evaluator: Evaluator driving the episodes.
+        env: Environment rolled out.
+        max_episodes: Number of random episodes to average over.
+
+    Returns:
+        Mean return of the random policy.
 
     Returns ``0.0`` unchanged — callers gate on ``baseline > 0`` before
     treating the value as meaningful (see ``check_divergence``).
@@ -212,12 +300,19 @@ def random_baseline(
 
 
 def _make_vec_env(env_name: str, num_envs: int):
-    """Build a vectorized training env, preferring async workers.
+    """Build a vectorised training environment, preferring async workers.
 
     ``AsyncVectorEnv`` parallelizes env stepping across worker processes —
     the single biggest rollout-throughput win for ``num_envs > 1``. Falls
     back to ``SyncVectorEnv`` if the async path is unavailable in the
     current runtime (e.g. no /dev/shm, pickling of the env factory fails).
+
+    Args:
+        env_name: Gymnasium environment id.
+        num_envs: Number of parallel environments.
+
+    Returns:
+        The vectorised environment.
     """
     import gymnasium as gym
 
@@ -242,7 +337,39 @@ def train_sjfpo_run(
     resume_from_checkpoint: str | Path | None = None,
     wandb_enabled: bool = True,
 ) -> dict[str, Any]:
-    """Run a single SJFPO training run, returning a summary with artifacts."""
+    """Run a single SJFPO training run.
+
+    The vectorised environment is built before any CUDA initialisation so
+    forked workers do not inherit the parent's CUDA context (the CleanRL / SB3
+    ordering). The actor and critic optimizers are stepped under Accelerate's
+    accumulation contract: backward on every microbatch, synchronize and step
+    only at the accumulation boundary, and always flush a final partial group.
+
+    Gradients are clipped per optimizer rather than jointly, because the
+    critic's gradient norm is orders of magnitude larger than the actor's and a
+    shared clip would consume the whole budget on the critic.
+
+    Args:
+        env: Environment to train on. Built from ``cfg`` when omitted.
+        out_dir: Directory artifacts are written to; created if absent.
+        cfg: Active configuration; the defaults are used when omitted.
+        seed: Seed for the policy, env, and torch RNGs.
+        total_steps: Absolute environment-step budget for the run.
+        eval_steps: Environment steps between periodic evaluations.
+        save_steps: Environment steps between periodic checkpoints.
+        obs_dim: Observation dimension override.
+        action_dim: Action dimension override.
+        resume_from_checkpoint: Checkpoint directory to resume policy,
+            optimizers, and counters from.
+        wandb_enabled: Whether to log to wandb.
+
+    Returns:
+        Summary dict with the final metrics and the artifact paths.
+
+    Raises:
+        RuntimeError: If the run aborts, or if a buffered collection executed
+            zero steps.
+    """
     cfg = cfg or SJFPOConfig()
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -257,8 +384,6 @@ def train_sjfpo_run(
     set_seed(seed)
     device = resolve_device()
 
-    # Build vectorized training env *before* CUDA init so forked workers don't
-    # inherit the parent's CUDA context (CleanRL / SB3 ordering).
     train_env = env
     if cfg.num_envs > 1 and env_name != "unknown":
         train_env = _make_vec_env(env_name, cfg.num_envs)
@@ -281,7 +406,6 @@ def train_sjfpo_run(
             actor_optimizer, critic_optimizer = build_optimizers(policy, policy.config)
         global_step = int(counters["global_step"])
         policy.train()
-        # Re-apply compilation — from_pretrained builds an eager policy.
         _compile_in_place(policy)
         (out_dir / "resume_info.json").write_text(
             json.dumps(
@@ -321,7 +445,6 @@ def train_sjfpo_run(
         wandb_enabled=wandb_enabled,
     )
 
-    # Next step at which each periodic action fires.
     next_eval = eval_steps
     next_save = save_steps
 
@@ -338,8 +461,6 @@ def train_sjfpo_run(
     fps = 0.0
     t_start = time.time()
 
-    # Hoisted once — indexing the optimizer's param groups every minibatch is
-    # pure Python overhead on the critical path.
     actor_params = [
         p for group in actor_optimizer.param_groups for p in group["params"]
     ]
@@ -358,7 +479,6 @@ def train_sjfpo_run(
                 action_low=action_low,
                 action_high=action_high,
             )
-            # Count executed env steps via executed chunk prefixes.
             step_delta = int((~batch["action_is_pad"]).sum())
             if step_delta <= 0:
                 raise RuntimeError(
@@ -403,9 +523,6 @@ def train_sjfpo_run(
                 compile_batch_size,
                 (n_chunks + n_minibatches - 1) // n_minibatches,
             )
-            # Match Accelerate's accumulation contract: backward on every
-            # microbatch, synchronize/step only at the accumulation boundary,
-            # and always flush a final partial accumulation group.
             microbatches = list(
                 mini_batch_indices(
                     n_chunks,
@@ -470,8 +587,6 @@ def train_sjfpo_run(
 
             policy.update_ema(global_step)
 
-            # Update once per collected rollout, after the policy/value update.
-            # These are raw post-step frames, not overlapping warmup windows.
             policy.update_observation_stats(batch["normalizer_observations"])
 
             if infos:
@@ -509,10 +624,6 @@ def train_sjfpo_run(
                 )
                 log_metrics(data, step=global_step)
 
-            # clamp() has zero gradient above its max, so CFM samples above
-            # cfm_clamp contribute nothing: rho stays exactly 1 and the policy
-            # receives no gradient while the critic keeps training. Abort
-            # instead of burning a run that can only plateau.
             above_clamp_frac = (
                 float(torch.stack(above_clamp_fracs).mean())
                 if above_clamp_fracs

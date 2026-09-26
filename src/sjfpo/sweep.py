@@ -29,12 +29,29 @@ class ScanResult:
 
 
 def format_run_directory_name(spec: RunSpec) -> str:
-    """Per-run subdir: {method}_{env}_seed{seed}/."""
+    """Build the conventional subdirectory name for one run.
+
+    Args:
+        spec: Run spec to name.
+
+    Returns:
+        Name of the form ``{method}_{env}_seed{seed}``.
+    """
     return f"{spec.method}_{spec.env}_seed{spec.seed}"
 
 
 def read_run_manifest(run_dir: Path) -> dict[str, Any]:
-    """Read and parse manifest.json, raising SweepError on failure."""
+    """Read and parse a run's ``manifest.json``.
+
+    Args:
+        run_dir: Directory of the run to read.
+
+    Returns:
+        The parsed manifest dict.
+
+    Raises:
+        SweepError: If the manifest is corrupt or unreadable.
+    """
     manifest_path = run_dir / "manifest.json"
     try:
         return json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -49,7 +66,19 @@ def classify_run_status(
     dir_name: str,
     manifest_reader: Callable[[Path], dict[str, Any]],
 ) -> str:
-    """Classify one run dir: missing | diverged | complete | partial."""
+    """Classify a run directory from its manifest.
+
+    Args:
+        run_dir: Directory of the run to classify.
+        dir_name: Run directory name, used in the error message.
+        manifest_reader: Callable that reads and parses the manifest.
+
+    Returns:
+        One of ``missing``, ``diverged``, ``complete``, or ``partial``.
+
+    Raises:
+        SweepError: If the manifest exists but cannot be read.
+    """
     if not run_dir.is_dir():
         return "missing"
     if not (run_dir / "manifest.json").is_file():
@@ -71,7 +100,14 @@ def print_session_summary(
     session_start_time: float,
     failed: list[str] | None = None,
 ) -> None:
-    """Print completed/failed/remaining/hours session summary."""
+    """Print a completed/failed/remaining/hours summary for the session.
+
+    Args:
+        completed_count: Runs that finished successfully.
+        total_count: Runs attempted this session.
+        session_start_time: ``time.time()`` value from session start.
+        failed: Names of the runs that failed.
+    """
     elapsed_hours = (time.time() - session_start_time) / 3600.0
     failed = list(failed or [])
     remaining = total_count - completed_count - len(failed)
@@ -95,7 +131,24 @@ def scan_runs(
         s.seed,
     ),
 ) -> ScanResult:
-    """Scan the run matrix, classifying each run as pending/skipped/diverged."""
+    """Scan the run matrix and bucket each run by its on-disk status.
+
+    Runs are re-sorted by ``sort_key`` with their original matrix index as the
+    tiebreaker, so a resumed sweep keeps the canonical ordering.
+
+    Args:
+        matrix: Run specs making up the sweep.
+        base_dir: Parent directory holding the per-run subdirectories.
+        dir_name_fn: Callable mapping a spec to its subdirectory name.
+        manifest_reader: Callable that reads and parses a manifest.
+        sort_key: Callable producing the sort key for a spec.
+
+    Returns:
+        The pending, skipped, and diverged runs.
+
+    Raises:
+        SweepError: If any run's manifest exists but cannot be read.
+    """
     base = Path(base_dir)
     pending: list[RunSpec] = []
     skipped: list[RunSpec] = []
@@ -121,7 +174,22 @@ def flush_pending_runs(
     session_start_time: float,
     dir_name_fn: Callable[[RunSpec], str] = format_run_directory_name,
 ) -> tuple[list[dict[str, Any]], list[str]]:
-    """Execute pending runs sequentially; failures are recorded, never silent."""
+    """Execute pending runs sequentially, recording failures as they happen.
+
+    A failing run is logged and the sweep continues, so one broken run cannot
+    abort the rest. The session summary is printed even if the sweep is
+    interrupted.
+
+    Args:
+        pending_runs: Run specs to execute, in order.
+        base_dir: Parent directory the runs write into.
+        run_fn: Callable executing one spec and returning its result dict.
+        session_start_time: ``time.time()`` value from session start.
+        dir_name_fn: Callable mapping a spec to its subdirectory name.
+
+    Returns:
+        Tuple of the successful result dicts and the names of failed runs.
+    """
     base = Path(base_dir)
     results: list[dict[str, Any]] = []
     failed: list[str] = []
@@ -145,7 +213,11 @@ def flush_pending_runs(
 
 
 def announce_scan_results(scan_result: ScanResult) -> None:
-    """Print the skipped/pending/diverged scan summary."""
+    """Print the skipped/pending/diverged scan summary.
+
+    Args:
+        scan_result: Scan outcome to summarise.
+    """
     print(
         f"{len(scan_result.skipped)} skipped (complete), "
         f"{len(scan_result.pending)} pending, "
@@ -154,7 +226,16 @@ def announce_scan_results(scan_result: ScanResult) -> None:
 
 
 def register_atexit_summary(pending_count: int, session_start: float) -> None:
-    """Register belt-and-braces atexit summary for SIGTERM'd sessions."""
+    """Register a fallback session summary for interrupted sessions.
+
+    The normal summary is skipped when the process is killed by SIGTERM, so an
+    ``atexit`` handler reports what was still pending and how long the session
+    ran.
+
+    Args:
+        pending_count: Runs pending when the handler was registered.
+        session_start: ``time.time()`` value from session start.
+    """
 
     def print_atexit_summary() -> None:
         elapsed_hours = (time.time() - session_start) / 3600.0
@@ -173,7 +254,21 @@ def run_pending(
     scan_fn: Callable[[tuple[RunSpec, ...], str | Path], ScanResult] = scan_runs,
     dir_name_fn: Callable[[RunSpec], str] = format_run_directory_name,
 ) -> dict[str, Any]:
-    """Scan, report, execute pending runs, register atexit handler."""
+    """Scan the matrix, report the outcome, and execute the pending runs.
+
+    The sweep is reentrant: scanning first means an interrupted session
+    resumes by skipping whatever already completed.
+
+    Args:
+        matrix: Run specs making up the sweep.
+        base_dir: Parent directory holding the per-run subdirectories.
+        run_fn: Callable executing one spec and returning its result dict.
+        scan_fn: Callable that buckets the matrix into a :class:`ScanResult`.
+        dir_name_fn: Callable mapping a spec to its subdirectory name.
+
+    Returns:
+        Session result dict with the completed, failed, and remaining runs.
+    """
     base = Path(base_dir)
     session_start = time.time()
 

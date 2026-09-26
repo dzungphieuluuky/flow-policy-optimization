@@ -109,6 +109,12 @@ class SJFPOConfig(PreTrainedConfig):
             self.n_action_steps = self.action_horizon
 
     def _validate_geometry(self) -> None:
+        """Validate observation, action, and DiT shape parameters.
+
+        Raises:
+            ValueError: If any dimension is out of range, or ``hidden_dim`` is
+                not divisible by ``dit_heads``.
+        """
         if self.n_obs_steps < 1:
             raise ValueError(f"n_obs_steps={self.n_obs_steps} must be >= 1")
         if self.action_horizon < 1:
@@ -143,6 +149,12 @@ class SJFPOConfig(PreTrainedConfig):
             raise ValueError(f"timestep_scale={self.timestep_scale} must be > 0")
 
     def _validate_loss_params(self) -> None:
+        """Validate discount, trust-region, clamp, and sampling parameters.
+
+        Raises:
+            ValueError: If any discount, epsilon, clamp bound, or enumerated
+                mode is outside its allowed set.
+        """
         if not 0.0 < self.gamma <= 1.0:
             raise ValueError(f"gamma={self.gamma} must satisfy 0 < gamma <= 1")
         if not 0.0 < self.gae_lambda <= 1.0:
@@ -197,6 +209,12 @@ class SJFPOConfig(PreTrainedConfig):
             raise ValueError(f"vf_coef={self.vf_coef} must be >= 0")
 
     def _validate_optimizer(self) -> None:
+        """Validate learning rates, clipping, and batch-shaping parameters.
+
+        Raises:
+            ValueError: If a rate or count is non-positive, or if
+                ``chunks_per_update`` is smaller than ``num_minibatches``.
+        """
         if self.policy_lr <= 0:
             raise ValueError(f"policy_lr={self.policy_lr} must be > 0")
         if self.critic_lr <= 0:
@@ -228,6 +246,13 @@ class SJFPOConfig(PreTrainedConfig):
             raise ValueError(f"num_mc_samples={self.num_mc_samples} must be >= 1")
 
     def _validate_flags(self) -> None:
+        """Validate step counts, spectral token fraction, and flag combinations.
+
+        Raises:
+            ValueError: If a step count is below one, if
+                ``top_p_spectral_tokens`` is outside ``(0, 1]``, or if
+                per-bin clipping is requested without the DCT transform.
+        """
         if self.num_euler_steps < 1:
             raise ValueError(f"num_euler_steps={self.num_euler_steps} must be >= 1")
         if self.num_inference_steps < 1:
@@ -245,14 +270,28 @@ class SJFPOConfig(PreTrainedConfig):
 
 
     def validate_features(self) -> None:
-        """Require observation.state + action features (base class skips this)."""
+        """Require the ``observation.state`` and ``action`` features.
+
+        The base class skips this check, so it is enforced here.
+
+        Raises:
+            ValueError: If either required feature is missing.
+        """
         if self.robot_state_feature is None:
             raise ValueError("SJFPO requires 'observation.state' in input_features.")
         if self.action_feature is None:
             raise ValueError("SJFPO requires 'action' in output_features.")
 
     def get_optimizer_preset(self, lr: float | None = None) -> AdamWConfig:
-        """Return the standard FP32/bf16-compatible AdamW preset."""
+        """Build the AdamW preset used for the actor and critic.
+
+        Args:
+            lr: Override learning rate; ``policy_lr`` is used when omitted.
+
+        Returns:
+            An :class:`AdamWConfig` carrying the learning rate, weight decay,
+            and gradient clip norm.
+        """
         kwargs = dict(
             lr=self.policy_lr if lr is None else float(lr),
             weight_decay=self.optimizer_weight_decay,
@@ -261,21 +300,38 @@ class SJFPOConfig(PreTrainedConfig):
         return AdamWConfig(**kwargs)
 
     def get_scheduler_preset(self):
-        """No LR scheduler by default. Override in a subclass to return one."""
+        """Return the learning-rate scheduler, if any.
+
+        Returns:
+            None; training runs without a scheduler unless a subclass
+            overrides this.
+        """
         return None
 
 
     @property
     def observation_delta_indices(self) -> list[int] | None:
-        """Stacked past frames ending at the current step."""
+        """Observation window offsets fed to the policy.
+
+        Returns:
+            The ``n_obs_steps`` past-frame offsets ending at the current step.
+        """
         return list(range(1 - self.n_obs_steps, 1))
 
     @property
     def action_delta_indices(self) -> list[int]:
-        """Action-chunk offsets the dataset loader returns."""
+        """Action-chunk offsets returned by the dataset loader.
+
+        Returns:
+            One offset per step of a full action chunk.
+        """
         return list(range(self.action_horizon))
 
     @property
     def reward_delta_indices(self) -> None:
-        """None: rollouts supply executed-step rewards directly."""
+        """Reward offsets requested from the dataset loader.
+
+        Returns:
+            None, because rollouts supply executed-step rewards directly.
+        """
         return None

@@ -29,6 +29,20 @@ def bootstrap_ci(
     ci: float = 0.95,
     seed: int = 42,
 ) -> tuple[float, float, float]:
+    """Bootstrap a confidence interval for the mean of ``data``.
+
+    Args:
+        data: Sample to resample.
+        n_boot: Number of bootstrap resamples.
+        ci: Two-sided confidence level in ``(0, 1)``.
+        seed: RNG seed, fixed by default so plots are reproducible.
+
+    Returns:
+        Tuple of ``(mean, ci_low, ci_high)``.
+
+    Raises:
+        ValueError: If ``data`` is empty.
+    """
     if len(data) == 0:
         raise ValueError("data must not be empty")
 
@@ -50,6 +64,20 @@ def bootstrap_ci(
 
 
 def compute_iqm(returns_per_seed: list[float]) -> float:
+    """Interquartile mean across seeds, robust to a few outlier runs.
+
+    Falls back to the plain mean for fewer than four seeds, where trimming
+    would discard too much of the sample.
+
+    Args:
+        returns_per_seed: Final return for each seed.
+
+    Returns:
+        Interquartile mean of the per-seed returns.
+
+    Raises:
+        ValueError: If ``returns_per_seed`` is empty.
+    """
     if not returns_per_seed:
         raise ValueError("returns_per_seed must not be empty")
 
@@ -70,12 +98,33 @@ def compute_iqm(returns_per_seed: list[float]) -> float:
 
 
 def is_superior(ci_low: float, ci_high: float) -> bool:
+    """Report whether a bootstrap CI on a paired difference excludes zero.
+
+    Args:
+        ci_low: Lower bound of the difference interval.
+        ci_high: Upper bound of the difference interval.
+
+    Returns:
+        True when the whole interval sits above zero.
+    """
     return ci_low > 0
 
 
 def normalize_cross_env(
     results_by_env: dict[str, dict[str, list[float]]],
 ) -> dict[str, dict[str, list[float]]]:
+    """Scale each environment's returns by that environment's best run.
+
+    Dividing by the per-environment maximum puts environments on a common
+    0-1 scale so they can share one aggregate chart. An environment whose best
+    return is zero is passed through unchanged to avoid dividing by zero.
+
+    Args:
+        results_by_env: Nested ``{env: {method: [return per eval]}}`` mapping.
+
+    Returns:
+        The same nesting with every series divided by its environment maximum.
+    """
     normalized = {}
 
     for env_name, methods in results_by_env.items():
@@ -100,7 +149,24 @@ def normalize_cross_env(
 
 
 def load_eval_histories(run_dir: Path, *, eval_steps: int) -> list[dict[str, Any]]:
-    """Scan run dirs for eval_history.csv files.      Returns [{method, env, seed, global_step, return}]; global_step is     ep"""
+    """Scan run subdirectories and collect their eval histories.
+
+    Each subdirectory is expected to be named
+    ``{method}_{env}_seed{seed}``; the CSV carries no step column, so the
+    global step is reconstructed as ``episode * eval_steps``.
+
+    Args:
+        run_dir: Parent directory holding the per-run subdirectories.
+        eval_steps: Environment steps between evals, used to recover steps.
+
+    Returns:
+        List of ``{method, env, seed, global_step, return}`` dicts, one per
+        CSV row across every recognised run.
+
+    Raises:
+        AnalysisError: If a CSV is missing the ``episode`` or ``return``
+            column. Malformed input raises rather than defaulting to zero.
+    """
     histories = []
 
     for subdir in run_dir.iterdir():
@@ -159,7 +225,20 @@ def plot_per_env_curves(
     curves_by_method: dict[str, dict[str, Any]],
     output_dir: Path,
 ) -> Path:
-    """Learning curves with bootstrap-CI shading for one env."""
+    """Plot per-seed learning curves for one environment.
+
+    Shaded bands are bootstrap CIs across seeds, which collapse to a zero-width
+    band when only one seed is present.
+
+    Args:
+        env_name: Environment id, used in the title and output filename.
+        curves_by_method: ``{method: {eval_points, returns_per_seed}}`` for a
+            single environment.
+        output_dir: Directory the PNG is written to; created if absent.
+
+    Returns:
+        Path to the written ``{env_name}_curves.png``.
+    """
     output_dir.mkdir(parents=True, exist_ok=True)
 
     fig, ax = plt.subplots(figsize=(10, 6))
@@ -214,7 +293,18 @@ def plot_aggregate(
     aggregate_data: dict[str, dict[str, list[float]]],
     output_dir: Path,
 ) -> Path:
-    """Normalized cross-env bar chart with bootstrap-CI error bars."""
+    """Plot the cross-environment aggregate bar chart.
+
+    Expects normalized returns, as produced by :func:`normalize_cross_env`, so
+    the methods stay comparable across environments.
+
+    Args:
+        aggregate_data: ``{env: {method: [normalized return per eval]}}``.
+        output_dir: Directory the PNG is written to; created if absent.
+
+    Returns:
+        Path to the written ``aggregate_comparison.png``.
+    """
     output_dir.mkdir(parents=True, exist_ok=True)
 
     methods = set()
@@ -277,7 +367,15 @@ def plot_aggregate(
 
 
 def write_summary_csv(report: AnalysisReport, output_dir: Path) -> None:
-    """Summary CSV (method,env,iqm,ci_low,ci_high,status) from report cells."""
+    """Write the per-method, per-env summary table.
+
+    A run whose subdirectory is listed in ``report.excluded_diverged`` is
+    marked ``diverged`` rather than ``complete``.
+
+    Args:
+        report: Analysis report holding the summary statistics.
+        output_dir: Directory the CSV is written to; created if absent.
+    """
     output_dir.mkdir(parents=True, exist_ok=True)
     csv_path = output_dir / "results_summary.csv"
 
@@ -302,7 +400,23 @@ def analyze_results(
     *,
     eval_steps: int,
 ) -> AnalysisReport:
-    """Run the full analysis: histories → curves → aggregate → plots → CSV."""
+    """Run the full analysis: histories, curves, aggregate plots, and CSV.
+
+    Runs flagged as diverged are excluded from every plot and statistic.
+
+    Args:
+        matrix: Run specs the analysis is expected to cover.
+        base_dir: Directory holding the per-run subdirectories.
+        output_dir: Directory all generated plots and CSVs are written to.
+        eval_steps: Environment steps between evals, used to recover the
+            global step of each eval row.
+
+    Returns:
+        The populated :class:`AnalysisReport`.
+
+    Raises:
+        AnalysisError: If no eval histories are found under ``base_dir``.
+    """
     output_dir.mkdir(parents=True, exist_ok=True)
 
     histories = load_eval_histories(base_dir, eval_steps=eval_steps)

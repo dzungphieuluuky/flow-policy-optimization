@@ -38,9 +38,24 @@ def compute_step_advantages_torch(
     ``V(s_(t+1))`` otherwise. GAE recursion continues across ordinary
     transitions and stops at both terminated and truncated transitions.
 
+    Args:
+        rewards_1d: Executed-step rewards, shape ``[T]``.
+        values: Value estimates for the state at each executed step.
+        next_values: Value estimates for the state following each step.
+        terminated: Mask of true terminations, shape ``[T]``.
+        gamma: Discount factor in ``[0, 1]``.
+        lam: GAE decay in ``[0, 1]``.
+        truncated: Optional mask of true timeouts, shape ``[T]``. Treated as
+            all-false when omitted.
+
     Returns:
-        advantages: GAE advantage for every executed step.
-        returns: ``values + advantages``, i.e. the GAE value target.
+        Advantages for every executed step, and ``values + advantages``, i.e.
+        the GAE value target.
+
+    Raises:
+        ValueError: If ``gamma`` or ``lam`` fall outside ``[0, 1]``, if
+            ``rewards_1d`` is not 1D, or if the step tensors disagree in
+            length with ``rewards_1d``.
     """
     if not 0.0 <= gamma <= 1.0:
         raise ValueError(f"gamma must be in [0, 1], got {gamma}")
@@ -82,8 +97,6 @@ def compute_step_advantages_torch(
         empty = torch.empty(0, device=device, dtype=dtype)
         return empty, empty
 
-    # Match rsl_rl/FPO++: timeouts are handled by adding gamma * V(s_t) to
-    # the reward, then the transition is treated as terminal for GAE.
     effective_rewards = torch.where(
         truncated,
         rewards + gamma * values,
