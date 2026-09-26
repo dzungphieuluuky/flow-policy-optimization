@@ -824,6 +824,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             gamma=cfg.gamma,
             lam=cfg.gae_lambda,
         )
+        raw_advantages = advantages
         if cfg.normalize_advantage and advantages.numel() > 0:
             advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
         # The critic regresses onto normalized returns so the value loss does
@@ -837,7 +838,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             active["chunk_env_id"][:n_chunks],
             active["chunk_done"][:n_chunks],
             active["chunk_truncated"][:n_chunks],
-            advantages,
+            raw_advantages,
             raw_returns,
         )
         advantages = advantages.to(storage_dtype)
