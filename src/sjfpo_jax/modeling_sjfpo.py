@@ -370,9 +370,9 @@ class SJFPOPolicy:
 
         # Normalize states via running stats (identity until first update).
         stats = self.params.obs_stats
-        states_n = normalize_with_stats(states, stats)
+        normalized_states = normalize_with_stats(states, stats)
         next_states_n = normalize_with_stats(next_states, stats)
-        values = self.critic.apply(self.params.critic, states_n)
+        values = self.critic.apply(self.params.critic, normalized_states)
         v_next_all = self.critic.apply(self.params.critic, next_states_n)
         next_values = jnp.where(terminated, 0.0, v_next_all)
 

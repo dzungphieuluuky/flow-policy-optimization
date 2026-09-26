@@ -557,7 +557,7 @@ def generate_batch(
     # One normalizer pass for states + next_states (concatenate along batch).
     combined = jnp.concatenate([states_b, next_b], axis=0)
     combined_n = policy.normalizer(combined)
-    states_n = combined_n[:n_chunks]
+    normalized_states = combined_n[:n_chunks]
     next_n = combined_n[n_chunks:]
 
     # One critic pass for both.

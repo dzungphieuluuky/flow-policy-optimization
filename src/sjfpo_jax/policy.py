@@ -8,11 +8,11 @@ host-side via :func:`update_normalizer`), stored CRN draws (tau/eps).
 Performance notes
 -----------------
 * ``prepare_batch`` precomputes everything that depends only on the frozen
-  behavior snapshot + the CRN draws (``states_n``, ``x_t``, ``v_star``,
+  behavior snapshot + the CRN draws (``normalized_states``, ``x_t``, ``v_star``,
   ``l_old``, ``tau_bn``). The jitted training step then runs only the live
   conditioner + actor + critic, roughly halving the flow-model work per
   update epoch.
-* ``compute_loss`` accepts the precomputed ``l_old`` and reuses ``states_n``;
+* ``compute_loss`` accepts the precomputed ``l_old`` and reuses ``normalized_states``;
   it no longer calls into the behavior module at all.
 * The actor is invoked with ``return_stats=False`` (the default in the
   optimized networks file), so no per-block diagnostics run on the hot path.
@@ -171,7 +171,7 @@ def prepare_batch(
     """Precompute everything independent of the live (trainable) params.
 
     Output keys consumed by :func:`compute_loss`:
-      ``states_n``      [B, T, D]   normalized observations
+      ``normalized_states``      [B, T, D]   normalized observations
       ``x_t``           [B*M, *flow_shape]   noisy action tokens (frozen CRN)
       ``tau_bn``        [B*M]       broadcast flow times
       ``v_star``        [B, M, *flow_shape]  CFM target velocity
@@ -186,7 +186,7 @@ def prepare_batch(
     if actions.shape[-2] != action_horizon:
         raise ValueError(f"action horizon {actions.shape[-2]} != {action_horizon}")
 
-    states_n = policy.normalizer(states)
+    normalized_states = policy.normalizer(states)
 
     token_dim = _spectral_token_count(action_horizon, top_p_spectral_tokens,
                                       use_dct_transform)
@@ -210,7 +210,7 @@ def prepare_batch(
     )
     v_star = jnp.expand_dims(spec_tokens, 1) - eps  # [n, M, *flow_shape]
 
-    old_cond = behavior.conditioner(states_n)  # [n, hidden]
+    old_cond = behavior.conditioner(normalized_states)  # [n, hidden]
     old_cond_flat = jnp.broadcast_to(
         old_cond[:, None, :], (n, num_mc, old_cond.shape[-1])
     ).reshape(n * num_mc, -1)
@@ -220,7 +220,7 @@ def prepare_batch(
 
     return {
         **batch,
-        "states_n": states_n,
+        "normalized_states": normalized_states,
         "x_t": x_t,
         "tau_bn": tau_bn,
         "v_star": v_star,
@@ -250,7 +250,7 @@ def compute_loss(
     ``batch`` is the output of :func:`prepare_batch`. No behavior module is
     touched here — the frozen behavior forward already ran once per batch.
     """
-    states_n = batch["states_n"]
+    normalized_states = batch["normalized_states"]
     x_t = batch["x_t"]
     tau_bn = batch["tau_bn"]
     v_star = batch["v_star"]
@@ -263,7 +263,7 @@ def compute_loss(
     num_mc = int(l_old.shape[1])
     flow_shape = tuple(v_star.shape[2:])
 
-    cond = policy.conditioner(states_n)                 # [n, hidden]
+    cond = policy.conditioner(normalized_states)                 # [n, hidden]
     cond_flat = jnp.broadcast_to(
         cond[:, None, :], (n, num_mc, cond.shape[-1])
     ).reshape(n * num_mc, -1)
@@ -282,7 +282,7 @@ def compute_loss(
     policy_loss = -psi.mean()
 
     # Fix 3 mirror: enforce [B] contract; guard broadcasting bugs.
-    v_pred_raw = policy.critic(states_n).astype(jnp.float32)
+    v_pred_raw = policy.critic(normalized_states).astype(jnp.float32)
     # Note: CFM ratio uses safe FP32 clamp in fpo (fix 7 mirror); value shape validated above (fix 3).
     # Note: advantage validation applied in training loop (fix 5 mirror).
     v_pred = v_pred_raw.squeeze(-1) if v_pred_raw.dim() > 1 and v_pred_raw.shape[-1] == 1 else v_pred_raw
@@ -338,7 +338,7 @@ def train_step(
     """One jitted update on the live params.
 
     ``batch`` must be the output of :func:`prepare_batch` (contains
-    ``l_old`` / ``x_t`` / ``v_star`` / ``states_n``). Behavior module is no
+    ``l_old`` / ``x_t`` / ``v_star`` / ``normalized_states``). Behavior module is no
     longer an argument — its contribution is baked into the batch.
     """
     loss_kwargs = loss_kwargs or {}
@@ -361,8 +361,8 @@ def predict_action_chunk(
     noise: bool = True,
 ) -> jax.Array:
     """Full REAL-space action chunk [B, H, act] (denoise + unscale)."""
-    states_n = policy.normalizer(states.astype(jnp.float32))
-    condition = policy.conditioner(states_n)
+    normalized_states = policy.normalizer(states.astype(jnp.float32))
+    condition = policy.conditioner(normalized_states)
     token_dim = max(1, round(top_p_spectral_tokens * action_horizon))
     action_dim = int(policy.action_low[...].shape[0])
     if noise:

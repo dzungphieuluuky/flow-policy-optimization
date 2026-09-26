@@ -635,7 +635,7 @@ class SJFPOPolicy(PreTrainedPolicy):
 
     def _initial_cfm_losses(
         self,
-        states_n: torch.Tensor,
+        normalized_states: torch.Tensor,
         actions: torch.Tensor,
         tau: torch.Tensor,
         eps: torch.Tensor,
@@ -643,7 +643,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         """Compute the initial old and new CFM losses for one minibatch.
 
         Args:
-            states_n: Normalised observation window.
+            normalized_states: Normalised observation window.
             actions: Action chunk in ``[-1, 1]``.
             tau: Flow times.
             eps: Monte-Carlo noise matching the token layout.
@@ -663,7 +663,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         x_t = _mc_x_t(tau_bn, flatten_mc_noise, flatten_mc_action, flow_shape)
         actor_tau = tau_bn if tau_bn.dim() == 1 else tau_bn.squeeze(-1)
         with torch.inference_mode(), autocast_context(actions.device):
-            condition = self.conditioner(states_n)
+            condition = self.conditioner(normalized_states)
             condition_flat = einx.id(
                 "n d -> n m d", condition, m=num_mc
             ).reshape(num_mc * condition.shape[0], condition.shape[-1])
@@ -831,7 +831,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             all_step_states_n = self.preprocessor(
                 {OBS_STATE: torch.cat([step_states, step_next_states], dim=0)}
             )[OBS_STATE]
-            states_n = all_step_states_n.index_select(0, chunk_starts)
+            normalized_states = all_step_states_n.index_select(0, chunk_starts)
             with autocast_context(device):
                 all_step_values = self.critic(all_step_states_n).float()
             total_executed = n_steps
@@ -882,7 +882,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             )
 
         initial_cfm_loss, initial_cfm_loss_bin = self._initial_cfm_losses(
-            states_n, actions, tau, eps
+            normalized_states, actions, tau, eps
         )
 
         return {
