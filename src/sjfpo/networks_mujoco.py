@@ -108,6 +108,12 @@ class MLPFlowBlock(nn.Module):
     ) -> torch.Tensor | tuple[torch.Tensor, dict[str, torch.Tensor]]:
         """Mix tokens, then mix channels, both conditioned on ``c``.
 
+        The token-mix weight is sliced to ``x``'s token count, so a reduced
+        spectral layout (``use_dct_transform=True`` with
+        ``top_p_spectral_tokens < 1.0``) uses the top-left ``K x K`` submatrix
+        and the leading ``K`` biases. When the full ``action_horizon`` tokens
+        are supplied this is identical to the unsliced ``token_mix``.
+
         Args:
             x: Tokens of shape ``[B, K, D]``.
             c: Conditioning of shape ``[B, D]`` or ``[B, K, D]`` when each
@@ -115,8 +121,8 @@ class MLPFlowBlock(nn.Module):
             return_stats: Whether to also return the modulation statistics.
 
         Returns:
-            The transformed tokens, or a tuple of those tokens and a stats dict
-            when ``return_stats`` is set.
+            The transformed tokens, or a tuple of those tokens and a stats
+            dict when ``return_stats`` is set.
         """
         token_axis = c.dim() == 3
         b = c.shape[0]
@@ -127,7 +133,14 @@ class MLPFlowBlock(nn.Module):
             shift = shift.unsqueeze(1)
             scale = scale.unsqueeze(1)
 
-        mixed = self.token_mix(self.norm1(x).transpose(1, 2)).transpose(1, 2)
+        # Slice to the actual token count so a reduced spectral token layout
+        # still mixes correctly. With K == action_horizon the slice is a
+        # no-op and the weight is used in full.
+        k = x.shape[1]
+        w = self.token_mix.weight[:k, :k]
+        bias = self.token_mix.bias[:k] if self.token_mix.bias is not None else None
+        normed = self.norm1(x).transpose(1, 2)  # [B, D, K]
+        mixed = torch.nn.functional.linear(normed, w, bias).transpose(1, 2)
         x = x + mixed
         mlp_out = self.mlp(modulate(self.norm2(x), shift, scale))
         out = x + mlp_out
@@ -142,7 +155,6 @@ class MLPFlowBlock(nn.Module):
                 "scale_mlp": (1.0 + scale).square().mean().sqrt(),
             }
         return out, stats
-
 
 class SJFPOFlowModelMLP(nn.Module):
     """MLP-mixer velocity model over noisy-action tokens.
