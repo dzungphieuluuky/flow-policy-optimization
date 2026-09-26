@@ -1023,32 +1023,27 @@ class SJFPOPolicy(PreTrainedPolicy):
                 "n m d -> (n m) d",
                 einx.id("n d -> n m d", self.conditioner(states), m=num_mc),
             )
-        stored_l_old = "behavior_cfm_loss" in batch
-        if stored_l_old:
-            l_old = to_tensor(
-                batch["behavior_cfm_loss"], dtype=torch.float32, device=device
+        if "behavior_cfm_loss" not in batch or "behavior_cfm_loss_bin" not in batch:
+            raise KeyError(
+                "forward requires 'behavior_cfm_loss' and 'behavior_cfm_loss_bin' "
+                "from generate_rollout. They are computed once per rollout against "
+                "the frozen snapshot and must not be recomputed here."
             )
-            l_old_bin = to_tensor(
-                batch["behavior_cfm_loss_bin"], dtype=torch.float32, device=device
+        l_old = to_tensor(
+            batch["behavior_cfm_loss"], dtype=torch.float32, device=device
+        )
+        l_old_bin = to_tensor(
+            batch["behavior_cfm_loss_bin"], dtype=torch.float32, device=device
+        )
+        if tuple(l_old.shape) != (n, num_mc):
+            raise ValueError(
+                f"behavior_cfm_loss shape {tuple(l_old.shape)} != {(n, num_mc)}"
             )
-            if tuple(l_old.shape) != (n, num_mc):
-                raise ValueError(
-                    f"behavior_cfm_loss shape {tuple(l_old.shape)} != {(n, num_mc)}"
-                )
-            if tuple(l_old_bin.shape) != (n, num_mc, flow_shape[0]):
-                raise ValueError(
-                    f"behavior_cfm_loss_bin shape {tuple(l_old_bin.shape)} != "
-                    f"{(n, num_mc, flow_shape[0])}"
-                )
-        else:
-            with torch.inference_mode(), autocast_context(device):
-                old_cond_flat = einx.id(
-                    "n m d -> (n m) d",
-                    einx.id("n d -> n m d", self.old_conditioner(states), m=num_mc),
-                )
-                v_old = self.compute_predicted_velocity(
-                    x_t_flat, actor_tau, old_cond_flat, old=True
-                ).float()
+        if tuple(l_old_bin.shape) != (n, num_mc, flow_shape[0]):
+            raise ValueError(
+                f"behavior_cfm_loss_bin shape {tuple(l_old_bin.shape)} != "
+                f"{(n, num_mc, flow_shape[0])}"
+            )
 
         with autocast_context(device):
             v_new = self.compute_predicted_velocity(
@@ -1066,10 +1061,6 @@ class SJFPOPolicy(PreTrainedPolicy):
             v_star_f = self.compute_target_velocity(spectral_action_tokens, eps).float()
             v_new_r_f = v_new.reshape(n, num_mc, *flow_shape)
 
-            if not stored_l_old:
-                v_old_r_f = v_old.reshape(n, num_mc, *flow_shape)
-                l_old_bin = compute_cfm_loss(v_old_r_f, v_star_f, cfg, "bin", action_is_pad)
-                l_old = compute_cfm_loss(v_old_r_f, v_star_f, cfg, "sample", action_is_pad)
             adv_mc = advantages.float().unsqueeze(1)
             l_new_bin = compute_cfm_loss(v_new_r_f, v_star_f, cfg, "bin", action_is_pad)
             rho_bin = compute_policy_ratio(l_old_bin, l_new_bin, cfg)
