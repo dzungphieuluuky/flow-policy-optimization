@@ -821,6 +821,8 @@ class SJFPOPolicy(PreTrainedPolicy):
                 f"{expected_eps_shape}"
             )
 
+        chunk_clip_counts = active["chunk_clip_counts"][:n_chunks]
+
         initial_cfm_loss, initial_cfm_loss_bin = self._initial_cfm_losses(
             normalized_states, actions, tau, eps
         )
@@ -835,6 +837,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             "normalizer_observations": step_next_states[:, -1, :].detach(),
             "mc_tau": tau,
             "mc_eps": eps,
+            "chunk_clip_counts": chunk_clip_counts,
             "initial_cfm_loss": initial_cfm_loss,
             "initial_cfm_loss_bin": initial_cfm_loss_bin,
         }

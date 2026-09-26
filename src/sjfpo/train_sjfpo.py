@@ -278,9 +278,13 @@ def _make_vec_env(env_name: str, num_envs: int):
     import gymnasium as gym
 
     env_fns = [lambda: gym.make(env_name) for _ in range(num_envs)]
+    # Depends on env.autoreset_mode propagating through vectorisation;
+    # collector validates NEXT_STEP (see _validate_autoreset_mode).
     try:
         return gym.vector.AsyncVectorEnv(env_fns)
     except Exception:
+        # Depends on env.autoreset_mode propagating through vectorisation;
+        # collector validates NEXT_STEP (see _validate_autoreset_mode).
         return gym.vector.SyncVectorEnv(env_fns)
 
 
@@ -561,6 +565,9 @@ def train_sjfpo_run(
                 data["train/grad_norm_after_clip"] = grad_norm_mean_post
                 if rollout_jerk is not None:
                     data["train/rollout_jerk"] = rollout_jerk
+                clip_counts = batch.get("chunk_clip_counts")
+                if clip_counts is not None:
+                    data["train/chunk_clip_counts"] = float(clip_counts.float().mean())
                 data["train/action_magnitude"] = action_magnitude
                 data["train/total_loss"] = (
                     info["policy_loss"] + cfg.vf_coef * info["value_loss"]
