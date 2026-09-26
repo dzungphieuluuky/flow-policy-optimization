@@ -152,7 +152,7 @@ class RolloutBuffer:
         )
         self.chunk_starts = zeros((max_chunks,), _INDEX_DTYPE)
         self.chunk_lengths = zeros((max_chunks,), _INDEX_DTYPE)
-        self.chunk_done = zeros((max_chunks,), torch.bool)
+        self.chunk_terminated = zeros((max_chunks,), torch.bool)
         self.chunk_truncated = zeros((max_chunks,), torch.bool)
         self.chunk_clip_counts = zeros((max_chunks,), _INDEX_DTYPE)
         self.chunk_env_id = zeros((max_chunks,), torch.int16)
@@ -190,7 +190,7 @@ class RolloutBuffer:
         action: torch.Tensor,
         rewards: list[float] | np.ndarray | torch.Tensor,
         step_next_states: torch.Tensor,
-        done: bool,
+        terminated: bool,
         truncated: bool,
         clip_count: int,
         env_id: int = 0,
@@ -205,7 +205,7 @@ class RolloutBuffer:
             action: Full action chunk in ``[-1, 1]``.
             rewards: Per-executed-step rewards.
             step_next_states: Observation after every executed step.
-            done: Whether the chunk ended in a true termination.
+            terminated: Whether the chunk ended in a true termination.
             truncated: Whether the chunk ended in a timeout or budget cut.
             clip_count: Number of action elements that hit a bound.
             env_id: Index of the vec-env slot that produced the chunk. The
@@ -245,11 +245,11 @@ class RolloutBuffer:
         self.chunk_actions[chunk_index].copy_(action)
         self.chunk_starts[chunk_index] = offset
         self.chunk_lengths[chunk_index] = n_exec
-        self.chunk_done[chunk_index] = done
+        self.chunk_terminated[chunk_index] = terminated
         self.chunk_truncated[chunk_index] = truncated
         self.chunk_clip_counts[chunk_index] = int(clip_count)
         self.chunk_env_id[chunk_index] = int(env_id)
-        self.step_terminated[offset + n_exec - 1] = done
+        self.step_terminated[offset + n_exec - 1] = terminated
         self.step_truncated[offset + n_exec - 1] = truncated
         self.n_chunks += 1
         self.n_steps += n_exec
@@ -280,7 +280,7 @@ class RolloutBuffer:
             "chunk_actions",
             "chunk_starts",
             "chunk_lengths",
-            "chunk_done",
+            "chunk_terminated",
             "chunk_truncated",
             "chunk_clip_counts",
             "chunk_env_id",
@@ -325,7 +325,7 @@ class RolloutBuffer:
             "chunk_actions": self.chunk_actions[:n_chunks],
             "chunk_starts": self.chunk_starts[:n_chunks],
             "chunk_lengths": self.chunk_lengths[:n_chunks],
-            "chunk_done": self.chunk_done[:n_chunks],
+            "chunk_terminated": self.chunk_terminated[:n_chunks],
             "chunk_truncated": self.chunk_truncated[:n_chunks],
             "chunk_clip_counts": self.chunk_clip_counts[:n_chunks],
             "chunk_env_id": self.chunk_env_id[:n_chunks],
@@ -920,7 +920,7 @@ def collect_chunks_vec(
                             action=scaled,
                             rewards=reward_windows[i, :n_exec],
                             step_next_states=step_windows[i, :n_exec],
-                            done=bool(term_np[i]),
+                            terminated=bool(term_np[i]),
                             truncated=bool(trunc_np[i]),
                             clip_count=clip_count,
                             env_id=i,
@@ -1046,7 +1046,7 @@ def collect_chunks(
                     action=scaled,
                     rewards=reward_window[:n_exec],
                     step_next_states=step_windows[:n_exec],
-                    done=done_kind == "terminated",
+                    terminated=done_kind == "terminated",
                     truncated=done_kind == "truncated",
                     clip_count=clip_count,
                 )

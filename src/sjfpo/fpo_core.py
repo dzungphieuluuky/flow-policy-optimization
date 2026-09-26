@@ -179,7 +179,7 @@ def compute_cfm_loss(
     v_star: torch.Tensor,
     cfg: SJFPOConfig,
     reduce_mode: str,
-    is_pad: torch.Tensor | None = None,
+    action_is_pad: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """CFM squared-velocity loss (paper Eq.7-8).
 
@@ -193,10 +193,11 @@ def compute_cfm_loss(
         v_star: Target velocities, same shape as ``v_hat``.
         cfg: Active configuration supplying ``cfm_loss_reduction``.
         reduce_mode: One of ``scalar``, ``sample``, or ``bin``.
-        is_pad: Optional ``[batch, horizon]`` mask of never-executed action
-            positions. When given, padded positions are dropped and each sample
-            is renormalized by its own executed count, so a chunk cut short
-            contributes the same loss magnitude as a full one.
+        action_is_pad: Optional ``[batch, horizon]`` mask of never-executed
+            action positions, True where padded. When given, padded positions
+            are dropped and each sample is renormalized by its own executed
+            count, so a chunk cut short contributes the same loss magnitude as
+            a full one.
 
     Returns:
         Scalar for ``scalar``, otherwise a per-sample loss tensor.
@@ -211,11 +212,15 @@ def compute_cfm_loss(
         )
     sq = torch.square(v_hat - v_star)
     n_valid = None
-    if is_pad is not None:
-        keep = (~is_pad).to(sq.dtype)[:, None, :, None]
+    if action_is_pad is not None:
+        # action_is_pad marks what to discard, so flip it before multiplying:
+        # keep is 1 on executed positions and 0 on padded ones.
+        keep = (~action_is_pad).to(sq.dtype)[:, None, :, None]
         # [n, 1]: valid tokens per sample, scaled by action_dim so the divisor
         # counts scalar elements rather than tokens.
-        n_valid = ((~is_pad).sum(dim=-1, keepdim=True).to(sq.dtype) * sq.shape[-1])
+        n_valid = (
+            (~action_is_pad).sum(dim=-1, keepdim=True).to(sq.dtype) * sq.shape[-1]
+        )
         n_valid = n_valid.clamp(min=1.0)
         sq = sq * keep
 
