@@ -179,6 +179,7 @@ def compute_cfm_loss(
     v_star: torch.Tensor,
     cfg: SJFPOConfig,
     reduce_mode: str,
+    is_pad: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """CFM squared-velocity loss (paper Eq.7-8).
 
@@ -192,6 +193,10 @@ def compute_cfm_loss(
         v_star: Target velocities, same shape as ``v_hat``.
         cfg: Active configuration supplying ``cfm_loss_reduction``.
         reduce_mode: One of ``scalar``, ``sample``, or ``bin``.
+        is_pad: Optional ``[batch, horizon]`` mask of never-executed action
+            positions. When given, padded positions are dropped and each sample
+            is renormalized by its own executed count, so a chunk cut short
+            contributes the same loss magnitude as a full one.
 
     Returns:
         Scalar for ``scalar``, otherwise a per-sample loss tensor.
@@ -205,18 +210,30 @@ def compute_cfm_loss(
             f"v_hat shape {tuple(v_hat.shape)} != v_star shape {tuple(v_star.shape)}"
         )
     sq = torch.square(v_hat - v_star)
+    n_valid = None
+    if is_pad is not None:
+        keep = (~is_pad).to(sq.dtype)[:, None, :, None]
+        # [n, 1]: valid tokens per sample, scaled by action_dim so the divisor
+        # counts scalar elements rather than tokens.
+        n_valid = ((~is_pad).sum(dim=-1, keepdim=True).to(sq.dtype) * sq.shape[-1])
+        n_valid = n_valid.clamp(min=1.0)
+        sq = sq * keep
 
     if reduce_mode == "scalar":
-        return sq.mean()
+        return sq.mean() if n_valid is None else sq.sum() / n_valid.sum()
 
     if reduce_mode == "sample":
         flat = sq.flatten(2)
         if cfg.cfm_loss_reduction == "mean":
-            return flat.mean(dim=-1)
+            return flat.mean(dim=-1) if n_valid is None else flat.sum(dim=-1) / n_valid
         if cfg.cfm_loss_reduction == "sum":
             return flat.sum(dim=-1)
-        return flat.sum(dim=-1) / math.sqrt(flat.shape[-1])
+        total = flat.sum(dim=-1)
+        if n_valid is None:
+            return total / math.sqrt(flat.shape[-1])
+        return total / n_valid.sqrt()
     if reduce_mode == "bin":
+        # Per-token diagnostic; masking sq already zeroes padded tokens.
         return sq.sum(dim=-1) / math.sqrt(sq.shape[-1])
     raise ValueError(
         f"reduce_mode={reduce_mode!r} must be 'scalar', 'sample', or 'bin'"
