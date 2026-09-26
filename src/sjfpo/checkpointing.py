@@ -37,52 +37,6 @@ class ResumeError(RuntimeError):
     """Unresumable checkpoint (missing/corrupt files)."""
 
 
-def _iter_compiled_children(
-    policy,
-) -> list[tuple[str, torch.nn.Module, torch.nn.Module]]:
-    """Find the top-level submodules of ``policy`` wrapped by ``torch.compile``.
-
-    Only top-level children are inspected; ``torch.compile`` is applied
-    per-module via ``maybe_compile`` and never nested in this codebase.
-
-    Args:
-        policy: Policy whose children are inspected.
-
-    Returns:
-        List of ``(name, compiled_module, inner_module)`` triples.
-    """
-    out = []
-    for name, child in policy.named_children():
-        inner = getattr(child, "_orig_mod", None)
-        if isinstance(inner, torch.nn.Module):
-            out.append((name, child, inner))
-    return out
-
-
-@contextlib.contextmanager
-def unwrapped_policy(policy):
-    """Expose a compiled policy's eager submodules for checkpoint IO.
-
-    Swaps every ``torch.compile`` wrapper (``X._orig_mod``) for its inner
-    module so ``state_dict()`` emits unwrapped keys. Restores the wrappers on
-    exit, even on exception.
-
-    Args:
-        policy: Policy whose compiled children are temporarily swapped out.
-
-    Yields:
-        The same policy, with eager submodules in place of the wrappers.
-    """
-    swapped = _iter_compiled_children(policy)
-    for name, _compiled, inner in swapped:
-        setattr(policy, name, inner)
-    try:
-        yield policy
-    finally:
-        for name, compiled, _inner in swapped:
-            setattr(policy, name, compiled)
-
-
 def _atomic_write_bytes(path: Path, data: bytes) -> None:
     """Write bytes to a path atomically, durable across a crash.
 
@@ -136,10 +90,8 @@ def save_policy_checkpoint(
 ) -> None:
     """Save through LeRobot's ``HubMixin`` (+ optimizer.pt, counters.json).
 
-    ``model.safetensors`` holds **unwrapped** eager keys (torch.compile
-    wrappers are swapped out for the duration of ``save_pretrained``), so a
-    fresh, uncompiled ``SJFPOFlowModel`` in :func:`load_policy_checkpoint`
-    finds every key it expects.
+    ``model.safetensors`` holds eager keys, so a fresh ``SJFPOFlowModel`` in
+    :func:`load_policy_checkpoint` finds every key it expects.
 
     The frozen behavior snapshots are runtime-only and are refreshed before the
     next rollout, so their duplicate parameters are not persisted.
@@ -176,18 +128,17 @@ def save_policy_checkpoint(
     d = Path(dir_path)
     d.mkdir(parents=True, exist_ok=True)
 
-    with unwrapped_policy(policy):
-        state_dict = {
-            name: tensor
-            for name, tensor in policy.state_dict().items()
-            if not name.startswith(("old_actor.", "old_conditioner."))
-        }
-        if ema_state is not None and policy.ema_ready(global_step):
-            for name, shadow in ema_state["shadow_params"].items():
-                full_name = f"actor.{name}"
-                if full_name in state_dict:
-                    state_dict[full_name] = shadow.detach().clone()
-        policy.save_pretrained(d, state_dict=state_dict)
+    state_dict = {
+        name: tensor
+        for name, tensor in policy.state_dict().items()
+        if not name.startswith(("old_actor.", "old_conditioner."))
+    }
+    if ema_state is not None and policy.ema_ready(global_step):
+        for name, shadow in ema_state["shadow_params"].items():
+            full_name = f"actor.{name}"
+            if full_name in state_dict:
+                state_dict[full_name] = shadow.detach().clone()
+    policy.save_pretrained(d, state_dict=state_dict)
     if ema_state is not None:
         _atomic_torch_save(d / "ema.pt", ema_state)
 

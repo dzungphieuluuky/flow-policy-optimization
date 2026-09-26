@@ -141,10 +141,7 @@ class CondMLP(nn.Module):
 class SinusoidalEncoding(nn.Module):
     """Fixed sinusoidal codes with cached frequency tables.
 
-    Cache is a small per-module LRU keyed by ``torch.device``. Under
-    ``torch.compile`` the first miss can still cause a graph break; callers
-    that compile this module should warm the cache or move the table to a
-    non-persistent buffer in a future optimization.
+    Cache is a small per-module LRU keyed by ``torch.device``.
     """
 
     def __init__(self, dim: int, scale: float = 1.0):

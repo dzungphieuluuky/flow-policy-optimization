@@ -324,7 +324,7 @@ def sample_action(
     """Sample the learned flow t=0 (noise) → t=1 (data) with Euler steps.
 
     The step sizes are computed once up front, which keeps the integration loop
-    free of tensor arithmetic and friendly to XLA and ``torch.compile``.
+    free of tensor arithmetic and friendly to XLA.
 
     Args:
         predict_velocity: Callable mapping ``(x, t, condition)`` to velocity.

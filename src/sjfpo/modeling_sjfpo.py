@@ -10,7 +10,7 @@ Performance notes
   the whole diagnostic pass is gated on ``compute_info=True``.
 * ``rho_bin`` is computed once per forward, not once per branch.
 * ``snapshot_behavior_policy`` copies weights in-place into the frozen
-  snapshot instead of ``copy.deepcopy``-ing a ``torch.compile`` wrapper.
+  snapshot instead of ``copy.deepcopy``-ing it.
 """
 
 from __future__ import annotations
@@ -129,18 +129,6 @@ def _mc_x_t(
     noise = flatten_mc_noise.reshape(-1, *flow_shape)
     action = flatten_mc_action.reshape(-1, *flow_shape)
     return (1.0 - t) * noise + t * action
-
-
-def _unwrap_compiled(m: torch.nn.Module) -> torch.nn.Module:
-    """Unwrap a ``torch.compile`` module.
-
-    Args:
-        m: Module that may be an ``OptimizedModule``.
-
-    Returns:
-        The inner eager module, or ``m`` itself when it is not compiled.
-    """
-    return getattr(m, "_orig_mod", m)
 
 
 class SJFPOPolicy(PreTrainedPolicy):
@@ -275,18 +263,11 @@ class SJFPOPolicy(PreTrainedPolicy):
     def snapshot_behavior_policy(self) -> None:
         """Refresh the frozen π_old snapshot in place.
 
-        Avoids ``copy.deepcopy`` on ``torch.compile`` wrappers
-        (``OptimizedModule``), which clones the FX graph + guards and forces a
-        fresh compile warmup on the snapshot every rollout. Copying weights
-        into the existing modules instead keeps the compiled graph intact.
+        Copies weights into the existing modules rather than
+        ``copy.deepcopy``-ing the live ones over them.
         """
-        actor_old = _unwrap_compiled(self.old_actor)
-        actor_live = _unwrap_compiled(self.actor)
-        actor_old.load_state_dict(actor_live.state_dict())
-
-        cond_old = _unwrap_compiled(self.old_conditioner)
-        cond_live = _unwrap_compiled(self.conditioner)
-        cond_old.load_state_dict(cond_live.state_dict())
+        self.old_actor.load_state_dict(self.actor.state_dict())
+        self.old_conditioner.load_state_dict(self.conditioner.state_dict())
 
         self.old_actor.requires_grad_(False)
         self.old_actor.eval()
@@ -307,7 +288,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         decay = self.config.ema_decay
         if decay <= 0:
             return
-        actor = _unwrap_compiled(self.actor)
+        actor = self.actor
         current = {
             name: param
             for name, param in actor.named_parameters()
@@ -377,8 +358,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         """
         decay, no_decay = [], []
         for name, p in self.actor.named_parameters():
-            short = name.split("_orig_mod.")[-1]
-            if "adaLN" in short or short.startswith("out."):
+            if "adaLN" in name or name.startswith("out."):
                 no_decay.append(p)
             else:
                 decay.append(p)
@@ -522,7 +502,7 @@ class SJFPOPolicy(PreTrainedPolicy):
 
         num_spectral_tokens_kept = _num_spectral_tokens_kept(cfg)
         action_dim = int(self.config.action_feature.shape[0])
-        actor = _unwrap_compiled(self.actor)
+        actor = self.actor
 
         with torch.inference_mode(), autocast_context(device):
             condition = self.conditioner(states)
@@ -926,16 +906,6 @@ class SJFPOPolicy(PreTrainedPolicy):
         action_is_pad = to_tensor(
             batch["action_is_pad"], dtype=torch.bool, device=device
         )
-        sample_mask = None
-        if "sample_mask" in batch:
-            sample_mask = to_tensor(
-                batch["sample_mask"], dtype=torch.bool, device=device
-            )
-            if sample_mask.shape != (states.shape[0],):
-                raise ValueError(
-                    f"sample_mask must have shape {(states.shape[0],)}, "
-                    f"got {tuple(sample_mask.shape)}"
-                )
 
         if states.shape[-2] != cfg.n_obs_steps:
             raise ValueError(
@@ -1080,23 +1050,11 @@ class SJFPOPolicy(PreTrainedPolicy):
             value_per_chunk = se
 
         if reduction == "mean":
-            if sample_mask is None:
-                policy_loss = policy_per_chunk.mean()
-                value_loss = value_per_chunk.mean()
-            else:
-                weight = sample_mask.to(policy_per_chunk.dtype)
-                count = weight.sum().clamp_min(1)
-                policy_loss = (policy_per_chunk * weight).sum() / count
-                value_loss = (value_per_chunk * weight).sum() / count
+            policy_loss = policy_per_chunk.mean()
+            value_loss = value_per_chunk.mean()
             loss = policy_loss + cfg.vf_coef * value_loss
         elif reduction == "none":
-            if sample_mask is None:
-                loss = policy_per_chunk + cfg.vf_coef * value_per_chunk
-            else:
-                weight = sample_mask.to(policy_per_chunk.dtype)
-                loss = weight * (
-                    policy_per_chunk + cfg.vf_coef * value_per_chunk
-                )
+            loss = policy_per_chunk + cfg.vf_coef * value_per_chunk
         else:
             raise ValueError(f"reduction={reduction!r} must be 'mean' or 'none'")
 

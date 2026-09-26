@@ -38,7 +38,7 @@ from sjfpo.configuration_sjfpo import SJFPOConfig
 from sjfpo.evaluator import Evaluator, check_divergence, mean_chunk_jerk
 from sjfpo.modeling_sjfpo import SJFPOAborted, SJFPOPolicy
 from lerobot.utils.constants import CHECKPOINTS_DIR
-from sjfpo.utils import maybe_compile, resolve_device, to_numpy_1d
+from sjfpo.utils import resolve_device, to_numpy_1d
 from sjfpo.wandb_logging import (
     finish_run,
     init_wandb_run_for_method,
@@ -109,19 +109,6 @@ class _EvalPolicy:
         return to_numpy_1d(action)
 
 
-def _compile_in_place(policy: SJFPOPolicy) -> None:
-    """Apply ``maybe_compile`` to the CUDA submodules training uses.
-
-    Args:
-        policy: Policy whose actor, critic, and conditioner are compiled in
-            place when applicable.
-    """
-    device = next(policy.parameters()).device
-    policy.actor = maybe_compile(policy.actor, device=device)
-    policy.old_actor = maybe_compile(policy.old_actor, device=device)
-    policy.critic = maybe_compile(policy.critic, device=device)
-
-
 def build_policy(
     obs_dim: int,
     action_dim: int,
@@ -156,7 +143,6 @@ def build_policy(
         output_features={"action": PolicyFeature(FeatureType.ACTION, (action_dim,))},
     )
     policy = policy_cls(policy_cfg).to(device)
-    _compile_in_place(policy)
     if action_low is not None and action_high is not None:
         policy.set_action_bounds(action_low, action_high)
     return policy
@@ -241,36 +227,6 @@ def sample_minibatch(
         else:
             out[k] = v[indices]
     return out
-
-
-def pad_minibatch_indices(
-    indices: torch.Tensor, size: int
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Pad a minibatch to a fixed size by repeating its last row.
-
-    Repeating keeps the compiled graph's batch dimension static, at the cost
-    of duplicated samples that the returned mask lets the loss ignore.
-
-    Args:
-        indices: Index tensor to pad.
-        size: Required number of rows.
-
-    Returns:
-        Tuple of the padded indices and a mask that is False on padded rows.
-
-    Raises:
-        ValueError: If ``size`` is smaller than the real minibatch.
-    """
-    valid = int(indices.numel())
-    if size < valid:
-        raise ValueError(f"compile batch size {size} is smaller than minibatch {valid}")
-    if valid == size:
-        mask = torch.ones(size, dtype=torch.bool, device=indices.device)
-        return indices, mask
-    padding = indices[-1:].expand(size - valid)
-    padded = torch.cat([indices, padding])
-    mask = torch.arange(size, device=indices.device) < valid
-    return padded, mask
 
 
 def random_baseline(
@@ -420,7 +376,6 @@ def train_sjfpo_run(
             actor_optimizer, critic_optimizer = build_optimizers(policy, policy.config)
         global_step = int(counters["global_step"])
         policy.train()
-        _compile_in_place(policy)
         (out_dir / "resume_info.json").write_text(
             json.dumps(
                 {
@@ -523,21 +478,6 @@ def train_sjfpo_run(
             critic_pre_norms: list[torch.Tensor] = []
             above_clamp_fracs: list[torch.Tensor] = []
             n_chunks = batch["advantages"].shape[0]
-            n_minibatches = min(cfg.num_minibatches, n_chunks)
-            expected_chunks = (
-                cfg.chunks_per_update * cfg.action_horizon + cfg.n_action_steps - 1
-            ) // cfg.n_action_steps
-            if cfg.compile_batch_size > 0:
-                compile_batch_size = cfg.compile_batch_size
-            else:
-                compile_batch_size = max(
-                    1,
-                    (expected_chunks + n_minibatches - 1) // n_minibatches,
-                )
-            compile_batch_size = max(
-                compile_batch_size,
-                (n_chunks + n_minibatches - 1) // n_minibatches,
-            )
             microbatches = list(
                 mini_batch_indices(
                     n_chunks,
@@ -556,15 +496,10 @@ def train_sjfpo_run(
             for micro_step, mb_idx in enumerate(microbatches):
                 group_start = micro_step - (micro_step % accumulation_steps)
                 group_size = min(accumulation_steps, len(microbatches) - group_start)
-                padded_indices, sample_mask = pad_minibatch_indices(
-                    mb_idx, compile_batch_size
-                )
-                padded = int(padded_indices.numel()) != int(mb_idx.numel())
-                minibatch = sample_minibatch(batch, padded_indices, minibatch)
-                minibatch["sample_mask"] = sample_mask
+                minibatch = sample_minibatch(batch, mb_idx, minibatch)
                 loss, epoch_info = policy(
                     minibatch,
-                    compute_info=wandb_enabled and not padded,
+                    compute_info=wandb_enabled,
                     check_finite=False,
                 )
                 finite_error |= ~torch.isfinite(loss)

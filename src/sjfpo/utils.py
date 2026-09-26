@@ -147,46 +147,6 @@ def autocast_context(device=None):
     return torch.autocast(device_type="cuda", dtype=torch.bfloat16)
 
 
-def maybe_compile(
-    module: torch.nn.Module, device: str | torch.device | None = None
-) -> torch.nn.Module:
-    """Compile a module with inductor, after build and before train/infer.
-
-    On CUDA by default. ``SJFPO_COMPILE=0`` opts out (e.g., for debugging or
-    when the module is called with a fresh shape per iteration and the
-    recompile cost dominates).
-
-    A symbolic batch dimension is used so train minibatches
-    (``n_mb * num_mc``), remainder splits, and inference (``B=1``) all share
-    one graph instead of recompiling per ``B``. ``capture_scalar_outputs``
-    keeps guarded Python scalars (e.g. Critic's executed-step check) in the
-    graph instead of forcing an eager fallback.
-
-    Args:
-        module: Module to compile.
-        device: Device the module runs on. Read from its parameters when
-            omitted.
-
-    Returns:
-        The compiled module, or the original one when compilation is
-        disabled or not applicable.
-    """
-    if os.environ.get("SJFPO_COMPILE", "1") == "0":
-        return module
-    target = (
-        next(module.parameters()).device
-        if device is None
-        else torch.device(device)
-    )
-    if target.type != "cuda" or not cuda_available():
-        return module
-    if not torch.cuda.is_bf16_supported() and not is_rtx_1000_pro_blackwell():
-        return module
-    with torch._dynamo.config.patch(capture_scalar_outputs=True):
-        compiled = torch.compile(module, dynamic=True)
-    return compiled
-
-
 def detect_runtime_env() -> str:
     """Identify the current runtime.
 
