@@ -164,7 +164,7 @@ def plot_per_env_curves(
 
     fig, ax = plt.subplots(figsize=(10, 6))
 
-    colors = {"sjfpo": "#1f77b4", "ppo": "#ff7f0e", "sac": "#2ca02c"}
+    colors = {"sjfpo": "#1f77b4"}
 
     for method, data in curves_by_method.items():
         eval_points = data["eval_points"]
@@ -243,7 +243,7 @@ def plot_aggregate(
 
     fig, ax = plt.subplots(figsize=(8, 6))
 
-    colors = {"sjfpo": "#1f77b4", "ppo": "#ff7f0e", "sac": "#2ca02c"}
+    colors = {"sjfpo": "#1f77b4"}
     x_pos = np.arange(len(methods))
     means = [method_means[m] for m in methods]
     ci_lows = [method_cis[m][0] for m in methods]
@@ -376,8 +376,8 @@ def analyze_results(
     aggregate_png = plot_aggregate(normalized, output_dir)
 
     superiority = {}
-    for method in ["sjfpo", "ppo", "sac"]:
-        baseline_methods = [m for m in ["sjfpo", "ppo", "sac"] if m != method]
+    for method in ["sjfpo"]:
+        baseline_methods = [m for m in ["sjfpo"] if m != method]
         if not baseline_methods:
             superiority[method] = False
             continue

@@ -1,4 +1,4 @@
-"""Environment registry and PPO/SAC baseline hyperparameters."""
+"""Environment registry and run-matrix helpers for the SJFPO benchmark."""
 
 from __future__ import annotations
 
@@ -25,41 +25,6 @@ PROTOTYPE_ENVS = tuple(
     k for k in _REGISTRY_KEYS if _ENV_REGISTRY[k].get("tier") != "core"
 )
 KNOWN_ENVS = ENVS + PROTOTYPE_ENVS
-
-
-@dataclass(frozen=True)
-class PPOConfig:
-    """skrl 2.1.0 PPO baseline keys."""
-
-    rollouts: int = 2048
-    learning_epochs: int = 10
-    mini_batches: int = 8
-    lr: float = 3e-4
-    kl_threshold: float = 0.0  # reference default (no KL early stop)
-    grad_norm_clip: float = 0.5
-    discount: float = 0.99
-    gae_lambda: float = 0.95
-    ratio_clip: float = 0.2
-    value_loss_scale: float = 2.5
-    hidden: tuple[int, ...] = (256, 256, 256)
-
-
-@dataclass(frozen=True)
-class SACConfig:
-    """skrl 2.1.0 SAC baseline keys."""
-
-    lr: float = 3e-4
-    batch_size: int = 256
-    memory_size: int = 300_000
-    gradient_steps: int = 1
-    polyak: float = 0.005
-    discount: float = 0.99
-    initial_random_steps: int = 5000
-    hidden: tuple[int, ...] = (256, 256, 256)
-
-
-PPO_CFG = PPOConfig()
-SAC_CFG = SACConfig()
 
 
 @dataclass(frozen=True)
@@ -91,10 +56,6 @@ def assert_runtime(allow_fp16: bool = False) -> None:
             f"gymnasium {gym_version} has major.minor < 1.0; "
             "this project requires gymnasium[mujoco]>=1.0,<1.3"
         )
-
-    skrl_version = importlib.metadata.version("skrl")
-    if skrl_version != "2.1.0":
-        raise RuntimeError(f"skrl {skrl_version} != 2.1.0; exact pin required")
 
     if allow_fp16:
         raise RuntimeError(

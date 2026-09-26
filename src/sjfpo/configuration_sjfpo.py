@@ -51,7 +51,12 @@ class SJFPOConfig(PreTrainedConfig):
     use_per_bin_clip: bool = False  # legacy diagnostics-only bin clipping
     epsilon_clip_lowfreq: float = 0.02  # tight: low bins carry task intent
     epsilon_clip_highfreq: float = 0.10  # loose: high bins are detail/exploration
-    cfm_loss_reduction: str = "sqrt"  # mean | sum | sqrt, official default sqrt
+    # "mean" (E[(v-v*)^2] over the chunk) keeps the CFM loss O(1) -- ~1.25 for
+    # a zero-velocity model on unit noise -- so cfm_clamp below is a real guard.
+    # "sqrt" (FPO++'s default) scales the loss by sqrt(horizon*action_dim); at
+    # 16x17 that starts the run above cfm_clamp, and clamp() has zero gradient
+    # above its max, which silently pins rho at 1 and kills the policy gradient.
+    cfm_loss_reduction: str = "mean"  # mean | sum | sqrt
     cfm_clamp: float = 20.0
     cfm_loss_clamp_negative_advantages: bool = True
     cfm_loss_clamp_negative_advantages_max: float = 20.0
@@ -82,7 +87,7 @@ class SJFPOConfig(PreTrainedConfig):
     ema_warmup_steps: int = 500
 
     # -- Losses / optimization --------------------------------------------
-    vf_coef: float = 1.0  # skrl PPO default; 0.5 was too weak for critic
+    vf_coef: float = 1.0  # 0.5 was too weak for the critic
     grad_clip_norm: float = 1.0
 
     # -- Chunk selection ---------------------------------------------------
@@ -97,7 +102,7 @@ class SJFPOConfig(PreTrainedConfig):
     # No separate warm-up phase; stats initialize naturally during first rollout.
     # -- Blackwell / GPU memory --------------------------------------------
     use_gradient_checkpointing: bool = False
-    grad_accum_steps: int = 1  # skrl PPO default; >1 reduces GPU memory at cost of speed
+    grad_accum_steps: int = 1  # >1 reduces GPU memory at cost of speed
 
     # ----------------------------------------------------------------------
     # Validation

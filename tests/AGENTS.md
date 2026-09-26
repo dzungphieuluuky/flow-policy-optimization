@@ -19,10 +19,9 @@ test_utils.py (12)           env detect + paths + notebook builder + bf16/compil
 test_collector.py (12)       collect_chunks incl. NEVER-hardcode-horizon guards (fake_env)
 test_evaluator.py (10)       Evaluator 3-col CSV
 test_transition_v4.py (9)    Transition 8-key/shape/dtype + continuity + no-aux-head lock
-test_todo4_characterization.py (9) behavior pins (GAE/trainer/baselines goldens)
+test_todo4_characterization.py behavior pins (GAE/trainer goldens)
 test_device.py (9)           device placement + cpu fp32 inference
 test_configuration_sjfpo.py (8) LeRobot SJFPOConfig registry/parity/validation
-test_baselines.py (7)        skrl PPO/SAC drivers + tiny smokes
 test_gae.py (6)              compute_advantages vs zero-shared-code brute-force oracle
 test_policy_checkpoint.py (5) Hub save/load roundtrip
 test_pipeline_cpu.py (5)     end-to-end invariants: CSV + 45 + wandb

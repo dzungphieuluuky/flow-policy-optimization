@@ -1,7 +1,7 @@
 # AGENTS — scripts
 
 ## Overview
-3 entry points: `train.py` (unified CLI) → `runner`/`baselines`; `build_notebook.py` (Kaggle notebook: `%%writefile` sources + offline pip + `!train.py`); `verify_deps.sh` (dep-pin gate, partly stale — see Notes).
+3 entry points: `train.py` (unified CLI) → `train_sjfpo`; `build_notebook.py` (Kaggle notebook: `%%writefile` sources + offline pip + `!train.py`); `verify_deps.sh` (dep-pin gate, partly stale — see Notes).
 
 ## Structure
 ```
@@ -16,7 +16,7 @@ verify_deps.sh      venv bootstrap + inline version asserts (STALE vs pyproject 
 - `build_notebook.py:embedded_files` — runtime files recreated via `%%writefile` (`src/`, `scripts/train.py`, `configs/`, `requirements-linux.txt`); rebuild after changing any of them
 
 ## Conventions
-- Precedence: CLI flags > `--config <yaml>` > dataclass defaults (`configs/{sjfpo,ppo,sac,shared}.yaml`; YAML keys ⊆ dataclass fields per `test_config_yaml_parity.py`)
+- Precedence: CLI flags > `--config <yaml>` > dataclass defaults (`configs/{sjfpo,shared}.yaml`; YAML keys ⊆ dataclass fields per `test_config_yaml_parity.py`)
 - Exit codes: 0 ok · 1 usage · 2 runtime/divergence · 4 missing artifact
 - `sys.path.insert(src)` in `train.py` (alt: `PYTHONPATH=src`); `.venv/bin/python` is the working interpreter (torch 2.14.0)
 - Env switches: `SJFPO_TINY_MATRIX=1` (3-run matrix), `SJFPO_DISABLE_WANDB=1`
@@ -29,7 +29,7 @@ verify_deps.sh      venv bootstrap + inline version asserts (STALE vs pyproject 
 ## Commands
 ```bash
 PYTHONPATH=src .venv/bin/python scripts/train.py --method sjfpo --env Hopper-v5 --seed 0 --total_steps 2000
-METHODS="sjfpo ppo" ENVS=Hopper-v5 SEEDS="0 1" bash scripts/sweep.sh --python .venv/bin/python
+ENVS=Hopper-v5 SEEDS="0 1" bash scripts/sweep.sh --python .venv/bin/python
 PYTHONPATH=src .venv/bin/python scripts/build_notebook.py   # rebuilds spectral_joint_flow.ipynb
 ```
 

@@ -2,7 +2,7 @@
 
 Covers:
   (a) drives fake policies of all three kinds (callable, zero-noise SJFPO,
-      mean-action PPO, deterministic SAC) producing CSV rows
+      zero-action, fixed-action) producing CSV rows
   (b) determinism: same weights+eval_seed twice → identical episode returns
   (c) acting batch B=1 works out of the box (no calibration)
   (d) 12-episode default + max-steps cap respected
@@ -126,8 +126,8 @@ class SJFPOPolicyAdapter:
         self.action_dim = dim
 
 
-class PPOPolicyAdapter:
-    """PPO-style adapter: mean action (no sampling noise)."""
+class ZeroActionPolicy:
+    """Constant zero-action policy (no sampling noise)."""
 
     def __init__(self, action_dim: int = 4):
         self.action_dim = action_dim
@@ -139,8 +139,8 @@ class PPOPolicyAdapter:
         return np.zeros(self.action_dim, dtype=np.float32)
 
 
-class SACPolicyAdapter:
-    """SAC-style adapter: deterministic action."""
+class FixedActionPolicy:
+    """Constant non-zero-action policy."""
 
     def __init__(self, action_dim: int = 4):
         self.action_dim = action_dim
@@ -166,17 +166,17 @@ class TestPolicyKinds:
             assert isinstance(r["return"], float)
             assert isinstance(r["length"], int)
 
-    def test_ppo_mean_action(self):
+    def test_zero_action_policy(self):
         env = FakeEnv()
         evaluator = Evaluator(env, eval_seed=42, max_episodes=3)
-        adapter = PPOPolicyAdapter(action_dim=4)
+        adapter = ZeroActionPolicy(action_dim=4)
         results = evaluator.evaluate(adapter)
         assert len(results) == 3
 
-    def test_sac_deterministic(self):
+    def test_fixed_action_policy(self):
         env = FakeEnv()
         evaluator = Evaluator(env, eval_seed=42, max_episodes=3)
-        adapter = SACPolicyAdapter(action_dim=4)
+        adapter = FixedActionPolicy(action_dim=4)
         results = evaluator.evaluate(adapter)
         assert len(results) == 3
 

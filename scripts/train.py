@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Single-run training CLI for SJFPO / PPO / SAC (PyTorch) and SJFPO (JAX).
+"""Single-run training CLI for SJFPO (PyTorch) and SJFPO (JAX).
 
 One run per invocation; draccus builds the run config (singular values only).
-Sweeps live in scripts/sweep.sh: one call here per method x env x seed.
+Sweeps live in scripts/sweep.sh: one call here per env x seed.
 
-    python scripts/train.py --method sjfpo      --env Hopper-v5 --seed 0 --total_steps 2000
-    python scripts/train.py --method sjfpo_jax  --env Hopper-v5 --seed 0 --total_steps 2000
+    python scripts/train.py --method sjfpo --env Hopper-v5 --seed 0 --total_steps 2000
+    python scripts/train.py --method sjfpo_jax --env Hopper-v5 --seed 0 --total_steps 2000
     python scripts/train.py --method sjfpo --env Hopper-v5 --sjfpo.policy_lr 3e-4
     python scripts/train.py --method sjfpo --env Hopper-v5 --seed 0 \
         --resume outputs/sjfpo_Hopper-v5_seed0/checkpoint_1000 \
@@ -40,8 +40,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from sjfpo.config import (  # noqa: E402
     KNOWN_ENVS,
-    PPOConfig,
-    SACConfig,
     lookup_env_dims,
 )
 from sjfpo.configuration_sjfpo import SJFPOConfig  # noqa: E402
@@ -92,7 +90,7 @@ def configure_torch_cuda() -> bool:
 class TrainConfig:
     """One training run (singular values only; sweep axes live in sweep.sh)."""
 
-    method: Literal["sjfpo", "ppo", "sac", "sjfpo_jax"] = "sjfpo"
+    method: Literal["sjfpo", "sjfpo_jax"] = "sjfpo"
     env: str | None = None
     seed: int = 3407
     total_steps: int | None = None
@@ -112,8 +110,6 @@ class TrainConfig:
     # sjfpo_jax.checkpointing).
     resume: str | None = None
     sjfpo: SJFPOConfig = field(default_factory=SJFPOConfig)
-    ppo: PPOConfig = field(default_factory=PPOConfig)
-    sac: SACConfig = field(default_factory=SACConfig)
 
 
 # ---------------------------------------------------------------------------
@@ -189,8 +185,6 @@ def select_method_cfg(
     """
     method_cfg = {
         "sjfpo": args.sjfpo,
-        "ppo": args.ppo,
-        "sac": args.sac,
         "sjfpo_jax": args.sjfpo,
     }[args.method]
     return apply_flat_yaml(method_cfg, yaml_dict, cli_fields=cli_fields)
@@ -265,7 +259,6 @@ def run_single(
     save_steps: int,
     obs_dim: int | None,
     action_dim: int | None,
-    n_obs_steps: int = 16,
     resume_from_checkpoint: str | None = None,
     wandb_enabled: bool = True,
 ) -> dict:
@@ -318,28 +311,13 @@ def run_single(
                 wandb_enabled=wandb_enabled,
             )
 
-        # ---- Torch paths --------------------------------------------------
-        from sjfpo.baselines import ppo_train_run, sac_train_run
+        # ---- Torch path ---------------------------------------------------
         from sjfpo.train_sjfpo import train_sjfpo_run
 
         if resume_from_checkpoint is not None and method != "sjfpo":
             raise ValueError(f"--resume is sjfpo-only, got method={method!r}")
 
-        runners = {
-            "sjfpo": (
-                train_sjfpo_run,
-                {
-                    "obs_dim": obs_dim,
-                    "action_dim": action_dim,
-                    "resume_from_checkpoint": resume_from_checkpoint,
-                    "wandb_enabled": wandb_enabled,
-                },
-            ),
-            "ppo": (ppo_train_run, {"n_obs_steps": n_obs_steps, "wandb_enabled": wandb_enabled}),
-            "sac": (sac_train_run, {"n_obs_steps": n_obs_steps, "wandb_enabled": wandb_enabled}),
-        }
-        run_fn, extra = runners[method]
-        return run_fn(
+        return train_sjfpo_run(
             env=env,
             out_dir=out_dir,
             cfg=cfg,
@@ -347,7 +325,10 @@ def run_single(
             total_steps=total_steps,
             eval_steps=eval_steps,
             save_steps=save_steps,
-            **extra,
+            obs_dim=obs_dim,
+            action_dim=action_dim,
+            resume_from_checkpoint=resume_from_checkpoint,
+            wandb_enabled=wandb_enabled,
         )
     finally:
         env.close()
@@ -386,7 +367,6 @@ def main(argv: list[str] | None = None) -> int:
     ckpt_i = default_intervals(
         total, args.save_steps, yaml_dict, "save_steps", 25000 if is_jax else 1000
     )
-    n_obs_steps = int(yaml_dict.get("n_obs_steps", 16))
     cfg = select_method_cfg(args, yaml_dict, _sjfpo_cli_fields(argv))
 
     if args.resume and args.method not in ("sjfpo", "sjfpo_jax"):
@@ -426,7 +406,6 @@ def main(argv: list[str] | None = None) -> int:
             ckpt_i,
             args.obs_dim,
             args.action_dim,
-            n_obs_steps,
             args.resume,
             args.wandb_enabled,
         )

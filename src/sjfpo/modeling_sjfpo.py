@@ -192,6 +192,11 @@ class SJFPOPolicy(PreTrainedPolicy):
         self._rollout_buffer: RolloutBuffer | None = None
         self._device_rollout_buffer: RolloutBuffer | None = None
         self._rollout_h2d_event: torch.cuda.Event | None = None
+        # Fraction of the last forward's CFM samples above ``cfm_clamp``. Those
+        # samples get zero gradient from the ratio, so the training loop reads
+        # this to abort rather than run on with rho pinned at 1. Left on device
+        # so the loop syncs once per rollout, not once per microbatch.
+        self.cfm_above_clamp_frac = torch.zeros(())
 
         self._frame_buffer: deque[torch.Tensor] = deque(maxlen=config.n_obs_steps)
         self._action_buffer: deque[torch.Tensor] = deque()
@@ -875,6 +880,7 @@ class SJFPOPolicy(PreTrainedPolicy):
 
             l_new = compute_cfm_loss(v_new_r_f, v_star_f, cfg, "sample")
             rho = compute_policy_ratio(l_old, l_new, cfg, advantage=adv_mc)
+            self.cfm_above_clamp_frac = (l_new > cfg.cfm_clamp).float().mean().detach()
 
             psi = compute_aspo_surrogate(rho, adv_mc, cfg, cfg.epsilon_clip)
             policy_per_chunk = -psi.mean(dim=1)
@@ -977,6 +983,10 @@ class SJFPOPolicy(PreTrainedPolicy):
         log_rho_abs = delta.abs()
         log_rho_max = log_rho_abs.max()
         log_rho_clip_frac = (log_rho_abs > cfg.log_ratio_cap).float().mean()
+        # Fraction of samples whose CFM loss exceeds cfm_clamp. Those samples
+        # contribute no gradient at all, so a run where this stays high is
+        # training the critic only.
+        cfm_above_clamp_frac = (l_new > cfg.cfm_clamp).float().mean()
 
         # rho stats
         rho_mean = rho.mean()
@@ -1057,6 +1067,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             l_new.mean(),
             l_old_std,
             l_new_std,
+            cfm_above_clamp_frac,
             l_old_new_corr,
             advantages.abs().mean(),
             returns_d.std(correction=0),
@@ -1094,6 +1105,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             "l_new_mean",
             "l_old_std",
             "l_new_std",
+            "cfm_above_clamp_frac",
             "l_old_new_corr",
             "adv_mean_abs",
             "value_target_std",

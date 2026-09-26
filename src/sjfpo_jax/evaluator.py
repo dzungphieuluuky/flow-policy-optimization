@@ -5,9 +5,6 @@ or the step budget is exhausted. Actions are stored per step in fp32;
 ``action_jerk`` reports mean squared second-difference as a scale-free
 smoothness probe.
 
-``compute_random_baseline`` runs the same evaluator against a freshly-built
-env so its seeds and episode count match the caller's; the sampled action
-space comes from the *fresh* env, not the training env.
 """
 
 from __future__ import annotations
@@ -157,67 +154,6 @@ def render_episode_frames(
 
 
 # ---------------------------------------------------------------------------
-# Random baseline
-# ---------------------------------------------------------------------------
-
-
-def _fresh_env_from(template):
-    """Best-effort reconstruction of a fresh env from an existing one."""
-    import gymnasium as gym
-
-    spec = getattr(getattr(template, "unwrapped", template), "spec", None)
-    if spec is not None and getattr(spec, "id", None):
-        return gym.make(spec.id)
-    # Fallback: reconstruct from the class. Works only for nullary constructors.
-    cls = type(template.unwrapped if hasattr(template, "unwrapped") else template)
-    try:
-        return cls()
-    except TypeError as e:
-        raise RuntimeError(
-            f"cannot rebuild fresh env from {cls.__name__} (constructor requires "
-            f"arguments); pass a template env with a registered gymnasium spec id"
-        ) from e
-
-
-def compute_random_baseline(
-    env: Any,
-    seed: int,
-    n_obs_steps: int,
-    *,
-    max_episodes: int = 30,
-) -> float:
-    """Random-policy baseline return for divergence detection.
-
-    Returns the mean episode return over ``max_episodes`` rollouts. A
-    result of ``0.0`` is returned as-is; callers must decide how to treat
-    a zero/negative baseline (typically by disabling divergence checks).
-    """
-    from sjfpo.baselines import FrameStackWrapper
-
-    fresh_env = _fresh_env_from(env)
-    random_env = FrameStackWrapper(fresh_env, n_obs_steps=n_obs_steps)
-    try:
-        rng = np.random.RandomState(10000 + seed)
-        action_space = random_env.action_space
-
-        def random_policy(_obs):
-            return action_space.sample()
-
-        results = Evaluator(
-            random_env,
-            eval_seed=10000 + seed,
-            max_episodes=max_episodes,
-        ).evaluate(random_policy, out_dir=None)
-    finally:
-        random_env.close()
-
-    if not results:
-        return 1.0
-    return float(np.mean([r["return"] for r in results]))
-
-
-# ---------------------------------------------------------------------------
-# Evaluator
 # ---------------------------------------------------------------------------
 
 

@@ -183,6 +183,24 @@ def test_forward_finite_loss_and_native_dict():
     assert all(isinstance(v, float) for v in info.values())
 
 
+def test_split_optimizers_partition_every_trainable_tensor():
+    """Actor and critic must not share a group, clip, or LR.
+
+    A shared group lets the critic's much larger value gradient own the single
+    grad-norm clip and starve the policy step.
+    """
+    from sjfpo.train_sjfpo import build_optimizers
+
+    policy = SJFPOPolicy(make_config())
+    actor_opt, critic_opt = build_optimizers(policy, policy.config)
+    actor_ids = {id(p) for g in actor_opt.param_groups for p in g["params"]}
+    critic_ids = {id(p) for g in critic_opt.param_groups for p in g["params"]}
+    trainable = {id(p) for p in policy.parameters() if p.requires_grad}
+    assert actor_ids and critic_ids
+    assert not actor_ids & critic_ids, "a tensor is in both optimizers"
+    assert actor_ids | critic_ids == trainable, "a trainable tensor is in neither"
+
+
 def test_optim_params_exclude_snapshot():
     policy = SJFPOPolicy(make_config())
     groups = policy.get_optim_params()["params"]

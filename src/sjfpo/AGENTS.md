@@ -1,7 +1,7 @@
 # AGENTS — src/sjfpo
 
 ## Overview
-MuJoCo-only hotspot — single live train path, chunked flow policy: Transition-dict rollout (H=16/n=8/T=16) → step-level GAE over executed prefixes → ASPO + V(s) TD-critic; CUDA-default (CPU fallback) fp32, einx.id shapes (collector/fpo_core/trainer + dct_utils/baselines), RUN_MATRIX 45. analysis.py is notebook-invoked (train.py never imports it), everything else is live.
+MuJoCo-only hotspot — single live train path, chunked flow policy: Transition-dict rollout (H=16/n=8/T=16) → step-level GAE over executed prefixes → ASPO + V(s) TD-critic; CUDA-default (CPU fallback) fp32, einx.id shapes (collector/fpo_core/trainer + dct_utils), RUN_MATRIX 15. analysis.py is notebook-invoked (train.py never imports it), everything else is live.
 
 ## Structure
 ```
@@ -12,13 +12,12 @@ collector.py      346L — Transition TypedDict (8 LeRobot keys); full-H open-lo
 gae.py            step-level GAE over executed transitions; terminated masks bootstrap and cuts recursion, truncated keeps bootstrap and cuts recursion; first executed step supplies each chunk target
 fpo_core.py       230L — CFM/SQL-ℓ [N,m], STE-capped ρ, ASPO piecewise (PPO-clip Â>0 / SPO Â≤0), mean-of-ψ objective, sample(mode=euler) t:0→1; policy + vf_coef·value summed inline in forward
 dct_utils.py      orthonormal DCT-II/III [H,action_dim] action chunks + discounted_chunk_reward + einx.id (parity-guarded)
-config.py         flags + PPO/SAC dataclasses, RUN_MATRIX 45 (TINY 3) + build_run_matrix; SACConfig.polyak is skrl-boundary (keep). SJFPO hyperparams live ONLY in configuration_sjfpo.py::SJFPOConfig (H=16/T=16/top_p=0.3→K=5/D=128, DiT-8/4heads/mlp×4/t256)
-baselines.py      804L — skrl PPO/SAC via baseline_train_loop; FrameStackWrapper shared with evaluator
+config.py         env registry (envs.yaml) + RUN_MATRIX 15 (TINY 1) + build_run_matrix. SJFPO hyperparams live ONLY in configuration_sjfpo.py::SJFPOConfig (H=16/T=16/top_p=0.3→K=5/D=128, DiT-8/4heads/mlp×4/t256)
 checkpointing.py  Hub policy ckpt (config.json + safetensors via save/load_policy_checkpoint)
 evaluator.py      159L — Evaluator MuJoCo 3-col [episode,return,length]
 sweep.py          196L — scan_runs/run_pending state machine
 analysis.py       IQM+bootstrap 2000, notebook-invoked (train.py never imports it; risk boundary)
-wandb_logging.py  ~114L — sole wandb importer (REQUIRED, hard import): 5 fns SDK-direct (wandb_disabled, init_wandb_run_for_method->bool, log_metrics, log_eval_summary, finish_run; shared baselines)
+wandb_logging.py  ~114L — sole wandb importer (REQUIRED, hard import): 5 fns SDK-direct (wandb_disabled, init_wandb_run_for_method->bool, log_metrics, log_eval_summary, finish_run)
 utils.py          149L — shared pure helpers (device/dtype/compile), no sjfpo imports
 ```
 
@@ -36,19 +35,18 @@ utils.py          149L — shared pure helpers (device/dtype/compile), no sjfpo 
 | `networks.py` | `WindowEncoder` `RunningMeanStd` `StateConditioner` `SJFPOFlowModel` `Critic` `DiTBlock` `CondMLP` `SwiGLU` | `modeling_sjfpo.py` (live) |
 | `collector.py` | `Transition` `collect_chunks` (+`collect_chunks_vec` for `num_envs>1`) | `tests/test_transition_v4.py` |
 | `dct_utils.py` | `dct` `idct` `discounted_chunk_reward` | `collector.py` `fpo_core.py` (DCT) + `tests/test_dct.py` |
-| `utils.py` | `resolve_device` `is_bf16_available` `resolve_compute_dtype` `maybe_compile` | `baselines.py` |
+| `utils.py` | `resolve_device` `is_bf16_available` `resolve_compute_dtype` `maybe_compile` | `train_sjfpo.py` |
 | `modeling_sjfpo.py` | `SJFPOPolicy` `SJFPOAborted` | `sweep.py` |
-| `wandb_logging.py` | `wandb_disabled` `init_wandb_run_for_method`->bool `log_metrics` `log_eval_summary` `finish_run` (5 fns SDK-direct) | `runner.py` `baselines.py` (REQUIRED import, SJFPO_DISABLE_WANDB=1 gate) |
+| `wandb_logging.py` | `wandb_disabled` `init_wandb_run_for_method`->bool `log_metrics` `log_eval_summary` `finish_run` (5 fns SDK-direct) | `train_sjfpo.py` (REQUIRED import, SJFPO_DISABLE_WANDB=1 gate) |
 
 ## Conventions
 - Tensor order `B,N,H,K,D,action_dim,Ds` — comment dimensions at each transform (Google docstrings + inline `[B,H,action_dim]`)
 - Flow takes `(x_t, t, condition[B,D])`; observation fusion lives in `StateConditioner` (state queries DCT bins, mean-pool). The transformer sees action tokens only — no prefix tokens, no readout slice.
 - Block FFNs and window encoders use SwiGLU (gate/up/down linears); the conditioning path (`time_mlp`, block `adaLN`) uses SiLU MLPs (`CondMLP`) per DiT canon — the gate regression stays (near-)linear.
 - Spectral-only: no non-spectral regularizers (no Sobolev/SIGReg/Barlow heads) — smoothness comes from DCT truncation structure, not auxiliary losses
-- `polyak` survives ONLY at the skrl boundary (`SACConfig`, `build_sac_skrl_config`, `sac.yaml`); no EMA/target nets in the sjfpo path
-- einx.id reshapes in collector/fpo_core/trainer (+dct_utils/baselines) must match torch at 1e-6 (`tests/test_einx_migration.py`); ground truth is current torch behavior
+- einx.id reshapes in collector/fpo_core/trainer (+dct_utils) must match torch at 1e-6 (`tests/test_einx_migration.py`); ground truth is current torch behavior
 - CUDA-default with CPU fallback, fp32-only (no autocast/bf16/`torch.compile`): `SJFPO_DEVICE=cuda|cpu|auto` overrides; storage (transitions/checkpoints/CSV) stays on CPU, batches move to device per update; LSP absent here — `py_compile` + suite is the gate
-- wandb imported ONLY in `sjfpo.wandb_logging` (sole importer, module-level REQUIRED — absent → hard ImportError); baselines route init through `init_wandb_run_for_method()->bool` + `log_eval_details` + `log_metrics(data, step=global_step)` + `finish_run()`; metrics: train/*, eval/*, gae/*, timing/*; `wandb/` dir NOT in .gitignore
+- wandb imported ONLY in `sjfpo.wandb_logging` (sole importer, module-level REQUIRED — absent → hard ImportError); train_sjfpo routes init through `init_wandb_run_for_method()->bool` + `log_eval_details` + `log_metrics(data, step=global_step)` + `finish_run()`; metrics: train/*, eval/*, gae/*, timing/*; `wandb/` dir NOT in .gitignore
 - `# %%` + `# CELLORDER:` markers are vestigial (the builder no longer inlines `src/` into notebooks) — leave them, don't add new ones
 - `retained:`-marked helpers are test seams (compute_cfm_loss/compute_policy_loss, discounted_chunk_reward, assert_runtime) — deleting one breaks its consumer test first
 

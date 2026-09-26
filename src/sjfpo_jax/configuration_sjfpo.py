@@ -65,8 +65,8 @@ class SJFPOConfig(PreTrainedConfig):
     timestep_scale: float = 1000.0
 
     # -- Losses / optimization --------------------------------------------
-    vf_coef: float = 1.0  # skrl PPO default; 0.5 was too weak for critic
-    grad_clip_norm: float = 0.5  # skrl PPO default; 1.0 was too loose
+    vf_coef: float = 1.0  # 0.5 was too weak for the critic
+    grad_clip_norm: float = 0.5  # 1.0 was too loose
 
     # -- Chunk selection ---------------------------------------------------
     top_p_spectral_tokens: float = 1.0
@@ -74,13 +74,13 @@ class SJFPOConfig(PreTrainedConfig):
     # -- Optimizer ---------------------------------------------------------
     policy_lr: float = 3e-4
     critic_lr: float = 9e-4  # 3x policy_lr for faster value tracking
-    optimizer_weight_decay: float = 1e-2  # skrl AdamWConfig default; 1e-4 too weak for critic
+    optimizer_weight_decay: float = 1e-2  # 1e-4 was too weak for the critic
 
     # -- Training loop -----------------------------------------------------
     # No separate warm-up phase; stats initialize naturally during first rollout.
     # -- Blackwell / GPU memory --------------------------------------------
     use_gradient_checkpointing: bool = False
-    grad_accum_steps: int = 1  # skrl PPO default; >1 reduces GPU memory at cost of speed
+    grad_accum_steps: int = 1  # >1 reduces GPU memory at cost of speed
 
     # ----------------------------------------------------------------------
     # Validation

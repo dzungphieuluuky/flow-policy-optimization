@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# Cartesian sweep: methods x envs x seeds, one scripts/train.py call per run.
+# Cartesian sweep: envs x seeds, one scripts/train.py call per run.
 # Run dirs (<out-base>/<method>_<env>_seed<seed>/) are composed by train.py.
 #
 #   scripts/sweep.sh [--tiny] [--out-base DIR] [--python BIN] [extra train.py args...]
 #
-# Axes from the environment (space-separated); defaults = full 45-run matrix:
-#   METHODS="sjfpo ppo sac" ENVS="HalfCheetah-v5 Walker2d-v5 Hopper-v5" SEEDS="0 1 2 3 4"
+# Axes from the environment (space-separated); defaults = full 15-run matrix:
+#   ENVS="HalfCheetah-v5 Walker2d-v5 Hopper-v5" SEEDS="0 1 2 3 4"
 # Budgets default to train.py's own resolution (CLI > YAML > defaults); pin them:
 #   TOTAL_STEPS / EVAL_STEPS / SAVE_STEPS
-# --tiny: all methods x Hopper-v5 x seed 0 at 20k/10k/10k.
+# --tiny: Hopper-v5 x seed 0 at 20k/10k/10k.
 # Remaining args pass through to every train.py call (e.g. --config, --sjfpo.*).
 set -euo pipefail
 
@@ -31,7 +31,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-METHODS="${METHODS:-sjfpo ppo sac}"
+METHODS="${METHODS:-sjfpo}"
 ENVS="${ENVS:-HalfCheetah-v5 Walker2d-v5 Hopper-v5}"
 SEEDS="${SEEDS:-0 1 2 3 4}"
 
@@ -41,7 +41,7 @@ BUDGET_FLAGS=()
 [[ -n "${SAVE_STEPS:-}" ]] && BUDGET_FLAGS+=(--save_steps "$SAVE_STEPS")
 
 if [[ "$TINY" == 1 ]]; then
-  METHODS="sjfpo ppo sac"
+  METHODS="sjfpo"
   ENVS="Hopper-v5"
   SEEDS="0"
   BUDGET_FLAGS=(--total_steps 20000 --eval_steps 10000 --save_steps 10000)

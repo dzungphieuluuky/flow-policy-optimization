@@ -74,7 +74,7 @@ def test_known_envs_extends_registry_envs():
 
 
 def test_every_config_field_non_null():
-    for instance in (SJFPOConfig(), config.PPO_CFG, config.SAC_CFG):
+    for instance in (SJFPOConfig(),):
         for field in dataclasses.fields(instance):
             if field.default is None:
                 continue  # Hub-inherited optional (repo_id, ...) unset pre-push
@@ -133,35 +133,6 @@ def test_sjfpo_config_documented_ranges():
     assert c.hidden_dim > 0
 
 
-def test_ppo_config_documented_ranges():
-    c = config.PPO_CFG
-    assert c.rollouts > 0
-    assert c.learning_epochs >= 1
-    assert c.mini_batches >= 1
-    assert c.lr > 0
-    assert c.kl_threshold > 0
-    assert c.grad_norm_clip > 0
-    assert 0 < c.discount < 1
-    assert 0 < c.gae_lambda < 1
-    assert 0 < c.ratio_clip < 1
-    assert c.value_loss_scale > 0
-    assert len(c.hidden) > 0 and all(h > 0 for h in c.hidden)
-
-
-def test_sac_config_documented_ranges():
-    c = config.SAC_CFG
-    assert c.lr > 0
-    assert c.batch_size >= 1
-    assert c.memory_size > 0
-    assert c.gradient_steps >= 1
-    assert 0 < c.polyak < 1
-    assert 0 < c.discount < 1
-    assert c.initial_random_steps >= 0
-    assert len(c.hidden) > 0 and all(h > 0 for h in c.hidden)
-
-    # 3. assert_runtime(): dependency pins + precision flag
-
-
 def test_assert_runtime_passes_on_pinned_env():
     config.assert_runtime()
     config.assert_runtime(allow_fp16=False)
@@ -170,12 +141,6 @@ def test_assert_runtime_passes_on_pinned_env():
 def test_assert_runtime_gymnasium_below_1_0(monkeypatch):
     fake_version(monkeypatch, {"gymnasium": "0.29.1"})
     with pytest.raises(RuntimeError, match="gymnasium"):
-        config.assert_runtime()
-
-
-def test_assert_runtime_skrl_not_2_1_0(monkeypatch):
-    fake_version(monkeypatch, {"skrl": "2.0.9"})
-    with pytest.raises(RuntimeError, match="skrl"):
         config.assert_runtime()
 
 

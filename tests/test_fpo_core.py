@@ -34,8 +34,10 @@ def _cfg(**overrides):
     return replace(_DEFAULTS, **overrides)
 
 
-def compute_cfm_loss(v_hat, v_star, reduce_mode="scalar", clamp=None):
+def compute_cfm_loss(v_hat, v_star, reduce_mode="scalar", clamp=None, reduction=None):
     cfg = _DEFAULTS if clamp is None else _cfg(cfm_clamp=clamp)
+    if reduction is not None:
+        cfg = _cfg(cfm_loss_reduction=reduction, cfm_clamp=cfg.cfm_clamp)
     return fpo_core.compute_cfm_loss(v_hat, v_star, cfg, reduce_mode)
 
 
@@ -360,6 +362,22 @@ def test_large_loss_clamped_for_negative_advantage():
     assert rho.item() == pytest.approx(math.exp(-20.0), rel=1e-6)
 
 
+def test_default_config_keeps_policy_ratio_out_of_the_clamp_dead_zone():
+    """Regression: clamp() has zero gradient above its max.
+
+    A CFM loss that starts above cfm_clamp makes l_old and l_new both clamp to
+    the same constant, so rho is identically 1 and the policy gradient is
+    exactly zero for the whole run while the critic keeps training.
+    """
+    torch.manual_seed(7)
+    v_star = torch.randn(64, 2, 16, 17)  # unit-noise target
+    l = fpo_core.compute_cfm_loss(torch.zeros_like(v_star), v_star, _DEFAULTS, "sample")
+    assert float((l > _DEFAULTS.cfm_clamp).float().mean()) == 0.0
+    l_new = (l + torch.randn_like(l) * 0.1).requires_grad_(True)
+    compute_policy_ratio(l, l_new).mean().backward()
+    assert float(l_new.grad.abs().mean()) > 0.0
+
+
 def test_symmetric_cfm_clamp_applies_to_both():
     # OFF cfm_loss_clamp=20 binds old and new alike.
     l_old = torch.full((2,), 100.0)
@@ -514,7 +532,7 @@ def test_compute_cfm_loss_reduce_mode_contract():
     v_star = torch.randn(2, 4, 3)
     scalar = compute_cfm_loss(v_hat, v_star)
     assert scalar.dim() == 0
-    per_sample = compute_cfm_loss(v_hat, v_star, reduce_mode="sample")
+    per_sample = compute_cfm_loss(v_hat, v_star, reduce_mode="sample", reduction="sqrt")
     assert per_sample.shape == (2, 4)
     # OFF sqrt convention: sample = sum/sqrt(D); mean over draws recovers the
     # scalar mean up to sqrt(D_flat).
@@ -535,7 +553,7 @@ def test_compute_cfm_loss_bin_mode_parity():
     v_star = torch.randn(2, 4, 5, 3) * 0.1
     per_bin = compute_cfm_loss(v_hat, v_star, reduce_mode="bin")
     assert per_bin.shape == (2, 4, 5)
-    per_sample = compute_cfm_loss(v_hat, v_star, reduce_mode="sample")
+    per_sample = compute_cfm_loss(v_hat, v_star, reduce_mode="sample", reduction="sqrt")
     # bin_k = sum_D/sqrt(D); sample = sum/sqrt(K*D) = bin.mean * sqrt(K).
     torch.testing.assert_close(per_bin.mean(dim=-1) * math.sqrt(5), per_sample)
     # CFM reduction itself is unclamped; FPO++ clamps losses in the ratio update.

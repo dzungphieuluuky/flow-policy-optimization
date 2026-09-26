@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 import torch
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
@@ -43,9 +44,12 @@ def test_resolve_run_dir_plain_and_resume_dedup(tmp_path):
     assert second == tmp_path / "sjfpo_Hopper-v5_seed0_resume2"
 
 
-def test_main_rejects_resume_for_baselines_and_missing_dir(tmp_path):
+def test_main_rejects_removed_methods_and_missing_resume_dir(tmp_path):
     train = load_train_module()
-    assert train.main(["--method", "ppo", "--env", "Hopper-v5", "--resume", "x"]) == 1
+    # ppo/sac were removed; --method is a Literal, so draccus rejects them.
+    for method in ("ppo", "sac"):
+        with pytest.raises(SystemExit):
+            train.main(["--method", method, "--env", "Hopper-v5"])
     assert (
         train.main(
             [

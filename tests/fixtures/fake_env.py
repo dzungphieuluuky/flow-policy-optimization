@@ -1,9 +1,7 @@
 """Canonical FakeGymEnv fixture — minimal gym.Env for testing without MuJoCo.
 
-Superset of the three former per-file duplicates (test_baselines,
-test_pipeline_cpu, test_wandb_logging): obs_dim/action_dim/max_steps defaults,
-seed support in both constructor and reset, and the _act_dim attribute
-required by the skrl compat tests.
+Shared by the CPU-pipeline, CLI, and wandb-logging tests: obs_dim/action_dim/
+max_steps defaults plus seed support in both constructor and reset.
 """
 
 from __future__ import annotations

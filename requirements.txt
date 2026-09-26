@@ -19,7 +19,6 @@ gymnasium-robotics
 pettingzoo
 mujoco
 mujoco-warp
-skrl
 lerobot
 jax[cuda13]
 flax

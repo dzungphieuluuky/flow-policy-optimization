@@ -1,7 +1,7 @@
-"""Golden behavior pins: chunk GAE numerics, trainer assembly, baselines helpers.
+"""Golden behavior pins: chunk GAE numerics and trainer assembly.
 
-Hand-computed GAE values plus trainer/baselines assembly outputs, so later
-refactors cannot silently change math. Fast unit-level only.
+Hand-computed GAE values plus trainer assembly outputs, so later refactors
+cannot silently change math. Fast unit-level only.
 """
 
 from __future__ import annotations
@@ -119,40 +119,3 @@ class TestTrainerGolden:
             action_dim,
         )
         assert torch.isfinite(v).all()
-
-
-class TestBaselinesHelpersGolden:
-    def test_frame_stack_shape(self):
-        import gymnasium as gym
-
-        from sjfpo.baselines import FrameStackWrapper
-        from tests.fixtures.fake_env import FakeGymEnv
-
-        env = FrameStackWrapper(FakeGymEnv(obs_dim=4, action_dim=2), n_obs_steps=16)
-        obs, _ = env.reset(seed=0)
-        assert obs.shape == (4 * 16,)
-        assert obs.dtype == np.float32
-
-    def test_import_skrl_idempotent(self):
-        from sjfpo import baselines
-
-        baselines.import_skrl_dependencies()
-        first = baselines.PPOPolicy
-        baselines.import_skrl_dependencies()
-        assert baselines.PPOPolicy is first
-        assert baselines.PPOPolicy is not None
-        assert baselines.SACCritic is not None
-
-    def test_seed_and_wrap_dims(self):
-        from sjfpo import baselines
-
-        baselines.import_skrl_dependencies()
-        from tests.fixtures.fake_env import FakeGymEnv
-
-        wrapped, skrl_env, obs_dim, action_dim = baselines.seed_and_wrap_env(
-            FakeGymEnv(obs_dim=4, action_dim=2), seed=0, n_obs_steps=16
-        )
-        assert obs_dim == 4 * 16
-        assert action_dim == 2
-        assert wrapped.observation_space.shape[0] == obs_dim
-        wrapped.close()

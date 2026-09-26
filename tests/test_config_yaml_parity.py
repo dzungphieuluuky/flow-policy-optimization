@@ -1,7 +1,7 @@
 """YAML<->dataclass parity: every method YAML key must be a real config field.
 
-Locks the deslop Wave 3 single-truth gate: silently-dropped keys (e.g. the
-removed ``n_obs_steps`` in ppo/sac.yaml) fail here instead of drifting.
+Locks the deslop Wave 3 single-truth gate: silently-dropped keys fail here
+instead of drifting.
 """
 
 import dataclasses
@@ -9,13 +9,10 @@ from pathlib import Path
 
 import yaml
 
-from sjfpo.config import PPOConfig, SACConfig
 from sjfpo.configuration_sjfpo import SJFPOConfig
 
 CASES = [
     ("configs/sjfpo.yaml", SJFPOConfig),
-    ("configs/ppo.yaml", PPOConfig),
-    ("configs/sac.yaml", SACConfig),
 ]
 
 
