@@ -153,6 +153,11 @@ class SJFPOConfig(PreTrainedConfig):
         """
         if not 0.0 < self.gamma <= 1.0:
             raise ValueError(f"gamma={self.gamma} must satisfy 0 < gamma <= 1")
+        if self.use_clipped_value_loss:
+            raise ValueError(
+                "use_clipped_value_loss is not supported: the value target is "
+                "now normalized, so epsilon_clip would be a sub-sigma clip"
+            )
         if not 0.0 < self.gae_lambda <= 1.0:
             raise ValueError(
                 f"gae_lambda={self.gae_lambda} must satisfy 0 < lambda <= 1"
