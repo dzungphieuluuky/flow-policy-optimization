@@ -610,6 +610,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         actions: torch.Tensor,
         tau: torch.Tensor,
         eps: torch.Tensor,
+        is_pad: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Compute the initial old and new CFM losses for one minibatch.
 
@@ -618,9 +619,12 @@ class SJFPOPolicy(PreTrainedPolicy):
             actions: Action chunk in ``[-1, 1]``.
             tau: Flow times.
             eps: Monte-Carlo noise matching the token layout.
+            is_pad: ``[batch, horizon]`` mask of never-executed positions.
 
         Returns:
-            Tuple of the frozen-policy and current-policy CFM losses.
+            Tuple of the frozen-policy and current-policy CFM losses. Both are
+            masked, so they average over the same positions as the losses they
+            are later compared against.
         """
         cfg = self.config
         token_count = eps.shape[2]
@@ -647,8 +651,8 @@ class SJFPOPolicy(PreTrainedPolicy):
                 eps.shape[0], num_mc, *flow_shape
             )
             return (
-                compute_cfm_loss(v_initial, v_star, cfg, "sample"),
-                compute_cfm_loss(v_initial, v_star, cfg, "bin"),
+                compute_cfm_loss(v_initial, v_star, cfg, "sample", is_pad),
+                compute_cfm_loss(v_initial, v_star, cfg, "bin", is_pad),
             )
 
     def generate_rollout(
@@ -866,7 +870,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         chunk_clip_counts = active["chunk_clip_counts"][:n_chunks]
 
         initial_cfm_loss, initial_cfm_loss_bin = self._initial_cfm_losses(
-            normalized_states, actions, tau, eps
+            normalized_states, actions, tau, eps, is_pad
         )
 
         return {
