@@ -81,8 +81,6 @@ def mini_batch_indices(
         raise ValueError(f"n={n} must be >= 1")
     n_mb = max(1, min(int(num_minibatches), n))
     device = torch.device(device)
-    n_mb = max(1, min(int(num_minibatches), n))
-    device = torch.device(device)
     for _ in range(max(1, int(num_epochs))):
         perm = torch.randperm(n, device=device)          # <- move inside
         for i in range(n_mb):
