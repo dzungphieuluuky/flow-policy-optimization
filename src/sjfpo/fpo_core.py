@@ -20,19 +20,9 @@ def sample_timesteps(
 ):
     """Draw flow timesteps in ``[min_timestep, max_timestep]``.
 
-    The distribution is selected by ``cfg.timestep_sampling_mode``.
-
-    Args:
-        num_samples: Number of timesteps to draw.
-        cfg: Active configuration supplying the range and sampling mode.
-        device: Device the returned tensor is allocated on.
-        generator: Optional RNG for reproducible draws.
-
-    Returns:
-        Tensor of shape ``[num_samples]`` holding flow times.
-
-    Raises:
-        ValueError: If ``cfg.timestep_sampling_mode`` is not a known mode.
+    The distribution is selected by ``cfg.timestep_sampling_mode``. Returns a
+    tensor of shape ``[num_samples]``. Raises ``ValueError`` if the mode is not a
+    known mode.
     """
     lo, hi = cfg.min_timestep, cfg.max_timestep
     mode = cfg.timestep_sampling_mode
@@ -73,21 +63,10 @@ def sample_noise(
     device: torch.device | str,
     generator: torch.Generator | None,
 ):
-    """Draw Monte-Carlo noise ε of shape ``shape``.
+    """Draw Monte-Carlo noise of shape ``shape``.
 
-    The distribution is selected by ``cfg.noise_sampling_mode``.
-
-    Args:
-        shape: Output shape of the noise tensor.
-        cfg: Active configuration supplying the sampling mode.
-        device: Device the returned tensor is allocated on.
-        generator: Optional RNG for reproducible draws.
-
-    Returns:
-        Tensor of shape ``shape`` holding the sampled noise.
-
-    Raises:
-        ValueError: If ``cfg.noise_sampling_mode`` is not a known mode.
+    The distribution is selected by ``cfg.noise_sampling_mode``. Raises
+    ``ValueError`` if the mode is not a known mode.
     """
     mode = cfg.noise_sampling_mode
     if mode == "normal":
@@ -104,24 +83,15 @@ def run_mc_simulation(
     """Broadcast action, noise, and per-coordinate timesteps over MC.
 
     Legacy scalar/[M]/[B,M] tau inputs return ``flatten_mc_timestep`` with shape
-    ``[B*M]``. The training path uses per-token tau with shape
-    ``[B, M, K, 1]`` and receives ``[B*M, K, 1]``; each token timestep is shared
-    across that token's action dimensions. ``tau`` is always coerced onto
-    ``eps``'s device and storage dtype so a scalar never triggers a silent CPU
-    hop part-way through the graph.
+    ``[B*M]``. The training path uses per-token tau with shape ``[B, M, K, 1]`` and
+    receives ``[B*M, K, 1]``; each token timestep is shared across that token's
+    action dimensions. ``tau`` is always coerced onto ``eps``'s device and storage
+    dtype so a scalar never triggers a silent CPU hop part-way through the graph.
 
-    Args:
-        a: Action chunk of shape ``[B, K, action_dim]``.
-        eps: Noise of shape ``[B, num_mc_samples, K, action_dim]``.
-        tau: Scalar, vector, or per-token timesteps; see the shapes above.
-
-    Returns:
-        Tuple of the flattened timestep, the flattened noise, the broadcast
-        action, the per-sample flow shape, and the Monte-Carlo sample count.
-
-    Raises:
-        ValueError: If ``eps`` disagrees with the action shape, or if ``tau``
-            matches none of the accepted shapes.
+    Returns the flattened timestep, the flattened noise, the broadcast action, the
+    per-sample flow shape, and the Monte-Carlo sample count. Raises
+    ``ValueError`` if ``eps`` disagrees with the action shape, or if ``tau``
+    matches none of the accepted shapes.
     """
     b, num_mc = eps.shape[0], eps.shape[1]
     flow_shape = tuple(a.shape[1:])
@@ -188,23 +158,14 @@ def compute_cfm_loss(
     ``bin`` is a legacy diagnostic reduction kept for comparison, since the
     official FPO policy only ever uses ``sample``.
 
-    Args:
-        v_hat: Predicted velocities.
-        v_star: Target velocities, same shape as ``v_hat``.
-        cfg: Active configuration supplying ``cfm_loss_reduction``.
-        reduce_mode: One of ``scalar``, ``sample``, or ``bin``.
-        action_is_pad: Optional ``[batch, horizon]`` mask of never-executed
-            action positions, True where padded. When given, padded positions
-            are dropped and each sample is renormalized by its own executed
-            count, so a chunk cut short contributes the same loss magnitude as
-            a full one.
+    ``action_is_pad`` is an optional ``[batch, horizon]`` mask of never-executed
+    action positions, True where padded. When given, padded positions are dropped
+    and each sample is renormalized by its own executed count, so a chunk cut
+    short contributes the same loss magnitude as a full one.
 
-    Returns:
-        Scalar for ``scalar``, otherwise a per-sample loss tensor.
-
-    Raises:
-        ValueError: If the velocity shapes disagree, or if ``reduce_mode`` is
-            unknown.
+    Returns a scalar for ``scalar``, otherwise a per-sample loss tensor. Raises
+    ``ValueError`` if the velocity shapes disagree, or if ``reduce_mode`` is
+    unknown.
     """
     if v_hat.shape != v_star.shape:
         raise ValueError(
@@ -254,15 +215,7 @@ def compute_aspo_surrogate(
     """FPO++ trust region: PPO clipping, SPO, or asymmetric ASPO.
 
     ASPO uses PPO for positive advantages and SPO for negative advantages.
-
-    Args:
-        rho: Importance ratio of each sample under the updated policy.
-        advantage: Per-sample advantage estimates.
-        cfg: Active configuration selecting ``trust_region_mode``.
-        epsilon_clip: Scalar or per-sample trust-region radius.
-
-    Returns:
-        Elementwise surrogate objective.
+    Returns the elementwise surrogate objective.
     """
     rho_adv = rho * advantage
     rho_clipped = torch.clamp(rho, 1.0 - epsilon_clip, 1.0 + epsilon_clip)
@@ -285,19 +238,10 @@ def compute_policy_ratio(
     """Official FPO++ ratio exp(old CFM loss - new CFM loss).
 
     The official implementation clamps both CFM losses from above, optionally
-    clamps the new loss for negative-advantage samples, then applies a
-    one-sided STE cap to the log-ratio: the forward pass uses the capped delta
-    while the backward pass flows through the original.
-
-    Args:
-        l_old: CFM loss under the frozen behavior policy.
-        l_new: CFM loss under the updated policy.
-        cfg: Active configuration supplying the clamp bounds.
-        advantage: Optional per-sample advantages, required when
-            ``cfm_loss_clamp_negative_advantages`` is set.
-
-    Returns:
-        Elementwise ratio tensor.
+    clamps the new loss for negative-advantage samples, then applies a one-sided
+    STE cap to the log-ratio: the forward pass uses the capped delta while the
+    backward pass flows through the original. ``advantage`` is required when
+    ``cfm_loss_clamp_negative_advantages`` is set.
     """
     old = torch.clamp(l_old, max=cfg.cfm_clamp)
     new = torch.clamp(l_new, max=cfg.cfm_clamp)
@@ -319,16 +263,7 @@ def compute_policy_loss(
     advantage: torch.Tensor,
     cfg: SJFPOConfig,
 ) -> torch.Tensor:
-    """Scalar FPO++ policy objective: MEAN over i of ψ per chunk (Eq.13).
-
-    Args:
-        l_old: CFM loss under the frozen behavior policy.
-        l_new: CFM loss under the updated policy.
-        advantage: Per-sample advantage estimates.
-        cfg: Active configuration supplying the trust region and clamps.
-
-    Returns:
-        Scalar policy loss to backpropagate.
+    """Scalar FPO++ policy objective: MEAN over i of psi per chunk (Eq.13).
     """
     rho = compute_policy_ratio(l_old, l_new, cfg, advantage=advantage)
     return compute_aspo_surrogate(rho, advantage, cfg, cfg.epsilon_clip).mean()
@@ -343,25 +278,11 @@ def sample_action(
     generator: torch.Generator | None,
     device: torch.device | str,
 ) -> torch.Tensor:
-    """Sample the learned flow t=0 (noise) → t=1 (data) with Euler steps.
+    """Sample the learned flow t=0 (noise) -> t=1 (data) with Euler steps.
 
     The step sizes are computed once up front, which keeps the integration loop
-    free of tensor arithmetic and friendly to XLA.
-
-    Args:
-        predict_velocity: Callable mapping ``(x, t, condition)`` to velocity.
-        shape: Shape of the noise sample to integrate from.
-        condition: Conditioning forwarded to ``predict_velocity``.
-        num_inference_steps: Number of Euler steps.
-        eps: Optional starting noise; drawn on ``device`` when omitted.
-        generator: Optional RNG used when ``eps`` is omitted.
-        device: Device the integration runs on.
-
-    Returns:
-        Integrated sample of shape ``shape``.
-
-    Raises:
-        ValueError: If ``device`` is not provided.
+    free of tensor arithmetic and friendly to XLA. Returns an integrated sample of
+    shape ``shape``; raises ``ValueError`` if ``device`` is not provided.
     """
     if device is None:
         raise ValueError("device must be provided explicitly")

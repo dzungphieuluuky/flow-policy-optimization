@@ -35,13 +35,7 @@ def _normalize_device(device: torch.device | str | None) -> torch.device:
     """Resolve a device argument to a concrete device with an index.
 
     A bare ``"cuda"`` is pinned to the current device so cached tensors are
-    never keyed to an ambiguous device.
-
-    Args:
-        device: Device, device string, or None for CPU.
-
-    Returns:
-        A device with a resolved index.
+    never keyed to an ambiguous device. None means CPU.
     """
     target = torch.device("cpu") if device is None else torch.device(device)
     if target.type == "cuda" and target.index is None:
@@ -52,16 +46,8 @@ def _normalize_device(device: torch.device | str | None) -> torch.device:
 def _dct_norm(count: int, sequence_length: int, device: torch.device) -> torch.Tensor:
     """Build the orthonormal DCT-II normalization for a frequency count.
 
-    Args:
-        count: Number of frequency bins.
-        sequence_length: Length of the sequence being transformed.
-        device: Device the tensor is allocated on.
-
-    Returns:
-        Per-bin normalization vector of shape ``[count]``.
-
-    Raises:
-        ValueError: If either argument is below one.
+    Returns a per-bin vector of shape ``[count]``. Raises ``ValueError`` if
+    either count is below one.
     """
     if count < 1 or sequence_length < 1:
         raise ValueError("count and sequence_length must be positive")
@@ -77,17 +63,7 @@ def _build_dct_basis_f32(n: int, device: torch.device) -> torch.Tensor:
 
     ``D[k, j] = c_k · cos(π k (2j+1) / (2n))`` with ``c_0 = sqrt(1/n)`` and
     ``c_k = sqrt(2/n)`` for ``k > 0``. Forward DCT is ``D @ x``; inverse is
-    ``Dᵀ @ x``.
-
-    Args:
-        n: Sequence length; the basis is square.
-        device: Device the basis is allocated on.
-
-    Returns:
-        The ``[n, n]`` fp32 basis matrix.
-
-    Raises:
-        ValueError: If ``n`` is below one.
+    ``Dᵀ @ x``. Raises ``ValueError`` if ``n`` is below one.
     """
     if n < 1:
         raise ValueError(f"n must be positive, got {n}")
@@ -103,12 +79,7 @@ def _build_dct_basis_f32(n: int, device: torch.device) -> torch.Tensor:
 def _get_dct_basis_f32(n: int, device: torch.device) -> torch.Tensor:
     """Return the cached fp32 DCT-II basis for a length and device.
 
-    Args:
-        n: Sequence length.
-        device: Device the basis is allocated on.
-
-    Returns:
-        The cached ``[n, n]`` basis matrix. Callers must copy before mutating.
+    Returns the cached ``[n, n]`` matrix; callers must copy before mutating.
     """
     return _build_dct_basis_f32(n, device)
 
@@ -118,17 +89,8 @@ def dct_basis_matrix(
 ) -> torch.Tensor:
     """Return a mutable copy of the orthonormal DCT-II basis matrix.
 
-    The returned copy uses the device's resolved storage dtype.
-
-    Args:
-        n: Sequence length.
-        device: Device the basis is allocated on; resolved when omitted.
-
-    Returns:
-        A fresh ``[n, n]`` basis matrix the caller may modify in place.
-
-    Raises:
-        ValueError: If ``n`` is below one.
+    The copy uses the device's resolved storage dtype. Raises ``ValueError``
+    if ``n`` is below one.
     """
     if n < 1:
         raise ValueError(f"n must be positive, got {n}")
@@ -144,16 +106,9 @@ def _get_analysis_basis(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Return the cached analysis basis and its normalization.
 
-    Args:
-        K: Full sequence length.
-        M: Highest retained frequency; ``M+1`` bins are produced.
-        device: Device the tensors are allocated on.
-
-    Returns:
-        The ``[M+1, K]`` basis matrix and the ``[M+1]`` normalization vector.
-
-    Raises:
-        ValueError: If ``K`` is below one, or if ``M`` is outside ``[0, K)``.
+    Returns the ``[M+1, K]`` basis matrix and the ``[M+1]`` normalization
+    vector. Raises ``ValueError`` if ``K`` is below one, or ``M`` outside
+    ``[0, K)``.
     """
     if K < 1:
         raise ValueError(f"K must be positive, got {K}")
@@ -170,18 +125,9 @@ def extract_dct_coeffs(v_star: torch.Tensor, M: int) -> torch.Tensor:
 
     ``v_star`` is either ``[K, d]`` or ``[B, K, d]``; returns ``[M+1, d]``
     or ``[B, M+1, d]`` respectively. The contraction accumulates in fp32 even
-    under autocast, then casts back to the input dtype.
-
-    Args:
-        v_star: Velocity sequence or batch of sequences.
-        M: Highest frequency retained.
-
-    Returns:
-        Coefficients of shape ``[M+1, d]``, or ``[B, M+1, d]`` for a batch.
-
-    Raises:
-        ValueError: If the rank is not 2 or 3, or if the batch or feature
-            dimension is not positive.
+    under autocast, then casts back to the input dtype. Raises ``ValueError``
+    if the rank is not 2 or 3, or if the batch or feature dimension is not
+    positive.
     """
     squeeze = False
     if v_star.dim() == 3:
@@ -214,16 +160,8 @@ def extract_dct_coeffs(v_star: torch.Tensor, M: int) -> torch.Tensor:
 def _get_synth_norm(M: int, K_original: int, device: torch.device) -> torch.Tensor:
     """Return the cached synthesis normalization.
 
-    The synthesis norm depends only on the retained frequency count and the
-    original sequence length, not on any query times.
-
-    Args:
-        M: Highest retained frequency.
-        K_original: Length of the sequence the coefficients came from.
-        device: Device the tensor is allocated on.
-
-    Returns:
-        The ``[M+1]`` normalization vector.
+    Depends only on the retained frequency count and the original sequence
+    length, not on any query times. Returns the ``[M+1]`` vector.
     """
     return _dct_norm(M + 1, K_original, device)
 
@@ -246,20 +184,10 @@ def decode_coeffs_to_velocity(
     ``j = tau*K/T``. The contraction runs in fp32 even under autocast, because
     CUDA would otherwise lower it to bf16.
 
-    Args:
-        coeffs: Coefficients of shape ``[M+1, d]`` or ``[B, M+1, d]``.
-        tau: Query times, shape ``[N]`` shared across the batch or ``[B, N]``
-            per batch element.
-        T: Physical duration of the chunk.
-        K_original: Length of the sequence the coefficients came from.
-
-    Returns:
-        Velocities at the query times, shaped ``[N, d]`` or ``[B, N, d]``.
-
-    Raises:
-        ValueError: If the ranks disagree, if ``T`` is not finite and
-            positive, if ``tau`` does not match the batch, or if any query
-            time falls outside ``[0, T]``.
+    Returns velocities at the query times, shaped ``[N, d]`` or ``[B, N, d]``.
+    Raises ``ValueError`` if the ranks disagree, if ``T`` is not finite and
+    positive, if ``tau`` does not match the batch, or if any query time falls
+    outside ``[0, T]``.
     """
     squeeze = False
     if coeffs.dim() == 3:
@@ -341,23 +269,9 @@ def sample_freq_weighted_noise(
     untouched; otherwise it samples from the global RNG. Reproducibility with
     a key is guaranteed on the same device, not across CPU/CUDA generators.
 
-    Args:
-        M: Highest frequency; ``M+1`` bins are sampled.
-        d: Feature dimension, one per action dimension.
-        T: Physical duration of the chunk, setting the spectral envelope.
-        B: Batch size.
-        sigma: Scale of the frequency-0 component.
-        key: Optional seed for a local generator; the global RNG is used when
-            omitted.
-        device: Device the noise is allocated on; resolved when omitted.
-        dtype: Output dtype; the device's storage dtype when omitted.
-
-    Returns:
-        Frequency-weighted noise of shape ``[B, M+1, d]``.
-
-    Raises:
-        ValueError: If ``M`` is negative, if ``d`` or ``B`` is not positive,
-            or if ``T`` is not finite and positive.
+    Returns noise of shape ``[B, M+1, d]``. Raises ``ValueError`` if ``M`` is
+    negative, if ``d`` or ``B`` is not positive, or if ``T`` is not finite and
+    positive.
     """
     if M < 0 or d < 1 or B < 1:
         raise ValueError("M must be nonnegative; d and B must be positive")

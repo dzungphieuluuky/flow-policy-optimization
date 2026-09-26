@@ -98,12 +98,8 @@ def _gae_diagnostics(
 def _num_spectral_tokens_kept(cfg: SJFPOConfig) -> int:
     """Count the spectral tokens retained per action chunk.
 
-    Args:
-        cfg: Active configuration.
-
-    Returns:
-        ``M+1`` derived from ``top_p_spectral_tokens`` when the DCT transform
-        is on, otherwise the full action horizon.
+    ``M+1`` derived from ``top_p_spectral_tokens`` when the DCT transform is on,
+    otherwise the full action horizon.
     """
     return max(1, round(cfg.top_p_spectral_tokens * cfg.action_horizon)) if cfg.use_dct_transform else cfg.action_horizon
 
@@ -116,14 +112,7 @@ def _sample_spectral_eps(
 ) -> torch.Tensor:
     """Draw Monte-Carlo noise matching the configured token layout.
 
-    Args:
-        cfg: Active configuration.
-        n: Number of chunks.
-        action_dim: Feature dimension, one per action dimension.
-        device: Device the noise is allocated on.
-
-    Returns:
-        Noise of shape ``[n, num_mc_samples, tokens, action_dim]``.
+    Returns noise of shape ``[n, num_mc_samples, tokens, action_dim]``.
     """
     shape = (
         n,
@@ -146,14 +135,7 @@ def _mc_x_t(
 ) -> torch.Tensor:
     """Interpolate between noise and action to form the flow point x_t.
 
-    Args:
-        flatten_mc_timestep: Flattened per-token timesteps, ``[B*m, K, 1]``.
-        flatten_mc_noise: Flattened noise of shape ``[B*m, d]``.
-        flatten_mc_action: Flattened action of shape ``[B*m, d]``.
-        flow_shape: Per-sample flow shape the result is reshaped to.
-
-    Returns:
-        The flow point, of shape ``[-1, *flow_shape]``.
+    Returns the flow point, of shape ``[-1, *flow_shape]``.
     """
     t = flatten_mc_timestep.expand(-1, -1, flow_shape[-1])
     noise = flatten_mc_noise.reshape(-1, *flow_shape)
@@ -218,11 +200,7 @@ class SJFPOPolicy(PreTrainedPolicy):
     def train(self, mode: bool = True):
         """Set the module mode, keeping the frozen snapshot in eval.
 
-        Args:
-            mode: Training mode to switch to.
-
-        Returns:
-            This policy, so the call chains.
+        Returns this policy, so the call chains.
         """
         super().train(mode)
         self.old_actor.eval()
@@ -238,11 +216,7 @@ class SJFPOPolicy(PreTrainedPolicy):
     def update_observation_stats(self, observations: torch.Tensor) -> None:
         """Update the live running statistics from raw post-step observations.
 
-        Args:
-            observations: Raw frames of shape ``[N, obs_dim]``.
-
-        Raises:
-            ValueError: If the shape is not ``[N, obs_dim]``.
+        Raises ``ValueError`` if the shape is not ``[N, obs_dim]``.
         """
         if (
             observations.ndim != 2
@@ -261,13 +235,8 @@ class SJFPOPolicy(PreTrainedPolicy):
     ) -> None:
         """Replace the env action bounds used by the postprocessor.
 
-        Args:
-            low: Per-dimension lower bounds.
-            high: Per-dimension upper bounds.
-
-        Raises:
-            ValueError: If the bounds disagree in shape or fail the
-                ``high > low`` check.
+        Raises ``ValueError`` if the bounds disagree in shape or fail the
+        ``high > low`` check.
         """
         storage_dtype = resolve_storage_dtype(self.action_low.device)
         low_t = to_tensor_1d(
@@ -309,12 +278,9 @@ class SJFPOPolicy(PreTrainedPolicy):
     def update_ema(self, global_step: int) -> None:
         """Update the FPO++ actor EMA after an optimizer update.
 
-        The shadow is seeded on the first call and hard-copied at the end of
-        warmup, so only properly warmed weights enter the average.
-
-        Args:
-            global_step: Current environment-step count, compared against
-                ``ema_warmup_steps``.
+        The shadow is seeded on the first call and hard-copied at the end of warmup,
+        so only properly warmed weights enter the average. ``global_step`` is compared
+        against ``ema_warmup_steps``.
         """
         decay = self.config.ema_decay
         if decay <= 0:
@@ -340,12 +306,6 @@ class SJFPOPolicy(PreTrainedPolicy):
 
     def ema_ready(self, global_step: int) -> bool:
         """Report whether the EMA shadow may now be used for evaluation.
-
-        Args:
-            global_step: Current environment-step count.
-
-        Returns:
-            True once the warmup has passed and the shadow is initialised.
         """
         return (
             self.config.ema_decay > 0
@@ -368,9 +328,6 @@ class SJFPOPolicy(PreTrainedPolicy):
 
     def load_ema_state_dict(self, state: dict) -> None:
         """Restore an EMA shadow exported by :meth:`ema_state_dict`.
-
-        Args:
-            state: Previously exported EMA state.
         """
         self._ema_shadow = {
             name: value.detach().clone()
@@ -444,13 +401,6 @@ class SJFPOPolicy(PreTrainedPolicy):
 
         ``v* = a - eps``, broadcast over the Monte-Carlo draws, mapping
         ``[B, *flow]`` against ``[B, m, *flow]`` to ``[B, m, *flow]``.
-
-        Args:
-            a: Action chunk.
-            eps: Monte-Carlo noise of the matching shape.
-
-        Returns:
-            Target velocities of shape ``[B, m, *flow]``.
         """
         return a.unsqueeze(1) - eps
 
@@ -464,18 +414,10 @@ class SJFPOPolicy(PreTrainedPolicy):
     ) -> torch.Tensor:
         """Run the actor on a flow point against a prepared conditioning.
 
-        ``condition`` is the state conditioner's output, already broadcast over
-        the Monte-Carlo draws, so both the frozen and live paths share the one
-        forward-conditioning pass their caller already performed.
-
-        Args:
-            x_t: Flow point, of shape ``[B, K, action_dim]``.
-            tau: Per-token flow times.
-            condition: Conditioning of shape ``[B, D]`` or ``[B*m, D]``.
-            old: Whether to use the frozen behavior snapshot.
-
-        Returns:
-            Predicted velocities, in the actor's own dtype.
+        ``condition`` is the state conditioner's output, already broadcast over the
+        Monte-Carlo draws, so both the frozen and live paths share the one
+        forward-conditioning pass their caller already performed. ``old`` selects the
+        frozen behavior snapshot. Returns velocities in the actor's own dtype.
         """
         net = self.old_actor if old else self.actor
         return net(x_t, tau, condition)
@@ -484,14 +426,8 @@ class SJFPOPolicy(PreTrainedPolicy):
     def standardize_obs_tensor(self, states: torch.Tensor) -> torch.Tensor:
         """Coerce observations to the ``[B, T, obs]`` layout the policy expects.
 
-        Args:
-            states: Observations in any of the accepted layouts.
-
-        Returns:
-            A storage-dtype tensor of shape ``[B, T, obs]``.
-
-        Raises:
-            ValueError: If the rank is not 1, 2, or 3.
+        Returns a storage-dtype tensor of shape ``[B, T, obs]``. Raises
+        ``ValueError`` if the rank is not 1, 2, or 3.
         """
         states = to_tensor(states)
         states = states.to(dtype=resolve_storage_dtype(states.device))
@@ -512,16 +448,10 @@ class SJFPOPolicy(PreTrainedPolicy):
     ) -> torch.Tensor:
         """Predict a full action chunk.
 
-        Action perturbation is applied before postprocessing, matching FPO++,
-        so the noise lands in the policy's normalized action space.
-
-        Args:
-            batch: Batch holding ``observation.state``.
-            **kwargs: ``noise=True`` samples the chunk's first token; the
-                default returns zeros at t=0.
-
-        Returns:
-            Action chunk of shape ``[B, H, action_dim]``.
+        Action perturbation is applied before postprocessing, matching FPO++, so the
+        noise lands in the policy's normalized action space. ``noise=True`` samples the
+        chunk's first token; the default returns zeros at t=0. Returns a chunk of shape
+        ``[B, H, action_dim]``.
         """
         noise = kwargs.get("noise", False)
         cfg = self.config
@@ -567,19 +497,11 @@ class SJFPOPolicy(PreTrainedPolicy):
     def select_action(self, batch: dict[str, torch.Tensor], **kwargs) -> torch.Tensor:
         """Return the next action, receding through a cached chunk.
 
-        A chunk is predicted once and its executed prefix is buffered, so
-        consecutive calls do not re-run the actor.
-
-        Args:
-            batch: Batch holding ``observation.state``, shaped ``[obs]`` for a
-                single frame or ``[T, obs]`` for a full window.
-            **kwargs: Forwarded to :meth:`predict_action_chunk`.
-
-        Returns:
-            The next action to execute.
-
-        Raises:
-            ValueError: If the observation rank is neither 1 nor 2.
+        A chunk is predicted once and its executed prefix is buffered, so consecutive
+        calls do not re-run the actor. ``batch`` holds ``observation.state``, shaped
+        ``[obs]`` for a single frame or ``[T, obs]`` for a full window; extra kwargs
+        are forwarded to :meth:`predict_action_chunk`. Raises ``ValueError`` if the
+        observation rank is neither 1 nor 2.
         """
         obs = to_tensor(batch[OBS_STATE])
         obs = obs.to(dtype=resolve_storage_dtype(obs.device))
@@ -614,20 +536,11 @@ class SJFPOPolicy(PreTrainedPolicy):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Compute the frozen behavior policy's CFM loss for one minibatch.
 
-        The behavior weights are the snapshot taken at the start of the rollout,
-        so this is the ``l_old`` term of the importance ratio. Both reductions
-        are masked identically to the current-policy losses they get compared
-        against, so the ratio never mixes means over different positions.
-
-        Args:
-            normalized_states: Normalised observation window.
-            actions: Action chunk in ``[-1, 1]``.
-            tau: Flow times.
-            eps: Monte-Carlo noise matching the token layout.
-            action_is_pad: ``[batch, horizon]`` mask of never-executed positions.
-
-        Returns:
-            The ``sample`` and ``bin`` reductions of the frozen policy's loss.
+        The behavior weights are the snapshot taken at the start of the rollout, so
+        this is the ``l_old`` term of the importance ratio. Both reductions are masked
+        identically to the current-policy losses they get compared against, so the
+        ratio never mixes means over different positions. Returns the ``sample`` and
+        ``bin`` reductions.
         """
         cfg = self.config
         token_count = eps.shape[2]
@@ -669,33 +582,19 @@ class SJFPOPolicy(PreTrainedPolicy):
     ) -> dict[str, torch.Tensor]:
         """Roll out open-loop action chunks and build a training batch.
 
-        A chunk may execute only one step before termination, so the
-        allocation-free upper bound on chunk count is one chunk per requested
-        step. Each chunk is one macro-transition: the backup sums the rewards
-        of its executed steps, discounts by ``gamma ** h``, and the GAE
-        recursion runs between consecutive chunks of the same env (see
-        :mod:`sjfpo.gae`). Advantages are normalised over chunks.
+        A chunk may execute only one step before termination, so the allocation-free
+        upper bound on chunk count is one chunk per requested step. Each chunk is one
+        macro-transition: the backup sums the rewards of its executed steps, discounts
+        by ``gamma ** h``, and the GAE recursion runs between consecutive chunks of
+        the same env (see :mod:`sjfpo.gae`). Advantages are normalised over chunks.
 
-        The batch carries one raw post-step frame per executed step, kept
-        separate from the overlapping observation windows so the training loop
-        can fold them into the live normalizer without double counting, plus
-        independent per-chunk/Monte-Carlo CFM draws that the policy loss reuses
-        for both the old and new losses.
+        The batch carries one raw post-step frame per executed step, kept separate from
+        the overlapping observation windows so the training loop can fold them into the
+        live normalizer without double counting, plus independent per-chunk/Monte-Carlo
+        CFM draws that the policy loss reuses for both the old and new losses.
 
-        Args:
-            env: Environment to roll out.
-            total_steps: Environment-step budget for the rollout.
-            action_low: Scalar lower bound of the env action space.
-            action_high: Scalar upper bound of the env action space.
-            noisy: Whether the policy samples rather than integrating from
-                zero.
-
-        Returns:
-            A forward-ready batch of per-chunk tensors.
-
-        Raises:
-            ValueError: If ``total_steps`` is not positive, or if a collected
-                transition is inconsistent.
+        Raises ``ValueError`` if ``total_steps`` is not positive, or if a collected
+        transition is inconsistent.
         """
         if total_steps <= 0:
             raise ValueError(f"total_steps={total_steps} must be positive")
@@ -902,45 +801,31 @@ class SJFPOPolicy(PreTrainedPolicy):
     ) -> tuple[torch.Tensor, dict | None]:
         """Combine the ASPO policy and value losses for one minibatch.
 
-        Each selected action chunk is treated as one macro-action for the
-        policy loss. The unexecuted suffix is still part of the chunk the
-        behavior policy selected, so it must contribute to the FPO ratio when
-        receding-horizon execution is enabled; ``action_is_pad`` records
-        execution bookkeeping only, and just the chunks with no executed action
-        are invalid for the update.
+        Each selected action chunk is treated as one macro-action for the policy loss.
+        The unexecuted suffix is still part of the chunk the behavior policy selected,
+        so it must contribute to the FPO ratio when receding-horizon execution is
+        enabled; ``action_is_pad`` records execution bookkeeping only, and just the
+        chunks with no executed action are invalid for the update.
 
-        Spectral encoding keeps the first ``M+1`` DCT bins, giving a token
-        count of ``M+1`` derived from ``top_p * H``. The condition is fused
-        from ``[n, D]`` to ``[n*m, D]`` so one conditioning vector covers every
-        Monte-Carlo draw. The CFM losses are computed under target velocities
-        in fp32 for stability, and the value loss is a mean squared error, as
-        the official FPO++ does.
+        Spectral encoding keeps the first ``M+1`` DCT bins, giving a token count of
+        ``M+1`` derived from ``top_p * H``. The condition is fused from ``[n, D]`` to
+        ``[n*m, D]`` so one conditioning vector covers every Monte-Carlo draw. The CFM
+        losses are computed under target velocities in fp32 for stability, and the
+        value loss is a mean squared error, as the official FPO++ does.
 
-        On info-requesting steps the modulation MLPs are re-run on a single row
-        to collect conditioner statistics, which is cheap relative to
-        attention.
+        On info-requesting steps the modulation MLPs are re-run on a single row to
+        collect conditioner statistics, which is cheap relative to attention.
 
-        When ``compute_info=False`` the diagnostic reductions are skipped
-        entirely and the returned info is ``None``. Training runs without wandb
-        should pass ``compute_info=False`` — the info pass is ~25 small
-        reductions per minibatch that would otherwise be discarded.
+        When ``compute_info=False`` the diagnostic reductions are skipped entirely and
+        the returned info is ``None``. Training runs without wandb should pass
+        ``compute_info=False`` -- the info pass is ~25 small reductions per minibatch
+        that would otherwise be discarded.
 
-        Args:
-            batch: Batch produced by :meth:`generate_rollout`.
-            reduction: ``"mean"`` to return a scalar loss, ``"none"`` to return
-                the per-chunk losses.
-            compute_info: Whether to compute the diagnostic info dict.
-            check_finite: Whether to abort on a non-finite loss.
-
-        Returns:
-            Tuple of the loss and the info dict, which is None when
-            ``compute_info`` is false.
-
-        Raises:
-            ValueError: If a batch tensor is missing or malformed, if
-                ``mc_tau`` and ``mc_eps`` disagree about being present, or if
-                ``reduction`` is not ``mean`` or ``none``.
-            SJFPOAborted: If ``check_finite`` is set and the loss is non-finite.
+        Returns ``(loss, info)``, where info is None when ``compute_info`` is false.
+        Raises ``ValueError`` if a batch tensor is missing or malformed, if ``mc_tau``
+        and ``mc_eps`` disagree about being present, or if ``reduction`` is not
+        ``mean`` or ``none``; and ``SJFPOAborted`` if ``check_finite`` is set and the
+        loss is non-finite.
         """
         cfg = self.config
         device = next(self.parameters()).device
@@ -1148,32 +1033,15 @@ class SJFPOPolicy(PreTrainedPolicy):
     ) -> dict[str, float]:
         """Compute every diagnostic reduction, batched into a single sync.
 
-        The log ratio is taken on the raw delta rather than the clamped one, so
-        the reported figure is never an artefact of the clamp. The reported
+        The log ratio is taken on the raw delta rather than the clamped one, so the
+        reported figure is never an artefact of the clamp. The reported
         clamp-saturation fraction matters because samples above ``cfm_clamp``
-        contribute no gradient at all, so a run where it stays high is training
-        the critic only. Every scalar is packed into one tensor and transferred
-        in a single sync.
+        contribute no gradient at all, so a run where it stays high is training the
+        critic only. Every scalar is packed into one tensor and transferred in a single
+        sync.
 
-        Only called when ``forward(compute_info=True)``; the training loop can
-        skip it entirely when nothing will consume the result.
-
-        Args:
-            l_old: CFM loss under the frozen behavior policy.
-            l_new: CFM loss under the updated policy.
-            rho: Elementwise policy ratio.
-            rho_bin: Per-frequency-bin policy ratio.
-            v_star_f: Flattened target velocities.
-            v_pred: Flattened predicted velocities.
-            returns_d: Value targets.
-            policy_per_chunk: Per-chunk policy loss.
-            value_per_chunk: Per-chunk value loss.
-            advantages: Per-chunk advantages.
-            cond_stats: Conditioner modulation statistics.
-            cfg: Active configuration, supplying ``cfm_clamp`` and friends.
-
-        Returns:
-            Dict of diagnostic scalars for the wandb log.
+        Only called when ``forward(compute_info=True)``; the training loop can skip it
+        entirely when nothing will consume the result.
         """
         delta = l_old - l_new
         log_rho_abs = delta.abs()

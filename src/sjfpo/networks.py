@@ -1,31 +1,28 @@
 """Networks: window encoders, state conditioner (raw + spectral), flow heads, V(s) critic.
 
-Changes in this revision (addresses review feedback):
+Design notes:
+* ``RunningMeanStd`` keeps ``count`` in fp64 (avoids fp32 saturation at 2^24
+  frames) while mean/var stay fp32, and registers ``_uninitialized`` with
+  ``persistent=False`` so older checkpoints still load.
 * ``RunningMeanStd.forward`` pins the output dtype to the input dtype, so
-  half-precision callers don't get silently promoted to fp32.
-* ``RunningMeanStd.count`` is fp64 (avoids fp32 saturation at 2^24 frames);
-  mean/var stay fp32.
-* ``RunningMeanStd._uninitialized`` is registered with ``persistent=False``
-  so pre-change checkpoints still load.
-* Added ``RunningMeanStd.reset()`` to clear the one-way latch.
-* Added a shape assertion in ``RunningMeanStd.update``.
-* ``_RMSNorm`` uses the ``dtype=`` kwarg at construction instead of mutating
-  ``.data`` (meta-device / ``to_empty`` friendly).
-* ``condition.to(...)`` now moves device as well as dtype.
-* ``temb`` broadcast replaces the explicit ``expand`` (scalar ``t`` runs the
-  time MLP once, not B times).
-* ``SelfAttention`` accepts an explicit ``[B, L]`` key-padding mask and
-  validates its shape before constructing the SDPA mask.
+  half-precision callers are not silently promoted to fp32.
+* ``_RMSNorm`` runs its reduction in fp32 and uses the ``dtype=`` kwarg at
+  construction instead of mutating ``.data`` (meta-device / ``to_empty``
+  friendly).
 * ``StateConditioner`` uses a per-frame raw-state MLP plus a temporal DCT
   branch; it does not instantiate an inner ``WindowEncoder``.
-* Type hints on the dual-return forwards.
+* ``SelfAttention`` takes an explicit ``[B, L]`` key-padding mask, validates
+  its shape, and inverts it to reach SDPA (whose boolean mask means the
+  opposite of the HF convention).
+* ``temb`` broadcast replaces an explicit ``expand``, so a scalar ``t`` runs
+  the time MLP once rather than B times.
 
-Performance notes (carried from the previous revision):
-* Attention uses ``jax.nn.dot_product_attention``-equivalent SDPA on CUDA.
+Performance notes:
+* Attention uses SDPA on CUDA.
 * Sinusoidal frequency tables are cached per-module per-device.
 * ``SwiGLU`` fuses gate and up into a single GEMM.
 * ``DiTBlock`` / ``SJFPOFlowModel`` return diagnostics only when
-  ``return_stats=True`` — the default training path has no extra reductions.
+  ``return_stats=True`` -- the default training path has no extra reductions.
 """
 
 from __future__ import annotations
@@ -55,14 +52,8 @@ class _RMSNorm(nn.RMSNorm):
         """Normalise the trailing dimensions with the learned scale.
 
         The reduction always runs in fp32 and is cast back on exit, so a module
-        converted to a lower parameter dtype with ``module.to`` still gets an
-        accurate norm.
-
-        Args:
-            x: Input tensor.
-
-        Returns:
-            The normalised tensor, in the input dtype.
+        converted to a lower parameter dtype with ``module.to`` still gets an accurate
+        norm. Returns the normalised tensor, in the input dtype.
         """
         input_dtype = x.dtype
         with torch.autocast(device_type=x.device.type, enabled=False):
@@ -77,13 +68,6 @@ class _RMSNorm(nn.RMSNorm):
 
 def _rms_norm(hidden_dim: int, eps: float = 1e-6) -> nn.RMSNorm:
     """Build an fp32-safe RMS norm over the given width.
-
-    Args:
-        hidden_dim: Number of trailing dimensions to normalise.
-        eps: Epsilon added inside the root for numerical stability.
-
-    Returns:
-        The configured norm layer.
     """
     return _RMSNorm(hidden_dim, eps=eps)
 
@@ -104,13 +88,7 @@ class SwiGLU(nn.Module):
         self.down = nn.Linear(hidden_dim, out_dim)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Apply the gated GELU activation.
-
-        Args:
-            x: Input tensor of shape ``[..., in_dim]``.
-
-        Returns:
-            Tensor of shape ``[..., hidden_dim]``.
+        """Apply the gated GELU activation; ``[..., in_dim]`` -> ``[..., hidden_dim]``.
         """
         g, u = self.gate_up(x).chunk(2, dim=-1)
         return self.down(F.silu(g) * u)
@@ -127,13 +105,7 @@ class CondMLP(nn.Module):
         self.fc2 = nn.Linear(hidden_dim, out_dim)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Apply the two-layer SiLU-gated MLP.
-
-        Args:
-            x: Input tensor of shape ``[..., in_dim]``.
-
-        Returns:
-            Tensor of shape ``[..., out_dim]``.
+        """Apply the two-layer SiLU-gated MLP; ``[..., in_dim]`` -> ``[..., out_dim]``.
         """
         return self.fc2(F.silu(self.fc1(x)))
 
@@ -154,16 +126,10 @@ class SinusoidalEncoding(nn.Module):
         self._freq_cache: OrderedDict[torch.device, torch.Tensor] = OrderedDict()
 
     def _freqs(self, device: torch.device) -> torch.Tensor:
-        """Return the cached frequency table for a device.
+        """Return the cached ``[half]`` frequency table for a device.
 
-        At most four devices are cached; the least recently used is evicted
-        beyond that.
-
-        Args:
-            device: Device the table is needed on.
-
-        Returns:
-            The ``[half]`` frequency table on ``device``.
+        At most four devices are cached; the least recently used is evicted beyond
+        that.
         """
         device = torch.device(device)
         cached = self._freq_cache.get(device)
@@ -186,14 +152,8 @@ class SinusoidalEncoding(nn.Module):
         self._freq_cache.clear()
 
     def add_to(self, x: torch.Tensor, positions: torch.Tensor) -> torch.Tensor:
-        """Add sinusoidal codes for the given positions.
-
-        Args:
-            x: Base tensor of shape ``[..., L, D]``.
-            positions: Position indices of shape ``[..., L]``.
-
-        Returns:
-            Tensor of shape ``[..., L, D]`` with the codes added.
+        """Add sinusoidal codes for the given positions, growing ``[..., L, D]`` in place
+        of the caller's base tensor.
         """
         ang = (positions.to(dtype=torch.float32) * self.scale).unsqueeze(
             -1
@@ -204,13 +164,7 @@ class SinusoidalEncoding(nn.Module):
         return x + pe.to(dtype=x.dtype)
 
     def encode_times(self, t: torch.Tensor) -> torch.Tensor:
-        """Embed continuous timestep values sinusoidally.
-
-        Args:
-            t: Timestep values of shape ``[N]``.
-
-        Returns:
-            Tensor of shape ``[N, 2 * half]``.
+        """Embed continuous timestep values sinusoidally; ``[N]`` -> ``[N, 2 * half]``.
         """
         if not isinstance(t, torch.Tensor):
             t = torch.as_tensor(t, dtype=torch.float32)
@@ -222,25 +176,13 @@ class SinusoidalEncoding(nn.Module):
         return emb
 
     def positions(self, length: int, device) -> torch.Tensor:
-        """Build the sequential index vector used for slot or frame codes.
-
-        Args:
-            length: Number of positions.
-            device: Device the vector is created on.
-
-        Returns:
-            Tensor of shape ``[length]`` holding ``0..length-1``.
+        """Build the ``[length]`` index vector holding ``0..length-1``, used for slot or
+        frame codes.
         """
         return torch.arange(length, dtype=torch.float32, device=device)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Add position codes to a tensor, indexed by slot.
-
-        Args:
-            x: Tensor of shape ``[..., L, D]``.
-
-        Returns:
-            Tensor of shape ``[..., L, D]`` with the codes added.
+        """Add position codes to a ``[..., L, D]`` tensor, indexed by slot.
         """
         return self.add_to(x, self.positions(x.shape[-2], x.device))
 
@@ -274,24 +216,15 @@ class SelfAttention(nn.Module):
     ) -> torch.Tensor:
         """Run multi-head self attention.
 
-        ``attention_mask`` is a boolean/0-1 key-padding mask of shape
-        ``[B, L]``. Under the Hugging Face convention 1/True marks a valid key
-        and 0/False is ignored, so the mask is inverted before it reaches
-        SDPA, whose boolean mask means the opposite. Every batch item is forced
-        to keep at least one key, because an all-masked row makes SDPA emit
-        NaN. The fused ``[B, L, H*D]`` projection is reshaped with a view plus
-        transpose rather than a permute.
+        ``attention_mask`` is a boolean/0-1 key-padding mask of shape ``[B, L]``. Under
+        the Hugging Face convention 1/True marks a valid key and 0/False is ignored, so
+        the mask is inverted before it reaches SDPA, whose boolean mask means the
+        opposite. Every batch item is forced to keep at least one key, because an
+        all-masked row makes SDPA emit NaN. The fused ``[B, L, H*D]`` projection is
+        reshaped with a view plus transpose rather than a permute.
 
-        Args:
-            x: Input of shape ``[B, L, D]``.
-            attention_mask: Optional key-padding mask of shape ``[B, L]``.
-
-        Returns:
-            Tensor of shape ``[B, L, D]``.
-
-        Raises:
-            ValueError: If ``x`` is not 3D, or the mask length disagrees with
-                the sequence length.
+        Raises ``ValueError`` if ``x`` is not 3D, or the mask length disagrees with
+        the sequence length.
         """
         if x.dim() != 3:
             raise ValueError(f"x must have shape [B, L, D], got {tuple(x.shape)}")
@@ -361,15 +294,8 @@ class WindowEncoder(nn.Module):
     ) -> torch.Tensor:
         """Project an observation window and run self attention over it.
 
-        ``attention_mask`` is a boolean/0-1 key-padding mask of shape
-        ``[B, L]``; 1/True marks a valid key and 0/False is ignored.
-
-        Args:
-            x: Input of shape ``[B, L, in_dim]``.
-            attention_mask: Optional key-padding mask of shape ``[B, L]``.
-
-        Returns:
-            Tensor of shape ``[B, L, hidden_dim]``.
+        ``attention_mask`` is a boolean/0-1 key-padding mask of shape ``[B, L]``;
+        1/True marks a valid key and 0/False is ignored. Returns ``[B, L, hidden_dim]``.
         """
         h = self.pos_encoding(self.frame_proj(x))
         h = h + self.attn1(self.norm1(h), attention_mask)
@@ -401,17 +327,11 @@ class RunningMeanStd(nn.Module):
     def update(self, x: torch.Tensor) -> None:
         """Fold raw frames into the running statistics.
 
-        The merge follows Chan et al.'s parallel variance formula in fp64 and
-        casts the result back to fp32, so incremental updates do not drift. The
-        latch buffer is non-persistent so pre-change checkpoints load without
-        it.
-
-        Args:
-            x: Frames of shape ``[..., obs_dim]``, on any device.
-
-        Raises:
-            ValueError: If the trailing dimension does not match the tracked
-                observation size.
+        The merge follows Chan et al.'s parallel variance formula in fp64 and casts the
+        result back to fp32, so incremental updates do not drift. The latch buffer is
+        non-persistent so pre-change checkpoints load without it. Raises
+        ``ValueError`` if the trailing dimension does not match the tracked
+        observation size.
         """
         if x.shape[-1] != self.mean.numel():
             raise ValueError(
@@ -452,12 +372,9 @@ class RunningMeanStd(nn.Module):
     def _load_from_state_dict(self, *args, **kwargs):
         """Load state and re-derive the one-way initialisation latch.
 
-        The latch is not persisted, so a freshly loaded module whose count is
-        still zero must pass frames through unchanged.
-
-        Args:
-            *args: Positional arguments forwarded to ``nn.Module``.
-            **kwargs: Keyword arguments forwarded to ``nn.Module``.
+        The latch is not persisted, so a freshly loaded module whose count is still zero
+        must pass frames through unchanged. Positional and keyword arguments are
+        forwarded to ``nn.Module``.
         """
         super()._load_from_state_dict(*args, **kwargs)
         self._uninitialized.copy_(self.count.eq(0))
@@ -465,11 +382,7 @@ class RunningMeanStd(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Normalise with the frozen running statistics.
 
-        Args:
-            x: Tensor whose trailing dimension matches the tracked size.
-
-        Returns:
-            The normalised tensor, or ``x`` unchanged until the first update.
+        Returns ``x`` unchanged until the first update.
         """
         norm = (x - self.mean.to(x.device)) * torch.rsqrt(
             self.var.to(x.device) + self.eps
@@ -479,15 +392,7 @@ class RunningMeanStd(nn.Module):
 
 
 def modulate(x: torch.Tensor, shift: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
-    """Apply adaptive layer-norm modulation.
-
-    Args:
-        x: Tensor being modulated.
-        shift: Per-channel shift.
-        scale: Per-channel scale.
-
-    Returns:
-        ``x * (1 + scale) + shift``.
+    """Apply adaptive layer-norm modulation: ``x * (1 + scale) + shift``.
     """
     return x * (1.0 + scale) + shift
 
@@ -523,23 +428,15 @@ class DiTBlock(nn.Module):
     ) -> torch.Tensor | tuple[torch.Tensor, dict[str, torch.Tensor]]:
         """Run the DiT stack over the action tokens.
 
-        The modulation head is zero-initialised, so the block starts as an
-        identity mapping (adaLN-Zero) and the network begins as a no-op. On the
-        coordinate-aware ``[B, K, D_a, H]`` layout, attention runs over the K
-        action tokens independently for each action dimension, and only the
-        batch/attention axis is reshaped. The modulation parameters are
-        gathered with ``reshape`` plus ``unbind`` to avoid materialising a
-        ``[B, 1, 6H]`` intermediate.
+        The modulation head is zero-initialised, so the block starts as an identity
+        mapping (adaLN-Zero) and the network begins as a no-op. On the
+        coordinate-aware ``[B, K, D_a, H]`` layout, attention runs over the K action
+        tokens independently for each action dimension, and only the batch/attention
+        axis is reshaped. The modulation parameters are gathered with ``reshape`` plus
+        ``unbind`` to avoid materialising a ``[B, 1, 6H]`` intermediate.
 
-        Args:
-            x: Tokens of shape ``[B, K, D]``, or ``[B, K, D_a, H]`` when the
-                conditioner returns per-action-dimension features.
-            c: Conditioning of shape ``[B, D]`` or ``[B, K, D]``.
-            return_stats: Whether to also return the modulation statistics.
-
-        Returns:
-            The transformed tokens, or a tuple of those tokens and a stats dict
-            when ``return_stats`` is set.
+        ``c`` is the conditioning, ``[B, D]`` or ``[B, K, D]``. Returns the transformed
+        tokens, or those plus a stats dict when ``return_stats`` is set.
         """
         coordinate_axis = x.dim() == 4
         token_axis = not coordinate_axis and c.dim() == 3
@@ -631,17 +528,10 @@ class StateConditioner(nn.Module):
         self.fuse = nn.Linear(2 * hidden_dim, hidden_dim)
 
     def forward(self, states: torch.Tensor) -> torch.Tensor:
-        """Fuse the observation window into a single conditioning vector.
+        """Fuse the observation window into a single ``[B, D]`` conditioning vector.
 
-        Args:
-            states: Observation window of shape ``[B, T, obs_dim]``.
-
-        Returns:
-            Conditioning of shape ``[B, D]``.
-
-        Raises:
-            ValueError: If the rank is not 3, the batch or time dimension is
-                not positive, or ``obs_dim`` disagrees with the configuration.
+        Raises ``ValueError`` if the rank is not 3, the batch or time dimension is not
+        positive, or ``obs_dim`` disagrees with the configuration.
         """
         if states.dim() != 3:
             raise ValueError(
@@ -726,31 +616,20 @@ class SJFPOFlowModel(nn.Module):
     ) -> torch.Tensor | tuple[torch.Tensor, dict[str, torch.Tensor]]:
         """Predict velocity from token actions and per-token times.
 
-        ``t`` is either a scalar, ``[B]``, or ``[B, K, 1]``. The per-token form
-        gives each action token its own time, shared across its action
-        dimensions.
+        ``t`` is either a scalar, ``[B]``, or ``[B, K, 1]``. The per-token form gives
+        each action token its own time, shared across its action dimensions.
 
-        The raw input path applies a per-frame MLP and mean-pools, replacing a
-        full attention window over frames. The spectral path instead slices the
-        learned positional table, which carries one row per configured action
-        position, down to the reduced DCT token count. The final layer is
-        zero-initialised so an untrained model predicts near-zero velocity.
+        The raw input path applies a per-frame MLP and mean-pools, replacing a full
+        attention window over frames. The spectral path instead slices the learned
+        positional table, which carries one row per configured action position, down to
+        the reduced DCT token count. The final layer is zero-initialised so an
+        untrained model predicts near-zero velocity.
 
-        Args:
-            x_t: Noisy action tokens of shape ``[B, K, action_dim]``.
-            t: Flow time, as a scalar, ``[B]``, or ``[B, K, 1]``.
-            condition: Conditioning of shape ``[B, hidden_dim]``.
-            return_stats: Whether to also return the modulation statistics.
-
-        Returns:
-            Predicted velocity of shape ``[B, K, action_dim]``, or a tuple of
-            that tensor and a stats dict when ``return_stats`` is set.
-
-        Raises:
-            ValueError: If ``x_t`` is not ``[B, K, action_dim]`` with positive
-                batch and token dimensions, if it carries more tokens than the
-                action horizon, or if ``condition`` disagrees with the batch
-                size or hidden width.
+        Returns a velocity of shape ``[B, K, action_dim]``, or that plus a stats dict
+        when ``return_stats`` is set. Raises ``ValueError`` if ``x_t`` is not
+        ``[B, K, action_dim]`` with positive batch and token dimensions, if it carries
+        more tokens than the action horizon, or if ``condition`` disagrees with the
+        batch size or hidden width.
         """
         if x_t.dim() != 3:
             raise ValueError(f"x_t must have shape [B, K, D], got {tuple(x_t.shape)}")
@@ -862,17 +741,10 @@ class Critic(nn.Module):
         self.mlp = CondMLP(obs_dim, hidden_dim, 1)
 
     def forward(self, states: torch.Tensor) -> torch.Tensor:
-        """Predict the value of the current frame in an observation window.
+        """Predict the value of the current frame in an observation window, ``[B]``.
 
-        Args:
-            states: Observation window of shape ``[B, T, obs_dim]``.
-
-        Returns:
-            Values of shape ``[B]``.
-
-        Raises:
-            ValueError: If the rank is not 3, the batch or time dimension is
-                not positive, or ``obs_dim`` disagrees with the configuration.
+        Raises ``ValueError`` if the rank is not 3, the batch or time dimension is not
+        positive, or ``obs_dim`` disagrees with the configuration.
         """
         if states.dim() != 3:
             raise ValueError(
