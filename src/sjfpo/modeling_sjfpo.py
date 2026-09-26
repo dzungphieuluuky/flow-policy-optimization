@@ -1219,11 +1219,10 @@ class SJFPOPolicy(PreTrainedPolicy):
 
         returns_var = returns_d.var(correction=0).clamp_min(1e-8)
         explained_var = 1.0 - (returns_d - v_pred).var(correction=0) / returns_var
-        value_error_max = torch.nn.functional.smooth_l1_loss(
+        value_huber_max = torch.nn.functional.smooth_l1_loss(
             v_pred, returns_d, reduction="none", beta=1.0
         ).max()
         value_pred_max = v_pred.abs().max()
-        return_max = returns_d.abs().max()
         v_star_rms = v_star_f.pow(2).mean().sqrt()
 
         l_old_std = l_old.std(correction=0)
@@ -1241,9 +1240,8 @@ class SJFPOPolicy(PreTrainedPolicy):
             delta.mean(),
             log_rho_max,
             log_rho_clip_frac,
-            value_error_max,
+            value_huber_max,
             value_pred_max,
-            return_max,
             rho_mean,
             rho_std,
             rho_bin_range,
@@ -1259,7 +1257,6 @@ class SJFPOPolicy(PreTrainedPolicy):
             l_new_std,
             cfm_above_clamp_frac,
             l_old_new_corr,
-            advantages.abs().mean(),
             returns_d.std(correction=0),
             v_pred.std(correction=0),
         ]
@@ -1279,9 +1276,8 @@ class SJFPOPolicy(PreTrainedPolicy):
             "mean_log_ratio",
             "log_rho_max",
             "log_rho_clip_frac",
-            "value_error_max",
+            "value_huber_max",
             "value_pred_max",
-            "return_max",
             "flow_rho_mean",
             "flow_rho_std",
             "flow_rho_bin_range",
@@ -1297,7 +1293,6 @@ class SJFPOPolicy(PreTrainedPolicy):
             "l_new_std",
             "cfm_above_clamp_frac",
             "l_old_new_corr",
-            "adv_mean_abs",
             "value_target_std",
             "value_pred_std",
         ]

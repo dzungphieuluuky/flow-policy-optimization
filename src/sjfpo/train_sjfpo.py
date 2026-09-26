@@ -555,15 +555,11 @@ def train_sjfpo_run(
             critic_grad_norm_mean_pre = (
                 float(torch.stack(critic_pre_norms).mean()) if critic_pre_norms else 0.0
             )
-            grad_norm_mean_pre = actor_grad_norm_mean_pre + critic_grad_norm_mean_pre
-            grad_norm_mean_post = min(grad_norm_mean_pre, cfg.grad_clip_norm)
 
             if wandb_enabled and info is not None:
                 data = {f"train/{k}": v for k, v in info.items()}
                 data["train/actor_grad_norm_preclip"] = actor_grad_norm_mean_pre
                 data["train/critic_grad_norm_preclip"] = critic_grad_norm_mean_pre
-                data["train/grad_norm_preclip"] = grad_norm_mean_pre
-                data["train/grad_norm_after_clip"] = grad_norm_mean_post
                 if rollout_jerk is not None:
                     data["train/rollout_jerk"] = rollout_jerk
                 clip_counts = batch.get("chunk_clip_counts")
@@ -577,14 +573,6 @@ def train_sjfpo_run(
                     data["train/returns_rms"] = gae_diag["return_rms"]
                 data["train/total_loss"] = (
                     info["policy_loss"] + cfg.vf_coef * info["value_loss"]
-                )
-                data.update(
-                    {
-                        "gae/advantages_mean": float(batch["advantages"].mean()),
-                        "gae/advantages_std": float(batch["advantages"].std()),
-                        "gae/returns_mean": float(batch["returns"].mean()),
-                        "gae/values_mean": float(batch["values"].mean()),
-                    }
                 )
                 log_metrics(data, step=global_step)
 
