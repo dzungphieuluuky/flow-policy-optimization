@@ -164,7 +164,7 @@ def save_policy_checkpoint(
 
     if not isinstance(policy, SJFPOPolicy):
         raise ValueError(
-            f"save_policy_checkpoint needs an SJFOPolicy, got {type(policy).__name__}"
+            f"save_policy_checkpoint needs an SJFPOPolicy, got {type(policy).__name__}"
         )
     if int(global_step) < 0:
         raise ValueError(f"global_step={global_step} must be >= 0")
