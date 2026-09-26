@@ -129,6 +129,7 @@ def build_policy(
     device=None,
     action_low: np.ndarray | None = None,
     action_high: np.ndarray | None = None,
+    policy_cls: type[SJFPOPolicy] = SJFPOPolicy,
 ) -> SJFPOPolicy:
     """Attach runtime features, then build the policy.
 
@@ -139,6 +140,9 @@ def build_policy(
         device: Device the policy is built on.
         action_low: Per-dimension lower env action bounds.
         action_high: Per-dimension upper env action bounds.
+        policy_cls: Policy class to instantiate. Subclasses that swap the
+            actor network, such as ``SJFPOPolicyMLP``, pass through here so
+            the rest of the training loop is unchanged.
 
     Returns:
         The constructed policy.
@@ -151,7 +155,7 @@ def build_policy(
         },
         output_features={"action": PolicyFeature(FeatureType.ACTION, (action_dim,))},
     )
-    policy = SJFPOPolicy(policy_cfg).to(device)
+    policy = policy_cls(policy_cfg).to(device)
     _compile_in_place(policy)
     if action_low is not None and action_high is not None:
         policy.set_action_bounds(action_low, action_high)
@@ -336,6 +340,7 @@ def train_sjfpo_run(
     action_dim: int | None = None,
     resume_from_checkpoint: str | Path | None = None,
     wandb_enabled: bool = True,
+    policy_cls: type[SJFPOPolicy] = SJFPOPolicy,
 ) -> dict[str, Any]:
     """Run a single SJFPO training run.
 
@@ -362,6 +367,8 @@ def train_sjfpo_run(
         resume_from_checkpoint: Checkpoint directory to resume policy,
             optimizers, and counters from.
         wandb_enabled: Whether to log to wandb.
+        policy_cls: Policy class to build. Defaults to the DiT policy; the
+            MLP actor is selected by passing ``SJFPOPolicyMLP``.
 
     Returns:
         Summary dict with the final metrics and the artifact paths.
@@ -393,6 +400,13 @@ def train_sjfpo_run(
 
     global_step = 0
     if resume_from_checkpoint is not None:
+        if policy_cls is not SJFPOPolicy:
+            # load_policy_checkpoint rebuilds a hardcoded SJFPOPolicy, so a
+            # subclass would come back with the wrong actor architecture.
+            raise ValueError(
+                f"resume is not supported for policy_cls={policy_cls.__name__}; "
+                "actor checkpoints are not interchangeable between architectures"
+            )
         loaded = load_policy_checkpoint(
             resume_from_checkpoint,
             device=device,
@@ -425,6 +439,7 @@ def train_sjfpo_run(
             device=device,
             action_low=action_low,
             action_high=action_high,
+            policy_cls=policy_cls,
         )
         actor_optimizer, critic_optimizer = build_optimizers(policy, cfg)
 
