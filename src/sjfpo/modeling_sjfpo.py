@@ -65,6 +65,36 @@ class SJFPOAborted(RuntimeError):
         self.message = message
 
 
+def _gae_diagnostics(
+    env_id: torch.Tensor,
+    terminated: torch.Tensor,
+    truncated: torch.Tensor,
+    advantages: torch.Tensor,
+    raw_returns: torch.Tensor,
+) -> dict[str, float]:
+    """Trace-liveness and scale probes for the chunk-level backup.
+
+    ``linked_frac`` is the one that matters: it is the share of chunk pairs the
+    GAE recursion actually joined. Chunks are stored in wavefront order, so an
+    adjacency-based mask silently joins nothing and every advantage collapses
+    to a bare 1-step delta, with no error raised. A linked_frac of 0 means the
+    trace is dead regardless of what gae_lambda is set to.
+    """
+    n = env_id.numel()
+    linked = 0
+    if n > 1:
+        order = torch.argsort(env_id.to(torch.long), stable=True)
+        e = env_id.to(torch.long)[order]
+        t = terminated.to(torch.bool)[order]
+        u = truncated.to(torch.bool)[order]
+        linked = int(((e[1:] == e[:-1]) & ~(t[:-1] | u[:-1])).sum())
+    return {
+        "linked_frac": linked / max(n - 1, 1),
+        "advantage_std": float(advantages.float().std()) if n > 1 else 0.0,
+        "return_rms": float(raw_returns.float().pow(2).mean().sqrt()) if n else 0.0,
+    }
+
+
 def _num_spectral_tokens_kept(cfg: SJFPOConfig) -> int:
     """Count the spectral tokens retained per action chunk.
 
@@ -803,6 +833,13 @@ class SJFPOPolicy(PreTrainedPolicy):
         self.return_normalizer.update(raw_returns.reshape(-1, 1))
         returns = self.return_normalizer(raw_returns.reshape(-1, 1)).reshape(-1)
         values = self.return_normalizer(values.reshape(-1, 1)).reshape(-1)
+        gae_diagnostics = _gae_diagnostics(
+            active["chunk_env_id"][:n_chunks],
+            active["chunk_done"][:n_chunks],
+            active["chunk_truncated"][:n_chunks],
+            advantages,
+            raw_returns,
+        )
         advantages = advantages.to(storage_dtype)
         returns = returns.to(storage_dtype)
 
@@ -842,6 +879,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             "mc_tau": tau,
             "mc_eps": eps,
             "chunk_clip_counts": chunk_clip_counts,
+            "gae_diagnostics": gae_diagnostics,
             "initial_cfm_loss": initial_cfm_loss,
             "initial_cfm_loss_bin": initial_cfm_loss_bin,
         }

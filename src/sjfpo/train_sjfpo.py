@@ -210,7 +210,8 @@ def sample_minibatch(
     ``normalizer_observations`` is the one exception: it is passed through
     unslided because it holds one row per executed environment step rather than
     per chunk, and the normalizer is updated once from the complete rollout
-    batch.
+    batch. ``gae_diagnostics`` is a plain dict of scalars, passed through for
+    the same reason.
 
     Args:
         batch: Batch of per-chunk tensors.
@@ -223,7 +224,7 @@ def sample_minibatch(
     if out is None:
         out = {}
     for k, v in batch.items():
-        if k == "normalizer_observations":
+        if k == "normalizer_observations" or k == "gae_diagnostics":
             out[k] = v
         else:
             out[k] = v[indices]
@@ -569,6 +570,11 @@ def train_sjfpo_run(
                 if clip_counts is not None:
                     data["train/chunk_clip_counts"] = float(clip_counts.float().mean())
                 data["train/action_magnitude"] = action_magnitude
+                gae_diag = batch.get("gae_diagnostics")
+                if gae_diag:
+                    data["train/gae_linked_frac"] = gae_diag["linked_frac"]
+                    data["train/gae_advantage_std"] = gae_diag["advantage_std"]
+                    data["train/returns_rms"] = gae_diag["return_rms"]
                 data["train/total_loss"] = (
                     info["policy_loss"] + cfg.vf_coef * info["value_loss"]
                 )
