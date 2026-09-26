@@ -156,8 +156,6 @@ class SJFPOActionPostprocessorStep(ProcessorStep):
             This processor, with its bounds and cache primed for ``device``.
         """
         device = torch.device(device)
-        self._scale_cpu.to(device=device)
-        self._bias_cpu.to(device=device)
         key = (str(device), torch.float32)
         self._scale_cache.setdefault(
             key, self._scale_cpu.to(device=device, dtype=torch.float32)
@@ -168,7 +166,7 @@ class SJFPOActionPostprocessorStep(ProcessorStep):
         self.action_low = self.action_low.to(device=device)
         self.action_high = self.action_high.to(device=device)
         return self
-
+    
     @torch.inference_mode()
     def unnormalize(self, scaled: torch.Tensor) -> torch.Tensor:
         """Unscale an action chunk into real env bounds.
