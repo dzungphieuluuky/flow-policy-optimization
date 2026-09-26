@@ -34,7 +34,7 @@ class SJFPOConfig(PreTrainedConfig):
     num_inference_steps: int = 16
     chunks_per_update: int = 256
     num_epochs: int = 16
-    num_minibatches: int = 4
+    batch_size: int = 64  # chunks per minibatch; num_minibatches is derived
     num_envs: int = 64
 
     gamma: float = 0.99
@@ -212,7 +212,7 @@ class SJFPOConfig(PreTrainedConfig):
 
         Raises:
             ValueError: If a rate or count is non-positive, or if
-                ``chunks_per_update`` is smaller than ``num_minibatches``.
+                ``batch_size`` exceeds ``chunks_per_update``.
         """
         if self.policy_lr <= 0:
             raise ValueError(f"policy_lr={self.policy_lr} must be > 0")
@@ -226,14 +226,14 @@ class SJFPOConfig(PreTrainedConfig):
             raise ValueError(f"grad_clip_norm={self.grad_clip_norm} must be > 0")
         if self.grad_accum_steps < 1:
             raise ValueError(f"grad_accum_steps={self.grad_accum_steps} must be >= 1")
-        if self.num_minibatches < 1:
-            raise ValueError(f"num_minibatches={self.num_minibatches} must be >= 1")
         if self.chunks_per_update < 1:
             raise ValueError(f"chunks_per_update={self.chunks_per_update} must be >= 1")
-        if self.chunks_per_update < self.num_minibatches:
+        if self.batch_size < 1:
+            raise ValueError(f"batch_size={self.batch_size} must be >= 1")
+        if self.batch_size > self.chunks_per_update:
             raise ValueError(
-                f"chunks_per_update={self.chunks_per_update} must be >= "
-                f"num_minibatches={self.num_minibatches}"
+                f"batch_size={self.batch_size} must be <= "
+                f"chunks_per_update={self.chunks_per_update}"
             )
         if self.num_epochs < 1:
             raise ValueError(f"num_epochs={self.num_epochs} must be >= 1")
@@ -305,6 +305,17 @@ class SJFPOConfig(PreTrainedConfig):
         """
         return None
 
+
+    @property
+    def num_minibatches(self) -> int:
+        """Minibatches per epoch, derived from ``batch_size``.
+
+        Returns:
+            ``chunks_per_update // batch_size``, floored at one. Computed on
+            access rather than in ``__post_init__`` so it cannot go stale if
+            ``chunks_per_update`` or ``batch_size`` is reassigned later.
+        """
+        return max(1, self.chunks_per_update // self.batch_size)
 
     @property
     def observation_delta_indices(self) -> list[int] | None:
