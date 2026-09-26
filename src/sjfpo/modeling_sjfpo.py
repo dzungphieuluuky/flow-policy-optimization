@@ -1022,13 +1022,13 @@ class SJFPOPolicy(PreTrainedPolicy):
 
             if not stored_l_old:
                 v_old_r_f = v_old.reshape(n, num_mc, *flow_shape)
-                l_old_bin = compute_cfm_loss(v_old_r_f, v_star_f, cfg, "bin")
-                l_old = compute_cfm_loss(v_old_r_f, v_star_f, cfg, "sample")
+                l_old_bin = compute_cfm_loss(v_old_r_f, v_star_f, cfg, "bin", action_is_pad)
+                l_old = compute_cfm_loss(v_old_r_f, v_star_f, cfg, "sample", action_is_pad)
             adv_mc = advantages.float().unsqueeze(1)
-            l_new_bin = compute_cfm_loss(v_new_r_f, v_star_f, cfg, "bin")
+            l_new_bin = compute_cfm_loss(v_new_r_f, v_star_f, cfg, "bin", action_is_pad)
             rho_bin = compute_policy_ratio(l_old_bin, l_new_bin, cfg)
 
-            l_new = compute_cfm_loss(v_new_r_f, v_star_f, cfg, "sample")
+            l_new = compute_cfm_loss(v_new_r_f, v_star_f, cfg, "sample", action_is_pad)
             rho = compute_policy_ratio(l_old, l_new, cfg, advantage=adv_mc)
             self.cfm_above_clamp_frac = (l_new > cfg.cfm_clamp).float().mean().detach()
 
