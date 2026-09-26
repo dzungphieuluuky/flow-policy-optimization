@@ -31,7 +31,6 @@ epsilon_clip_lowfreq: 0.02
 epsilon_clip_highfreq: 0.10
 cfm_clamp: 20.0
 log_ratio_cap: 10.0
-advantage_clamp: 100.0
 normalize_advantage: true
 use_clipped_value_loss: false
 min_timestep: 0.005

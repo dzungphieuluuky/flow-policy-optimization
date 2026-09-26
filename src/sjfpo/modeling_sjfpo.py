@@ -253,7 +253,7 @@ class SJFPOPolicy(PreTrainedPolicy):
                 f"action bounds must match action_dim={self.action_low.numel()}: "
                 f"low={tuple(low_t.shape)}, high={tuple(high_t.shape)}"
             )
-        if not bool((high_t >= low_t).all()):
+        if not bool((high_t > low_t).all()):
             raise ValueError("action_high must be elementwise >= action_low")
 
         self.action_low.copy_(low_t)
@@ -792,11 +792,6 @@ class SJFPOPolicy(PreTrainedPolicy):
             step_advantages = (step_advantages - step_advantages.mean()) / (
                 step_advantages.std() + 1e-8
             )
-        if step_advantages.numel() > 0 and cfg.advantage_clamp is not None:
-            step_advantages = step_advantages.clamp(
-                -cfg.advantage_clamp, cfg.advantage_clamp
-            )
-
         advantages = step_advantages.index_select(0, chunk_starts)
         returns = step_returns.index_select(0, chunk_starts)
         advantages = advantages.to(storage_dtype)
@@ -1053,7 +1048,11 @@ class SJFPOPolicy(PreTrainedPolicy):
             value_per_chunk = se
 
         if reduction == "mean":
-            policy_loss = policy_per_chunk.mean()
+            # Weight by executed steps so the update is a mean over environment
+            # steps, not over chunks: a chunk cut short by a termination would
+            # otherwise count as much as one that ran the full horizon.
+            step_weights = (~action_is_pad).sum(dim=1).to(policy_per_chunk.dtype)
+            policy_loss = (policy_per_chunk * step_weights).sum() / step_weights.sum()
             value_loss = value_per_chunk.mean()
             loss = policy_loss + cfg.vf_coef * value_loss
         elif reduction == "none":
