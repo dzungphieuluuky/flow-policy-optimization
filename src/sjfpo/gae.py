@@ -1,10 +1,25 @@
-"""Step-level GAE over executed rollout transitions.
+"""Chunk-level GAE: one action chunk is one macro-transition.
 
-The Torch path computes GAE per executed environment step and then selects
-the first-step target of each action chunk. Timeouts are handled the FPO++
-way: a truncated transition bootstraps from ``V(s_t)`` via the reward
-adjustment below, so its ``bootstrap_t`` term is zero rather than
-``V(s_{t+1})``.
+The rollout action is a chunk of ``h`` open-loop steps, so the Bellman
+backup is taken at chunk granularity (QC-style, ``discount ** horizon_length``)
+rather than per executed step. For chunk ``i`` starting at executed step
+``s_i`` and running ``h_i`` steps:
+
+    R_i     = sum_{k < h_i} gamma^k * r_{s_i + k}
+    delta_i = R_i + gamma^{h_i} * (1 - terminated_i) * V(s_{s_i + h_i}) - V(s_{s_i})
+    A_i     = delta_i + gamma^{h_i} * lam * continue_i * A_{i+1}
+    return_i = A_i + V(s_{s_i})
+
+``R_i`` is the discounted sum, which is also what QC's ``rewards[..., -1]``
+holds (``utils/datasets.py`` accumulates it over the sequence). A truncated
+(time-limit) chunk still bootstraps from the value after its last executed
+step; only a true termination zeroes the bootstrap. The collector always ends
+a chunk on a terminal, so ``~terminated`` coincides with QC's
+``masks[..., -1]``; that invariant must be preserved.
+
+The vec collector appends chunks in wavefront order, so consecutive buffer
+entries belong to different envs. ``chunk_env_id`` is what lets the recursion
+know that ``i`` and ``i+1`` are on the same trajectory.
 """
 from __future__ import annotations
 
@@ -12,126 +27,118 @@ import torch
 
 
 @torch.no_grad()
-def compute_step_advantages_torch(
-    rewards_1d: torch.Tensor,
-    values: torch.Tensor,
-    next_values: torch.Tensor,
-    terminated: torch.Tensor,
+def compute_chunk_advantages(
+    step_rewards: torch.Tensor,
+    step_values: torch.Tensor,
+    step_next_values: torch.Tensor,
+    chunk_starts: torch.Tensor,
+    chunk_lengths: torch.Tensor,
     *,
+    chunk_terminated: torch.Tensor,
+    chunk_truncated: torch.Tensor,
+    chunk_env_id: torch.Tensor,
+    chunk_size: int,
     gamma: float = 0.99,
     lam: float = 0.95,
-    truncated: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Compute step-level GAE over a flat stream of executed transitions.
-
-    Inputs must be ordered by trajectory. A trajectory boundary must be
-    indicated by either ``terminated`` or ``truncated``.
-
-    For transition t, the FPO++ timeout handling adjusts the reward before
-    computing the TD residual:
-
-        r_adjusted = r_t + gamma * V(s_t)  when truncated
-
-    Then:
-
-        delta_t = r_adjusted + gamma * bootstrap_t - V(s_t)
-
-    where ``bootstrap_t`` is zero for **both** terminated and truncated
-    transitions, and ``V(s_(t+1))`` otherwise. A truncated transition
-    therefore gets its bootstrap from the ``gamma * V(s_t)`` term inside
-    ``r_adjusted`` rather than from a separate ``V(s_(t+1))``; adding both
-    would double-count. GAE recursion continues across ordinary transitions
-    and stops at both terminated and truncated transitions.
+    """Compute chunk-level GAE over the executed chunks of a rollout.
 
     Args:
-        rewards_1d: Executed-step rewards, shape ``[T]``.
-        values: Value estimates for the state at each executed step.
-        next_values: Value estimates for the state following each step.
-        terminated: Mask of true terminations, shape ``[T]``.
+        step_rewards: Executed-step rewards, shape ``[T]``.
+        step_values: Value estimates for the state at each executed step.
+        step_next_values: Value estimates for the state after each step.
+        chunk_starts: Index of each chunk's first executed step, ``[B]``.
+        chunk_lengths: Executed steps per chunk, ``[B]``, each in
+            ``[1, chunk_size]``.
+        chunk_terminated: True-termination mask per chunk, ``[B]``.
+        chunk_truncated: Timeout / budget-cut mask per chunk, ``[B]``.
+        chunk_env_id: Vec-env slot per chunk, ``[B]``. Consecutive chunks
+            continue a trajectory only when the slot matches.
+        chunk_size: Full action horizon, used to size the gather window.
         gamma: Discount factor in ``[0, 1]``.
         lam: GAE decay in ``[0, 1]``.
-        truncated: Optional mask of true timeouts, shape ``[T]``. Treated as
-            all-false when omitted.
 
     Returns:
-        Advantages for every executed step, and ``values + advantages``, i.e.
-        the GAE value target.
+        Advantages per chunk, and ``values + advantages``, the chunk-level
+        value target.
 
     Raises:
-        ValueError: If ``gamma`` or ``lam`` fall outside ``[0, 1]``, if
-            ``rewards_1d`` is not 1D, or if the step tensors disagree in
-            length with ``rewards_1d``.
+        ValueError: If ``gamma`` or ``lam`` fall outside ``[0, 1]``, or if
+            the chunk tensors are not the same length.
     """
     if not 0.0 <= gamma <= 1.0:
         raise ValueError(f"gamma must be in [0, 1], got {gamma}")
     if not 0.0 <= lam <= 1.0:
         raise ValueError(f"lam must be in [0, 1], got {lam}")
 
-    if rewards_1d.ndim != 1:
-        raise ValueError(
-            f"rewards_1d must be 1D, got shape {tuple(rewards_1d.shape)}"
-        )
-
-    device = values.device
+    device = step_values.device
     dtype = torch.float32
 
-    rewards = rewards_1d.to(device=device, dtype=dtype)
-    values = values.to(device=device, dtype=dtype).reshape(-1)
-    next_values = next_values.to(device=device, dtype=dtype).reshape(-1)
-    terminated = terminated.to(device=device, dtype=torch.bool).reshape(-1)
+    rewards = step_rewards.to(device=device, dtype=dtype).reshape(-1)
+    values = step_values.to(device=device, dtype=dtype).reshape(-1)
+    next_values = step_next_values.to(device=device, dtype=dtype).reshape(-1)
+    starts = chunk_starts.to(device=device, dtype=torch.long).reshape(-1)
+    lengths = chunk_lengths.to(device=device, dtype=torch.long).reshape(-1)
+    terminated = chunk_terminated.to(device=device, dtype=torch.bool).reshape(-1)
+    truncated = chunk_truncated.to(device=device, dtype=torch.bool).reshape(-1)
+    env_id = chunk_env_id.to(device=device, dtype=torch.long).reshape(-1)
 
-    if truncated is None:
-        truncated = torch.zeros_like(terminated)
-    else:
-        truncated = truncated.to(device=device, dtype=torch.bool).reshape(-1)
-
-    total_steps = rewards.numel()
-
-    if not (
-        values.numel()
-        == next_values.numel()
-        == terminated.numel()
-        == truncated.numel()
-        == total_steps
+    n_chunks = starts.numel()
+    for name, tensor in (
+        ("chunk_lengths", lengths),
+        ("chunk_terminated", terminated),
+        ("chunk_truncated", truncated),
+        ("chunk_env_id", env_id),
     ):
-        raise ValueError(
-            "step GAE inputs must all have the same length as rewards_1d"
-        )
+        if tensor.numel() != n_chunks:
+            raise ValueError(f"{name} must have {n_chunks} entries, got {tensor.numel()}")
 
-    if total_steps == 0:
+    if n_chunks == 0:
         empty = torch.empty(0, device=device, dtype=dtype)
         return empty, empty
 
-    effective_rewards = torch.where(
-        truncated,
-        rewards + gamma * values,
-        rewards,
-    )
-    boundary = terminated | truncated
-    bootstrap = torch.where(
-        boundary,
-        torch.zeros_like(next_values),
-        next_values,
-    )
-    delta = effective_rewards + gamma * bootstrap - values
+    # Gather each chunk's executed rewards in one shot and discount them by
+    # gamma^k. A cumsum difference would need gamma**-s_i, which loses all
+    # precision in fp32 once s_i reaches a few thousand steps.
+    offsets = torch.arange(chunk_size, device=device)
+    window = starts.unsqueeze(1) + offsets                      # [B, chunk_size]
+    gathered = rewards[window.clamp(max=rewards.numel() - 1)]  # [B, chunk_size]
+    valid = offsets.unsqueeze(0) < lengths.unsqueeze(1)        # [B, chunk_size]
+    chunk_rewards = (gathered * valid * (gamma**offsets)).sum(dim=1)   # [B]
 
-    advantages = torch.empty_like(delta)
+    last_step = starts + lengths - 1                            # [B]
+    chunk_value = values[starts]                                 # [B]
+    chunk_next_value = next_values[last_step]                   # [B]
+
+    # Chunks are stored in wavefront order, so one env's chunks sit n_envs
+    # apart and never adjacent: an adjacency mask finds no links at all. A
+    # stable sort groups each env contiguously and keeps its temporal order.
+    order = torch.argsort(env_id, stable=True)
+    unsort = torch.argsort(order)
+    lengths, env_id = lengths[order], env_id[order]
+    terminated, truncated = terminated[order], truncated[order]
+    chunk_rewards = chunk_rewards[order]
+    chunk_value, chunk_next_value = chunk_value[order], chunk_next_value[order]
+    same_env_sorted = env_id[1:] == env_id[:-1]
+
+    gamma_h = gamma ** lengths.to(dtype)                        # [B]
+    # Only a true termination removes the bootstrap; a timeout keeps it.
+    delta = (
+        chunk_rewards
+        + gamma_h * (~terminated) * chunk_next_value
+        - chunk_value
+    )                                                           # [B]
+
+    continuation_factor = torch.zeros(n_chunks, device=device, dtype=dtype)
+    if n_chunks > 1:
+        continues = same_env_sorted & ~(terminated[:-1] | truncated[:-1])
+        continuation_factor[:-1] = gamma_h[:-1] * lam * continues.to(dtype)
+
+    advantages = torch.empty(n_chunks, device=device, dtype=dtype)
     next_advantage = torch.zeros((), device=device, dtype=dtype)
-
-    continuation_factor = torch.as_tensor(
-        gamma * lam,
-        device=device,
-        dtype=dtype,
-    )
-    cut_recursion = terminated | truncated
-
-    for index in range(total_steps - 1, -1, -1):
-        continuation = torch.where(
-            cut_recursion[index],
-            torch.zeros((), device=device, dtype=dtype),
-            continuation_factor,
-        )
-        next_advantage = delta[index] + continuation * next_advantage
+    for index in range(n_chunks - 1, -1, -1):
+        next_advantage = delta[index] + continuation_factor[index] * next_advantage
         advantages[index] = next_advantage
 
-    return advantages, advantages + values
+    advantages = advantages[unsort]
+    return advantages, advantages + chunk_value[unsort]
