@@ -112,7 +112,7 @@ class TestTrainerGolden:
         states = torch.randn(4 * cfg.num_mc_samples, cfg.n_obs_steps, obs_dim).to(
             device
         )
-        v = policy.compute_predicted_velocity(x_t, tau, states)
+        v = policy.compute_predicted_velocity(x_t, tau, policy.conditioner(states))
         assert v.shape == (
             4 * cfg.num_mc_samples,
             top_k_spectral_action_tokens,

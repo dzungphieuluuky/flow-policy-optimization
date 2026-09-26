@@ -231,15 +231,16 @@ def test_compute_predicted_velocity_old_vs_live():
     x_t = torch.randn(4, 5, ACT_DIM)
     tau = torch.rand(4)
     states = torch.randn(4, 16, OBS_DIM)
-    v_live = policy.compute_predicted_velocity(x_t, tau, states)
-    v_old = policy.compute_predicted_velocity(x_t, tau, states, old=True)
+    cond = policy.conditioner(states)
+    v_live = policy.compute_predicted_velocity(x_t, tau, cond)
+    v_old = policy.compute_predicted_velocity(x_t, tau, cond, old=True)
     assert torch.equal(v_live, v_old)  # snapshot matches at init
     with torch.no_grad():
         # Perturb the readout bias: the zero-init final layer would swallow
         # any upstream perturbation, so touch the output directly.
         policy.actor.out.bias.add_(1.0)
-    v_live2 = policy.compute_predicted_velocity(x_t, tau, states)
-    v_old2 = policy.compute_predicted_velocity(x_t, tau, states, old=True)
+    v_live2 = policy.compute_predicted_velocity(x_t, tau, cond)
+    v_old2 = policy.compute_predicted_velocity(x_t, tau, cond, old=True)
     assert not torch.equal(v_live2, v_old2)
 
 

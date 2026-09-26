@@ -149,24 +149,6 @@ def _mc_x_t(
     ).reshape(-1, *flow_shape)
 
 
-def _actor_tau(
-    flatten_mc_timestep: torch.Tensor, flow_shape: tuple[int, ...]
-) -> torch.Tensor:
-    """Reshape flattened timesteps into the layout the actor expects.
-
-    Args:
-        flatten_mc_timestep: Flattened timesteps, ``[B*m]`` or ``[B*m, K, 1]``.
-        flow_shape: Per-sample flow shape, accepted for signature symmetry
-            with the sibling helpers.
-
-    Returns:
-        The reshaped timesteps.
-    """
-    if flatten_mc_timestep.dim() == 1:
-        return flatten_mc_timestep
-    return flatten_mc_timestep.squeeze(-1)
-
-
 def _actor_call(actor, x_t, tau, cond, *, use_ckpt: bool):
     """Run the actor, optionally under gradient checkpointing.
 
@@ -497,21 +479,35 @@ class SJFPOPolicy(PreTrainedPolicy):
         """
         return a.unsqueeze(1) - eps
 
-    def compute_predicted_velocity(self, x_t, tau, states, old: bool = False):
-        """Condition states and run the actor on the flow point.
+    def compute_predicted_velocity(
+        self,
+        x_t: torch.Tensor,
+        tau: torch.Tensor,
+        condition: torch.Tensor,
+        *,
+        old: bool = False,
+    ) -> torch.Tensor:
+        """Run the actor on a flow point against a prepared conditioning.
+
+        ``condition`` is the state conditioner's output, already broadcast over
+        the Monte-Carlo draws, so both the frozen and live paths share the one
+        forward-conditioning pass their caller already performed. Gradient
+        checkpointing is applied here for the live actor, matching the training
+        loop's configuration.
 
         Args:
-            x_t: Flow point.
+            x_t: Flow point, of shape ``[B, K, action_dim]``.
             tau: Per-token flow times.
-            states: Observation window.
+            condition: Conditioning of shape ``[B, D]`` or ``[B*m, D]``.
             old: Whether to use the frozen behavior snapshot.
 
         Returns:
-            Predicted velocities.
+            Predicted velocities, in the actor's own dtype.
         """
-        conditioner = self.old_conditioner if old else self.conditioner
         net = self.old_actor if old else self.actor
-        return net(x_t, tau, conditioner(states))
+        if old or not self.config.use_gradient_checkpointing:
+            return net(x_t, tau, condition)
+        return _actor_call(net, x_t, tau, condition, use_ckpt=True)
 
 
     def standardize_obs_tensor(self, states: torch.Tensor) -> torch.Tensor:
@@ -665,15 +661,15 @@ class SJFPOPolicy(PreTrainedPolicy):
             spectral_action, eps, tau
         )
         x_t = _mc_x_t(tau_bn, flatten_mc_noise, flatten_mc_action, flow_shape)
-        actor_tau = _actor_tau(tau_bn, flow_shape)
-        actor = _unwrap_compiled(self.actor)
-        conditioner = _unwrap_compiled(self.conditioner)
+        actor_tau = tau_bn if tau_bn.dim() == 1 else tau_bn.squeeze(-1)
         with torch.inference_mode(), autocast_context(actions.device):
-            condition = conditioner(states_n)
+            condition = self.conditioner(states_n)
             condition_flat = einx.id(
                 "n d -> n m d", condition, m=num_mc
             ).reshape(num_mc * condition.shape[0], condition.shape[-1])
-            v_initial = actor(x_t, actor_tau, condition_flat).float()
+            v_initial = self.compute_predicted_velocity(
+                x_t, actor_tau, condition_flat
+            ).float()
         with torch.autocast(device_type=actions.device.type, enabled=False):
             v_star = (spectral_action[:, None] - eps).float()
             v_initial = v_initial.reshape(
@@ -1037,7 +1033,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             spectral_action_tokens, eps, tau
         )
         x_t_flat = _mc_x_t(tau_bn, flatten_mc_noise, flatten_mc_action, flow_shape)
-        actor_tau = _actor_tau(tau_bn, flow_shape)
+        actor_tau = tau_bn if tau_bn.dim() == 1 else tau_bn.squeeze(-1)
 
         with autocast_context(device):
             cond_flat = einx.id(
@@ -1067,16 +1063,14 @@ class SJFPOPolicy(PreTrainedPolicy):
                     "n m d -> (n m) d",
                     einx.id("n d -> n m d", self.old_conditioner(states), m=num_mc),
                 )
-                v_old = self.old_actor(x_t_flat, actor_tau, old_cond_flat).float()
+                v_old = self.compute_predicted_velocity(
+                    x_t_flat, actor_tau, old_cond_flat, old=True
+                ).float()
 
         with autocast_context(device):
-            if cfg.use_gradient_checkpointing:
-                v_new = _actor_call(
-                    self.actor, x_t_flat, actor_tau, cond_flat, use_ckpt=True
-                )
-            else:
-                v_new = self.actor(x_t_flat, actor_tau, cond_flat)
-            v_new = v_new.float()
+            v_new = self.compute_predicted_velocity(
+                x_t_flat, actor_tau, cond_flat
+            ).float()
 
         cond_stats = None
         if compute_info:
