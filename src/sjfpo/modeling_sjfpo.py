@@ -156,6 +156,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         self.conditioner = StateConditioner(obs_dim, config.hidden_dim)
         self.critic = Critic(obs_dim, config.hidden_dim)
         self.obs_normalizer = RunningMeanStd(obs_dim)
+        self.return_normalizer = RunningMeanStd(1)
 
         self.register_buffer(
             "action_low", torch.full((action_dim,), -1.0), persistent=False
@@ -795,6 +796,13 @@ class SJFPOPolicy(PreTrainedPolicy):
         )
         if cfg.normalize_advantage and advantages.numel() > 0:
             advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+        # The critic regresses onto normalized returns so the value loss does
+        # not inherit gamma's scale (1 / (1 - gamma) drops 1000 -> 100 here,
+        # which would otherwise shrink value_loss ~100x at fixed vf_coef).
+        raw_returns = returns
+        self.return_normalizer.update(raw_returns.reshape(-1, 1))
+        returns = self.return_normalizer(raw_returns.reshape(-1, 1)).reshape(-1)
+        values = self.return_normalizer(values.reshape(-1, 1)).reshape(-1)
         advantages = advantages.to(storage_dtype)
         returns = returns.to(storage_dtype)
 
