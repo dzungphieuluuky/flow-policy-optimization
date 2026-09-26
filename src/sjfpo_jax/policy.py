@@ -96,10 +96,6 @@ def snapshot_behavior_policy(policy: SJFPOJaxPolicy, behavior: SJFPOJaxPolicy) -
     nnx.update(behavior.conditioner, live["conditioner"])
 
 
-# ---------------------------------------------------------------------------
-# Optimizer / mask helpers (unchanged semantics)
-# ---------------------------------------------------------------------------
-
 def _path_names(path) -> list[str]:
     names = []
     for p in path:
@@ -153,10 +149,6 @@ def update_normalizer(policy: SJFPOJaxPolicy, states: jax.Array) -> None:
     policy.normalizer.update(states)
 
 
-# ---------------------------------------------------------------------------
-# Batch preparation: everything that depends only on frozen state + CRN draws
-# ---------------------------------------------------------------------------
-
 def _spectral_token_count(action_horizon: int, top_p_spectral_tokens: float,
                           use_dct_transform: bool) -> int:
     if not use_dct_transform:
@@ -194,10 +186,8 @@ def prepare_batch(
     if actions.shape[-2] != action_horizon:
         raise ValueError(f"action horizon {actions.shape[-2]} != {action_horizon}")
 
-    # --- Normalize once, reuse everywhere ---
     states_n = policy.normalizer(states)
 
-    # --- Spectral / raw tokens ---
     token_dim = _spectral_token_count(action_horizon, top_p_spectral_tokens,
                                       use_dct_transform)
     if use_dct_transform:
@@ -212,7 +202,6 @@ def prepare_batch(
     if tuple(eps.shape) != (n, num_mc_samples, token_dim, actions.shape[-1]):
         raise ValueError(f"stored eps shape {tuple(eps.shape)} incompatible with batch")
 
-    # --- MC broadcast (frozen CRN) ---
     tau_bn, eps_flat, a_rep, flow_shape, num_mc = fpo_jax.run_mc_simulation(
         spec_tokens, eps, tau
     )
@@ -221,7 +210,6 @@ def prepare_batch(
     )
     v_star = jnp.expand_dims(spec_tokens, 1) - eps  # [n, M, *flow_shape]
 
-    # --- Behavior snapshot forward (frozen) ---
     old_cond = behavior.conditioner(states_n)  # [n, hidden]
     old_cond_flat = jnp.broadcast_to(
         old_cond[:, None, :], (n, num_mc, old_cond.shape[-1])
@@ -244,10 +232,6 @@ def prepare_batch(
         "token_dim": token_dim,
     }
 
-
-# ---------------------------------------------------------------------------
-# Loss on the live params only
-# ---------------------------------------------------------------------------
 
 def compute_loss(
     policy: SJFPOJaxPolicy,
@@ -279,7 +263,6 @@ def compute_loss(
     num_mc = int(l_old.shape[1])
     flow_shape = tuple(v_star.shape[2:])
 
-    # --- Live conditioner + actor ---
     cond = policy.conditioner(states_n)                 # [n, hidden]
     cond_flat = jnp.broadcast_to(
         cond[:, None, :], (n, num_mc, cond.shape[-1])
@@ -291,7 +274,6 @@ def compute_loss(
 
     l_new = fpo_jax.compute_cfm_loss(v_new_r, v_star, "sample", cfm_clamp=cfm_clamp)
 
-    # --- ASPO ratio + surrogate (all fp32; l_old is constant w.r.t. live params) ---
     rho = fpo_jax.compute_policy_ratio(l_old, l_new, cfm_clamp=cfm_clamp, cap=log_ratio_cap)
     adv_mc = advantages[:, None]
     psi = fpo_jax.compute_aspo_surrogate(
@@ -299,7 +281,6 @@ def compute_loss(
     )
     policy_loss = -psi.mean()
 
-    # --- Critic / value loss ---
     # Fix 3 mirror: enforce [B] contract; guard broadcasting bugs.
     v_pred_raw = policy.critic(states_n).astype(jnp.float32)
     # Note: CFM ratio uses safe FP32 clamp in fpo (fix 7 mirror); value shape validated above (fix 3).
@@ -331,10 +312,6 @@ def compute_loss(
     }
     return loss, info
 
-
-# ---------------------------------------------------------------------------
-# Jitted update
-# ---------------------------------------------------------------------------
 
 def _make_train_step(loss_kwargs: dict):
     """Build the jitted step once per distinct ``loss_kwargs``."""
@@ -371,10 +348,6 @@ def train_step(
         raise FloatingPointError(f"non-finite loss: {total}")
     return total, {k: float(v) for k, v in info.items()}
 
-
-# ---------------------------------------------------------------------------
-# Inference
-# ---------------------------------------------------------------------------
 
 def predict_action_chunk(
     policy: SJFPOJaxPolicy,

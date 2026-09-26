@@ -71,9 +71,6 @@ def _merge_subtree(params: PolicyParams, subtree: dict) -> PolicyParams:
         conditioner=subtree["conditioner"],
         critic=subtree["critic"],
     )
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 
 def _num_spectral_tokens_kept(cfg: SJFPOConfig) -> int:
@@ -106,11 +103,6 @@ def _sample_spectral_eps(cfg, n, action_dim, key):
         (n, cfg.num_mc_samples, cfg.action_horizon, action_dim),
         key=key,
     )
-
-
-# ---------------------------------------------------------------------------
-# Policy
-# ---------------------------------------------------------------------------
 
 
 @jax.tree_util.register_dataclass
@@ -158,9 +150,6 @@ class SJFPOPolicy:
         self._frame_buffer: deque = deque(maxlen=self.config.n_obs_steps)
         self._action_buffer: deque = deque()
 
-    # ------------------------------------------------------------------
-    # Construction
-    # ------------------------------------------------------------------
 
     @classmethod
     def create(cls, config: SJFPOConfig, obs_dim: int, action_dim: int, key):
@@ -217,9 +206,6 @@ class SJFPOPolicy:
             params=params,
         )
 
-    # ------------------------------------------------------------------
-    # State
-    # ------------------------------------------------------------------
 
     def reset(self) -> None:
         self._frame_buffer.clear()
@@ -249,9 +235,6 @@ class SJFPOPolicy:
             )
         raise ValueError(f"observation.state bad shape: {states.shape}")
 
-    # ------------------------------------------------------------------
-    # Inference
-    # ------------------------------------------------------------------
 
     def predict_action_chunk(self, batch: dict, *, noise: bool = False, key=None):
         cfg = self.config
@@ -320,9 +303,6 @@ class SJFPOPolicy:
                 self._action_buffer.append(chunk[0, i])
         return self._action_buffer.popleft()
 
-    # ------------------------------------------------------------------
-    # Rollout
-    # ------------------------------------------------------------------
 
     def generate_rollout(
         self,
@@ -433,9 +413,6 @@ class SJFPOPolicy:
             "eps": eps,
         }
 
-    # ------------------------------------------------------------------
-    # Training forward
-    # ------------------------------------------------------------------
 
     def forward(self, batch: dict, *, compute_info: bool = True):
         cfg = self.config
@@ -561,9 +538,6 @@ class SJFPOPolicy:
             advantages=advantages, cfg=cfg,
         )
 
-    # ------------------------------------------------------------------
-    # Diagnostics
-    # ------------------------------------------------------------------
 
     def _compute_info(
         self, *, l_old, l_new, rho, rho_bin, v_star_f, v_pred, returns_d,

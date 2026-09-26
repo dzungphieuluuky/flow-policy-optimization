@@ -23,14 +23,12 @@ class SJFPOConfig(PreTrainedConfig):
       ``num_euler_steps`` is used when sampling with ``noise=True``.
     """
 
-    # -- Observation / action geometry -------------------------------------
     n_obs_steps: int = 16
     action_horizon: int = 16
     n_action_steps: int = 16  # must be set explicitly; no derived value
     action_perturb_std: float = 0.02
     hidden_dim: int = 128
 
-    # -- Monte-Carlo / rollout ---------------------------------------------
     num_mc_samples: int = 16
     num_euler_steps: int = 16
     num_inference_steps: int = 16
@@ -41,7 +39,6 @@ class SJFPOConfig(PreTrainedConfig):
     compile_batch_size: int = 0
     num_envs: int = 64
 
-    # -- Optimization ------------------------------------------------------
     gamma: float = 0.999
     gae_lambda: float = 0.995
     epsilon_clip: float = 0.05
@@ -72,7 +69,6 @@ class SJFPOConfig(PreTrainedConfig):
     timestep_beta_alpha: float = 2.0
     timestep_beta_beta: float = 2.0
 
-    # -- DiT backbone ------------------------------------------------------
     dit_depth: int = 4
     dit_heads: int = 4
     dit_mlp_ratio: float = 4.0
@@ -82,31 +78,22 @@ class SJFPOConfig(PreTrainedConfig):
     # angle <= 1 and t is nearly unresolvable.
     timestep_scale: float = 1000.0
 
-    # -- EMA actor ----------------------------------------------------------
     ema_decay: float = 0.95
     ema_warmup_steps: int = 500
 
-    # -- Losses / optimization --------------------------------------------
     vf_coef: float = 1.0  # 0.5 was too weak for the critic
     grad_clip_norm: float = 1.0
 
-    # -- Chunk selection ---------------------------------------------------
     top_p_spectral_tokens: float = 1.0
 
-    # -- Optimizer ---------------------------------------------------------
     policy_lr: float = 1e-4
     critic_lr: float = 1e-4  # legacy split-checkpoint compatibility
     optimizer_weight_decay: float = 1e-4
 
-    # -- Training loop -----------------------------------------------------
     # No separate warm-up phase; stats initialize naturally during first rollout.
-    # -- Blackwell / GPU memory --------------------------------------------
     use_gradient_checkpointing: bool = False
     grad_accum_steps: int = 1  # >1 reduces GPU memory at cost of speed
 
-    # ----------------------------------------------------------------------
-    # Validation
-    # ----------------------------------------------------------------------
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -256,9 +243,6 @@ class SJFPOConfig(PreTrainedConfig):
                 "(per-bin epsilon needs frequency bins)"
             )
 
-    # ----------------------------------------------------------------------
-    # LeRobot hooks
-    # ----------------------------------------------------------------------
 
     def validate_features(self) -> None:
         """Require observation.state + action features (base class skips this)."""
@@ -280,9 +264,6 @@ class SJFPOConfig(PreTrainedConfig):
         """No LR scheduler by default. Override in a subclass to return one."""
         return None
 
-    # ----------------------------------------------------------------------
-    # Dataset windows
-    # ----------------------------------------------------------------------
 
     @property
     def observation_delta_indices(self) -> list[int] | None:

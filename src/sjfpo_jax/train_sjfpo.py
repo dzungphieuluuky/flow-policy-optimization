@@ -136,11 +136,6 @@ def _make_vec_env(env_name, num_envs):
         return gym.vector.SyncVectorEnv(env_fns)
 
 
-# ---------------------------------------------------------------------------
-# Main loop
-# ---------------------------------------------------------------------------
-
-
 def train_sjfpo_run(
     env: Any,
     out_dir: str | Path,
@@ -272,7 +267,6 @@ def train_sjfpo_run(
                     step=global_step,
                 )
 
-            # Eval
             if global_step >= next_eval or global_step >= total_steps:
                 eval_results = evaluator.evaluate(eval_policy, out_dir=out_dir)
                 mean_return = float(np.mean([r["return"] for r in eval_results]))

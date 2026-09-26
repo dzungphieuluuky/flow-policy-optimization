@@ -14,11 +14,6 @@ import torch
 from lerobot.processor.converters import from_tensor_to_numpy, to_tensor
 
 
-# ---------------------------------------------------------------------------
-# Runtime probes (lazy, cached)
-# ---------------------------------------------------------------------------
-
-
 @lru_cache(maxsize=1)
 def cuda_available() -> bool:
     """Whether CUDA is usable. Cached — first call triggers CUDA init."""
@@ -40,11 +35,6 @@ def is_rtx_1000_pro_blackwell() -> bool:
 @lru_cache(maxsize=1)
 def _colab_drive_present() -> bool:
     return Path("/content/drive").exists()
-
-
-# ---------------------------------------------------------------------------
-# Device / dtype resolution
-# ---------------------------------------------------------------------------
 
 
 def resolve_device() -> torch.device:
@@ -108,11 +98,6 @@ def autocast_context(device=None):
     return torch.autocast(device_type="cuda", dtype=torch.bfloat16)
 
 
-# ---------------------------------------------------------------------------
-# torch.compile wrapper
-# ---------------------------------------------------------------------------
-
-
 def maybe_compile(
     module: torch.nn.Module, device: str | torch.device | None = None
 ) -> torch.nn.Module:
@@ -141,11 +126,6 @@ def maybe_compile(
     with torch._dynamo.config.patch(capture_scalar_outputs=True):
         compiled = torch.compile(module, dynamic=True)
     return compiled
-
-
-# ---------------------------------------------------------------------------
-# Environment / path discovery
-# ---------------------------------------------------------------------------
 
 
 def detect_runtime_env() -> str:
@@ -205,11 +185,6 @@ def default_smoke_dir(runtime: str | None = None) -> Path:
         ".omo/evidence/smoke",
         runtime,
     )
-
-
-# ---------------------------------------------------------------------------
-# Tensor / array interop
-# ---------------------------------------------------------------------------
 
 
 def to_device_async(x: torch.Tensor, device) -> torch.Tensor:

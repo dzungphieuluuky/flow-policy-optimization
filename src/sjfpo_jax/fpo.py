@@ -35,10 +35,6 @@ __all__ = [
 ]
 
 
-# ---------------------------------------------------------------------------
-# Sampling
-# ---------------------------------------------------------------------------
-
 def sample_timesteps(
     key: jax.Array,
     num_samples: int,
@@ -75,10 +71,6 @@ def sample_noise(
     return key, eps
 
 
-# ---------------------------------------------------------------------------
-# Monte-Carlo simulation
-# ---------------------------------------------------------------------------
-
 def run_mc_simulation(
     a: jax.Array, eps: jax.Array, tau: jax.Array
 ) -> tuple[jax.Array, jax.Array, jax.Array, tuple[int, ...], int]:
@@ -91,7 +83,6 @@ def run_mc_simulation(
     if tuple(eps.shape) != (b, num_mc, *flow_shape):
         raise ValueError(f"eps shape {tuple(eps.shape)} != {(b, num_mc, *flow_shape)}")
 
-    # --- τ broadcasting ---
     t = jnp.asarray(tau)
     if t.ndim == 0:
         t = jnp.broadcast_to(t, (b, num_mc))
@@ -108,10 +99,6 @@ def run_mc_simulation(
     eps_flat = eps.reshape(b * num_mc, d)
     return t.reshape(b * num_mc), eps_flat, a_flat, flow_shape, num_mc
 
-
-# ---------------------------------------------------------------------------
-# CFM loss
-# ---------------------------------------------------------------------------
 
 def compute_cfm_loss(
     v_hat: jax.Array,
@@ -146,10 +133,6 @@ def compute_cfm_loss(
 
     return jnp.clip(reduced, max=cfm_clamp if clamp is None else clamp)
 
-
-# ---------------------------------------------------------------------------
-# ASPO surrogate / policy objective
-# ---------------------------------------------------------------------------
 
 def compute_aspo_surrogate(
     rho: jax.Array,
@@ -198,10 +181,6 @@ def compute_policy_loss(
     rho = compute_policy_ratio(l_old, l_new, cfm_clamp=cfm_clamp, cap=cap)
     return compute_aspo_surrogate(rho, advantage, epsilon_clip).mean()
 
-
-# ---------------------------------------------------------------------------
-# Inference
-# ---------------------------------------------------------------------------
 
 def sample_action(
     predict_velocity: Callable[[jax.Array, jax.Array, Any], jax.Array],

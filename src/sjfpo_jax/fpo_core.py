@@ -23,11 +23,6 @@ def _defaults():
     return _DEFAULT_CFG
 
 
-# ---------------------------------------------------------------------------
-# Sampling
-# ---------------------------------------------------------------------------
-
-
 def sample_timesteps(
     num_samples: int, tau_range=None, *, key=None, mode="uniform",
     alpha=None, beta=None,
@@ -92,11 +87,6 @@ def run_mc_simulation(a, eps, tau):
     return t.reshape(b * num_mc), eps.reshape(b * num_mc, d), a_flat, flow_shape, num_mc
 
 
-# ---------------------------------------------------------------------------
-# CFM loss
-# ---------------------------------------------------------------------------
-
-
 def compute_cfm_loss(v_hat, v_star, reduce_mode: str = "scalar", clamp=None):
     """CFM squared-velocity loss (paper Eq.7-8)."""
     if v_hat.shape != v_star.shape:
@@ -121,11 +111,6 @@ def compute_cfm_loss(v_hat, v_star, reduce_mode: str = "scalar", clamp=None):
     cfg = _defaults()
     clamp = cfg.cfm_clamp if clamp is None else clamp
     return jnp.minimum(reduced, clamp)
-
-
-# ---------------------------------------------------------------------------
-# ASPO surrogate / ratio / policy loss
-# ---------------------------------------------------------------------------
 
 
 def compute_aspo_surrogate(rho, advantage, epsilon_clip=None, symmetrical_ppo=None):
@@ -172,11 +157,6 @@ def compute_policy_loss(
     """Scalar FPO++ policy objective: mean over i of ψ per chunk (Eq.13)."""
     rho = compute_policy_ratio(l_old, l_new, cfm_clamp=cfm_clamp, cap=cap)
     return compute_aspo_surrogate(rho, advantage, epsilon_clip).mean()
-
-
-# ---------------------------------------------------------------------------
-# Inference (Euler)
-# ---------------------------------------------------------------------------
 
 
 def sample_action(

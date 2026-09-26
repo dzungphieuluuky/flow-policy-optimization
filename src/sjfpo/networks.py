@@ -39,10 +39,6 @@ from torch import nn
 
 from sjfpo.dct_utils import dct
 
-# ---------------------------------------------------------------------------
-# Norm
-# ---------------------------------------------------------------------------
-
 
 class _RMSNorm(nn.RMSNorm):
     """RMSNorm computed in FP32 with the input dtype preserved on output.
@@ -71,11 +67,6 @@ class _RMSNorm(nn.RMSNorm):
 
 def _rms_norm(hidden_dim: int, eps: float = 1e-6) -> nn.RMSNorm:
     return _RMSNorm(hidden_dim, eps=eps)
-
-
-# ---------------------------------------------------------------------------
-# Primitives
-# ---------------------------------------------------------------------------
 
 
 class SwiGLU(nn.Module):
@@ -289,11 +280,6 @@ class WindowEncoder(nn.Module):
         return h + self.mlp1(self.norm2(h))
 
 
-# ---------------------------------------------------------------------------
-# Running stats
-# ---------------------------------------------------------------------------
-
-
 class RunningMeanStd(nn.Module):
     """Per-dim running mean/variance over raw obs frames.
 
@@ -367,11 +353,6 @@ class RunningMeanStd(nn.Module):
         )
         norm = norm.clamp(-self.clip, self.clip).to(x.dtype)
         return torch.where(self._uninitialized.to(x.device), x, norm)
-
-
-# ---------------------------------------------------------------------------
-# DiT
-# ---------------------------------------------------------------------------
 
 
 def modulate(x: torch.Tensor, shift: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
@@ -498,7 +479,6 @@ class StateConditioner(nn.Module):
         # Raw path: per-frame MLP then mean-pool (replaces full attention window).
         self.frame_proj = nn.Linear(obs_dim, hidden_dim)
         self.frame_mlp = SwiGLU(hidden_dim, 4 * hidden_dim, hidden_dim)
-        # Spectral path: unchanged.
         self.bin_norm = _rms_norm(obs_dim)
         self.bin_encoding = SinusoidalEncoding(obs_dim)
         self.key_proj = nn.Linear(obs_dim, hidden_dim)

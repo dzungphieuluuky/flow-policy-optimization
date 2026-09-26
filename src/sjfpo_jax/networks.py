@@ -34,11 +34,6 @@ def resolve_config_value(name: str, override: Any) -> Any:
     return override if override is not None else getattr(_defaults(), name)
 
 
-# ---------------------------------------------------------------------------
-# Norm
-# ---------------------------------------------------------------------------
-
-
 class RMSNorm(nn.Module):
     eps: float = 1e-6
 
@@ -48,11 +43,6 @@ class RMSNorm(nn.Module):
         w = self.param("weight", nn.initializers.ones, (d,), x.dtype)
         var = jnp.mean(x * x, axis=-1, keepdims=True)
         return x * jax.lax.rsqrt(var + self.eps) * w
-
-
-# ---------------------------------------------------------------------------
-# Primitives
-# ---------------------------------------------------------------------------
 
 
 class SwiGLU(nn.Module):
@@ -160,11 +150,6 @@ class WindowEncoder(nn.Module):
         return h
 
 
-# ---------------------------------------------------------------------------
-# Running stats
-# ---------------------------------------------------------------------------
-
-
 def normalize_with_stats(x: jnp.ndarray, stats: dict, eps: float = 1e-8, clip: float = 10.0) -> jnp.ndarray:
     """Normalize ``x`` with a running-stats dict; identity until first update.
 
@@ -202,11 +187,6 @@ def running_mean_std_update(stats, x):
         "count": total,
         "uninitialized": jnp.asarray(False),
     }
-
-
-# ---------------------------------------------------------------------------
-# DiT
-# ---------------------------------------------------------------------------
 
 
 def modulate(x, shift, scale):

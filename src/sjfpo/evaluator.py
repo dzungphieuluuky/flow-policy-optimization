@@ -20,11 +20,6 @@ import numpy as np
 CSV_FIELDS = ["episode", "return", "length", "success", "jerk"]
 
 
-# ---------------------------------------------------------------------------
-# CSV IO
-# ---------------------------------------------------------------------------
-
-
 def write_eval_csv(
     results: list[dict[str, Any]],
     out_dir: str | Path,
@@ -47,11 +42,6 @@ def write_eval_csv(
             writer.writeheader()
         writer.writerows(results)
     return csv_path
-
-
-# ---------------------------------------------------------------------------
-# Diagnostics
-# ---------------------------------------------------------------------------
 
 
 def action_jerk(actions: np.ndarray) -> float | None:
@@ -120,11 +110,6 @@ def check_divergence(
     return consecutive, consecutive >= patience
 
 
-# ---------------------------------------------------------------------------
-# Frame rendering
-# ---------------------------------------------------------------------------
-
-
 def render_episode_frames(
     env_id: str,
     policy: Callable[[np.ndarray], np.ndarray],
@@ -151,10 +136,6 @@ def render_episode_frames(
         return frames, ret
     finally:
         env.close()
-
-
-# ---------------------------------------------------------------------------
-# ---------------------------------------------------------------------------
 
 
 class Evaluator:

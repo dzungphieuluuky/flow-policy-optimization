@@ -37,11 +37,6 @@ class ResumeError(RuntimeError):
     """Unresumable checkpoint (missing/corrupt files)."""
 
 
-# ---------------------------------------------------------------------------
-# torch.compile unwrapping
-# ---------------------------------------------------------------------------
-
-
 def _iter_compiled_children(
     policy,
 ) -> list[tuple[str, torch.nn.Module, torch.nn.Module]]:
@@ -77,11 +72,6 @@ def unwrapped_policy(policy):
             setattr(policy, name, compiled)
 
 
-# ---------------------------------------------------------------------------
-# Atomic write helpers
-# ---------------------------------------------------------------------------
-
-
 def _atomic_write_bytes(path: Path, data: bytes) -> None:
     with tempfile.NamedTemporaryFile(
         mode="wb", dir=path.parent, prefix=f".{path.name}.", delete=False
@@ -105,11 +95,6 @@ def _atomic_torch_save(path: Path, obj) -> None:
         with contextlib.suppress(FileNotFoundError):
             os.unlink(tmp_name)
         raise
-
-
-# ---------------------------------------------------------------------------
-# Save
-# ---------------------------------------------------------------------------
 
 
 def save_policy_checkpoint(
@@ -191,11 +176,6 @@ def save_policy_checkpoint(
         if torch.cuda.is_available():
             rng["cuda"] = torch.cuda.get_rng_state_all()
         _atomic_torch_save(d / RNG_FILE, rng)
-
-
-# ---------------------------------------------------------------------------
-# Load
-# ---------------------------------------------------------------------------
 
 
 def _load_optimizer(policy, d: Path) -> torch.optim.Optimizer:

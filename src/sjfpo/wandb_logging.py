@@ -12,11 +12,6 @@ import wandb
 # Enabled only when the caller passes ``wandb_enabled=True``.
 
 
-# ---------------------------------------------------------------------------
-# Run-name helpers
-# ---------------------------------------------------------------------------
-
-
 def compact_value(v) -> str:
     """Short wandb-safe rendering: ints plain, floats via ``:g``."""
     if isinstance(v, bool):
@@ -58,11 +53,6 @@ def build_run_name(method: str, env_name: str, seed: int, cfg_dict: dict) -> str
     return base if not tags else f"{base}_{'_'.join(tags)}"
 
 
-# ---------------------------------------------------------------------------
-# Run lifecycle
-# ---------------------------------------------------------------------------
-
-
 def init_wandb_run_for_method(
     *,
     method: str,
@@ -89,11 +79,6 @@ def init_wandb_run_for_method(
 
 def finish_run(exit_code: int = 0) -> None:
     wandb.finish(exit_code=exit_code)
-
-
-# ---------------------------------------------------------------------------
-# Metric logging
-# ---------------------------------------------------------------------------
 
 
 def log_metrics(data: dict, step: int) -> None:

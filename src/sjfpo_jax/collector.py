@@ -54,11 +54,6 @@ Transition = TypedDict(
 )
 
 
-# ---------------------------------------------------------------------------
-# Conversions / bounds
-# ---------------------------------------------------------------------------
-
-
 def as_float_array(x) -> jnp.ndarray:
     if isinstance(x, jnp.ndarray):
         return x.astype(_OBS_DTYPE)
@@ -87,11 +82,6 @@ def scale_and_clip_chunk(proposed, low, range_):
     return executed, scaled, clip_count
 
 
-# ---------------------------------------------------------------------------
-# Windows
-# ---------------------------------------------------------------------------
-
-
 def build_warmup_window(first_obs, n_obs_steps):
     shared = jnp.asarray(first_obs).astype(_OBS_DTYPE)
     return deque((shared for _ in range(n_obs_steps)), maxlen=n_obs_steps)
@@ -100,11 +90,6 @@ def build_warmup_window(first_obs, n_obs_steps):
 def reset_chunk_window(env, n_obs_steps):
     obs, _ = env.reset()
     return build_warmup_window(as_float_array(obs), n_obs_steps)
-
-
-# ---------------------------------------------------------------------------
-# Transition builder
-# ---------------------------------------------------------------------------
 
 
 def finalize_transition(
@@ -129,11 +114,6 @@ def finalize_transition(
         "executed_n_action_steps": jnp.asarray(n_executed, dtype=_INDEX_DTYPE),
         "clip_count": jnp.asarray(clip_count, dtype=_INDEX_DTYPE),
     }
-
-
-# ---------------------------------------------------------------------------
-# Single-env collector
-# ---------------------------------------------------------------------------
 
 
 def execute_open_loop_steps(
@@ -174,11 +154,6 @@ def propose_and_execute_chunk(
         chunk_size, n_action_steps,
     )
     return record, done_kind
-
-
-# ---------------------------------------------------------------------------
-# Vector collector
-# ---------------------------------------------------------------------------
 
 
 def collect_chunks_vec(
@@ -281,11 +256,6 @@ def collect_chunks_vec(
             prev[i][TRUNCATED] = jnp.asarray(True)
 
     return [r for traj in records for r in traj]
-
-
-# ---------------------------------------------------------------------------
-# Single-env collector
-# ---------------------------------------------------------------------------
 
 
 def collect_chunks(

@@ -228,11 +228,6 @@ def _make_vec_env(env_name: str, num_envs: int):
         return gym.vector.SyncVectorEnv(env_fns)
 
 
-# ---------------------------------------------------------------------------
-# Main loop
-# ---------------------------------------------------------------------------
-
-
 def train_sjfpo_run(
     env: Any,
     out_dir: str | Path,
@@ -314,7 +309,6 @@ def train_sjfpo_run(
         f"params={sum(p.numel() for p in policy.parameters()):,}",
         file=sys.stderr,
     )
-    # -- Eval / checkpoint infrastructure -----------------------------------
     evaluator = Evaluator(env, eval_seed=10000 + seed, max_episodes=12)
     eval_policy = _EvalPolicy(policy)
     r_rand = random_baseline(evaluator, env)
@@ -480,7 +474,6 @@ def train_sjfpo_run(
             # These are raw post-step frames, not overlapping warmup windows.
             policy.update_observation_stats(batch["normalizer_observations"])
 
-            # Aggregate across epochs/minibatches.
             if infos:
                 info = {k: sum(d[k] for d in infos) / len(infos) for k in infos[0]}
             else:
@@ -539,7 +532,6 @@ def train_sjfpo_run(
             else:
                 above_clamp_updates = 0
 
-            # -- Periodic eval ------------------------------------------
             diverged_now = False
             diverge_msg = ""
             if global_step >= next_eval or global_step >= total_steps:
@@ -574,7 +566,6 @@ def train_sjfpo_run(
                         f"mean_return={mean_return:.2f} "
                         f"< 0.10*R_rand={0.10 * r_rand:.2f}"
                     )
-                # Advance the trigger past the current step.
                 next_eval = max(global_step + eval_steps, next_eval + eval_steps)
 
             if diverged_now:
@@ -587,7 +578,6 @@ def train_sjfpo_run(
                 print(diverge_msg)
                 break
 
-            # -- Periodic checkpoint ------------------------------------
             if global_step >= next_save or global_step >= total_steps:
                 ckpt_dir = out_dir / CHECKPOINTS_DIR / f"step_{global_step}"
                 save_policy_checkpoint(

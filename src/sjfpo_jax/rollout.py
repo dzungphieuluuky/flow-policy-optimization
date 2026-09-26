@@ -67,10 +67,6 @@ def _require_rollout():
     )
 
 
-# ---------------------------------------------------------------------------
-# MjxVec
-# ---------------------------------------------------------------------------
-
 class MjxVec:
     """Batched MJX env with autoreset; jnp in/out, all on device."""
 
@@ -147,9 +143,6 @@ class MjxVec:
         )
         self.reset()
 
-    # ------------------------------------------------------------------
-    # Reset sampling
-    # ------------------------------------------------------------------
 
     def _sample_state_jit(self, rng, n: int):
         """Jit-able reset for ``uniform_*`` kinds; raises for others."""
@@ -214,9 +207,6 @@ class MjxVec:
             return jnp.asarray(qpos, dtype=jnp.float32), jnp.asarray(qvel, dtype=jnp.float32)
         raise ValueError(f"reset_kind={kind!r} unknown")
 
-    # ------------------------------------------------------------------
-    # Observation / extras / health / reward (all pure functions of dx)
-    # ------------------------------------------------------------------
 
     def _extras_jax(self, dx) -> dict:
         extra = {}
@@ -340,9 +330,6 @@ class MjxVec:
         truncated = ep_len >= self._max_ep_steps
         return obs, rew, terminated, truncated
 
-    # ------------------------------------------------------------------
-    # Reset
-    # ------------------------------------------------------------------
 
     def reset(self) -> jnp.ndarray:
         self._rng, sub = jax.random.split(self._rng)
@@ -372,9 +359,6 @@ class MjxVec:
 
         return do_reset
 
-    # ------------------------------------------------------------------
-    # Step
-    # ------------------------------------------------------------------
 
     def step(
         self, ctrl: jnp.ndarray
@@ -416,10 +400,6 @@ class MjxVec:
 
         return obs, rew, terminated, truncated
 
-
-# ---------------------------------------------------------------------------
-# Rollout -> loss-ready batch
-# ---------------------------------------------------------------------------
 
 def generate_batch(
     policy,

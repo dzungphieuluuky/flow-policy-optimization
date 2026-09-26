@@ -47,7 +47,6 @@ def compute_advantages(
     if bool(jnp.any(lengths <= 0)):
         raise ValueError("every chunk must have length >= 1")
 
-    # ---- Intra-chunk discounted rewards via segment sum ----
     chunk_ids = jnp.repeat(jnp.arange(n, dtype=jnp.int32), lengths)
     offsets = jnp.concatenate([jnp.zeros((1,), dtype=jnp.int32), jnp.cumsum(lengths)])
     pos = (jnp.arange(rewards.shape[0], dtype=jnp.int32) - offsets[chunk_ids]).astype(
@@ -57,14 +56,12 @@ def compute_advantages(
     r_chunk = jnp.zeros(n, dtype=dtype)
     r_chunk = r_chunk.at[chunk_ids].add(rewards * jnp.exp(pos * log_gamma))
 
-    # ---- Per-chunk continuation factors ----
     len_f = lengths.astype(dtype)
     gamma_len = jnp.exp(len_f * log_gamma)
     gamma_lam_log = math.log(gamma * lam)
     gamma_lam_len = jnp.exp(len_f * gamma_lam_log)
     done = terminated | truncated
 
-    # ---- Backward recursion via scan over reversed arrays ----
     r_rev = r_chunk[::-1]
     v_rev = values[::-1]
     nv_rev = next_values[::-1]

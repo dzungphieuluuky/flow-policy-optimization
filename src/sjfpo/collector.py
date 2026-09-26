@@ -243,11 +243,6 @@ class RolloutBuffer:
         }
 
 
-# ---------------------------------------------------------------------------
-# Conversions
-# ---------------------------------------------------------------------------
-
-
 def as_float_tensor(x: object) -> torch.Tensor:
     """Coerce to an fp32 CPU/GPU tensor without forcing a device hop.
 
@@ -294,11 +289,6 @@ def scale_and_clip_chunk(
     return executed, scaled, clip_count
 
 
-# ---------------------------------------------------------------------------
-# Window helpers
-# ---------------------------------------------------------------------------
-
-
 def build_warmup_window(
     first_obs: torch.Tensor, n_obs_steps: int
 ) -> deque[torch.Tensor]:
@@ -315,11 +305,6 @@ def build_warmup_window(
 def reset_chunk_window(env, n_obs_steps: int) -> deque[torch.Tensor]:
     obs, _ = env.reset()
     return build_warmup_window(as_float_tensor(obs), n_obs_steps)
-
-
-# ---------------------------------------------------------------------------
-# Transition builder
-# ---------------------------------------------------------------------------
 
 
 def _bool_tensor(v: bool) -> torch.Tensor:
@@ -372,11 +357,6 @@ def finalize_transition(
         "clip_count": _int_tensor(clip_count),
     }
     return _StepTransition(record, step_next_states)  # type: ignore[return-value]
-
-
-# ---------------------------------------------------------------------------
-# Single-env collector
-# ---------------------------------------------------------------------------
 
 
 def execute_open_loop_steps(
@@ -480,11 +460,6 @@ def flush_on_collection_error(
             on_error_flush()
         except Exception:
             pass
-
-
-# ---------------------------------------------------------------------------
-# Vector collector
-# ---------------------------------------------------------------------------
 
 
 def collect_chunks_vec(
@@ -690,11 +665,6 @@ def collect_chunks_vec(
     except Exception:
         flush_on_collection_error(on_error_flush)
         raise
-
-
-# ---------------------------------------------------------------------------
-# Single-env collector
-# ---------------------------------------------------------------------------
 
 
 def collect_chunks(

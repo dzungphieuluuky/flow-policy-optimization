@@ -32,11 +32,6 @@ def _normalize_device(device: torch.device | str | None) -> torch.device:
     return target
 
 
-# ---------------------------------------------------------------------------
-# Cached DCT-II basis (fp32) keyed by (n, device)
-# ---------------------------------------------------------------------------
-
-
 def _dct_norm(count: int, sequence_length: int, device: torch.device) -> torch.Tensor:
     """Return orthonormal DCT-II normalization for ``count`` frequencies."""
     if count < 1 or sequence_length < 1:
@@ -84,10 +79,6 @@ def dct_basis_matrix(
         target, dtype=resolve_storage_dtype(target), copy=True
     )
 
-
-# ---------------------------------------------------------------------------
-# Analysis / synthesis bases for FAFM
-# ---------------------------------------------------------------------------
 
 # Analysis: [M+1, K] basis + [M+1] norm, keyed by (K, M, device).
 @lru_cache(maxsize=64)
@@ -227,11 +218,6 @@ def decode_coeffs_to_velocity(
     return v
 
 
-# ---------------------------------------------------------------------------
-# Noise sampling
-# ---------------------------------------------------------------------------
-
-
 def sample_freq_weighted_noise(
     M: int,
     d: int,
@@ -269,11 +255,6 @@ def sample_freq_weighted_noise(
         xi = torch.randn(B, M + 1, d, dtype=out_dtype, device=device)
 
     return (xi.float() * std_k[None, :, None]).to(out_dtype)
-
-
-# ---------------------------------------------------------------------------
-# Matrix application / DCT / IDCT
-# ---------------------------------------------------------------------------
 
 
 def apply_matrix_along_dim(
@@ -326,11 +307,6 @@ def idct(x: torch.Tensor, dim: int = -1) -> torch.Tensor:
         raise ValueError(f"DCT length must be positive, got {n}")
     basis = _get_dct_basis_f32(n, x.device)
     return apply_matrix_along_dim(x, dim, basis)
-
-
-# ---------------------------------------------------------------------------
-# Chunked reward discounting
-# ---------------------------------------------------------------------------
 
 
 @lru_cache(maxsize=128)

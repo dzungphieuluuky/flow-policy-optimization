@@ -12,11 +12,6 @@ from sjfpo.configuration_sjfpo import SJFPOConfig
 from sjfpo.utils import resolve_storage_dtype
 
 
-# ---------------------------------------------------------------------------
-# Sampling
-# ---------------------------------------------------------------------------
-
-
 def sample_timesteps(
     num_samples: int,
     cfg: SJFPOConfig,
@@ -135,11 +130,6 @@ def run_mc_simulation(
     )
 
 
-# ---------------------------------------------------------------------------
-# CFM loss
-# ---------------------------------------------------------------------------
-
-
 def compute_cfm_loss(
     v_hat: torch.Tensor,
     v_star: torch.Tensor,
@@ -174,11 +164,6 @@ def compute_cfm_loss(
     raise ValueError(
         f"reduce_mode={reduce_mode!r} must be 'scalar', 'sample', or 'bin'"
     )
-
-
-# ---------------------------------------------------------------------------
-# ASPO surrogate / policy ratio / policy loss
-# ---------------------------------------------------------------------------
 
 
 def compute_aspo_surrogate(
@@ -239,11 +224,6 @@ def compute_policy_loss(
     """Scalar FPO++ policy objective: MEAN over i of ψ per chunk (Eq.13)."""
     rho = compute_policy_ratio(l_old, l_new, cfg, advantage=advantage)
     return compute_aspo_surrogate(rho, advantage, cfg, cfg.epsilon_clip).mean()
-
-
-# ---------------------------------------------------------------------------
-# Inference
-# ---------------------------------------------------------------------------
 
 
 def sample_action(

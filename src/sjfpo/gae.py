@@ -9,8 +9,6 @@ from __future__ import annotations
 import torch
 
 
-
-
 @torch.no_grad()
 def compute_step_advantages_torch(
     rewards_1d: torch.Tensor,

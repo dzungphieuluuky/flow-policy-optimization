@@ -75,18 +75,15 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    # Load policy from checkpoint
     print(f"Loading checkpoint from: {args.checkpoint}")
     policy, _, counters = load_policy_checkpoint(args.checkpoint, device=args.device)
     policy.eval()
     print(f"Checkpoint loaded (global_step={counters.get('global_step', '?')})")
 
-    # Build environment with render mode
     import gymnasium as gym  # noqa: E402
 
     env = gym.make(args.env, render_mode=args.render_mode)
     try:
-        # Evaluate with deterministic rollout
         evaluator = Evaluator(
             env=env,
             eval_seed=args.seed,
@@ -94,7 +91,6 @@ def main(argv: list[str] | None = None) -> int:
             max_steps=args.max_steps,
         )
 
-        # Policy callable that handles reset and returns action
         def policy_callable(obs: np.ndarray) -> np.ndarray:
             import torch
 
@@ -117,7 +113,6 @@ def main(argv: list[str] | None = None) -> int:
                 f"length={r['length']}, success={r['success']}, jerk={r['jerk']}"
             )
 
-        # Render frames for first episode (if rgb_array)
         if args.render_mode == "rgb_array":
             frames, ret = render_episode_frames(
                 env_id=args.env,

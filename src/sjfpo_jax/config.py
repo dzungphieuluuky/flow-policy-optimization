@@ -46,7 +46,7 @@ class RunSpec:
 
 
 def build_run_matrix() -> tuple[RunSpec, ...]:
-    """Legacy MuJoCo matrix (45 runs: 3 methods × 3 envs × 5 seeds)."""
+    """Legacy MuJoCo matrix (20 runs: 1 method × 4 envs × 5 seeds)."""
     specs: list[RunSpec] = []
     for method in METHODS:
         for env in ENVS:
@@ -64,7 +64,7 @@ def build_run_matrix() -> tuple[RunSpec, ...]:
     return tuple(specs)
 
 
-RUN_MATRIX = build_run_matrix()  # 45 runs
+RUN_MATRIX = build_run_matrix()  # 20 runs
 
 
 if TINY_MATRIX:

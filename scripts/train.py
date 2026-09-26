@@ -48,11 +48,6 @@ from sjfpo.configuration_sjfpo import SJFPOConfig  # noqa: E402
 VALID_ENVS = KNOWN_ENVS
 
 
-# ---------------------------------------------------------------------------
-# Torch CUDA tuning (skipped when torch is not installed — JAX-only installs)
-# ---------------------------------------------------------------------------
-
-
 def configure_torch_cuda() -> bool:
     """Apply torch CUDA tuning when torch is importable and CUDA is present.
 
@@ -81,11 +76,6 @@ def configure_torch_cuda() -> bool:
     return True
 
 
-# ---------------------------------------------------------------------------
-# Config
-# ---------------------------------------------------------------------------
-
-
 @dataclass
 class TrainConfig:
     """One training run (singular values only; sweep axes live in sweep.sh)."""
@@ -110,11 +100,6 @@ class TrainConfig:
     # sjfpo_jax.checkpointing).
     resume: str | None = None
     sjfpo: SJFPOConfig = field(default_factory=SJFPOConfig)
-
-
-# ---------------------------------------------------------------------------
-# YAML overlay + helpers
-# ---------------------------------------------------------------------------
 
 
 def load_yaml_dict(path: str | Path) -> dict:
@@ -243,11 +228,6 @@ def resolve_run_dir(
     return candidate
 
 
-# ---------------------------------------------------------------------------
-# Run dispatch
-# ---------------------------------------------------------------------------
-
-
 def run_single(
     method: str,
     env_id: str,
@@ -292,7 +272,6 @@ def run_single(
                 f"{(live_obs, live_act)}"
             )
 
-        # ---- JAX path -----------------------------------------------------
         if method == "sjfpo_jax":
             # Lazy import so torch-only users don't pay the JAX import cost.
             from sjfpo_jax.train_sjfpo import train_sjfpo_run as train_jax_run
@@ -311,7 +290,6 @@ def run_single(
                 wandb_enabled=wandb_enabled,
             )
 
-        # ---- Torch path ---------------------------------------------------
         from sjfpo.train_sjfpo import train_sjfpo_run
 
         if resume_from_checkpoint is not None and method != "sjfpo":
@@ -332,11 +310,6 @@ def run_single(
         )
     finally:
         env.close()
-
-
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
 
 
 def main(argv: list[str] | None = None) -> int:

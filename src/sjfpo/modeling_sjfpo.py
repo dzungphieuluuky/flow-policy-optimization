@@ -68,11 +68,6 @@ class SJFPOAborted(RuntimeError):
         self.message = message
 
 
-# ---------------------------------------------------------------------------
-# Small helpers (avoid repeating shape arithmetic)
-# ---------------------------------------------------------------------------
-
-
 def _num_spectral_tokens_kept(cfg: SJFPOConfig) -> int:
     """Number of spectral tokens kept per action chunk."""
     return max(1, round(cfg.top_p_spectral_tokens * cfg.action_horizon)) if cfg.use_dct_transform else cfg.action_horizon
@@ -144,11 +139,6 @@ def _unwrap_compiled(m: torch.nn.Module) -> torch.nn.Module:
     return getattr(m, "_orig_mod", m)
 
 
-# ---------------------------------------------------------------------------
-# Policy
-# ---------------------------------------------------------------------------
-
-
 class SJFPOPolicy(PreTrainedPolicy):
     config_class = SJFPOConfig
     name = "sjfpo"
@@ -204,7 +194,6 @@ class SJFPOPolicy(PreTrainedPolicy):
         self.preprocessor, self.postprocessor = make_sjfpo_pre_post_processors(self)
         del dataset_stats  # kept for base-class signature compatibility
 
-    # -- module state --------------------------------------------------
 
     def train(self, mode: bool = True):
         super().train(mode)
@@ -363,7 +352,6 @@ class SJFPOPolicy(PreTrainedPolicy):
             ]
         }
 
-    # -- velocity helpers ----------------------------------------------
 
     @staticmethod
     def compute_target_velocity(a: torch.Tensor, eps: torch.Tensor) -> torch.Tensor:
@@ -375,7 +363,6 @@ class SJFPOPolicy(PreTrainedPolicy):
         net = self.old_actor if old else self.actor
         return net(x_t, tau, conditioner(states))
 
-    # -- observation coercion ------------------------------------------
 
     def standardize_obs_tensor(self, states: torch.Tensor) -> torch.Tensor:
         states = to_tensor(states)
@@ -391,7 +378,6 @@ class SJFPOPolicy(PreTrainedPolicy):
             f"got {tuple(states.shape)}"
         )
 
-    # -- inference -----------------------------------------------------
 
     def predict_action_chunk(
         self, batch: dict[str, torch.Tensor], **kwargs
@@ -463,7 +449,6 @@ class SJFPOPolicy(PreTrainedPolicy):
                 self._action_buffer.append(chunk[0, i])
         return self._action_buffer.popleft()
 
-    # -- rollout -------------------------------------------------------
 
     def _initial_cfm_losses(
         self,
@@ -623,7 +608,6 @@ class SJFPOPolicy(PreTrainedPolicy):
         states = step_states.index_select(0, chunk_starts)
 
         with torch.inference_mode():
-            # One batched critic pass for both sides of every executed step.
             all_step_states_n = self.preprocessor(
                 {OBS_STATE: torch.cat([step_states, step_next_states], dim=0)}
             )[OBS_STATE]
@@ -674,7 +658,6 @@ class SJFPOPolicy(PreTrainedPolicy):
         ).unsqueeze(-1)
         eps = _sample_spectral_eps(cfg, n_chunks, action_dim, device)
 
-        # Single shape check against the layout that will actually be used.
         expected_eps_shape = (n_chunks, cfg.num_mc_samples, num_spectral_tokens_kept, action_dim)
         if tuple(eps.shape) != expected_eps_shape:
             raise ValueError(
@@ -705,7 +688,6 @@ class SJFPOPolicy(PreTrainedPolicy):
             "initial_cfm_loss_bin": initial_cfm_loss_bin,
         }
 
-    # -- training forward ---------------------------------------------
 
     def forward(
         self,
@@ -782,7 +764,6 @@ class SJFPOPolicy(PreTrainedPolicy):
             extract_dct_coeffs(actions, M=M_modes) if cfg.use_dct_transform else actions
         )
 
-        # Reuse the per-chunk/MC CFM draws stored during rollout.
         has_mc_tau = "mc_tau" in batch
         has_mc_eps = "mc_eps" in batch
         if has_mc_tau != has_mc_eps:
@@ -809,7 +790,6 @@ class SJFPOPolicy(PreTrainedPolicy):
             ).unsqueeze(-1)
             eps = _sample_spectral_eps(cfg, n, action_dim, device)
 
-        # Noisy anchors.
         tau_bn, flatten_mc_noise, flatten_mc_action, flow_shape, num_mc = run_mc_simulation(
             spectral_action_tokens, eps, tau
         )
@@ -954,7 +934,6 @@ class SJFPOPolicy(PreTrainedPolicy):
         )
         return loss, info
 
-    # -- diagnostics (single device->host transfer) --------------------
 
     @torch.inference_mode()
     def _compute_info(
@@ -988,11 +967,9 @@ class SJFPOPolicy(PreTrainedPolicy):
         # training the critic only.
         cfm_above_clamp_frac = (l_new > cfg.cfm_clamp).float().mean()
 
-        # rho stats
         rho_mean = rho.mean()
         rho_std = rho.std(correction=0)
 
-        # per-bin rho
         rho_bin_mean = rho_bin.mean(dim=(0, 1))
         n_bins = rho_bin_mean.numel()
         split = max(1, n_bins // 2)
@@ -1024,7 +1001,6 @@ class SJFPOPolicy(PreTrainedPolicy):
         else:
             rho_bin_high_outside = rho_bin_low_outside
 
-        # value-health stats
         returns_var = returns_d.var(correction=0).clamp_min(1e-8)
         explained_var = 1.0 - (returns_d - v_pred).var(correction=0) / returns_var
         value_error_max = torch.nn.functional.smooth_l1_loss(
@@ -1034,7 +1010,6 @@ class SJFPOPolicy(PreTrainedPolicy):
         return_max = returns_d.abs().max()
         v_star_rms = v_star_f.pow(2).mean().sqrt()
 
-        # Concrete diagnostics (Step 3)
         l_old_std = l_old.std(correction=0)
         l_new_std = l_new.std(correction=0)
         corr_denom = l_old_std * l_new_std + 1e-8

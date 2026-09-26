@@ -17,11 +17,6 @@ STORAGE_DTYPE = resolve_storage_dtype()
 _INV_SQRT2 = math.sqrt(0.5)
 
 
-# ---------------------------------------------------------------------------
-# Orthonormal DCT-II basis
-# ---------------------------------------------------------------------------
-
-
 def _build_dct_basis_f32(n: int) -> jnp.ndarray:
     """Orthonormal DCT-II matrix ``D[k, j]`` of shape ``[n, n]``, fp32."""
     k = jnp.arange(n, dtype=jnp.float32)[:, None]
@@ -37,10 +32,6 @@ def _dct_basis_f32(n: int) -> jnp.ndarray:
 
 def dct_basis_matrix(n: int) -> jnp.ndarray:
     return _dct_basis_f32(n).astype(STORAGE_DTYPE)
-
-# ---------------------------------------------------------------------------
-# Analysis / synthesis bases for FAFM
-# ---------------------------------------------------------------------------
 
 
 def _analysis_basis(K: int, M: int) -> tuple[jnp.ndarray, jnp.ndarray]:
@@ -111,11 +102,6 @@ def decode_coeffs_to_velocity(coeffs, tau, T: float, K_original: int) -> jnp.nda
     return v[0] if squeeze else v
 
 
-# ---------------------------------------------------------------------------
-# Noise
-# ---------------------------------------------------------------------------
-
-
 def sample_freq_weighted_noise(
     M: int, d: int, T: float, B: int = 1, sigma: float = 1.0,
     key=None, dtype=jnp.float32,
@@ -127,11 +113,6 @@ def sample_freq_weighted_noise(
     std_k = sigma / jnp.sqrt(1.0 + (k_idx * (math.pi / T)) ** 2)
     xi = jax.random.normal(key, (B, M + 1, d), dtype=dtype)
     return xi * std_k[None, :, None]
-
-
-# ---------------------------------------------------------------------------
-# Matrix application / DCT / IDCT
-# ---------------------------------------------------------------------------
 
 
 def apply_matrix_along_dim(x: jnp.ndarray, dim: int, mat: jnp.ndarray) -> jnp.ndarray:
@@ -155,11 +136,6 @@ def idct(x: jnp.ndarray, dim: int = -1) -> jnp.ndarray:
     """Orthonormal inverse DCT-II along ``dim`` (``Dᵀ @ x``)."""
     n = x.shape[dim % x.ndim]
     return apply_matrix_along_dim(x, dim, _dct_basis_f32(n))
-
-
-# ---------------------------------------------------------------------------
-# Chunked reward discounting
-# ---------------------------------------------------------------------------
 
 
 _LOG_GAMMA_CACHE: dict[float, float] = {}
