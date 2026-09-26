@@ -178,15 +178,17 @@ def test_running_stats_rejects_nonpositive_dim():
 
 def test_action_low_freq_filter_keeps_ka_bins():
     """K-lowest filter is action-only: [B, H, Ad] -> [B, Ka, Ad]."""
-    from sjfpo.dct_utils import dct
+    from sjfpo.dct_utils import extract_dct_coeffs
     from sjfpo.utils import filter_low_freq
 
     ka = max(1, round(_DEFAULTS.top_p_spectral_tokens * CHUNK))
     assert ka == CHUNK
     a = torch.randn(2, CHUNK, 3)
-    out = filter_low_freq(dct(a, dim=1), ka, dim=1)
+    # M = CHUNK-1 keeps every bin, so this is the full orthonormal transform.
+    coeffs = extract_dct_coeffs(a, M=CHUNK - 1)
+    out = filter_low_freq(coeffs, ka, dim=1)
     assert out.shape == (2, ka, 3)
-    assert torch.allclose(out, dct(a, dim=1)[:, :ka, :], atol=1e-6)
+    assert torch.allclose(out, coeffs[:, :ka, :], atol=1e-6)
 
     # timestep embedding + flow heads
 
@@ -442,14 +444,15 @@ def test_no_batchnorm_no_dropout_fp32_everywhere():
 
 def test_action_top_p_token_count():
     """top_p maps onto the action horizon only: Ka = round(p * H)."""
-    from sjfpo.dct_utils import dct
+    from sjfpo.dct_utils import extract_dct_coeffs
     from sjfpo.utils import filter_low_freq
 
     assert max(1, round(0.3 * CHUNK)) == 5
     assert max(1, round(1.0 * CHUNK)) == CHUNK
     assert max(1, round(0.01 * CHUNK)) == 1
     a = torch.randn(2, CHUNK, OBS)
-    out = filter_low_freq(dct(a, dim=1), max(1, round(0.5 * CHUNK)), dim=1)
+    coeffs = extract_dct_coeffs(a, M=CHUNK - 1)
+    out = filter_low_freq(coeffs, max(1, round(0.5 * CHUNK)), dim=1)
     assert out.shape == (2, 8, OBS)  # round(0.5 * 16)
 
 

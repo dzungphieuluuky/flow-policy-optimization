@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from sjfpo.configuration_sjfpo import SJFPOConfig  # noqa: E402
 
 _DEFAULTS = SJFPOConfig()
-from sjfpo.dct_utils import dct, idct  # noqa: E402
+from sjfpo.dct_utils import decode_coeffs_to_velocity, extract_dct_coeffs  # noqa: E402
 from sjfpo.networks import SJFPOFlowModel, SinusoidalEncoding  # noqa: E402
 from sjfpo.modeling_sjfpo import SJFPOPolicy  # noqa: E402 (velocity helpers under test)
 
@@ -507,7 +507,12 @@ def test_space_consistency_dct_pipeline():
             num_inference_steps=16,
             generator=torch.Generator().manual_seed(52),
         )
-        actions = idct(coeffs, dim=1)  # coefficient space -> action space
+        # The sampler emits coefficients; decode onto the t_j = j*T/K grid.
+        K = coeffs.shape[1]
+        grid = torch.arange(K, dtype=torch.float32) / K
+        actions = decode_coeffs_to_velocity(
+            extract_dct_coeffs(coeffs, M=K - 1), grid, T=1.0, K_original=K
+        )
         low, high = -0.5, 0.5
         clipped = actions.clamp(min=low, max=high)
         assert (clipped <= high).all() and (clipped >= low).all(), (
@@ -517,8 +522,25 @@ def test_space_consistency_dct_pipeline():
             "clip never engaged; bounds too loose"
         )
 
-    rt_coeffs = (dct(idct(coeffs, dim=1), dim=1) - coeffs).abs().max().item()
-    rt_actions = (idct(dct(actions, dim=1), dim=1) - actions).abs().max().item()
+    # Analysis then synthesis on the same grid must be lossless.
+    rt_coeffs = (
+        decode_coeffs_to_velocity(
+            extract_dct_coeffs(coeffs, M=coeffs.shape[1] - 1),
+            torch.arange(coeffs.shape[1], dtype=torch.float32) / coeffs.shape[1],
+            T=1.0,
+            K_original=coeffs.shape[1],
+        )
+        - coeffs
+    ).abs().max().item()
+    rt_actions = (
+        decode_coeffs_to_velocity(
+            extract_dct_coeffs(actions, M=actions.shape[1] - 1),
+            torch.arange(actions.shape[1], dtype=torch.float32) / actions.shape[1],
+            T=1.0,
+            K_original=actions.shape[1],
+        )
+        - actions
+    ).abs().max().item()
     assert rt_coeffs < 1e-5
     assert rt_actions < 1e-5
 

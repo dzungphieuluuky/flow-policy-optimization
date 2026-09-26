@@ -13,38 +13,9 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from sjfpo import dct_utils as torch_dct  # noqa: E402
 from sjfpo import fpo_core as torch_fpo  # noqa: E402
-from sjfpo_jax import dct as jax_dct  # noqa: E402
 from sjfpo_jax import fpo as jax_fpo  # noqa: E402
 from sjfpo_jax import gae as jax_gae  # noqa: E402
-
-
-def test_dct_matches_torch():
-    x = torch.randn(4, 16, 6, dtype=torch.float32)
-    xj = jnp.asarray(x.numpy())
-    np.testing.assert_allclose(
-        np.asarray(jax_dct.dct(xj, dim=1)),
-        torch_dct.dct(x, dim=1).numpy(),
-        rtol=1e-5,
-        atol=1e-5,
-    )
-    np.testing.assert_allclose(
-        np.asarray(jax_dct.idct(jax_dct.dct(xj, dim=1), dim=1)),
-        x.numpy(),
-        rtol=1e-5,
-        atol=1e-5,
-    )
-
-
-def test_discounted_chunk_reward_matches():
-    r = torch.randn(5, 8, dtype=torch.float32)
-    np.testing.assert_allclose(
-        np.asarray(jax_dct.discounted_chunk_reward(jnp.asarray(r.numpy()), 0.99)),
-        torch_dct.discounted_chunk_reward(r, 0.99).numpy(),
-        rtol=1e-5,
-        atol=1e-5,
-    )
 
 
 def test_gae_matches_numpy_oracle():

@@ -37,7 +37,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from sjfpo.dct_utils import dct
+from sjfpo.dct_utils import extract_dct_coeffs
 
 
 class _RMSNorm(nn.RMSNorm):
@@ -657,9 +657,10 @@ class StateConditioner(nn.Module):
                 f"states feature dimension must be {self.obs_dim}, got {states.shape[2]}"
             )
         raw = self.frame_mlp(self.frame_proj(states)).mean(dim=1)
-        spec = self.key_proj(self.bin_encoding(self.bin_norm(dct(states, dim=1)))).mean(
-            dim=1
-        )
+        # M = T-1 keeps all T frequency bins, so this is the full orthonormal
+        # transform of the window; extract_dct_coeffs is the only public entry.
+        coeffs = extract_dct_coeffs(states, M=states.shape[1] - 1)
+        spec = self.key_proj(self.bin_encoding(self.bin_norm(coeffs))).mean(dim=1)
         return self.fuse(torch.cat([raw, spec], dim=-1))
 
 

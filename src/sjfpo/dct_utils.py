@@ -1,11 +1,17 @@
 """DCT-based Fourier coefficient utilities for FAFM.
 
+``extract_dct_coeffs`` and ``decode_coeffs_to_velocity`` are the public entry
+points: analysis keeps the low-frequency bins and synthesis evaluates the
+coefficients at continuous query times. ``dct_basis_matrix`` exposes the raw
+orthonormal basis for callers that need the matrix itself.
+
 Performance notes
 -----------------
 * DCT bases are bounded LRU caches keyed by ``(shape, device)`` and stored in
-  fp32. Low-precision DCT/IDCT contractions run in fp32 before casting back.
+  fp32. Low-precision contractions run in fp32 before casting back.
 * ``extract_dct_coeffs`` caches its ``[M+1, K]`` analysis basis and the
-  ``[M+1]`` normalization vector.
+  ``[M+1]`` normalization vector. Passing ``M = K - 1`` yields the full
+  orthonormal transform of a length-``K`` window.
 * ``decode_coeffs_to_velocity`` shares its cached normalization vector across
   calls and performs the coefficient contraction in fp32.
 * ``sample_freq_weighted_noise`` uses a local ``torch.Generator`` when ``key``
@@ -374,136 +380,3 @@ def sample_freq_weighted_noise(
     return (xi.float() * std_k[None, :, None]).to(out_dtype)
 
 
-def apply_matrix_along_dim(
-    x: torch.Tensor, dim: int, mat: torch.Tensor
-) -> torch.Tensor:
-    """Apply a 2D matrix along one dimension, preserving the input dtype.
-
-    Half and bfloat16 contractions run in fp32 for accuracy; float64 input
-    stays in float64. Autocast is disabled for the same reason.
-
-    Args:
-        x: Input tensor.
-        dim: Dimension to contract over.
-        mat: Matrix whose first dimension matches ``x.shape[dim]``.
-
-    Returns:
-        The contracted tensor, cast back to ``x``'s dtype.
-
-    Raises:
-        ValueError: If ``mat`` is not 2D, or if its first dimension does not
-            match ``x.shape[dim]``.
-    """
-    dim = dim % x.dim()
-    moved = dim != x.dim() - 1
-    if moved:
-        x = x.movedim(dim, -1)
-    if mat.ndim != 2:
-        raise ValueError(f"mat must be 2D, got shape {mat.shape}")
-    if mat.shape[0] != x.shape[-1]:
-        raise ValueError(
-            f"mat.shape[0] must match x.shape[{dim}]={x.shape[-1]}, got {mat.shape[0]}"
-        )
-
-    compute_dtype = torch.float64 if x.dtype == torch.float64 else torch.float32
-    x_compute = x if x.dtype == compute_dtype else x.to(compute_dtype)
-    if mat.device != x_compute.device or mat.dtype != compute_dtype:
-        mat = mat.to(x_compute.device, dtype=compute_dtype)
-    with torch.autocast(device_type=x_compute.device.type, enabled=False):
-        out = x_compute @ mat
-    if moved:
-        out = out.movedim(-1, dim)
-    return out.to(x.dtype)
-
-
-def dct(x: torch.Tensor, dim: int = -1) -> torch.Tensor:
-    """Apply the orthonormal forward DCT-II along a dimension.
-
-    Args:
-        x: Input tensor.
-        dim: Dimension holding the sequence.
-
-    Returns:
-        The transformed tensor, keeping the input dtype.
-
-    Raises:
-        ValueError: If ``x`` has no dimensions, or the sequence length is not
-            positive.
-    """
-    if x.dim() < 1:
-        raise ValueError("DCT input must have at least one dimension")
-    n = x.shape[dim % x.dim()]
-    if n < 1:
-        raise ValueError(f"DCT length must be positive, got {n}")
-    basis = _get_dct_basis_f32(n, x.device)
-    return apply_matrix_along_dim(x, dim, basis.t())
-
-
-def idct(x: torch.Tensor, dim: int = -1) -> torch.Tensor:
-    """Apply the orthonormal inverse DCT-II along a dimension.
-
-    Args:
-        x: Frequency-domain tensor.
-        dim: Dimension holding the spectrum.
-
-    Returns:
-        The reconstructed tensor, keeping the input dtype.
-
-    Raises:
-        ValueError: If ``x`` has no dimensions, or the spectrum length is not
-            positive.
-    """
-    if x.dim() < 1:
-        raise ValueError("DCT input must have at least one dimension")
-    n = x.shape[dim % x.dim()]
-    if n < 1:
-        raise ValueError(f"DCT length must be positive, got {n}")
-    basis = _get_dct_basis_f32(n, x.device)
-    return apply_matrix_along_dim(x, dim, basis)
-
-
-@lru_cache(maxsize=128)
-def _discount_weights(n: int, gamma: float, device: torch.device) -> torch.Tensor:
-    """Return the cached geometric discount weights for a chunk length.
-
-    Args:
-        n: Chunk length.
-        gamma: Per-step discount factor in ``[0, 1]``.
-        device: Device the tensor is allocated on.
-
-    Returns:
-        Weights of shape ``[n]``, with the degenerate cases ``gamma == 0`` and
-        ``gamma == 1`` handled exactly. RL chunks sit far below ``2**24``,
-        where an fp32 ``arange`` is still exact.
-
-    Raises:
-        ValueError: If ``gamma`` falls outside ``[0, 1]``.
-    """
-    if not 0.0 <= gamma <= 1.0:
-        raise ValueError(f"gamma must be in [0, 1], got {gamma}")
-    if n == 0:
-        return torch.empty(0, dtype=torch.float32, device=device)
-    if gamma == 0.0:
-        weights = torch.zeros(n, dtype=torch.float32, device=device)
-        weights[0] = 1.0
-        return weights
-    if gamma == 1.0:
-        return torch.ones(n, dtype=torch.float32, device=device)
-    pos = torch.arange(n, dtype=torch.float32, device=device)
-    return torch.exp(pos * math.log(gamma))
-
-
-def discounted_chunk_reward(rewards: torch.Tensor, gamma: float) -> torch.Tensor:
-    """Discount a chunk's rewards along the time axis and sum them.
-
-    Args:
-        rewards: Per-step rewards, discounted over the last axis.
-        gamma: Per-step discount factor in ``[0, 1]``.
-
-    Returns:
-        Discounted chunk rewards, with the time axis summed out.
-    """
-    weights = _discount_weights(
-        rewards.shape[-1], float(gamma), _normalize_device(rewards.device)
-    ).to(rewards.dtype)
-    return (rewards * weights).sum(dim=-1)

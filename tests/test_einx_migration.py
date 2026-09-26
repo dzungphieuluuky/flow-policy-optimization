@@ -100,12 +100,13 @@ class TestDctEinx:
     """einx op equivalence for reshape/concat shapes on the encoder path."""
 
     def test_dct_low_bin_slice(self):
-        from sjfpo.dct_utils import dct
+        from sjfpo.dct_utils import extract_dct_coeffs
 
         torch.manual_seed(0)
         for B, T, D in [(2, 16, 128), (4, 16, 64)]:
             z = torch.randn(B, T, D)
-            full = dct(z, dim=1)
+            # M = T-1 keeps every bin, so this is the full orthonormal transform.
+            full = extract_dct_coeffs(z, M=T - 1)
             assert full.shape == (B, T, D)
             # low-K slice keeps the DC + slowest bins, stays finite
             assert torch.isfinite(full[:, :5, :]).all()
