@@ -15,6 +15,16 @@ Performance notes
   is only read, never mutated in place.
 * Tail truncation writes into the existing reward/done tensors rather than
   constructing a fresh scalar per tail.
+
+Autoreset contract
+------------------
+``collect_chunks_vec`` implements the vec-env reset as a state machine: an
+env that returns ``done=True`` is flagged ``awaiting``, and the reset
+observation is picked up on the *next* ``envs.step()`` call. This is only
+correct under gymnasium's default ``AutoresetMode.NEXT_STEP``. Under
+``SAME_STEP`` the reset observation arrives together with ``done=True`` and
+the state machine would step a freshly-reset env with a zero action. The
+collector validates the mode up front and refuses to run otherwise.
 """
 
 from __future__ import annotations
@@ -75,7 +85,14 @@ Transition = TypedDict(
 
 
 class _StepTransition(dict):
-    """Transition dict with post-step windows stored outside public keys."""
+    """Transition dict with post-step windows stored outside public keys.
+
+    The extra ``step_next_states`` attribute is a runtime-only convenience for
+    callers that consume the record list directly; it is deliberately not part
+    of the eight-key :data:`Transition` contract and is not preserved by
+    ``copy`` / serialization. The buffer path does not use it — the per-step
+    windows live in :class:`RolloutBuffer` instead.
+    """
 
     def __init__(self, record: Transition, step_next_states: torch.Tensor):
         super().__init__(record)
@@ -258,6 +275,7 @@ class RolloutBuffer:
             "chunk_lengths",
             "chunk_done",
             "chunk_truncated",
+            "chunk_clip_counts",
         ):
             getattr(other, name)[: self.n_steps if name.startswith("step_") else self.n_chunks].copy_(
                 getattr(self, name)[: self.n_steps if name.startswith("step_") else self.n_chunks],
@@ -301,6 +319,7 @@ class RolloutBuffer:
             "chunk_lengths": self.chunk_lengths[:n_chunks],
             "chunk_done": self.chunk_done[:n_chunks],
             "chunk_truncated": self.chunk_truncated[:n_chunks],
+            "chunk_clip_counts": self.chunk_clip_counts[:n_chunks],
         }
 
 
@@ -327,6 +346,11 @@ def _bounds_to_tensor(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Coerce and validate env action bounds into fp32 tensors.
 
+    Enforces the strict ``high > low`` convention, matching the collector's
+    action-scaling contract. ``SJFPOPolicy.set_action_bounds`` must use the
+    same convention, otherwise a policy can be constructed with a degenerate
+    dimension that only fails on the first rollout.
+
     Args:
         low: Per-dimension lower bounds.
         high: Per-dimension upper bounds.
@@ -336,7 +360,7 @@ def _bounds_to_tensor(
 
     Raises:
         ValueError: If the bounds disagree in shape, or if any dimension fails
-            the ``high > low`` check.
+            the strict ``high > low`` check.
     """
     lo = torch.as_tensor(
         np.asarray(low, dtype=np.float32), dtype=torch.float32
@@ -658,6 +682,32 @@ def flush_on_collection_error(
             pass
 
 
+def _validate_autoreset_mode(envs) -> None:
+    """Reject vec envs whose autoreset mode breaks the awaiting state machine.
+
+    ``collect_chunks_vec`` handles the reset as a two-step handshake: it flags
+    the env on the ``done=True`` step and picks up the reset observation on the
+    following ``step()``. That only works under ``NEXT_STEP`` autoreset.
+
+    Args:
+        envs: Vectorised environment about to be stepped.
+
+    Raises:
+        ValueError: If ``envs.autoreset_mode`` is set and is not ``NEXT_STEP``.
+    """
+    mode = getattr(envs, "autoreset_mode", None)
+    if mode is None:
+        return
+    name = getattr(mode, "name", None) or str(mode)
+    if name != "NEXT_STEP":
+        raise ValueError(
+            f"collect_chunks_vec requires AutoresetMode.NEXT_STEP (the "
+            f"gymnasium default), got {mode!r}. The awaiting/reset state "
+            "machine assumes the reset observation arrives on the step() "
+            "call after done=True."
+        )
+
+
 def collect_chunks_vec(
     envs,
     policy: Callable[[torch.Tensor], torch.Tensor],
@@ -681,6 +731,9 @@ def collect_chunks_vec(
     are gathered into a single tensor per wavefront, so the loop performs one
     device-to-host transfer per chunk rather than one per step.
 
+    Requires gymnasium ``AutoresetMode.NEXT_STEP`` on ``envs`` (the default);
+    see :func:`_validate_autoreset_mode`.
+
     Args:
         envs: Vectorised environment.
         policy: Callable mapping a stacked observation window to an action
@@ -701,13 +754,16 @@ def collect_chunks_vec(
         The transition records, or the populated buffer when one is supplied.
 
     Raises:
-        ValueError: If ``n_action_steps`` exceeds ``chunk_size``, or if the
-            action bounds are invalid.
+        ValueError: If ``n_action_steps`` exceeds ``chunk_size``, if the
+            action bounds are invalid, or if the vec env's autoreset mode is
+            not ``NEXT_STEP``.
         RuntimeError: If the vectorised loop executes zero steps.
     """
     cfg = _defaults()
     n_obs_steps = cfg.n_obs_steps if n_obs_steps is None else n_obs_steps
     chunk_size = cfg.action_horizon if chunk_size is None else int(chunk_size)
+
+    _validate_autoreset_mode(envs)
 
     n = int(envs.num_envs)
     base_target, remainder = divmod(total_steps, n)
@@ -731,6 +787,9 @@ def collect_chunks_vec(
             windows = torch.zeros(n, n_obs_steps, obs_dim, dtype=_OBS_DTYPE)
             for i in range(n):
                 windows[i].copy_(as_float_tensor(obs[i]).expand_as(windows[i]))
+            # Reused per chunk: slot ``pos`` is overwritten on every chunk of
+            # env i, so ``buffer.add_chunk`` must consume ``reward_windows[i,
+            # :n_exec]`` before the next chunk for that env begins.
             reward_windows = torch.zeros(n, chunk_size, dtype=_REWARD_DTYPE)
             step_windows = torch.zeros(n, chunk_size, n_obs_steps, obs_dim, dtype=_OBS_DTYPE)
         else:
@@ -765,7 +824,8 @@ def collect_chunks_vec(
             ]
             if need:
                 if buffer is not None:
-                    states = windows[need].clone()
+                    # Advanced indexing already returns a copy, so no clone.
+                    states = windows[need]
                 else:
                     states = torch.stack(
                         [torch.stack(tuple(windows[i]), dim=0) for i in need]
@@ -792,13 +852,13 @@ def collect_chunks_vec(
                         step_states[i] = []
 
             actions_t.zero_()
-            any_active = False
             for i in range(n):
                 if cur[i] is not None:
                     actions_t[i] = cur[i][0][pos[i]]
-                    any_active = True
-            if not any_active:
-                    break
+            # No early-out: envs flagged ``awaiting`` have ``cur[i] is None``
+            # but still need this step() to pick up their reset observation
+            # (NEXT_STEP autoreset). The while condition terminates the loop
+            # once every env is done and no resets are pending.
             actions_np = actions_t.cpu().numpy()
 
             obs, rew, term, trunc, _ = envs.step(actions_np)
