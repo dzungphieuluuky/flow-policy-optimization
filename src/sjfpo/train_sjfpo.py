@@ -81,13 +81,14 @@ def mini_batch_indices(
         raise ValueError(f"n={n} must be >= 1")
     n_mb = max(1, min(int(num_minibatches), n))
     device = torch.device(device)
-    perm = torch.randperm(n, device=device)
+    n_mb = max(1, min(int(num_minibatches), n))
+    device = torch.device(device)
     for _ in range(max(1, int(num_epochs))):
+        perm = torch.randperm(n, device=device)          # <- move inside
         for i in range(n_mb):
             start = (i * n) // n_mb
             stop = ((i + 1) * n) // n_mb
             yield perm[start:stop]
-
 
 class _EvalPolicy:
     """Single-action eval adapter over ``SJFPOPolicy.select_action``."""
@@ -240,10 +241,11 @@ def random_baseline(
         max_episodes: Number of random episodes to average over.
 
     Returns:
-        Mean return of the random policy.
-
-    Returns ``0.0`` unchanged — callers gate on ``baseline > 0`` before
-    treating the value as meaningful (see ``check_divergence``).
+        Mean return of the random policy, or ``0.0`` when no episodes could
+        be evaluated. Callers gate on ``baseline > 0`` before treating the
+        value as meaningful (see :func:`check_divergence`), so returning
+        ``0.0`` on failure disables divergence detection rather than
+        falsely flagging every subsequent run as diverged.
     """
     baseline_evaluator = Evaluator(
         env,
@@ -255,9 +257,8 @@ def random_baseline(
         lambda obs: env.action_space.sample(), out_dir=None
     )
     if not results:
-        return 1.0
+        return 0.0
     return float(np.mean([r["return"] for r in results]))
-
 
 def _make_vec_env(env_name: str, num_envs: int):
     """Build a vectorised training environment, preferring async workers.
