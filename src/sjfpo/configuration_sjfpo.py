@@ -37,8 +37,8 @@ class SJFPOConfig(PreTrainedConfig):
     num_minibatches: int = 4
     num_envs: int = 64
 
-    gamma: float = 0.999
-    gae_lambda: float = 0.995
+    gamma: float = 0.99
+    gae_lambda: float = 0.95
     epsilon_clip: float = 0.05
     use_dct_transform: bool = False  # spectral chunk encoding; False = raw action chunk
     # FPO++ trust region: ppo, spo, or aspo (official default).
@@ -56,7 +56,6 @@ class SJFPOConfig(PreTrainedConfig):
     cfm_loss_clamp_negative_advantages: bool = True
     cfm_loss_clamp_negative_advantages_max: float = 20.0
     log_ratio_cap: float = 10.0  # official cfm_diff_clamp_max (one-sided)
-    advantage_clamp: float = 100.0
     normalize_advantage: bool = True
     use_clipped_value_loss: bool = False
     min_timestep: float = 0.005
@@ -179,8 +178,6 @@ class SJFPOConfig(PreTrainedConfig):
             raise ValueError("cfm_loss_clamp_negative_advantages_max must be > 0")
         if self.log_ratio_cap <= 0:
             raise ValueError(f"log_ratio_cap={self.log_ratio_cap} must be > 0")
-        if self.advantage_clamp <= 0:
-            raise ValueError(f"advantage_clamp={self.advantage_clamp} must be > 0")
         if not 0.0 <= self.min_timestep < self.max_timestep <= 1.0:
             raise ValueError(
                 "require 0 <= min_timestep < max_timestep <= 1, got "
