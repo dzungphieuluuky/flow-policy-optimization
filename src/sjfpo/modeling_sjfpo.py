@@ -641,21 +641,21 @@ class SJFPOPolicy(PreTrainedPolicy):
         x_t = _mc_x_t(tau_bn, flatten_mc_noise, flatten_mc_action, flow_shape)
         actor_tau = tau_bn.squeeze(-1)
         with torch.inference_mode(), autocast_context(actions.device):
-            condition = self.conditioner(normalized_states)
+            condition = self.old_conditioner(normalized_states)
             condition_flat = einx.id(
                 "n d -> n m d", condition, m=num_mc
             ).reshape(num_mc * condition.shape[0], condition.shape[-1])
-            v_initial = self.compute_predicted_velocity(
-                x_t, actor_tau, condition_flat
+            v_old = self.compute_predicted_velocity(
+                x_t, actor_tau, condition_flat, old=True
             ).float()
         with torch.autocast(device_type=actions.device.type, enabled=False):
             v_star = (spectral_action[:, None] - eps).float()
-            v_initial = v_initial.reshape(
+            v_old = v_old.reshape(
                 eps.shape[0], num_mc, *flow_shape
             )
             return (
-                compute_cfm_loss(v_initial, v_star, cfg, "sample", action_is_pad),
-                compute_cfm_loss(v_initial, v_star, cfg, "bin", action_is_pad),
+                compute_cfm_loss(v_old, v_star, cfg, "sample", action_is_pad),
+                compute_cfm_loss(v_old, v_star, cfg, "bin", action_is_pad),
             )
 
     def generate_rollout(
