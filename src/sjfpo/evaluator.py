@@ -87,17 +87,18 @@ def extract_success(info: dict) -> float | None:
     return float(bool(info["success"]))
 
 
-def mean_chunk_jerk(actions: np.ndarray, is_pad: np.ndarray) -> float | None:
+def mean_chunk_jerk(actions: np.ndarray, action_is_pad: np.ndarray) -> float | None:
     """Mean ``action_jerk`` over chunks' executed prefixes.
 
-    ``actions`` is ``[N, H, D]`` real-space chunks and ``is_pad`` is ``[N, H]``
-    with True marking padding past the executed prefix. Chunks with fewer
-    than 3 executed steps are skipped; returns ``None`` if no chunk
+    ``actions`` is ``[N, H, D]`` real-space chunks and ``action_is_pad`` is
+    ``[N, H]`` with True marking padding past the executed prefix. Chunks with
+    fewer than 3 executed steps are skipped; returns ``None`` if no chunk
     qualifies.
 
     Args:
         actions: Action chunks of shape ``[N, H, action_dim]``.
-        is_pad: Padding mask of shape ``[N, H]``, True past the executed prefix.
+        action_is_pad: Padding mask of shape ``[N, H]``, True past the
+            executed prefix.
 
     Returns:
         Mean jerk over the qualifying chunks, or None when none qualify.
@@ -106,10 +107,10 @@ def mean_chunk_jerk(actions: np.ndarray, is_pad: np.ndarray) -> float | None:
         ValueError: If the shapes are not ``[N, H, D]`` and ``[N, H]``.
     """
     a = np.asarray(actions)
-    pad = np.asarray(is_pad, dtype=bool)
+    pad = np.asarray(action_is_pad, dtype=bool)
     if a.ndim != 3 or pad.shape != a.shape[:2]:
         raise ValueError(
-            f"expected actions [N, H, D] and is_pad [N, H]; "
+            f"expected actions [N, H, D] and action_is_pad [N, H]; "
             f"got {a.shape} and {pad.shape}"
         )
     jerks: list[float] = []

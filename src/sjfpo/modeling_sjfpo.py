@@ -604,27 +604,30 @@ class SJFPOPolicy(PreTrainedPolicy):
         return self._action_buffer.popleft()
 
 
-    def _initial_cfm_losses(
+    def _behavior_cfm_losses(
         self,
         normalized_states: torch.Tensor,
         actions: torch.Tensor,
         tau: torch.Tensor,
         eps: torch.Tensor,
-        is_pad: torch.Tensor,
+        action_is_pad: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Compute the initial old and new CFM losses for one minibatch.
+        """Compute the frozen behavior policy's CFM loss for one minibatch.
+
+        The behavior weights are the snapshot taken at the start of the rollout,
+        so this is the ``l_old`` term of the importance ratio. Both reductions
+        are masked identically to the current-policy losses they get compared
+        against, so the ratio never mixes means over different positions.
 
         Args:
             normalized_states: Normalised observation window.
             actions: Action chunk in ``[-1, 1]``.
             tau: Flow times.
             eps: Monte-Carlo noise matching the token layout.
-            is_pad: ``[batch, horizon]`` mask of never-executed positions.
+            action_is_pad: ``[batch, horizon]`` mask of never-executed positions.
 
         Returns:
-            Tuple of the frozen-policy and current-policy CFM losses. Both are
-            masked, so they average over the same positions as the losses they
-            are later compared against.
+            The ``sample`` and ``bin`` reductions of the frozen policy's loss.
         """
         cfg = self.config
         token_count = eps.shape[2]
@@ -651,8 +654,8 @@ class SJFPOPolicy(PreTrainedPolicy):
                 eps.shape[0], num_mc, *flow_shape
             )
             return (
-                compute_cfm_loss(v_initial, v_star, cfg, "sample", is_pad),
-                compute_cfm_loss(v_initial, v_star, cfg, "bin", is_pad),
+                compute_cfm_loss(v_initial, v_star, cfg, "sample", action_is_pad),
+                compute_cfm_loss(v_initial, v_star, cfg, "bin", action_is_pad),
             )
 
     def generate_rollout(
@@ -808,9 +811,9 @@ class SJFPOPolicy(PreTrainedPolicy):
             normalized_states = all_step_states_n.index_select(0, chunk_starts)
             with autocast_context(device):
                 all_step_values = self.critic(all_step_states_n).float()
-            total_executed = n_steps
-            step_values = all_step_values[:total_executed]
-            step_next_values = all_step_values[total_executed:]
+            executed_total = n_steps
+            step_values = all_step_values[:executed_total]
+            step_next_values = all_step_values[executed_total:]
             values = step_values.index_select(0, chunk_starts)
 
         # One chunk is one macro-transition, so the backup is taken at chunk
@@ -821,7 +824,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             step_next_values,
             chunk_starts,
             lengths,
-            chunk_terminated=active["chunk_done"],
+            chunk_terminated=active["chunk_terminated"],
             chunk_truncated=active["chunk_truncated"],
             chunk_env_id=active["chunk_env_id"],
             chunk_size=cfg.action_horizon,
@@ -840,7 +843,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         values = self.return_normalizer(values.reshape(-1, 1)).reshape(-1)
         gae_diagnostics = _gae_diagnostics(
             active["chunk_env_id"][:n_chunks],
-            active["chunk_done"][:n_chunks],
+            active["chunk_terminated"][:n_chunks],
             active["chunk_truncated"][:n_chunks],
             raw_advantages,
             raw_returns,
@@ -848,7 +851,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         advantages = advantages.to(storage_dtype)
         returns = returns.to(storage_dtype)
 
-        is_pad = torch.arange(cfg.action_horizon, device=device).unsqueeze(
+        action_is_pad = torch.arange(cfg.action_horizon, device=device).unsqueeze(
             0
         ) >= lengths.unsqueeze(1)
 
@@ -869,14 +872,14 @@ class SJFPOPolicy(PreTrainedPolicy):
 
         chunk_clip_counts = active["chunk_clip_counts"][:n_chunks]
 
-        initial_cfm_loss, initial_cfm_loss_bin = self._initial_cfm_losses(
-            normalized_states, actions, tau, eps, is_pad
+        behavior_cfm_loss, behavior_cfm_loss_bin = self._behavior_cfm_losses(
+            normalized_states, actions, tau, eps, action_is_pad
         )
 
         return {
             OBS_STATE: states,
             ACTION: actions,
-            "action_is_pad": is_pad,
+            "action_is_pad": action_is_pad,
             "advantages": advantages,
             "returns": returns,
             "values": values.detach(),
@@ -885,8 +888,8 @@ class SJFPOPolicy(PreTrainedPolicy):
             "mc_eps": eps,
             "chunk_clip_counts": chunk_clip_counts,
             "gae_diagnostics": gae_diagnostics,
-            "initial_cfm_loss": initial_cfm_loss,
-            "initial_cfm_loss_bin": initial_cfm_loss_bin,
+            "behavior_cfm_loss": behavior_cfm_loss,
+            "behavior_cfm_loss_bin": behavior_cfm_loss_bin,
         }
 
 
@@ -1020,21 +1023,21 @@ class SJFPOPolicy(PreTrainedPolicy):
                 "n m d -> (n m) d",
                 einx.id("n d -> n m d", self.conditioner(states), m=num_mc),
             )
-        stored_l_old = "initial_cfm_loss" in batch
+        stored_l_old = "behavior_cfm_loss" in batch
         if stored_l_old:
             l_old = to_tensor(
-                batch["initial_cfm_loss"], dtype=torch.float32, device=device
+                batch["behavior_cfm_loss"], dtype=torch.float32, device=device
             )
             l_old_bin = to_tensor(
-                batch["initial_cfm_loss_bin"], dtype=torch.float32, device=device
+                batch["behavior_cfm_loss_bin"], dtype=torch.float32, device=device
             )
             if tuple(l_old.shape) != (n, num_mc):
                 raise ValueError(
-                    f"initial_cfm_loss shape {tuple(l_old.shape)} != {(n, num_mc)}"
+                    f"behavior_cfm_loss shape {tuple(l_old.shape)} != {(n, num_mc)}"
                 )
             if tuple(l_old_bin.shape) != (n, num_mc, flow_shape[0]):
                 raise ValueError(
-                    f"initial_cfm_loss_bin shape {tuple(l_old_bin.shape)} != "
+                    f"behavior_cfm_loss_bin shape {tuple(l_old_bin.shape)} != "
                     f"{(n, num_mc, flow_shape[0])}"
                 )
         else:
