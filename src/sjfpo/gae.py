@@ -1,9 +1,11 @@
 """Step-level GAE over executed rollout transitions.
 
 The Torch path computes GAE per executed environment step and then selects
-the first-step target of each action chunk.
+the first-step target of each action chunk. Timeouts are handled the FPO++
+way: a truncated transition bootstraps from ``V(s_t)`` via the reward
+adjustment below, so its ``bootstrap_t`` term is zero rather than
+``V(s_{t+1})``.
 """
-
 from __future__ import annotations
 
 import torch
@@ -34,9 +36,12 @@ def compute_step_advantages_torch(
 
         delta_t = r_adjusted + gamma * bootstrap_t - V(s_t)
 
-    where ``bootstrap_t`` is zero for terminated transitions and
-    ``V(s_(t+1))`` otherwise. GAE recursion continues across ordinary
-    transitions and stops at both terminated and truncated transitions.
+    where ``bootstrap_t`` is zero for **both** terminated and truncated
+    transitions, and ``V(s_(t+1))`` otherwise. A truncated transition
+    therefore gets its bootstrap from the ``gamma * V(s_t)`` term inside
+    ``r_adjusted`` rather than from a separate ``V(s_(t+1))``; adding both
+    would double-count. GAE recursion continues across ordinary transitions
+    and stops at both terminated and truncated transitions.
 
     Args:
         rewards_1d: Executed-step rewards, shape ``[T]``.
