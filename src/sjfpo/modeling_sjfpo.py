@@ -117,8 +117,7 @@ def _mc_x_t(
     """Interpolate between noise and action to form the flow point x_t.
 
     Args:
-        flatten_mc_timestep: Flattened timesteps, either ``[B*m]`` or
-            ``[B*m, K, 1]``.
+        flatten_mc_timestep: Flattened per-token timesteps, ``[B*m, K, 1]``.
         flatten_mc_noise: Flattened noise of shape ``[B*m, d]``.
         flatten_mc_action: Flattened action of shape ``[B*m, d]``.
         flow_shape: Per-sample flow shape the result is reshaped to.
@@ -126,24 +125,10 @@ def _mc_x_t(
     Returns:
         The flow point, of shape ``[-1, *flow_shape]``.
     """
-    if flatten_mc_timestep.dim() == 1:
-        flatten_mc_timestep = flatten_mc_timestep[:, None].expand(
-            -1, flatten_mc_noise.shape[-1]
-        )
-        flatten_mc_noise = flatten_mc_noise.reshape(flatten_mc_timestep.shape[0], -1)
-        flatten_mc_action = flatten_mc_action.reshape(flatten_mc_timestep.shape[0], -1)
-    else:
-        flatten_mc_timestep = flatten_mc_timestep.expand(-1, -1, flow_shape[-1])
-        flatten_mc_noise = flatten_mc_noise.reshape(
-            flatten_mc_timestep.shape[0], flow_shape[0], flow_shape[1]
-        )
-        flatten_mc_action = flatten_mc_action.reshape(
-            flatten_mc_timestep.shape[0], flow_shape[0], flow_shape[1]
-        )
-    return (
-        (1.0 - flatten_mc_timestep) * flatten_mc_noise
-        + flatten_mc_timestep * flatten_mc_action
-    ).reshape(-1, *flow_shape)
+    t = flatten_mc_timestep.expand(-1, -1, flow_shape[-1])
+    noise = flatten_mc_noise.reshape(-1, *flow_shape)
+    action = flatten_mc_action.reshape(-1, *flow_shape)
+    return (1.0 - t) * noise + t * action
 
 
 def _unwrap_compiled(m: torch.nn.Module) -> torch.nn.Module:
@@ -636,7 +621,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             spectral_action, eps, tau
         )
         x_t = _mc_x_t(tau_bn, flatten_mc_noise, flatten_mc_action, flow_shape)
-        actor_tau = tau_bn if tau_bn.dim() == 1 else tau_bn.squeeze(-1)
+        actor_tau = tau_bn.squeeze(-1)
         with torch.inference_mode(), autocast_context(actions.device):
             condition = self.conditioner(normalized_states)
             condition_flat = einx.id(
@@ -1008,7 +993,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             spectral_action_tokens, eps, tau
         )
         x_t_flat = _mc_x_t(tau_bn, flatten_mc_noise, flatten_mc_action, flow_shape)
-        actor_tau = tau_bn if tau_bn.dim() == 1 else tau_bn.squeeze(-1)
+        actor_tau = tau_bn.squeeze(-1)
 
         with autocast_context(device):
             cond_flat = einx.id(
