@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
 import os
 import sys
 from functools import lru_cache
@@ -10,9 +9,6 @@ from pathlib import Path
 
 import jax
 import jax.numpy as jnp
-import numpy as np
-
-from lerobot.processor.converters import from_tensor_to_numpy
 
 
 @lru_cache(maxsize=1)
@@ -62,31 +58,10 @@ def resolve_storage_dtype() -> jnp.dtype:
     return jnp.bfloat16 if is_rtx_1000_pro_blackwell() else jnp.float32
 
 
-def resolve_compute_dtype() -> jnp.dtype:
-    """bf16 matmuls when supported; ``SJFPO_DTYPE`` overrides."""
-    if is_rtx_1000_pro_blackwell():
-        return jnp.bfloat16
-    want = os.environ.get("SJFPO_DTYPE", "auto").lower()
-    if want == "fp32":
-        return jnp.float32
-    if want == "bf16":
-        return jnp.bfloat16
-    if want != "auto":
-        raise ValueError(f"SJFPO_DTYPE={want!r} unknown; expected 'auto', 'fp32', 'bf16'")
-    return jnp.bfloat16 if gpu_available() else jnp.float32
 
 
-@contextlib.contextmanager
-def autocast_context(device=None):
-    """JAX has no autocast; matmuls take the input dtype. Kept for parity."""
-    yield
 
 
-def maybe_compile(fn, *, donate_argnums=()):
-    """JIT a callable. ``SJFPO_COMPILE=0`` opts out (debugging)."""
-    if os.environ.get("SJFPO_COMPILE", "1") == "0":
-        return fn
-    return jax.jit(fn, donate_argnums=donate_argnums)
 
 
 def detect_runtime_env() -> str:
@@ -107,58 +82,18 @@ def _runtime_root(kaggle, colab_drive, colab_local, local, runtime=None) -> Path
     return Path(local)
 
 
-def default_runs_base(runtime: str | None = None) -> Path:
-    return _runtime_root(
-        "/kaggle/working/runs",
-        "/content/drive/MyDrive/spectral-joint-policy/runs",
-        "/content/runs",
-        ".omo/evidence/runs",
-        runtime,
-    )
 
 
-def default_analysis_output(runtime: str | None = None) -> Path:
-    return _runtime_root(
-        "/kaggle/working/analysis",
-        "/content/drive/MyDrive/spectral-joint-policy/analysis",
-        "/content/analysis",
-        ".omo/evidence/analysis",
-        runtime,
-    )
 
 
-def default_smoke_dir(runtime: str | None = None) -> Path:
-    return _runtime_root(
-        "/kaggle/working/smoke",
-        "/content/drive/MyDrive/spectral-joint-policy/smoke",
-        "/content/smoke",
-        ".omo/evidence/smoke",
-        runtime,
-    )
 
 
-def to_device(x, device=None):
-    """Place ``x`` on ``device`` (defaults to ``resolve_device()``)."""
-    device = device or resolve_device()
-    return jax.device_put(jnp.asarray(x), device)
 
 
-def filter_low_freq(x, k: int, dim: int = 1):
-    if k < 1 or k > x.shape[dim]:
-        raise ValueError(f"k={k} out of range for dim {dim} with size {x.shape[dim]}")
-    s = [slice(None)] * x.ndim
-    s[dim] = slice(None, k)
-    return x[tuple(s)]
 
 
-def to_numpy_1d(x) -> np.ndarray:
-    return np.atleast_1d(from_tensor_to_numpy(np.asarray(x)))
 
 
-def to_jnp_1d(x, dtype=None):
-    if dtype is None:
-        dtype = jnp.float32
-    return jnp.atleast_1d(jnp.asarray(x, dtype=dtype))
 
 
 def stop_gradient(tree):

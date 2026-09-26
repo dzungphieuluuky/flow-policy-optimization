@@ -144,16 +144,3 @@ def log_eval_summary(
     log_metrics(data, step=global_step)
 
 
-def log_eval_video(frames: list, global_step: int, *, fps: int = 30) -> None:
-    if not frames:
-        return
-    try:
-        video = np.stack([np.asarray(f, dtype=np.uint8) for f in frames])
-    except (ValueError, TypeError):
-        return
-    if video.ndim != 4:
-        return
-    try:
-        log_metrics({"eval/video": wandb.Video(video, fps=fps, format="mp4")}, step=global_step)
-    except Exception:
-        return

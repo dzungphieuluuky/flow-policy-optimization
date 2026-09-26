@@ -1,17 +1,13 @@
-"""Benchmark config registry: run matrix + runtime dependency guards."""
+"""Environment registry and runtime dependency guards."""
 
 from __future__ import annotations
 
 import os
-from collections.abc import Iterable
-from dataclasses import dataclass
 from pathlib import Path
 
 
 IS_KAGGLE = os.environ.get("KAGGLE_KERNEL_RUN_TYPE") is not None
-TINY_MATRIX = os.environ.get("SJFPO_TINY_MATRIX") == "1"
 
-METHODS = ("sjfpo",)
 ENV_REGISTRY_PATH = Path(__file__).resolve().parents[2] / "configs" / "envs.yaml"
 
 try:
@@ -28,68 +24,6 @@ PROTOTYPE_ENVS = tuple(
     k for k in _REGISTRY_KEYS if _ENV_REGISTRY[k].get("tier") != "core"
 )
 KNOWN_ENVS = ENVS + PROTOTYPE_ENVS
-SEEDS = (0, 1, 2, 3, 4)
-
-TOTAL_STEPS = 1_000_000
-EVAL_STEPS = 50_000
-SAVE_STEPS = 25_000
-
-
-@dataclass(frozen=True)
-class RunSpec:
-    method: str
-    env: str
-    seed: int
-    total_steps: int
-    eval_steps: int
-    save_steps: int
-
-
-def build_run_matrix() -> tuple[RunSpec, ...]:
-    """Legacy MuJoCo matrix (20 runs: 1 method × 4 envs × 5 seeds)."""
-    specs: list[RunSpec] = []
-    for method in METHODS:
-        for env in ENVS:
-            for seed in SEEDS:
-                specs.append(
-                    RunSpec(
-                        method=method,
-                        env=env,
-                        seed=seed,
-                        total_steps=TOTAL_STEPS,
-                        eval_steps=EVAL_STEPS,
-                        save_steps=SAVE_STEPS,
-                    )
-                )
-    return tuple(specs)
-
-
-RUN_MATRIX = build_run_matrix()  # 20 runs
-
-
-if TINY_MATRIX:
-    tiny: list[RunSpec] = []
-    for method in METHODS:
-        tiny.append(
-            RunSpec(
-                method=method,
-                env="Hopper-v5",
-                seed=0,
-                total_steps=20_000,
-                eval_steps=10_000,
-                save_steps=10_000,
-            )
-        )
-    RUN_MATRIX = tuple(tiny)  # 3 runs
-
-
-def validate_run_matrix(specs: Iterable[RunSpec]) -> None:
-    """Raise AssertionError on any duplicate (method, env, seed)."""
-    seen: set[tuple[str, str, int]] = set()
-    for spec in specs:
-        key = (spec.method, spec.env, spec.seed)
-        assert key not in seen, f"duplicate (method, env, seed) in run matrix: {key}"
-        seen.add(key)
 
 
 def parse_version_tuple(version: str) -> tuple[int, ...]:
@@ -102,7 +36,19 @@ def parse_version_tuple(version: str) -> tuple[int, ...]:
 
 
 def assert_runtime(allow_fp16: bool = False) -> None:
-    """Fail fast on dependency pins and unsupported precision flags.      bf16 *autocast* (fp32 storage, bf16 matmuls) is allow"""
+    """Fail fast on dependency pins and unsupported precision flags.
+
+    bf16 *autocast* (fp32 storage, bf16 matmuls) is allowed; fp16/bf16
+    *storage* is not, because flow-matching Euler rollouts and CFM losses
+    need fp32 to stay stable.
+
+    Args:
+        allow_fp16: True when the caller requested fp16/bf16 storage.
+
+    Raises:
+        RuntimeError: If gymnasium is older than 1.0, or if ``allow_fp16`` is
+            set.
+    """
     import importlib.metadata
 
     gym_version = importlib.metadata.version("gymnasium")
@@ -118,9 +64,6 @@ def assert_runtime(allow_fp16: bool = False) -> None:
             "Euler rollouts and CFM losses require fp32 storage; use "
             "SJFPO_DTYPE=bf16 for bf16 autocast (fp32 params, bf16 matmuls)"
         )
-
-
-validate_run_matrix(RUN_MATRIX)
 
 
 def lookup_env_dims(env_id: str) -> tuple[int, int]:

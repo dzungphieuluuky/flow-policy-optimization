@@ -1,7 +1,7 @@
 # AGENTS — src/sjfpo
 
 ## Overview
-MuJoCo-only hotspot — single live train path, chunked flow policy: Transition-dict rollout (H=16/n=8/T=16) → step-level GAE over executed prefixes → ASPO + V(s) TD-critic; CUDA-default (CPU fallback) fp32, einx.id shapes (collector/fpo_core/trainer + dct_utils), RUN_MATRIX 15. analysis.py is notebook-invoked (train.py never imports it), everything else is live.
+MuJoCo-only hotspot — single live train path, chunked flow policy: Transition-dict rollout (H=16/n=8/T=16) → step-level GAE over executed prefixes → ASPO + V(s) TD-critic; CUDA-default (CPU fallback) fp32, einx.id shapes (collector/fpo_core/trainer + dct_utils), Everything is live.
 
 ## Structure
 ```
@@ -12,11 +12,9 @@ collector.py      346L — Transition TypedDict (8 LeRobot keys); full-H open-lo
 gae.py            step-level GAE over executed transitions; terminated masks bootstrap and cuts recursion, truncated keeps bootstrap and cuts recursion; first executed step supplies each chunk target
 fpo_core.py       230L — CFM/SQL-ℓ [N,m], STE-capped ρ, ASPO piecewise (PPO-clip Â>0 / SPO Â≤0), mean-of-ψ objective, sample(mode=euler) t:0→1; policy + vf_coef·value summed inline in forward
 dct_utils.py      orthonormal DCT-II/III [H,action_dim] action chunks + discounted_chunk_reward + einx.id (parity-guarded)
-config.py         env registry (envs.yaml) + RUN_MATRIX 15 (TINY 1) + build_run_matrix. SJFPO hyperparams live ONLY in configuration_sjfpo.py::SJFPOConfig (H=16/T=16/top_p=0.3→K=5/D=128, DiT-8/4heads/mlp×4/t256)
+config.py         env registry (envs.yaml) + version/dims helpers. SJFPO hyperparams live ONLY in configuration_sjfpo.py::SJFPOConfig (H=16/T=16/top_p=0.3→K=5/D=128, DiT-8/4heads/mlp×4/t256)
 checkpointing.py  Hub policy ckpt (config.json + safetensors via save/load_policy_checkpoint)
 evaluator.py      159L — Evaluator MuJoCo 3-col [episode,return,length]
-sweep.py          196L — scan_runs/run_pending state machine
-analysis.py       IQM+bootstrap 2000, notebook-invoked (train.py never imports it; risk boundary)
 wandb_logging.py  ~114L — sole wandb importer (REQUIRED, hard import): 5 fns SDK-direct (wandb_disabled, init_wandb_run_for_method->bool, log_metrics, log_eval_summary, finish_run)
 utils.py          149L — shared pure helpers (device/dtype/compile), no sjfpo imports
 ```
@@ -27,7 +25,7 @@ utils.py          149L — shared pure helpers (device/dtype/compile), no sjfpo 
 - `networks.py:StateConditioner`: raw window tokens query DCT-II bins (bin index = frequency order) in one cross-attn block, mean-pool → `[B,D]` (rFFT reserved for observation.image)
 - `gae.py:compute_step_advantages_torch`: per-step `δ_t`, backward `γλ`; terminated masks bootstrap and cuts recursion, truncated keeps bootstrap and cuts recursion
 - `runner.py:build_training_components`: policy/critic/conditioner (each model owns its state encoder, no target nets, no aux head); `compute_chunk_values` V(s) via Critic, bootstraps truncated only
-- trainer sums `policy + vf_coef·value` inline (no helper); `sweep.py:ScanResult(pending,skipped,diverged)` deterministic sort (method,env,seed)
+- trainer sums `policy + vf_coef·value` inline (no helper)
 
 ## Code Map
 | File | Export | Caller |
@@ -36,7 +34,7 @@ utils.py          149L — shared pure helpers (device/dtype/compile), no sjfpo 
 | `collector.py` | `Transition` `collect_chunks` (+`collect_chunks_vec` for `num_envs>1`) | `tests/test_transition_v4.py` |
 | `dct_utils.py` | `dct` `idct` `discounted_chunk_reward` | `collector.py` `fpo_core.py` (DCT) + `tests/test_dct.py` |
 | `utils.py` | `resolve_device` `is_bf16_available` `resolve_compute_dtype` `maybe_compile` | `train_sjfpo.py` |
-| `modeling_sjfpo.py` | `SJFPOPolicy` `SJFPOAborted` | `sweep.py` |
+
 | `wandb_logging.py` | `wandb_disabled` `init_wandb_run_for_method`->bool `log_metrics` `log_eval_summary` `finish_run` (5 fns SDK-direct) | `train_sjfpo.py` (REQUIRED import, SJFPO_DISABLE_WANDB=1 gate) |
 
 ## Conventions
@@ -53,10 +51,8 @@ utils.py          149L — shared pure helpers (device/dtype/compile), no sjfpo 
 ## Anti-Patterns
 - DO NOT move observation fusion back into the flow head (`SJFPOFlowModel` stays `(x_t, t, condition)`); do NOT reintroduce target/EMA nets (`target_state_encoder`, `EMAProjection`, `ema_power`) beyond the frozen `old_*` behavior snapshots
 - DO NOT reintroduce `Polyak`/`ema_decay` naming in the sjfpo path
-- DO NOT touch `analysis.py` statistics/plotting (bootstrap, IQM n_boot 2000, CI) without explicit plan amendment — risk boundary, off train path
 - DO NOT add RL heads to the flow loss (ASPO+value live in `assemble_update`, not in the flow)
 - DO NOT import `wandb` outside `sjfpo.wandb_logging` (sole importer); do NOT log secrets/API keys
-- DO NOT change `AnalysisError` hierarchy without updating `build_notebook.py` Analysis fallback
 
 ## Commands
 ```bash

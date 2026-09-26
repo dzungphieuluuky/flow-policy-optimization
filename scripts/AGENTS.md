@@ -12,7 +12,6 @@ verify_deps.sh      venv bootstrap + inline version asserts (STALE vs pyproject 
 
 ## Where to Look
 - `train.py:select_method_cfg` — CLI flags > flat-YAML overlay > dataclass defaults; only dataclass fields pass (`total_steps`/`eval_steps`/`save_steps`/`obs_dim`/`action_dim` are runner scalars, NOT config fields)
-- `sweep.sh` axes → `sweep.scan_runs`/`run_pending` (reentrant: scans FS for done runs, dispatches pending sequentially)
 - `build_notebook.py:embedded_files` — runtime files recreated via `%%writefile` (`src/`, `scripts/train.py`, `configs/`, `requirements-linux.txt`); rebuild after changing any of them
 
 ## Conventions
@@ -29,7 +28,6 @@ verify_deps.sh      venv bootstrap + inline version asserts (STALE vs pyproject 
 ## Commands
 ```bash
 PYTHONPATH=src .venv/bin/python scripts/train.py --method sjfpo --env Hopper-v5 --seed 0 --total_steps 2000
-ENVS=Hopper-v5 SEEDS="0 1" bash scripts/sweep.sh --python .venv/bin/python
 PYTHONPATH=src .venv/bin/python scripts/build_notebook.py   # rebuilds spectral_joint_flow.ipynb
 ```
 

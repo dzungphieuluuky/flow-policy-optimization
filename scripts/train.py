@@ -2,7 +2,7 @@
 """Single-run training CLI for SJFPO (PyTorch) and SJFPO (JAX).
 
 One run per invocation; draccus builds the run config (singular values only).
-Sweeps live in scripts/sweep.sh: one call here per env x seed.
+One call per run; run each env/seed combination you want.
 
     python scripts/train.py --method sjfpo --env Hopper-v5 --seed 0 --total_steps 2000
     python scripts/train.py --method sjfpo_jax --env Hopper-v5 --seed 0 --total_steps 2000
@@ -78,7 +78,7 @@ def configure_torch_cuda() -> bool:
 
 @dataclass
 class TrainConfig:
-    """One training run (singular values only; sweep axes live in sweep.sh)."""
+    """Run one training job (single values only)."""
 
     method: Literal["sjfpo", "sjfpo_jax"] = "sjfpo"
     env: str | None = None
@@ -360,8 +360,7 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
 
-    # Same layout the old matrix used (sweep.format_run_directory_name),
-    # suffixed when resuming so the source run is never overwritten.
+    # Suffixed when resuming so the source run is never overwritten.
     run_dir = resolve_run_dir(
         args.out_dir, args.method, args.env, args.seed, args.resume
     )

@@ -8,12 +8,10 @@
 test_networks.py (29)        encoder/conditioner/DiT + V(s) Critic
 test_wandb_logging.py (27)   default-on gate (imports FakeGymEnv)
 test_einx_migration.py (27)  torch↔einx 1e-6 parity (QUARANTINE per ledger)
-test_sweep.py (21)           scan_runs/run_pending (imports RunSpec, RUN_MATRIX)
 test_modeling_sjfpo.py (18)  SJFPOPolicy modules/inference/forward/hub roundtrip
 test_config.py (17)          dataclasses + 45/TINY matrices (module-reload tests)
-test_todo3_characterization.py (15) behavior pins (evaluator/sweep/collector goldens)
+test_todo3_characterization.py (13) behavior pins (evaluator/collector goldens)
 test_dct.py (14)             DCT/IDCT roundtrip + Parseval + DC=mean·√H (no scipy)
-test_analysis.py (14)        analyze_results IQM/bootstrap
 test_fpo_core.py (13)        ASPO/CFM (imports sample_action, SJFPOFlowModel)
 test_utils.py (12)           env detect + paths + notebook builder + bf16/compile
 test_collector.py (12)       collect_chunks incl. NEVER-hardcode-horizon guards (fake_env)
@@ -39,7 +37,7 @@ fixtures/fake_env.py       FakeGymEnv shared fixture
 - Characterization guards: `test_todo3_characterization.py`, `test_todo4_characterization.py` (behavior pins)
 
 ## Conventions
-- Test-only seams are load-bearing: Transition/SJFPOAborted/policy heads/sample_action/build_run_matrix imports — deleting src helpers breaks these first
+- Test-only seams are load-bearing: Transition/SJFPOAborted/policy heads/sample_action/helpers — deleting src helpers breaks these first
 - Deleting a tested src fn requires deleting/rewriting its test (deslop rule, verified 3×)
 - Collected-item counts per file (parametrize-inflated); full-suite count recomputed on test add/remove (never hardcoded)
 - RED-GREEN headers: most files carry a TDD docstring (`RED phase` / `RED until implemented`) — historical, suite is green
@@ -47,7 +45,7 @@ fixtures/fake_env.py       FakeGymEnv shared fixture
 
 ## Anti-Patterns
 - DO NOT delete failing tests to pass — fix src or amend plan
-- DO NOT touch test_einx_migration.py (quarantine) or analysis stats tests without amendment
+- DO NOT touch test_einx_migration.py (quarantine) without amendment
 - DO NOT weaken pipeline invariants (CSV cols, 45, is_stub) silently
 - DO NOT remove characterization tests (test_todo3/4) — they are behavior pins
 

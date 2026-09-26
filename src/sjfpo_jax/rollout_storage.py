@@ -50,70 +50,12 @@ class RolloutStorage:
         self.cursor = jnp.zeros(num_envs, dtype=jnp.int32)
         self.count = 0
 
-    def num_chunks(self) -> int:
-        return self.count
 
     def clear(self) -> None:
         self.cursor = jnp.zeros(self.num_envs, dtype=jnp.int32)
         self.count = 0
 
-    def add_chunk(
-        self,
-        env_idx: int,
-        state,
-        action,
-        next_state,
-        rewards_1d,
-        done: bool,
-        truncated: bool = False,
-    ) -> None:
-        """Mutate the buffer in place (Python-level mutation, jnp arrays)."""
-        c = int(self.cursor[env_idx])
-        if c >= self.max_chunks:
-            raise OverflowError("Rollout buffer overflow: call clear() before reuse")
-        r = jnp.asarray(rewards_1d, dtype=self.dtype).reshape(-1)
-        length = int(r.shape[0])
-        if not 1 <= length <= self.action_horizon:
-            raise ValueError(f"chunk must execute 1..H steps, got {length}")
 
-        self.states = self.states.at[c, env_idx].set(
-            jnp.asarray(state, dtype=self.dtype)
-        )
-        self.actions = self.actions.at[c, env_idx].set(
-            jnp.asarray(action, dtype=self.dtype)
-        )
-        self.next_states = self.next_states.at[c, env_idx].set(
-            jnp.asarray(next_state, dtype=self.dtype)
-        )
-        self.rewards = self.rewards.at[c, env_idx].set(
-            jnp.zeros((self.action_horizon,), dtype=self.dtype).at[:length].set(r)
-        )
-        self.lengths = self.lengths.at[c, env_idx].set(length)
-        self.dones = self.dones.at[c, env_idx].set(bool(done))
-        self.truncated = self.truncated.at[c, env_idx].set(bool(truncated))
-        self.cursor = self.cursor.at[env_idx].add(1)
-        self.count += 1
-
-    def to_transition_list(self) -> list[dict]:
-        from lerobot.utils.constants import DONE, OBS_STATE, REWARD, TRUNCATED
-
-        out: list[dict] = []
-        for e in range(self.num_envs):
-            for c in range(int(self.cursor[e])):
-                length = int(self.lengths[c, e])
-                out.append(
-                    {
-                        OBS_STATE: self.states[c, e],
-                        "action": self.actions[c, e],
-                        "next.observation.state": self.next_states[c, e],
-                        REWARD: self.rewards[c, e, :length],
-                        DONE: jnp.asarray(bool(self.dones[c, e])),
-                        TRUNCATED: jnp.asarray(bool(self.truncated[c, e])),
-                        "executed_n_action_steps": jnp.asarray(length),
-                        "clip_count": jnp.asarray(0, dtype=jnp.int32),
-                    }
-                )
-        return out
 
 
 def mini_batch_indices(n: int, num_minibatches: int, key, num_epochs: int = 1):

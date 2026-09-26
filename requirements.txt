@@ -30,7 +30,6 @@ orbax-checkpoint
 numpy
 scipy
 pandas
-matplotlib
 scikit-learn
 scikit-image
 opencv-python-headless

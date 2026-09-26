@@ -252,24 +252,6 @@ def default_runs_base(runtime: str | None = None) -> Path:
     )
 
 
-def default_analysis_output(runtime: str | None = None) -> Path:
-    """Resolve the analysis output directory for a runtime.
-
-    Args:
-        runtime: Runtime name; detected when omitted.
-
-    Returns:
-        Root directory the analysis writes plots and CSVs into.
-    """
-    return _runtime_root(
-        "/kaggle/working/analysis",
-        "/content/drive/MyDrive/spectral-joint-policy/analysis",
-        "/content/analysis",
-        ".omo/evidence/analysis",
-        runtime,
-    )
-
-
 def default_smoke_dir(runtime: str | None = None) -> Path:
     """Resolve the smoke-gate output directory for a runtime.
 

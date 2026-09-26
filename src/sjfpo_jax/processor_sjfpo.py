@@ -51,11 +51,3 @@ class SJFPOActionPostprocessor:
         return out
 
 
-def make_sjfpo_pre_post_processors(policy):
-    return (
-        SJFPOObservationProcessor(stats=policy.params.obs_stats),
-        SJFPOActionPostprocessor(
-            action_low=jnp.asarray(policy.action_low),
-            action_high=jnp.asarray(policy.action_high),
-        ),
-    )

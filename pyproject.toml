@@ -24,7 +24,6 @@ dependencies = [
     "jax>=0.5.3",
     "jaxlib>=0.5.3",
     "lerobot[core-scripts,dataset,training]>=0.1.0",
-    "matplotlib>=3.11.2",
     "moviepy>=1.0.3",
     "mujoco>=3.13.0",
     "numpy>=1.26.4",

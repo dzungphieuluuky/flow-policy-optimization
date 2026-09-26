@@ -27,16 +27,6 @@ PROTOTYPE_ENVS = tuple(
 KNOWN_ENVS = ENVS + PROTOTYPE_ENVS
 
 
-@dataclass(frozen=True)
-class RunSpec:
-    method: str
-    env: str
-    seed: int
-    total_steps: int
-    eval_steps: int
-    save_steps: int
-
-
 def parse_version_tuple(version: str) -> tuple[int, ...]:
     """Parse a version string into a comparable integer tuple.
 

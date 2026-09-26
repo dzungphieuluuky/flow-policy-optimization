@@ -10,7 +10,6 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from sjfpo.utils import (  # noqa: E402
-    default_analysis_output,
     default_runs_base,
     default_smoke_dir,
     detect_runtime_env,
@@ -45,16 +44,13 @@ class TestDetectRuntimeEnv:
 class TestDefaultPaths:
     def test_explicit_env_needs_no_fs(self):
         assert default_runs_base("kaggle") == Path("/kaggle/working/runs")
-        assert default_analysis_output("kaggle") == Path("/kaggle/working/analysis")
         assert default_smoke_dir("kaggle") == Path("/kaggle/working/smoke")
         assert default_runs_base("local") == Path(".omo/evidence/runs")
-        assert default_analysis_output("local") == Path(".omo/evidence/analysis")
         assert default_smoke_dir("local") == Path(".omo/evidence/smoke")
 
     def test_colab_without_drive(self, monkeypatch):
         monkeypatch.setattr("pathlib.Path.exists", lambda self: False)
         assert default_runs_base("colab") == Path("/content/runs")
-        assert default_analysis_output("colab") == Path("/content/analysis")
         assert default_smoke_dir("colab") == Path("/content/smoke")
 
     def test_colab_with_drive_mount(self, monkeypatch):

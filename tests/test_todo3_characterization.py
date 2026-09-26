@@ -1,4 +1,4 @@
-"""Golden behavior pins: evaluator, select_action, sweep, collector, guards.
+"""Golden behavior pins: evaluator, select_action, collector, guards.
 
 Locks observable outputs (CSV schema, open-loop cadence, pending/flush
 format, truncation/bootstrap semantics, divergence/ratio guards) so later
@@ -157,47 +157,6 @@ class TestSelectActionCharacterization:
         policy.reset()
         assert len(policy._frame_buffer) == 0
         assert len(policy._action_buffer) == 0
-
-
-class TestSweepCharacterization:
-    def test_dir_without_manifest_is_pending(self, tmp_path):
-        from sjfpo.sweep import scan_runs
-        from sjfpo.config import RunSpec
-
-        spec = RunSpec(
-            method="sjfpo",
-            env="Hopper-v5",
-            seed=0,
-            total_steps=100,
-            eval_steps=10,
-            save_steps=10,
-        )
-        (tmp_path / "sjfpo_Hopper-v5_seed0").mkdir(parents=True)
-        result = scan_runs((spec,), tmp_path)
-        assert len(result.pending) == 1
-        assert len(result.skipped) == 0
-
-    def test_flush_error_message_format(self, tmp_path, capsys):
-        from sjfpo.sweep import flush_pending_runs
-        from sjfpo.config import RunSpec
-        import time
-
-        spec = RunSpec(
-            method="sjfpo",
-            env="Hopper-v5",
-            seed=0,
-            total_steps=100,
-            eval_steps=10,
-            save_steps=10,
-        )
-
-        def boom(spec, base):
-            raise RuntimeError("kablam")
-
-        results, failed = flush_pending_runs([spec], tmp_path, boom, time.time())
-        assert results == []
-        assert failed == ["sjfpo_Hopper-v5_seed0"]
-        assert "ERROR in run sjfpo_Hopper-v5_seed0: kablam" in capsys.readouterr().out
 
 
 class TestCollectorHelperCharacterization:
