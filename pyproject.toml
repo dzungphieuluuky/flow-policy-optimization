@@ -46,9 +46,6 @@ dependencies = [
     "wandb>=0.16.6",
 ]
 
-[dependency-groups]
-dev = ["pytest>=8.0"]
-
 [project.scripts]
 spectral-joint-policy = "spectral_joint_policy:main"
 
