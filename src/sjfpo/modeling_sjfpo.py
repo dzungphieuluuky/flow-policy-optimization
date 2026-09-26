@@ -9,8 +9,6 @@ Performance notes
   transfer (one ``.tolist()``) instead of ~20 ``float()`` syncs per call, and
   the whole diagnostic pass is gated on ``compute_info=True``.
 * ``rho_bin`` is computed once per forward, not once per branch.
-* Gradient checkpointing is off by default for shallow DiT stacks; when on,
-  it actually wraps the actor call.
 * ``snapshot_behavior_policy`` copies weights in-place into the frozen
   snapshot instead of ``copy.deepcopy``-ing a ``torch.compile`` wrapper.
 """
@@ -24,7 +22,6 @@ from typing import Any
 import einx
 import numpy as np
 import torch
-import torch.utils.checkpoint as cp
 
 from lerobot.policies import PreTrainedPolicy
 from lerobot.processor.converters import to_tensor
@@ -147,24 +144,6 @@ def _mc_x_t(
         (1.0 - flatten_mc_timestep) * flatten_mc_noise
         + flatten_mc_timestep * flatten_mc_action
     ).reshape(-1, *flow_shape)
-
-
-def _actor_call(actor, x_t, tau, cond, *, use_ckpt: bool):
-    """Run the actor, optionally under gradient checkpointing.
-
-    Args:
-        actor: Actor module to call.
-        x_t: Flow point.
-        tau: Per-token flow times.
-        cond: Conditioning.
-        use_ckpt: Whether to wrap the call in a checkpointed region.
-
-    Returns:
-        The actor's predicted velocity.
-    """
-    if use_ckpt:
-        return cp.checkpoint(actor, x_t, tau, cond, use_reentrant=False)
-    return actor(x_t, tau, cond)
 
 
 def _unwrap_compiled(m: torch.nn.Module) -> torch.nn.Module:
@@ -491,9 +470,7 @@ class SJFPOPolicy(PreTrainedPolicy):
 
         ``condition`` is the state conditioner's output, already broadcast over
         the Monte-Carlo draws, so both the frozen and live paths share the one
-        forward-conditioning pass their caller already performed. Gradient
-        checkpointing is applied here for the live actor, matching the training
-        loop's configuration.
+        forward-conditioning pass their caller already performed.
 
         Args:
             x_t: Flow point, of shape ``[B, K, action_dim]``.
@@ -505,9 +482,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             Predicted velocities, in the actor's own dtype.
         """
         net = self.old_actor if old else self.actor
-        if old or not self.config.use_gradient_checkpointing:
-            return net(x_t, tau, condition)
-        return _actor_call(net, x_t, tau, condition, use_ckpt=True)
+        return net(x_t, tau, condition)
 
 
     def standardize_obs_tensor(self, states: torch.Tensor) -> torch.Tensor:

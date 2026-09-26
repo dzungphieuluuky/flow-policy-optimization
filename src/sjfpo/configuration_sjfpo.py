@@ -91,7 +91,6 @@ class SJFPOConfig(PreTrainedConfig):
     optimizer_weight_decay: float = 1e-4
 
     # No separate warm-up phase; stats initialize naturally during first rollout.
-    use_gradient_checkpointing: bool = False
     grad_accum_steps: int = 1  # >1 reduces GPU memory at cost of speed
 
 
