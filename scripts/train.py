@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""Single-run training CLI for SJFPO (PyTorch) and SJFPO (JAX).
+"""Single-run training CLI for SJFPO (PyTorch).
 
 One run per invocation; draccus builds the run config (singular values only).
 One call per run; run each env/seed combination you want.
 
-    python scripts/train.py --method sjfpo --env Hopper-v5 --seed 0 --total_steps 2000
-    python scripts/train.py --method sjfpo_jax --env Hopper-v5 --seed 0 --total_steps 2000
+    python scripts/train.py --env Hopper-v5 --seed 0 --total_steps 2000
     python scripts/train.py --method sjfpo --env Hopper-v5 --sjfpo.policy_lr 3e-4
     python scripts/train.py --method sjfpo --env Hopper-v5 --seed 0 \
         --resume outputs/sjfpo_Hopper-v5_seed0/checkpoint_1000 \
@@ -51,9 +50,8 @@ VALID_ENVS = KNOWN_ENVS
 def configure_torch_cuda() -> bool:
     """Apply torch CUDA tuning when torch is importable and CUDA is present.
 
-    Returns True when torch is usable. Never raises: a JAX-only environment
-    simply skips this. Importing torch is deferred to this function so the
-    JAX path doesn't pay the import cost.
+    Returns True when torch is usable. Never raises, so a torch-less
+    environment still reaches the import error further down with context.
     """
     try:
         import torch  # noqa: F401
@@ -80,7 +78,7 @@ def configure_torch_cuda() -> bool:
 class TrainConfig:
     """Run one training job (single values only)."""
 
-    method: Literal["sjfpo", "sjfpo_jax"] = "sjfpo"
+    method: Literal["sjfpo"] = "sjfpo"
     env: str | None = None
     seed: int = 3407
     total_steps: int | None = None
@@ -93,11 +91,10 @@ class TrainConfig:
     wandb_enabled: bool = True
     wandb_run_name: str | None = None
     config: str | None = None  # legacy flat YAML overlay for the method config
-    # Resume an sjfpo / sjfpo_jax checkpoint dir (checkpoint_<step>/ or
+    # Resume an sjfpo checkpoint dir (checkpoint_<step>/ or
     # checkpoint_final/): continues policy + optimizer + counters into a FRESH
     # run dir (<base>_resume[/2...]). total_steps stays an absolute env-step
-    # budget. sjfpo_jax resume requires a JAX-side checkpoint (see
-    # sjfpo_jax.checkpointing).
+    # budget.
     resume: str | None = None
     sjfpo: SJFPOConfig = field(default_factory=SJFPOConfig)
 
@@ -165,14 +162,8 @@ def select_method_cfg(
 ):
     """Nested draccus sub-config for the method, overlaid with flat YAML.
 
-    ``sjfpo_jax`` reuses the sjfpo hyperparameter block (identical fields,
-    identical semantics; only the execution backend differs).
     """
-    method_cfg = {
-        "sjfpo": args.sjfpo,
-        "sjfpo_jax": args.sjfpo,
-    }[args.method]
-    return apply_flat_yaml(method_cfg, yaml_dict, cli_fields=cli_fields)
+    return apply_flat_yaml(args.sjfpo, yaml_dict, cli_fields=cli_fields)
 
 
 def default_intervals(
@@ -272,24 +263,6 @@ def run_single(
                 f"{(live_obs, live_act)}"
             )
 
-        if method == "sjfpo_jax":
-            # Lazy import so torch-only users don't pay the JAX import cost.
-            from sjfpo_jax.train_sjfpo import train_sjfpo_run as train_jax_run
-
-            return train_jax_run(
-                env=env,
-                out_dir=out_dir,
-                cfg=cfg,
-                seed=seed,
-                total_steps=total_steps,
-                eval_steps=eval_steps,
-                save_steps=save_steps,
-                obs_dim=obs_dim,
-                action_dim=action_dim,
-                resume_from_checkpoint=resume_from_checkpoint,
-                wandb_enabled=wandb_enabled,
-            )
-
         from sjfpo.train_sjfpo import train_sjfpo_run
 
         if resume_from_checkpoint is not None and method != "sjfpo":
@@ -313,8 +286,6 @@ def run_single(
 
 
 def main(argv: list[str] | None = None) -> int:
-    # Torch CUDA tuning is a no-op (and torch is not imported) if torch is
-    # unavailable — the sjfpo_jax path works in a JAX-only install.
     configure_torch_cuda()
 
     argv = list(sys.argv[1:] if argv is None else argv)
@@ -332,17 +303,11 @@ def main(argv: list[str] | None = None) -> int:
     yaml_dict: dict = load_yaml_dict(args.config) if args.config else {}
     total = args.total_steps or int(yaml_dict.get("total_steps", 2000))
 
-    # JAX eval is 12 full episodes: sparse defaults (capped by total for smokes).
-    is_jax = args.method == "sjfpo_jax"
-    eval_s = default_intervals(
-        total, args.eval_steps, yaml_dict, "eval_steps", 20000 if is_jax else 1000
-    )
-    ckpt_i = default_intervals(
-        total, args.save_steps, yaml_dict, "save_steps", 25000 if is_jax else 1000
-    )
+    eval_s = default_intervals(total, args.eval_steps, yaml_dict, "eval_steps", 1000)
+    ckpt_i = default_intervals(total, args.save_steps, yaml_dict, "save_steps", 1000)
     cfg = select_method_cfg(args, yaml_dict, _sjfpo_cli_fields(argv))
 
-    if args.resume and args.method not in ("sjfpo", "sjfpo_jax"):
+    if args.resume and args.method != "sjfpo":
         print(
             f"ERROR: --resume is sjfpo-only, got --method {args.method!r}",
             file=sys.stderr,
