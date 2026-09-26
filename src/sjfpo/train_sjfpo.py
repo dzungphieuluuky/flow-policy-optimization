@@ -64,18 +64,8 @@ def mini_batch_indices(
     """Yield shuffled minibatch index tensors, one per epoch.
 
     Every epoch reshuffles, so repeated epochs do not see the same order.
-
-    Args:
-        n: Total number of chunks to split.
-        num_minibatches: Number of minibatches per epoch.
-        device: Device the index tensors are created on.
-        num_epochs: Number of epochs to yield indices for.
-
-    Yields:
-        An index tensor per minibatch, reshuffled for every epoch.
-
-    Raises:
-        ValueError: If ``n`` is below one.
+    Splits are proportional (``(i * n) // n_mb``), so a remainder is spread
+    over the bins rather than dropped; the count is clamped to ``[1, n]``.
     """
     if n < 1:
         raise ValueError(f"n={n} must be >= 1")
@@ -119,19 +109,8 @@ def build_policy(
 ) -> SJFPOPolicy:
     """Attach runtime features, then build the policy.
 
-    Args:
-        obs_dim: Observation dimension.
-        action_dim: Action dimension.
-        cfg: Active configuration.
-        device: Device the policy is built on.
-        action_low: Per-dimension lower env action bounds.
-        action_high: Per-dimension upper env action bounds.
-        policy_cls: Policy class to instantiate. Subclasses that swap the
-            actor network, such as ``SJFPOPolicyMLP``, pass through here so
-            the rest of the training loop is unchanged.
-
-    Returns:
-        The constructed policy.
+    ``policy_cls`` is how a swapped actor, such as ``SJFPOPolicyMLP``, enters
+    the run without any change to the training loop.
     """
     device = torch.device(device) if device is not None else resolve_device()
     policy_cfg = dataclasses.replace(
@@ -150,17 +129,7 @@ def build_policy(
 def _build_optimizer(
     policy: SJFPOPolicy, cfg: SJFPOConfig, params: list[dict], lr: float
 ):
-    """Build an optimizer over one param group at a fixed learning rate.
-
-    Args:
-        policy: Policy supplying the config preset.
-        cfg: Active configuration.
-        params: The single param group to optimize.
-        lr: Learning rate for this optimizer.
-
-    Returns:
-        The constructed optimizer.
-    """
+    """Build an optimizer over a single param group at a fixed learning rate."""
     kwargs = dataclasses.asdict(cfg.get_optimizer_preset(lr=lr))
     kwargs.pop("grad_clip_norm", None)
     if next(policy.parameters()).is_cuda:
@@ -171,18 +140,11 @@ def _build_optimizer(
 def build_optimizers(
     policy: SJFPOPolicy, cfg: SJFPOConfig
 ) -> tuple[torch.optim.Optimizer, torch.optim.Optimizer]:
-    """Build the separate actor and critic optimizers.
+    """Build separate actor and critic optimizers.
 
     A single shared group would let the critic's value gradient (orders of
     magnitude larger than the policy's) own the one grad-norm clip, so the
     policy step is both clipped and outnumbered.
-
-    Args:
-        policy: Policy supplying the actor and critic param groups.
-        cfg: Active configuration supplying both learning rates.
-
-    Returns:
-        Tuple of the actor optimizer and the critic optimizer.
     """
     return (
         _build_optimizer(
@@ -205,19 +167,10 @@ def sample_minibatch(
     them all consistently. ``mc_tau`` ``[B,M,K,1]`` and ``mc_eps`` ``[B,M,K,d]``
     are stored per chunk/MC draw and are sliced with the minibatch.
 
-    ``normalizer_observations`` is the one exception: it is passed through
-    unslided because it holds one row per executed environment step rather than
-    per chunk, and the normalizer is updated once from the complete rollout
-    batch. ``gae_diagnostics`` is a plain dict of scalars, passed through for
-    the same reason.
-
-    Args:
-        batch: Batch of per-chunk tensors.
-        indices: Row indices to select.
-        out: Optional preallocated destination, written in place.
-
-    Returns:
-        The sliced batch, or ``out`` when one was supplied.
+    ``normalizer_observations`` is passed through unsliced: it holds one row
+    per executed env step rather than per chunk, and the normalizer is updated
+    once from the complete rollout batch. ``gae_diagnostics`` is a plain dict
+    of scalars, passed through for the same reason.
     """
     if out is None:
         out = {}
@@ -234,17 +187,9 @@ def random_baseline(
 ) -> float:
     """Measure the random-policy return used as the divergence reference.
 
-    Args:
-        evaluator: Evaluator driving the episodes.
-        env: Environment rolled out.
-        max_episodes: Number of random episodes to average over.
-
-    Returns:
-        Mean return of the random policy, or ``0.0`` when no episodes could
-        be evaluated. Callers gate on ``baseline > 0`` before treating the
-        value as meaningful (see :func:`check_divergence`), so returning
-        ``0.0`` on failure disables divergence detection rather than
-        falsely flagging every subsequent run as diverged.
+    Returns ``0.0`` when no episode could be evaluated. Callers gate on
+    ``baseline > 0``, so that disables divergence detection rather than
+    falsely flagging every later run as diverged.
     """
     baseline_evaluator = Evaluator(
         env,
@@ -264,26 +209,17 @@ def _make_vec_env(env_name: str, num_envs: int):
 
     ``AsyncVectorEnv`` parallelizes env stepping across worker processes —
     the single biggest rollout-throughput win for ``num_envs > 1``. Falls
-    back to ``SyncVectorEnv`` if the async path is unavailable in the
-    current runtime (e.g. no /dev/shm, pickling of the env factory fails).
-
-    Args:
-        env_name: Gymnasium environment id.
-        num_envs: Number of parallel environments.
-
-    Returns:
-        The vectorised environment.
+    back to ``SyncVectorEnv`` when the async path is unavailable in the
+    current runtime (no ``/dev/shm``, env-factory pickling failure).
     """
     import gymnasium as gym
 
     env_fns = [lambda: gym.make(env_name) for _ in range(num_envs)]
-    # Depends on env.autoreset_mode propagating through vectorisation;
+    # autoreset_mode must survive vectorisation in either branch; the
     # collector validates NEXT_STEP (see _validate_autoreset_mode).
     try:
         return gym.vector.AsyncVectorEnv(env_fns)
     except Exception:
-        # Depends on env.autoreset_mode propagating through vectorisation;
-        # collector validates NEXT_STEP (see _validate_autoreset_mode).
         return gym.vector.SyncVectorEnv(env_fns)
 
 
@@ -313,29 +249,6 @@ def train_sjfpo_run(
     Gradients are clipped per optimizer rather than jointly, because the
     critic's gradient norm is orders of magnitude larger than the actor's and a
     shared clip would consume the whole budget on the critic.
-
-    Args:
-        env: Environment to train on. Built from ``cfg`` when omitted.
-        out_dir: Directory artifacts are written to; created if absent.
-        cfg: Active configuration; the defaults are used when omitted.
-        seed: Seed for the policy, env, and torch RNGs.
-        total_steps: Absolute environment-step budget for the run.
-        eval_steps: Environment steps between periodic evaluations.
-        save_steps: Environment steps between periodic checkpoints.
-        obs_dim: Observation dimension override.
-        action_dim: Action dimension override.
-        resume_from_checkpoint: Checkpoint directory to resume policy,
-            optimizers, and counters from.
-        wandb_enabled: Whether to log to wandb.
-        policy_cls: Policy class to build. Defaults to the DiT policy; the
-            MLP actor is selected by passing ``SJFPOPolicyMLP``.
-
-    Returns:
-        Summary dict with the final metrics and the artifact paths.
-
-    Raises:
-        RuntimeError: If the run aborts, or if a buffered collection executed
-            zero steps.
     """
     cfg = cfg or SJFPOConfig()
     out_dir = Path(out_dir)

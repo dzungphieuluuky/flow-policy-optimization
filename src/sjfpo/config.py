@@ -32,12 +32,6 @@ def parse_version_tuple(version: str) -> tuple[int, ...]:
 
     Non-numeric segments collapse to ``0``, so ``"1.0.0rc1"`` parses as
     ``(1, 0, 0, 1)``.
-
-    Args:
-        version: Dotted version string.
-
-    Returns:
-        Tuple of integers ordered major, minor, patch, and any extras.
     """
     parts: list[int] = []
     for part in version.split("."):
@@ -53,12 +47,8 @@ def assert_runtime(allow_fp16: bool = False) -> None:
     *storage* is not, because flow-matching Euler rollouts and CFM losses
     need fp32 to stay stable.
 
-    Args:
-        allow_fp16: True when the caller requested fp16/bf16 storage.
-
-    Raises:
-        RuntimeError: If gymnasium is older than 1.0, or if ``allow_fp16`` is
-            set.
+    Raises ``RuntimeError`` if gymnasium is older than 1.0, or if
+    ``allow_fp16`` is set.
     """
     import importlib.metadata
 
@@ -80,15 +70,8 @@ def assert_runtime(allow_fp16: bool = False) -> None:
 def lookup_env_dims(env_id: str) -> tuple[int, int]:
     """Look up observation and action dimensions from ``configs/envs.yaml``.
 
-    Args:
-        env_id: Gymnasium environment id, e.g. ``"Hopper-v5"``.
-
-    Returns:
-        Tuple of ``(obs_dim, action_dim)``.
-
-    Raises:
-        RuntimeError: If PyYAML is not installed.
-        KeyError: If ``env_id`` is absent from the registry.
+    Raises ``RuntimeError`` if PyYAML is missing and ``KeyError`` if ``env_id``
+    is absent from the registry.
     """
     try:
         import yaml

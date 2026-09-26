@@ -43,28 +43,10 @@ def compute_chunk_advantages(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Compute chunk-level GAE over the executed chunks of a rollout.
 
-    Args:
-        step_rewards: Executed-step rewards, shape ``[T]``.
-        step_values: Value estimates for the state at each executed step.
-        step_next_values: Value estimates for the state after each step.
-        chunk_starts: Index of each chunk's first executed step, ``[B]``.
-        chunk_lengths: Executed steps per chunk, ``[B]``, each in
-            ``[1, chunk_size]``.
-        chunk_terminated: True-termination mask per chunk, ``[B]``.
-        chunk_truncated: Timeout / budget-cut mask per chunk, ``[B]``.
-        chunk_env_id: Vec-env slot per chunk, ``[B]``. Consecutive chunks
-            continue a trajectory only when the slot matches.
-        chunk_size: Full action horizon, used to size the gather window.
-        gamma: Discount factor in ``[0, 1]``.
-        lam: GAE decay in ``[0, 1]``.
-
-    Returns:
-        Advantages per chunk, and ``values + advantages``, the chunk-level
-        value target.
-
-    Raises:
-        ValueError: If ``gamma`` or ``lam`` fall outside ``[0, 1]``, or if
-            the chunk tensors are not the same length.
+    The chunk tensors must all have the same length. Returns advantages per chunk,
+    and ``values + advantages``, the chunk-level value target. Raises
+    ``ValueError`` if ``gamma`` or ``lam`` fall outside ``[0, 1]``, or if the
+    chunk tensors are not the same length.
     """
     if not 0.0 <= gamma <= 1.0:
         raise ValueError(f"gamma must be in [0, 1], got {gamma}")

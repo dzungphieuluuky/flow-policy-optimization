@@ -77,15 +77,8 @@ class MLPFlowBlock(nn.Module):
     def __init__(self, hidden_dim: int, n_tokens: int, mlp_ratio: float):
         """Build one mixer block.
 
-        Args:
-            hidden_dim: Token width.
-            n_tokens: Number of action tokens, fixed for the run.
-            mlp_ratio: Channel-MLP expansion factor.
-
-        Raises:
-            ValueError: If ``hidden_dim`` is below two, if ``n_tokens`` is
-                below one, or if ``mlp_ratio`` does not give a positive MLP
-                width.
+        Raises ``ValueError`` if ``hidden_dim`` is below two, if ``n_tokens`` is below
+        one, or if ``mlp_ratio`` does not give a positive MLP width.
         """
         super().__init__()
         if hidden_dim < 2:
@@ -108,21 +101,15 @@ class MLPFlowBlock(nn.Module):
     ) -> torch.Tensor | tuple[torch.Tensor, dict[str, torch.Tensor]]:
         """Mix tokens, then mix channels, both conditioned on ``c``.
 
-        The token-mix weight is sliced to ``x``'s token count, so a reduced
-        spectral layout (``use_dct_transform=True`` with
-        ``top_p_spectral_tokens < 1.0``) uses the top-left ``K x K`` submatrix
-        and the leading ``K`` biases. When the full ``action_horizon`` tokens
-        are supplied this is identical to the unsliced ``token_mix``.
+        The token-mix weight is sliced to ``x``'s token count, so a reduced spectral
+        layout (``use_dct_transform=True`` with ``top_p_spectral_tokens < 1.0``) uses
+        the top-left ``K x K`` submatrix and the leading ``K`` biases. When the full
+        ``action_horizon`` tokens are supplied this is identical to the unsliced
+        ``token_mix``.
 
-        Args:
-            x: Tokens of shape ``[B, K, D]``.
-            c: Conditioning of shape ``[B, D]`` or ``[B, K, D]`` when each
-                token carries its own flow time.
-            return_stats: Whether to also return the modulation statistics.
-
-        Returns:
-            The transformed tokens, or a tuple of those tokens and a stats
-            dict when ``return_stats`` is set.
+        ``c`` has shape ``[B, D]``, or ``[B, K, D]`` when each token carries its own
+        flow time. Returns the transformed tokens, or those plus a stats dict when
+        ``return_stats`` is set.
         """
         token_axis = c.dim() == 3
         b = c.shape[0]
@@ -178,21 +165,10 @@ class SJFPOFlowModelMLP(nn.Module):
     ):
         """Build the actor.
 
-        Args:
-            action_dim: Action dimension.
-            action_horizon: Number of action tokens in a full chunk.
-            hidden_dim: Token width.
-            dit_depth: Number of mixer blocks.
-            dit_heads: Accepted and ignored, so the signature matches the DiT
-                model and the same config drives both.
-            dit_mlp_ratio: Channel-MLP expansion factor.
-            time_embed_dim: Width of the sinusoidal time embedding.
-            timestep_scale: Scale applied to the flow time before embedding.
-
-        Raises:
-            ValueError: If the dimensions are out of range, if ``dit_mlp_ratio``
-                does not give a positive MLP width, or if ``timestep_scale`` is
-                not finite and positive.
+        ``dit_heads`` is accepted and ignored, so the signature matches the DiT model
+        and the same config drives both. Raises ``ValueError`` if the dimensions are
+        out of range, if ``dit_mlp_ratio`` does not give a positive MLP width, or if
+        ``timestep_scale`` is not finite and positive.
         """
         super().__init__()
         if action_dim < 1 or hidden_dim < 2:
@@ -241,26 +217,15 @@ class SJFPOFlowModelMLP(nn.Module):
     ) -> torch.Tensor | tuple[torch.Tensor, dict[str, torch.Tensor]]:
         """Predict velocity from token actions and per-token times.
 
-        ``t`` is either a scalar, ``[B]``, or ``[B, K, 1]``. The per-token form
-        gives each action token its own time, shared across its action
-        dimensions. The final layer is zero-initialised, so an untrained model
-        predicts near-zero velocity.
+        ``t`` is either a scalar, ``[B]``, or ``[B, K, 1]``. The per-token form gives
+        each action token its own time, shared across its action dimensions. The final
+        layer is zero-initialised, so an untrained model predicts near-zero velocity.
 
-        Args:
-            x_t: Noisy action tokens of shape ``[B, K, action_dim]``.
-            t: Flow time, as a scalar, ``[B]``, or ``[B, K, 1]``.
-            condition: Conditioning of shape ``[B, hidden_dim]``.
-            return_stats: Whether to also return the modulation statistics.
-
-        Returns:
-            Predicted velocity of shape ``[B, K, action_dim]``, or a tuple of
-            that tensor and a stats dict when ``return_stats`` is set.
-
-        Raises:
-            ValueError: If ``x_t`` is not ``[B, K, action_dim]`` with positive
-                batch and token dimensions, if it carries more tokens than the
-                action horizon, or if ``condition`` disagrees with the batch
-                size or hidden width.
+        Returns a velocity of shape ``[B, K, action_dim]``, or that plus a stats dict
+        when ``return_stats`` is set. Raises ``ValueError`` if ``x_t`` is not
+        ``[B, K, action_dim]`` with positive batch and token dimensions, if it carries
+        more tokens than the action horizon, or if ``condition`` disagrees with the
+        batch size or hidden width.
         """
         if x_t.dim() != 3:
             raise ValueError(f"x_t must have shape [B, K, D], got {tuple(x_t.shape)}")
@@ -354,14 +319,8 @@ class SJFPOFlowModelMLP(nn.Module):
     def _out_modulation(
         self, c: torch.Tensor, token_axis: bool
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Split the output-layer FiLM into shift and scale.
-
-        Args:
-            c: Fused conditioning.
-            token_axis: Whether ``c`` carries a per-token axis.
-
-        Returns:
-            The shift and scale, broadcast to ``[B, 1, D]`` or ``[B, K, D]``.
+        """Split the output-layer FiLM into shift and scale, broadcast to ``[B, 1, D]``
+        or ``[B, K, D]``.
         """
         if token_axis:
             shift_out, scale_out = self.adaLN_out(c).chunk(2, dim=-1)
@@ -382,14 +341,9 @@ class SJFPOPolicyMLP(SJFPOPolicy):
         """Build the policy, then replace the DiT actor with the MLP actor.
 
         ``SJFPOPolicy.__init__`` deep-copies the actor it just built into
-        ``old_actor`` for the frozen behavior snapshot, so that copy has to be
-        redone here; otherwise the snapshot would still hold DiT weights and
+        ``old_actor`` for the frozen behavior snapshot, so that copy has to be redone
+        here; otherwise the snapshot would still hold DiT weights and
         ``snapshot_behavior_policy`` would fail on a key mismatch.
-
-        Args:
-            config: Active configuration, including the feature shapes.
-            dataset_stats: Optional dataset statistics, forwarded to the base
-                class.
         """
         super().__init__(config, dataset_stats)
         self.actor = SJFPOFlowModelMLP(
