@@ -29,8 +29,8 @@ import torch
 @torch.no_grad()
 def compute_chunk_advantages(
     step_rewards: torch.Tensor,
-    step_values: torch.Tensor,
-    step_next_values: torch.Tensor,
+    chunk_value: torch.Tensor,
+    chunk_next_value: torch.Tensor,
     chunk_starts: torch.Tensor,
     chunk_lengths: torch.Tensor,
     *,
@@ -53,12 +53,12 @@ def compute_chunk_advantages(
     if not 0.0 <= lam <= 1.0:
         raise ValueError(f"lam must be in [0, 1], got {lam}")
 
-    device = step_values.device
+    device = chunk_value.device
     dtype = torch.float32
 
     rewards = step_rewards.to(device=device, dtype=dtype).reshape(-1)
-    values = step_values.to(device=device, dtype=dtype).reshape(-1)
-    next_values = step_next_values.to(device=device, dtype=dtype).reshape(-1)
+    chunk_value = chunk_value.to(device=device, dtype=dtype).reshape(-1)
+    chunk_next_value = chunk_next_value.to(device=device, dtype=dtype).reshape(-1)
     starts = chunk_starts.to(device=device, dtype=torch.long).reshape(-1)
     lengths = chunk_lengths.to(device=device, dtype=torch.long).reshape(-1)
     terminated = chunk_terminated.to(device=device, dtype=torch.bool).reshape(-1)
@@ -71,6 +71,8 @@ def compute_chunk_advantages(
         ("chunk_terminated", terminated),
         ("chunk_truncated", truncated),
         ("chunk_env_id", env_id),
+        ("chunk_value", chunk_value),
+        ("chunk_next_value", chunk_next_value),
     ):
         if tensor.numel() != n_chunks:
             raise ValueError(f"{name} must have {n_chunks} entries, got {tensor.numel()}")
@@ -87,10 +89,6 @@ def compute_chunk_advantages(
     gathered = rewards[window.clamp(max=rewards.numel() - 1)]  # [B, chunk_size]
     valid = offsets.unsqueeze(0) < lengths.unsqueeze(1)        # [B, chunk_size]
     chunk_rewards = (gathered * valid * (gamma**offsets)).sum(dim=1)   # [B]
-
-    last_step = starts + lengths - 1                            # [B]
-    chunk_value = values[starts]                                 # [B]
-    chunk_next_value = next_values[last_step]                   # [B]
 
     # Chunks are stored in wavefront order, so one env's chunks sit n_envs
     # apart and never adjacent: an adjacency mask finds no links at all. A

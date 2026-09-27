@@ -735,24 +735,28 @@ class SJFPOPolicy(PreTrainedPolicy):
         actions = active["chunk_actions"]
         states = step_states.index_select(0, chunk_starts)
 
+        # Only the chunk's first and post-chunk states are ever read by the
+        # backup, so the critic and the preprocessor see 2 * n_chunks windows
+        # rather than 2 * n_steps. The obs normalizer is updated separately
+        # from raw frames via normalizer_observations.
         with torch.inference_mode():
-            all_step_states_n = self.preprocessor(
-                {OBS_STATE: torch.cat([step_states, step_next_states], dim=0)}
+            last_step = chunk_starts + lengths - 1
+            next_states = step_next_states.index_select(0, last_step)
+            all_chunk_states_n = self.preprocessor(
+                {OBS_STATE: torch.cat([states, next_states], dim=0)}
             )[OBS_STATE]
-            normalized_states = all_step_states_n.index_select(0, chunk_starts)
+            normalized_states = all_chunk_states_n[:n_chunks]
             with autocast_context(device):
-                all_step_values = self.critic(all_step_states_n).float()
-            executed_total = n_steps
-            step_values = all_step_values[:executed_total]
-            step_next_values = all_step_values[executed_total:]
-            values = step_values.index_select(0, chunk_starts)
+                all_chunk_values = self.critic(all_chunk_states_n).float()
+            chunk_value = all_chunk_values[:n_chunks]
+            chunk_next_value = all_chunk_values[n_chunks:]
 
         # One chunk is one macro-transition, so the backup is taken at chunk
         # granularity: reward summed over the chunk, discount gamma ** h.
         advantages, returns = compute_chunk_advantages(
             all_rewards,
-            step_values,
-            step_next_values,
+            chunk_value,
+            chunk_next_value,
             chunk_starts,
             lengths,
             chunk_terminated=active["chunk_terminated"],
@@ -771,7 +775,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         raw_returns = returns
         self.return_normalizer.update(raw_returns.reshape(-1, 1))
         returns = self.return_normalizer(raw_returns.reshape(-1, 1)).reshape(-1)
-        values = self.return_normalizer(values.reshape(-1, 1)).reshape(-1)
+        values = self.return_normalizer(chunk_value.reshape(-1, 1)).reshape(-1)
         gae_diagnostics = _gae_diagnostics(
             active["chunk_env_id"][:n_chunks],
             active["chunk_terminated"][:n_chunks],
