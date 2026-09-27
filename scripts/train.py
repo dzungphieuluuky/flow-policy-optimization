@@ -39,7 +39,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from sjfpo.config import (  # noqa: E402
     KNOWN_ENVS,
-    lookup_env_dims,
+    get_observation_action_dim,
 )
 from sjfpo.configuration_sjfpo import SJFPOConfig  # noqa: E402
 
@@ -247,7 +247,7 @@ def run_single(
     env = gym.make(env_id)
     try:
         # Registry fills unset dims; the live space is ground truth on mismatch.
-        reg_obs, reg_act = lookup_env_dims(env_id)
+        reg_obs, reg_act = get_observation_action_dim(env_id)
         live_obs = int(math.prod(env.observation_space.shape))
         live_act = int(math.prod(env.action_space.shape))
         if (reg_obs, reg_act) != (live_obs, live_act):
