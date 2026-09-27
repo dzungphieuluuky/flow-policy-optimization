@@ -486,8 +486,13 @@ class SJFPOPolicy(PreTrainedPolicy):
             ).float()
 
         if cfg.use_dct_transform:
-            tau_grid = torch.linspace(
-                0.0, 1.0, cfg.action_horizon, device=x0.device, dtype=torch.float32
+            # Half-open grid t_j = j*T/K, so a query maps to j = tau*K/T. The
+            # training samples sit at j = 0..K-1; linspace(0, 1, K) instead
+            # queries j = 0, 1.067, ..., K, which time-warps every executed
+            # action by K/(K-1).
+            tau_grid = (
+                torch.arange(cfg.action_horizon, device=x0.device, dtype=torch.float32)
+                / cfg.action_horizon
             )
             scaled = decode_coeffs_to_velocity(
                 x0, tau=tau_grid, T=1.0, K_original=cfg.action_horizon
