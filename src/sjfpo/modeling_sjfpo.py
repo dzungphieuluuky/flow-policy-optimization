@@ -19,6 +19,8 @@ import copy
 from collections import deque
 from typing import Any
 
+import dataclasses
+
 import einx
 import numpy as np
 import torch
@@ -125,6 +127,25 @@ def _sample_spectral_eps(
         action_dim,
     )
     return sample_noise(shape, cfg, device, None)
+
+
+def build_optimizer(policy: SJFPOPolicy) -> torch.optim.Optimizer:
+    """One AdamW over actor and critic, kept in separate param groups.
+
+    The groups stay split per role so grad clipping can be applied per role: the
+    critic's value gradient is orders of magnitude larger than the policy's, and
+    one shared clip would let it own the actor's step. rsl-rl uses this same
+    single-optimizer, per-role-group layout.
+    """
+    kwargs = dataclasses.asdict(policy.config.get_optimizer_preset())
+    kwargs.pop("grad_clip_norm", None)  # AdamW preset field; clipping is per role
+    if next(policy.parameters()).is_cuda:
+        kwargs["fused"] = True
+    groups = [
+        *policy.get_actor_optim_params()["params"],
+        *policy.get_critic_optim_params()["params"],
+    ]
+    return torch.optim.AdamW(groups, **kwargs)
 
 
 def _mc_x_t(
@@ -377,8 +398,10 @@ class SJFPOPolicy(PreTrainedPolicy):
     def get_optim_params(self) -> dict:
         """Build a single FPO++-style group over all trainable weights.
 
-        Retained for legacy single-optimizer checkpoints; new runs use
-        :meth:`get_actor_optim_params` and :meth:`get_critic_optim_params`.
+        Implements the abstract base-class method. The training path does not
+        use it: :func:`build_optimizer` composes the per-role groups from
+        :meth:`get_actor_optim_params` and :meth:`get_critic_optim_params` so
+        grad clipping stays separable. Kept because the base class requires it.
 
         Returns:
             Optimizer param-group dict.
