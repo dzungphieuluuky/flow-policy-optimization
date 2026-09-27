@@ -1042,6 +1042,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             l_new=l_new,
             ratio=ratio,
             ratio_bin=ratio_bin,
+            action_is_pad=action_is_pad,
             v_star_f=v_star_f,
             v_pred=v_pred,
             returns_d=returns_d,
@@ -1062,6 +1063,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         l_new,
         ratio,
         ratio_bin,
+        action_is_pad,
         v_star_f,
         v_pred,
         returns_d,
@@ -1123,6 +1125,16 @@ class SJFPOPolicy(PreTrainedPolicy):
         else:
             ratio_bin_high_outside = ratio_bin_low_outside
 
+        # Does the trust region ever bind? If clipfrac sits near zero the ratio
+        # is moving well inside the band and clip_param is not constraining
+        # anything, whatever its value. Read it before trusting clip_param.
+        clipfrac = (
+            (ratio < 1.0 - cfg.clip_param) | (ratio > 1.0 + cfg.clip_param)
+        ).float().mean()
+        # Share of chunks with any never-executed action position. Those rows
+        # still enter the DCT target, so this bounds the contamination.
+        truncated_chunk_frac = action_is_pad.any(dim=1).float().mean()
+
         returns_var = returns_d.var(correction=0).clamp_min(1e-8)
         explained_var = 1.0 - (returns_d - v_pred).var(correction=0) / returns_var
         value_huber_max = torch.nn.functional.smooth_l1_loss(
@@ -1146,6 +1158,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             delta.mean(),
             log_ratio_max,
             log_ratio_clip_frac,
+            clipfrac,
             value_huber_max,
             value_pred_max,
             ratio_mean,
@@ -1163,6 +1176,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             l_new_std,
             cfm_above_clamp_frac,
             l_old_new_corr,
+            truncated_chunk_frac,
             returns_d.std(correction=0),
             v_pred.std(correction=0),
         ]
@@ -1182,6 +1196,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             "mean_log_ratio",
             "log_ratio_max",
             "log_ratio_clip_frac",
+            "clipfrac",
             "value_huber_max",
             "value_pred_max",
             "flow_ratio_mean",
@@ -1199,6 +1214,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             "l_new_std",
             "cfm_above_clamp_frac",
             "l_old_new_corr",
+            "truncated_chunk_frac",
             "value_target_std",
             "value_pred_std",
         ]

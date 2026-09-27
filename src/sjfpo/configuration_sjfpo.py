@@ -46,6 +46,12 @@ class SJFPOConfig(PreTrainedConfig):
     use_per_bin_clip: bool = False  # legacy diagnostics-only bin clipping
     clip_param_lowfreq: float = 0.02  # tight: low bins carry task intent
     clip_param_highfreq: float = 0.10
+    # "mean" divides the sum FPO++ uses (Eq. 8 sums CFM losses across chunk
+    # timesteps) by tokens*action_dim, keeping the loss O(1) so cfm_clamp stays
+    # a real guard. The cost is that the loss scale IS the trust-region
+    # temperature, since ratio = exp(l_old - l_new), so clip_param is not
+    # comparable to FPO++'s 0.05 and must be swept. Read clipfrac first: if it
+    # sits near zero, clip_param is not constraining anything.
     cfm_loss_reduction: str = "mean"  # mean | sum | sqrt
     cfm_clamp: float = 20.0
     cfm_loss_clamp_negative_advantages: bool = True
