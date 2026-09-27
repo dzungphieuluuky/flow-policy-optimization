@@ -39,7 +39,7 @@ from sjfpo.fpo_core import (
     compute_aspo_surrogate,
     compute_cfm_loss,
     compute_policy_ratio,
-    run_mc_simulation,
+    run_monte_carlo_sampling,
     sample_action,
     sample_noise,
     sample_timesteps,
@@ -580,8 +580,8 @@ class SJFPOPolicy(PreTrainedPolicy):
             spectral_action = extract_dct_coeffs(actions, M=token_count - 1)
         else:
             spectral_action = actions
-        tau_bn, flatten_mc_noise, flatten_mc_action, flow_shape, num_mc = run_mc_simulation(
-            spectral_action, eps, tau
+        tau_bn, flatten_mc_noise, flatten_mc_action, flow_shape, num_mc = (
+            run_monte_carlo_sampling(spectral_action, eps, tau)
         )
         x_t = _mc_x_t(tau_bn, flatten_mc_noise, flatten_mc_action, flow_shape)
         actor_tau = tau_bn.squeeze(-1)
@@ -935,8 +935,8 @@ class SJFPOPolicy(PreTrainedPolicy):
             ).unsqueeze(-1)
             eps = _sample_spectral_eps(cfg, n, action_dim, device)
 
-        tau_bn, flatten_mc_noise, flatten_mc_action, flow_shape, num_mc = run_mc_simulation(
-            spectral_action_tokens, eps, tau
+        tau_bn, flatten_mc_noise, flatten_mc_action, flow_shape, num_mc = (
+            run_monte_carlo_sampling(spectral_action_tokens, eps, tau)
         )
         x_t_flat = _mc_x_t(tau_bn, flatten_mc_noise, flatten_mc_action, flow_shape)
         actor_tau = tau_bn.squeeze(-1)
