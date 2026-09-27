@@ -34,10 +34,12 @@ def run(lengths, env_id, terminated=None, truncated=None, value=0.0, next_value=
     starts = torch.cat([torch.zeros(1, dtype=torch.long), lengths.cumsum(0)[:-1]])
     total = int(total_steps if total_steps is not None else lengths.sum())
     zeros = lambda: torch.zeros(n, dtype=torch.bool)  # noqa: E731
+    # Rewards are per executed step; the two value arrays are per chunk, already
+    # gathered at the chunk's first and post-chunk state by the caller.
     return compute_chunk_advantages(
         torch.full((total,), float(reward)),
-        torch.full((total,), float(value)),
-        torch.full((total,), float(next_value)),
+        torch.full((n,), float(value)),
+        torch.full((n,), float(next_value)),
         starts, lengths,
         chunk_terminated=zeros() if terminated is None else torch.tensor(terminated),
         chunk_truncated=zeros() if truncated is None else torch.tensor(truncated),
@@ -148,7 +150,7 @@ def test_no_fp32_precision_loss_at_large_offsets():
     rewards = torch.zeros(total)
     rewards[starts[-1]: starts[-1] + H] = 1.0  # only the last chunk has reward
     adv, _ = compute_chunk_advantages(
-        rewards, torch.zeros(total), torch.zeros(total), starts, lengths,
+        rewards, torch.zeros(n), torch.zeros(n), starts, lengths,
         chunk_terminated=torch.zeros(n, dtype=torch.bool),
         chunk_truncated=torch.zeros(n, dtype=torch.bool),
         chunk_env_id=torch.zeros(n, dtype=torch.long),
@@ -163,8 +165,8 @@ def test_no_fp32_precision_loss_at_large_offsets():
 
 def test_rejects_out_of_range_discounts():
     args = dict(
-        step_rewards=torch.ones(H), step_values=torch.zeros(H),
-        step_next_values=torch.zeros(H),
+        step_rewards=torch.ones(H), chunk_value=torch.zeros(1),
+        chunk_next_value=torch.zeros(1),
         chunk_starts=torch.zeros(1, dtype=torch.long),
         chunk_lengths=torch.tensor([H]),
         chunk_terminated=torch.zeros(1, dtype=torch.bool),
@@ -179,9 +181,62 @@ def test_rejects_out_of_range_discounts():
 def test_rejects_mismatched_chunk_tensors():
     with pytest.raises(ValueError, match="chunk_env_id"):
         compute_chunk_advantages(
-            torch.ones(H), torch.zeros(H), torch.zeros(H),
+            torch.ones(H), torch.zeros(2), torch.zeros(2),
             torch.zeros(2, dtype=torch.long), torch.tensor([H, H]),
             chunk_terminated=torch.zeros(2, dtype=torch.bool),
             chunk_truncated=torch.zeros(2, dtype=torch.bool),
             chunk_env_id=torch.zeros(3, dtype=torch.long), chunk_size=H,
+        )
+
+
+def test_values_are_per_chunk_not_per_step():
+    """The value arrays are gathered by the caller, so they are n_chunks long.
+
+    n_chunks must differ from the step count for this to be a real check, and
+    the per-chunk values must vary, or a per-step array of the right length
+    would pass by coincidence.
+    """
+    lengths, env_id = [H, 2, 3], [0, 0, 0]
+    total = sum(lengths)
+    starts = torch.cat([torch.zeros(1, dtype=torch.long), torch.tensor(lengths).cumsum(0)[:-1]])
+    per_chunk_v = torch.tensor([1.0, 2.0, 3.0])
+    per_chunk_nv = torch.tensor([-1.0, -2.0, -3.0])
+    rewards = torch.ones(total)
+    adv, _ = compute_chunk_advantages(
+        rewards, per_chunk_v, per_chunk_nv, starts, torch.tensor(lengths),
+        chunk_terminated=torch.zeros(3, dtype=torch.bool),
+        chunk_truncated=torch.zeros(3, dtype=torch.bool),
+        chunk_env_id=torch.zeros(3, dtype=torch.long),
+        chunk_size=H, gamma=GAMMA, lam=LAM,
+    )
+    # Recompute the recursion by hand with the per-chunk values.
+    exp = [0.0] * 3
+    acc = 0.0
+    for j in (2, 1, 0):
+        h = lengths[j]
+        delta = sum(GAMMA**k for k in range(h)) + GAMMA**h * per_chunk_nv[j].item() - per_chunk_v[j].item()
+        acc = delta if j == 2 else delta + GAMMA**h * LAM * acc
+        exp[j] = acc
+    assert adv.tolist() == pytest.approx(exp, abs=1e-5)
+
+
+def test_rejects_value_arrays_of_the_wrong_length():
+    """A per-step-sized value array must raise, not silently misindex."""
+    n = 3
+    common = dict(
+        step_rewards=torch.ones(16),
+        chunk_starts=torch.arange(0, n * 4, 4, dtype=torch.long),
+        chunk_lengths=torch.full((n,), 4, dtype=torch.long),
+        chunk_terminated=torch.zeros(n, dtype=torch.bool),
+        chunk_truncated=torch.zeros(n, dtype=torch.bool),
+        chunk_env_id=torch.zeros(n, dtype=torch.long),
+        chunk_size=4,
+    )
+    with pytest.raises(ValueError, match="chunk_value"):
+        compute_chunk_advantages(
+            chunk_value=torch.zeros(16), chunk_next_value=torch.zeros(n), **common
+        )
+    with pytest.raises(ValueError, match="chunk_next_value"):
+        compute_chunk_advantages(
+            chunk_value=torch.zeros(n), chunk_next_value=torch.zeros(16), **common
         )
