@@ -49,7 +49,7 @@ from sjfpo.wandb_logging import (
 
 # Consecutive updates with most CFM samples above ``cfm_clamp`` before
 # aborting. clamp() has zero gradient above its max, so those samples
-# contribute nothing: rho stays exactly 1 and the policy receives no gradient
+# contribute nothing: the ratio stays exactly 1 and the policy receives no gradient
 # while the critic keeps training. Abort instead of burning a run that can only
 # plateau.
 ABOVE_CLAMP_ABORT_UPDATES = 5
@@ -57,9 +57,9 @@ ABOVE_CLAMP_ABORT_UPDATES = 5
 
 def mini_batch_indices(
     n: int,
-    num_minibatches: int,
+    num_mini_batches: int,
     device: torch.device | str,
-    num_epochs: int = 1,
+    num_learning_epochs: int = 1,
 ):
     """Yield shuffled minibatch index tensors, one per epoch.
 
@@ -69,9 +69,9 @@ def mini_batch_indices(
     """
     if n < 1:
         raise ValueError(f"n={n} must be >= 1")
-    n_mb = max(1, min(int(num_minibatches), n))
+    n_mb = max(1, min(int(num_mini_batches), n))
     device = torch.device(device)
-    for _ in range(max(1, int(num_epochs))):
+    for _ in range(max(1, int(num_learning_epochs))):
         perm = torch.randperm(n, device=device)          # <- move inside
         for i in range(n_mb):
             start = (i * n) // n_mb
@@ -131,7 +131,7 @@ def _build_optimizer(
 ):
     """Build an optimizer over a single param group at a fixed learning rate."""
     kwargs = dataclasses.asdict(cfg.get_optimizer_preset(lr=lr))
-    kwargs.pop("grad_clip_norm", None)
+    kwargs.pop("grad_clip_norm", None)  # AdamW preset field; clipping happens below
     if next(policy.parameters()).is_cuda:
         kwargs["fused"] = True
     return torch.optim.AdamW(params, **kwargs)
@@ -398,9 +398,9 @@ def train_sjfpo_run(
             microbatches = list(
                 mini_batch_indices(
                     n_chunks,
-                    cfg.num_minibatches,
+                    cfg.num_mini_batches,
                     batch["advantages"].device,
-                    num_epochs=cfg.num_epochs,
+                    num_learning_epochs=cfg.num_learning_epochs,
                 )
             )
             accumulation_steps = cfg.grad_accum_steps
@@ -436,11 +436,11 @@ def train_sjfpo_run(
                         )
                     finite_error.zero_()
                     pre_clip_actor = torch.nn.utils.clip_grad_norm_(
-                        actor_params, cfg.grad_clip_norm
+                        actor_params, cfg.max_grad_norm
                     )
                     actor_pre_norms.append(pre_clip_actor.detach())
                     pre_clip_critic = torch.nn.utils.clip_grad_norm_(
-                        critic_params, cfg.grad_clip_norm
+                        critic_params, cfg.max_grad_norm
                     )
                     critic_pre_norms.append(pre_clip_critic.detach())
                     above_clamp_fracs.append(policy.cfm_above_clamp_frac)
@@ -483,7 +483,7 @@ def train_sjfpo_run(
                     data["train/gae_advantage_std"] = gae_diag["advantage_std"]
                     data["train/returns_rms"] = gae_diag["return_rms"]
                 data["train/total_loss"] = (
-                    info["policy_loss"] + cfg.vf_coef * info["value_loss"]
+                    info["policy_loss"] + cfg.value_loss_coef * info["value_loss"]
                 )
                 log_metrics(data, step=global_step)
 

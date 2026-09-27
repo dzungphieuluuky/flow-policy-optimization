@@ -231,20 +231,21 @@ def compute_cfm_loss(
 
 
 def compute_aspo_surrogate(
-    rho: torch.Tensor,
+    ratio: torch.Tensor,
     advantage: torch.Tensor,
     cfg: SJFPOConfig,
-    epsilon_clip: float | torch.Tensor,
+    clip_param: float | torch.Tensor,
 ) -> torch.Tensor:
     """FPO++ trust region: PPO clipping, SPO, or asymmetric ASPO.
 
     ASPO uses PPO for positive advantages and SPO for negative advantages.
-    Returns the elementwise surrogate objective.
+    ``ratio`` is the FPO++ likelihood ratio (rho in the paper). Returns the
+    elementwise surrogate objective.
     """
-    rho_adv = rho * advantage
-    rho_clipped = torch.clamp(rho, 1.0 - epsilon_clip, 1.0 + epsilon_clip)
-    ppo = torch.min(rho_adv, rho_clipped * advantage)
-    spo = rho_adv - (advantage.abs() / (2.0 * epsilon_clip)) * torch.square(rho - 1.0)
+    ratio_adv = ratio * advantage
+    ratio_clipped = torch.clamp(ratio, 1.0 - clip_param, 1.0 + clip_param)
+    ppo = torch.min(ratio_adv, ratio_clipped * advantage)
+    spo = ratio_adv - (advantage.abs() / (2.0 * clip_param)) * torch.square(ratio - 1.0)
 
     if cfg.trust_region_mode == "ppo":
         return ppo
@@ -265,7 +266,8 @@ def compute_policy_ratio(
     clamps the new loss for negative-advantage samples, then applies a one-sided
     STE cap to the log-ratio: the forward pass uses the capped delta while the
     backward pass flows through the original. ``advantage`` is required when
-    ``cfm_loss_clamp_negative_advantages`` is set.
+    ``cfm_loss_clamp_negative_advantages`` is set. Returns the ratio (rho in the
+    paper), standing in for the ``actions_log_prob`` ratio of a Gaussian policy.
     """
     old = torch.clamp(l_old, max=cfg.cfm_clamp)
     new = torch.clamp(l_new, max=cfg.cfm_clamp)
@@ -287,10 +289,10 @@ def compute_policy_loss(
     advantage: torch.Tensor,
     cfg: SJFPOConfig,
 ) -> torch.Tensor:
-    """Scalar FPO++ policy objective: MEAN over i of psi per chunk (Eq.13).
+    """Scalar FPO++ policy objective: MEAN over i of the surrogate per chunk (Eq.13).
     """
-    rho = compute_policy_ratio(l_old, l_new, cfg, advantage=advantage)
-    return compute_aspo_surrogate(rho, advantage, cfg, cfg.epsilon_clip).mean()
+    ratio = compute_policy_ratio(l_old, l_new, cfg, advantage=advantage)
+    return compute_aspo_surrogate(ratio, advantage, cfg, cfg.clip_param).mean()
 
 
 def sample_action(

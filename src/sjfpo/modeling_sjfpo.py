@@ -8,7 +8,7 @@ Performance notes
 * Diagnostics returned by ``forward`` are batched into a single device→host
   transfer (one ``.tolist()``) instead of ~20 ``float()`` syncs per call, and
   the whole diagnostic pass is gated on ``compute_info=True``.
-* ``rho_bin`` is computed once per forward, not once per branch.
+* ``ratio_bin`` is computed once per forward, not once per branch.
 * ``snapshot_behavior_policy`` copies weights in-place into the frozen
   snapshot instead of ``copy.deepcopy``-ing it.
 """
@@ -735,7 +735,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
         # The critic regresses onto normalized returns so the value loss does
         # not inherit gamma's scale (1 / (1 - gamma) drops 1000 -> 100 here,
-        # which would otherwise shrink value_loss ~100x at fixed vf_coef).
+        # which would otherwise shrink value_loss ~100x at fixed value_loss_coef).
         raw_returns = returns
         self.return_normalizer.update(raw_returns.reshape(-1, 1))
         returns = self.return_normalizer(raw_returns.reshape(-1, 1)).reshape(-1)
@@ -948,14 +948,14 @@ class SJFPOPolicy(PreTrainedPolicy):
 
             adv_mc = advantages.float().unsqueeze(1)
             l_new_bin = compute_cfm_loss(v_new_r_f, v_star_f, cfg, "bin", action_is_pad)
-            rho_bin = compute_policy_ratio(l_old_bin, l_new_bin, cfg)
+            ratio_bin = compute_policy_ratio(l_old_bin, l_new_bin, cfg)
 
             l_new = compute_cfm_loss(v_new_r_f, v_star_f, cfg, "sample", action_is_pad)
-            rho = compute_policy_ratio(l_old, l_new, cfg, advantage=adv_mc)
+            ratio = compute_policy_ratio(l_old, l_new, cfg, advantage=adv_mc)
             self.cfm_above_clamp_frac = (l_new > cfg.cfm_clamp).float().mean().detach()
 
-            psi = compute_aspo_surrogate(rho, adv_mc, cfg, cfg.epsilon_clip)
-            policy_per_chunk = -psi.mean(dim=1)
+            surrogate = compute_aspo_surrogate(ratio, adv_mc, cfg, cfg.clip_param)
+            policy_per_chunk = -surrogate.mean(dim=1)
 
         with autocast_context(device):
             v_pred = self.critic(states).float()
@@ -971,7 +971,7 @@ class SJFPOPolicy(PreTrainedPolicy):
                 batch["values"], dtype=storage_dtype, device=device
             )
             v_clipped = old_values + (v_pred - old_values).clamp(
-                -cfg.epsilon_clip, cfg.epsilon_clip
+                -cfg.clip_param, cfg.clip_param
             )
             clipped_se = torch.square(v_clipped - returns_d)
             value_per_chunk = torch.maximum(se, clipped_se)
@@ -981,9 +981,9 @@ class SJFPOPolicy(PreTrainedPolicy):
         if reduction == "mean":
             policy_loss = policy_per_chunk.mean()
             value_loss = value_per_chunk.mean()
-            loss = policy_loss + cfg.vf_coef * value_loss
+            loss = policy_loss + cfg.value_loss_coef * value_loss
         elif reduction == "none":
-            loss = policy_per_chunk + cfg.vf_coef * value_per_chunk
+            loss = policy_per_chunk + cfg.value_loss_coef * value_per_chunk
         else:
             raise ValueError(f"reduction={reduction!r} must be 'mean' or 'none'")
 
@@ -1000,8 +1000,8 @@ class SJFPOPolicy(PreTrainedPolicy):
         info = self._compute_info(
             l_old=l_old,
             l_new=l_new,
-            rho=rho,
-            rho_bin=rho_bin,
+            ratio=ratio,
+            ratio_bin=ratio_bin,
             v_star_f=v_star_f,
             v_pred=v_pred,
             returns_d=returns_d,
@@ -1020,8 +1020,8 @@ class SJFPOPolicy(PreTrainedPolicy):
         *,
         l_old,
         l_new,
-        rho,
-        rho_bin,
+        ratio,
+        ratio_bin,
         v_star_f,
         v_pred,
         returns_d,
@@ -1044,44 +1044,44 @@ class SJFPOPolicy(PreTrainedPolicy):
         entirely when nothing will consume the result.
         """
         delta = l_old - l_new
-        log_rho_abs = delta.abs()
-        log_rho_max = log_rho_abs.max()
-        log_rho_clip_frac = (log_rho_abs > cfg.log_ratio_cap).float().mean()
+        log_ratio_abs = delta.abs()
+        log_ratio_max = log_ratio_abs.max()
+        log_ratio_clip_frac = (log_ratio_abs > cfg.log_ratio_cap).float().mean()
         cfm_above_clamp_frac = (l_new > cfg.cfm_clamp).float().mean()
 
-        rho_mean = rho.mean()
-        rho_std = rho.std(correction=0)
+        ratio_mean = ratio.mean()
+        ratio_std = ratio.std(correction=0)
 
-        rho_bin_mean = rho_bin.mean(dim=(0, 1))
-        n_bins = rho_bin_mean.numel()
+        ratio_bin_mean = ratio_bin.mean(dim=(0, 1))
+        n_bins = ratio_bin_mean.numel()
         split = max(1, n_bins // 2)
-        rho_bin_range = rho_bin_mean.max() - rho_bin_mean.min()
-        rho_bin_low = rho_bin_mean[:split].mean()
-        rho_bin_high = (
-            rho_bin_mean[split:].mean() if n_bins > 1 else rho_bin_mean.mean()
+        ratio_bin_range = ratio_bin_mean.max() - ratio_bin_mean.min()
+        ratio_bin_low = ratio_bin_mean[:split].mean()
+        ratio_bin_high = (
+            ratio_bin_mean[split:].mean() if n_bins > 1 else ratio_bin_mean.mean()
         )
-        rho_bin_outside = (
-            ((rho_bin < 1.0 - cfg.epsilon_clip) | (rho_bin > 1.0 + cfg.epsilon_clip))
+        ratio_bin_outside = (
+            ((ratio_bin < 1.0 - cfg.clip_param) | (ratio_bin > 1.0 + cfg.clip_param))
             .float()
             .mean()
         )
-        eps_low = cfg.epsilon_clip_lowfreq if cfg.use_per_bin_clip else cfg.epsilon_clip
-        eps_high = (
-            cfg.epsilon_clip_highfreq if cfg.use_per_bin_clip else cfg.epsilon_clip
+        clip_low = cfg.clip_param_lowfreq if cfg.use_per_bin_clip else cfg.clip_param
+        clip_high = (
+            cfg.clip_param_highfreq if cfg.use_per_bin_clip else cfg.clip_param
         )
-        low_slice = rho_bin[..., :split]
-        rho_bin_low_outside = (
-            ((low_slice < 1.0 - eps_low) | (low_slice > 1.0 + eps_low)).float().mean()
+        low_slice = ratio_bin[..., :split]
+        ratio_bin_low_outside = (
+            ((low_slice < 1.0 - clip_low) | (low_slice > 1.0 + clip_low)).float().mean()
         )
         if n_bins > 1:
-            high_slice = rho_bin[..., split:]
-            rho_bin_high_outside = (
-                ((high_slice < 1.0 - eps_high) | (high_slice > 1.0 + eps_high))
+            high_slice = ratio_bin[..., split:]
+            ratio_bin_high_outside = (
+                ((high_slice < 1.0 - clip_high) | (high_slice > 1.0 + clip_high))
                 .float()
                 .mean()
             )
         else:
-            rho_bin_high_outside = rho_bin_low_outside
+            ratio_bin_high_outside = ratio_bin_low_outside
 
         returns_var = returns_d.var(correction=0).clamp_min(1e-8)
         explained_var = 1.0 - (returns_d - v_pred).var(correction=0) / returns_var
@@ -1104,18 +1104,18 @@ class SJFPOPolicy(PreTrainedPolicy):
             value_per_chunk.mean(),
             explained_var,
             delta.mean(),
-            log_rho_max,
-            log_rho_clip_frac,
+            log_ratio_max,
+            log_ratio_clip_frac,
             value_huber_max,
             value_pred_max,
-            rho_mean,
-            rho_std,
-            rho_bin_range,
-            rho_bin_low,
-            rho_bin_high,
-            rho_bin_outside,
-            rho_bin_low_outside,
-            rho_bin_high_outside,
+            ratio_mean,
+            ratio_std,
+            ratio_bin_range,
+            ratio_bin_low,
+            ratio_bin_high,
+            ratio_bin_outside,
+            ratio_bin_low_outside,
+            ratio_bin_high_outside,
             v_star_rms,
             l_old.mean(),
             l_new.mean(),
@@ -1140,18 +1140,18 @@ class SJFPOPolicy(PreTrainedPolicy):
             "value_loss",
             "explained_var",
             "mean_log_ratio",
-            "log_rho_max",
-            "log_rho_clip_frac",
+            "log_ratio_max",
+            "log_ratio_clip_frac",
             "value_huber_max",
             "value_pred_max",
-            "flow_rho_mean",
-            "flow_rho_std",
-            "flow_rho_bin_range",
-            "flow_rho_bin_lowfreq",
-            "flow_rho_bin_highfreq",
-            "flow_rho_bin_outside_frac",
-            "flow_rho_bin_low_outside_frac",
-            "flow_rho_bin_high_outside_frac",
+            "flow_ratio_mean",
+            "flow_ratio_std",
+            "flow_ratio_bin_range",
+            "flow_ratio_bin_lowfreq",
+            "flow_ratio_bin_highfreq",
+            "flow_ratio_bin_outside_frac",
+            "flow_ratio_bin_low_outside_frac",
+            "flow_ratio_bin_high_outside_frac",
             "flow_v_star_rms",
             "l_old_mean",
             "l_new_mean",
