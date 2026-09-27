@@ -65,6 +65,23 @@ def extract_dct_coeffs(v_star: torch.Tensor, M: int) -> torch.Tensor:
     return coeffs.squeeze(0) if squeeze else coeffs
 
 
+def velocity_to_action_steps(vel: torch.Tensor, num_rows: int) -> torch.Tensor:
+    """Expand DCT coefficients back to the half-open time grid ``t_j = j*H/H``.
+
+    Accepts any leading batch axes, so ``[n, mc, K, d]`` and ``[n, K, d]`` both
+    work. This is the inverse of :func:`extract_dct_coeffs` for a full-length
+    signal: reading coefficients as time samples, and putting a velocity in row
+    space so a per-row execution mask can index it.
+    """
+    lead, k, d = vel.shape[:-2], vel.shape[-2], vel.shape[-1]
+    tau = torch.arange(num_rows, device=vel.device, dtype=torch.float32) / num_rows
+    with torch.autocast(device_type=vel.device.type, enabled=False):
+        rows = decode_coeffs_to_velocity(
+            vel.reshape(-1, k, d).to(torch.float32), tau, 1.0, num_rows
+        )
+    return rows.reshape(*lead, num_rows, d).to(vel.dtype)
+
+
 def decode_coeffs_to_velocity(
     coeffs: torch.Tensor,
     tau: torch.Tensor,

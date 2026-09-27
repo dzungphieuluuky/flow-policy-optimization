@@ -54,6 +54,9 @@ class SJFPOConfig(PreTrainedConfig):
     # sits near zero, clip_param is not constraining anything.
     cfm_loss_reduction: str = "mean"  # mean | sum | sqrt
     cfm_clamp: float = 20.0
+    cfm_mask_unexecuted: bool = (
+        True  # drop the unexecuted tail of a truncated chunk from the CFM loss
+    )
     cfm_loss_clamp_negative_advantages: bool = True
     cfm_loss_clamp_negative_advantages_max: float = 20.0
     log_ratio_cap: float = 10.0  # official cfm_diff_clamp_max (one-sided)

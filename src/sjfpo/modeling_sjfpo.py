@@ -32,8 +32,9 @@ from lerobot.utils.constants import ACTION, OBS_STATE
 from sjfpo.configuration_sjfpo import SJFPOConfig
 from sjfpo.collector import RolloutBuffer, collect_chunks, collect_chunks_vec
 from sjfpo.dct_utils import (
-    decode_coeffs_to_velocity,
+    velocity_to_action_steps,
     extract_dct_coeffs,
+    velocity_to_action_steps,
 )
 from sjfpo.fpo_core import (
     compute_aspo_surrogate,
@@ -496,17 +497,10 @@ class SJFPOPolicy(PreTrainedPolicy):
             ).float()
 
         if cfg.use_dct_transform:
-            # Half-open grid t_j = j*T/K, so a query maps to j = tau*K/T. The
-            # training samples sit at j = 0..K-1; linspace(0, 1, K) instead
-            # queries j = 0, 1.067, ..., K, which time-warps every executed
-            # action by K/(K-1).
-            tau_grid = (
-                torch.arange(cfg.action_horizon, device=x0.device, dtype=torch.float32)
-                / cfg.action_horizon
-            )
-            scaled = decode_coeffs_to_velocity(
-                x0, tau=tau_grid, T=1.0, K_original=cfg.action_horizon
-            )[:, : cfg.action_horizon, :].clamp(-1.0, 1.0)
+            # velocity_to_action_steps reads the coefficients back on the half-open grid
+            # t_j = j*H/H. linspace(0, 1, K) instead queries j = 0, 1.067, ..., K,
+            # which time-warps every executed action by K/(K-1).
+            scaled = velocity_to_action_steps(x0, cfg.action_horizon).clamp(-1.0, 1.0)
         else:
             scaled = x0[:, : cfg.action_horizon, :].clamp(-1.0, 1.0)
 
@@ -546,26 +540,45 @@ class SJFPOPolicy(PreTrainedPolicy):
         return self._action_buffer.popleft()
 
 
-    @staticmethod
-    def _cfm_loss_mask(
-        cfg: SJFPOConfig, action_is_pad: torch.Tensor
-    ) -> torch.Tensor | None:
-        """The execution mask to pass to :func:`compute_cfm_loss`, if any.
+    def prepare_cfm_loss_inputs(
+        self,
+        cfg: SJFPOConfig,
+        action_is_pad: torch.Tensor,
+        *velocities: torch.Tensor,
+    ) -> tuple[torch.Tensor | None, tuple[torch.Tensor, ...]]:
+        """Return the execution mask and the velocities it can be applied to.
 
-        ``action_is_pad`` marks *time* positions that were never executed, and
-        ``compute_cfm_loss`` broadcasts it over the token axis. With the DCT on
-        that axis is frequency, not time: one time position maps to every
-        coefficient, so no per-token mask exists and the shapes disagree. Drop
-        it there rather than pretend it is meaningful.
+        ``action_is_pad`` marks the action steps a chunk never ran, so it only
+        indexes a velocity laid out over the ``action_horizon`` steps. DCT off,
+        that is already the layout. DCT on, the velocity is
+        ``num_flow_tokens`` frequency coefficients and every step maps to every
+        coefficient, so expand the coefficients back onto the action steps first;
+        the same mask then drops the tail, and a chunk that terminated early
+        contributes no gradient from the steps it never ran instead of a
+        wrong-signed one.
 
-        The cost is that a chunk terminated before ``n_action_steps`` is fit
-        over all kept bins, including those that only saw padded positions. The
-        truncation discontinuity lands mostly in the high bins that
-        ``num_kept_tokens`` drops, so the kept bins should be barely affected;
-        ``truncated_chunk_frac`` in the diagnostics is the check.
+        Expanding each velocity is exact because the inverse DCT is linear, so
+        ``grid(v_hat) - grid(v_star) == grid(v_hat - v_star)`` and the loss still
+        measures the same residual. At ``num_kept_tokens == action_horizon`` the
+        basis is orthonormal, so this is a rotation and the loss is unchanged.
+
+        The mask and the layout are returned together on purpose: they are only
+        consistent with each other, and at ``num_kept_tokens == action_horizon``
+        the two spaces have the same shape, so returning a mask with unexpanded
+        velocities applies it in the wrong space and fails silently.
+
+        Both the ``l_old`` and ``l_new`` reductions must come through here, or the
+        importance ratio would compare means over different positions.
         """
-        return None if cfg.use_dct_transform else action_is_pad
-
+        if cfg.use_dct_transform and cfg.cfm_mask_unexecuted:
+            steps = cfg.action_horizon
+            return action_is_pad, tuple(
+                velocity_to_action_steps(v, steps) for v in velocities
+            )
+        # DCT off, the velocities already are the action steps. DCT on with the
+        # mask off, the mask would index the frequency axis, so drop it.
+        mask = None if cfg.use_dct_transform else action_is_pad
+        return mask, velocities
 
     def _behavior_cfm_losses(
         self,
@@ -585,7 +598,6 @@ class SJFPOPolicy(PreTrainedPolicy):
         """
         cfg = self.config
         token_count = eps.shape[2]
-        loss_mask = self._cfm_loss_mask(cfg, action_is_pad)
         if cfg.use_dct_transform:
             spectral_action = extract_dct_coeffs(actions, M=token_count - 1)
         else:
@@ -605,8 +617,9 @@ class SJFPOPolicy(PreTrainedPolicy):
             ).float()
         with torch.autocast(device_type=actions.device.type, enabled=False):
             v_star = (spectral_action[:, None] - eps).float()
-            v_old = v_old.reshape(
-                eps.shape[0], num_mc, *flow_shape
+            v_old = v_old.reshape(eps.shape[0], num_mc, *flow_shape)
+            loss_mask, (v_old, v_star) = self.prepare_cfm_loss_inputs(
+                cfg, action_is_pad, v_old, v_star
             )
             return (
                 compute_cfm_loss(v_old, v_star, cfg, "sample", loss_mask),
@@ -913,7 +926,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         n = states.shape[0]
         action_dim = actions.shape[-1]
 
-        loss_mask = self._cfm_loss_mask(cfg, action_is_pad)
+        loss_mask: torch.Tensor = action_is_pad
 
         spectral_action_tokens = (
             extract_dct_coeffs(actions, M=M_modes) if cfg.use_dct_transform else actions
@@ -995,6 +1008,9 @@ class SJFPOPolicy(PreTrainedPolicy):
         with torch.autocast(device_type=device.type, enabled=False):
             v_star_f = self.compute_target_velocity(spectral_action_tokens, eps).float()
             v_new_r_f = v_new.reshape(n, num_mc, *flow_shape)
+            loss_mask, (v_new_r_f, v_star_f) = self.prepare_cfm_loss_inputs(
+                cfg, action_is_pad, v_new_r_f, v_star_f
+            )
 
             adv_mc = advantages.float().unsqueeze(1)
             l_new_bin = compute_cfm_loss(v_new_r_f, v_star_f, cfg, "bin", loss_mask)
@@ -1144,6 +1160,10 @@ class SJFPOPolicy(PreTrainedPolicy):
         # Share of chunks with any never-executed action position. Those rows
         # still enter the DCT target, so this bounds the contamination.
         truncated_chunk_frac = action_is_pad.any(dim=1).float().mean()
+        # Share of action rows the chunk actually ran. With cfm_mask_unexecuted
+        # on, this is the fraction of the CFM loss that survives masking, so the
+        # two together say how much of the batch the row mask discards.
+        executed_action_step_frac = (~action_is_pad).float().mean()
 
         returns_var = returns_d.var(correction=0).clamp_min(1e-8)
         explained_var = 1.0 - (returns_d - v_pred).var(correction=0) / returns_var
@@ -1187,6 +1207,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             cfm_above_clamp_frac,
             l_old_new_corr,
             truncated_chunk_frac,
+            executed_action_step_frac,
             returns_d.std(correction=0),
             v_pred.std(correction=0),
         ]
@@ -1225,6 +1246,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             "cfm_above_clamp_frac",
             "l_old_new_corr",
             "truncated_chunk_frac",
+            "executed_action_step_frac",
             "value_target_std",
             "value_pred_std",
         ]
