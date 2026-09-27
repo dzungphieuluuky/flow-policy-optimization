@@ -45,11 +45,7 @@ class SJFPOConfig(PreTrainedConfig):
     trust_region_mode: str = "aspo"
     use_per_bin_clip: bool = False  # legacy diagnostics-only bin clipping
     epsilon_clip_lowfreq: float = 0.02  # tight: low bins carry task intent
-    epsilon_clip_highfreq: float = 0.10  # loose: high bins are detail/exploration
-    # "mean" keeps the CFM loss O(1) (~1.25 for a zero-velocity model on unit
-    # noise), so cfm_clamp below is a real guard. "sqrt" (FPO++'s default)
-    # scales by sqrt(horizon*action_dim) and starts above cfm_clamp at 16x17,
-    # where clamp has zero gradient and silently pins rho at 1.
+    epsilon_clip_highfreq: float = 0.10
     cfm_loss_reduction: str = "mean"  # mean | sum | sqrt
     cfm_clamp: float = 20.0
     cfm_loss_clamp_negative_advantages: bool = True
@@ -72,10 +68,7 @@ class SJFPOConfig(PreTrainedConfig):
     dit_heads: int = 4
     dit_mlp_ratio: float = 4.0
     time_embed_dim: int = 128
-    # t in [0, 1] is scaled by this before the DDPM sinusoidal ladder (built
-    # for integer steps 0-1000); without it every channel sits at angle <= 1
-    # and t is nearly unresolvable.
-    timestep_scale: float = 1000.0
+    timestep_scale: float = 10000.0
 
     ema_decay: float = 0.95
     ema_warmup_steps: int = 500
@@ -85,8 +78,8 @@ class SJFPOConfig(PreTrainedConfig):
 
     top_p_spectral_tokens: float = 1.0
 
-    policy_lr: float = 1e-4
-    critic_lr: float = 1e-4  # legacy split-checkpoint compatibility
+    policy_lr: float = 1e-3
+    critic_lr: float = 1e-3  # legacy split-checkpoint compatibility
     optimizer_weight_decay: float = 1e-4
 
     # No separate warm-up phase; stats initialize naturally during first rollout.

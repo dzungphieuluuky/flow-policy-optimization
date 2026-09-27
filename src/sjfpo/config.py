@@ -67,7 +67,7 @@ def assert_runtime(allow_fp16: bool = False) -> None:
         )
 
 
-def lookup_env_dims(env_id: str) -> tuple[int, int]:
+def get_observation_action_dim(env_id: str) -> tuple[int, int]:
     """Look up observation and action dimensions from ``configs/envs.yaml``.
 
     Raises ``RuntimeError`` if PyYAML is missing and ``KeyError`` if ``env_id``
