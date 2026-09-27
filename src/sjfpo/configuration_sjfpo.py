@@ -76,7 +76,7 @@ class SJFPOConfig(PreTrainedConfig):
     value_loss_coef: float = 1.0  # 0.5 was too weak for the critic
     max_grad_norm: float = 1.0
 
-    top_p_spectral_tokens: float = 1.0
+    num_kept_tokens: int = 16  # DCT coefficients the flow sees; inert when use_dct_transform=False
 
     policy_lr: float = 1e-3
     critic_lr: float = 1e-3  # legacy split-checkpoint compatibility
@@ -242,9 +242,11 @@ class SJFPOConfig(PreTrainedConfig):
             raise ValueError(
                 f"num_inference_steps={self.num_inference_steps} must be >= 1"
             )
-        p = self.top_p_spectral_tokens
-        if not 0.0 < p <= 1.0:
-            raise ValueError(f"top_p_spectral_tokens={p} must satisfy 0 < p <= 1")
+        if not 1 <= self.num_kept_tokens <= self.action_horizon:
+            raise ValueError(
+                f"num_kept_tokens={self.num_kept_tokens} must satisfy "
+                f"1 <= K <= action_horizon={self.action_horizon}"
+            )
         if self.use_per_bin_clip and not self.use_dct_transform:
             raise ValueError(
                 "use_per_bin_clip=True requires use_dct_transform=True "
@@ -290,6 +292,16 @@ class SJFPOConfig(PreTrainedConfig):
         stale if ``chunks_per_update`` or ``batch_size`` is reassigned later.
         """
         return max(1, self.chunks_per_update // self.batch_size)
+
+    @property
+    def num_flow_tokens(self) -> int:
+        """Token count the flow model operates on.
+
+        ``num_kept_tokens`` with the DCT on, otherwise the full action horizon.
+        ``num_kept_tokens`` is inert without the DCT rather than an error: the
+        token axis is time there, so there is no frequency count to keep.
+        """
+        return self.num_kept_tokens if self.use_dct_transform else self.action_horizon
 
     @property
     def observation_delta_indices(self) -> list[int] | None:

@@ -97,15 +97,6 @@ def _gae_diagnostics(
     }
 
 
-def _num_spectral_tokens_kept(cfg: SJFPOConfig) -> int:
-    """Count the spectral tokens retained per action chunk.
-
-    ``M+1`` derived from ``top_p_spectral_tokens`` when the DCT transform is on,
-    otherwise the full action horizon.
-    """
-    return max(1, round(cfg.top_p_spectral_tokens * cfg.action_horizon)) if cfg.use_dct_transform else cfg.action_horizon
-
-
 def _sample_spectral_eps(
     cfg: SJFPOConfig,
     n: int,
@@ -116,16 +107,7 @@ def _sample_spectral_eps(
 
     Returns noise of shape ``[n, num_mc_samples, tokens, action_dim]``.
     """
-    shape = (
-        n,
-        cfg.num_mc_samples,
-        (
-            _num_spectral_tokens_kept(cfg)
-            if cfg.use_dct_transform
-            else cfg.action_horizon
-        ),
-        action_dim,
-    )
+    shape = (n, cfg.num_mc_samples, cfg.num_flow_tokens, action_dim)
     return sample_noise(shape, cfg, device, None)
 
 
@@ -484,7 +466,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         states = to_device_async(states, device)
         states = self.preprocessor({OBS_STATE: states})[OBS_STATE]
 
-        num_spectral_tokens_kept = _num_spectral_tokens_kept(cfg)
+        num_spectral_tokens_kept = cfg.num_flow_tokens
         action_dim = int(self.config.action_feature.shape[0])
         actor = self.actor
 
@@ -716,7 +698,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             active = buffer.active()
         n_chunks = buffer.n_chunks
         n_steps = buffer.n_steps
-        num_spectral_tokens_kept = _num_spectral_tokens_kept(cfg)
+        num_spectral_tokens_kept = cfg.num_flow_tokens
 
         lengths = active["chunk_lengths"]
         chunk_starts = active["chunk_starts"]
@@ -885,7 +867,7 @@ class SJFPOPolicy(PreTrainedPolicy):
 
         states = self.preprocessor({OBS_STATE: states})[OBS_STATE]
 
-        num_spectral_tokens_kept = _num_spectral_tokens_kept(cfg)
+        num_spectral_tokens_kept = cfg.num_flow_tokens
         M_modes = num_spectral_tokens_kept - 1
         n = states.shape[0]
         action_dim = actions.shape[-1]

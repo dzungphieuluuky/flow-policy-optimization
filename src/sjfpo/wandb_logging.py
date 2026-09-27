@@ -38,8 +38,8 @@ def build_run_name(method: str, env_name: str, seed: int, cfg_dict: dict) -> str
     """
     tags: list[str] = []
     get = cfg_dict.get
-    if (v := get("top_p_spectral_tokens")) is not None:
-        tags.append(f"top{compact_value(v)}")
+    if (v := get("num_kept_tokens")) is not None:
+        tags.append(f"k{compact_value(v)}")
     if (v := get("hidden_dim")) is not None and (d := get("dit_depth")) is not None:
         tags.append(f"d{v}x{d}")
     if (v := get("num_learning_epochs", get("num_epochs"))) is not None:

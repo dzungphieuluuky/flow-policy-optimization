@@ -92,7 +92,7 @@ TRAIN_CELL = """\
     --eval_steps 50 \
     --save_steps 10000 \
     --use_per_bin_clip true \
-    --top_p_spectral_tokens 1.0
+    --num_kept_tokens 16
 """
 
 FULL_CELL = """\
@@ -105,7 +105,7 @@ FULL_CELL = """\
     --eval_steps 50 \
     --save_steps 10000 \
     --use_per_bin_clip true \
-    --top_p_spectral_tokens 1.0
+    --num_kept_tokens 16
 """
 
 
