@@ -19,8 +19,8 @@ class SJFPOConfig(PreTrainedConfig):
     -----
     * ``action_horizon`` is the full predicted chunk length (training) and the
       executed prefix length (eval); ``n_action_steps`` falls back to it.
-    * ``num_inference_steps`` is used when sampling with ``noise=False``;
-      ``num_euler_steps`` is used when sampling with ``noise=True``.
+    * ``num_inference_steps`` is used for zero-sampling; ``num_euler_steps`` is
+      used when the flow starts from sampled noise.
     """
 
     n_obs_steps: int = 16

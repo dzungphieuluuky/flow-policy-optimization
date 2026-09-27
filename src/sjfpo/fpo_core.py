@@ -300,15 +300,17 @@ def sample_action(
     shape,
     condition,
     num_inference_steps: int,
-    eps: torch.Tensor | None,
-    generator: torch.Generator | None,
+    eps: torch.Tensor,
     device: torch.device | str,
 ) -> torch.Tensor:
     """Sample the learned flow t=0 (noise) -> t=1 (data) with Euler steps.
 
     The step sizes are computed once up front, which keeps the integration loop
-    free of tensor arithmetic and friendly to XLA. Returns an integrated sample of
-    shape ``shape``; raises ``ValueError`` if ``device`` is not provided.
+    free of tensor arithmetic and friendly to XLA. ``eps`` is the flow's
+    starting point and must already be drawn by the caller, so that
+    ``noise_sampling_mode`` and ``noise_scaling_mode`` both apply; a
+    zero-sampling caller passes zeros. Returns an integrated sample of shape
+    ``shape``; raises ``ValueError`` if ``device`` is not provided.
     """
     if device is None:
         raise ValueError("device must be provided explicitly")
@@ -321,9 +323,7 @@ def sample_action(
         dtype=torch.float32,
     )
 
-    if eps is None:
-        eps = torch.randn(*shape, device=device, generator=generator)
-    elif device is not None and eps.device != torch.device(device):
+    if eps.device != torch.device(device):
         eps = eps.to(device)
 
     x = eps
