@@ -536,6 +536,27 @@ class SJFPOPolicy(PreTrainedPolicy):
         return self._action_buffer.popleft()
 
 
+    @staticmethod
+    def _cfm_loss_mask(
+        cfg: SJFPOConfig, action_is_pad: torch.Tensor
+    ) -> torch.Tensor | None:
+        """The execution mask to pass to :func:`compute_cfm_loss`, if any.
+
+        ``action_is_pad`` marks *time* positions that were never executed, and
+        ``compute_cfm_loss`` broadcasts it over the token axis. With the DCT on
+        that axis is frequency, not time: one time position maps to every
+        coefficient, so no per-token mask exists and the shapes disagree. Drop
+        it there rather than pretend it is meaningful.
+
+        The cost is that a chunk terminated before ``n_action_steps`` is fit
+        over all kept bins, including those that only saw padded positions. The
+        truncation discontinuity lands mostly in the high bins that
+        ``num_kept_tokens`` drops, so the kept bins should be barely affected;
+        ``truncated_chunk_frac`` in the diagnostics is the check.
+        """
+        return None if cfg.use_dct_transform else action_is_pad
+
+
     def _behavior_cfm_losses(
         self,
         normalized_states: torch.Tensor,
@@ -554,6 +575,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         """
         cfg = self.config
         token_count = eps.shape[2]
+        loss_mask = self._cfm_loss_mask(cfg, action_is_pad)
         if cfg.use_dct_transform:
             spectral_action = extract_dct_coeffs(actions, M=token_count - 1)
         else:
@@ -577,8 +599,8 @@ class SJFPOPolicy(PreTrainedPolicy):
                 eps.shape[0], num_mc, *flow_shape
             )
             return (
-                compute_cfm_loss(v_old, v_star, cfg, "sample", action_is_pad),
-                compute_cfm_loss(v_old, v_star, cfg, "bin", action_is_pad),
+                compute_cfm_loss(v_old, v_star, cfg, "sample", loss_mask),
+                compute_cfm_loss(v_old, v_star, cfg, "bin", loss_mask),
             )
 
     def generate_rollout(
@@ -877,6 +899,8 @@ class SJFPOPolicy(PreTrainedPolicy):
         n = states.shape[0]
         action_dim = actions.shape[-1]
 
+        loss_mask = self._cfm_loss_mask(cfg, action_is_pad)
+
         spectral_action_tokens = (
             extract_dct_coeffs(actions, M=M_modes) if cfg.use_dct_transform else actions
         )
@@ -957,10 +981,10 @@ class SJFPOPolicy(PreTrainedPolicy):
             v_new_r_f = v_new.reshape(n, num_mc, *flow_shape)
 
             adv_mc = advantages.float().unsqueeze(1)
-            l_new_bin = compute_cfm_loss(v_new_r_f, v_star_f, cfg, "bin", action_is_pad)
+            l_new_bin = compute_cfm_loss(v_new_r_f, v_star_f, cfg, "bin", loss_mask)
             ratio_bin = compute_policy_ratio(l_old_bin, l_new_bin, cfg)
 
-            l_new = compute_cfm_loss(v_new_r_f, v_star_f, cfg, "sample", action_is_pad)
+            l_new = compute_cfm_loss(v_new_r_f, v_star_f, cfg, "sample", loss_mask)
             ratio = compute_policy_ratio(l_old, l_new, cfg, advantage=adv_mc)
             self.cfm_above_clamp_frac = (l_new > cfg.cfm_clamp).float().mean().detach()
 
