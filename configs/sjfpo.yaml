@@ -13,8 +13,8 @@ num_mc_samples: 16
 num_euler_steps: 16
 num_inference_steps: 16
 chunks_per_update: 256
-num_learning_epochs: 16
-batch_size: 64  # chunks per minibatch; num_mini_batches = chunks_per_update / batch_size
+num_learning_epochs: 4
+batch_size: 128  # chunks per minibatch; num_mini_batches = chunks_per_update / batch_size
 num_envs: 64
 
 # -- Optimization ------------------------------------------------------

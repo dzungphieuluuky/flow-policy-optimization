@@ -36,7 +36,7 @@ from lerobot.utils.random_utils import set_seed
 from sjfpo.checkpointing import load_policy_checkpoint, save_policy_checkpoint
 from sjfpo.configuration_sjfpo import SJFPOConfig
 from sjfpo.evaluator import Evaluator, check_divergence, mean_chunk_jerk
-from sjfpo.modeling_sjfpo import SJFPOAborted, SJFPOPolicy
+from sjfpo.modeling_sjfpo import SJFPOAborted, SJFPOPolicy, build_optimizer
 from lerobot.utils.constants import CHECKPOINTS_DIR
 from sjfpo.utils import resolve_device, to_numpy_1d
 from sjfpo.wandb_logging import (
@@ -124,36 +124,6 @@ def build_policy(
     if action_low is not None and action_high is not None:
         policy.set_action_bounds(action_low, action_high)
     return policy
-
-
-def _build_optimizer(
-    policy: SJFPOPolicy, cfg: SJFPOConfig, params: list[dict], lr: float
-):
-    """Build an optimizer over a single param group at a fixed learning rate."""
-    kwargs = dataclasses.asdict(cfg.get_optimizer_preset(lr=lr))
-    kwargs.pop("grad_clip_norm", None)  # AdamW preset field; clipping happens below
-    if next(policy.parameters()).is_cuda:
-        kwargs["fused"] = True
-    return torch.optim.AdamW(params, **kwargs)
-
-
-def build_optimizers(
-    policy: SJFPOPolicy, cfg: SJFPOConfig
-) -> tuple[torch.optim.Optimizer, torch.optim.Optimizer]:
-    """Build separate actor and critic optimizers.
-
-    A single shared group would let the critic's value gradient (orders of
-    magnitude larger than the policy's) own the one grad-norm clip, so the
-    policy step is both clipped and outnumbered.
-    """
-    return (
-        _build_optimizer(
-            policy, cfg, policy.get_actor_optim_params()["params"], cfg.policy_lr
-        ),
-        _build_optimizer(
-            policy, cfg, policy.get_critic_optim_params()["params"], cfg.critic_lr
-        ),
-    )
 
 
 def sample_minibatch(
@@ -280,17 +250,12 @@ def train_sjfpo_run(
                 f"resume is not supported for policy_cls={policy_cls.__name__}; "
                 "actor checkpoints are not interchangeable between architectures"
             )
-        loaded = load_policy_checkpoint(
+        policy, optimizer, counters = load_policy_checkpoint(
             resume_from_checkpoint,
             device=device,
             action_low=action_low,
             action_high=action_high,
         )
-        if len(loaded) == 4:
-            policy, actor_optimizer, critic_optimizer, counters = loaded
-        else:
-            policy, _legacy_optimizer, counters = loaded
-            actor_optimizer, critic_optimizer = build_optimizers(policy, policy.config)
         global_step = int(counters["global_step"])
         policy.train()
         (out_dir / "resume_info.json").write_text(
@@ -313,7 +278,7 @@ def train_sjfpo_run(
             action_high=action_high,
             policy_cls=policy_cls,
         )
-        actor_optimizer, critic_optimizer = build_optimizers(policy, cfg)
+        optimizer = build_optimizer(policy)
 
     print(
         f"SJFPO policy: actor_depth={cfg.dit_depth} hidden={cfg.hidden_dim} "
@@ -349,10 +314,14 @@ def train_sjfpo_run(
     t_start = time.time()
 
     actor_params = [
-        p for group in actor_optimizer.param_groups for p in group["params"]
+        p
+        for group in policy.get_actor_optim_params()["params"]
+        for p in group["params"]
     ]
     critic_params = [
-        p for group in critic_optimizer.param_groups for p in group["params"]
+        p
+        for group in policy.get_critic_optim_params()["params"]
+        for p in group["params"]
     ]
 
     try:
@@ -404,8 +373,7 @@ def train_sjfpo_run(
                 )
             )
             accumulation_steps = cfg.grad_accum_steps
-            actor_optimizer.zero_grad(set_to_none=True)
-            critic_optimizer.zero_grad(set_to_none=True)
+            optimizer.zero_grad(set_to_none=True)
             minibatch: dict[str, torch.Tensor] = {}
             finite_error = torch.zeros(
                 (), device=batch["advantages"].device, dtype=torch.bool
@@ -444,10 +412,8 @@ def train_sjfpo_run(
                     )
                     critic_pre_norms.append(pre_clip_critic.detach())
                     above_clamp_fracs.append(policy.cfm_above_clamp_frac)
-                    actor_optimizer.step()
-                    critic_optimizer.step()
-                    actor_optimizer.zero_grad(set_to_none=True)
-                    critic_optimizer.zero_grad(set_to_none=True)
+                    optimizer.step()
+                    optimizer.zero_grad(set_to_none=True)
                     policy.step_count += 1
                 if epoch_info is not None:
                     infos.append(epoch_info)
@@ -557,8 +523,7 @@ def train_sjfpo_run(
                 save_policy_checkpoint(
                     ckpt_dir,
                     policy=policy,
-                    actor_optimizer=actor_optimizer,
-                    critic_optimizer=critic_optimizer,
+                    optimizer=optimizer,
                     global_step=global_step,
                     ema_state=policy.ema_state_dict(),
                 )
@@ -582,8 +547,7 @@ def train_sjfpo_run(
     save_policy_checkpoint(
         ckpt_dir,
         policy=policy,
-        actor_optimizer=actor_optimizer,
-        critic_optimizer=critic_optimizer,
+        optimizer=optimizer,
         global_step=global_step,
         ema_state=policy.ema_state_dict(),
     )

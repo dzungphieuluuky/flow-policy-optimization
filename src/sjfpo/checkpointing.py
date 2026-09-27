@@ -72,8 +72,6 @@ def save_policy_checkpoint(
     *,
     policy,
     optimizer: torch.optim.Optimizer | None = None,
-    actor_optimizer: torch.optim.Optimizer | None = None,
-    critic_optimizer: torch.optim.Optimizer | None = None,
     global_step: int,
     ema_state: dict | None = None,
     save_rng: bool = True,
@@ -86,11 +84,11 @@ def save_policy_checkpoint(
     The frozen behavior snapshots are runtime-only and are refreshed before the
     next rollout, so their duplicate parameters are not persisted.
 
-    ``optimizer`` is the legacy single-optimizer form, for checkpoints predating
-    the split; ``critic_optimizer`` is required alongside ``actor_optimizer``.
+    ``optimizer`` holds actor and critic as separate param groups, so one
+    ``step`` drives both while grad clipping stays per role.
 
     Raises ``ValueError`` if ``policy`` is not an SJFPO policy, if
-    ``global_step`` is negative, or if the optimizer arguments are inconsistent.
+    ``global_step`` is negative, or if ``optimizer`` is missing.
     """
     from sjfpo.modeling_sjfpo import SJFPOPolicy  # lazy: import-light module
 
@@ -100,10 +98,8 @@ def save_policy_checkpoint(
         )
     if int(global_step) < 0:
         raise ValueError(f"global_step={global_step} must be >= 0")
-    if (actor_optimizer is None) != (critic_optimizer is None):
-        raise ValueError("actor_optimizer and critic_optimizer must be provided together")
-    if actor_optimizer is None and optimizer is None:
-        raise ValueError("provide actor/critic optimizers or legacy optimizer")
+    if optimizer is None:
+        raise ValueError("provide an optimizer")
 
     d = Path(dir_path)
     d.mkdir(parents=True, exist_ok=True)
@@ -122,15 +118,7 @@ def save_policy_checkpoint(
     if ema_state is not None:
         _atomic_torch_save(d / "ema.pt", ema_state)
 
-    if actor_optimizer is not None:
-        optimizer_state = {
-            "format": 2,
-            "actor": actor_optimizer.state_dict(),
-            "critic": critic_optimizer.state_dict(),
-        }
-    else:
-        optimizer_state = optimizer.state_dict()
-    _atomic_torch_save(d / OPTIMIZER_FILE, optimizer_state)
+    _atomic_torch_save(d / OPTIMIZER_FILE, optimizer.state_dict())
 
     counters = {
         "global_step": int(global_step),
@@ -149,15 +137,18 @@ def save_policy_checkpoint(
 
 
 def _load_optimizer(policy, d: Path) -> torch.optim.Optimizer:
-    """Rebuild a single optimizer from the current config and load its state.
+    """Rebuild the optimizer from the policy and load its state.
 
-    Fails loudly on any structural mismatch (wrong number of param groups,
-    wrong key set) rather than relying on ``load_state_dict``'s opaque
-    error messages. Raises ``ResumeError`` if the file cannot be unpickled or
-    the state does not match the current config.
+    Builds through :func:`sjfpo.modeling_sjfpo.build_optimizer`, the same
+    construction the training loop uses, so the saved and rebuilt param groups
+    cannot drift apart. Fails loudly on any structural mismatch (wrong number of
+    param groups, wrong key set) rather than relying on ``load_state_dict``'s
+    opaque error messages. Raises ``ResumeError`` if the file cannot be unpickled
+    or the state does not match the current config.
     """
-    groups = policy.get_optim_params()["params"]
-    optimizer = policy.config.get_optimizer_preset().build(groups)
+    from sjfpo.modeling_sjfpo import build_optimizer  # lazy: import-light module
+
+    optimizer = build_optimizer(policy)
 
     try:
         opt_state = torch.load(
@@ -170,6 +161,12 @@ def _load_optimizer(policy, d: Path) -> torch.optim.Optimizer:
             "with weights_only=False at your own risk."
         ) from e
 
+    if isinstance(opt_state, dict) and opt_state.get("format") == 2:
+        raise ResumeError(
+            f"{d / OPTIMIZER_FILE} holds separate actor/critic optimizers, which "
+            "predate the merged single optimizer. That state cannot be loaded "
+            "into one optimizer; resume from a checkpoint saved after the merge."
+        )
     saved_groups = opt_state.get("param_groups", [])
     if len(saved_groups) != len(optimizer.param_groups):
         raise ResumeError(
@@ -183,47 +180,6 @@ def _load_optimizer(policy, d: Path) -> torch.optim.Optimizer:
     except Exception as e:
         raise ResumeError(f"optimizer.load_state_dict failed: {e}") from e
     return optimizer
-
-
-def _load_optimizer_pair(policy, d: Path):
-    """Load the split actor/critic optimizers, falling back to the legacy format.
-
-    Returns the actor and critic optimizers, or the legacy optimizer and None.
-    Raises ``ResumeError`` if the file cannot be unpickled, is a split-format
-    payload with missing keys, or the state does not match the config.
-    """
-    try:
-        payload = torch.load(
-            d / OPTIMIZER_FILE, map_location="cpu", weights_only=True
-        )
-    except Exception as e:
-        raise ResumeError(
-            f"failed to unpickle {d / OPTIMIZER_FILE}: {e}. "
-            "If the optimizer was subclassed with non-tensor state, re-save "
-            "with weights_only=False at your own risk."
-        ) from e
-
-    if not isinstance(payload, dict) or payload.get("format") != 2:
-        return _load_optimizer(policy, d), None
-
-    try:
-        actor_state = payload["actor"]
-        critic_state = payload["critic"]
-    except (KeyError, TypeError) as e:
-        raise ResumeError(f"malformed split optimizer payload in {d}: {e}") from e
-
-    actor = policy.config.get_optimizer_preset(lr=policy.config.policy_lr).build(
-        policy.get_actor_optim_params()["params"]
-    )
-    critic = policy.config.get_optimizer_preset(lr=policy.config.critic_lr).build(
-        policy.get_critic_optim_params()["params"]
-    )
-    try:
-        actor.load_state_dict(actor_state)
-        critic.load_state_dict(critic_state)
-    except Exception as e:
-        raise ResumeError(f"split optimizer load_state_dict failed: {e}") from e
-    return actor, critic
 
 
 def _load_rng(d: Path) -> None:
@@ -258,8 +214,7 @@ def load_policy_checkpoint(
     Rebuilds every component from ``config.json`` — no caller-supplied dims.
     Environment action bounds are runtime state; pass both ``action_low`` and
     ``action_high`` to restore the current postprocessor mapping.
-    New split checkpoints return ``(policy, actor_optimizer, critic_optimizer,
-    counters)``; legacy checkpoints return ``(policy, optimizer, counters)``.
+    Returns ``(policy, optimizer, counters)``.
 
     Raises ``ResumeError`` if the checkpoint is incomplete or any saved
     component is corrupt or structurally mismatched, and ``ValueError`` if
@@ -285,7 +240,7 @@ def load_policy_checkpoint(
     if action_low is not None:
         policy.set_action_bounds(action_low, action_high)
 
-    actor_optimizer, critic_optimizer = _load_optimizer_pair(policy, d)
+    optimizer = _load_optimizer(policy, d)
 
     ema_path = d / "ema.pt"
     if ema_path.is_file():
@@ -313,6 +268,4 @@ def load_policy_checkpoint(
         _load_rng(d)
 
     counters = {"global_step": global_step, "step_count": step_count}
-    if critic_optimizer is None:
-        return policy, actor_optimizer, counters
-    return policy, actor_optimizer, critic_optimizer, counters
+    return policy, optimizer, counters

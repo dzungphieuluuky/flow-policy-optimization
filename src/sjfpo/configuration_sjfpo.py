@@ -33,8 +33,8 @@ class SJFPOConfig(PreTrainedConfig):
     num_euler_steps: int = 16
     num_inference_steps: int = 16
     chunks_per_update: int = 256
-    num_learning_epochs: int = 16
-    batch_size: int = 64  # chunks per minibatch; num_mini_batches is derived
+    num_learning_epochs: int = 4
+    batch_size: int = 128  # chunks per minibatch; num_mini_batches is derived
     num_envs: int = 64
 
     gamma: float = 0.99
