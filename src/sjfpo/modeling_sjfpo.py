@@ -454,11 +454,13 @@ class SJFPOPolicy(PreTrainedPolicy):
         """Predict a full action chunk.
 
         Action perturbation is applied before postprocessing, matching FPO++, so the
-        noise lands in the policy's normalized action space. ``noise=True`` samples the
-        chunk's first token; the default returns zeros at t=0. Returns a chunk of shape
+        noise lands in the policy's normalized action space. ``zero_sampling=True``
+        integrates from eps=0 over ``num_inference_steps``; ``zero_sampling=False``
+        integrates from sampled noise over ``num_euler_steps``, honouring
+        ``noise_sampling_mode`` and ``noise_scaling_mode``. Returns a chunk of shape
         ``[B, H, action_dim]``.
         """
-        noise = kwargs.get("noise", False)
+        zero_sampling = kwargs.get("zero_sampling", True)
         cfg = self.config
         device = next(self.actor.parameters()).device
 
@@ -473,15 +475,23 @@ class SJFPOPolicy(PreTrainedPolicy):
         with torch.inference_mode(), autocast_context(device):
             condition = self.conditioner(states)
             shape = (states.shape[0], num_spectral_tokens_kept, action_dim)
-            eps = None if noise else torch.zeros(*shape, device=device)
-            num_steps = cfg.num_euler_steps if noise else cfg.num_inference_steps
+            # zero_sampling starts the flow at eps=0, which is what FPO++ uses
+            # for eval and for the reported metrics. Otherwise start from
+            # sampled noise, drawn through sample_noise so noise_scaling_mode
+            # applies; the old path called torch.randn here and skipped it,
+            # so freq_weighted trained pink and rolled out white.
+            if zero_sampling:
+                eps = torch.zeros(*shape, device=device)
+                num_steps = cfg.num_inference_steps
+            else:
+                eps = sample_noise(shape, cfg, device, None)
+                num_steps = cfg.num_euler_steps
             x0 = sample_action(
                 lambda x, t, c: actor(x, t, c),
                 shape,
                 condition,
                 num_inference_steps=num_steps,
                 eps=eps,
-                generator=None,
                 device=device,
             ).float()
 
@@ -636,13 +646,13 @@ class SJFPOPolicy(PreTrainedPolicy):
 
         def propose(state: torch.Tensor) -> torch.Tensor:
             chunk = self.predict_action_chunk(
-                {OBS_STATE: to_device_async(state, device)}, noise=noisy
+                {OBS_STATE: to_device_async(state, device)}, zero_sampling=not noisy
             )[0]
             return chunk.cpu()
 
         def propose_batch(states: torch.Tensor) -> torch.Tensor:
             chunk = self.predict_action_chunk(
-                {OBS_STATE: to_device_async(states, device)}, noise=noisy
+                {OBS_STATE: to_device_async(states, device)}, zero_sampling=not noisy
             )
             return chunk.cpu()
 

@@ -100,7 +100,7 @@ def main(argv: list[str] | None = None) -> int:
                         obs, dtype=torch.float32
                     ).unsqueeze(0)
                 }
-                action = policy.select_action(batch, noise=False)
+                action = policy.select_action(batch, zero_sampling=True)
                 return action.squeeze(0).cpu().numpy()
 
         print(
