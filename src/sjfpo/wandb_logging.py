@@ -42,16 +42,16 @@ def build_run_name(method: str, env_name: str, seed: int, cfg_dict: dict) -> str
         tags.append(f"top{compact_value(v)}")
     if (v := get("hidden_dim")) is not None and (d := get("dit_depth")) is not None:
         tags.append(f"d{v}x{d}")
-    if (v := get("num_epochs", get("learning_epochs"))) is not None:
+    if (v := get("num_learning_epochs", get("num_epochs"))) is not None:
         tags.append(f"ep{v}")
     if (v := get("policy_lr", get("lr"))) is not None:
         tags.append(f"lr{v:g}" if isinstance(v, float) else f"lr{v}")
-    if (v := get("epsilon_clip", get("ratio_clip"))) is not None:
+    if (v := get("clip_param", get("epsilon_clip"))) is not None:
         tags.append(f"eps{compact_value(v)}")
     if get("use_per_bin_clip"):
         tags.append(
-            f"bin{compact_value(get('epsilon_clip_lowfreq'))}"
-            f"-{compact_value(get('epsilon_clip_highfreq'))}"
+            f"bin{compact_value(get('clip_param_lowfreq'))}"
+            f"-{compact_value(get('clip_param_highfreq'))}"
         )
     if (v := get("num_mc_samples")) is not None:
         tags.append(f"mc{v}")

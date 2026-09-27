@@ -33,19 +33,19 @@ class SJFPOConfig(PreTrainedConfig):
     num_euler_steps: int = 16
     num_inference_steps: int = 16
     chunks_per_update: int = 256
-    num_epochs: int = 16
-    batch_size: int = 64  # chunks per minibatch; num_minibatches is derived
+    num_learning_epochs: int = 16
+    batch_size: int = 64  # chunks per minibatch; num_mini_batches is derived
     num_envs: int = 64
 
     gamma: float = 0.99
     gae_lambda: float = 0.95
-    epsilon_clip: float = 0.05
+    clip_param: float = 0.05
     use_dct_transform: bool = False  # spectral chunk encoding; False = raw action chunk
     # FPO++ trust region: ppo, spo, or aspo (official default).
     trust_region_mode: str = "aspo"
     use_per_bin_clip: bool = False  # legacy diagnostics-only bin clipping
-    epsilon_clip_lowfreq: float = 0.02  # tight: low bins carry task intent
-    epsilon_clip_highfreq: float = 0.10
+    clip_param_lowfreq: float = 0.02  # tight: low bins carry task intent
+    clip_param_highfreq: float = 0.10
     cfm_loss_reduction: str = "mean"  # mean | sum | sqrt
     cfm_clamp: float = 20.0
     cfm_loss_clamp_negative_advantages: bool = True
@@ -73,8 +73,8 @@ class SJFPOConfig(PreTrainedConfig):
     ema_decay: float = 0.95
     ema_warmup_steps: int = 500
 
-    vf_coef: float = 1.0  # 0.5 was too weak for the critic
-    grad_clip_norm: float = 1.0
+    value_loss_coef: float = 1.0  # 0.5 was too weak for the critic
+    max_grad_norm: float = 1.0
 
     top_p_spectral_tokens: float = 1.0
 
@@ -141,21 +141,21 @@ class SJFPOConfig(PreTrainedConfig):
         if self.use_clipped_value_loss:
             raise ValueError(
                 "use_clipped_value_loss is not supported: the value target is "
-                "now normalized, so epsilon_clip would be a sub-sigma clip"
+                "now normalized, so clip_param would be a sub-sigma clip"
             )
         if not 0.0 < self.gae_lambda <= 1.0:
             raise ValueError(
                 f"gae_lambda={self.gae_lambda} must satisfy 0 < lambda <= 1"
             )
-        if not 0.0 < self.epsilon_clip < 1.0:
+        if not 0.0 < self.clip_param < 1.0:
             raise ValueError(
-                f"epsilon_clip={self.epsilon_clip} must satisfy 0 < eps < 1"
+                f"clip_param={self.clip_param} must satisfy 0 < eps < 1"
             )
         if self.use_per_bin_clip:
-            lo, hi = self.epsilon_clip_lowfreq, self.epsilon_clip_highfreq
+            lo, hi = self.clip_param_lowfreq, self.clip_param_highfreq
             if not 0.0 < lo <= hi < 1.0:
                 raise ValueError(
-                    "require 0 < epsilon_clip_lowfreq <= epsilon_clip_highfreq < 1, "
+                    "require 0 < clip_param_lowfreq <= clip_param_highfreq < 1, "
                     f"got ({lo}, {hi})"
                 )
         if self.trust_region_mode not in {"ppo", "spo", "aspo"}:
@@ -197,8 +197,10 @@ class SJFPOConfig(PreTrainedConfig):
             raise ValueError("timestep_inverse_cdf_beta must be > 0")
         if self.timestep_beta_alpha <= 0 or self.timestep_beta_beta <= 0:
             raise ValueError("timestep beta alpha/beta must be > 0")
-        if self.vf_coef < 0:
-            raise ValueError(f"vf_coef={self.vf_coef} must be >= 0")
+        if self.value_loss_coef < 0:
+            raise ValueError(
+                f"value_loss_coef={self.value_loss_coef} must be >= 0"
+            )
 
     def _validate_optimizer(self) -> None:
         """Validate learning rates, clipping, and batch-shaping parameters."""
@@ -210,8 +212,8 @@ class SJFPOConfig(PreTrainedConfig):
             raise ValueError(
                 f"optimizer_weight_decay={self.optimizer_weight_decay} must be >= 0"
             )
-        if self.grad_clip_norm <= 0:
-            raise ValueError(f"grad_clip_norm={self.grad_clip_norm} must be > 0")
+        if self.max_grad_norm <= 0:
+            raise ValueError(f"max_grad_norm={self.max_grad_norm} must be > 0")
         if self.grad_accum_steps < 1:
             raise ValueError(f"grad_accum_steps={self.grad_accum_steps} must be >= 1")
         if self.chunks_per_update < 1:
@@ -223,8 +225,10 @@ class SJFPOConfig(PreTrainedConfig):
                 f"batch_size={self.batch_size} must be <= "
                 f"chunks_per_update={self.chunks_per_update}"
             )
-        if self.num_epochs < 1:
-            raise ValueError(f"num_epochs={self.num_epochs} must be >= 1")
+        if self.num_learning_epochs < 1:
+            raise ValueError(
+                f"num_learning_epochs={self.num_learning_epochs} must be >= 1"
+            )
         if self.num_envs < 1:
             raise ValueError(f"num_envs={self.num_envs} must be >= 1")
         if self.num_mc_samples < 1:
@@ -266,7 +270,7 @@ class SJFPOConfig(PreTrainedConfig):
         kwargs = dict(
             lr=self.policy_lr if lr is None else float(lr),
             weight_decay=self.optimizer_weight_decay,
-            grad_clip_norm=self.grad_clip_norm,
+            grad_clip_norm=self.max_grad_norm,
         )
         return AdamWConfig(**kwargs)
 
@@ -279,7 +283,7 @@ class SJFPOConfig(PreTrainedConfig):
 
 
     @property
-    def num_minibatches(self) -> int:
+    def num_mini_batches(self) -> int:
         """Minibatches per epoch: ``chunks_per_update // batch_size``, floored at one.
 
         Computed on access rather than in ``__post_init__`` so it cannot go
