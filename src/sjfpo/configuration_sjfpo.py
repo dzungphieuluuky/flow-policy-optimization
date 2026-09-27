@@ -61,6 +61,9 @@ class SJFPOConfig(PreTrainedConfig):
     max_timestep: float = 0.995
     timestep_sampling_mode: str = "fpo_beta"
     noise_sampling_mode: str = "normal"
+    # Per-mode std across the token axis: "white" (1.0) or NEED's beta=1 1/f
+    # coloring, which concentrates base variance in the low DCT modes.
+    noise_scaling_mode: str = "white"
     timestep_inverse_cdf_beta: float = 1.0
     timestep_beta_alpha: float = 2.0
     timestep_beta_beta: float = 2.0
@@ -189,6 +192,14 @@ class SJFPOConfig(PreTrainedConfig):
             )
         if self.noise_sampling_mode not in {"normal", "uniform"}:
             raise ValueError("noise_sampling_mode must be 'normal' or 'uniform'")
+        if self.noise_scaling_mode not in {"white", "freq_weighted"}:
+            raise ValueError("noise_scaling_mode must be 'white' or 'freq_weighted'")
+        if self.noise_scaling_mode == "freq_weighted" and not self.use_dct_transform:
+            raise ValueError(
+                "noise_scaling_mode='freq_weighted' requires "
+                "use_dct_transform=True (the token axis is time, not frequency, "
+                "without the DCT)"
+            )
         if self.timestep_inverse_cdf_beta <= 0:
             raise ValueError("timestep_inverse_cdf_beta must be > 0")
         if self.timestep_beta_alpha <= 0 or self.timestep_beta_beta <= 0:
