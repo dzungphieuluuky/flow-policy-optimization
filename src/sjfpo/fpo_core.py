@@ -101,7 +101,7 @@ def sample_noise(
     )
 
 
-def run_mc_simulation(
+def run_monte_carlo_sampling(
     a: torch.Tensor, eps: torch.Tensor, tau
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, tuple[int, ...], int]:
     """Broadcast action, noise, and per-coordinate timesteps over MC.
