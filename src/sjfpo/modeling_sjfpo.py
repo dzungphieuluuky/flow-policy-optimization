@@ -549,39 +549,12 @@ class SJFPOPolicy(PreTrainedPolicy):
         it there rather than pretend it is meaningful.
 
         The cost is that a chunk terminated before ``n_action_steps`` is fit
-        over all kept bins, including those that only saw padded positions.
-        That is what :meth:`_cfm_executed_fraction` down-weights; this
-        predicate only decides whether a mask exists at all.
+        over all kept bins, including those that only saw padded positions. The
+        truncation discontinuity lands mostly in the high bins that
+        ``num_kept_tokens`` drops, so the kept bins should be barely affected;
+        ``truncated_chunk_frac`` in the diagnostics is the check.
         """
         return None if cfg.use_dct_transform else action_is_pad
-
-
-    @staticmethod
-    def _cfm_executed_fraction(
-        cfg: SJFPOConfig, action_is_pad: torch.Tensor
-    ) -> torch.Tensor:
-        """Per-chunk ``executed / action_horizon``, or all-ones off the DCT path.
-
-        The padded rows of a chunk are the policy's own unexecuted predictions,
-        and the DCT mixes every time step into every kept coefficient, so a
-        truncated chunk's CFM target is partly unvalidated. Charging a chunk in
-        proportion to how much of it actually ran keeps a nearly-complete chunk
-        at nearly full weight while damping the ones that mostly did not.
-
-        Only the *policy* term is weighted. The advantage, the GAE recursion and
-        the value target are already correct for a short chunk, since
-        :mod:`sjfpo.gae` sums over the real length and discounts by
-        ``gamma ** h``, so the critic should keep learning from it.
-
-        Off the DCT path :func:`compute_cfm_loss` already masks and renormalises
-        by the executed count, so weighting there would charge twice.
-        """
-        if not cfg.use_dct_transform:
-            return torch.ones(
-                action_is_pad.shape[0], device=action_is_pad.device
-            )
-        executed = (~action_is_pad).sum(dim=1).to(torch.float32)
-        return executed / cfg.action_horizon
 
 
     def _behavior_cfm_losses(
@@ -1022,13 +995,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             self.cfm_above_clamp_frac = (l_new > cfg.cfm_clamp).float().mean().detach()
 
             surrogate = compute_aspo_surrogate(ratio, adv_mc, cfg, cfg.clip_param)
-            # Charge a truncated chunk in proportion to how much of it ran, then
-            # renormalise to mean one so this redistributes weight across chunks
-            # without quietly shrinking the policy loss and rebalancing it
-            # against the value loss.
-            chunk_weight = self._cfm_executed_fraction(cfg, action_is_pad)
-            chunk_weight = chunk_weight / chunk_weight.mean().clamp_min(1e-6)
-            policy_per_chunk = -surrogate.mean(dim=1) * chunk_weight
+            policy_per_chunk = -surrogate.mean(dim=1)
 
         with autocast_context(device):
             v_pred = self.critic(states).float()
@@ -1167,12 +1134,6 @@ class SJFPOPolicy(PreTrainedPolicy):
         # Share of chunks with any never-executed action position. Those rows
         # still enter the DCT target, so this bounds the contamination.
         truncated_chunk_frac = action_is_pad.any(dim=1).float().mean()
-        # Mean weight the reweighting applies, before its mean-one rescale.
-        policy_weight_mean = (
-            (~action_is_pad).sum(dim=1).float().mean() / action_is_pad.shape[1]
-            if cfg.use_dct_transform
-            else action_is_pad.new_ones(())
-        )
 
         returns_var = returns_d.var(correction=0).clamp_min(1e-8)
         explained_var = 1.0 - (returns_d - v_pred).var(correction=0) / returns_var
@@ -1216,7 +1177,6 @@ class SJFPOPolicy(PreTrainedPolicy):
             cfm_above_clamp_frac,
             l_old_new_corr,
             truncated_chunk_frac,
-            policy_weight_mean,
             returns_d.std(correction=0),
             v_pred.std(correction=0),
         ]
@@ -1255,7 +1215,6 @@ class SJFPOPolicy(PreTrainedPolicy):
             "cfm_above_clamp_frac",
             "l_old_new_corr",
             "truncated_chunk_frac",
-            "policy_weight_mean",
             "value_target_std",
             "value_pred_std",
         ]
