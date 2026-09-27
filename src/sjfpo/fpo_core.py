@@ -57,6 +57,18 @@ def sample_timesteps(
     )
 
 
+def _freq_weighted_std(num_modes: int, horizon: int, device) -> torch.Tensor:
+    """Per-mode std of pink (1/f) noise over DCT-II modes.
+
+    NEED (Eberhard et al. 2023) finds the beta=1 coloring beats white and OU
+    noise for continuous-control exploration: action chunks are band-limited,
+    so base variance belongs in the low modes instead of being spread
+    uniformly over the coefficient axis.
+    """
+    k = torch.arange(num_modes, dtype=torch.float32, device=device)
+    return torch.rsqrt(1.0 + (k * (math.pi / horizon)) ** 2)
+
+
 def sample_noise(
     shape,
     cfg: SJFPOConfig,
@@ -65,16 +77,28 @@ def sample_noise(
 ):
     """Draw Monte-Carlo noise of shape ``shape``.
 
-    The distribution is selected by ``cfg.noise_sampling_mode``. Raises
-    ``ValueError`` if the mode is not a known mode.
+    The marginal distribution is selected by ``cfg.noise_sampling_mode``; the
+    per-mode std across the token axis is selected by ``cfg.noise_scaling_mode``.
+    Raises ``ValueError`` if either mode is not a known mode.
     """
     mode = cfg.noise_sampling_mode
     if mode == "normal":
-        return torch.randn(*shape, device=device, generator=generator)
-    if mode == "uniform":
-        s = math.sqrt(3.0)
-        return (torch.rand(*shape, device=device, generator=generator) * 2.0 - 1.0) * s
-    raise ValueError(f"mode={mode!r} unknown; expected 'normal' or 'uniform'")
+        eps = torch.randn(*shape, device=device, generator=generator)
+    elif mode == "uniform":
+        eps = (torch.rand(*shape, device=device, generator=generator) * 2.0 - 1.0) * math.sqrt(3.0)
+    else:
+        raise ValueError(f"mode={mode!r} unknown; expected 'normal' or 'uniform'")
+
+    if cfg.noise_scaling_mode == "white":
+        return eps
+    if cfg.noise_scaling_mode == "freq_weighted":
+        # Axis -2 holds the DCT coefficients; broadcast the per-mode std over
+        # the leading batch/MC axes and the trailing action dim.
+        std = _freq_weighted_std(shape[-2], cfg.action_horizon, device)
+        return eps * std.view(*(1,) * (eps.dim() - 2), -1, 1)
+    raise ValueError(
+        f"mode={cfg.noise_scaling_mode!r} unknown; expected 'white' or 'freq_weighted'"
+    )
 
 
 def run_mc_simulation(
