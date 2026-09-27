@@ -64,7 +64,7 @@ class SJFPOConfig(PreTrainedConfig):
     timestep_beta_alpha: float = 2.0
     timestep_beta_beta: float = 2.0
 
-    dit_depth: int = 4
+    dit_depth: int = 2
     dit_heads: int = 4
     dit_mlp_ratio: float = 4.0
     time_embed_dim: int = 128

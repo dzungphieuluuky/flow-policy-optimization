@@ -42,7 +42,7 @@ timestep_beta_alpha: 2.0
 timestep_beta_beta: 2.0
 
 # -- DiT backbone ------------------------------------------------------
-dit_depth: 4
+dit_depth: 2
 dit_heads: 4
 dit_mlp_ratio: 4.0
 time_embed_dim: 128
