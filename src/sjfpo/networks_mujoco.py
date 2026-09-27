@@ -102,7 +102,7 @@ class MLPFlowBlock(nn.Module):
         """Mix tokens, then mix channels, both conditioned on ``c``.
 
         The token-mix weight is sliced to ``x``'s token count, so a reduced spectral
-        layout (``use_dct_transform=True`` with ``top_p_spectral_tokens < 1.0``) uses
+        layout (``use_dct_transform=True`` with ``num_kept_tokens < action_horizon``) uses
         the top-left ``K x K`` submatrix and the leading ``K`` biases. When the full
         ``action_horizon`` tokens are supplied this is identical to the unsliced
         ``token_mix``.

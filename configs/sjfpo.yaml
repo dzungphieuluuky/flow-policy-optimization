@@ -51,7 +51,7 @@ timestep_scale: 1000.0
 # -- Losses / optimization --------------------------------------------
 value_loss_coef: 1.0
 max_grad_norm: 0.5
-top_p_spectral_tokens: 1.0
+num_kept_tokens: 16
 policy_lr: 3.0e-4
 critic_lr: 9.0e-4
 optimizer_weight_decay: 1.0e-2
