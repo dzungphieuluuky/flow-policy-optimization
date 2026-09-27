@@ -503,13 +503,13 @@ class DiTBlock(nn.Module):
 
 
 class StateConditioner(nn.Module):
-    """Fuse a mean-pooled per-frame state summary with DCT-bin features.
+    """Fuse a mean-pooled per-frame state summary with DCT-frequency features.
 
     The raw path uses a per-frame MLP + mean-pool rather than an attention
     block: the spectral branch already encodes temporal structure explicitly,
     so the attention block is redundant for the chunk-level conditioning
-    vector (the caller mean-pools the result anyway). ``bin_norm`` normalizes
-    each DCT frequency bin across the observation-feature dimension before
+    vector (the caller mean-pools the result anyway). ``freq_norm`` normalizes
+    each DCT frequency across the observation-feature dimension before
     positional encoding and projection.
     """
 
@@ -522,8 +522,8 @@ class StateConditioner(nn.Module):
         self.obs_dim = obs_dim
         self.frame_proj = nn.Linear(obs_dim, hidden_dim)
         self.frame_mlp = SwiGLU(hidden_dim, 4 * hidden_dim, hidden_dim)
-        self.bin_norm = _rms_norm(obs_dim)
-        self.bin_encoding = SinusoidalEncoding(obs_dim)
+        self.freq_norm = _rms_norm(obs_dim)
+        self.freq_encoding = SinusoidalEncoding(obs_dim)
         self.key_proj = nn.Linear(obs_dim, hidden_dim)
         self.fuse = nn.Linear(2 * hidden_dim, hidden_dim)
 
@@ -544,10 +544,10 @@ class StateConditioner(nn.Module):
                 f"states feature dimension must be {self.obs_dim}, got {states.shape[2]}"
             )
         raw = self.frame_mlp(self.frame_proj(states)).mean(dim=1)
-        # M = T-1 keeps all T frequency bins, so this is the full orthonormal
+        # M = T-1 keeps all T frequencies, so this is the full orthonormal
         # transform of the window; extract_dct_coeffs is the only public entry.
         coeffs = extract_dct_coeffs(states, M=states.shape[1] - 1)
-        spec = self.key_proj(self.bin_encoding(self.bin_norm(coeffs))).mean(dim=1)
+        spec = self.key_proj(self.freq_encoding(self.freq_norm(coeffs))).mean(dim=1)
         return self.fuse(torch.cat([raw, spec], dim=-1))
 
 

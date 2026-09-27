@@ -65,7 +65,7 @@ def mini_batch_indices(
 
     Every epoch reshuffles, so repeated epochs do not see the same order.
     Splits are proportional (``(i * n) // n_mb``), so a remainder is spread
-    over the bins rather than dropped; the count is clamped to ``[1, n]``.
+    over the frequencies rather than dropped; the count is clamped to ``[1, n]``.
     """
     if n < 1:
         raise ValueError(f"n={n} must be >= 1")

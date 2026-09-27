@@ -48,9 +48,9 @@ def build_run_name(method: str, env_name: str, seed: int, cfg_dict: dict) -> str
         tags.append(f"lr{v:g}" if isinstance(v, float) else f"lr{v}")
     if (v := get("clip_param", get("epsilon_clip"))) is not None:
         tags.append(f"eps{compact_value(v)}")
-    if get("use_per_bin_clip"):
+    if get("use_per_freq_clipping"):
         tags.append(
-            f"bin{compact_value(get('clip_param_lowfreq'))}"
+            f"f{compact_value(get('clip_param_lowfreq'))}"
             f"-{compact_value(get('clip_param_highfreq'))}"
         )
     if (v := get("num_mc_samples")) is not None:

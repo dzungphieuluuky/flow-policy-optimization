@@ -43,8 +43,8 @@ class SJFPOConfig(PreTrainedConfig):
     use_dct_transform: bool = False  # spectral chunk encoding; False = raw action chunk
     # FPO++ trust region: ppo, spo, or aspo (official default).
     trust_region_mode: str = "aspo"
-    use_per_bin_clip: bool = False  # legacy diagnostics-only bin clipping
-    clip_param_lowfreq: float = 0.02  # tight: low bins carry task intent
+    use_per_freq_clipping: bool = False
+    clip_param_lowfreq: float = 0.02  # tight: low freqs carry task intent
     clip_param_highfreq: float = 0.10
     # "mean" divides the sum FPO++ uses (Eq. 8 sums CFM losses across chunk
     # timesteps) by tokens*action_dim, keeping the loss O(1) so cfm_clamp stays
@@ -160,7 +160,7 @@ class SJFPOConfig(PreTrainedConfig):
             raise ValueError(
                 f"clip_param={self.clip_param} must satisfy 0 < eps < 1"
             )
-        if self.use_per_bin_clip:
+        if self.use_per_freq_clipping:
             lo, hi = self.clip_param_lowfreq, self.clip_param_highfreq
             if not 0.0 < lo <= hi < 1.0:
                 raise ValueError(
@@ -256,10 +256,10 @@ class SJFPOConfig(PreTrainedConfig):
                 f"num_kept_tokens={self.num_kept_tokens} must satisfy "
                 f"1 <= K <= action_horizon={self.action_horizon}"
             )
-        if self.use_per_bin_clip and not self.use_dct_transform:
+        if self.use_per_freq_clipping and not self.use_dct_transform:
             raise ValueError(
-                "use_per_bin_clip=True requires use_dct_transform=True "
-                "(per-bin epsilon needs frequency bins)"
+                "use_per_freq_clipping=True requires use_dct_transform=True "
+                "(per-frequency epsilon needs frequencies)"
             )
 
 
