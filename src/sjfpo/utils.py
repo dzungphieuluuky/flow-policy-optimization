@@ -182,7 +182,7 @@ def to_device_async(x: torch.Tensor, device) -> torch.Tensor:
 
 
 def filter_low_freq(x: torch.Tensor, k: int, dim: int = 1) -> torch.Tensor:
-    """Keep only the ``k`` lowest-frequency bins along ``dim``."""
+    """Keep only the ``k`` lowest frequencies along ``dim``."""
     if k < 1 or k > x.shape[dim]:
         raise ValueError(f"k={k} out of range for dim {dim} with size {x.shape[dim]}")
     s = [slice(None)] * x.dim()

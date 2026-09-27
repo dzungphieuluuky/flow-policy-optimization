@@ -124,7 +124,7 @@ def test_row_mask_differs_from_coefficient_mask():
 
 
 def test_dct_basis_rows_are_dense_so_the_tail_is_not_the_high_bins():
-    """Every coefficient spreads over every row, so no bin is 'the tail'.
+    """Every coefficient spreads over every row, so no frequency is 'the tail'.
 
     Justifies the row-space cut: a single highest-frequency coefficient, which is
     the one the old code dropped under ``num_kept_tokens``, still puts energy on
@@ -135,8 +135,8 @@ def test_dct_basis_rows_are_dense_so_the_tail_is_not_the_high_bins():
     rows = velocity_to_action_steps(residual, HORIZON)[0, 0, :, 0]
     executed = 4
     head, tail = rows[:executed].abs().sum(), rows[executed:].abs().sum()
-    # The dropped 'high-frequency' bin puts most of its row-space energy on rows
-    # the chunk never executed, so dropping the bin did not drop the tail.
+    # The dropped 'high-frequency' component puts most of its row-space energy on rows
+    # the chunk never executed, so dropping it did not drop the tail.
     assert tail > 3 * head
 
 

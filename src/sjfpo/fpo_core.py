@@ -179,7 +179,7 @@ def compute_cfm_loss(
 
     The active ``sample`` path follows FPO++'s configurable reduction over the
     flattened action chunk (``mean``, ``sum``, or ``sqrt``; default ``mean``).
-    ``bin`` is a legacy diagnostic reduction kept for comparison, since the
+    ``freq`` is a legacy diagnostic reduction kept for comparison, since the
     official FPO policy only ever uses ``sample``.
 
     ``action_is_pad`` is an optional ``[batch, horizon]`` mask of never-executed
@@ -222,11 +222,11 @@ def compute_cfm_loss(
         if n_valid is None:
             return total / math.sqrt(flat.shape[-1])
         return total / n_valid.sqrt()
-    if reduce_mode == "bin":
+    if reduce_mode == "freq":
         # Per-token diagnostic; masking sq already zeroes padded tokens.
         return sq.sum(dim=-1) / math.sqrt(sq.shape[-1])
     raise ValueError(
-        f"reduce_mode={reduce_mode!r} must be 'scalar', 'sample', or 'bin'"
+        f"reduce_mode={reduce_mode!r} must be 'scalar', 'sample', or 'freq'"
     )
 
 

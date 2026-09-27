@@ -91,7 +91,7 @@ TRAIN_CELL = """\
     --total_steps 200000 \
     --eval_steps 50 \
     --save_steps 10000 \
-    --use_per_bin_clip true \
+    --use_per_freq_clipping true \
     --num_kept_tokens 16
 """
 
@@ -104,7 +104,7 @@ FULL_CELL = """\
     --total_steps 200000 \
     --eval_steps 50 \
     --save_steps 10000 \
-    --use_per_bin_clip true \
+    --use_per_freq_clipping true \
     --num_kept_tokens 16
 """
 
