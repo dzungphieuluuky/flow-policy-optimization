@@ -5,6 +5,7 @@ __pycache__/
 runs/
 outputs/
 wandb/
+tensorboard/
 uv.log
 .feynman/
 .pi-subagents/
