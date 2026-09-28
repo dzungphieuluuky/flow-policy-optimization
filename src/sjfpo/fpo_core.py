@@ -104,18 +104,16 @@ def sample_noise(
 def run_monte_carlo_sampling(
     a: torch.Tensor, eps: torch.Tensor, tau
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, tuple[int, ...], int]:
-    """Broadcast action, noise, and per-coordinate timesteps over MC.
+    """Broadcast action, noise, and per-token timesteps over MC.
 
-    Legacy scalar/[M]/[B,M] tau inputs return ``flatten_mc_timestep`` with shape
-    ``[B*M]``. The training path uses per-token tau with shape ``[B, M, K, 1]`` and
-    receives ``[B*M, K, 1]``; each token timestep is shared across that token's
-    action dimensions. ``tau`` is always coerced onto ``eps``'s device and storage
-    dtype so a scalar never triggers a silent CPU hop part-way through the graph.
+    The training path passes ``tau`` as ``[B, M, K, 1]`` and gets
+    ``[B*M, K, 1]``; each token's time is shared across its action dims. Scalar,
+    ``[M]`` and ``[B, M]`` forms are legacy and return ``[B*M]``. ``tau`` is
+    coerced onto ``eps``'s device and dtype so a scalar cannot trigger a silent
+    CPU hop mid-graph.
 
-    Returns the flattened timestep, the flattened noise, the broadcast action, the
-    per-sample flow shape, and the Monte-Carlo sample count. Raises
-    ``ValueError`` if ``eps`` disagrees with the action shape, or if ``tau``
-    matches none of the accepted shapes.
+    Returns the flattened timestep, noise, broadcast action, flow shape, and MC
+    count. Raises ``ValueError`` if the shapes disagree.
     """
     b, num_mc = eps.shape[0], eps.shape[1]
     flow_shape = tuple(a.shape[1:])
@@ -177,20 +175,17 @@ def compute_cfm_loss(
 ) -> torch.Tensor:
     """CFM squared-velocity loss (paper Eq.7-8).
 
-    The active ``sample`` path follows FPO++'s configurable reduction over the
-    flattened action chunk (``mean``, ``sum``, or ``sqrt``; default ``mean``).
-    ``token_mean`` is a diagnostic reduction kept for comparison, since the
-    official FPO policy only ever uses ``sample``. It means a mean over the
-    token axis of whatever space the operand is laid out in, which is the DCT
-    frequencies when the velocity is in coefficient space and the action steps
-    when it is on the action-step grid. The divisor is the action_dim because a
-    token aggregates only that axis, so the value does not depend on how many
-    tokens were masked out.
+    ``sample`` is the active path: FPO++'s reduction (``mean``, ``sum``,
+    ``sqrt``; default ``mean``) over the flattened chunk. ``token_mean`` is
+    diagnostic only; a mean over the token axis of whatever space the operand is
+    in, so frequencies in coefficient space and action steps on the step grid.
+    Divisor is action_dim, the only axis a token aggregates, so masking does not
+    move the value.
 
     ``action_is_pad`` is an optional ``[batch, horizon]`` mask of never-executed
-    action positions, True where padded. When given, padded positions are dropped
-    and each sample is renormalized by its own executed count, so a chunk cut
-    short contributes the same loss magnitude as a full one.
+    rows, True where padded. Padded rows are dropped and each sample renormalised
+    by its own executed count, so a short chunk keeps the loss magnitude of a
+    full one.
 
     Returns a scalar for ``scalar``, otherwise a per-sample loss tensor. Raises
     ``ValueError`` if the velocity shapes disagree, or if ``reduce_mode`` is
