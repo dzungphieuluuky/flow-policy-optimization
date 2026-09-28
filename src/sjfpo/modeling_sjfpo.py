@@ -540,6 +540,18 @@ class SJFPOPolicy(PreTrainedPolicy):
         return self._action_buffer.popleft()
 
 
+    @staticmethod
+    def _cfm_loss_token_count(cfg: SJFPOConfig) -> int:
+        """How many tokens the CFM loss reduces over.
+
+        The action-step grid when the loss operates on rows, the frequencies when
+        it does not. :meth:`prepare_cfm_loss_inputs` picks the layout and the
+        ``token_mean`` reduction inherits its length, so the two must agree or
+        the ratio compares different-width vectors.
+        """
+        on_action_grid = not cfg.use_dct_transform or cfg.cfm_mask_unexecuted
+        return cfg.action_horizon if on_action_grid else cfg.num_flow_tokens
+
     def prepare_cfm_loss_inputs(
         self,
         cfg: SJFPOConfig,
@@ -571,7 +583,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         importance ratio would compare means over different positions.
         """
         if cfg.use_dct_transform and cfg.cfm_mask_unexecuted:
-            steps = cfg.action_horizon
+            steps = self._cfm_loss_token_count(cfg)
             return action_is_pad, tuple(
                 velocity_to_action_steps(v, steps) for v in velocities
             )
@@ -987,10 +999,13 @@ class SJFPOPolicy(PreTrainedPolicy):
             raise ValueError(
                 f"behavior_cfm_loss shape {tuple(l_old.shape)} != {(n, num_mc)}"
             )
-        if tuple(l_old_token.shape) != (n, num_mc, flow_shape[0]):
+        # The token axis is the action-step grid when the mask moved the loss onto
+        # rows, and the frequencies otherwise, so it is not always flow_shape[0].
+        expected_tokens = self._cfm_loss_token_count(cfg)
+        if tuple(l_old_token.shape) != (n, num_mc, expected_tokens):
             raise ValueError(
                 f"behavior_cfm_loss_token shape {tuple(l_old_token.shape)} != "
-                f"{(n, num_mc, flow_shape[0])}"
+                f"{(n, num_mc, expected_tokens)}"
             )
 
         with autocast_context(device):
