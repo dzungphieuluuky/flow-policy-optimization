@@ -331,3 +331,52 @@ def test_unnormalize_is_identity_before_the_first_update():
     rms = RunningMeanStd(1)
     x = torch.tensor([[2.0], [9.0]])
     torch.testing.assert_close(rms.unnormalize(x), x)
+
+
+def _gae(chunk_size, rewards, value, next_value, terminated, truncated):
+    import torch
+
+    from sjfpo.gae import compute_chunk_advantages
+
+    n = len(value)
+    return compute_chunk_advantages(
+        torch.tensor(rewards, dtype=torch.float32),
+        torch.tensor(value, dtype=torch.float32),
+        torch.tensor(next_value, dtype=torch.float32),
+        torch.arange(n) * chunk_size,
+        torch.full((n,), chunk_size),
+        chunk_terminated=torch.tensor(terminated),
+        chunk_truncated=torch.tensor(truncated),
+        chunk_env_id=torch.zeros(n, dtype=torch.long),
+        chunk_size=chunk_size,
+        gamma=0.99,
+        lam=0.95,
+    )
+
+
+def test_truncation_breaks_the_chain():
+    """An episode end stops the carried credit reaching the previous chunk.
+
+    The flag has to sit on the EARLIER chunk: the chain test reads chunk i's own
+    flags to decide whether chunk i hands credit to chunk i+1, so a flag on the
+    last chunk cannot affect anything.
+    """
+    chained, _ = _gae(4, [1] * 8, [0, 0], [0, 0], [False, True], [False, False])
+    env_cut, _ = _gae(4, [1] * 8, [0, 0], [0, 0], [False, True], [True, False])
+    term_cut, _ = _gae(4, [1] * 8, [0, 0], [0, 0], [True, True], [False, False])
+    assert chained[0] > env_cut[0]
+    assert env_cut[0] == term_cut[0]
+
+
+def test_budget_cut_does_not_reach_the_gae():
+    """A budget cut is not an episode end, so it must not appear as one.
+
+    compute_chunk_advantages has no budget parameter at all, which is the fix: the
+    rollout budget and the env's time limit shared chunk_truncated, so a live
+    episode was read as finished and the carried credit was dropped.
+    """
+    import inspect
+
+    from sjfpo.gae import compute_chunk_advantages
+
+    assert "budget" not in inspect.signature(compute_chunk_advantages).parameters
