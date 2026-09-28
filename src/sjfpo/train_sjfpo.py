@@ -363,12 +363,12 @@ def train_sjfpo_run(
             actor_pre_norms: list[torch.Tensor] = []
             critic_pre_norms: list[torch.Tensor] = []
             above_clamp_fracs: list[torch.Tensor] = []
-            n_chunks = batch["advantages"].shape[0]
+            n_chunks = batch["raw_advantages"].shape[0]
             microbatches = list(
                 mini_batch_indices(
                     n_chunks,
                     cfg.num_mini_batches,
-                    batch["advantages"].device,
+                    batch["raw_advantages"].device,
                     num_learning_epochs=cfg.num_learning_epochs,
                 )
             )
@@ -376,7 +376,7 @@ def train_sjfpo_run(
             optimizer.zero_grad(set_to_none=True)
             minibatch: dict[str, torch.Tensor] = {}
             finite_error = torch.zeros(
-                (), device=batch["advantages"].device, dtype=torch.bool
+                (), device=batch["raw_advantages"].device, dtype=torch.bool
             )
             for micro_step, mb_idx in enumerate(microbatches):
                 group_start = micro_step - (micro_step % accumulation_steps)

@@ -240,3 +240,71 @@ def test_rejects_value_arrays_of_the_wrong_length():
         compute_chunk_advantages(
             chunk_value=torch.zeros(n), chunk_next_value=torch.zeros(16), **common
         )
+
+
+def test_returns_equal_advantages_plus_values_in_raw_space():
+    """returns = advantages + values must hold in the same units the critic emits.
+
+    This held inside compute_chunk_advantages but not in generate_rollout, which
+    used to normalize the critic output before comparing it against raw returns.
+    That silently made the identity false and left the baseline an order of
+    magnitude smaller than the reward term, so the advantage degenerated to "raw
+    reward" with no per-state baseline.
+    """
+    import torch
+
+    from sjfpo.gae import compute_chunk_advantages
+
+    chunk_size, n_chunks = 4, 2
+    rewards = torch.arange(1, 2 * chunk_size + 1, dtype=torch.float32)
+    chunk_value = torch.tensor([0.0, 5.0])
+    chunk_next_value = torch.tensor([0.0, 5.0])
+    advantages, returns = compute_chunk_advantages(
+        rewards,
+        chunk_value,
+        chunk_next_value,
+        torch.tensor([0, chunk_size]),
+        torch.tensor([chunk_size, chunk_size]),
+        chunk_terminated=torch.tensor([False, True]),
+        chunk_truncated=torch.tensor([False, False]),
+        chunk_env_id=torch.tensor([0, 0]),
+        chunk_size=chunk_size,
+        gamma=0.99,
+        lam=0.95,
+    )
+    torch.testing.assert_close(returns, advantages + chunk_value)
+
+
+def test_baseline_subtraction_scales_with_the_value():
+    """A higher V must lower the advantage, and by the same amount it raised V.
+
+    A unit-scale value sitting next to multi-unit rewards cannot do this, which is
+    exactly what the old normalized critic produced: the baseline contributed
+    almost nothing and the advantage was effectively the raw reward.
+    """
+    import torch
+
+    from sjfpo.gae import compute_chunk_advantages
+
+    def advantage_for(value: float) -> torch.Tensor:
+        advantages, _ = compute_chunk_advantages(
+            torch.tensor([5.0, 6.0, 7.0, 8.0]),
+            torch.tensor([value]),
+            torch.tensor([value]),
+            torch.tensor([0]),
+            torch.tensor([4]),
+            chunk_terminated=torch.tensor([True]),  # no bootstrap, so exact
+            chunk_truncated=torch.tensor([False]),
+            chunk_env_id=torch.tensor([0]),
+            chunk_size=4,
+            gamma=0.99,
+            lam=0.95,
+        )
+        return advantages
+
+    raw = advantage_for(0.0)
+    raised = advantage_for(9.0)
+    torch.testing.assert_close(raw - raised, torch.tensor([9.0]))
+    # The reward term alone is 25.56, so a 9-unit baseline is a third of the
+    # signal. Under the old wiring this term was O(1) against O(5) rewards.
+    assert float(raw) > 0 and float(raised) < float(raw)
