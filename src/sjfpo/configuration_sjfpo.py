@@ -23,6 +23,7 @@ class SJFPOConfig(PreTrainedConfig):
       used when the flow starts from sampled noise.
     """
 
+    report_to: str = "wandb"  # wandb | tensorboard | all | none
     num_critics: int = 1  # ensemble members; min over members feeds the GAE backup
     n_obs_steps: int = 16
     action_horizon: int = 16
@@ -115,6 +116,10 @@ class SJFPOConfig(PreTrainedConfig):
         """Validate observation, action, and DiT shape parameters."""
         if self.n_obs_steps < 1:
             raise ValueError(f"n_obs_steps={self.n_obs_steps} must be >= 1")
+        if self.report_to not in ("wandb", "tensorboard", "all", "none"):
+            raise ValueError(
+                f"report_to={self.report_to!r} must be wandb, tensorboard, all or none"
+            )
         if self.num_critics < 1:
             raise ValueError(f"num_critics={self.num_critics} must be >= 1")
         if self.action_horizon < 1:

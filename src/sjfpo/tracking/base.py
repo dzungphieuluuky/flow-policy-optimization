@@ -1,12 +1,8 @@
-"""wandb logging — direct wandb usage (installed and enabled)."""
-
 from __future__ import annotations
 
-import os
+from typing import Protocol
 
 import numpy as np
-import wandb
-
 
 def compact_value(v) -> str:
     """Render a metric compactly for a wandb run name.
@@ -59,65 +55,17 @@ def build_run_name(method: str, env_name: str, seed: int, cfg_dict: dict) -> str
     return base if not tags else f"{base}_{'_'.join(tags)}"
 
 
-def init_wandb_run_for_method(
-    *,
-    method: str,
-    env_name: str,
-    seed: int,
-    total_steps: int,
-    cfg_dict: dict,
-    wandb_enabled: bool = True,
-) -> bool:
-    """Initialise the wandb run for a training job.
-
-    Also used as the wandb project. ``total_steps`` labels short runs as ``smoke``,
-    and ``wandb_enabled=False`` skips wandb entirely. Returns True if a run was
-    started, False if logging was disabled.
-    """
-    if not wandb_enabled:
-        return False
-    wandb.init(
-        project=method,
-        group=f"{method}_{env_name}",
-        name=build_run_name(method, env_name, seed, cfg_dict),
-        tags=[method, "mujoco"],
-        config={**cfg_dict, "method": method, "seed": seed, "env": env_name},
-        job_type="smoke" if total_steps <= 10000 else "train",
-        mode=os.environ.get("WANDB_MODE", "online"),
-        reinit="finish_previous",
-    )
-    return True
-
-
-def finish_run(exit_code: int = 0) -> None:
-    """Close the active wandb run, recording ``exit_code``.
-    """
-    wandb.finish(exit_code=exit_code)
-
-
-def log_metrics(data: dict, step: int) -> None:
-    """Log a batch of scalars to the active wandb run at ``step``.
-    """
-    wandb.log(data, step=step)
-
-
-def log_eval_summary(
+def eval_summary_metrics(
     mean_return: float,
     eval_results: list[dict],
     all_eval_returns: list[float],
     eval_count: int,
-    global_step: int,
     *,
     r_rand: float | None = None,
     consecutive_below: int | None = None,
     best_return: float | None = None,
     steps_to_best: int | None = None,
-) -> None:
-    """Log the per-episode eval summary, plus history and health metrics.
-
-    Optional metrics are omitted entirely when their inputs are None, and the
-    reward-improvement pair is only emitted on a new best return.
-    """
+) -> dict:
     returns = [r["return"] for r in eval_results]
     lengths = [r["length"] for r in eval_results]
     successes = [r["success"] for r in eval_results if r.get("success") is not None]
@@ -142,7 +90,6 @@ def log_eval_summary(
         )
     if consecutive_below is not None:
         data["eval/consecutive_below"] = int(consecutive_below)
-
     data.update(
         {
             "eval/mean_length": float(np.mean(lengths)) if lengths else 0.0,
@@ -156,30 +103,33 @@ def log_eval_summary(
     if jerks:
         data["eval/mean_jerk"] = float(np.mean(jerks)) if jerks else 0.0
         data["eval/max_jerk"] = float(np.max(jerks)) if jerks else 0.0
-    if eval_results:
-        data["eval/episodes"] = wandb.Table(
-            columns=["episode", "return", "length", "success", "jerk"],
-            data=[[r["episode"], r["return"], r["length"], r.get("success"), r.get("jerk")]
-                  for r in eval_results],
-        )
-    log_metrics(data, step=global_step)
+    return data
 
 
-def log_eval_video(frames: list, global_step: int, *, fps: int = 30) -> None:
-    """Log the first eval episode as a wandb video, skipping unusable input.
+class ExperimentTrackerBackend(Protocol):
+    def log(self, data: dict[str, float], step: int) -> None: ...
+    def log_video(self, frames: list, step: int, *, fps: int) -> None: ...
+    def finish(self, exit_code: int) -> None: ...
 
-    Frame arrays that cannot be stacked into ``[T, H, W, C]``, and any wandb
-    encoding failure, are dropped silently so video logging never fails a run.
-    """
-    if not frames:
-        return
-    try:
-        video = np.stack([np.asarray(f, dtype=np.uint8) for f in frames])
-    except (ValueError, TypeError):
-        return
-    if video.ndim != 4:
-        return
-    try:
-        log_metrics({"eval/video": wandb.Video(video, fps=fps, format="mp4")}, step=global_step)
-    except Exception:
-        return
+
+class ExperimentTracker:
+    """Fans every call out to each configured backend."""
+
+    def __init__(self, backends: list[ExperimentTrackerBackend]):
+        self.backends = backends
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.backends)
+
+    def log(self, data: dict[str, float], step: int) -> None:
+        for b in self.backends:
+            b.log(data, step)
+
+    def log_video(self, frames: list, step: int, *, fps: int = 30) -> None:
+        for b in self.backends:
+            b.log_video(frames, step, fps=fps)
+
+    def finish(self, exit_code: int = 0) -> None:
+        for b in self.backends:
+            b.finish(exit_code)

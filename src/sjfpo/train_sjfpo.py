@@ -11,7 +11,7 @@ Performance notes
   pre-clip norms are accumulated on device and converted to a Python float
   once per rollout, not once per minibatch.
 * ``zero_grad(set_to_none=True)`` frees grad buffers between minibatches.
-* The ``forward`` diagnostic pass is requested only when wandb will consume it.
+* The ``forward`` diagnostic pass runs only when a tracker will consume it.
 * Eval and checkpoint are triggered by explicit step counters, so no eval or
   save is skipped when ``collect_steps`` overshoots the boundary.
 """
@@ -39,12 +39,7 @@ from sjfpo.evaluator import Evaluator, check_divergence, mean_chunk_jerk
 from sjfpo.modeling_sjfpo import SJFPOAborted, SJFPOPolicy, build_optimizer
 from lerobot.utils.constants import CHECKPOINTS_DIR
 from sjfpo.utils import resolve_device, to_numpy_1d
-from sjfpo.wandb_logging import (
-    finish_run,
-    init_wandb_run_for_method,
-    log_eval_summary,
-    log_metrics,
-)
+from sjfpo.tracking import build_tracker, eval_summary_metrics
 
 
 # Consecutive updates with most CFM samples above ``cfm_clamp`` before
@@ -204,7 +199,6 @@ def train_sjfpo_run(
     obs_dim: int | None = None,
     action_dim: int | None = None,
     resume_from_checkpoint: str | Path | None = None,
-    wandb_enabled: bool = True,
     policy_cls: type[SJFPOPolicy] = SJFPOPolicy,
 ) -> dict[str, Any]:
     """Run a single SJFPO training run.
@@ -291,13 +285,13 @@ def train_sjfpo_run(
     evaluator = Evaluator(env, eval_seed=10000 + seed, max_episodes=12)
     eval_policy = _EvalPolicy(policy)
     r_rand = random_baseline(evaluator, env)
-    wandb_enabled = init_wandb_run_for_method(
+    tracker = build_tracker(
+        cfg,
+        out_dir=out_dir,
         method="sjfpo",
         env_name=env_name,
         seed=seed,
         total_steps=total_steps,
-        cfg_dict=dataclasses.asdict(cfg),
-        wandb_enabled=wandb_enabled,
     )
 
     next_eval = eval_steps
@@ -387,7 +381,7 @@ def train_sjfpo_run(
                 minibatch = sample_minibatch(batch, mb_idx, minibatch)
                 loss, epoch_info = policy(
                     minibatch,
-                    compute_info=wandb_enabled,
+                    compute_info=tracker.enabled,
                     check_finite=False,
                 )
                 finite_error |= ~torch.isfinite(loss)
@@ -436,7 +430,7 @@ def train_sjfpo_run(
                 float(torch.stack(critic_pre_norms).mean()) if critic_pre_norms else 0.0
             )
 
-            if wandb_enabled and info is not None:
+            if tracker.enabled and info is not None:
                 data = {f"train/{k}": v for k, v in info.items()}
                 data["train/actor_grad_norm_preclip"] = actor_grad_norm_mean_pre
                 data["train/critic_grad_norm_preclip"] = critic_grad_norm_mean_pre
@@ -460,7 +454,7 @@ def train_sjfpo_run(
                 data["train/total_loss"] = (
                     info["policy_loss"] + cfg.value_loss_coef * info["value_loss"]
                 )
-                log_metrics(data, step=global_step)
+                tracker.log(data, step=global_step)
 
             above_clamp_frac = (
                 float(torch.stack(above_clamp_fracs).mean())
@@ -494,18 +488,22 @@ def train_sjfpo_run(
                 if best_return is None or mean_return > best_return:
                     best_return = mean_return
                     steps_to_best = global_step
-                if wandb_enabled:
-                    log_eval_summary(
-                        mean_return,
-                        eval_results,
-                        all_eval_returns,
-                        eval_count,
-                        global_step,
-                        r_rand=r_rand,
-                        consecutive_below=consecutive_below,
-                        best_return=best_return,
-                        steps_to_best=steps_to_best,
+                if tracker.enabled:
+                    tracker.log(
+                        eval_summary_metrics(
+                            mean_return,
+                            eval_results,
+                            all_eval_returns,
+                            eval_count,
+                            r_rand=r_rand,
+                            consecutive_below=consecutive_below,
+                            best_return=best_return,
+                            steps_to_best=steps_to_best,
+                        ),
+                        step=global_step,
                     )
+                    for b in tracker.backends:
+                        getattr(b, "log_eval_table", lambda *_: None)(eval_results, global_step)
                 consecutive_below, diverged_now = check_divergence(
                     mean_return, r_rand, consecutive_below
                 )
@@ -519,8 +517,8 @@ def train_sjfpo_run(
 
             if diverged_now:
                 diverged = True
-                if wandb_enabled:
-                    log_metrics(
+                if tracker.enabled:
+                    tracker.log(
                         {"eval/diverged": 1, "eval/diverge_step": global_step},
                         step=global_step,
                     )
@@ -541,16 +539,15 @@ def train_sjfpo_run(
 
         elapsed = time.time() - t_start
         fps = global_step / max(elapsed, 1e-6)
-        if wandb_enabled:
-            log_metrics(
+        if tracker.enabled:
+            tracker.log(
                 {"timing/fps": fps, "timing/elapsed_s": elapsed},
                 step=global_step,
             )
     finally:
         if train_env is not env:
             train_env.close()
-        if wandb_enabled:
-            finish_run(exit_code=1 if diverged else 0)
+        tracker.finish(exit_code=1 if diverged else 0)
 
     ckpt_dir = out_dir / CHECKPOINTS_DIR / "final"
     save_policy_checkpoint(

@@ -56,4 +56,5 @@ policy_lr: 3.0e-4
 critic_lr: 9.0e-4
 optimizer_weight_decay: 1.0e-2
 grad_accum_steps: 1
+  report_to: none
   num_critics: 2
