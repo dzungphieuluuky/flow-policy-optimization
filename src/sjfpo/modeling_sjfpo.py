@@ -95,6 +95,14 @@ def _gae_diagnostics(
         "linked_frac": linked / max(n - 1, 1),
         "advantage_std": float(advantages.float().std()) if n > 1 else 0.0,
         "return_rms": float(raw_returns.float().pow(2).mean().sqrt()) if n else 0.0,
+        # A = R - V, so Var(A) <= Var(R) with equality only when V is 0. This is
+        # the direct check that the baseline reached the advantage: it sits at 1.0
+        # when the critic is inert and falls toward 1 - R^2 as the critic improves.
+        "advantage_std_fraction": (
+            float(advantages.float().std() / raw_returns.float().std().clamp_min(1e-8))
+            if n > 1
+            else 0.0
+        ),
     }
 
 
@@ -172,6 +180,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         self.conditioner = StateConditioner(obs_dim, config.hidden_dim)
         self.critic = Critic(obs_dim, config.hidden_dim)
         self.obs_normalizer = RunningMeanStd(obs_dim)
+        self.return_normalizer = RunningMeanStd(1)
 
         self.register_buffer(
             "action_low", torch.full((action_dim,), -1.0), persistent=False
@@ -787,18 +796,19 @@ class SJFPOPolicy(PreTrainedPolicy):
 
         # One chunk is one macro-transition, so the backup is taken at chunk
         # granularity: reward summed over the chunk, discount gamma ** h.
-        # One space throughout, as rsl-rl: the critic predicts raw returns, GAE
-        # runs on raw rewards against those raw values, and the value target is
-        # the raw return. A return normalizer on the value target alone would
-        # leave V an order of magnitude smaller than the rewards, so the
-        # (V_next - V) baseline would be negligible next to the reward term and
-        # the advantage would collapse to "raw reward" rather than "reward
-        # relative to expectation". Per-batch whitening below is the only
-        # normalization, applied after GAE.
+        # Two scales on purpose. The critic regresses onto normalized returns, so
+        # its output is on a unit scale and that is what GAE must NOT subtract
+        # from raw rewards: doing so left the baseline an order of magnitude
+        # smaller than the reward term, and the advantage degenerated to "raw
+        # reward" with no per-state baseline. unnormalize puts the value back in
+        # reward units for the backup only; the regression target stays
+        # normalized, which is the easy problem the critic can actually solve.
+        # The statistics are updated after the backup, so GAE uses the previous
+        # step's scale and the returned advantage carries no drift of its own.
         raw_advantages, raw_returns = compute_chunk_advantages(
             all_rewards,
-            chunk_value,
-            chunk_next_value,
+            self.return_normalizer.unnormalize(chunk_value),
+            self.return_normalizer.unnormalize(chunk_next_value),
             chunk_starts,
             lengths,
             chunk_terminated=active["chunk_terminated"],
@@ -808,7 +818,9 @@ class SJFPOPolicy(PreTrainedPolicy):
             gamma=cfg.gamma,
             lam=cfg.gae_lambda,
         )
-        raw_values = chunk_value.detach()
+        normalized_values = chunk_value.detach()
+        self.return_normalizer.update(raw_returns.reshape(-1, 1))
+        normalized_returns = self.return_normalizer(raw_returns.reshape(-1, 1)).reshape(-1)
         normalized_advantages = raw_advantages
         if cfg.normalize_advantage and raw_advantages.numel() > 0:
             normalized_advantages = (raw_advantages - raw_advantages.mean()) / (
@@ -824,6 +836,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         raw_advantages = raw_advantages.to(storage_dtype)
         raw_returns = raw_returns.to(storage_dtype)
         normalized_advantages = normalized_advantages.to(storage_dtype)
+        normalized_returns = normalized_returns.to(storage_dtype)
 
         action_is_pad = torch.arange(cfg.action_horizon, device=device).unsqueeze(
             0
@@ -856,8 +869,8 @@ class SJFPOPolicy(PreTrainedPolicy):
             "action_is_pad": action_is_pad,
             "raw_advantages": raw_advantages,
             "normalized_advantages": normalized_advantages,
-            "raw_returns": raw_returns,
-            "raw_values": raw_values,
+            "normalized_returns": normalized_returns,
+            "normalized_values": normalized_values,
             "normalizer_observations": step_next_states[:, -1, :].detach(),
             "mc_tau": tau,
             "mc_eps": eps,
@@ -916,7 +929,9 @@ class SJFPOPolicy(PreTrainedPolicy):
         normalized_advantages = to_tensor(batch["normalized_advantages"]).to(
             device=device, dtype=storage_dtype
         )
-        raw_returns = to_tensor(batch["raw_returns"]).to(device=device, dtype=storage_dtype)
+        normalized_returns = to_tensor(batch["normalized_returns"]).to(
+            device=device, dtype=storage_dtype
+        )
         action_is_pad = to_tensor(
             batch["action_is_pad"], dtype=torch.bool, device=device
         )
@@ -1044,30 +1059,30 @@ class SJFPOPolicy(PreTrainedPolicy):
             policy_per_chunk = -surrogate.mean(dim=1)
 
         with autocast_context(device):
-            raw_value_pred = self.critic(states).float()
-        raw_returns_flat = raw_returns.reshape(-1)
-        if raw_value_pred.shape != raw_returns_flat.shape:
+            normalized_value_pred = self.critic(states).float()
+        normalized_returns_flat = normalized_returns.reshape(-1)
+        if normalized_value_pred.shape != normalized_returns_flat.shape:
             raise ValueError(
-                f"value/return shape mismatch: raw_value_pred="
-                f"{tuple(raw_value_pred.shape)}, raw_returns="
-                f"{tuple(raw_returns_flat.shape)}"
+                f"value/return shape mismatch: normalized_value_pred="
+                f"{tuple(normalized_value_pred.shape)}, normalized_returns="
+                f"{tuple(normalized_returns_flat.shape)}"
             )
-        # Huber, as rsl-rl: the target is raw returns with an RMS in the tens, so
-        # squared error would let a few chunks dominate the critic gradient.
+        # Both sides sit on the normalizer's unit scale, so Huber at beta=1.0 keeps
+        # the loss O(1) and value_loss_coef=1.0 keeps meaning what it says.
         value_loss_per_chunk = torch.nn.functional.smooth_l1_loss(
-            raw_value_pred, raw_returns_flat, reduction="none", beta=1.0
+            normalized_value_pred, normalized_returns_flat, reduction="none", beta=1.0
         )
-        if cfg.use_clipped_value_loss and "raw_values" in batch:
+        if cfg.use_clipped_value_loss and "normalized_values" in batch:
             # Pessimistic bound: also score the prediction clipped back toward the
             # rollout snapshot, and keep the worse of the two.
             rollout_values = to_tensor(
-                batch["raw_values"], dtype=storage_dtype, device=device
+                batch["normalized_values"], dtype=storage_dtype, device=device
             )
             clipped_value_pred = rollout_values + (
-                raw_value_pred - rollout_values
+                normalized_value_pred - rollout_values
             ).clamp(-cfg.clip_param, cfg.clip_param)
             clipped_value_loss_per_chunk = torch.nn.functional.smooth_l1_loss(
-                clipped_value_pred, raw_returns_flat, reduction="none", beta=1.0
+                clipped_value_pred, normalized_returns_flat, reduction="none", beta=1.0
             )
             value_loss_per_chunk = torch.maximum(
                 value_loss_per_chunk, clipped_value_loss_per_chunk
@@ -1099,8 +1114,8 @@ class SJFPOPolicy(PreTrainedPolicy):
             ratio_token=ratio_token,
             action_is_pad=action_is_pad,
             v_star_f=v_star_f,
-            raw_value_pred=raw_value_pred,
-            raw_returns_flat=raw_returns_flat,
+            normalized_value_pred=normalized_value_pred,
+            normalized_returns_flat=normalized_returns_flat,
             policy_per_chunk=policy_per_chunk,
             value_loss_per_chunk=value_loss_per_chunk,
             normalized_advantages=normalized_advantages,
@@ -1120,8 +1135,8 @@ class SJFPOPolicy(PreTrainedPolicy):
         ratio_token,
         action_is_pad,
         v_star_f,
-        raw_value_pred,
-        raw_returns_flat,
+        normalized_value_pred,
+        normalized_returns_flat,
         policy_per_chunk,
         value_loss_per_chunk,
         normalized_advantages,
@@ -1194,12 +1209,14 @@ class SJFPOPolicy(PreTrainedPolicy):
         # two together say how much of the batch the row mask discards.
         executed_action_step_frac = (~action_is_pad).float().mean()
 
-        returns_var = raw_returns_flat.var(correction=0).clamp_min(1e-8)
-        explained_var = 1.0 - (raw_returns_flat - raw_value_pred).var(correction=0) / returns_var
+        returns_var = normalized_returns_flat.var(correction=0).clamp_min(1e-8)
+        explained_var = 1.0 - (normalized_returns_flat - normalized_value_pred).var(
+            correction=0
+        ) / returns_var
         value_huber_max = torch.nn.functional.smooth_l1_loss(
-            raw_value_pred, raw_returns_flat, reduction="none", beta=1.0
+            normalized_value_pred, normalized_returns_flat, reduction="none", beta=1.0
         ).max()
-        value_pred_max = raw_value_pred.abs().max()
+        value_pred_max = normalized_value_pred.abs().max()
         v_star_rms = v_star_f.pow(2).mean().sqrt()
 
         l_old_std = l_old.std(correction=0)
@@ -1237,8 +1254,8 @@ class SJFPOPolicy(PreTrainedPolicy):
             l_old_new_corr,
             truncated_chunk_frac,
             executed_action_step_frac,
-            raw_returns_flat.std(correction=0),
-            raw_value_pred.std(correction=0),
+            normalized_returns_flat.std(correction=0),
+            normalized_value_pred.std(correction=0),
         ]
         scalars.extend(
             cond_stats[k].detach()

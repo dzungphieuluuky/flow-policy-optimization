@@ -390,6 +390,17 @@ class RunningMeanStd(nn.Module):
         norm = norm.clamp(-self.clip, self.clip).to(x.dtype)
         return torch.where(self._uninitialized.to(x.device), x, norm)
 
+    def unnormalize(self, x: torch.Tensor) -> torch.Tensor:
+        """Undo :meth:`forward` with the same frozen statistics.
+
+        Exact only where ``forward`` did not clamp, since the clamp is applied to
+        the normalized value and is not invertible. Callers must not read this as
+        the identity: it is the inverse of a clamped map.
+        """
+        std = torch.sqrt(self.var.to(x.device) + self.eps)
+        out = x.to(self.var.dtype) * std + self.mean.to(x.device)
+        return torch.where(self._uninitialized.to(x.device), x, out.to(x.dtype))
+
 
 def modulate(x: torch.Tensor, shift: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
     """Apply adaptive layer-norm modulation: ``x * (1 + scale) + shift``.

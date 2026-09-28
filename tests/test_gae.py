@@ -308,3 +308,26 @@ def test_baseline_subtraction_scales_with_the_value():
     # The reward term alone is 25.56, so a 9-unit baseline is a third of the
     # signal. Under the old wiring this term was O(1) against O(5) rewards.
     assert float(raw) > 0 and float(raised) < float(raw)
+
+
+def test_unnormalize_inverts_running_mean_std():
+    """The reverse direction must land back in raw units, or GAE is fed a unit V."""
+    import torch
+
+    from sjfpo.networks import RunningMeanStd
+
+    rms = RunningMeanStd(1, clip=100.0)
+    rms.update(torch.tensor([[4.0], [8.0], [10.0], [12.0]]))
+    raw = torch.tensor([[-3.0], [0.5], [7.0]])
+    torch.testing.assert_close(rms.unnormalize(rms(raw)), raw, rtol=1e-5, atol=1e-5)
+
+
+def test_unnormalize_is_identity_before_the_first_update():
+    """Mirrors forward()'s latch, so an uninitialized stats block passes through."""
+    import torch
+
+    from sjfpo.networks import RunningMeanStd
+
+    rms = RunningMeanStd(1)
+    x = torch.tensor([[2.0], [9.0]])
+    torch.testing.assert_close(rms.unnormalize(x), x)

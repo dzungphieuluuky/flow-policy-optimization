@@ -448,6 +448,9 @@ def train_sjfpo_run(
                     data["train/gae_linked_frac"] = gae_diag["linked_frac"]
                     data["train/gae_advantage_std"] = gae_diag["advantage_std"]
                     data["train/returns_rms"] = gae_diag["return_rms"]
+                    data["train/advantage_std_fraction"] = gae_diag[
+                        "advantage_std_fraction"
+                    ]
                 data["train/total_loss"] = (
                     info["policy_loss"] + cfg.value_loss_coef * info["value_loss"]
                 )
