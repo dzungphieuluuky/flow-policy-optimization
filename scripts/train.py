@@ -87,9 +87,6 @@ class TrainConfig:
     obs_dim: int | None = None
     action_dim: int | None = None
     out_dir: str = "outputs/"
-    wandb_project: str | None = None
-    wandb_enabled: bool = True
-    wandb_run_name: str | None = None
     config: str | None = None  # legacy flat YAML overlay for the method config
     # Resume an sjfpo checkpoint dir (checkpoint_<step>/ or
     # checkpoint_final/): continues policy + optimizer + counters into a FRESH
@@ -231,7 +228,6 @@ def run_single(
     obs_dim: int | None,
     action_dim: int | None,
     resume_from_checkpoint: str | None = None,
-    wandb_enabled: bool = True,
 ) -> dict:
     """Dispatch one run to the matching backend's training entry."""
     import gymnasium as gym
@@ -279,7 +275,6 @@ def run_single(
             obs_dim=obs_dim,
             action_dim=action_dim,
             resume_from_checkpoint=resume_from_checkpoint,
-            wandb_enabled=wandb_enabled,
         )
     finally:
         env.close()
@@ -344,7 +339,6 @@ def main(argv: list[str] | None = None) -> int:
             args.obs_dim,
             args.action_dim,
             args.resume,
-            args.wandb_enabled,
         )
     except Exception as exc:
         traceback.print_exc(file=sys.stderr)
