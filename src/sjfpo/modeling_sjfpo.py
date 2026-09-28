@@ -851,8 +851,16 @@ class SJFPOPolicy(PreTrainedPolicy):
             else None,
         )
         raw_advantages = raw_advantages.to(storage_dtype)
-        raw_returns = raw_returns.to(storage_dtype)
         normalized_advantages = normalized_advantages.to(storage_dtype)
+        # raw_returns and raw_values stay fp32. They are the critic's regression
+        # target and its clip snapshot, and they are the only tensors here whose
+        # magnitude is large rather than O(1): returns_rms runs to 35 and the
+        # values reach the hundreds. bf16 carries 8 mantissa bits, so 1234.5
+        # round-trips to 1232.0 and the target is quantised before the critic
+        # ever sees it. They are 256 elements each, so fp32 costs nothing, and
+        # the buffers holding step_states and chunk_actions are already fp32
+        # (collector._OBS_DTYPE), which means storage_dtype never saved
+        # meaningful memory in the first place.
 
         action_is_pad = torch.arange(cfg.action_horizon, device=device).unsqueeze(
             0
@@ -946,7 +954,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             device=device, dtype=storage_dtype
         )
         raw_returns = to_tensor(batch["raw_returns"]).to(
-            device=device, dtype=storage_dtype
+            device=device, dtype=torch.float32
         )
         action_is_pad = to_tensor(
             batch["action_is_pad"], dtype=torch.bool, device=device
@@ -1091,7 +1099,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         value_loss_per_chunk = torch.square(raw_value_pred - raw_returns_flat)
         if cfg.use_clipped_value_loss and "raw_values" in batch:
             rollout_values = to_tensor(
-                batch["raw_values"], dtype=storage_dtype, device=device
+                batch["raw_values"], dtype=torch.float32, device=device
             )
             clipped_value_pred = rollout_values + (
                 raw_value_pred - rollout_values
