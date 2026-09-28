@@ -228,3 +228,34 @@ def test_token_mean_is_invariant_to_masking():
         # Executed tokens read 1 no matter how many there are; masked ones 0.
         assert torch.allclose(out[..., :executed], torch.ones_like(out[..., :executed]), atol=1e-6)
         assert torch.allclose(out[..., executed:], torch.zeros_like(out[..., executed:]), atol=1e-6)
+
+
+def test_token_count_follows_the_layout_the_mask_chooses():
+    """The token axis is the action-step grid under the mask, else the frequencies.
+
+    Regression: forward() compared behavior_cfm_loss_token against flow_shape[0],
+    which is the frequency count. With the mask on, the loss reduces over 16
+    action steps instead of 4 coefficients, so every run with
+    num_kept_tokens < action_horizon died on a shape check.
+    """
+    kept = _cfg(num_kept_tokens=4)  # 4 < HORIZON
+    assert kept.use_dct_transform and kept.cfm_mask_unexecuted
+    assert SJFPOPolicy(kept)._cfm_loss_token_count(kept) == kept.action_horizon
+
+    unmasked = _cfg(num_kept_tokens=4, cfm_mask_unexecuted=False)
+    assert SJFPOPolicy(unmasked)._cfm_loss_token_count(unmasked) == unmasked.num_flow_tokens
+    assert unmasked.num_flow_tokens == 4
+
+    # DCT off always reduces over the action-step grid, mask or no mask.
+    off = _cfg(use_dct_transform=False)
+    assert SJFPOPolicy(off)._cfm_loss_token_count(off) == off.action_horizon
+
+    # And the reduction really does produce that many tokens.
+    cfg = kept
+    coeffs = torch.randn(2, MC, 4, ACTION_DIM)
+    _, (velocities,) = SJFPOPolicy(cfg).prepare_cfm_loss_inputs(
+        cfg, torch.zeros(2, HORIZON, dtype=torch.bool), coeffs
+    )
+    assert velocities.shape[2] == cfg.action_horizon
+    out = compute_cfm_loss(velocities, torch.zeros_like(velocities), cfg, "token_mean", None)
+    assert out.shape[-1] == cfg.action_horizon
