@@ -277,15 +277,11 @@ class RolloutBuffer:
             )
 
     def mark_incomplete(self, chunk_index: int) -> None:
-        """Flag a chunk as cut short by the rollout budget.
+        """Flag a chunk the rollout budget cut short.
 
-        The episode continued, so the next chunk in the same env is its successor
-        and GAE must chain to it. This is deliberately not ``chunk_truncated``:
-        the env's time-limit truncation does end the episode, and writing the
-        budget cut into the same flag made GAE treat a live episode as finished
-        and drop the ``gamma * lam * advantage`` handoff to the next chunk.
-
-        Raises ``IndexError`` if ``chunk_index`` is outside the populated prefix.
+        Not ``chunk_truncated``: the episode continued, so the next chunk in this
+        env is its successor and GAE must chain to it. Sharing that flag made GAE
+        read a live episode as finished and drop the handoff.
         """
         if not 0 <= chunk_index < self.n_chunks:
             raise IndexError(f"chunk index {chunk_index} out of range")
@@ -604,16 +600,11 @@ def collect_chunks_vec(
 ) -> list[Transition] | RolloutBuffer:
     """Vectorised twin of :func:`collect_chunks` -- same records, same chaining.
 
-    The step budget is split as evenly as possible across the environments, with
-    the remainder handed to the first environments. Budget-exhausted tails are
-    marked truncated so GAE bootstraps the cut. Each chunk is transferred to the
-    host in one copy before being indexed, and all still-active actions are
-    gathered into a single tensor per wavefront, so the loop performs one
-    device-to-host transfer per chunk rather than one per step.
+    The step budget splits evenly across envs, remainder to the first. All
+    still-active actions are gathered into one tensor per wavefront, so the loop
+    costs one device-to-host transfer per chunk instead of one per step.
 
-    Requires gymnasium ``AutoresetMode.NEXT_STEP`` on ``envs`` (the default); see
-    :func:`_validate_autoreset_mode`. ``n_obs_steps`` and ``chunk_size`` fall back
-    to the default config when omitted.
+    Needs ``AutoresetMode.NEXT_STEP``; see :func:`_validate_autoreset_mode`.
     """
     cfg = _defaults()
     n_obs_steps = cfg.n_obs_steps if n_obs_steps is None else n_obs_steps

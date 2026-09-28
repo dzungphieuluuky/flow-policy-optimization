@@ -216,12 +216,11 @@ class SelfAttention(nn.Module):
     ) -> torch.Tensor:
         """Run multi-head self attention.
 
-        ``attention_mask`` is a boolean/0-1 key-padding mask of shape ``[B, L]``. Under
-        the Hugging Face convention 1/True marks a valid key and 0/False is ignored, so
-        the mask is inverted before it reaches SDPA, whose boolean mask means the
-        opposite. Every batch item is forced to keep at least one key, because an
-        all-masked row makes SDPA emit NaN. The fused ``[B, L, H*D]`` projection is
-        reshaped with a view plus transpose rather than a permute.
+        ``attention_mask`` is ``[B, L]``, 1/True meaning a valid key. HF's
+        convention is the opposite of SDPA's boolean mask, so it is inverted
+        before the call. Every row is forced to keep one key, since an all-masked
+        row makes SDPA emit NaN. The fused ``[B, L, H*D]`` projection is reshaped
+        with a view plus transpose, not a permute.
 
         Raises ``ValueError`` if ``x`` is not 3D, or the mask length disagrees with
         the sequence length.
@@ -615,13 +614,10 @@ class SJFPOFlowModel(nn.Module):
     ) -> torch.Tensor | tuple[torch.Tensor, dict[str, torch.Tensor]]:
         """Predict velocity from token actions and per-token times.
 
-        ``t`` is either a scalar, ``[B]``, or ``[B, K, 1]``. The per-token form gives
-        each action token its own time, shared across its action dimensions.
-
-        The raw input path applies a per-frame MLP and mean-pools, replacing a full
-        attention window over frames. The spectral path instead slices the learned
-        positional table, which carries one row per configured action position, down to
-        the reduced DCT token count. The final layer is zero-initialised so an
+        ``t`` is a scalar, ``[B]``, or ``[B, K, 1]`` for a per-token time shared
+        across that token's action dims. The raw path runs a per-frame MLP and
+        mean-pools; the spectral path slices the learned positional table down to
+        the reduced token count. The final layer is zero-initialised so an
         untrained model predicts near-zero velocity.
 
         Returns a velocity of shape ``[B, K, action_dim]``, or that plus a stats dict
@@ -730,25 +726,20 @@ class SJFPOFlowModel(nn.Module):
 class Critic(nn.Module):
     """State-value baseline V(s) over the full observation window.
 
-    The window is flattened rather than pooled, so frame order survives into the
-    MLP instead of being averaged away, and each frame carries an explicit
-    sinusoidal position code. The code is a fixed constant, so ``W_j @ pe_j`` is
-    absorbed by the layer bias and ``obs_j + pe_j`` still separates back into
-    ``obs_j``; making the position explicit costs nothing and removes the reliance
-    on slot order being a convention.
+    The window is flattened, not pooled, so frame order survives into the MLP, and
+    each frame carries an explicit sinusoidal position code. The code is a constant,
+    so the layer bias absorbs it and ``obs_j + pe_j`` still splits back into
+    ``obs_j``.
 
-    ``num_critics`` independent members are held as batched weights and evaluated
-    with two ``baddbmm`` calls, so the whole ensemble is two kernels. The members
-    must stay independent or the ensemble is worthless: widening each ``Linear``
-    to ``n * out`` and chunking at the end would fully couple the second layer,
-    leaving one wide MLP whose n outputs are not independent estimates. Hence the
-    3-D weight layout and per-member init, which mirrors ``nn.Linear``'s
-    ``kaiming_uniform_(a=sqrt(5), fan_in)`` on each member separately.
+    ``num_critics`` members are batched weights run through two ``baddbmm`` calls, so
+    the ensemble is two kernels. They must stay independent or the ensemble is
+    worthless: widening each ``Linear`` to ``n * out`` and chunking at the end fully
+    couples layer 2, leaving one wide MLP whose n outputs are not independent
+    estimates, and ``min`` over them means nothing. Hence the 3-D layout and
+    per-member init mirroring ``nn.Linear``'s ``kaiming_uniform_(a=sqrt(5))``.
 
-    ``forward`` returns one value per member, ``[num_critics, B]``, and does not
-    aggregate. The caller takes the min for the GAE backup and the plain mean for
-    the value loss; min has no business inside a loss because it only trains the
-    single lowest member.
+    Returns ``[num_critics, B]`` unaggregated. Caller takes min for the GAE backup,
+    mean for the value loss: min inside a loss would only train the lowest member.
     """
 
     def __init__(

@@ -319,12 +319,10 @@ class SJFPOPolicy(PreTrainedPolicy):
                 name: param.detach().clone() for name, param in current.items()
             }
         if not self._ema_initialized and global_step >= self.config.ema_warmup_steps:
-            # >= and gated on _ema_initialized, not ==. global_step advances by a
-            # whole rollout's executed steps, so == ema_warmup_steps was never
-            # observed with the defaults (500 vs a ~4096 step delta) and the
-            # shadow was never initialised, leaving ema_ready() false forever.
-            # The gate keeps this a one-shot: without it every later call would
-            # re-hard-copy and discard the running average.
+            # >= and gated on _ema_initialized, not ==. global_step moves by a
+            # whole rollout, so == 500 was never hit and ema_ready() stayed false
+            # forever. The gate makes it one-shot: without it every later call
+            # re-hard-copied and threw away the running average.
             for name, shadow in self._ema_shadow.items():
                 shadow.copy_(current[name].detach())
             self._ema_initialized = True
@@ -592,16 +590,13 @@ class SJFPOPolicy(PreTrainedPolicy):
         coefficient, so expand the coefficients back onto the action steps first;
         the same mask then drops the tail, and a chunk that terminated early
         contributes no gradient from the steps it never ran instead of a
-        wrong-signed one.
-
-        Expanding each velocity is exact because the inverse DCT is linear, so
-        ``grid(v_hat) - grid(v_star) == grid(v_hat - v_star)`` and the loss still
-        measures the same residual. At ``num_kept_tokens == action_horizon`` the
-        basis is orthonormal, so this is a rotation and the loss is unchanged.
+        wrong-signed one. Expanding is exact because the inverse DCT is linear,
+        and at ``num_kept_tokens == action_horizon`` the basis is orthonormal so
+        it is a rotation and the loss is unchanged.
 
         The mask and the layout are returned together on purpose: they are only
         consistent with each other, and at ``num_kept_tokens == action_horizon``
-        the two spaces have the same shape, so returning a mask with unexpanded
+        the two spaces have the same shape, so a mask paired with unexpanded
         velocities applies it in the wrong space and fails silently.
 
         Both the ``l_old`` and ``l_new`` reductions must come through here, or the
@@ -674,16 +669,16 @@ class SJFPOPolicy(PreTrainedPolicy):
     ) -> dict[str, torch.Tensor]:
         """Roll out open-loop action chunks and build a training batch.
 
-        A chunk may execute only one step before termination, so the allocation-free
-        upper bound on chunk count is one chunk per requested step. Each chunk is one
-        macro-transition: the backup sums the rewards of its executed steps, discounts
-        by ``gamma ** h``, and the GAE recursion runs between consecutive chunks of
+        A chunk may execute one step before termination, so the upper bound on
+        chunk count is one chunk per requested step. Each chunk is one
+        macro-transition: the backup sums its executed rewards, discounts by
+        ``gamma ** h``, and the GAE recursion runs between consecutive chunks of
         the same env (see :mod:`sjfpo.gae`). Advantages are normalised over chunks.
 
-        The batch carries one raw post-step frame per executed step, kept separate from
-        the overlapping observation windows so the training loop can fold them into the
-        live normalizer without double counting, plus independent per-chunk/Monte-Carlo
-        CFM draws that the policy loss reuses for both the old and new losses.
+        The batch carries one raw post-step frame per executed step, separate from
+        the overlapping observation windows, so the training loop can fold them
+        into the live normalizer without double counting, plus per-chunk/Monte-Carlo
+        CFM draws the policy loss reuses for both the old and new losses.
 
         Raises ``ValueError`` if ``total_steps`` is not positive, or if a collected
         transition is inconsistent.
@@ -724,10 +719,9 @@ class SJFPOPolicy(PreTrainedPolicy):
         )
         if (
             self._rollout_buffer is None
-            # [:6] because capacity_key() also carries pin_memory, which is a
-            # property of the device rather than of this call's shape. Comparing
-            # the full tuple can never match, so the buffer was reallocated on
-            # every rollout, defeating the reuse the docstring promises.
+            # [:6] drops pin_memory, a device property, not part of this key.
+            # The full tuple never matches, so the buffer was reallocated every
+            # rollout.
             or self._rollout_buffer.capacity_key()[:6] != buffer_key
         ):
             self._rollout_buffer = RolloutBuffer(
@@ -812,21 +806,19 @@ class SJFPOPolicy(PreTrainedPolicy):
             normalized_states = all_chunk_states_n[:n_chunks]
             with autocast_context(device):
                 all_chunk_values = self.critic(all_chunk_states_n).float()
-            # min over the ensemble, for the backup only. The value loss trains
-            # every member separately; min has no justification inside a V loss
-            # because there is no max operator to counteract, so it would only
-            # bias V low and push advantages up.
+            # min over the ensemble, backup only. The loss trains every member
+            # separately: min has no case inside a V loss, since there is no max
+            # operator to counteract, so it would only bias V low.
             chunk_value = all_chunk_values[:, :n_chunks].amin(dim=0)
             chunk_next_value = all_chunk_values[:, n_chunks:].amin(dim=0)
 
-        # One chunk is one macro-transition, so the backup is taken at chunk
-        # granularity: reward summed over the chunk, discount gamma ** h.
-        # One space throughout, as rsl-rl: the critic predicts raw returns, GAE
-        # subtracts that from raw rewards, and the value target is the raw
-        # return. No return normalizer, so V(s) is the true expected return and
-        # the regression target does not drift as the return scale grows.
-        # Per-batch advantage whitening below is the only normalization, and it
-        # happens after the backup.
+        # One chunk is one macro-transition, so backup at chunk granularity:
+        # reward summed over the chunk, discount gamma ** h.
+        # One space throughout, as rsl-rl: critic predicts raw returns, GAE
+        # subtracts them from raw rewards, value target is the raw return. No
+        # return normalizer, so V is the true expected return and the target
+        # stops drifting as the return scale grows. Only normalization is the
+        # per-batch advantage whitening below, after the backup.
         raw_advantages, raw_returns = compute_chunk_advantages(
             all_rewards,
             chunk_value,
@@ -858,15 +850,11 @@ class SJFPOPolicy(PreTrainedPolicy):
         )
         raw_advantages = raw_advantages.to(storage_dtype)
         normalized_advantages = normalized_advantages.to(storage_dtype)
-        # raw_returns and raw_values stay fp32. They are the critic's regression
-        # target and its clip snapshot, and they are the only tensors here whose
-        # magnitude is large rather than O(1): returns_rms runs to 35 and the
-        # values reach the hundreds. bf16 carries 8 mantissa bits, so 1234.5
-        # round-trips to 1232.0 and the target is quantised before the critic
-        # ever sees it. They are 256 elements each, so fp32 costs nothing, and
-        # the buffers holding step_states and chunk_actions are already fp32
-        # (collector._OBS_DTYPE), which means storage_dtype never saved
-        # meaningful memory in the first place.
+        # raw_returns and raw_values stay fp32. They are the critic's target and
+        # clip snapshot, and the only stored tensors that are not O(1):
+        # returns_rms runs to 35. bf16 has 8 mantissa bits, so 1234.5 round-trips
+        # to 1232.0. Each is 256 elements, so fp32 is free, and step_states and
+        # chunk_actions are already fp32, so storage_dtype never saved real memory.
 
         action_is_pad = torch.arange(cfg.action_horizon, device=device).unsqueeze(
             0
@@ -920,24 +908,23 @@ class SJFPOPolicy(PreTrainedPolicy):
     ) -> tuple[torch.Tensor, dict | None]:
         """Combine the ASPO policy and value losses for one minibatch.
 
-        Each selected action chunk is treated as one macro-action for the policy loss.
-        The unexecuted suffix is still part of the chunk the behavior policy selected,
-        so it must contribute to the FPO ratio when receding-horizon execution is
-        enabled; ``action_is_pad`` records execution bookkeeping only, and just the
-        chunks with no executed action are invalid for the update.
+        Each selected action chunk is one macro-action for the policy loss, and
+        only the steps it actually executed contribute: ``action_is_pad`` masks
+        the rest out of the CFM loss when ``cfm_mask_unexecuted`` is set, which is
+        what stops a truncated chunk being fitted on steps it never ran.
 
-        Spectral encoding keeps the first ``M+1`` DCT frequencies, giving a token count of
-        ``M+1`` derived from ``top_p * H``. The condition is fused from ``[n, D]`` to
-        ``[n*m, D]`` so one conditioning vector covers every Monte-Carlo draw. The CFM
-        losses are computed under target velocities in fp32 for stability, and the
-        value loss is a mean squared error, as the official FPO++ does.
+        Spectral encoding keeps ``num_flow_tokens`` DCT frequencies. The condition
+        is fused from ``[n, D]`` to ``[n*m, D]`` so one conditioning vector covers
+        every Monte-Carlo draw. The CFM losses are computed under target
+        velocities in fp32 for stability, and the value loss is a mean squared
+        error against the raw return, as the official FPO++ does.
 
         On info-requesting steps the modulation MLPs are re-run on a single row to
         collect conditioner statistics, which is cheap relative to attention.
 
         When ``compute_info=False`` the diagnostic reductions are skipped entirely and
         the returned info is ``None``. Training runs without wandb should pass
-        ``compute_info=False`` -- the info pass is ~25 small reductions per minibatch
+        ``compute_info=False`` -- the info pass is a small reduction per minibatch
         that would otherwise be discarded.
 
         Returns ``(loss, info)``, where info is None when ``compute_info`` is false.
@@ -1237,11 +1224,9 @@ class SJFPOPolicy(PreTrainedPolicy):
         # two together say how much of the batch the row mask discards.
         executed_action_step_frac = (~action_is_pad).float().mean()
 
-        # explained_var is measured against the member mean, not the min the
-        # backup uses. min is a downward-biased selection, so scoring it here
-        # would overstate critic quality, and the mean is what the loss trains.
-        # The absolute value is therefore not comparable to runs that had a
-        # single critic, though the ratio trend across the run still is.
+        # explained_var scores the member mean, not the min the backup uses: min
+        # is biased low, so scoring it would flatter the critic. Not comparable
+        # in absolute terms to the single-critic runs, but the trend is.
         mean_value_pred = raw_value_pred.mean(dim=0)
         returns_var = raw_returns_flat.var(correction=0).clamp_min(1e-8)
         explained_var = 1.0 - (raw_returns_flat - mean_value_pred).var(

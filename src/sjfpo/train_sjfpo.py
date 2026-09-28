@@ -210,15 +210,13 @@ def train_sjfpo_run(
 ) -> dict[str, Any]:
     """Run a single SJFPO training run.
 
-    The vectorised environment is built before any CUDA initialisation so
-    forked workers do not inherit the parent's CUDA context (the CleanRL / SB3
-    ordering). The actor and critic optimizers are stepped under Accelerate's
-    accumulation contract: backward on every microbatch, synchronize and step
-    only at the accumulation boundary, and always flush a final partial group.
+    The vectorised environment is built before any CUDA init so forked workers do
+    not inherit the parent's CUDA context (CleanRL / SB3 ordering). Optimizers
+    follow Accelerate's accumulation contract: backward every microbatch, sync and
+    step only at the boundary, always flush a final partial group.
 
-    Gradients are clipped per optimizer rather than jointly, because the
-    critic's gradient norm is orders of magnitude larger than the actor's and a
-    shared clip would consume the whole budget on the critic.
+    Gradients are clipped per optimizer, not jointly: the critic's norm is orders
+    of magnitude larger, so a shared clip would spend the whole budget on it.
     """
     cfg = cfg or SJFPOConfig()
     out_dir = Path(out_dir)

@@ -6,8 +6,8 @@ collector, and checkpointing code depends on is reused verbatim rather than
 copied:
 
 * ``RunningMeanStd``, ``StateConditioner``, and ``Critic`` are imported from
-  ``networks``. The conditioner and critic are already plain MLPs, so there is
-  nothing to simplify and duplicating them would only create drift.
+  ``networks``. Nothing here simplifies them, so duplicating them would only
+  create drift.
 * ``SwiGLU``, ``CondMLP``, ``SinusoidalEncoding``, ``_rms_norm`` and
   ``modulate`` are shared building blocks, imported so there is exactly one
   copy of the numerics.
@@ -101,15 +101,13 @@ class MLPFlowBlock(nn.Module):
     ) -> torch.Tensor | tuple[torch.Tensor, dict[str, torch.Tensor]]:
         """Mix tokens, then mix channels, both conditioned on ``c``.
 
-        The token-mix weight is sliced to ``x``'s token count, so a reduced spectral
-        layout (``use_dct_transform=True`` with ``num_kept_tokens < action_horizon``) uses
-        the top-left ``K x K`` submatrix and the leading ``K`` biases. When the full
-        ``action_horizon`` tokens are supplied this is identical to the unsliced
-        ``token_mix``.
+        The token-mix weight is sliced to ``x``'s token count, so a reduced
+        spectral layout (``num_kept_tokens < action_horizon``) takes the top-left
+        ``K x K`` submatrix and the leading ``K`` biases; at the full
+        ``action_horizon`` this is the unsliced ``token_mix``.
 
-        ``c`` has shape ``[B, D]``, or ``[B, K, D]`` when each token carries its own
-        flow time. Returns the transformed tokens, or those plus a stats dict when
-        ``return_stats`` is set.
+        ``c`` is ``[B, D]``, or ``[B, K, D]`` when each token carries its own flow
+        time. Returns the transformed tokens, or those plus a stats dict.
         """
         token_axis = c.dim() == 3
         b = c.shape[0]

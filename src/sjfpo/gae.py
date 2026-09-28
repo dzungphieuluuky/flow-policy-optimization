@@ -1,25 +1,20 @@
 """Chunk-level GAE: one action chunk is one macro-transition.
 
-The rollout action is a chunk of ``h`` open-loop steps, so the Bellman
-backup is taken at chunk granularity (QC-style, ``discount ** horizon_length``)
-rather than per executed step. For chunk ``i`` starting at executed step
-``s_i`` and running ``h_i`` steps:
+A chunk is ``h`` open-loop steps, so backup at chunk granularity, not per step.
+For chunk ``i`` at executed step ``s_i`` running ``h_i`` steps:
 
     R_i     = sum_{k < h_i} gamma^k * r_{s_i + k}
     delta_i = R_i + gamma^{h_i} * (1 - terminated_i) * V(s_{s_i + h_i}) - V(s_{s_i})
     A_i     = delta_i + gamma^{h_i} * lam * continue_i * A_{i+1}
     return_i = A_i + V(s_{s_i})
 
-``R_i`` is the discounted sum, which is also what QC's ``rewards[..., -1]``
-holds (``utils/datasets.py`` accumulates it over the sequence). A truncated
-(time-limit) chunk still bootstraps from the value after its last executed
-step; only a true termination zeroes the bootstrap. The collector always ends
-a chunk on a terminal, so ``~terminated`` coincides with QC's
-``masks[..., -1]``; that invariant must be preserved.
+Truncation (time limit) keeps the bootstrap; only real termination zeroes it. The
+collector always ends a chunk on a terminal, so ``~terminated`` matches QC's
+``masks[..., -1]``; keep that true.
 
-The vec collector appends chunks in wavefront order, so consecutive buffer
-entries belong to different envs. ``chunk_env_id`` is what lets the recursion
-know that ``i`` and ``i+1`` are on the same trajectory.
+Vec collector appends in wavefront order, so adjacent buffer rows are different
+envs. ``chunk_env_id`` is what tells the recursion that ``i`` and ``i+1`` are the
+same trajectory.
 """
 from __future__ import annotations
 

@@ -79,12 +79,10 @@ def save_policy_checkpoint(
     """Save through LeRobot's ``HubMixin`` (+ optimizer.pt, counters.json).
 
     ``model.safetensors`` holds eager keys, so a fresh ``SJFPOFlowModel`` in
-    :func:`load_policy_checkpoint` finds every key it expects.
+    :func:`load_policy_checkpoint` finds every key it expects. The frozen behavior
+    snapshots are runtime-only, so their duplicate parameters are dropped.
 
-    The frozen behavior snapshots are runtime-only and are refreshed before the
-    next rollout, so their duplicate parameters are not persisted.
-
-    ``optimizer`` holds actor and critic as separate param groups, so one
+    ``optimizer`` keeps actor and critic in separate param groups, so one
     ``step`` drives both while grad clipping stays per role.
 
     Raises ``ValueError`` if ``policy`` is not an SJFPO policy, if
