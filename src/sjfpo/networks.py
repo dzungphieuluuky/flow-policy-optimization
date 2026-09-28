@@ -216,11 +216,11 @@ class SelfAttention(nn.Module):
     ) -> torch.Tensor:
         """Run multi-head self attention.
 
-        ``attention_mask`` is ``[B, L]``, 1/True meaning a valid key. HF's
-        convention is the opposite of SDPA's boolean mask, so it is inverted
-        before the call. Every row is forced to keep one key, since an all-masked
-        row makes SDPA emit NaN. The fused ``[B, L, H*D]`` projection is reshaped
-        with a view plus transpose, not a permute.
+        ``attention_mask``: ``[B, L]``, 1/True marks a valid key.
+
+        - HF's convention inverts SDPA's mask, so invert before the call
+        - force one valid key per row; all-masked emits NaN
+        - the fused ``[B, L, H*D]`` projection uses view + transpose, not permute
 
         Raises ``ValueError`` if ``x`` is not 3D, or the mask length disagrees with
         the sequence length.
@@ -426,15 +426,15 @@ class DiTBlock(nn.Module):
     ) -> torch.Tensor | tuple[torch.Tensor, dict[str, torch.Tensor]]:
         """Run the DiT stack over the action tokens.
 
-        The modulation head is zero-initialised, so the block starts as an identity
-        mapping (adaLN-Zero) and the network begins as a no-op. On the
-        coordinate-aware ``[B, K, D_a, H]`` layout, attention runs over the K action
-        tokens independently for each action dimension, and only the batch/attention
-        axis is reshaped. The modulation parameters are gathered with ``reshape`` plus
-        ``unbind`` to avoid materialising a ``[B, 1, 6H]`` intermediate.
+        - modulation head is zero-initialised (adaLN-Zero)
+        - so the stack starts as identity, and a no-op
+        - coordinate layout ``[B, K, D_a, H]``: attention runs over the K action
+          tokens per action dimension; only the batch/attention axis is reshaped
+        - modulation params use reshape + unbind, avoiding a ``[B, 1, 6H]``
+          intermediate
 
-        ``c`` is the conditioning, ``[B, D]`` or ``[B, K, D]``. Returns the transformed
-        tokens, or those plus a stats dict when ``return_stats`` is set.
+        ``c``: ``[B, D]`` or ``[B, K, D]``. Returns the tokens, plus stats dict
+        when ``return_stats`` is set.
         """
         coordinate_axis = x.dim() == 4
         token_axis = not coordinate_axis and c.dim() == 3
@@ -614,11 +614,16 @@ class SJFPOFlowModel(nn.Module):
     ) -> torch.Tensor | tuple[torch.Tensor, dict[str, torch.Tensor]]:
         """Predict velocity from token actions and per-token times.
 
-        ``t`` is a scalar, ``[B]``, or ``[B, K, 1]`` for a per-token time shared
-        across that token's action dims. The raw path runs a per-frame MLP and
-        mean-pools; the spectral path slices the learned positional table down to
-        the reduced token count. The final layer is zero-initialised so an
-        untrained model predicts near-zero velocity.
+        ``t``: scalar, ``[B]``, or ``[B, K, 1]`` for a per-token time.
+        Each token's time is shared across its action dims.
+
+        Two input paths:
+
+        - raw: per-frame MLP, then mean-pool
+        - spectral: slice the learned positional table to the token count
+
+        The final layer is zero-initialised.
+        An untrained model then predicts near-zero velocity.
 
         Returns a velocity of shape ``[B, K, action_dim]``, or that plus a stats dict
         when ``return_stats`` is set. Raises ``ValueError`` if ``x_t`` is not
@@ -726,20 +731,30 @@ class SJFPOFlowModel(nn.Module):
 class Critic(nn.Module):
     """State-value baseline V(s) over the full observation window.
 
-    The window is flattened, not pooled, so frame order survives into the MLP, and
-    each frame carries an explicit sinusoidal position code. The code is a constant,
-    so the layer bias absorbs it and ``obs_j + pe_j`` still splits back into
-    ``obs_j``.
+    Flattened, not pooled, so frame order survives into the MLP.
 
-    ``num_critics`` members are batched weights run through two ``baddbmm`` calls, so
-    the ensemble is two kernels. They must stay independent or the ensemble is
-    worthless: widening each ``Linear`` to ``n * out`` and chunking at the end fully
-    couples layer 2, leaving one wide MLP whose n outputs are not independent
-    estimates, and ``min`` over them means nothing. Hence the 3-D layout and
-    per-member init mirroring ``nn.Linear``'s ``kaiming_uniform_(a=sqrt(5))``.
+    - each frame carries an explicit sinusoidal position code
+    - the code is constant, so the bias absorbs it
+    - ``obs_j + pe_j`` still splits back into ``obs_j``
 
-    Returns ``[num_critics, B]`` unaggregated. Caller takes min for the GAE backup,
-    mean for the value loss: min inside a loss would only train the lowest member.
+    ``num_critics`` members are batched weights run through two ``baddbmm`` calls.
+    The ensemble costs two kernels.
+
+    Members must stay independent. Otherwise the ensemble is worthless.
+
+    - widening each ``Linear`` to ``n * out`` fully couples layer 2
+    - that leaves one wide MLP, not n independent estimates
+    - ``min`` over a single MLP's outputs means nothing
+    - hence the 3-D layout, and per-member init
+
+    Init mirrors ``nn.Linear``: ``kaiming_uniform_(a=sqrt(5))`` per member.
+
+    Returns ``[num_critics, B]``, unaggregated. Caller picks:
+
+    - GAE backup: min
+    - value loss: mean
+
+    Min inside a loss would only train the lowest member.
     """
 
     def __init__(

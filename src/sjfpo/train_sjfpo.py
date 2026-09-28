@@ -109,8 +109,7 @@ def build_policy(
 ) -> SJFPOPolicy:
     """Attach runtime features, then build the policy.
 
-    ``policy_cls`` is how a swapped actor, such as ``SJFPOPolicyMLP``, enters
-    the run without any change to the training loop.
+    ``policy_cls`` lets a swapped actor enter without touching the loop.
     """
     device = torch.device(device) if device is not None else resolve_device()
     policy_cfg = dataclasses.replace(
@@ -210,13 +209,19 @@ def train_sjfpo_run(
 ) -> dict[str, Any]:
     """Run a single SJFPO training run.
 
-    The vectorised environment is built before any CUDA init so forked workers do
-    not inherit the parent's CUDA context (CleanRL / SB3 ordering). Optimizers
-    follow Accelerate's accumulation contract: backward every microbatch, sync and
-    step only at the boundary, always flush a final partial group.
+    - vectorised env is built before any CUDA init
+    - so forked workers do not inherit the parent's CUDA context
+    - CleanRL / SB3 ordering
 
-    Gradients are clipped per optimizer, not jointly: the critic's norm is orders
-    of magnitude larger, so a shared clip would spend the whole budget on it.
+    Accelerate accumulation contract:
+
+    - backward every microbatch
+    - sync and step only at the boundary
+    - always flush a final partial group
+
+    Gradients are clipped per optimizer, not jointly.
+    The critic's norm is orders of magnitude larger,
+    so a shared clip would spend the whole budget on it.
     """
     cfg = cfg or SJFPOConfig()
     out_dir = Path(out_dir)

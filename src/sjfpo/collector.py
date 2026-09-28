@@ -279,9 +279,12 @@ class RolloutBuffer:
     def mark_incomplete(self, chunk_index: int) -> None:
         """Flag a chunk the rollout budget cut short.
 
-        Not ``chunk_truncated``: the episode continued, so the next chunk in this
-        env is its successor and GAE must chain to it. Sharing that flag made GAE
-        read a live episode as finished and drop the handoff.
+        Not ``chunk_truncated``: the episode continued.
+
+        - the next chunk in this env is its successor
+        - GAE must chain to it
+        - sharing that flag read a live episode as finished
+        - and dropped the handoff
         """
         if not 0 <= chunk_index < self.n_chunks:
             raise IndexError(f"chunk index {chunk_index} out of range")

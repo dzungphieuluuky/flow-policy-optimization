@@ -175,19 +175,26 @@ def compute_cfm_loss(
 ) -> torch.Tensor:
     """CFM squared-velocity loss (paper Eq.7-8).
 
-    ``sample`` is the active path: FPO++'s reduction (``mean``, ``sum``,
-    ``sqrt``; default ``mean``) over the flattened chunk. ``token_mean`` is
-    diagnostic only; a mean over the token axis of whatever space the operand is
-    in, so frequencies in coefficient space and action steps on the step grid.
-    Divisor is action_dim, the only axis a token aggregates, so masking does not
-    move the value.
+    ``sample`` is the active path:
 
-    ``action_is_pad`` is an optional ``[batch, horizon]`` mask of never-executed
-    rows, True where padded. Padded rows are dropped and each sample renormalised
-    by its own executed count, so a short chunk keeps the loss magnitude of a
-    full one.
+    - FPO++'s reduction over the flattened chunk
+    - ``mean``, ``sum``, or ``sqrt``; default ``mean``
 
-    Returns a scalar for ``scalar``, otherwise a per-sample loss tensor. Raises
+    ``token_mean`` is diagnostic only:
+
+    - a mean over the token axis of the operand's space
+    - frequencies, in coefficient space
+    - action steps, on the step grid
+    - divisor is action_dim, the only axis a token aggregates
+    - so masking does not move the value
+
+    ``action_is_pad``: optional ``[batch, horizon]``, True where padded.
+
+    - padded rows are dropped
+    - each sample renormalised by its executed count
+    - so a short chunk keeps a full chunk's magnitude
+
+    Returns a scalar for ``scalar``, else a per-sample loss tensor. Raises
     ``ValueError`` if the velocity shapes disagree, or if ``reduce_mode`` is
     unknown.
     """

@@ -78,11 +78,13 @@ def _gae_diagnostics(
 ) -> dict[str, float]:
     """Trace-liveness and scale probes for the chunk-level backup.
 
-    ``linked_frac`` is the one that matters: it is the share of chunk pairs the
-    GAE recursion actually joined. Chunks are stored in wavefront order, so an
-    adjacency-based mask silently joins nothing and every advantage collapses
-    to a bare 1-step delta, with no error raised. A linked_frac of 0 means the
-    trace is dead regardless of what gae_lambda is set to.
+    ``linked_frac`` is the one that matters:
+
+    - the share of chunk pairs the GAE recursion actually joined
+    - chunks arrive in wavefront order, so adjacency joins nothing
+    - every advantage then collapses to a bare 1-step delta
+    - and no error is raised
+    - linked_frac of 0 means a dead trace, whatever gae_lambda says
     """
     n = env_id.numel()
     linked = 0
@@ -131,12 +133,12 @@ def _sample_spectral_eps(
 
 
 def build_optimizer(policy: SJFPOPolicy) -> torch.optim.Optimizer:
-    """One AdamW over actor and critic, kept in separate param groups.
+    """One AdamW over actor and critic, in separate param groups.
 
-    The groups stay split per role so grad clipping can be applied per role: the
-    critic's value gradient is orders of magnitude larger than the policy's, and
-    one shared clip would let it own the actor's step. rsl-rl uses this same
-    single-optimizer, per-role-group layout.
+    - groups stay split per role, so clipping stays per role
+    - the critic's gradient is orders of magnitude larger
+    - one shared clip would let it own the actor's step
+    - rsl-rl uses this same single-optimizer, per-role-group layout
     """
     kwargs = dataclasses.asdict(policy.config.get_optimizer_preset())
     kwargs.pop("grad_clip_norm", None)  # AdamW preset field; clipping is per role
@@ -301,9 +303,8 @@ class SJFPOPolicy(PreTrainedPolicy):
     def update_ema(self, global_step: int) -> None:
         """Update the FPO++ actor EMA after an optimizer update.
 
-        The shadow is seeded on the first call and hard-copied at the end of warmup,
-        so only properly warmed weights enter the average. ``global_step`` is compared
-        against ``ema_warmup_steps``.
+        Seeded on the first call. Hard-copied at warmup end.
+        Only warmed weights enter the average.
         """
         decay = self.config.ema_decay
         if decay <= 0:
@@ -581,26 +582,31 @@ class SJFPOPolicy(PreTrainedPolicy):
         action_is_pad: torch.Tensor,
         *velocities: torch.Tensor,
     ) -> tuple[torch.Tensor | None, tuple[torch.Tensor, ...]]:
-        """Return the execution mask and the velocities it can be applied to.
+        """Return the execution mask plus velocities the mask can index.
 
-        ``action_is_pad`` marks the action steps a chunk never ran, so it only
-        indexes a velocity laid out over the ``action_horizon`` steps. DCT off,
-        that is already the layout. DCT on, the velocity is
-        ``num_flow_tokens`` frequency coefficients and every step maps to every
-        coefficient, so expand the coefficients back onto the action steps first;
-        the same mask then drops the tail, and a chunk that terminated early
-        contributes no gradient from the steps it never ran instead of a
-        wrong-signed one. Expanding is exact because the inverse DCT is linear,
-        and at ``num_kept_tokens == action_horizon`` the basis is orthonormal so
-        it is a rotation and the loss is unchanged.
+        ``action_is_pad`` marks action steps a chunk never ran. A mask only indexes
+        a velocity laid out over the ``action_horizon`` steps.
 
-        The mask and the layout are returned together on purpose: they are only
-        consistent with each other, and at ``num_kept_tokens == action_horizon``
-        the two spaces have the same shape, so a mask paired with unexpanded
-        velocities applies it in the wrong space and fails silently.
+        - DCT off: already that layout
+        - DCT on: ``num_flow_tokens`` frequency coefficients, every step mapping to
+          every coefficient, so expand back onto the action steps first
+        - the mask drops the tail
+        - so a short chunk gets no gradient from unrun steps
+        - instead of a wrong-signed one
 
-        Both the ``l_old`` and ``l_new`` reductions must come through here, or the
-        importance ratio would compare means over different positions.
+        Expanding is exact. The inverse DCT is linear. At
+        ``num_kept_tokens == action_horizon`` the basis is orthonormal, so it is a
+        rotation and the loss is unchanged.
+
+        Mask and layout return together on purpose:
+
+        - they are only consistent with each other
+        - at ``num_kept_tokens == action_horizon`` both spaces share a shape
+        - a mask with unexpanded velocities lands on the wrong axis
+        - and that fails silently
+
+        Both ``l_old`` and ``l_new`` must come through here. Otherwise the ratio
+        compares means over different positions.
         """
         if cfg.use_dct_transform and cfg.cfm_mask_unexecuted:
             steps = self.get_token_count_for_cfm_loss(cfg)
@@ -908,30 +914,28 @@ class SJFPOPolicy(PreTrainedPolicy):
     ) -> tuple[torch.Tensor, dict | None]:
         """Combine the ASPO policy and value losses for one minibatch.
 
-        Each selected action chunk is one macro-action for the policy loss, and
-        only the steps it actually executed contribute: ``action_is_pad`` masks
-        the rest out of the CFM loss when ``cfm_mask_unexecuted`` is set, which is
-        what stops a truncated chunk being fitted on steps it never ran.
+        One action chunk is one macro-action.
+        Only executed steps contribute.
+        ``action_is_pad`` masks the rest out of the CFM loss.
+        A short chunk is not fitted on unrun steps.
 
-        Spectral encoding keeps ``num_flow_tokens`` DCT frequencies. The condition
-        is fused from ``[n, D]`` to ``[n*m, D]`` so one conditioning vector covers
-        every Monte-Carlo draw. The CFM losses are computed under target
-        velocities in fp32 for stability, and the value loss is a mean squared
-        error against the raw return, as the official FPO++ does.
+        - spectral encoding keeps ``num_flow_tokens`` DCT frequencies
+        - the condition fuses ``[n, D]`` to ``[n*m, D]``, one vector per draw
+        - CFM losses run under target velocities in fp32
+        - value loss is mean squared error, raw return (FPO++)
 
-        On info-requesting steps the modulation MLPs are re-run on a single row to
-        collect conditioner statistics, which is cheap relative to attention.
+        Info steps re-run the modulation MLPs on one row.
+        Cheap next to attention.
 
-        When ``compute_info=False`` the diagnostic reductions are skipped entirely and
-        the returned info is ``None``. Training runs without wandb should pass
-        ``compute_info=False`` -- the info pass is a small reduction per minibatch
-        that would otherwise be discarded.
+        ``compute_info=False`` skips the reductions, returns ``info=None``.
+        Wandb-off runs should pass it.
+        Otherwise one reduction per minibatch is discarded.
 
-        Returns ``(loss, info)``, where info is None when ``compute_info`` is false.
-        Raises ``ValueError`` if a batch tensor is missing or malformed, if ``mc_tau``
-        and ``mc_eps`` disagree about being present, or if ``reduction`` is not
-        ``mean`` or ``none``; and ``SJFPOAborted`` if ``check_finite`` is set and the
-        loss is non-finite.
+        Returns ``(loss, info)``. ``info`` is None when ``compute_info`` is off.
+        Raises ``ValueError`` on a missing or malformed batch tensor, on
+        ``mc_tau`` and ``mc_eps`` disagreeing about presence, or on
+        ``reduction`` outside ``mean``/``none``. Raises ``SJFPOAborted`` on a
+        non-finite loss when ``check_finite`` is set.
         """
         cfg = self.config
         device = next(self.parameters()).device
