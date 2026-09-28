@@ -61,7 +61,9 @@ class SJFPOConfig(PreTrainedConfig):
     cfm_loss_clamp_negative_advantages_max: float = 20.0
     log_ratio_cap: float = 10.0  # official cfm_diff_clamp_max (one-sided)
     normalize_advantage: bool = True
-    use_clipped_value_loss: bool = False
+    use_clipped_value_loss: bool = (
+        False  # clip the value update against the rollout snapshot, as rsl-rl does
+    )
     min_timestep: float = 0.005
     max_timestep: float = 0.995
     timestep_sampling_mode: str = "fpo_beta"
@@ -82,7 +84,7 @@ class SJFPOConfig(PreTrainedConfig):
     ema_decay: float = 0.95
     ema_warmup_steps: int = 500
 
-    value_loss_coef: float = 1.0  # 0.5 was too weak for the critic
+    value_loss_coef: float = 1.0  # rsl-rl's default; the target is raw returns
     max_grad_norm: float = 1.0
 
     num_kept_tokens: int = 16  # DCT coefficients the flow sees; inert when use_dct_transform=False
@@ -147,11 +149,6 @@ class SJFPOConfig(PreTrainedConfig):
         """Validate discount, trust-region, clamp, and sampling parameters."""
         if not 0.0 < self.gamma <= 1.0:
             raise ValueError(f"gamma={self.gamma} must satisfy 0 < gamma <= 1")
-        if self.use_clipped_value_loss:
-            raise ValueError(
-                "use_clipped_value_loss is not supported: the value target is "
-                "now normalized, so clip_param would be a sub-sigma clip"
-            )
         if not 0.0 < self.gae_lambda <= 1.0:
             raise ValueError(
                 f"gae_lambda={self.gae_lambda} must satisfy 0 < lambda <= 1"
