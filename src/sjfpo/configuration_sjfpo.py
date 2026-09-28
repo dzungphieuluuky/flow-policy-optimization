@@ -23,6 +23,7 @@ class SJFPOConfig(PreTrainedConfig):
       used when the flow starts from sampled noise.
     """
 
+    num_critics: int = 1  # ensemble members; min over members feeds the GAE backup
     n_obs_steps: int = 16
     action_horizon: int = 16
     n_action_steps: int = 16  # falls back to action_horizon when None
@@ -85,7 +86,7 @@ class SJFPOConfig(PreTrainedConfig):
     ema_warmup_steps: int = 500
 
     value_loss_coef: float = 1.0  # rsl-rl's default; the target is raw returns
-    max_grad_norm: float = 1.0
+    max_grad_norm: float = 20.0  # critic_grad_norm_preclip runs ~150x over 1.0
 
     num_kept_tokens: int = 16  # DCT coefficients the flow sees; inert when use_dct_transform=False
 
@@ -114,6 +115,8 @@ class SJFPOConfig(PreTrainedConfig):
         """Validate observation, action, and DiT shape parameters."""
         if self.n_obs_steps < 1:
             raise ValueError(f"n_obs_steps={self.n_obs_steps} must be >= 1")
+        if self.num_critics < 1:
+            raise ValueError(f"num_critics={self.num_critics} must be >= 1")
         if self.action_horizon < 1:
             raise ValueError(f"action_horizon={self.action_horizon} must be >= 1")
         if not 0 < self.n_action_steps <= self.action_horizon:

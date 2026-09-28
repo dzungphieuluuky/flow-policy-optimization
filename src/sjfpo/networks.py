@@ -736,9 +736,28 @@ class Critic(nn.Module):
     absorbed by the layer bias and ``obs_j + pe_j`` still separates back into
     ``obs_j``; making the position explicit costs nothing and removes the reliance
     on slot order being a convention.
+
+    ``num_critics`` independent members are held as batched weights and evaluated
+    with two ``baddbmm`` calls, so the whole ensemble is two kernels. The members
+    must stay independent or the ensemble is worthless: widening each ``Linear``
+    to ``n * out`` and chunking at the end would fully couple the second layer,
+    leaving one wide MLP whose n outputs are not independent estimates. Hence the
+    3-D weight layout and per-member init, which mirrors ``nn.Linear``'s
+    ``kaiming_uniform_(a=sqrt(5), fan_in)`` on each member separately.
+
+    ``forward`` returns one value per member, ``[num_critics, B]``, and does not
+    aggregate. The caller takes the min for the GAE backup and the plain mean for
+    the value loss; min has no business inside a loss because it only trains the
+    single lowest member.
     """
 
-    def __init__(self, obs_dim: int, hidden_dim: int, n_obs_steps: int = 1):
+    def __init__(
+        self,
+        obs_dim: int,
+        hidden_dim: int,
+        n_obs_steps: int = 1,
+        num_critics: int = 1,
+    ):
         super().__init__()
         if obs_dim <= 0:
             raise ValueError("obs_dim must be positive")
@@ -746,20 +765,40 @@ class Critic(nn.Module):
             raise ValueError("hidden_dim must be positive")
         if n_obs_steps < 1:
             raise ValueError(f"n_obs_steps must be >= 1, got {n_obs_steps}")
+        if num_critics < 1:
+            raise ValueError(f"num_critics must be >= 1, got {num_critics}")
         if obs_dim < 2:
             raise ValueError(
                 f"obs_dim must be >= 2 for the position code, got {obs_dim}"
             )
         self.obs_dim = obs_dim
         self.n_obs_steps = n_obs_steps
+        self.num_critics = num_critics
+        in_dim = n_obs_steps * obs_dim
         self.pos_enc = SinusoidalEncoding(obs_dim)
-        self.mlp = CondMLP(n_obs_steps * obs_dim, hidden_dim, 1)
+        # [n, in, h] and [n, h, 1]: the layout baddbmm wants, so no transpose on
+        # the compute path.
+        self.w_in = nn.Parameter(torch.empty(num_critics, in_dim, hidden_dim))
+        self.b_in = nn.Parameter(torch.empty(num_critics, 1, hidden_dim))
+        self.w_out = nn.Parameter(torch.empty(num_critics, hidden_dim, 1))
+        self.b_out = nn.Parameter(torch.empty(num_critics, 1, 1))
+        # nn.Linear stores weight as [out, in]; ours is the transpose, so the
+        # init runs on the transposed view to get fan_in from the right axis.
+        with torch.no_grad():
+            for i in range(num_critics):
+                nn.init.kaiming_uniform_(self.w_in[i].t(), a=math.sqrt(5))
+                bound = 1.0 / math.sqrt(in_dim)
+                nn.init.uniform_(self.b_in[i], -bound, bound)
+                nn.init.kaiming_uniform_(self.w_out[i].t(), a=math.sqrt(5))
+                bound = 1.0 / math.sqrt(hidden_dim)
+                nn.init.uniform_(self.b_out[i], -bound, bound)
 
     def forward(self, states: torch.Tensor) -> torch.Tensor:
-        """Predict the value of an observation window, ``[B]``.
+        """Predict one value per member, ``[num_critics, B]``.
 
-        Raises ``ValueError`` if the rank is not 3, the batch or time dimension is not
-        positive, or ``obs_dim`` disagrees with the configuration.
+        Raises ``ValueError`` if the rank is not 3, the batch or time dimension is
+        not positive, ``obs_dim`` disagrees with the configuration, or the window
+        length differs from ``n_obs_steps``.
         """
         if states.dim() != 3:
             raise ValueError(
@@ -779,5 +818,8 @@ class Critic(nn.Module):
                 "declared window length"
             )
         positions = torch.arange(steps, device=states.device)
-        coded = self.pos_enc.add_to(states, positions)
-        return self.mlp(coded.reshape(batch, steps * obs)).squeeze(-1)
+        coded = self.pos_enc.add_to(states, positions).reshape(batch, steps * obs)
+        # stride-0 expand: every member sees the same window, independently.
+        x = coded.unsqueeze(0).expand(self.num_critics, batch, steps * obs)
+        h = torch.baddbmm(self.b_in, x, self.w_in)
+        return torch.baddbmm(self.b_out, F.silu(h), self.w_out).squeeze(-1)

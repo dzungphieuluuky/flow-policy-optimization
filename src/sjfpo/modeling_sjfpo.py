@@ -188,7 +188,9 @@ class SJFPOPolicy(PreTrainedPolicy):
             config.timestep_scale,
         )
         self.conditioner = StateConditioner(obs_dim, config.hidden_dim)
-        self.critic = Critic(obs_dim, config.hidden_dim, config.n_obs_steps)
+        self.critic = Critic(
+            obs_dim, config.hidden_dim, config.n_obs_steps, config.num_critics
+        )
         self.obs_normalizer = RunningMeanStd(obs_dim)
 
         self.register_buffer(
@@ -810,8 +812,12 @@ class SJFPOPolicy(PreTrainedPolicy):
             normalized_states = all_chunk_states_n[:n_chunks]
             with autocast_context(device):
                 all_chunk_values = self.critic(all_chunk_states_n).float()
-            chunk_value = all_chunk_values[:n_chunks]
-            chunk_next_value = all_chunk_values[n_chunks:]
+            # min over the ensemble, for the backup only. The value loss trains
+            # every member separately; min has no justification inside a V loss
+            # because there is no max operator to counteract, so it would only
+            # bias V low and push advantages up.
+            chunk_value = all_chunk_values[:, :n_chunks].amin(dim=0)
+            chunk_next_value = all_chunk_values[:, n_chunks:].amin(dim=0)
 
         # One chunk is one macro-transition, so the backup is taken at chunk
         # granularity: reward summed over the chunk, discount gamma ** h.
@@ -1083,9 +1089,9 @@ class SJFPOPolicy(PreTrainedPolicy):
             policy_per_chunk = -surrogate.mean(dim=1)
 
         with autocast_context(device):
-            raw_value_pred = self.critic(states).float()
+            raw_value_pred = self.critic(states).float()  # [num_critics, n]
         raw_returns_flat = raw_returns.reshape(-1)
-        if raw_value_pred.shape != raw_returns_flat.shape:
+        if raw_value_pred.shape[-1] != raw_returns_flat.shape[0]:
             raise ValueError(
                 f"value/return shape mismatch: raw_value_pred="
                 f"{tuple(raw_value_pred.shape)}, raw_returns="
@@ -1093,20 +1099,21 @@ class SJFPOPolicy(PreTrainedPolicy):
             )
         # rsl-rl's value loss verbatim: squared error against the raw return, and
         # when clipping is on, the worse of the clipped and unclipped prediction.
-        # The target is raw so value_loss scales with the return magnitude, the
-        # same trade rsl-rl makes: value_loss_coef absorbs it, and the critic is
-        # a separate parameter set so it does not touch the actor's gradient.
-        value_loss_per_chunk = torch.square(raw_value_pred - raw_returns_flat)
+        # Broadcasting against the [n, B] member axis trains every member; the
+        # mean over both axes is the per-chunk loss.
+        value_loss_per_chunk = torch.square(raw_value_pred - raw_returns_flat).mean(
+            dim=0
+        )
         if cfg.use_clipped_value_loss and "raw_values" in batch:
             rollout_values = to_tensor(
                 batch["raw_values"], dtype=torch.float32, device=device
             )
-            clipped_value_pred = rollout_values + (
-                raw_value_pred - rollout_values
+            clipped_value_pred = rollout_values.unsqueeze(0) + (
+                raw_value_pred - rollout_values.unsqueeze(0)
             ).clamp(-cfg.clip_param, cfg.clip_param)
             value_loss_per_chunk = torch.maximum(
                 value_loss_per_chunk,
-                torch.square(clipped_value_pred - raw_returns_flat),
+                torch.square(clipped_value_pred - raw_returns_flat).mean(dim=0),
             )
 
         if reduction == "mean":
@@ -1230,12 +1237,18 @@ class SJFPOPolicy(PreTrainedPolicy):
         # two together say how much of the batch the row mask discards.
         executed_action_step_frac = (~action_is_pad).float().mean()
 
+        # explained_var is measured against the member mean, not the min the
+        # backup uses. min is a downward-biased selection, so scoring it here
+        # would overstate critic quality, and the mean is what the loss trains.
+        # The absolute value is therefore not comparable to runs that had a
+        # single critic, though the ratio trend across the run still is.
+        mean_value_pred = raw_value_pred.mean(dim=0)
         returns_var = raw_returns_flat.var(correction=0).clamp_min(1e-8)
-        explained_var = 1.0 - (raw_returns_flat - raw_value_pred).var(
+        explained_var = 1.0 - (raw_returns_flat - mean_value_pred).var(
             correction=0
         ) / returns_var
-        value_huber_max = raw_value_pred.sub(raw_returns_flat).abs().max()
-        value_pred_max = raw_value_pred.abs().max()
+        value_huber_max = mean_value_pred.sub(raw_returns_flat).abs().max()
+        value_pred_max = mean_value_pred.abs().max()
         v_star_rms = v_star_f.pow(2).mean().sqrt()
 
         l_old_std = l_old.std(correction=0)
@@ -1274,8 +1287,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             truncated_chunk_frac,
             executed_action_step_frac,
             raw_returns_flat.std(correction=0),
-            raw_value_pred.std(correction=0),
-        ]
+            raw_value_pred.std(correction=0),        ]
         scalars.extend(
             cond_stats[k].detach()
             if torch.is_tensor(cond_stats[k])
