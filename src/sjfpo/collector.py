@@ -154,6 +154,11 @@ class RolloutBuffer:
         self.chunk_lengths = zeros((max_chunks,), _INDEX_DTYPE)
         self.chunk_terminated = zeros((max_chunks,), torch.bool)
         self.chunk_truncated = zeros((max_chunks,), torch.bool)
+        # Cut short by the rollout budget. The episode continued, so this is NOT
+        # an episode end: the next chunk in the same env is its successor and
+        # GAE must chain to it. Kept apart from chunk_truncated, which is the
+        # env's time-limit signal and does end the episode.
+        self.chunk_budget_truncated = zeros((max_chunks,), torch.bool)
         self.chunk_clip_counts = zeros((max_chunks,), _INDEX_DTYPE)
         self.chunk_env_id = zeros((max_chunks,), torch.int16)
         self.n_chunks = 0
@@ -262,6 +267,7 @@ class RolloutBuffer:
             "chunk_lengths",
             "chunk_terminated",
             "chunk_truncated",
+            "chunk_budget_truncated",
             "chunk_clip_counts",
             "chunk_env_id",
         ):
@@ -270,19 +276,20 @@ class RolloutBuffer:
                 non_blocking=non_blocking,
             )
 
-    def mark_truncated(self, chunk_index: int) -> None:
-        """Flag a chunk, and its final executed step, as truncated.
+    def mark_incomplete(self, chunk_index: int) -> None:
+        """Flag a chunk as cut short by the rollout budget.
 
-        Used when the step budget cuts a chunk short, so GAE bootstraps the cut
-        instead of treating it as a terminal transition. Raises ``IndexError`` if
-        ``chunk_index`` is outside the populated prefix.
+        The episode continued, so the next chunk in the same env is its successor
+        and GAE must chain to it. This is deliberately not ``chunk_truncated``:
+        the env's time-limit truncation does end the episode, and writing the
+        budget cut into the same flag made GAE treat a live episode as finished
+        and drop the ``gamma * lam * advantage`` handoff to the next chunk.
+
+        Raises ``IndexError`` if ``chunk_index`` is outside the populated prefix.
         """
         if not 0 <= chunk_index < self.n_chunks:
             raise IndexError(f"chunk index {chunk_index} out of range")
-        self.chunk_truncated[chunk_index] = True
-        start = int(self.chunk_starts[chunk_index])
-        length = int(self.chunk_lengths[chunk_index])
-        self.step_truncated[start + length - 1] = True
+        self.chunk_budget_truncated[chunk_index] = True
 
     def active(self) -> dict[str, torch.Tensor]:
         """Return contiguous views of the populated buffer prefix.
@@ -302,6 +309,7 @@ class RolloutBuffer:
             "chunk_lengths": self.chunk_lengths[:n_chunks],
             "chunk_terminated": self.chunk_terminated[:n_chunks],
             "chunk_truncated": self.chunk_truncated[:n_chunks],
+            "chunk_budget_truncated": self.chunk_budget_truncated[:n_chunks],
             "chunk_clip_counts": self.chunk_clip_counts[:n_chunks],
             "chunk_env_id": self.chunk_env_id[:n_chunks],
         }
@@ -788,7 +796,7 @@ def collect_chunks_vec(
                 prev[i] is not None or prev_chunk_indices[i] is not None
             ):
                 if buffer is not None:
-                    buffer.mark_truncated(prev_chunk_indices[i])  # type: ignore[arg-type]
+                    buffer.mark_incomplete(prev_chunk_indices[i])  # type: ignore[arg-type]
                 else:
                     prev[i][TRUNCATED].fill_(True)  # type: ignore[index]
 
@@ -867,8 +875,12 @@ def collect_chunks(
                     truncated=done_kind == "truncated",
                     clip_count=clip_count,
                 )
-                if done_kind == "continue":
-                    buffer.mark_truncated(chunk_index)
+                if n_exec < n_action_steps:
+                    # Cut short by the step budget. The env is still alive, so
+                    # this is not a truncation: flagging it as one made GAE treat
+                    # every live chunk as an episode end and drop the chain to the
+                    # next chunk, leaving linked_frac at zero.
+                    buffer.mark_incomplete(chunk_index)
                 executed_total += n_exec
                 if done_kind != "continue":
                     obs, _ = env.reset()

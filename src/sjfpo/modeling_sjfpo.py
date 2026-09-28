@@ -74,6 +74,7 @@ def _gae_diagnostics(
     truncated: torch.Tensor,
     advantages: torch.Tensor,
     raw_returns: torch.Tensor,
+    budget_truncated: torch.Tensor | None = None,
 ) -> dict[str, float]:
     """Trace-liveness and scale probes for the chunk-level backup.
 
@@ -101,6 +102,15 @@ def _gae_diagnostics(
         "advantage_std_fraction": (
             float(advantages.float().std() / raw_returns.float().std().clamp_min(1e-8))
             if n > 1
+            else 0.0
+        ),
+        # The budget cut is reported on its own so it cannot be confused with the
+        # env's time-limit truncation, which is the flag GAE reads. Not
+        # truncated_chunk_frac: that one is derived from action_is_pad in
+        # _compute_info and means "the chunk left action rows unexecuted".
+        "budget_truncated_chunk_frac": (
+            float(budget_truncated.to(torch.bool).float().mean())
+            if n and budget_truncated is not None
             else 0.0
         ),
     }
@@ -832,6 +842,9 @@ class SJFPOPolicy(PreTrainedPolicy):
             active["chunk_truncated"][:n_chunks],
             raw_advantages,
             raw_returns,
+            active.get("chunk_budget_truncated")[:n_chunks]
+            if "chunk_budget_truncated" in active
+            else None,
         )
         raw_advantages = raw_advantages.to(storage_dtype)
         raw_returns = raw_returns.to(storage_dtype)
