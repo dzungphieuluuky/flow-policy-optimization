@@ -240,15 +240,15 @@ def test_token_count_follows_the_layout_the_mask_chooses():
     """
     kept = _cfg(num_kept_tokens=4)  # 4 < HORIZON
     assert kept.use_dct_transform and kept.cfm_mask_unexecuted
-    assert SJFPOPolicy(kept)._cfm_loss_token_count(kept) == kept.action_horizon
+    assert SJFPOPolicy(kept).get_token_count_for_cfm_loss(kept) == kept.action_horizon
 
     unmasked = _cfg(num_kept_tokens=4, cfm_mask_unexecuted=False)
-    assert SJFPOPolicy(unmasked)._cfm_loss_token_count(unmasked) == unmasked.num_flow_tokens
+    assert SJFPOPolicy(unmasked).get_token_count_for_cfm_loss(unmasked) == unmasked.num_flow_tokens
     assert unmasked.num_flow_tokens == 4
 
     # DCT off always reduces over the action-step grid, mask or no mask.
     off = _cfg(use_dct_transform=False)
-    assert SJFPOPolicy(off)._cfm_loss_token_count(off) == off.action_horizon
+    assert SJFPOPolicy(off).get_token_count_for_cfm_loss(off) == off.action_horizon
 
     # And the reduction really does produce that many tokens.
     cfg = kept

@@ -541,7 +541,7 @@ class SJFPOPolicy(PreTrainedPolicy):
 
 
     @staticmethod
-    def _cfm_loss_token_count(cfg: SJFPOConfig) -> int:
+    def get_token_count_for_cfm_loss(cfg: SJFPOConfig) -> int:
         """How many tokens the CFM loss reduces over.
 
         The action-step grid when the loss operates on rows, the frequencies when
@@ -583,7 +583,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         importance ratio would compare means over different positions.
         """
         if cfg.use_dct_transform and cfg.cfm_mask_unexecuted:
-            steps = self._cfm_loss_token_count(cfg)
+            steps = self.get_token_count_for_cfm_loss(cfg)
             return action_is_pad, tuple(
                 velocity_to_action_steps(v, steps) for v in velocities
             )
@@ -1001,7 +1001,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             )
         # The token axis is the action-step grid when the mask moved the loss onto
         # rows, and the frequencies otherwise, so it is not always flow_shape[0].
-        expected_tokens = self._cfm_loss_token_count(cfg)
+        expected_tokens = self.get_token_count_for_cfm_loss(cfg)
         if tuple(l_old_token.shape) != (n, num_mc, expected_tokens):
             raise ValueError(
                 f"behavior_cfm_loss_token shape {tuple(l_old_token.shape)} != "
