@@ -316,7 +316,13 @@ class SJFPOPolicy(PreTrainedPolicy):
             self._ema_shadow = {
                 name: param.detach().clone() for name, param in current.items()
             }
-        if global_step == self.config.ema_warmup_steps:
+        if not self._ema_initialized and global_step >= self.config.ema_warmup_steps:
+            # >= and gated on _ema_initialized, not ==. global_step advances by a
+            # whole rollout's executed steps, so == ema_warmup_steps was never
+            # observed with the defaults (500 vs a ~4096 step delta) and the
+            # shadow was never initialised, leaving ema_ready() false forever.
+            # The gate keeps this a one-shot: without it every later call would
+            # re-hard-copy and discard the running average.
             for name, shadow in self._ema_shadow.items():
                 shadow.copy_(current[name].detach())
             self._ema_initialized = True
@@ -716,7 +722,11 @@ class SJFPOPolicy(PreTrainedPolicy):
         )
         if (
             self._rollout_buffer is None
-            or self._rollout_buffer.capacity_key() != buffer_key
+            # [:6] because capacity_key() also carries pin_memory, which is a
+            # property of the device rather than of this call's shape. Comparing
+            # the full tuple can never match, so the buffer was reallocated on
+            # every rollout, defeating the reuse the docstring promises.
+            or self._rollout_buffer.capacity_key()[:6] != buffer_key
         ):
             self._rollout_buffer = RolloutBuffer(
                 max_chunks=max_chunks,
