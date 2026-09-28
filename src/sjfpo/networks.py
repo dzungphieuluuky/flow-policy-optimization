@@ -728,19 +728,35 @@ class SJFPOFlowModel(nn.Module):
 
 
 class Critic(nn.Module):
-    """State-value baseline V(s): MLP on current frame."""
+    """State-value baseline V(s) over the full observation window.
 
-    def __init__(self, obs_dim: int, hidden_dim: int):
+    The window is flattened rather than pooled, so frame order survives into the
+    MLP instead of being averaged away, and each frame carries an explicit
+    sinusoidal position code. The code is a fixed constant, so ``W_j @ pe_j`` is
+    absorbed by the layer bias and ``obs_j + pe_j`` still separates back into
+    ``obs_j``; making the position explicit costs nothing and removes the reliance
+    on slot order being a convention.
+    """
+
+    def __init__(self, obs_dim: int, hidden_dim: int, n_obs_steps: int = 1):
         super().__init__()
         if obs_dim <= 0:
             raise ValueError("obs_dim must be positive")
         if hidden_dim < 1:
             raise ValueError("hidden_dim must be positive")
+        if n_obs_steps < 1:
+            raise ValueError(f"n_obs_steps must be >= 1, got {n_obs_steps}")
+        if obs_dim < 2:
+            raise ValueError(
+                f"obs_dim must be >= 2 for the position code, got {obs_dim}"
+            )
         self.obs_dim = obs_dim
-        self.mlp = CondMLP(obs_dim, hidden_dim, 1)
+        self.n_obs_steps = n_obs_steps
+        self.pos_enc = SinusoidalEncoding(obs_dim)
+        self.mlp = CondMLP(n_obs_steps * obs_dim, hidden_dim, 1)
 
     def forward(self, states: torch.Tensor) -> torch.Tensor:
-        """Predict the value of the current frame in an observation window, ``[B]``.
+        """Predict the value of an observation window, ``[B]``.
 
         Raises ``ValueError`` if the rank is not 3, the batch or time dimension is not
         positive, or ``obs_dim`` disagrees with the configuration.
@@ -755,4 +771,13 @@ class Critic(nn.Module):
             raise ValueError(
                 f"states feature dimension must be {self.obs_dim}, got {states.shape[2]}"
             )
-        return self.mlp(states[:, -1, :]).squeeze(-1)
+        batch, steps, obs = states.shape
+        if steps != self.n_obs_steps:
+            raise ValueError(
+                f"states has {steps} time steps but the critic was built for "
+                f"n_obs_steps={self.n_obs_steps}; the first layer is sized to the "
+                "declared window length"
+            )
+        positions = torch.arange(steps, device=states.device)
+        coded = self.pos_enc.add_to(states, positions)
+        return self.mlp(coded.reshape(batch, steps * obs)).squeeze(-1)

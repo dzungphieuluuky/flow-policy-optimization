@@ -188,7 +188,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             config.timestep_scale,
         )
         self.conditioner = StateConditioner(obs_dim, config.hidden_dim)
-        self.critic = Critic(obs_dim, config.hidden_dim)
+        self.critic = Critic(obs_dim, config.hidden_dim, config.n_obs_steps)
         self.obs_normalizer = RunningMeanStd(obs_dim)
 
         self.register_buffer(
