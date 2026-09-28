@@ -179,8 +179,13 @@ def compute_cfm_loss(
 
     The active ``sample`` path follows FPO++'s configurable reduction over the
     flattened action chunk (``mean``, ``sum``, or ``sqrt``; default ``mean``).
-    ``freq`` is a legacy diagnostic reduction kept for comparison, since the
-    official FPO policy only ever uses ``sample``.
+    ``token_mean`` is a diagnostic reduction kept for comparison, since the
+    official FPO policy only ever uses ``sample``. It means a mean over the
+    token axis of whatever space the operand is laid out in, which is the DCT
+    frequencies when the velocity is in coefficient space and the action steps
+    when it is on the action-step grid. The divisor is the action_dim because a
+    token aggregates only that axis, so the value does not depend on how many
+    tokens were masked out.
 
     ``action_is_pad`` is an optional ``[batch, horizon]`` mask of never-executed
     action positions, True where padded. When given, padded positions are dropped
@@ -222,11 +227,13 @@ def compute_cfm_loss(
         if n_valid is None:
             return total / math.sqrt(flat.shape[-1])
         return total / n_valid.sqrt()
-    if reduce_mode == "freq":
-        # Per-token diagnostic; masking sq already zeroes padded tokens.
-        return sq.sum(dim=-1) / math.sqrt(sq.shape[-1])
+    if reduce_mode == "token_mean":
+        # Per-token diagnostic. A token aggregates only action_dim, so dividing
+        # by that keeps the value independent of the token count; masking sq
+        # already zeroes the padded tokens.
+        return sq.sum(dim=-1) / sq.shape[-1]
     raise ValueError(
-        f"reduce_mode={reduce_mode!r} must be 'scalar', 'sample', or 'freq'"
+        f"reduce_mode={reduce_mode!r} must be 'scalar', 'sample', or 'token_mean'"
     )
 
 

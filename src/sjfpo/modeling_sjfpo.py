@@ -8,7 +8,7 @@ Performance notes
 * Diagnostics returned by ``forward`` are batched into a single device→host
   transfer (one ``.tolist()``) instead of ~20 ``float()`` syncs per call, and
   the whole diagnostic pass is gated on ``compute_info=True``.
-* ``ratio_freq`` is computed once per forward, not once per branch.
+* ``ratio_token`` is computed once per forward, not once per branch.
 * ``snapshot_behavior_policy`` copies weights in-place into the frozen
   snapshot instead of ``copy.deepcopy``-ing it.
 """
@@ -594,7 +594,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         this is the ``l_old`` term of the importance ratio. Both reductions are masked
         identically to the current-policy losses they get compared against, so the
         ratio never mixes means over different positions. Returns the ``sample`` and
-        ``freq`` reductions.
+        ``token_mean`` reductions.
         """
         cfg = self.config
         token_count = eps.shape[2]
@@ -623,7 +623,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             )
             return (
                 compute_cfm_loss(v_old, v_star, cfg, "sample", loss_mask),
-                compute_cfm_loss(v_old, v_star, cfg, "freq", loss_mask),
+                compute_cfm_loss(v_old, v_star, cfg, "token_mean", loss_mask),
             )
 
     def generate_rollout(
@@ -830,7 +830,7 @@ class SJFPOPolicy(PreTrainedPolicy):
 
         chunk_clip_counts = active["chunk_clip_counts"][:n_chunks]
 
-        behavior_cfm_loss, behavior_cfm_loss_freq = self._behavior_cfm_losses(
+        behavior_cfm_loss, behavior_cfm_loss_token = self._behavior_cfm_losses(
             normalized_states, actions, tau, eps, action_is_pad
         )
 
@@ -847,7 +847,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             "chunk_clip_counts": chunk_clip_counts,
             "gae_diagnostics": gae_diagnostics,
             "behavior_cfm_loss": behavior_cfm_loss,
-            "behavior_cfm_loss_freq": behavior_cfm_loss_freq,
+            "behavior_cfm_loss_token": behavior_cfm_loss_token,
         }
 
 
@@ -971,25 +971,25 @@ class SJFPOPolicy(PreTrainedPolicy):
                 "n m d -> (n m) d",
                 einx.id("n d -> n m d", self.conditioner(states), m=num_mc),
             )
-        if "behavior_cfm_loss" not in batch or "behavior_cfm_loss_freq" not in batch:
+        if "behavior_cfm_loss" not in batch or "behavior_cfm_loss_token" not in batch:
             raise KeyError(
-                "forward requires 'behavior_cfm_loss' and 'behavior_cfm_loss_freq' "
+                "forward requires 'behavior_cfm_loss' and 'behavior_cfm_loss_token' "
                 "from generate_rollout. They are computed once per rollout against "
                 "the frozen snapshot and must not be recomputed here."
             )
         l_old = to_tensor(
             batch["behavior_cfm_loss"], dtype=torch.float32, device=device
         )
-        l_old_freq = to_tensor(
-            batch["behavior_cfm_loss_freq"], dtype=torch.float32, device=device
+        l_old_token = to_tensor(
+            batch["behavior_cfm_loss_token"], dtype=torch.float32, device=device
         )
         if tuple(l_old.shape) != (n, num_mc):
             raise ValueError(
                 f"behavior_cfm_loss shape {tuple(l_old.shape)} != {(n, num_mc)}"
             )
-        if tuple(l_old_freq.shape) != (n, num_mc, flow_shape[0]):
+        if tuple(l_old_token.shape) != (n, num_mc, flow_shape[0]):
             raise ValueError(
-                f"behavior_cfm_loss_freq shape {tuple(l_old_freq.shape)} != "
+                f"behavior_cfm_loss_token shape {tuple(l_old_token.shape)} != "
                 f"{(n, num_mc, flow_shape[0])}"
             )
 
@@ -1013,8 +1013,8 @@ class SJFPOPolicy(PreTrainedPolicy):
             )
 
             adv_mc = advantages.float().unsqueeze(1)
-            l_new_freq = compute_cfm_loss(v_new_r_f, v_star_f, cfg, "freq", loss_mask)
-            ratio_freq = compute_policy_ratio(l_old_freq, l_new_freq, cfg)
+            l_new_token = compute_cfm_loss(v_new_r_f, v_star_f, cfg, "token_mean", loss_mask)
+            ratio_token = compute_policy_ratio(l_old_token, l_new_token, cfg)
 
             l_new = compute_cfm_loss(v_new_r_f, v_star_f, cfg, "sample", loss_mask)
             ratio = compute_policy_ratio(l_old, l_new, cfg, advantage=adv_mc)
@@ -1067,7 +1067,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             l_old=l_old,
             l_new=l_new,
             ratio=ratio,
-            ratio_freq=ratio_freq,
+            ratio_token=ratio_token,
             action_is_pad=action_is_pad,
             v_star_f=v_star_f,
             v_pred=v_pred,
@@ -1088,7 +1088,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         l_old,
         l_new,
         ratio,
-        ratio_freq,
+        ratio_token,
         action_is_pad,
         v_star_f,
         v_pred,
@@ -1120,16 +1120,16 @@ class SJFPOPolicy(PreTrainedPolicy):
         ratio_mean = ratio.mean()
         ratio_std = ratio.std(correction=0)
 
-        ratio_freq_mean = ratio_freq.mean(dim=(0, 1))
-        num_freqs = ratio_freq_mean.numel()
-        split = max(1, num_freqs // 2)
-        ratio_freq_range = ratio_freq_mean.max() - ratio_freq_mean.min()
-        ratio_freq_low = ratio_freq_mean[:split].mean()
-        ratio_freq_high = (
-            ratio_freq_mean[split:].mean() if num_freqs > 1 else ratio_freq_mean.mean()
+        ratio_token_mean = ratio_token.mean(dim=(0, 1))
+        num_tokens = ratio_token_mean.numel()
+        split = max(1, num_tokens // 2)
+        ratio_token_range = ratio_token_mean.max() - ratio_token_mean.min()
+        ratio_token_low = ratio_token_mean[:split].mean()
+        ratio_token_high = (
+            ratio_token_mean[split:].mean() if num_tokens > 1 else ratio_token_mean.mean()
         )
-        ratio_freq_outside = (
-            ((ratio_freq < 1.0 - cfg.clip_param) | (ratio_freq > 1.0 + cfg.clip_param))
+        ratio_token_outside = (
+            ((ratio_token < 1.0 - cfg.clip_param) | (ratio_token > 1.0 + cfg.clip_param))
             .float()
             .mean()
         )
@@ -1137,19 +1137,19 @@ class SJFPOPolicy(PreTrainedPolicy):
         clip_high = (
             cfg.clip_param_highfreq if cfg.use_per_freq_clipping else cfg.clip_param
         )
-        low_slice = ratio_freq[..., :split]
-        ratio_freq_low_outside = (
+        low_slice = ratio_token[..., :split]
+        ratio_token_low_outside = (
             ((low_slice < 1.0 - clip_low) | (low_slice > 1.0 + clip_low)).float().mean()
         )
-        if num_freqs > 1:
-            high_slice = ratio_freq[..., split:]
-            ratio_freq_high_outside = (
+        if num_tokens > 1:
+            high_slice = ratio_token[..., split:]
+            ratio_token_high_outside = (
                 ((high_slice < 1.0 - clip_high) | (high_slice > 1.0 + clip_high))
                 .float()
                 .mean()
             )
         else:
-            ratio_freq_high_outside = ratio_freq_low_outside
+            ratio_token_high_outside = ratio_token_low_outside
 
         # Does the trust region ever bind? If clipfrac sits near zero the ratio
         # is moving well inside the band and clip_param is not constraining
@@ -1193,12 +1193,12 @@ class SJFPOPolicy(PreTrainedPolicy):
             value_pred_max,
             ratio_mean,
             ratio_std,
-            ratio_freq_range,
-            ratio_freq_low,
-            ratio_freq_high,
-            ratio_freq_outside,
-            ratio_freq_low_outside,
-            ratio_freq_high_outside,
+            ratio_token_range,
+            ratio_token_low,
+            ratio_token_high,
+            ratio_token_outside,
+            ratio_token_low_outside,
+            ratio_token_high_outside,
             v_star_rms,
             l_old.mean(),
             l_new.mean(),
@@ -1232,12 +1232,12 @@ class SJFPOPolicy(PreTrainedPolicy):
             "value_pred_max",
             "flow_ratio_mean",
             "flow_ratio_std",
-            "flow_ratio_freq_range",
-            "flow_ratio_freq_lowfreq",
-            "flow_ratio_freq_highfreq",
-            "flow_ratio_freq_outside_frac",
-            "flow_ratio_freq_low_outside_frac",
-            "flow_ratio_freq_high_outside_frac",
+            "flow_ratio_token_range",
+            "flow_ratio_token_lowfreq",
+            "flow_ratio_token_highfreq",
+            "flow_ratio_token_outside_frac",
+            "flow_ratio_token_low_outside_frac",
+            "flow_ratio_token_high_outside_frac",
             "flow_v_star_rms",
             "l_old_mean",
             "l_new_mean",

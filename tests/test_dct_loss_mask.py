@@ -196,3 +196,35 @@ def test_mask_and_layout_cannot_disagree():
     mask, (out_pred, _) = p.prepare_cfm_loss_inputs(cfg, _mask(2, 4).to(torch.bool), pred, target)
     assert mask is None
     assert out_pred.shape == pred.shape  # left as coefficients
+
+
+def test_token_mean_reduces_the_operand_token_axis():
+    """token_mean means per token of whatever space the operand is in.
+
+    Coefficient space gives back the frequencies; the action-step grid gives back
+    the action steps. Naming it "freq" claimed the first while the masked DCT path
+    silently delivered the second.
+    """
+    cfg = _cfg()
+    coeffs = torch.randn(2, MC, 4, ACTION_DIM)  # K = 4 tokens
+    assert compute_cfm_loss(coeffs, torch.zeros_like(coeffs), cfg, "token_mean", None).shape == (2, MC, 4)
+    grid = velocity_to_action_steps(coeffs, HORIZON)
+    assert grid.shape[2] == HORIZON
+    assert compute_cfm_loss(grid, torch.zeros_like(grid), cfg, "token_mean", None).shape == (2, MC, HORIZON)
+
+
+def test_token_mean_is_invariant_to_masking():
+    """A token aggregates only action_dim, so its mean cannot depend on how many
+    tokens the mask removed. Pins the divisor against a future n_valid change."""
+    cfg = _cfg()
+    torch.manual_seed(0)
+    residual = torch.ones(1, MC, HORIZON, ACTION_DIM)
+    for executed in (2, 8, HORIZON):
+        mask = torch.zeros(1, HORIZON, dtype=torch.bool)
+        mask[0, executed:] = True
+        out = compute_cfm_loss(
+            torch.zeros_like(residual), residual, cfg, "token_mean", mask
+        )
+        # Executed tokens read 1 no matter how many there are; masked ones 0.
+        assert torch.allclose(out[..., :executed], torch.ones_like(out[..., :executed]), atol=1e-6)
+        assert torch.allclose(out[..., executed:], torch.zeros_like(out[..., executed:]), atol=1e-6)
