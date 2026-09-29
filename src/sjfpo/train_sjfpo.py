@@ -146,6 +146,34 @@ def sample_minibatch(
     return out
 
 
+_OBS_WARMUP_STEPS = 128
+
+
+def warm_observation_stats(policy, env, *, obs_dim: int, seed: int) -> int:
+    """Fold random-policy frames into the running obs stats before training.
+
+    The stats normalizer is identity until its first update, and updates only
+    after a rollout, so without this the entire first rollout runs on raw
+    observations. baselines and SB3 pay one step of that; here it would be a
+    whole rollout. Env is reset afterwards so training starts on a clean episode.
+    """
+    rng = np.random.default_rng(seed)
+    env.action_space.seed(seed)
+    obs, _ = env.reset()
+    frames = []
+    for _ in range(_OBS_WARMUP_STEPS):
+        obs, _, terminated, truncated, _ = env.step(
+            np.asarray(env.action_space.sample(), dtype=np.float32)
+        )
+        frames.append(np.asarray(obs, dtype=np.float32).reshape(-1, obs_dim))
+        if bool(np.any(terminated)) or bool(np.any(truncated)):
+            obs, _ = env.reset()
+    stacked = np.concatenate(frames, axis=0)
+    policy.update_observation_stats(torch.from_numpy(stacked))
+    env.reset()
+    return int(stacked.shape[0])
+
+
 def random_baseline(
     evaluator: Evaluator, env: Any, max_episodes: int = 30
 ) -> float:
@@ -277,6 +305,15 @@ def train_sjfpo_run(
         )
         optimizer = build_optimizer(policy)
 
+    warmed = warm_observation_stats(
+        policy,
+        train_env,
+        obs_dim=obs_dim,
+        seed=seed,
+    )
+    print(
+        f"obs normalizer warmed on {warmed} frames", file=sys.stderr
+    )
     print(
         f"SJFPO policy: actor_depth={cfg.dit_depth} hidden={cfg.hidden_dim} "
         f"params={sum(p.numel() for p in policy.parameters()):,}",
