@@ -174,6 +174,38 @@ def warm_observation_stats(policy, env, *, obs_dim: int, seed: int) -> int:
     return int(stacked.shape[0])
 
 
+@torch.no_grad()
+def measure_boot_value_drift(policy, batch, device) -> torch.Tensor:
+    """Relative RMS move of V(s_{t+h}) since the value targets were built.
+
+    Targets use the live critic, so after each critic step the bootstrap term
+    they regress against no longer matches the network. Small values mean
+    staleness is not what limits the critic; large values mean a target network
+    would buy something.
+    """
+    now = policy.critic(batch["boot_observations"].to(device)).float().T
+    start = batch["boot_values_start"].to(device)
+    rms = start.pow(2).mean().sqrt()
+    return (now - start).pow(2).mean().sqrt() / (rms + 1e-8)
+
+
+@torch.no_grad()
+def measure_value_target_drift(policy, batch, device) -> torch.Tensor:
+    """Same move, in the units the value loss sees: a fraction of target RMS.
+
+    A drift can be large relative to V yet negligible next to the return
+    magnitude. This is the number that decides whether the stale bootstrap
+    term matters for the regression.
+    """
+    delta = (
+        policy.critic(batch["boot_observations"].to(device)).float().T
+        - batch["boot_values_start"].to(device)
+    )
+    return delta.pow(2).mean().sqrt() / (
+        batch["raw_returns"].to(device).pow(2).mean().sqrt() + 1e-8
+    )
+
+
 def random_baseline(
     evaluator: Evaluator, env: Any, max_episodes: int = 30
 ) -> float:
@@ -397,6 +429,8 @@ def train_sjfpo_run(
             actor_pre_norms: list[torch.Tensor] = []
             critic_pre_norms: list[torch.Tensor] = []
             above_clamp_fracs: list[torch.Tensor] = []
+            boot_deltas: list[torch.Tensor] = []
+            target_drifts: list[torch.Tensor] = []
             n_chunks = batch["raw_advantages"].shape[0]
             microbatches = list(
                 mini_batch_indices(
@@ -442,13 +476,19 @@ def train_sjfpo_run(
                     )
                     actor_pre_norms.append(pre_clip_actor.detach())
                     pre_clip_critic = torch.nn.utils.clip_grad_norm_(
-                        critic_params, cfg.max_grad_norm
+                        critic_params, cfg.critic_max_grad_norm
                     )
                     critic_pre_norms.append(pre_clip_critic.detach())
                     above_clamp_fracs.append(policy.cfm_above_clamp_frac)
                     optimizer.step()
                     optimizer.zero_grad(set_to_none=True)
                     policy.step_count += 1
+                    boot_deltas.append(
+                        measure_boot_value_drift(policy, batch, device)
+                    )
+                    target_drifts.append(
+                        measure_value_target_drift(policy, batch, device)
+                    )
                 if epoch_info is not None:
                     infos.append(epoch_info)
 
@@ -466,11 +506,19 @@ def train_sjfpo_run(
             critic_grad_norm_mean_pre = (
                 float(torch.stack(critic_pre_norms).mean()) if critic_pre_norms else 0.0
             )
+            boot_drift_mean = (
+                float(torch.stack(boot_deltas).mean()) if boot_deltas else 0.0
+            )
+            target_drift_mean = (
+                float(torch.stack(target_drifts).mean()) if target_drifts else 0.0
+            )
 
             if tracker.enabled and info is not None:
                 data = {f"train/{k}": v for k, v in info.items()}
                 data["train/actor_grad_norm_preclip"] = actor_grad_norm_mean_pre
                 data["train/critic_grad_norm_preclip"] = critic_grad_norm_mean_pre
+                data["train/boot_value_delta"] = boot_drift_mean
+                data["train/value_target_drift"] = target_drift_mean
                 if rollout_jerk is not None:
                     data["train/rollout_jerk"] = rollout_jerk
                 clip_counts = batch.get("chunk_clip_counts")

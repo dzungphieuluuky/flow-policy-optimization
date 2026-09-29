@@ -896,6 +896,12 @@ class SJFPOPolicy(PreTrainedPolicy):
             "raw_returns": raw_returns,
             "raw_values": raw_values,
             "normalizer_observations": step_next_states[:, -1, :].detach(),
+            # Diagnostics for target staleness: there is no target critic, so
+            # the bootstrap term in every value target is built from the live
+            # weights and goes stale across the critic's update epochs.
+            # Chunk-major, since the minibatch sampler indexes dim 0.
+            "boot_observations": all_chunk_states_n[n_chunks:].to(storage_dtype),
+            "boot_values_start": all_chunk_values[:, n_chunks:].detach().T,
             "mc_tau": tau,
             "mc_eps": eps,
             "chunk_clip_counts": chunk_clip_counts,
