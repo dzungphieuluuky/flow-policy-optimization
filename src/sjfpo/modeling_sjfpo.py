@@ -67,6 +67,18 @@ class SJFPOAborted(RuntimeError):
         self.message = message
 
 
+def value_huber_loss(
+    pred: torch.Tensor, target: torch.Tensor, delta: torch.Tensor
+) -> torch.Tensor:
+    """Elementwise Huber penalty, broadcasting ``target`` over the member axis.
+
+    ``delta`` is a 0-dim tensor so the threshold can track the batch return RMS.
+    """
+    return torch.nn.functional.huber_loss(
+        pred, target.expand_as(pred), delta=delta, reduction="none"
+    )
+
+
 def _gae_diagnostics(
     env_id: torch.Tensor,
     terminated: torch.Tensor,
@@ -398,7 +410,10 @@ class SJFPOPolicy(PreTrainedPolicy):
         }
 
     def get_critic_optim_params(self) -> dict:
-        """Critic optimizer param groups at the critic lr.
+        """Critic optimizer param groups at the critic lr, without weight decay.
+
+        Decay pulls the value head toward zero, which shows up as a drifting
+        value scale and a wandering grad norm; the actor keeps its decay.
 
         Returns an optimizer param-group dict.
         """
@@ -407,6 +422,7 @@ class SJFPOPolicy(PreTrainedPolicy):
                 {
                     "params": list(self.critic.parameters()),
                     "lr": self.config.critic_lr,
+                    "weight_decay": 0.0,
                 }
             ]
         }
@@ -1098,13 +1114,17 @@ class SJFPOPolicy(PreTrainedPolicy):
                 f"{tuple(raw_value_pred.shape)}, raw_returns="
                 f"{tuple(raw_returns_flat.shape)}"
             )
-        # rsl-rl's value loss verbatim: squared error against the raw return,
-        # and when clipping is on, the worse of clipped and unclipped.
+        # rsl-rl's value loss, with squared error replaced by Huber: quadratic
+        # inside delta, linear outside, so one large-residual chunk cannot
+        # dominate the gradient. The clipped branch is the same penalty on the
+        # clipped prediction, and max() still takes the worse of the two.
         # Broadcasting against the [n, B] member axis trains every member; the
         # mean over both axes is the per-chunk loss.
-        value_loss_per_chunk = torch.square(raw_value_pred - raw_returns_flat).mean(
-            dim=0
-        )
+        returns_rms = raw_returns_flat.square().mean().sqrt()
+        huber_delta = cfg.value_huber_delta * returns_rms.clamp_min(1e-6)
+        value_loss_per_chunk = value_huber_loss(
+            raw_value_pred, raw_returns_flat, huber_delta
+        ).mean(dim=0)
         if cfg.use_clipped_value_loss and "raw_values" in batch:
             rollout_values = to_tensor(
                 batch["raw_values"], dtype=torch.float32, device=device
@@ -1114,7 +1134,9 @@ class SJFPOPolicy(PreTrainedPolicy):
             ).clamp(-cfg.clip_param, cfg.clip_param)
             value_loss_per_chunk = torch.maximum(
                 value_loss_per_chunk,
-                torch.square(clipped_value_pred - raw_returns_flat).mean(dim=0),
+                value_huber_loss(
+                    clipped_value_pred, raw_returns_flat, huber_delta
+                ).mean(dim=0),
             )
 
         if reduction == "mean":
