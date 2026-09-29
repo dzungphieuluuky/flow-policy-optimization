@@ -2,17 +2,6 @@
 
 ``generate_rollout`` gathers a batch, ``forward`` computes the loss. This loop
 only steps the optimizer, evaluates, and checkpoints.
-
-Speed
------
-* Vectorized envs use ``AsyncVectorEnv`` (worker processes) when available,
-  ``SyncVectorEnv`` on pickling failure.
-* Grad-norm-after-clip is derived: ``min(pre, clip_val)``. Pre-clip norms
-  accumulate on device and convert to float once per rollout, not per minibatch.
-* ``zero_grad(set_to_none=True)`` frees grad buffers between minibatches.
-* The ``forward`` diagnostic pass runs only when a tracker will consume it.
-* Eval and checkpoint fire on explicit step counters, so overshooting
-  ``collect_steps`` never skips one.
 """
 
 from __future__ import annotations
@@ -39,10 +28,8 @@ from sjfpo.utils import resolve_device, to_numpy_1d
 from sjfpo.tracking import build_tracker, eval_summary_metrics
 
 
-# Consecutive updates with most CFM samples above ``cfm_clamp`` before aborting.
-# clamp() has zero gradient above its max, so those samples contribute nothing:
-# the ratio stays exactly 1 and the policy gets no gradient while the critic
-# keeps training. Abort instead of burning a run that can only plateau.
+# Consecutive above-clamp updates before aborting. clamp() has zero gradient
+# above its max, so the policy stops learning while the critic keeps training.
 ABOVE_CLAMP_ABORT_UPDATES = 5
 
 

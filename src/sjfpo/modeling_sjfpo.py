@@ -77,13 +77,9 @@ def _gae_diagnostics(
 ) -> dict[str, float]:
     """Trace-liveness and scale probes for the chunk backup.
 
-    ``linked_frac`` is the one that matters:
-
-    - share of chunk pairs the GAE recursion actually joined
-    - chunks arrive in wavefront order, so adjacency joins nothing
-    - every advantage then collapses to a bare 1-step delta
-    - and nothing raises
-    - linked_frac of 0 means a dead trace, whatever gae_lambda says
+    ``linked_frac`` is the one that matters: the share of chunk pairs the
+    recursion joined. Chunks arrive in wavefront order, so raw adjacency joins
+    nothing and the env_id sort is what makes the chain live.
     """
     n = env_id.numel()
     linked = 0
@@ -104,10 +100,9 @@ def _gae_diagnostics(
             if n > 1
             else 0.0
         ),
-        # Budget cut, reported alone so it cannot be confused with the env's
-        # time-limit truncation, which is the flag GAE reads. Not
-        # truncated_chunk_frac: that one is derived from action_is_pad in
-        # _compute_info and means "the chunk left action rows unexecuted".
+        # Budget cut, reported apart from chunk_truncated, the flag GAE reads.
+        # Not truncated_chunk_frac: that one is derived from action_is_pad and
+        # means "the chunk left action rows unexecuted".
         "budget_truncated_chunk_frac": (
             float(budget_truncated.to(torch.bool).float().mean())
             if n and budget_truncated is not None
