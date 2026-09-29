@@ -231,7 +231,7 @@ def _make_vec_env(env_name: str, num_envs: int):
 
     env_fns = [lambda: gym.make(env_name) for _ in range(num_envs)]
     # autoreset_mode must survive vectorization in either branch; the collector
-    # validates NEXT_STEP, see _validate_autoreset_mode.
+    # validates NEXT_STEP, see validate_autoreset_mode.
     try:
         return gym.vector.AsyncVectorEnv(env_fns)
     except Exception:
