@@ -1,18 +1,5 @@
 """Chunked open-loop rollout collector.
 
-Speed
------
-* Actions go host-side **once per step**, batched over envs, not once per env
-  per step. That per-step ``.numpy()`` sync is the vec collector's biggest cost.
-* Obs windows and rewards stay **fp32** end to end. Only policy data follows the
-  execution-device dtype. bf16 rewards corrupt the GAE target.
-* Bounds validate once per collector call, then reduce to ``(low, range)``.
-  ``scale_and_clip_chunk`` does not re-validate.
-* Warmup windows share one clone (the deque holds N refs to one tensor). Safe:
-  the window is only read, never mutated in place.
-* Tail truncation writes into the existing reward/done tensors, not a fresh
-  scalar per tail.
-
 Autoreset
 ---------
 ``collect_chunks_vec`` runs the vec-env reset as a state machine: an env that
@@ -97,12 +84,9 @@ class RolloutBuffer:
     collector writes chunks; ``SJFPOPolicy.generate_rollout`` reads views of the
     used prefix and moves those contiguous tensors to the device.
 
-    Two axes, sized for what each one holds:
-
-    - the chunk axis holds one obs window per chunk, so it wants
-      ``total_steps // action_horizon`` rows, not ``total_steps``
-    - the step axis holds one frame and one reward per executed step, so
-      ``total_steps`` rows is right
+    Two axes: the chunk axis holds one obs window per chunk, so it wants
+    ``total_steps // action_horizon`` rows, not ``total_steps``. The step axis
+    holds one frame per executed step, so ``total_steps`` rows is right.
     """
 
     def __init__(
@@ -180,10 +164,9 @@ class RolloutBuffer:
         """Grow every chunk-major tensor so it can hold ``needed`` rows.
 
         The chunk count is data-dependent and no static bound is both safe and
-        tight. An episode that ends mid-chunk produces a 2-step chunk, so the
-        real count runs past ``max_steps // action_horizon``: measured 40 chunks
-        against a floor of 32 on Reacher-v5, 320 against 256 on a full rollout.
-        Overshooting is harmless, so double and carry on.
+        tight: an episode ending mid-chunk makes a short chunk, so the count
+        runs past ``max_steps // action_horizon``. Overshooting is harmless, so
+        double and carry on.
         """
         if needed <= self.chunk_capacity:
             return
@@ -290,10 +273,8 @@ class RolloutBuffer:
         self.chunk_lengths[chunk_index] = n_exec
         self.chunk_terminated[chunk_index] = terminated
         self.chunk_truncated[chunk_index] = truncated
-        # reset() clears cursors, not storage, and the buffer is reused across
-        # rollouts. Without this write, mark_incomplete's flag from the last
-        # rollout survives on the same chunk index and the metric becomes a
-        # running OR over rollouts instead of a per-rollout rate.
+        # Written unconditionally: reset() clears cursors, not storage, so a
+        # stale mark_incomplete would make the metric a running OR over rollouts.
         self.chunk_budget_truncated[chunk_index] = False
         self.chunk_clip_counts[chunk_index] = int(clip_count)
         self.chunk_env_id[chunk_index] = int(env_id)

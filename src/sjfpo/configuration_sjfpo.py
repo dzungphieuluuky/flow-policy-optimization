@@ -89,20 +89,16 @@ class SJFPOConfig(PreTrainedConfig):
 
     value_loss_coef: float = 1.0  # rsl-rl's default; the target is raw returns
     max_grad_norm: float = 20.0  # critic_grad_norm_preclip runs ~150x over 1.0
-    # Critic norm ran 45-170 against the actor's 0.14-3.7, so one shared clip of
-    # 20 did nothing for the actor and shrank every critic step by 2-9x. None
-    # turns the critic clip off entirely, to see what the guard was hiding.
+    # Critic norms run ~45-170 against the actor's 0.14-3.7, so a clip shared
+    # with the actor does nothing for the actor and shrinks every critic step.
     critic_max_grad_norm: float | None = 200.0
 
-    # Polyak rate for the target critic's bootstrap. qc and TD-JEPA both use
-    # 0.005, but they refresh over offline batches. This loop is online with 8
-    # steps per rollout, and 0.005 left the teacher 25 rollouts behind
-    # (boot_value_delta 0.9 on Hopper, 3.6 on Walker2d). 0.05 is a 2.5-rollout
-    # time constant: damped within a rollout, still tracking.
+    # qc and TD-JEPA use 0.005 but refresh over offline batches. This loop is
+    # online and 0.005 left the teacher tens of rollouts behind; 0.05 is a
+    # ~2.5-rollout time constant, damped within a rollout and still tracking.
     critic_ema_decay: float = 0.05
-    # gamma ** action_horizon puts 0.85 of every value target on the critic's own
-    # output, the regime qc and TD-JEPA hold fixed with a target network. rsl-rl
-    # avoids it only by bootstrapping a single step.
+    # gamma ** action_horizon puts 0.85 of the value target on the critic's own
+    # output, the regime a target network is meant to hold fixed.
     use_target_critic: bool = True
 
     num_kept_tokens: int = 16  # DCT coefficients the flow sees; inert when use_dct_transform=False
