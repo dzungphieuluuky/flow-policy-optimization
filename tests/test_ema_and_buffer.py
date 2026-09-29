@@ -117,3 +117,46 @@ def test_ema_is_inert_when_decay_is_zero():
     policy.update_ema(4096)
     assert policy.ema_ready(4096) is False
     assert not policy._ema_shadow
+
+
+# --- target critic ---------------------------------------------------------
+
+
+def test_target_critic_hard_copies_on_the_first_update():
+    policy = _policy()
+    key = next(iter(policy.critic.state_dict()))
+    assert torch.equal(
+        policy.target_critic.state_dict()[key],
+        policy.critic.state_dict()[key],
+    )
+
+    with torch.no_grad():
+        for p in policy.critic.parameters():
+            p.add_(1.0)
+    policy.update_target_critic()
+    # First call syncs exactly, so the teacher is not 0.5% behind at rollout 1.
+    assert torch.equal(
+        policy.target_critic.state_dict()[key], policy.critic.state_dict()[key]
+    )
+
+
+def test_target_critic_lags_by_exactly_the_decay():
+    policy = _policy()
+    key = next(iter(policy.critic.state_dict()))
+    online = policy.critic.state_dict()[key].clone()
+    policy.update_target_critic()
+
+    with torch.no_grad():
+        for p in policy.critic.parameters():
+            p.add_(1.0)
+    policy.update_target_critic()
+    decay = policy.config.critic_ema_decay
+    expected = online + decay
+    assert torch.allclose(policy.target_critic.state_dict()[key], expected, atol=1e-6)
+
+
+def test_target_critic_never_receives_gradients_or_training_mode():
+    policy = _policy()
+    assert all(not p.requires_grad for p in policy.target_critic.parameters())
+    assert not policy.target_critic.training
+    assert all(p.grad is None for p in policy.target_critic.parameters())

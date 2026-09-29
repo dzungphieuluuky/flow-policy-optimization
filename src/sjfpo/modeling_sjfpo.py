@@ -207,6 +207,11 @@ class SJFPOPolicy(PreTrainedPolicy):
         self.old_conditioner = (
             copy.deepcopy(self.conditioner).requires_grad_(False).eval()
         )
+        # Polyak target for the GAE bootstrap term, following qc and TD-JEPA.
+        # Kept even when use_target_critic is False so toggling the flag does
+        # not change which weights exist in the module.
+        self.target_critic = copy.deepcopy(self.critic).requires_grad_(False).eval()
+        self._target_critic_initialised = False
         self._ema_shadow: dict[str, torch.Tensor] = {}
         self._ema_initialized = False
         self._rollout_buffer: RolloutBuffer | None = None
@@ -331,6 +336,32 @@ class SJFPOPolicy(PreTrainedPolicy):
         if global_step > self.config.ema_warmup_steps:
             for name, shadow in self._ema_shadow.items():
                 shadow.mul_(decay).add_(current[name].detach(), alpha=1.0 - decay)
+
+    @torch.no_grad()
+    def update_target_critic(self) -> None:
+        """Polyak the target critic toward the live one.
+
+        gamma ** action_horizon puts 0.85 of every value target on the live
+        critic's own output, and the targets are then held for a whole rollout
+        while the critic trains. A slow teacher is the same guard qc
+        (``tau=0.005``) and TD-JEPA use for the same reason.
+
+        First call hard-copies. Later calls move the target by
+        ``critic_ema_decay`` per optimizer step.
+        """
+        if not self._target_critic_initialised:
+            self.target_critic.load_state_dict(self.critic.state_dict())
+            self._target_critic_initialised = True
+            return
+        decay = self.config.critic_ema_decay
+        for target, online in zip(
+            self.target_critic.parameters(), self.critic.parameters()
+        ):
+            target.mul_(1.0 - decay).add_(online.detach(), alpha=decay)
+        for target, online in zip(
+            self.target_critic.buffers(), self.critic.buffers()
+        ):
+            target.copy_(online)
 
     def ema_ready(self, global_step: int) -> bool:
         """Report whether the EMA shadow may now be used for evaluation.
@@ -816,7 +847,12 @@ class SJFPOPolicy(PreTrainedPolicy):
             # separately: min has no case inside a V loss, since there is no max
             # operator to counteract, so it would only bias V low.
             chunk_value = all_chunk_values[:, :n_chunks].amin(dim=0)
-            chunk_next_value = all_chunk_values[:, n_chunks:].amin(dim=0)
+            if cfg.use_target_critic:
+                with torch.inference_mode(), autocast_context(device):
+                    boot_values = self.target_critic(all_chunk_states_n[n_chunks:]).float()
+                chunk_next_value = boot_values.amin(dim=0)
+            else:
+                chunk_next_value = all_chunk_values[:, n_chunks:].amin(dim=0)
 
         # One chunk is one macro-transition, so backup at chunk granularity:
         # reward summed over the chunk, discount gamma ** h.
@@ -896,12 +932,12 @@ class SJFPOPolicy(PreTrainedPolicy):
             "raw_returns": raw_returns,
             "raw_values": raw_values,
             "normalizer_observations": step_next_states[:, -1, :].detach(),
-            # Diagnostics for target staleness: there is no target critic, so
-            # the bootstrap term in every value target is built from the live
-            # weights and goes stale across the critic's update epochs.
-            # Chunk-major, since the minibatch sampler indexes dim 0.
+            # Diagnostics: how far the live critic has moved from the bootstrap
+            # term that the value targets were actually built with. With a
+            # target critic that gap is the price of the slow teacher; without
+            # one it is the drift the target suffers.
             "boot_observations": all_chunk_states_n[n_chunks:].to(storage_dtype),
-            "boot_values_start": all_chunk_values[:, n_chunks:].detach().T,
+            "boot_values_start": chunk_next_value.unsqueeze(1),
             "mc_tau": tau,
             "mc_eps": eps,
             "chunk_clip_counts": chunk_clip_counts,

@@ -93,6 +93,17 @@ class SJFPOConfig(PreTrainedConfig):
     # disables the critic clip entirely, to measure what the guard was hiding.
     critic_max_grad_norm: float | None = 200.0
 
+    # Polyak rate for the target critic's bootstrap term. qc and TD-JEPA both
+    # use 0.005, but they refresh over offline batches; here the loop is online
+    # with 8 steps per rollout, and 0.005 left the teacher 25 rollouts behind
+    # (boot_value_delta 0.9 on Hopper, 3.6 on Walker2d). 0.05 is a 2.5-rollout
+    # time constant: damped within a rollout, still tracking.
+    critic_ema_decay: float = 0.05
+    # gamma ** action_horizon puts 0.85 of every value target on the critic's
+    # own output, which is the regime qc and TD-JEPA hold fixed with a target
+    # network and rsl-rl avoids only because it bootstraps a single step.
+    use_target_critic: bool = True
+
     num_kept_tokens: int = 16  # DCT coefficients the flow sees; inert when use_dct_transform=False
 
     policy_lr: float = 1e-3
@@ -235,6 +246,10 @@ class SJFPOConfig(PreTrainedConfig):
         if self.critic_max_grad_norm is not None and self.critic_max_grad_norm <= 0:
             raise ValueError(
                 f"critic_max_grad_norm={self.critic_max_grad_norm} must be > 0"
+            )
+        if not 0.0 < self.critic_ema_decay <= 1.0:
+            raise ValueError(
+                f"critic_ema_decay={self.critic_ema_decay} must be in (0, 1]"
             )
         if self.grad_accum_steps < 1:
             raise ValueError(f"grad_accum_steps={self.grad_accum_steps} must be >= 1")
