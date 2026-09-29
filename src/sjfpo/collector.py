@@ -43,7 +43,7 @@ __all__ = ["Transition", "collect_chunks", "collect_chunks_vec"]
 _DEFAULT_CFG: SJFPOConfig | None = None
 
 
-def _defaults() -> SJFPOConfig:
+def get_default_config() -> SJFPOConfig:
     """Default config singleton, built on first use. Import stays cheap."""
     global _DEFAULT_CFG
     if _DEFAULT_CFG is None:
@@ -73,7 +73,7 @@ Transition = TypedDict(
 )
 
 
-class _StepTransition(dict):
+class StepTransition(dict):
     """Transition dict holding post-step windows outside the public keys.
 
     ``step_next_states`` is a runtime-only convenience for callers that read
@@ -314,7 +314,7 @@ def as_float_tensor(x: object) -> torch.Tensor:
     return torch.as_tensor(np.asarray(x, dtype=np.float32), dtype=_OBS_DTYPE)
 
 
-def _bounds_to_tensor(
+def resolve_action_bounds(
     low: float | np.ndarray | torch.Tensor,
     high: float | np.ndarray | torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -348,7 +348,7 @@ def scale_and_clip_chunk(
 ) -> tuple[torch.Tensor, torch.Tensor, int]:
     """Clamp a chunk to env bounds, then rescale to ``[-1, 1]``.
 
-    ``range_`` is the precomputed ``high - low``, see :func:`_bounds_to_tensor`.
+    ``range_`` is the precomputed ``high - low``, see :func:`resolve_action_bounds`.
     Returns clipped actions, their rescaling, and the clipped element count.
     """
     clip_mask = (proposed < low) | (proposed > low + range_)
@@ -371,20 +371,6 @@ def build_warmup_window(
     return deque((shared for _ in range(n_obs_steps)), maxlen=n_obs_steps)
 
 
-def reset_chunk_window(env, n_obs_steps: int) -> deque[torch.Tensor]:
-    """Reset an env and build its warmup observation window."""
-    obs, _ = env.reset()
-    return build_warmup_window(as_float_tensor(obs), n_obs_steps)
-
-
-def _bool_tensor(v: bool) -> torch.Tensor:
-    """Python bool -> scalar bool tensor."""
-    return torch.tensor(v, dtype=torch.bool)
-
-
-def _int_tensor(v: int) -> torch.Tensor:
-    """Python int -> scalar index tensor."""
-    return torch.tensor(v, dtype=_INDEX_DTYPE)
 
 
 def finalize_transition(
@@ -427,12 +413,12 @@ def finalize_transition(
         "action": scaled,
         "next.observation.state": next_state,
         REWARD: reward_t,
-        DONE: _bool_tensor(done_kind == "terminated"),
-        TRUNCATED: _bool_tensor(done_kind == "truncated"),
-        "executed_n_action_steps": _int_tensor(n_executed),
-        "clip_count": _int_tensor(clip_count),
+        DONE: torch.tensor(done_kind == "terminated", dtype=torch.bool),
+        TRUNCATED: torch.tensor(done_kind == "truncated", dtype=torch.bool),
+        "executed_n_action_steps": torch.tensor(n_executed, dtype=_INDEX_DTYPE),
+        "clip_count": torch.tensor(clip_count, dtype=_INDEX_DTYPE),
     }
-    return _StepTransition(record, step_next_states)  # type: ignore[return-value]
+    return StepTransition(record, step_next_states)  # type: ignore[return-value]
 
 
 def execute_open_loop_steps(
@@ -548,7 +534,7 @@ def flush_on_collection_error(
             pass
 
 
-def _validate_autoreset_mode(envs) -> None:
+def validate_autoreset_mode(envs) -> None:
     """Reject vec envs whose autoreset mode breaks the awaiting machine.
 
     ``collect_chunks_vec`` resets in a two-step handshake: flag the env on the
@@ -588,19 +574,19 @@ def collect_chunks_vec(
     still-active actions gather into one tensor per wavefront, so the loop costs
     one device-to-host transfer per chunk, not per step.
 
-    Needs ``AutoresetMode.NEXT_STEP``, see :func:`_validate_autoreset_mode`.
+    Needs ``AutoresetMode.NEXT_STEP``, see :func:`validate_autoreset_mode`.
     """
-    cfg = _defaults()
+    cfg = get_default_config()
     n_obs_steps = cfg.n_obs_steps if n_obs_steps is None else n_obs_steps
     chunk_size = cfg.action_horizon if chunk_size is None else int(chunk_size)
 
-    _validate_autoreset_mode(envs)
+    validate_autoreset_mode(envs)
 
     n = int(envs.num_envs)
     base_target, remainder = divmod(total_steps, n)
     targets = [base_target + int(i < remainder) for i in range(n)]
 
-    low, range_ = _bounds_to_tensor(action_low, action_high)
+    low, range_ = resolve_action_bounds(action_low, action_high)
 
     if not 1 <= n_action_steps <= chunk_size:
         raise ValueError(
@@ -802,11 +788,11 @@ def collect_chunks(
     across each chunk's steps. ``n_obs_steps`` and ``chunk_size`` fall back to
     the default config.
     """
-    cfg = _defaults()
+    cfg = get_default_config()
     n_obs_steps = cfg.n_obs_steps if n_obs_steps is None else n_obs_steps
     chunk_size = cfg.action_horizon if chunk_size is None else int(chunk_size)
 
-    low, range_ = _bounds_to_tensor(action_low, action_high)
+    low, range_ = resolve_action_bounds(action_low, action_high)
 
     if not 1 <= n_action_steps <= chunk_size:
         raise ValueError(
@@ -876,7 +862,10 @@ def collect_chunks(
                 executed_total += int(record["executed_n_action_steps"])
                 records.append(record)  # type: ignore[union-attr]
                 if done_kind != "continue":
-                    window_deque = reset_chunk_window(env, n_obs_steps)
+                    obs, _ = env.reset()
+                    window_deque = build_warmup_window(
+                        as_float_tensor(obs), n_obs_steps
+                    )
         if buffer is not None:
             return buffer
         return records  # type: ignore[return-value]
