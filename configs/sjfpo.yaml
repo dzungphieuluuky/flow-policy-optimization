@@ -26,9 +26,6 @@ trust_region_mode: aspo
 cfm_loss_reduction: mean
 ema_decay: 0.95
 ema_warmup_steps: 500
-use_per_freq_clipping: false
-clip_param_lowfreq: 0.02
-clip_param_highfreq: 0.10
 cfm_clamp: 20.0
 log_ratio_cap: 10.0
 normalize_advantage: true

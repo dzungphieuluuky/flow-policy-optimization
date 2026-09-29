@@ -2,10 +2,9 @@ from __future__ import annotations
 
 import os
 
-import numpy as np
 import wandb
 
-from .base import build_run_name, compact_value, eval_summary_metrics
+from .base import build_run_name
 from .tensorboard import _stack
 
 

@@ -4,10 +4,9 @@ import torch
 
 from lerobot.configs.types import FeatureType
 from lerobot.configs.policies import PolicyFeature
-from lerobot.utils.constants import ACTION, OBS_STATE
 
 from sjfpo.configuration_sjfpo import SJFPOConfig
-from sjfpo.dct_utils import extract_dct_coeffs, velocity_to_action_steps
+from sjfpo.dct_utils import velocity_to_action_steps
 from sjfpo.fpo_core import compute_cfm_loss
 from sjfpo.modeling_sjfpo import SJFPOPolicy
 
@@ -142,7 +141,6 @@ def test_dct_basis_rows_are_dense_so_the_tail_is_not_the_high_bins():
 
 def test_truncated_rows_are_the_only_thing_dropped():
     """Expanding then masking must not change the executed rows' contribution."""
-    cfg = _cfg()
     n, executed = 2, 6
     torch.manual_seed(2)
     pred = torch.randn(n, MC, HORIZON, ACTION_DIM)

@@ -1,19 +1,18 @@
 """SJFPO online training entry (LeRobot-native, MuJoCo-only).
 
-``generate_rollout`` gathers a batch, ``forward`` computes the loss; this loop
+``generate_rollout`` gathers a batch, ``forward`` computes the loss. This loop
 only steps the optimizer, evaluates, and checkpoints.
 
-Performance notes
------------------
-* Vectorized training envs use ``AsyncVectorEnv`` (parallel worker processes)
-  when available; falls back to ``SyncVectorEnv`` on pickling failures.
-* Grad-norm-after-clip is derived analytically (``min(pre, clip_val)``);
-  pre-clip norms are accumulated on device and converted to a Python float
-  once per rollout, not once per minibatch.
+Speed
+-----
+* Vectorized envs use ``AsyncVectorEnv`` (worker processes) when available,
+  ``SyncVectorEnv`` on pickling failure.
+* Grad-norm-after-clip is derived: ``min(pre, clip_val)``. Pre-clip norms
+  accumulate on device and convert to float once per rollout, not per minibatch.
 * ``zero_grad(set_to_none=True)`` frees grad buffers between minibatches.
 * The ``forward`` diagnostic pass runs only when a tracker will consume it.
-* Eval and checkpoint are triggered by explicit step counters, so no eval or
-  save is skipped when ``collect_steps`` overshoots the boundary.
+* Eval and checkpoint fire on explicit step counters, so overshooting
+  ``collect_steps`` never skips one.
 """
 
 from __future__ import annotations
@@ -23,14 +22,12 @@ import json
 import sys
 import time
 from collections import deque
-from tqdm import tqdm
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import torch
 from lerobot.configs.types import FeatureType, PolicyFeature
-from lerobot.utils.constants import ACTION, DONE, OBS_STATE, REWARD, TRUNCATED
 from lerobot.utils.random_utils import set_seed
 
 from sjfpo.checkpointing import load_policy_checkpoint, save_policy_checkpoint
@@ -42,11 +39,10 @@ from sjfpo.utils import resolve_device, to_numpy_1d
 from sjfpo.tracking import build_tracker, eval_summary_metrics
 
 
-# Consecutive updates with most CFM samples above ``cfm_clamp`` before
-# aborting. clamp() has zero gradient above its max, so those samples
-# contribute nothing: the ratio stays exactly 1 and the policy receives no gradient
-# while the critic keeps training. Abort instead of burning a run that can only
-# plateau.
+# Consecutive updates with most CFM samples above ``cfm_clamp`` before aborting.
+# clamp() has zero gradient above its max, so those samples contribute nothing:
+# the ratio stays exactly 1 and the policy gets no gradient while the critic
+# keeps training. Abort instead of burning a run that can only plateau.
 ABOVE_CLAMP_ABORT_UPDATES = 5
 
 
@@ -56,11 +52,11 @@ def mini_batch_indices(
     device: torch.device | str,
     num_learning_epochs: int = 1,
 ):
-    """Yield shuffled minibatch index tensors, one per epoch.
+    """Shuffled minibatch index tensors, one per epoch.
 
-    Every epoch reshuffles, so repeated epochs do not see the same order.
-    Splits are proportional (``(i * n) // n_mb``), so a remainder is spread
-    over the frequencies rather than dropped; the count is clamped to ``[1, n]``.
+    Every epoch reshuffles, so repeats do not see the same order. Splits are
+    proportional (``(i * n) // n_mb``), so a remainder spreads over the
+    frequencies instead of being dropped. Count clamped to ``[1, n]``.
     """
     if n < 1:
         raise ValueError(f"n={n} must be >= 1")
@@ -80,7 +76,7 @@ class _EvalPolicy:
         self.policy = policy
 
     def reset(self) -> None:
-        """Clear the policy's cached action-chunk state before a new episode."""
+        """Drop the policy's cached chunk state before a new episode."""
         self.policy.reset()
 
     def __call__(self, obs: np.ndarray) -> np.ndarray:
@@ -104,7 +100,7 @@ def build_policy(
 ) -> SJFPOPolicy:
     """Attach runtime features, then build the policy.
 
-    ``policy_cls`` lets a swapped actor enter without touching the loop.
+    ``policy_cls`` lets a swapped actor in without touching the loop.
     """
     device = torch.device(device) if device is not None else resolve_device()
     policy_cfg = dataclasses.replace(
@@ -125,16 +121,15 @@ def sample_minibatch(
     indices: torch.Tensor,
     out: dict[str, torch.Tensor] | None = None,
 ) -> dict[str, torch.Tensor]:
-    """Slice the leading dimension of every per-chunk batch value.
+    """Slice the leading dim of every per-chunk batch value.
 
-    Every per-chunk batch value is ``[B, ...]``, so one index tensor slices
-    them all consistently. ``mc_tau`` ``[B,M,K,1]`` and ``mc_eps`` ``[B,M,K,d]``
-    are stored per chunk/MC draw and are sliced with the minibatch.
+    Each is ``[B, ...]``, so one index tensor slices them all consistently.
+    ``mc_tau`` ``[B,M,K,1]`` and ``mc_eps`` ``[B,M,K,d]`` are per chunk/MC draw
+    and slice with the minibatch.
 
-    ``normalizer_observations`` is passed through unsliced: it holds one row
-    per executed env step rather than per chunk, and the normalizer is updated
-    once from the complete rollout batch. ``gae_diagnostics`` is a plain dict
-    of scalars, passed through for the same reason.
+    ``normalizer_observations`` passes through unsliced: one row per executed env
+    step, not per chunk, and the normalizer updates once from the whole rollout
+    batch. ``gae_diagnostics`` is a plain dict of scalars, same reason.
     """
     if out is None:
         out = {}
@@ -152,12 +147,11 @@ _OBS_WARMUP_STEPS = 128
 def warm_observation_stats(policy, env, *, obs_dim: int, seed: int) -> int:
     """Fold random-policy frames into the running obs stats before training.
 
-    The stats normalizer is identity until its first update, and updates only
-    after a rollout, so without this the entire first rollout runs on raw
-    observations. baselines and SB3 pay one step of that; here it would be a
-    whole rollout. Env is reset afterwards so training starts on a clean episode.
+    The normalizer is identity until its first update, and updates only after a
+    rollout, so without this the whole first rollout runs on raw obs. cleanrl
+    and SB3 pay one step of that; here it would be a whole rollout. The env is
+    reset after, so training starts on a clean episode.
     """
-    rng = np.random.default_rng(seed)
     env.action_space.seed(seed)
     obs, _ = env.reset()
     frames = []
@@ -178,9 +172,9 @@ def warm_observation_stats(policy, env, *, obs_dim: int, seed: int) -> int:
 def measure_boot_value_drift(policy, batch, device) -> torch.Tensor:
     """Relative RMS move of the live critic from the bootstrap value in use.
 
-    Both branches store the ensemble min that GAE bootstrapped with, so this
-    reads as target staleness without a target critic and as the slow teacher's
-    lag with one. Small values mean staleness is not what limits the critic.
+    Both branches store the ensemble min GAE bootstrapped with, so this reads
+    as target staleness without a target critic and as the slow teacher's lag
+    with one. Small means staleness is not what limits the critic.
     """
     now = policy.critic(batch["boot_observations"].to(device)).float().amin(dim=0)
     start = batch["boot_values_start"].to(device).reshape(-1)
@@ -189,11 +183,11 @@ def measure_boot_value_drift(policy, batch, device) -> torch.Tensor:
 
 @torch.no_grad()
 def measure_value_target_drift(policy, batch, device) -> torch.Tensor:
-    """Same move, in the units the value loss sees: a fraction of target RMS.
+    """Same move, in the value loss's units: a fraction of target RMS.
 
     A drift can be large relative to V yet negligible next to the return
     magnitude. This is the number that decides whether the stale bootstrap
-    term matters for the regression.
+    matters for the regression.
     """
     delta = (
         policy.critic(batch["boot_observations"].to(device)).float().amin(dim=0)
@@ -207,11 +201,10 @@ def measure_value_target_drift(policy, batch, device) -> torch.Tensor:
 def random_baseline(
     evaluator: Evaluator, env: Any, max_episodes: int = 30
 ) -> float:
-    """Measure the random-policy return used as the divergence reference.
+    """Random-policy return, the divergence reference.
 
-    Returns ``0.0`` when no episode could be evaluated. Callers gate on
-    ``baseline > 0``, so that disables divergence detection rather than
-    falsely flagging every later run as diverged.
+    ``0.0`` when no episode evaluated. Callers gate on ``baseline > 0``, so that
+    disables divergence detection instead of falsely flagging every later run.
     """
     baseline_evaluator = Evaluator(
         env,
@@ -227,18 +220,18 @@ def random_baseline(
     return float(np.mean([r["return"] for r in results]))
 
 def _make_vec_env(env_name: str, num_envs: int):
-    """Build a vectorised training environment, preferring async workers.
+    """Vectorized training env, async workers preferred.
 
-    ``AsyncVectorEnv`` parallelizes env stepping across worker processes —
-    the single biggest rollout-throughput win for ``num_envs > 1``. Falls
-    back to ``SyncVectorEnv`` when the async path is unavailable in the
-    current runtime (no ``/dev/shm``, env-factory pickling failure).
+    ``AsyncVectorEnv`` parallelizes stepping across worker processes, the single
+    biggest rollout-throughput win for ``num_envs > 1``. Falls back to
+    ``SyncVectorEnv`` when async is unavailable (no ``/dev/shm``, env-factory
+    pickling failure).
     """
     import gymnasium as gym
 
     env_fns = [lambda: gym.make(env_name) for _ in range(num_envs)]
-    # autoreset_mode must survive vectorisation in either branch; the
-    # collector validates NEXT_STEP (see _validate_autoreset_mode).
+    # autoreset_mode must survive vectorization in either branch; the collector
+    # validates NEXT_STEP, see _validate_autoreset_mode.
     try:
         return gym.vector.AsyncVectorEnv(env_fns)
     except Exception:
@@ -259,11 +252,11 @@ def train_sjfpo_run(
     resume_from_checkpoint: str | Path | None = None,
     policy_cls: type[SJFPOPolicy] = SJFPOPolicy,
 ) -> dict[str, Any]:
-    """Run a single SJFPO training run.
+    """One SJFPO training run.
 
-    - vectorised env is built before any CUDA init
+    - vectorized env builds before any CUDA init
     - so forked workers do not inherit the parent's CUDA context
-    - CleanRL / SB3 ordering
+    - cleanrl / SB3 ordering
 
     Accelerate accumulation contract:
 
@@ -271,9 +264,8 @@ def train_sjfpo_run(
     - sync and step only at the boundary
     - always flush a final partial group
 
-    Gradients are clipped per optimizer, not jointly.
-    The critic's norm is orders of magnitude larger,
-    so a shared clip would spend the whole budget on it.
+    Gradients clip per optimizer, not jointly. The critic's norm is orders of
+    magnitude larger, so a shared clip would spend the whole budget on it.
     """
     cfg = cfg or SJFPOConfig()
     out_dir = Path(out_dir)
@@ -300,7 +292,7 @@ def train_sjfpo_run(
     if resume_from_checkpoint is not None:
         if policy_cls is not SJFPOPolicy:
             # load_policy_checkpoint rebuilds a hardcoded SJFPOPolicy, so a
-            # subclass would come back with the wrong actor architecture.
+            # subclass comes back with the wrong actor architecture.
             raise ValueError(
                 f"resume is not supported for policy_cls={policy_cls.__name__}; "
                 "actor checkpoints are not interchangeable between architectures"

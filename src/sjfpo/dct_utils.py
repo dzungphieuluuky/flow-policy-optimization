@@ -20,7 +20,7 @@ def _dct_norm(count: int, sequence_length: int, device: torch.device) -> torch.T
     norm = torch.full(
         (count,), math.sqrt(2.0 / sequence_length), dtype=torch.float32, device=device
     )
-    # DCT-II orthogonality: the k=0 term carries sqrt(1/K) weight, the rest sqrt(2/K).
+    # DCT-II: k=0 gets sqrt(1/K), the rest sqrt(2/K).
     norm[0] *= 1.0 / math.sqrt(2.0)
     return norm
 
@@ -66,12 +66,12 @@ def extract_dct_coeffs(v_star: torch.Tensor, M: int) -> torch.Tensor:
 
 
 def velocity_to_action_steps(vel: torch.Tensor, num_rows: int) -> torch.Tensor:
-    """Expand DCT coefficients back to the half-open time grid ``t_j = j*H/H``.
+    """Expand DCT coeffs back onto the half-open grid ``t_j = j*H/H``.
 
-    Accepts any leading batch axes, so ``[n, mc, K, d]`` and ``[n, K, d]`` both
-    work. This is the inverse of :func:`extract_dct_coeffs` for a full-length
-    signal: reading coefficients as time samples, and putting a velocity in row
-    space so a per-row execution mask can index it.
+    Takes any leading batch axes, so ``[n, mc, K, d]`` and ``[n, K, d]`` both
+    work. Inverse of :func:`extract_dct_coeffs` for a full-length signal: read
+    coeffs as time samples, velocity in row space, so a per-row execution mask
+    can index it.
     """
     lead, k, d = vel.shape[:-2], vel.shape[-2], vel.shape[-1]
     tau = torch.arange(num_rows, device=vel.device, dtype=torch.float32) / num_rows
@@ -88,11 +88,11 @@ def decode_coeffs_to_velocity(
     T: float,
     K_original: int,
 ) -> torch.Tensor:
-    """Decode DCT coefficients at query times.
+    """Decode DCT coeffs at query times.
 
-    Times use the half-open grid ``t_j = j*T/K``, so a query maps to
-    ``j = tau*K/T``. ``tau = T`` evaluates the DCT-II even-symmetric
-    extension (mirror of the last sample), not a periodic wrap.
+    Times use ``t_j = j*T/K``, so a query maps to ``j = tau*K/T``. ``tau = T``
+    gives the DCT-II even-symmetric extension (mirror of the last sample), not
+    a periodic wrap.
     """
     squeeze = False
     if coeffs.dim() == 3:

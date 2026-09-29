@@ -1,10 +1,8 @@
-"""SJFPO evaluator — deterministic rollouts, ``eval_history.csv``.
+"""SJFPO evaluator: deterministic rollouts, ``eval_history.csv``.
 
-Rollouts call ``env.reset(seed=...)`` and step until termination/truncation
-or the step budget is exhausted. Actions are stored per step in fp32;
-``action_jerk`` reports mean squared second-difference as a scale-free
-smoothness probe.
-
+Rollouts call ``env.reset(seed=...)`` and step to termination, truncation, or
+the step budget. Actions store per step in fp32. ``action_jerk`` is the mean
+squared second-difference, a scale-free smoothness probe.
 """
 
 from __future__ import annotations
@@ -26,10 +24,10 @@ def write_eval_csv(
     *,
     append: bool = False,
 ) -> Path:
-    """Write ``eval_history.csv`` with columns ``[episode, return, length, success, jerk]``.
+    """Write ``eval_history.csv``, columns ``[episode, return, length, success, jerk]``.
 
-    When ``append=True``, existing rows are preserved and the header is only
-    written if the file doesn't already exist.
+    With ``append=True``, old rows stay and the header is written only if the
+    file is new.
     """
     out_path = Path(out_dir)
     out_path.mkdir(parents=True, exist_ok=True)
@@ -45,11 +43,10 @@ def write_eval_csv(
 
 
 def action_jerk(actions: np.ndarray) -> float | None:
-    """Mean squared second-difference of actions ``[T, D]``; None when T < 3.
+    """Mean squared second-difference of actions ``[T, D]``. None if T < 3.
 
-    Scale-free smoothness probe: constant or constant-velocity motion yields
-    exactly ``0.0``; larger values indicate jitter between consecutive steps.
-    Returns None when the input is not 2D or has fewer than three steps.
+    Scale-free: constant or constant-velocity motion gives exactly ``0.0``,
+    larger values mean jitter between steps. None if the input is not 2D.
     """
     a = np.asarray(actions, dtype=np.float32)
     if a.ndim != 2 or a.shape[0] < 3:
@@ -59,10 +56,9 @@ def action_jerk(actions: np.ndarray) -> float | None:
 
 
 def extract_success(info: dict) -> float | None:
-    """Read the env-reported task success flag out of an info dict.
+    """Task success flag out of an info dict.
 
-    Returns 1.0 or 0.0 for a reported success, or None when the environment does
-    not report one.
+    1.0 or 0.0 if reported, else None when the env reports nothing.
     """
     if not isinstance(info, dict) or info.get("success") is None:
         return None
@@ -72,10 +68,10 @@ def extract_success(info: dict) -> float | None:
 def mean_chunk_jerk(actions: np.ndarray, action_is_pad: np.ndarray) -> float | None:
     """Mean ``action_jerk`` over chunks' executed prefixes.
 
-    ``actions`` is ``[N, H, D]`` real-space chunks and ``action_is_pad`` is
-    ``[N, H]`` with True marking padding past the executed prefix. Chunks with
-    fewer than 3 executed steps are skipped; returns None if no chunk qualifies,
-    or if the shapes are not ``[N, H, D]`` and ``[N, H]``.
+    ``actions`` is ``[N, H, D]`` real-space chunks, ``action_is_pad`` is
+    ``[N, H]`` with True past the executed prefix. Chunks under 3 executed steps
+    are skipped. None if no chunk qualifies, or shapes are not ``[N, H, D]``
+    and ``[N, H]``.
     """
     a = np.asarray(actions)
     pad = np.asarray(action_is_pad, dtype=bool)
@@ -102,11 +98,10 @@ def check_divergence(
     threshold_frac: float = 0.10,
     patience: int = 3,
 ) -> tuple[int, bool]:
-    """Increment a sub-threshold counter; flag divergence after ``patience`` in a row.
+    """Bump a sub-threshold streak; flag divergence after ``patience`` in a row.
 
-    The baseline must be strictly positive for the check to apply -- a
-    non-positive baseline disables divergence detection and resets the counter.
-    Returns the updated streak and whether divergence is now flagged.
+    The baseline must be strictly positive or the check is off and the counter
+    resets. Returns the new streak and whether divergence is flagged.
     """
     if baseline > 0 and mean_return < threshold_frac * baseline:
         consecutive += 1
@@ -121,10 +116,10 @@ def render_episode_frames(
     seed: int = 0,
     max_steps: int = 1000,
 ) -> tuple[list[np.ndarray], float]:
-    """Roll out one episode and collect its rendered frames.
+    """Roll out one episode, collect rendered frames.
 
-    ``policy`` is called with ``reset()`` first if it defines one. Returns the
-    uint8 frames and the episode return.
+    ``policy`` gets ``reset()`` first if it has one. Returns the uint8 frames
+    and the episode return.
     """
     import gymnasium as gym
 
@@ -148,7 +143,7 @@ def render_episode_frames(
 
 
 class Evaluator:
-    """Deterministic evaluator for flat-observation (MuJoCo) environments."""
+    """Deterministic evaluator for flat-obs (MuJoCo) envs."""
 
     def __init__(
         self,
@@ -185,11 +180,11 @@ class Evaluator:
         episode: int,
         step_budget: int | None,
     ) -> tuple[dict[str, Any], int]:
-        """Roll one deterministic episode; return ``(result, steps_taken)``.
+        """One deterministic episode. Returns ``(result, steps_taken)``.
 
-        ``step_budget`` (when set) caps the episode at that many steps; the returned
-        length reflects the truncated count. ``policy`` is called with ``reset()``
-        first if it defines one.
+        ``step_budget``, when set, caps the episode and the returned length
+        reflects the truncated count. ``policy`` gets ``reset()`` first if it
+        has one.
         """
         obs, _ = self.env.reset(seed=seed)
         if hasattr(policy, "reset"):
@@ -230,13 +225,12 @@ class Evaluator:
         out_dir: str | Path | None = None,
         append_csv: bool = False,
     ) -> list[dict[str, Any]]:
-        """Run deterministic rollouts, optionally writing ``eval_history.csv``.
+        """Deterministic rollouts, optionally writing ``eval_history.csv``.
 
-        Each episode gets a seed drawn from a generator seeded by ``self.eval_seed``,
-        so repeated evaluations of the same policy are identical but successive
-        episodes differ. When ``self.max_steps`` is set, the episode loop stops early
-        once that step budget is spent. Returns one dict per evaluated episode, with
-        the keys in :data:`CSV_FIELDS`.
+        Each episode draws a seed from a generator seeded by ``self.eval_seed``,
+        so repeat evals of one policy match while successive episodes differ.
+        With ``self.max_steps`` set, the loop stops early once that budget is
+        spent. One dict per episode, keys in :data:`CSV_FIELDS`.
         """
         rng = np.random.default_rng(self.eval_seed)
         results: list[dict[str, Any]] = []

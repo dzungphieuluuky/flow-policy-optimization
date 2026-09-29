@@ -65,6 +65,31 @@ Always name classes, functions, and variables using conventions from standard li
 
 Inspect nearby code before introducing new patterns. Follow existing conventions for naming, structure, config, logging, and imports. Consistency beats a theoretically "better" architecture. Don't refactor unrelated code for style.
 
+## Libraries: verify the API first
+
+Before using any library function, class, decorator, or config option, retrieve the current API with the context7 MCP tools. Do not code from memory.
+
+- Call `resolve-library-id` to get the library id, then `query-docs` for the specific API.
+- If the library id is already known in `/org/project` or `/org/project/version` form, skip straight to `query-docs`.
+- Scope each `query-docs` call to one topic. Multiple concepts means multiple calls.
+- Max 3 calls per question. If 3 calls are not enough, say so instead of guessing.
+
+Training data goes stale. Signatures, import paths, and defaults change between releases. A call that type-checks against a two-year-old memory is the most expensive kind of bug, because it ships silently.
+
+If context7 has no entry for the library, say so and state that the API is unverified.
+
+## Writing: short and direct
+
+Cut every word that does not carry information.
+
+- Short words. "Use" not "utilize". "Fix" not "remediate".
+- Short sentences. One idea each.
+- Delete hedges, filler, and restatements of the code.
+- No preamble. State the result.
+- Prefer a table or a number over a paragraph.
+
+Prose is not the deliverable. The diff is. Explain only what the code cannot show.
+
 ## Dependencies and Configuration
 
 Avoid new dependencies unless the stdlib or an existing dependency can't solve it — each one costs maintenance and reproducibility. Keep config simple; plain constants are fine for experiment-local values:

@@ -196,7 +196,7 @@ def test_values_are_per_chunk_not_per_step():
     the per-chunk values must vary, or a per-step array of the right length
     would pass by coincidence.
     """
-    lengths, env_id = [H, 2, 3], [0, 0, 0]
+    lengths = [H, 2, 3]
     total = sum(lengths)
     starts = torch.cat([torch.zeros(1, dtype=torch.long), torch.tensor(lengths).cumsum(0)[:-1]])
     per_chunk_v = torch.tensor([1.0, 2.0, 3.0])
@@ -255,7 +255,7 @@ def test_returns_equal_advantages_plus_values_in_raw_space():
 
     from sjfpo.gae import compute_chunk_advantages
 
-    chunk_size, n_chunks = 4, 2
+    chunk_size = 4
     rewards = torch.arange(1, 2 * chunk_size + 1, dtype=torch.float32)
     chunk_value = torch.tensor([0.0, 5.0])
     chunk_next_value = torch.tensor([0.0, 5.0])

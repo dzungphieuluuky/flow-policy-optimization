@@ -24,7 +24,7 @@ class SJFPOConfig(PreTrainedConfig):
     """
 
     report_to: str = "wandb"  # wandb | tensorboard | all | none
-    num_critics: int = 1  # ensemble members; min over members feeds the GAE backup
+    num_critics: int = 2  # ensemble members; min over members feeds the GAE backup
     n_obs_steps: int = 16
     action_horizon: int = 16
     n_action_steps: int = 16  # falls back to action_horizon when None
@@ -41,19 +41,20 @@ class SJFPOConfig(PreTrainedConfig):
 
     gamma: float = 0.99
     gae_lambda: float = 0.95
+    # One epsilon for the whole chunk. No per-frequency clipping: the trust
+    # region applies to the "sample" CFM reduction, which averages every token
+    # into one number per chunk, so no per-frequency ratio survives into the
+    # loss to hang a different epsilon on.
     clip_param: float = 0.05
     use_dct_transform: bool = False  # spectral chunk encoding; False = raw action chunk
     # FPO++ trust region: ppo, spo, or aspo (official default).
     trust_region_mode: str = "aspo"
-    use_per_freq_clipping: bool = False
-    clip_param_lowfreq: float = 0.02  # tight: low freqs carry task intent
-    clip_param_highfreq: float = 0.10
-    # "mean" divides the sum FPO++ uses (Eq. 8 sums CFM losses across chunk
-    # timesteps) by tokens*action_dim, keeping the loss O(1) so cfm_clamp stays
-    # a real guard. The cost is that the loss scale IS the trust-region
-    # temperature, since ratio = exp(l_old - l_new), so clip_param is not
-    # comparable to FPO++'s 0.05 and must be swept. Read clipfrac first: if it
-    # sits near zero, clip_param is not constraining anything.
+    # "mean" divides FPO++'s sum (Eq. 8 sums CFM losses over chunk timesteps) by
+    # tokens*action_dim, keeping the loss O(1) so cfm_clamp stays a real guard.
+    # The cost: the loss scale IS the trust-region temperature, since
+    # ratio = exp(l_old - l_new), so clip_param is not comparable to FPO++'s
+    # 0.05 and must be swept. Read clipfrac first: near zero means clip_param
+    # constrains nothing.
     cfm_loss_reduction: str = "mean"  # mean | sum | sqrt
     cfm_clamp: float = 20.0
     cfm_mask_unexecuted: bool = (
@@ -70,8 +71,8 @@ class SJFPOConfig(PreTrainedConfig):
     max_timestep: float = 0.995
     timestep_sampling_mode: str = "fpo_beta"
     noise_sampling_mode: str = "normal"
-    # Per-mode std across the token axis: "white" (1.0) or NEED's beta=1 1/f
-    # coloring, which concentrates base variance in the low DCT modes.
+    # Per-mode std over the token axis: "white" (1.0), or NEED's beta=1 1/f
+    # coloring, which pushes base variance into the low DCT modes.
     noise_scaling_mode: str = "white"
     timestep_inverse_cdf_beta: float = 1.0
     timestep_beta_alpha: float = 2.0
@@ -90,18 +91,18 @@ class SJFPOConfig(PreTrainedConfig):
     max_grad_norm: float = 20.0  # critic_grad_norm_preclip runs ~150x over 1.0
     # Critic norm ran 45-170 against the actor's 0.14-3.7, so one shared clip of
     # 20 did nothing for the actor and shrank every critic step by 2-9x. None
-    # disables the critic clip entirely, to measure what the guard was hiding.
+    # turns the critic clip off entirely, to see what the guard was hiding.
     critic_max_grad_norm: float | None = 200.0
 
-    # Polyak rate for the target critic's bootstrap term. qc and TD-JEPA both
-    # use 0.005, but they refresh over offline batches; here the loop is online
-    # with 8 steps per rollout, and 0.005 left the teacher 25 rollouts behind
+    # Polyak rate for the target critic's bootstrap. qc and TD-JEPA both use
+    # 0.005, but they refresh over offline batches. This loop is online with 8
+    # steps per rollout, and 0.005 left the teacher 25 rollouts behind
     # (boot_value_delta 0.9 on Hopper, 3.6 on Walker2d). 0.05 is a 2.5-rollout
     # time constant: damped within a rollout, still tracking.
     critic_ema_decay: float = 0.05
-    # gamma ** action_horizon puts 0.85 of every value target on the critic's
-    # own output, which is the regime qc and TD-JEPA hold fixed with a target
-    # network and rsl-rl avoids only because it bootstraps a single step.
+    # gamma ** action_horizon puts 0.85 of every value target on the critic's own
+    # output, the regime qc and TD-JEPA hold fixed with a target network. rsl-rl
+    # avoids it only by bootstrapping a single step.
     use_target_critic: bool = True
 
     num_kept_tokens: int = 16  # DCT coefficients the flow sees; inert when use_dct_transform=False
@@ -110,7 +111,7 @@ class SJFPOConfig(PreTrainedConfig):
     critic_lr: float = 1e-3  # legacy split-checkpoint compatibility
     optimizer_weight_decay: float = 1e-4
 
-    # No separate warm-up phase; stats initialize naturally during first rollout.
+    # No separate warm-up. Stats initialize during the first rollout.
     grad_accum_steps: int = 1  # >1 reduces GPU memory at cost of speed
 
 
@@ -180,13 +181,6 @@ class SJFPOConfig(PreTrainedConfig):
             raise ValueError(
                 f"clip_param={self.clip_param} must satisfy 0 < eps < 1"
             )
-        if self.use_per_freq_clipping:
-            lo, hi = self.clip_param_lowfreq, self.clip_param_highfreq
-            if not 0.0 < lo <= hi < 1.0:
-                raise ValueError(
-                    "require 0 < clip_param_lowfreq <= clip_param_highfreq < 1, "
-                    f"got ({lo}, {hi})"
-                )
         if self.trust_region_mode not in {"ppo", "spo", "aspo"}:
             raise ValueError("trust_region_mode must be 'ppo', 'spo', or 'aspo'")
         if self.cfm_loss_reduction not in {"mean", "sum", "sqrt"}:
@@ -283,11 +277,6 @@ class SJFPOConfig(PreTrainedConfig):
             raise ValueError(
                 f"num_kept_tokens={self.num_kept_tokens} must satisfy "
                 f"1 <= K <= action_horizon={self.action_horizon}"
-            )
-        if self.use_per_freq_clipping and not self.use_dct_transform:
-            raise ValueError(
-                "use_per_freq_clipping=True requires use_dct_transform=True "
-                "(per-frequency epsilon needs frequencies)"
             )
 
 

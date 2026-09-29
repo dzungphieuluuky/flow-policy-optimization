@@ -6,7 +6,6 @@ from pathlib import Path
 from .base import (
     ExperimentTracker,
     ExperimentTrackerBackend,
-    build_run_name,
     eval_summary_metrics,
 )
 
@@ -52,8 +51,8 @@ def build_tracker(
             )
         )
     if report_to in ("tensorboard", "all"):
+        from .base import build_run_name
         from .tensorboard import TensorboardBackend
-        from .wandb import build_run_name
 
         log_dir = Path("tensorboard") / build_run_name(
             method, env_name, seed, cfg_dict

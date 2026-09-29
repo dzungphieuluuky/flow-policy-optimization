@@ -1,8 +1,8 @@
-"""SJFPO pre/post processors (LeRobot fashion): obs normalize, action unscale.
+"""SJFPO pre/post processors (LeRobot style): norm obs, unscale action.
 
-Note: ``ProcessorStep`` is not a ``torch.nn.Module`` — no ``register_buffer``.
-Bounds are stored as plain attributes with a small per-(device, dtype) cache
-so ``unnormalize`` avoids a per-call ``.to()``.
+``ProcessorStep`` is not an ``torch.nn.Module``, so no ``register_buffer``.
+Bounds are plain attributes plus a small per-``(device, dtype)`` cache, so
+``unnormalize`` skips a per-call ``.to()``.
 """
 
 from __future__ import annotations
@@ -18,11 +18,10 @@ from sjfpo.networks import RunningMeanStd
 
 @ProcessorStepRegistry.register(name="sjfpo_observation_normalizer")
 class SJFPOObservationProcessorStep(ProcessorStep):
-    """Normalize ``observation.state`` with the shared live ``RunningMeanStd``.
+    """Norm ``observation.state`` with the shared live ``RunningMeanStd``.
 
-    Holds a **reference** to the policy's normalizer, not a copy, so
-    ``update_stats`` folds into the same buffers the policy reads at forward
-    time.
+    Holds a **reference** to the policy's normalizer, not a copy, so stat
+    updates fold into the same buffers the policy reads at forward time.
     """
 
     def __init__(self, normalizer: RunningMeanStd):
@@ -31,15 +30,8 @@ class SJFPOObservationProcessorStep(ProcessorStep):
 
     @torch.no_grad()
     def normalize(self, states: torch.Tensor) -> torch.Tensor:
-        """Normalize a raw observation window.
-
-        An unchanged identity until the first stats update.
-        """
+        """Norm a raw obs window. Identity until the first stats update."""
         return self.normalizer(states)
-
-    def update_stats(self, states: torch.Tensor) -> None:
-        """Fold raw training frames into the running stats."""
-        self.normalizer.update(states)
 
     @torch.no_grad()
     def __call__(self, batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
@@ -56,13 +48,12 @@ class SJFPOObservationProcessorStep(ProcessorStep):
 
 @ProcessorStepRegistry.register(name="sjfpo_action_unnormalizer")
 class SJFPOActionPostprocessorStep(ProcessorStep):
-    """Unscale policy action chunks from [-1, 1] to real env bounds.
+    """Unscale action chunks from ``[-1, 1]`` to real env bounds.
 
-    Bounds are updated atomically by ``set_action_bounds()``. A tiny
-    per-``(device, dtype)`` cache keeps the pre-computed affine coefficients
-    ``_scale`` / ``_bias`` local to whatever device the incoming chunk is on,
-    so ``unnormalize`` is a single FMA with no per-call ``.to()``. Updating
-    bounds clears both caches.
+    ``set_action_bounds()`` updates bounds atomically. A tiny
+    per-``(device, dtype)`` cache keeps ``_scale`` / ``_bias`` local to whatever
+    device the chunk is on, so ``unnormalize`` is one FMA with no per-call
+    ``.to()``. Updating bounds clears both caches.
     """
 
     def __init__(self, action_low: torch.Tensor, action_high: torch.Tensor):
@@ -75,10 +66,9 @@ class SJFPOActionPostprocessorStep(ProcessorStep):
         action_low: torch.Tensor,
         action_high: torch.Tensor,
     ) -> None:
-        """Replace the action bounds and invalidate cached coefficients.
+        """Set the action bounds, invalidate cached coefficients.
 
-        Raises ``ValueError`` if the bounds disagree in shape or any high bound
-        is below its low bound.
+        ``ValueError`` if shapes disagree or any high sits below its low.
         """
         low = torch.as_tensor(action_low, dtype=torch.float32).reshape(-1).clone()
         high = torch.as_tensor(action_high, dtype=torch.float32).reshape(-1).clone()
@@ -99,9 +89,9 @@ class SJFPOActionPostprocessorStep(ProcessorStep):
         self._bias_cache.clear()
 
     def _coefs_for(self, ref: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """Look up the cached affine coefficients for a reference tensor.
+        """Cached affine coefficients for a reference tensor.
 
-        Populates the cache on first use for that device and dtype.
+        Fills the cache on first use for that device and dtype.
         """
         key = (str(ref.device), ref.dtype)
         scale = self._scale_cache.get(key)
@@ -113,10 +103,10 @@ class SJFPOActionPostprocessorStep(ProcessorStep):
         return scale, self._bias_cache[key]
 
     def to(self, device: torch.device | str) -> "SJFPOActionPostprocessorStep":
-        """Optional eager move: pre-populate the cache for ``device``.
+        """Eager move: pre-populate the cache for ``device``.
 
-        Not required (``unnormalize`` populates it on first call), but keeps
-        the transfer out of the hot path.
+        Not required, ``unnormalize`` fills it on first call, but it keeps the
+        transfer out of the hot path.
         """
         device = torch.device(device)
         key = (str(device), torch.float32)
@@ -132,10 +122,7 @@ class SJFPOActionPostprocessorStep(ProcessorStep):
     
     @torch.inference_mode()
     def unnormalize(self, scaled: torch.Tensor) -> torch.Tensor:
-        """Unscale an action chunk into real env bounds.
-
-        An identity transform when the bounds are +/-1.
-        """
+        """Unscale a chunk into real env bounds. Identity at +/-1."""
         scale, bias = self._coefs_for(scaled)
         return torch.addcmul(bias, scale, scaled)
 
@@ -155,10 +142,10 @@ class SJFPOActionPostprocessorStep(ProcessorStep):
 def make_sjfpo_pre_post_processors(
     policy,
 ) -> tuple[SJFPOObservationProcessorStep, SJFPOActionPostprocessorStep]:
-    """Build the pre/post pair; policy setter synchronizes action bounds.
+    """Build the pre/post pair. The policy setter syncs action bounds.
 
-    The observation step reads and updates the policy's ``obs_normalizer``
-    buffers in place. The action step owns its validated affine cache, and
+    The obs step reads and updates the policy's ``obs_normalizer`` buffers in
+    place. The action step owns its validated affine cache, and
     ``SJFPOPolicy.set_action_bounds()`` updates it atomically.
     """
     return (

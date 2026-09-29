@@ -7,8 +7,8 @@ import numpy as np
 def compact_value(v) -> str:
     """Render a metric compactly for a wandb run name.
 
-    Bools become plain ints, floats use ``:g``, and non-finite floats become
-    ``nan``/``inf``/``-inf`` rather than an empty or padded string.
+    Bools become ints, floats use ``:g``, non-finite floats become
+    ``nan``/``inf``/``-inf`` instead of an empty or padded string.
     """
     if isinstance(v, bool):
         return str(int(v))
@@ -26,11 +26,10 @@ def compact_value(v) -> str:
 
 
 def build_run_name(method: str, env_name: str, seed: int, cfg_dict: dict) -> str:
-    """Compose a wandb run name from the method, env, seed, and key settings.
+    """wandb run name from method, env, seed, and key settings.
 
-    Only settings that meaningfully distinguish runs are appended, so a run name
-    stays short enough to read in the wandb UI. The result has the form
-    ``method_env_sseed_tag_tag``.
+    Only settings that distinguish runs get appended, so the name stays
+    readable in the UI. Form: ``method_env_sseed_tag_tag``.
     """
     tags: list[str] = []
     get = cfg_dict.get
@@ -44,11 +43,6 @@ def build_run_name(method: str, env_name: str, seed: int, cfg_dict: dict) -> str
         tags.append(f"lr{v:g}" if isinstance(v, float) else f"lr{v}")
     if (v := get("clip_param", get("epsilon_clip"))) is not None:
         tags.append(f"eps{compact_value(v)}")
-    if get("use_per_freq_clipping"):
-        tags.append(
-            f"f{compact_value(get('clip_param_lowfreq'))}"
-            f"-{compact_value(get('clip_param_highfreq'))}"
-        )
     if (v := get("num_mc_samples")) is not None:
         tags.append(f"mc{v}")
     base = f"{method}_{env_name}_s{seed}"
@@ -113,7 +107,7 @@ class ExperimentTrackerBackend(Protocol):
 
 
 class ExperimentTracker:
-    """Fans every call out to each configured backend."""
+    """Fan every call out to each configured backend."""
 
     def __init__(self, backends: list[ExperimentTrackerBackend]):
         self.backends = backends

@@ -2,12 +2,8 @@
 
 from __future__ import annotations
 
-import os
-from dataclasses import dataclass
 from pathlib import Path
 
-
-IS_KAGGLE = os.environ.get("KAGGLE_KERNEL_RUN_TYPE") is not None
 
 ENV_REGISTRY_PATH = Path(__file__).resolve().parents[2] / "configs" / "envs.yaml"
 
@@ -27,51 +23,11 @@ PROTOTYPE_ENVS = tuple(
 KNOWN_ENVS = ENVS + PROTOTYPE_ENVS
 
 
-def parse_version_tuple(version: str) -> tuple[int, ...]:
-    """Parse a version string into a comparable integer tuple.
-
-    Non-numeric segments collapse to ``0``, so ``"1.0.0rc1"`` parses as
-    ``(1, 0, 0, 1)``.
-    """
-    parts: list[int] = []
-    for part in version.split("."):
-        digits = "".join(ch for ch in part if ch.isdigit())
-        parts.append(int(digits) if digits else 0)
-    return tuple(parts)
-
-
-def assert_runtime(allow_fp16: bool = False) -> None:
-    """Fail fast on dependency pins and unsupported precision flags.
-
-    bf16 *autocast* (fp32 storage, bf16 matmuls) is allowed; fp16/bf16
-    *storage* is not, because flow-matching Euler rollouts and CFM losses
-    need fp32 to stay stable.
-
-    Raises ``RuntimeError`` if gymnasium is older than 1.0, or if
-    ``allow_fp16`` is set.
-    """
-    import importlib.metadata
-
-    gym_version = importlib.metadata.version("gymnasium")
-    if parse_version_tuple(gym_version)[:2] < (1, 0):
-        raise RuntimeError(
-            f"gymnasium {gym_version} has major.minor < 1.0; "
-            "this project requires gymnasium[mujoco]>=1.0,<1.3"
-        )
-
-    if allow_fp16:
-        raise RuntimeError(
-            "fp16/bf16 storage requested but unsupported: flow-matching "
-            "Euler rollouts and CFM losses require fp32 storage; use "
-            "SJFPO_DTYPE=bf16 for bf16 autocast (fp32 params, bf16 matmuls)"
-        )
-
-
 def get_observation_action_dim(env_id: str) -> tuple[int, int]:
-    """Look up observation and action dimensions from ``configs/envs.yaml``.
+    """Obs and action dims for ``env_id`` from ``configs/envs.yaml``.
 
-    Raises ``RuntimeError`` if PyYAML is missing and ``KeyError`` if ``env_id``
-    is absent from the registry.
+    ``RuntimeError`` if PyYAML is missing. ``KeyError`` if ``env_id`` is not
+    in the registry.
     """
     try:
         import yaml

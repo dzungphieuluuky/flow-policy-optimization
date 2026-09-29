@@ -20,9 +20,8 @@ def sample_timesteps(
 ):
     """Draw flow timesteps in ``[min_timestep, max_timestep]``.
 
-    The distribution is selected by ``cfg.timestep_sampling_mode``. Returns a
-    tensor of shape ``[num_samples]``. Raises ``ValueError`` if the mode is not a
-    known mode.
+    Mode comes from ``cfg.timestep_sampling_mode``. Returns ``[num_samples]``.
+    ``ValueError`` on an unknown mode.
     """
     lo, hi = cfg.min_timestep, cfg.max_timestep
     mode = cfg.timestep_sampling_mode
@@ -60,10 +59,9 @@ def sample_timesteps(
 def _freq_weighted_std(num_modes: int, horizon: int, device) -> torch.Tensor:
     """Per-mode std of pink (1/f) noise over DCT-II modes.
 
-    NEED (Eberhard et al. 2023) finds the beta=1 coloring beats white and OU
-    noise for continuous-control exploration: action chunks are band-limited,
-    so base variance belongs in the low modes instead of being spread
-    uniformly over the coefficient axis.
+    NEED (Eberhard et al. 2023): beta=1 coloring beats white and OU for
+    continuous control. Chunks are band-limited, so base variance belongs in
+    the low modes, not spread evenly over the coefficient axis.
     """
     k = torch.arange(num_modes, dtype=torch.float32, device=device)
     return torch.rsqrt(1.0 + (k * (math.pi / horizon)) ** 2)
@@ -75,11 +73,10 @@ def sample_noise(
     device: torch.device | str,
     generator: torch.Generator | None,
 ):
-    """Draw Monte-Carlo noise of shape ``shape``.
+    """Draw Monte-Carlo noise of ``shape``.
 
-    The marginal distribution is selected by ``cfg.noise_sampling_mode``; the
-    per-mode std across the token axis is selected by ``cfg.noise_scaling_mode``.
-    Raises ``ValueError`` if either mode is not a known mode.
+    Marginal from ``cfg.noise_sampling_mode``; per-mode std over the token axis
+    from ``cfg.noise_scaling_mode``. ``ValueError`` on an unknown mode.
     """
     mode = cfg.noise_sampling_mode
     if mode == "normal":
@@ -92,8 +89,8 @@ def sample_noise(
     if cfg.noise_scaling_mode == "white":
         return eps
     if cfg.noise_scaling_mode == "freq_weighted":
-        # Axis -2 holds the DCT coefficients; broadcast the per-mode std over
-        # the leading batch/MC axes and the trailing action dim.
+        # Axis -2 holds the DCT coeffs. Broadcast the per-mode std over the
+        # leading batch/MC axes and the trailing action dim.
         std = _freq_weighted_std(shape[-2], cfg.action_horizon, device)
         return eps * std.view(*(1,) * (eps.dim() - 2), -1, 1)
     raise ValueError(
@@ -106,14 +103,13 @@ def run_monte_carlo_sampling(
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, tuple[int, ...], int]:
     """Broadcast action, noise, and per-token timesteps over MC.
 
-    The training path passes ``tau`` as ``[B, M, K, 1]`` and gets
-    ``[B*M, K, 1]``; each token's time is shared across its action dims. Scalar,
-    ``[M]`` and ``[B, M]`` forms are legacy and return ``[B*M]``. ``tau`` is
-    coerced onto ``eps``'s device and dtype so a scalar cannot trigger a silent
-    CPU hop mid-graph.
+    Training passes ``tau`` as ``[B, M, K, 1]`` and gets ``[B*M, K, 1]``. One
+    time per token, shared across its action dims. Scalar, ``[M]``, ``[B, M]``
+    forms are legacy and return ``[B*M]``. ``tau`` is moved onto ``eps``'s
+    device and dtype, so a scalar cannot cause a silent CPU hop mid-graph.
 
-    Returns the flattened timestep, noise, broadcast action, flow shape, and MC
-    count. Raises ``ValueError`` if the shapes disagree.
+    Returns flattened timestep, noise, broadcast action, flow shape, MC count.
+    ``ValueError`` if shapes disagree.
     """
     b, num_mc = eps.shape[0], eps.shape[1]
     flow_shape = tuple(a.shape[1:])
@@ -182,21 +178,19 @@ def compute_cfm_loss(
 
     ``token_mean`` is diagnostic only:
 
-    - a mean over the token axis of the operand's space
-    - frequencies, in coefficient space
-    - action steps, on the step grid
-    - divisor is action_dim, the only axis a token aggregates
-    - so masking does not move the value
+    - mean over the token axis of the operand's space
+    - freqs in coefficient space, action steps on the step grid
+    - divisor is ``action_dim``, the only axis a token aggregates
+    - so masking cannot move the value
 
     ``action_is_pad``: optional ``[batch, horizon]``, True where padded.
 
-    - padded rows are dropped
+    - padded rows dropped
     - each sample renormalised by its executed count
     - so a short chunk keeps a full chunk's magnitude
 
-    Returns a scalar for ``scalar``, else a per-sample loss tensor. Raises
-    ``ValueError`` if the velocity shapes disagree, or if ``reduce_mode`` is
-    unknown.
+    Scalar for ``scalar``, else a per-sample loss tensor. ``ValueError`` if
+    velocity shapes disagree or ``reduce_mode`` is unknown.
     """
     if v_hat.shape != v_star.shape:
         raise ValueError(
@@ -205,11 +199,11 @@ def compute_cfm_loss(
     sq = torch.square(v_hat - v_star)
     n_valid = None
     if action_is_pad is not None:
-        # action_is_pad marks what to discard, so flip it before multiplying:
-        # keep is 1 on executed positions and 0 on padded ones.
+        # action_is_pad marks what to drop, so flip it: keep is 1 on executed
+        # positions, 0 on padded ones.
         keep = (~action_is_pad).to(sq.dtype)[:, None, :, None]
         # [n, 1]: valid tokens per sample, scaled by action_dim so the divisor
-        # counts scalar elements rather than tokens.
+        # counts scalar elements, not tokens.
         n_valid = (
             (~action_is_pad).sum(dim=-1, keepdim=True).to(sq.dtype) * sq.shape[-1]
         )
@@ -231,8 +225,8 @@ def compute_cfm_loss(
         return total / n_valid.sqrt()
     if reduce_mode == "token_mean":
         # Per-token diagnostic. A token aggregates only action_dim, so dividing
-        # by that keeps the value independent of the token count; masking sq
-        # already zeroes the padded tokens.
+        # by that keeps the value independent of token count. mask_sq already
+        # zeroed the padded tokens.
         return sq.sum(dim=-1) / sq.shape[-1]
     raise ValueError(
         f"reduce_mode={reduce_mode!r} must be 'scalar', 'sample', or 'token_mean'"
@@ -247,9 +241,8 @@ def compute_aspo_surrogate(
 ) -> torch.Tensor:
     """FPO++ trust region: PPO clipping, SPO, or asymmetric ASPO.
 
-    ASPO uses PPO for positive advantages and SPO for negative advantages.
-    ``ratio`` is the FPO++ likelihood ratio (rho in the paper). Returns the
-    elementwise surrogate objective.
+    ASPO = PPO on positive advantages, SPO on negative. ``ratio`` is the FPO++
+    likelihood ratio (rho in the paper). Returns the elementwise surrogate.
     """
     ratio_adv = ratio * advantage
     ratio_clipped = torch.clamp(ratio, 1.0 - clip_param, 1.0 + clip_param)
@@ -271,12 +264,12 @@ def compute_policy_ratio(
 ) -> torch.Tensor:
     """Official FPO++ ratio exp(old CFM loss - new CFM loss).
 
-    The official implementation clamps both CFM losses from above, optionally
-    clamps the new loss for negative-advantage samples, then applies a one-sided
-    STE cap to the log-ratio: the forward pass uses the capped delta while the
-    backward pass flows through the original. ``advantage`` is required when
-    ``cfm_loss_clamp_negative_advantages`` is set. Returns the ratio (rho in the
-    paper), standing in for the ``actions_log_prob`` ratio of a Gaussian policy.
+    Clamps both CFM losses from above, optionally clamps the new loss on
+    negative-advantage samples, then applies a one-sided STE cap to the
+    log-ratio: forward uses the capped delta, backward flows through the
+    original. ``advantage`` is required when
+    ``cfm_loss_clamp_negative_advantages`` is set. Returns rho, standing in for
+    a Gaussian policy's ``actions_log_prob`` ratio.
     """
     old = torch.clamp(l_old, max=cfg.cfm_clamp)
     new = torch.clamp(l_new, max=cfg.cfm_clamp)
@@ -292,18 +285,6 @@ def compute_policy_ratio(
     return torch.exp(delta_st)
 
 
-def compute_policy_loss(
-    l_old: torch.Tensor,
-    l_new: torch.Tensor,
-    advantage: torch.Tensor,
-    cfg: SJFPOConfig,
-) -> torch.Tensor:
-    """Scalar FPO++ policy objective: MEAN over i of the surrogate per chunk (Eq.13).
-    """
-    ratio = compute_policy_ratio(l_old, l_new, cfg, advantage=advantage)
-    return compute_aspo_surrogate(ratio, advantage, cfg, cfg.clip_param).mean()
-
-
 def sample_action(
     predict_velocity: Callable[[torch.Tensor, torch.Tensor, Any], torch.Tensor],
     shape,
@@ -312,14 +293,13 @@ def sample_action(
     eps: torch.Tensor,
     device: torch.device | str,
 ) -> torch.Tensor:
-    """Sample the learned flow t=0 (noise) -> t=1 (data) with Euler steps.
+    """Euler-sample the learned flow t=0 (noise) -> t=1 (data).
 
-    The step sizes are computed once up front, which keeps the integration loop
-    free of tensor arithmetic and friendly to XLA. ``eps`` is the flow's
-    starting point and must already be drawn by the caller, so that
-    ``noise_sampling_mode`` and ``noise_scaling_mode`` both apply; a
-    zero-sampling caller passes zeros. Returns an integrated sample of shape
-    ``shape``; raises ``ValueError`` if ``device`` is not provided.
+    Step sizes are computed once up front, so the integration loop holds no
+    tensor arithmetic and stays XLA friendly. ``eps`` is the flow's start point
+    and the caller draws it, so ``noise_sampling_mode`` and
+    ``noise_scaling_mode`` both apply; a zero-sampling caller passes zeros.
+    Returns a sample of ``shape``. ``ValueError`` if no ``device``.
     """
     if device is None:
         raise ValueError("device must be provided explicitly")
