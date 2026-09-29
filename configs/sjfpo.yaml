@@ -47,6 +47,7 @@ timestep_scale: 1000.0
 
 # -- Losses / optimization --------------------------------------------
 value_loss_coef: 1.0
+value_huber_delta: 1.0  # Huber delta as a multiple of the batch return RMS
 max_grad_norm: 0.5
 num_kept_tokens: 16
 policy_lr: 3.0e-4

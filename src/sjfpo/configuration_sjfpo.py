@@ -88,6 +88,12 @@ class SJFPOConfig(PreTrainedConfig):
     ema_warmup_steps: int = 500
 
     value_loss_coef: float = 1.0  # rsl-rl's default; the target is raw returns
+    # Huber delta as a multiple of the batch return RMS, so the quadratic-to-
+    # linear transition tracks the target's own scale (returns_rms runs ~2.9 on
+    # InvertedPendulum, ~15 on Hopper) instead of a constant that is 5x off on one
+    # of them. Bounds the per-sample gradient, which is what lets a few
+    # large-residual chunks stop owning critic_grad_norm_preclip.
+    value_huber_delta: float = 1.0
     max_grad_norm: float = 20.0  # critic_grad_norm_preclip runs ~150x over 1.0
     # Critic norms run ~45-170 against the actor's 0.14-3.7, so a clip shared
     # with the actor does nothing for the actor and shrinks every critic step.
@@ -219,6 +225,10 @@ class SJFPOConfig(PreTrainedConfig):
         if self.value_loss_coef < 0:
             raise ValueError(
                 f"value_loss_coef={self.value_loss_coef} must be >= 0"
+            )
+        if self.value_huber_delta <= 0:
+            raise ValueError(
+                f"value_huber_delta={self.value_huber_delta} must be > 0"
             )
 
     def _validate_optimizer(self) -> None:
