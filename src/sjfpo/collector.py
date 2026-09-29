@@ -96,6 +96,13 @@ class RolloutBuffer:
     The active training path reuses one instance per capacity/device. The
     collector writes chunks; ``SJFPOPolicy.generate_rollout`` reads views of the
     used prefix and moves those contiguous tensors to the device.
+
+    Two axes, sized for what each one holds:
+
+    - the chunk axis holds one obs window per chunk, so it wants
+      ``total_steps // action_horizon`` rows, not ``total_steps``
+    - the step axis holds one frame and one reward per executed step, so
+      ``total_steps`` rows is right
     """
 
     def __init__(
@@ -107,6 +114,7 @@ class RolloutBuffer:
         obs_dim: int,
         action_horizon: int,
         action_dim: int,
+        chunk_capacity: int | None = None,
         device: torch.device | str = "cpu",
         pin_memory: bool = False,
     ):
@@ -122,36 +130,87 @@ class RolloutBuffer:
         self.action_horizon = action_horizon
         self.action_dim = action_dim
         self.pin_memory = pin_memory
+        if chunk_capacity is None:
+            # A rollout runs one chunk per action_horizon steps, plus one per
+            # episode end, because a chunk cut by a terminal is short. The +8
+            # absorbs that; ensure_chunk_capacity covers the rest.
+            chunk_capacity = -(-max_steps // action_horizon) + 8
+        if chunk_capacity < 1:
+            raise ValueError("chunk_capacity must be positive")
+        self.chunk_capacity = chunk_capacity
 
-        def zeros(shape, dtype):
-            return torch.zeros(
-                *shape, dtype=dtype, device=self.device, pin_memory=self.pin_memory
-            )
+        # One frame per executed step. The obs windows live on the chunk axis:
+        # envs interleave, so a chunk's obs_steps frames are not obs_steps
+        # adjacent rows and cannot be gathered back out of a step timeline.
+        self.step_frames = self.zeros_for((max_steps, obs_dim), _OBS_DTYPE)
+        self.step_rewards = self.zeros_for((max_steps,), _REWARD_DTYPE)
+        self.step_terminated = self.zeros_for((max_steps,), torch.bool)
+        self.step_truncated = self.zeros_for((max_steps,), torch.bool)
 
-        self.step_states = zeros((max_steps, obs_steps, obs_dim), _OBS_DTYPE)
-        self.step_next_states = zeros(
-            (max_steps, obs_steps, obs_dim), _OBS_DTYPE
+        self.chunk_state = self.zeros_for(
+            (chunk_capacity, obs_steps, obs_dim), _OBS_DTYPE
         )
-        self.step_rewards = zeros((max_steps,), _REWARD_DTYPE)
-        self.step_terminated = zeros((max_steps,), torch.bool)
-        self.step_truncated = zeros((max_steps,), torch.bool)
-
-        self.chunk_actions = zeros(
-            (max_chunks, action_horizon, action_dim), _OBS_DTYPE
+        self.chunk_next_state = self.zeros_for(
+            (chunk_capacity, obs_steps, obs_dim), _OBS_DTYPE
         )
-        self.chunk_starts = zeros((max_chunks,), _INDEX_DTYPE)
-        self.chunk_lengths = zeros((max_chunks,), _INDEX_DTYPE)
-        self.chunk_terminated = zeros((max_chunks,), torch.bool)
-        self.chunk_truncated = zeros((max_chunks,), torch.bool)
+        self.chunk_actions = self.zeros_for(
+            (chunk_capacity, action_horizon, action_dim), _OBS_DTYPE
+        )
+        self.chunk_starts = self.zeros_for((chunk_capacity,), _INDEX_DTYPE)
+        self.chunk_lengths = self.zeros_for((chunk_capacity,), _INDEX_DTYPE)
+        self.chunk_terminated = self.zeros_for((chunk_capacity,), torch.bool)
+        self.chunk_truncated = self.zeros_for((chunk_capacity,), torch.bool)
         # Cut short by the rollout budget, not by an episode end: the next chunk
         # in this env is this one's successor and GAE must chain to it. Kept
         # apart from chunk_truncated, the env's time-limit signal, which does
         # end the episode.
-        self.chunk_budget_truncated = zeros((max_chunks,), torch.bool)
-        self.chunk_clip_counts = zeros((max_chunks,), _INDEX_DTYPE)
-        self.chunk_env_id = zeros((max_chunks,), torch.int16)
+        self.chunk_budget_truncated = self.zeros_for((chunk_capacity,), torch.bool)
+        self.chunk_clip_counts = self.zeros_for((chunk_capacity,), _INDEX_DTYPE)
+        self.chunk_env_id = self.zeros_for((chunk_capacity,), torch.int16)
         self.n_chunks = 0
         self.n_steps = 0
+
+    def zeros_for(self, shape: tuple[int, ...], dtype: torch.dtype) -> torch.Tensor:
+        """One zero tensor in this buffer's layout, dtype and device."""
+        return torch.zeros(
+            *shape, dtype=dtype, device=self.device, pin_memory=self.pin_memory
+        )
+
+    def ensure_chunk_capacity(self, needed: int) -> None:
+        """Grow every chunk-major tensor so it can hold ``needed`` rows.
+
+        The chunk count is data-dependent and no static bound is both safe and
+        tight. An episode that ends mid-chunk produces a 2-step chunk, so the
+        real count runs past ``max_steps // action_horizon``: measured 40 chunks
+        against a floor of 32 on Reacher-v5, 320 against 256 on a full rollout.
+        Overshooting is harmless, so double and carry on.
+        """
+        if needed <= self.chunk_capacity:
+            return
+        capacity = max(needed, 2 * self.chunk_capacity)
+        grown = {
+            "chunk_state": ((capacity, self.obs_steps, self.obs_dim), _OBS_DTYPE),
+            "chunk_next_state": (
+                (capacity, self.obs_steps, self.obs_dim),
+                _OBS_DTYPE,
+            ),
+            "chunk_actions": (
+                (capacity, self.action_horizon, self.action_dim),
+                _OBS_DTYPE,
+            ),
+            "chunk_starts": ((capacity,), _INDEX_DTYPE),
+            "chunk_lengths": ((capacity,), _INDEX_DTYPE),
+            "chunk_terminated": ((capacity,), torch.bool),
+            "chunk_truncated": ((capacity,), torch.bool),
+            "chunk_budget_truncated": ((capacity,), torch.bool),
+            "chunk_clip_counts": ((capacity,), _INDEX_DTYPE),
+            "chunk_env_id": ((capacity,), torch.int16),
+        }
+        for name, (shape, dtype) in grown.items():
+            fresh = self.zeros_for(shape, dtype)
+            fresh[: self.chunk_capacity].copy_(getattr(self, name))
+            setattr(self, name, fresh)
+        self.chunk_capacity = capacity
 
     def capacity_key(self) -> tuple[int, ...]:
         """Buffer layout signature, device excluded.
@@ -178,9 +237,10 @@ class RolloutBuffer:
         self,
         *,
         state: torch.Tensor,
+        next_state: torch.Tensor,
         action: torch.Tensor,
         rewards: list[float] | np.ndarray | torch.Tensor,
-        step_next_states: torch.Tensor,
+        step_frames: torch.Tensor,
         terminated: bool,
         truncated: bool,
         clip_count: int,
@@ -188,11 +248,13 @@ class RolloutBuffer:
     ) -> int:
         """Append one executed chunk.
 
-        The step obs window chains across the chunk, so ``step_next_states``
-        must be supplied for every executed step. ``env_id`` is the vec slot
-        that produced the chunk: the buffer appends in wavefront order, so
-        consecutive entries usually belong to different envs, and the chunk
-        backup uses this to find trajectory boundaries.
+        ``state`` is the obs window the policy saw, ``next_state`` the window
+        the chunk ran to, and ``step_frames`` the raw observation after each of
+        the chunk's executed steps. The window chains across the chunk, so the
+        collector supplies only the two ends plus one frame per step. ``env_id``
+        is the vec slot that produced the chunk: the buffer appends in wavefront
+        order, so consecutive entries usually belong to different envs, and the
+        chunk backup uses this to find trajectory boundaries.
 
         ``RuntimeError`` if chunk or step capacity is spent. ``ValueError`` if
         any tensor shape misses the buffer layout.
@@ -205,19 +267,23 @@ class RolloutBuffer:
             raise RuntimeError("RolloutBuffer step capacity exceeded")
         if state.shape != (self.obs_steps, self.obs_dim):
             raise ValueError(f"state shape {tuple(state.shape)} does not fit buffer")
+        if next_state.shape != (self.obs_steps, self.obs_dim):
+            raise ValueError(
+                f"next_state shape {tuple(next_state.shape)} does not fit buffer"
+            )
         if action.shape != (self.action_horizon, self.action_dim):
             raise ValueError(f"action shape {tuple(action.shape)} does not fit buffer")
-        if tuple(step_next_states.shape) != (n_exec, self.obs_steps, self.obs_dim):
+        if tuple(step_frames.shape) != (n_exec, self.obs_dim):
             raise ValueError(
-                f"step_next_states shape {tuple(step_next_states.shape)} does not fit buffer"
+                f"step_frames shape {tuple(step_frames.shape)} does not fit buffer"
             )
 
         chunk_index = self.n_chunks
         offset = self.n_steps
-        self.step_states[offset].copy_(state)
-        if n_exec > 1:
-            self.step_states[offset + 1 : offset + n_exec].copy_(step_next_states[:-1])
-        self.step_next_states[offset : offset + n_exec].copy_(step_next_states)
+        self.ensure_chunk_capacity(chunk_index + 1)
+        self.chunk_state[chunk_index].copy_(state)
+        self.chunk_next_state[chunk_index].copy_(next_state)
+        self.step_frames[offset : offset + n_exec].copy_(step_frames)
         self.step_rewards[offset : offset + n_exec].copy_(reward_t)
         self.chunk_actions[chunk_index].copy_(action)
         self.chunk_starts[chunk_index] = offset
@@ -246,12 +312,15 @@ class RolloutBuffer:
             raise ValueError("RolloutBuffer capacities do not match")
         other.n_chunks = self.n_chunks
         other.n_steps = self.n_steps
+        # The source may have grown past the destination's initial allocation.
+        other.ensure_chunk_capacity(self.n_chunks)
         for name in (
-            "step_states",
-            "step_next_states",
+            "step_frames",
             "step_rewards",
             "step_terminated",
             "step_truncated",
+            "chunk_state",
+            "chunk_next_state",
             "chunk_actions",
             "chunk_starts",
             "chunk_lengths",
@@ -287,11 +356,12 @@ class RolloutBuffer:
         """
         n_chunks, n_steps = self.n_chunks, self.n_steps
         return {
-            "step_states": self.step_states[:n_steps],
-            "step_next_states": self.step_next_states[:n_steps],
+            "step_frames": self.step_frames[:n_steps],
             "step_rewards": self.step_rewards[:n_steps],
             "step_terminated": self.step_terminated[:n_steps],
             "step_truncated": self.step_truncated[:n_steps],
+            "chunk_state": self.chunk_state[:n_chunks],
+            "chunk_next_state": self.chunk_next_state[:n_chunks],
             "chunk_actions": self.chunk_actions[:n_chunks],
             "chunk_starts": self.chunk_starts[:n_chunks],
             "chunk_lengths": self.chunk_lengths[:n_chunks],
@@ -458,13 +528,17 @@ def execute_open_loop_steps_into(
     env,
     executed_np: np.ndarray,
     window: torch.Tensor,
-    step_windows: torch.Tensor,
+    step_frames: torch.Tensor,
     rewards: torch.Tensor,
     executed_total: int,
     total_steps: int,
     n_action_steps: int,
 ) -> tuple[int, str]:
-    """Execute one chunk into preallocated window and reward storage."""
+    """Execute one chunk into preallocated frame and reward storage.
+
+    ``step_frames`` gets the raw observation after each step. The obs window
+    itself is left in ``window``, which the caller reads once the chunk closes.
+    """
     n_exec = 0
     done_kind = "continue"
     for i in range(n_action_steps):
@@ -475,7 +549,7 @@ def execute_open_loop_steps_into(
         rewards[n_exec - 1] = reward
         window[:-1].copy_(window[1:].clone())
         window[-1].copy_(torch.as_tensor(np.asarray(obs, dtype=np.float32)))
-        step_windows[n_exec - 1].copy_(window)
+        step_frames[n_exec - 1].copy_(window[-1])
         if terminated:
             done_kind = "terminated"
             break
@@ -608,11 +682,13 @@ def collect_chunks_vec(
             # env i, so ``add_chunk`` must consume ``reward_windows[i,
             # :n_exec]`` before env i's next chunk.
             reward_windows = torch.zeros(n, chunk_size, dtype=_REWARD_DTYPE)
-            step_windows = torch.zeros(n, chunk_size, n_obs_steps, obs_dim, dtype=_OBS_DTYPE)
+            # One frame per step, not one window per step. The window the chunk
+            # ends on is already in hand when the chunk closes.
+            step_frames = torch.zeros(n, chunk_size, obs_dim, dtype=_OBS_DTYPE)
         else:
             windows = [build_warmup_window(as_float_tensor(o), n_obs_steps) for o in obs]
             reward_windows = None
-            step_windows = None
+            step_frames = None
         cur: list = [None] * n
         pos = [0] * n
         rewards: list[list[float]] | None = None if buffer is not None else [[] for _ in range(n)]
@@ -699,7 +775,7 @@ def collect_chunks_vec(
                     reward_windows[i, pos[i]] = float(rew_np[i])
                     windows[i, :-1].copy_(windows[i, 1:].clone())
                     windows[i, -1].copy_(as_float_tensor(obs[i]))
-                    step_windows[i, pos[i]].copy_(windows[i])
+                    step_frames[i, pos[i]].copy_(windows[i, -1])
                 else:
                     rewards[i].append(float(rew_np[i]))
                     windows[i].append(as_float_tensor(obs[i]))
@@ -724,9 +800,10 @@ def collect_chunks_vec(
                     if buffer is not None:
                         prev_chunk_indices[i] = buffer.add_chunk(
                             state=replan,
+                            next_state=next_state,
                             action=scaled,
                             rewards=reward_windows[i, :n_exec],
-                            step_next_states=step_windows[i, :n_exec],
+                            step_frames=step_frames[i, :n_exec],
                             terminated=bool(term_np[i]),
                             truncated=bool(trunc_np[i]),
                             clip_count=clip_count,
@@ -804,7 +881,7 @@ def collect_chunks(
         window_deque = build_warmup_window(as_float_tensor(obs), n_obs_steps)
         if buffer is not None:
             window = torch.stack(tuple(window_deque), dim=0)
-            step_windows = torch.zeros(chunk_size, n_obs_steps, int(window.shape[-1]))
+            step_frames = torch.zeros(chunk_size, int(window.shape[-1]))
             reward_window = torch.zeros(chunk_size, dtype=_REWARD_DTYPE)
         records: list[Transition] | None = [] if buffer is None else None
         executed_total = 0
@@ -818,7 +895,7 @@ def collect_chunks(
                     env,
                     executed_np,
                     window,
-                    step_windows,
+                    step_frames,
                     reward_window,
                     executed_total,
                     total_steps,
@@ -828,9 +905,10 @@ def collect_chunks(
                     raise RuntimeError("buffer collection executed zero steps")
                 chunk_index = buffer.add_chunk(
                     state=state,
+                    next_state=window,
                     action=scaled,
                     rewards=reward_window[:n_exec],
-                    step_next_states=step_windows[:n_exec],
+                    step_frames=step_frames[:n_exec],
                     terminated=done_kind == "terminated",
                     truncated=done_kind == "truncated",
                     clip_count=clip_count,
