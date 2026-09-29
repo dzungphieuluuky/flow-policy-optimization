@@ -475,9 +475,20 @@ def train_sjfpo_run(
                         actor_params, cfg.max_grad_norm
                     )
                     actor_pre_norms.append(pre_clip_actor.detach())
-                    pre_clip_critic = torch.nn.utils.clip_grad_norm_(
-                        critic_params, cfg.critic_max_grad_norm
-                    )
+                    if cfg.critic_max_grad_norm is None:
+                        pre_clip_critic = torch.linalg.vector_norm(
+                            torch.stack(
+                                [
+                                    p.grad.norm()
+                                    for p in critic_params
+                                    if p.grad is not None
+                                ]
+                            )
+                        )
+                    else:
+                        pre_clip_critic = torch.nn.utils.clip_grad_norm_(
+                            critic_params, cfg.critic_max_grad_norm
+                        )
                     critic_pre_norms.append(pre_clip_critic.detach())
                     above_clamp_fracs.append(policy.cfm_above_clamp_frac)
                     optimizer.step()
