@@ -176,17 +176,15 @@ def warm_observation_stats(policy, env, *, obs_dim: int, seed: int) -> int:
 
 @torch.no_grad()
 def measure_boot_value_drift(policy, batch, device) -> torch.Tensor:
-    """Relative RMS move of V(s_{t+h}) since the value targets were built.
+    """Relative RMS move of the live critic from the bootstrap value in use.
 
-    Targets use the live critic, so after each critic step the bootstrap term
-    they regress against no longer matches the network. Small values mean
-    staleness is not what limits the critic; large values mean a target network
-    would buy something.
+    Both branches store the ensemble min that GAE bootstrapped with, so this
+    reads as target staleness without a target critic and as the slow teacher's
+    lag with one. Small values mean staleness is not what limits the critic.
     """
-    now = policy.critic(batch["boot_observations"].to(device)).float().T
-    start = batch["boot_values_start"].to(device)
-    rms = start.pow(2).mean().sqrt()
-    return (now - start).pow(2).mean().sqrt() / (rms + 1e-8)
+    now = policy.critic(batch["boot_observations"].to(device)).float().amin(dim=0)
+    start = batch["boot_values_start"].to(device).reshape(-1)
+    return (now - start).pow(2).mean().sqrt() / (start.pow(2).mean().sqrt() + 1e-8)
 
 
 @torch.no_grad()
@@ -198,8 +196,8 @@ def measure_value_target_drift(policy, batch, device) -> torch.Tensor:
     term matters for the regression.
     """
     delta = (
-        policy.critic(batch["boot_observations"].to(device)).float().T
-        - batch["boot_values_start"].to(device)
+        policy.critic(batch["boot_observations"].to(device)).float().amin(dim=0)
+        - batch["boot_values_start"].to(device).reshape(-1)
     )
     return delta.pow(2).mean().sqrt() / (
         batch["raw_returns"].to(device).pow(2).mean().sqrt() + 1e-8
@@ -494,6 +492,7 @@ def train_sjfpo_run(
                     optimizer.step()
                     optimizer.zero_grad(set_to_none=True)
                     policy.step_count += 1
+                    policy.update_target_critic()
                     boot_deltas.append(
                         measure_boot_value_drift(policy, batch, device)
                     )
