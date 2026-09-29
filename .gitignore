@@ -9,3 +9,4 @@ tensorboard/
 uv.log
 .feynman/
 .pi-subagents/
+tmp/
