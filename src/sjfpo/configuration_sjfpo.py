@@ -88,10 +88,10 @@ class SJFPOConfig(PreTrainedConfig):
 
     value_loss_coef: float = 1.0  # rsl-rl's default; the target is raw returns
     max_grad_norm: float = 20.0  # critic_grad_norm_preclip runs ~150x over 1.0
-    # Critic norm ran 45-170 against the actor's 20, so the shared clip shrank
-    # every critic step by 2-9x, an effective lr of ~6e-5. Large on purpose: this
-    # is a guard against blowups, not the binding constraint.
-    critic_max_grad_norm: float = 200.0
+    # Critic norm ran 45-170 against the actor's 0.14-3.7, so one shared clip of
+    # 20 did nothing for the actor and shrank every critic step by 2-9x. None
+    # disables the critic clip entirely, to measure what the guard was hiding.
+    critic_max_grad_norm: float | None = 200.0
 
     num_kept_tokens: int = 16  # DCT coefficients the flow sees; inert when use_dct_transform=False
 
@@ -232,7 +232,7 @@ class SJFPOConfig(PreTrainedConfig):
             )
         if self.max_grad_norm <= 0:
             raise ValueError(f"max_grad_norm={self.max_grad_norm} must be > 0")
-        if self.critic_max_grad_norm <= 0:
+        if self.critic_max_grad_norm is not None and self.critic_max_grad_norm <= 0:
             raise ValueError(
                 f"critic_max_grad_norm={self.critic_max_grad_norm} must be > 0"
             )
