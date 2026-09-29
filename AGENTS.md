@@ -139,6 +139,31 @@ if __name__ == "__main__":
 
 No CLI frameworks unless the repo uses one or the task requires it.
 
+## Temp Files
+
+Write every scratch file, benchmark script, oracle dump, and run output to
+`./tmp`, never to the global `/tmp`.
+
+```
+./tmp/bench_collector.py
+./tmp/baseline.pt
+./tmp/ab/s3407/ne32/
+```
+
+`./tmp` is gitignored. Do not commit it, and do not add exceptions.
+
+Why:
+
+- artifacts stay next to the code that produced them, so a later session can
+  still read them
+- one directory to clean, and `git status` stays quiet
+- the global `/tmp` is shared with every other process and session on the box;
+  two runs of the same sweep collide, and neither is discoverable from the repo
+
+This covers the large ones too: training output, profiler traces, and
+`torch.compile` caches. Point an existing tool at the repo path rather than
+letting it default elsewhere.
+
 ## Diff Discipline
 
 Minimize the diff. Don't turn "Add X" into "rewrite the architecture." Before finishing: inspect the diff; remove unused imports, dead code, unnecessary comments/abstractions, and unrelated changes.
