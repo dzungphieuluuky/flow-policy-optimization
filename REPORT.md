@@ -7,6 +7,73 @@ Severity: **S1** breaks training, **S2** biases it, **S3** cosmetic or latent.
 
 ---
 
+## Current state (read this first)
+
+The pass-by-pass body below is a **historical audit**. Much of the code it
+describes is gone. Do not read the body as a description of the current tree.
+
+### Critic redesign — done, and NOT validated
+
+`Critic` was a flatten-plus-position-code MLP over the 16-frame window, with
+`num_critics` members batched through two `baddbmm` calls. It is now one
+`StateConditioner` plus one linear head per member, in a `ModuleList`.
+
+Why: the actor's `StateConditioner` already does a full orthonormal DCT of the
+window. The critic did not. The function that sets the advantage scale was
+estimated by a strictly weaker approximator than the policy it criticizes. The
+old critic also had no recency structure at all — measured per-frame
+`|dV/dframe|` was 0.0507 for the first 8 frames and 0.0500 for the last 8, equal
+to three significant figures. The new one is non-uniform (0.0113 vs 0.0049).
+
+Cost: **22,785 -> 467,736 params** at `num_critics=2`, about 20x. 85% of that is
+the conditioner's `SwiGLU(128, 512, 128)`. Output shape is unchanged
+(`[num_critics, B]`), so no call site changed.
+
+**The motivating evidence did not reproduce.** The old health run reported
+`Reacher-v5` DCT-off diverging at `cfm_above_clamp_frac=0.98`. A clean A/B on
+that exact arm, seed 3407, 24576 steps:
+
+| | old critic | new critic |
+|---|---|---|
+| `diverged` | false | false |
+| `reward_mean_last10` | -10.95 | -11.87 |
+
+Neither diverged, and the old one scored marginally better. Treat the redesign as
+architecturally motivated and empirically **unvalidated**. A single seed and a
+single eval number settle nothing.
+
+### Audit findings: what still holds
+
+| # | finding | status |
+|---|---|---|
+| 1 | Actor and critic clipped separately, so `max_grad_norm` is 2x loose | **live** — `train_sjfpo.py:473-487` |
+| 2 | Critic target non-stationary via `return_normalizer` | **resolved** — no `return_normalizer` in the tree; GAE and the value loss are both on raw returns |
+| 3 | `forward` docstring contradicts `cfm_mask_unexecuted` | **resolved** — docstring rewritten |
+| 4 | Missing `return_normalizer.*` key resumes silently inert | **resolved** — the key does not exist |
+| 5 | Stale `# <- move inside` marker | **live** — `train_sjfpo.py:74` |
+| 6 | `collect_steps` vs `global_step` disagree | **resolved** — `collect_steps` is gone |
+| 7 | `compute_policy_loss` dead | **resolved** — deleted |
+| 8 | `reduction="none"` unreachable | **live** — `modeling_sjfpo.py:951` |
+| 9 | Value-loss docstring says MSE, code was Huber | **resolved** — the code is now `torch.square` (`modeling_sjfpo.py:1135`), so the docstring was right and is kept |
+| 10 | `top_p` in docstring | **resolved** — no `top_p` in the tree |
+| 11 | Conditioner spectral branch has no frequency identity | **live** — `freq_encoding` runs on the feature axis, then mean-pools over frequency |
+| 12 | `step_truncated` written but never read | **live** — now exported in `collector.py:309`; no consumer found |
+
+### Still-open, worth doing
+
+- The **ACPPO chunk-level ratio audit**. Hahn et al. argue the PPO importance
+  ratio must be taken over the whole action chunk. Check whether
+  `compute_policy_ratio` in `fpo_core.py` is already evaluated at chunk
+  granularity, and whether it is consistent with the `gamma ** h` backup in
+  `gae.py`. Unstarted.
+- `np.float_` was removed in NumPy 2.0 and `wandb` still calls it. The default
+  `report_to="wandb"` path **fails outright**; every run needs an explicit
+  `--sjfpo.report_to tensorboard`. Pre-existing, breaks `tests/test_tracking.py`.
+- `configs/sjfpo.yaml` has orphaned indented `report_to` and `num_critics` lines
+  near line 56.
+
+---
+
 ## Pass 1 of 5 — rollout and data collection
 
 **Area:** `src/sjfpo/collector.py` (908 lines), the rollout half of
@@ -187,11 +254,15 @@ One `clip_grad_norm_` over the concatenated parameter list is the fix, but that
 changes what the two logged metrics mean, so the diagnostic names would need
 revisiting too.
 
-### S3 — `compute_policy_loss` is dead and duplicates the inline path
+### S3 — ~~`compute_policy_loss` is dead and duplicates the inline path~~ RESOLVED
 
-`fpo_core.compute_policy_loss` is defined and never called. `forward` inlines the
-identical computation at `modeling_sjfpo.py:1071-1072`. Two copies of the
-surrogate assembly that can drift apart silently.
+`fpo_core.compute_policy_loss` was defined and never called. `forward` inlined the
+identical computation. Two copies of the surrogate assembly that could drift apart
+silently.
+
+**Resolved:** `compute_policy_loss` deleted from `src/sjfpo/fpo_core.py`. The single
+inline path in `SJFPOPolicy.forward` (`src/sjfpo/modeling_sjfpo.py:1115-1153`) is now
+the only copy of the surrogate assembly.
 
 ### S3 — `reduction="none"` is unreachable
 
@@ -243,6 +314,10 @@ it were.
 **Area:** `StateConditioner`, `Critic`, `SJFPOFlowModel` in
 `src/sjfpo/networks.py`, and `SJFPOPolicy.forward` plus the eval/inference path
 in `modeling_sjfpo.py`.
+
+> `Critic` has since been rewritten — see "Current state" at the top. The
+> "Verified correct" list in this pass covers the old flatten-and-`baddbmm` critic
+> and no longer applies to it.
 
 **Method:** traced tensor ranks and normalisations from `forward` down through the
 conditioner and the DiT, and cross-read every docstring claim against the code it
@@ -371,6 +446,9 @@ general.
 
 # Summary
 
+**Historical.** Superseded by the "Current state" table at the top of this file.
+The findings below were true when written; several now describe deleted code.
+
 Five passes, one stage each. Nothing implemented; this pass list is findings
 only. 51 tests, no new failures.
 
@@ -389,7 +467,7 @@ only. 51 tests, no new failures.
 |---|---|---|
 | 5 | Stale `# <- move inside` marker in `mini_batch_indices` | 2 |
 | 6 | `collect_steps` and `global_step` count nominal vs executed steps | 2 |
-| 7 | `compute_policy_loss` is dead and duplicates the inline surrogate | 3 |
+| 7 | ~~`compute_policy_loss` is dead and duplicates the inline surrogate~~ **RESOLVED** (deleted) | 3 |
 | 8 | `reduction="none"` is unreachable and guarded against | 3 |
 | 9 | `forward` docstring: "value loss is a mean squared error" — it is Huber | 4 |
 | 10 | `forward` docstring: token count "derived from `top_p * H`" — no `top_p` exists | 4 |
@@ -419,3 +497,8 @@ Recording these because each looked like a real bug on inspection:
 working baseline. A critic worse than a constant is upstream of everything else
 in this list: no loss-mask or advantage work shows up through it. Item 2 above is
 the most likely mechanism, and it is the one thing here with a concrete fix.
+
+**Update:** item 2's proposed mechanism (`return_normalizer`) is gone from the
+tree, so this diagnosis is no longer current and the negative `explained_var` is
+**unexplained**. It is the highest-value open question in the repo. Re-measure
+`explained_var` on the new critic before drawing any conclusion.

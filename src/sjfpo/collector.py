@@ -1,30 +1,26 @@
 """Chunked open-loop rollout collector.
 
-Performance notes
------------------
-* Actions are transferred host-side **once per step** (batched over envs) rather
-  than once per env per step. That per-step `.numpy()` sync is the single
-  biggest cost in the vec collector.
-* Observation windows and rewards stay in **fp32** end-to-end; only policy data
-  follows the execution-device dtype policy. bf16 rewards corrupt the GAE
-  target.
-* Bounds are validated once per collector call and reduced to
-  ``(low, range)``; ``scale_and_clip_chunk`` does not re-validate.
-* Warmup windows share one clone (the deque holds N references to the same
-  tensor) rather than cloning ``n_obs_steps`` copies; safe because the window
-  is only read, never mutated in place.
-* Tail truncation writes into the existing reward/done tensors rather than
-  constructing a fresh scalar per tail.
+Speed
+-----
+* Actions go host-side **once per step**, batched over envs, not once per env
+  per step. That per-step ``.numpy()`` sync is the vec collector's biggest cost.
+* Obs windows and rewards stay **fp32** end to end. Only policy data follows the
+  execution-device dtype. bf16 rewards corrupt the GAE target.
+* Bounds validate once per collector call, then reduce to ``(low, range)``.
+  ``scale_and_clip_chunk`` does not re-validate.
+* Warmup windows share one clone (the deque holds N refs to one tensor). Safe:
+  the window is only read, never mutated in place.
+* Tail truncation writes into the existing reward/done tensors, not a fresh
+  scalar per tail.
 
-Autoreset contract
-------------------
-``collect_chunks_vec`` implements the vec-env reset as a state machine: an env
-that returns ``done=True`` is flagged ``awaiting``, and the reset observation is
-picked up on the *next* ``envs.step()``. This is only correct under gymnasium's
-default ``AutoresetMode.NEXT_STEP``. Under ``SAME_STEP`` the reset observation
-arrives together with ``done=True`` and the state machine would step a
-freshly-reset env with a zero action. The collector validates the mode up front
-and refuses to run otherwise.
+Autoreset
+---------
+``collect_chunks_vec`` runs the vec-env reset as a state machine: an env that
+returns ``done=True`` is flagged ``awaiting``, and its reset observation is
+picked up on the *next* ``envs.step()``. Only correct under gymnasium's default
+``AutoresetMode.NEXT_STEP``. Under ``SAME_STEP`` the reset obs arrives with
+``done=True`` and the machine would step a fresh env with a zero action. The
+mode is validated up front.
 """
 
 from __future__ import annotations
@@ -36,7 +32,6 @@ from typing import TypedDict
 import numpy as np
 import torch
 
-from lerobot.processor.converters import to_tensor
 from lerobot.utils.constants import DONE, OBS_STATE, REWARD, TRUNCATED
 
 from sjfpo.configuration_sjfpo import SJFPOConfig
@@ -49,13 +44,7 @@ _DEFAULT_CFG: SJFPOConfig | None = None
 
 
 def _defaults() -> SJFPOConfig:
-    """Return the lazily built default config singleton.
-
-    Constructed on first use so importing this module stays cheap.
-
-    Returns:
-        The shared default :class:`SJFPOConfig`.
-    """
+    """Default config singleton, built on first use. Import stays cheap."""
     global _DEFAULT_CFG
     if _DEFAULT_CFG is None:
         _DEFAULT_CFG = SJFPOConfig()
@@ -85,28 +74,28 @@ Transition = TypedDict(
 
 
 class _StepTransition(dict):
-    """Transition dict with post-step windows stored outside public keys.
+    """Transition dict holding post-step windows outside the public keys.
 
-    The extra ``step_next_states`` attribute is a runtime-only convenience for
-    callers that consume the record list directly; it is deliberately not part
-    of the eight-key :data:`Transition` contract and is not preserved by
-    ``copy`` / serialization. The buffer path does not use it — the per-step
-    windows live in :class:`RolloutBuffer` instead.
+    ``step_next_states`` is a runtime-only convenience for callers that read
+    the record list directly. It is deliberately not part of the eight-key
+    :data:`Transition` contract and is not preserved by ``copy`` or
+    serialization. The buffer path does not use it: per-step windows live in
+    :class:`RolloutBuffer`.
     """
 
     def __init__(self, record: Transition, step_next_states: torch.Tensor):
         super().__init__(record)
         # Keep the public eight-key Transition contract while retaining the
-        # state window after every executed action for step-level GAE.
+        # state window after every executed action, for step-level GAE.
         self.step_next_states = step_next_states
 
 
 class RolloutBuffer:
     """Fixed-capacity CPU storage for chunk and executed-step rollout data.
 
-    The active training path reuses one instance per capacity/device. Chunks
-    are written by the collector; ``SJFPOPolicy.generate_rollout`` reads views
-    of the used prefix and transfers those contiguous tensors to the device.
+    The active training path reuses one instance per capacity/device. The
+    collector writes chunks; ``SJFPOPolicy.generate_rollout`` reads views of the
+    used prefix and moves those contiguous tensors to the device.
     """
 
     def __init__(
@@ -154,10 +143,10 @@ class RolloutBuffer:
         self.chunk_lengths = zeros((max_chunks,), _INDEX_DTYPE)
         self.chunk_terminated = zeros((max_chunks,), torch.bool)
         self.chunk_truncated = zeros((max_chunks,), torch.bool)
-        # Cut short by the rollout budget. The episode continued, so this is NOT
-        # an episode end: the next chunk in the same env is its successor and
-        # GAE must chain to it. Kept apart from chunk_truncated, which is the
-        # env's time-limit signal and does end the episode.
+        # Cut short by the rollout budget, not by an episode end: the next chunk
+        # in this env is this one's successor and GAE must chain to it. Kept
+        # apart from chunk_truncated, the env's time-limit signal, which does
+        # end the episode.
         self.chunk_budget_truncated = zeros((max_chunks,), torch.bool)
         self.chunk_clip_counts = zeros((max_chunks,), _INDEX_DTYPE)
         self.chunk_env_id = zeros((max_chunks,), torch.int16)
@@ -165,13 +154,10 @@ class RolloutBuffer:
         self.n_steps = 0
 
     def capacity_key(self) -> tuple[int, ...]:
-        """Return the buffer's layout signature, excluding its device.
+        """Buffer layout signature, device excluded.
 
-        Two buffers may exchange data only when this matches, so the device is
-        deliberately left out.
-
-        Returns:
-            Tuple of capacities, dimensions, and the pin-memory flag.
+        Two buffers may exchange data only when this matches, so device is left
+        out. Returns capacities, dims, and the pin-memory flag.
         """
         return (
             self.max_chunks,
@@ -184,7 +170,7 @@ class RolloutBuffer:
         )
 
     def reset(self) -> None:
-        """Reset cursors without clearing the large storage tensors."""
+        """Reset cursors, keep the big storage tensors."""
         self.n_chunks = 0
         self.n_steps = 0
 
@@ -200,16 +186,16 @@ class RolloutBuffer:
         clip_count: int,
         env_id: int = 0,
     ) -> int:
-        """Append one executed chunk to the buffer.
+        """Append one executed chunk.
 
-        The step-level observation window is chained across the chunk, so
-        ``step_next_states`` must be supplied for every executed step. ``env_id`` is
-        the vec-env slot that produced the chunk: the buffer appends in wavefront
-        order, so consecutive entries usually belong to different envs, and the
-        chunk-level backup uses this to find trajectory boundaries.
+        The step obs window chains across the chunk, so ``step_next_states``
+        must be supplied for every executed step. ``env_id`` is the vec slot
+        that produced the chunk: the buffer appends in wavefront order, so
+        consecutive entries usually belong to different envs, and the chunk
+        backup uses this to find trajectory boundaries.
 
-        Raises ``RuntimeError`` if the chunk or step capacity is exhausted, and
-        ``ValueError`` if any tensor shape does not match the buffer layout.
+        ``RuntimeError`` if chunk or step capacity is spent. ``ValueError`` if
+        any tensor shape misses the buffer layout.
         """
         if self.n_chunks >= self.max_chunks:
             raise RuntimeError("RolloutBuffer chunk capacity exceeded")
@@ -238,6 +224,11 @@ class RolloutBuffer:
         self.chunk_lengths[chunk_index] = n_exec
         self.chunk_terminated[chunk_index] = terminated
         self.chunk_truncated[chunk_index] = truncated
+        # reset() clears cursors, not storage, and the buffer is reused across
+        # rollouts. Without this write, mark_incomplete's flag from the last
+        # rollout survives on the same chunk index and the metric becomes a
+        # running OR over rollouts instead of a per-rollout rate.
+        self.chunk_budget_truncated[chunk_index] = False
         self.chunk_clip_counts[chunk_index] = int(clip_count)
         self.chunk_env_id[chunk_index] = int(env_id)
         self.step_terminated[offset + n_exec - 1] = terminated
@@ -249,8 +240,7 @@ class RolloutBuffer:
     def copy_to(self, other: "RolloutBuffer", *, non_blocking: bool = False) -> None:
         """Copy the active prefix into a compatible buffer, e.g. onto a GPU.
 
-        Raises ``ValueError`` if the two buffers have different capacities or
-        dimensions.
+        ``ValueError`` if capacities or dims differ.
         """
         if other.capacity_key()[:6] != self.capacity_key()[:6]:
             raise ValueError("RolloutBuffer capacities do not match")
@@ -279,9 +269,9 @@ class RolloutBuffer:
     def mark_incomplete(self, chunk_index: int) -> None:
         """Flag a chunk the rollout budget cut short.
 
-        Not ``chunk_truncated``: the episode continued.
+        Not ``chunk_truncated``: the episode went on.
 
-        - the next chunk in this env is its successor
+        - the env's next chunk is this one's successor
         - GAE must chain to it
         - sharing that flag read a live episode as finished
         - and dropped the handoff
@@ -291,10 +281,9 @@ class RolloutBuffer:
         self.chunk_budget_truncated[chunk_index] = True
 
     def active(self) -> dict[str, torch.Tensor]:
-        """Return contiguous views of the populated buffer prefix.
+        """Contiguous views of the populated prefix.
 
-        Returns:
-            Dict of buffer name to a view covering only the written region.
+        Returns buffer name -> view covering only the written region.
         """
         n_chunks, n_steps = self.n_chunks, self.n_steps
         return {
@@ -315,10 +304,10 @@ class RolloutBuffer:
 
 
 def as_float_tensor(x: object) -> torch.Tensor:
-    """Coerce to an fp32 CPU/GPU tensor without forcing a device hop.
+    """fp32 CPU/GPU tensor, without forcing a device hop.
 
-    A ``torch.Tensor`` input keeps its device (no implicit ``.cpu()``); numpy /
-    Python inputs are lifted to a fresh CPU fp32 tensor.
+    A ``torch.Tensor`` keeps its device (no implicit ``.cpu()``). numpy and
+    Python inputs lift to a fresh CPU fp32 tensor.
     """
     if isinstance(x, torch.Tensor):
         return x.detach().to(_OBS_DTYPE)
@@ -331,13 +320,12 @@ def _bounds_to_tensor(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Coerce and validate env action bounds into fp32 tensors.
 
-    Enforces the strict ``high > low`` convention, matching the collector's
-    action-scaling contract. ``SJFPOPolicy.set_action_bounds`` must use the same
-    convention, otherwise a policy can be built with a degenerate dimension that
-    only fails on the first rollout.
+    Enforces strict ``high > low``, matching the collector's scaling contract.
+    ``SJFPOPolicy.set_action_bounds`` must use the same convention, else a
+    policy can build a degenerate dim that only fails on the first rollout.
 
-    Returns ``(low, high - low)``. Raises ``ValueError`` if the bounds disagree in
-    shape or any dimension fails the strict ``high > low`` check.
+    Returns ``(low, high - low)``. ``ValueError`` if shapes disagree or any dim
+    fails ``high > low``.
     """
     lo = torch.as_tensor(
         np.asarray(low, dtype=np.float32), dtype=torch.float32
@@ -358,11 +346,10 @@ def _bounds_to_tensor(
 def scale_and_clip_chunk(
     proposed: torch.Tensor, low: torch.Tensor, range_: torch.Tensor
 ) -> tuple[torch.Tensor, torch.Tensor, int]:
-    """Clamp a proposed chunk to the env bounds and rescale it to ``[-1, 1]``.
+    """Clamp a chunk to env bounds, then rescale to ``[-1, 1]``.
 
-    ``range_`` is the precomputed ``high - low`` (see :func:`_bounds_to_tensor`).
-    Returns the clipped actions, their rescaling, and the number of clipped
-    elements.
+    ``range_`` is the precomputed ``high - low``, see :func:`_bounds_to_tensor`.
+    Returns clipped actions, their rescaling, and the clipped element count.
     """
     clip_mask = (proposed < low) | (proposed > low + range_)
     clip_count = int(clip_mask.sum())
@@ -374,32 +361,29 @@ def scale_and_clip_chunk(
 def build_warmup_window(
     first_obs: torch.Tensor, n_obs_steps: int
 ) -> deque[torch.Tensor]:
-    """Build a warmup deque of ``n_obs_steps`` identical frames.
+    """Warmup deque of ``n_obs_steps`` identical frames.
 
-    Uses a single clone referenced N times, safe because the window is only read,
-    never mutated in place. Appends past the initial fill replace the oldest
-    reference, not the shared tensor.
+    One clone, referenced N times. Safe: the window is only read, never mutated
+    in place. Appends past the first fill replace the oldest ref, not the
+    shared tensor.
     """
     shared = first_obs.detach().clone()
     return deque((shared for _ in range(n_obs_steps)), maxlen=n_obs_steps)
 
 
 def reset_chunk_window(env, n_obs_steps: int) -> deque[torch.Tensor]:
-    """Reset an environment and build its warmup observation window.
-    """
+    """Reset an env and build its warmup observation window."""
     obs, _ = env.reset()
     return build_warmup_window(as_float_tensor(obs), n_obs_steps)
 
 
 def _bool_tensor(v: bool) -> torch.Tensor:
-    """Wrap a Python bool as a scalar bool tensor.
-    """
+    """Python bool -> scalar bool tensor."""
     return torch.tensor(v, dtype=torch.bool)
 
 
 def _int_tensor(v: int) -> torch.Tensor:
-    """Wrap a Python int as a scalar index tensor.
-    """
+    """Python int -> scalar index tensor."""
     return torch.tensor(v, dtype=_INDEX_DTYPE)
 
 
@@ -414,9 +398,9 @@ def finalize_transition(
     n_action_steps: int,
     step_next_states: torch.Tensor,
 ) -> Transition:
-    """Assemble the transition record for one executed action chunk.
+    """Build the transition record for one executed chunk.
 
-    Raises ``ValueError`` if the chunk, ``n_action_steps``, or ``step_next_states``
+    ``ValueError`` if the chunk, ``n_action_steps``, or ``step_next_states``
     shape is inconsistent.
     """
     if scaled.shape[0] != chunk_size:
@@ -459,11 +443,10 @@ def execute_open_loop_steps(
     total_steps: int,
     n_action_steps: int,
 ) -> tuple[list[float], str, torch.Tensor]:
-    """Execute the executed prefix of a chunk one env step at a time.
+    """Execute a chunk's executed prefix, one env step at a time.
 
-    ``executed_np`` is kept on the host so stepping never forces a
-    device-to-host sync per step; the observation window is advanced after every
-    step and stopped at the step budget.
+    ``executed_np`` stays on the host, so stepping never syncs device to host
+    per step. The obs window advances after every step and stops at the budget.
     """
     rewards: list[float] = []
     step_next_states: list[torch.Tensor] = []
@@ -495,8 +478,7 @@ def execute_open_loop_steps_into(
     total_steps: int,
     n_action_steps: int,
 ) -> tuple[int, str]:
-    """Execute one chunk into preallocated window and reward storage.
-    """
+    """Execute one chunk into preallocated window and reward storage."""
     n_exec = 0
     done_kind = "continue"
     for i in range(n_action_steps):
@@ -528,8 +510,7 @@ def propose_and_execute_chunk(
     chunk_size: int,
     n_action_steps: int,
 ) -> tuple[Transition, str]:
-    """Propose one chunk from the current window and execute it open loop.
-    """
+    """Propose one chunk from the current window, execute it open loop."""
     state = torch.stack(tuple(window), dim=0)
     proposed = as_float_tensor(policy(state))
     executed, scaled, clip_count = scale_and_clip_chunk(proposed, low, range_)
@@ -555,10 +536,10 @@ def propose_and_execute_chunk(
 def flush_on_collection_error(
     on_error_flush: Callable[[], None] | None,
 ) -> None:
-    """Invoke the error flush hook, swallowing any failure it raises.
+    """Call the error flush hook, swallowing any raise.
 
-    The hook is best effort: a failing flush must not mask the collection error
-    that triggered it.
+    Best effort: a failing flush must not mask the collection error that
+    triggered it.
     """
     if on_error_flush is not None:
         try:
@@ -568,11 +549,11 @@ def flush_on_collection_error(
 
 
 def _validate_autoreset_mode(envs) -> None:
-    """Reject vec envs whose autoreset mode breaks the awaiting state machine.
+    """Reject vec envs whose autoreset mode breaks the awaiting machine.
 
-    ``collect_chunks_vec`` handles the reset as a two-step handshake: it flags the
-    env on the ``done=True`` step and picks up the reset observation on the
-    following ``step()``. That only works under ``NEXT_STEP`` autoreset.
+    ``collect_chunks_vec`` resets in a two-step handshake: flag the env on the
+    ``done=True`` step, take the reset obs on the following ``step()``. Only
+    works under ``NEXT_STEP``.
     """
     mode = getattr(envs, "autoreset_mode", None)
     if mode is None:
@@ -601,13 +582,13 @@ def collect_chunks_vec(
     on_error_flush: Callable[[], None] | None = None,
     buffer: RolloutBuffer | None = None,
 ) -> list[Transition] | RolloutBuffer:
-    """Vectorised twin of :func:`collect_chunks` -- same records, same chaining.
+    """Vectorised twin of :func:`collect_chunks`. Same records, same chaining.
 
     The step budget splits evenly across envs, remainder to the first. All
-    still-active actions are gathered into one tensor per wavefront, so the loop
-    costs one device-to-host transfer per chunk instead of one per step.
+    still-active actions gather into one tensor per wavefront, so the loop costs
+    one device-to-host transfer per chunk, not per step.
 
-    Needs ``AutoresetMode.NEXT_STEP``; see :func:`_validate_autoreset_mode`.
+    Needs ``AutoresetMode.NEXT_STEP``, see :func:`_validate_autoreset_mode`.
     """
     cfg = _defaults()
     n_obs_steps = cfg.n_obs_steps if n_obs_steps is None else n_obs_steps
@@ -705,10 +686,9 @@ def collect_chunks_vec(
             for i in range(n):
                 if cur[i] is not None:
                     actions_t[i] = cur[i][0][pos[i]]
-            # No early-out: envs flagged ``awaiting`` have ``cur[i] is None``
-            # but still need this step() to pick up their reset observation
-            # (NEXT_STEP autoreset). The while condition exits once every env
-            # is done and no resets are pending.
+            # No early-out: envs flagged ``awaiting`` have ``cur[i] is None`` but
+            # still need this step() to take their reset observation (NEXT_STEP).
+            # The while exits once every env is done and no resets are pending.
             actions_np = actions_t.cpu().numpy()
 
             obs, rew, term, trunc, _ = envs.step(actions_np)
@@ -816,11 +796,11 @@ def collect_chunks(
     on_error_flush: Callable[[], None] | None = None,
     buffer: RolloutBuffer | None = None,
 ) -> list[Transition] | RolloutBuffer:
-    """Collect executed action chunks from a single environment.
+    """Collect executed action chunks from one env.
 
-    Chunks are proposed from the current observation window and executed open
-    loop, with the window chained across the steps of each chunk. ``n_obs_steps``
-    and ``chunk_size`` fall back to the default config when omitted.
+    Chunks come from the current obs window and run open loop, window chained
+    across each chunk's steps. ``n_obs_steps`` and ``chunk_size`` fall back to
+    the default config.
     """
     cfg = _defaults()
     n_obs_steps = cfg.n_obs_steps if n_obs_steps is None else n_obs_steps
@@ -869,11 +849,13 @@ def collect_chunks(
                     truncated=done_kind == "truncated",
                     clip_count=clip_count,
                 )
-                if n_exec < n_action_steps:
+                if done_kind == "continue" and n_exec < n_action_steps:
                     # Cut short by the step budget. The env is still alive, so
                     # this is not a truncation: flagging it as one made GAE treat
                     # every live chunk as an episode end and drop the chain to the
                     # next chunk, leaving linked_frac at zero.
+                    # done_kind is required: a short chunk is also what an early
+                    # termination produces, and the vec path gates the same way.
                     buffer.mark_incomplete(chunk_index)
                 executed_total += n_exec
                 if done_kind != "continue":

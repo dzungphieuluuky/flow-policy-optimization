@@ -1,18 +1,16 @@
 """Policy checkpoint IO (HuggingFace style): save_pretrained/from_pretrained.
 
-Layout of a saved checkpoint directory:
+Saved checkpoint dir:
 
-* ``config.json``                — LeRobot ``PreTrainedConfig`` (unwrapped keys)
-* ``model.safetensors``          — policy weights (unwrapped keys)
-* ``optimizer.pt``               — AdamW state_dict (pickled, weights-only)
-* ``counters.json``              — ``{global_step, step_count}``
-* ``rng.pt``                     — torch / cuda RNG state (optional, when
-                                    ``save_rng=True``)
+* ``config.json``       — LeRobot ``PreTrainedConfig`` (unwrapped keys)
+* ``model.safetensors`` — policy weights (unwrapped keys)
+* ``optimizer.pt``      — AdamW state_dict (pickled, weights-only)
+* ``counters.json``     — ``{global_step, step_count}``
+* ``rng.pt``            — torch / cuda RNG state, when ``save_rng=True``
 
-Optimizer, counters, and RNG files use temporary files followed by atomic
-replacement. Policy model/config serialization follows the LeRobot/Hugging
-Face ``save_pretrained`` path and is not claimed to be atomic as a complete
-multi-file checkpoint generation.
+Optimizer, counters, and RNG go to a temp file then get replaced atomically.
+Model and config follow the LeRobot/HuggingFace ``save_pretrained`` path and are
+not claimed atomic as a whole multi-file generation.
 """
 
 from __future__ import annotations
@@ -25,8 +23,6 @@ from pathlib import Path
 
 import torch
 from huggingface_hub.constants import CONFIG_NAME, SAFETENSORS_SINGLE_FILE
-from lerobot.utils.constants import CHECKPOINTS_DIR
-from sjfpo.modeling_sjfpo import SJFPOPolicy  # lazy: import-light module
 
 OPTIMIZER_FILE = "optimizer.pt"
 COUNTERS_FILE = "counters.json"
@@ -34,7 +30,7 @@ RNG_FILE = "rng.pt"
 
 
 class ResumeError(RuntimeError):
-    """Unresumable checkpoint (missing/corrupt files)."""
+    """Unresumable checkpoint: missing or corrupt files."""
 
 
 def _atomic_write_bytes(path: Path, data: bytes) -> None:
@@ -50,7 +46,7 @@ def _atomic_write_bytes(path: Path, data: bytes) -> None:
 
 
 def _atomic_torch_save(path: Path, obj) -> None:
-    """Pickle an object to a path atomically, cleaning up on failure.
+    """Pickle to a path atomically, cleaning up on failure.
 
     Re-raises whatever ``torch.save`` raised, after removing the temp file.
     """
@@ -76,17 +72,17 @@ def save_policy_checkpoint(
     ema_state: dict | None = None,
     save_rng: bool = True,
 ) -> None:
-    """Save through LeRobot's ``HubMixin`` (+ optimizer.pt, counters.json).
+    """Save through LeRobot ``HubMixin``, plus optimizer.pt and counters.json.
 
     ``model.safetensors`` holds eager keys, so a fresh ``SJFPOFlowModel`` in
-    :func:`load_policy_checkpoint` finds every key it expects. The frozen behavior
-    snapshots are runtime-only, so their duplicate parameters are dropped.
+    :func:`load_policy_checkpoint` finds every key it expects. Frozen behavior
+    snapshots are runtime-only, so their duplicate params are dropped.
 
     ``optimizer`` keeps actor and critic in separate param groups, so one
     ``step`` drives both while grad clipping stays per role.
 
-    Raises ``ValueError`` if ``policy`` is not an SJFPO policy, if
-    ``global_step`` is negative, or if ``optimizer`` is missing.
+    ``ValueError`` if ``policy`` is not an SJFPO policy, ``global_step`` is
+    negative, or ``optimizer`` is missing.
     """
     from sjfpo.modeling_sjfpo import SJFPOPolicy  # lazy: import-light module
 
@@ -137,14 +133,13 @@ def save_policy_checkpoint(
 
 
 def _load_optimizer(policy, d: Path) -> torch.optim.Optimizer:
-    """Rebuild the optimizer from the policy and load its state.
+    """Rebuild the optimizer from the policy, then load its state.
 
-    Builds through :func:`sjfpo.modeling_sjfpo.build_optimizer`, the same
-    construction the training loop uses, so the saved and rebuilt param groups
-    cannot drift apart. Fails loudly on any structural mismatch (wrong number of
-    param groups, wrong key set) rather than relying on ``load_state_dict``'s
-    opaque error messages. Raises ``ResumeError`` if the file cannot be unpickled
-    or the state does not match the current config.
+    Builds through :func:`sjfpo.modeling_sjfpo.build_optimizer`, the same call
+    the training loop makes, so saved and rebuilt param groups cannot drift.
+    Fails loudly on any structural mismatch (wrong group count, wrong key set)
+    instead of relying on ``load_state_dict``'s opaque errors. ``ResumeError``
+    if the file will not unpickle or the state does not match the config.
     """
     from sjfpo.modeling_sjfpo import build_optimizer  # lazy: import-light module
 
@@ -185,8 +180,8 @@ def _load_optimizer(policy, d: Path) -> torch.optim.Optimizer:
 def _load_rng(d: Path) -> None:
     """Restore torch and CUDA RNG state, best effort.
 
-    A missing or corrupt RNG file is ignored rather than raised on, since
-    losing bit-reproducibility should not block a resume.
+    A missing or corrupt file is ignored. Losing bit-reproducibility should not
+    block a resume.
     """
     path = d / RNG_FILE
     if not path.is_file():
@@ -209,16 +204,16 @@ def load_policy_checkpoint(
     action_low=None,
     action_high=None,
 ):
-    """Load a checkpoint written by :func:`save_policy_checkpoint`.
+    """Load a checkpoint from :func:`save_policy_checkpoint`.
 
-    Rebuilds every component from ``config.json`` — no caller-supplied dims.
-    Environment action bounds are runtime state; pass both ``action_low`` and
-    ``action_high`` to restore the current postprocessor mapping.
-    Returns ``(policy, optimizer, counters)``.
+    Rebuilds every component from ``config.json``, no caller-supplied dims.
+    Action bounds are runtime state: pass both ``action_low`` and ``action_high``
+    to restore the postprocessor mapping. Returns
+    ``(policy, optimizer, counters)``.
 
-    Raises ``ResumeError`` if the checkpoint is incomplete or any saved
-    component is corrupt or structurally mismatched, and ``ValueError`` if
-    only one of ``action_low`` and ``action_high`` is given.
+    ``ResumeError`` if the checkpoint is incomplete or any component is corrupt
+    or mismatched. ``ValueError`` if only one of ``action_low`` and
+    ``action_high`` is given.
     """
     from sjfpo.modeling_sjfpo import SJFPOPolicy  # lazy: import-light module
 

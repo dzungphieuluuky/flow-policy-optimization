@@ -120,7 +120,6 @@ def main(argv: list[str] | None = None) -> int:
                 seed=args.seed,
                 max_steps=args.max_steps,
             )
-            out_video_path = f"outputs/play_{args.env}_seed{args.seed}.mp4"
             # Note: frames returned as numpy arrays; caller can save with imageio/ffmpeg
             print(f"  First episode frames: {len(frames)} frames, return={ret:.2f}")
             print(

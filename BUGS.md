@@ -11,6 +11,25 @@ torch 2.11.0+cu130 | cuda available: False | device count: 0
 Do not treat any item as confirmed-fixed without a CUDA run. Items 1 and 2 are
 read-confirmed defects; the rest are unverified risks that only a GPU can settle.
 
+## Status
+
+Still accurate as written. All four checklist metrics (`explained_var`,
+`value_target_std`, `advantage_std_fraction`, `critic_grad_norm_preclip`) are
+still logged by `train_sjfpo.py`, and `resolve_storage_dtype` is still at
+`utils.py:55`.
+
+Two things changed since this file was written:
+
+- **The critic was rewritten.** `Critic` is now one `StateConditioner` plus one
+  linear head per member. E1 below is unaffected, since it concerns the buffer
+  storage dtype and not the network. But any CUDA run of stage 1 measures a
+  different critic than the one these numbers were first taken on, so
+  before/after comparisons across the redesign are not apples-to-apples.
+- **numpy is 2.2.6, and `wandb` calls `np.float_`,** removed in numpy 2.0. The
+  default `report_to="wandb"` path raises `AttributeError` at import. Pass
+  `--sjfpo.report_to tensorboard`. This also fails
+  `tests/test_tracking.py::test_all_fans_out_to_every_backend` on CPU.
+
 ---
 
 ---

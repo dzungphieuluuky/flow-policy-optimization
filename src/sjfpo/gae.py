@@ -1,20 +1,20 @@
-"""Chunk-level GAE: one action chunk is one macro-transition.
+"""Chunk-level GAE: one chunk is one macro-transition.
 
 A chunk is ``h`` open-loop steps, so backup at chunk granularity, not per step.
-For chunk ``i`` at executed step ``s_i`` running ``h_i`` steps:
+Chunk ``i`` at step ``s_i`` running ``h_i`` steps:
 
     R_i     = sum_{k < h_i} gamma^k * r_{s_i + k}
     delta_i = R_i + gamma^{h_i} * (1 - terminated_i) * V(s_{s_i + h_i}) - V(s_{s_i})
     A_i     = delta_i + gamma^{h_i} * lam * continue_i * A_{i+1}
     return_i = A_i + V(s_{s_i})
 
-Truncation (time limit) keeps the bootstrap; only real termination zeroes it. The
-collector always ends a chunk on a terminal, so ``~terminated`` matches QC's
-``masks[..., -1]``; keep that true.
+Timeout keeps the bootstrap. Only real termination zeroes it. The collector
+always ends a chunk on a terminal, so ``~terminated`` matches QC's
+``masks[..., -1]``. Keep that true.
 
-Vec collector appends in wavefront order, so adjacent buffer rows are different
-envs. ``chunk_env_id`` is what tells the recursion that ``i`` and ``i+1`` are the
-same trajectory.
+The vec collector appends in wavefront order, so adjacent rows are different
+envs. ``chunk_env_id`` is what tells the recursion ``i`` and ``i+1`` share a
+trajectory.
 """
 from __future__ import annotations
 
@@ -36,12 +36,11 @@ def compute_chunk_advantages(
     gamma: float = 0.99,
     lam: float = 0.95,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Compute chunk-level GAE over the executed chunks of a rollout.
+    """Chunk-level GAE over a rollout's executed chunks.
 
-    The chunk tensors must all have the same length. Returns advantages per chunk,
-    and ``values + advantages``, the chunk-level value target. Raises
-    ``ValueError`` if ``gamma`` or ``lam`` fall outside ``[0, 1]``, or if the
-    chunk tensors are not the same length.
+    All chunk tensors must be the same length. Returns per-chunk advantages and
+    ``values + advantages``, the value target. ``ValueError`` if ``gamma`` or
+    ``lam`` leaves ``[0, 1]``, or lengths disagree.
     """
     if not 0.0 <= gamma <= 1.0:
         raise ValueError(f"gamma must be in [0, 1], got {gamma}")
@@ -76,18 +75,17 @@ def compute_chunk_advantages(
         empty = torch.empty(0, device=device, dtype=dtype)
         return empty, empty
 
-    # Gather each chunk's executed rewards in one shot and discount them by
-    # gamma^k. A cumsum difference would need gamma**-s_i, which loses all
-    # precision in fp32 once s_i reaches a few thousand steps.
+    # One shot gather, then discount by gamma^k. A cumsum diff would need
+    # gamma**-s_i, which loses all fp32 precision once s_i hits a few thousand.
     offsets = torch.arange(chunk_size, device=device)
     window = starts.unsqueeze(1) + offsets                      # [B, chunk_size]
     gathered = rewards[window.clamp(max=rewards.numel() - 1)]  # [B, chunk_size]
     valid = offsets.unsqueeze(0) < lengths.unsqueeze(1)        # [B, chunk_size]
     chunk_rewards = (gathered * valid * (gamma**offsets)).sum(dim=1)   # [B]
 
-    # Chunks are stored in wavefront order, so one env's chunks sit n_envs
-    # apart and never adjacent: an adjacency mask finds no links at all. A
-    # stable sort groups each env contiguously and keeps its temporal order.
+    # Wavefront order puts one env's chunks n_envs apart, never adjacent, so an
+    # adjacency mask finds no links. A stable sort groups each env and keeps
+    # its temporal order.
     order = torch.argsort(env_id, stable=True)
     unsort = torch.argsort(order)
     lengths, env_id = lengths[order], env_id[order]
@@ -97,7 +95,7 @@ def compute_chunk_advantages(
     same_env_sorted = env_id[1:] == env_id[:-1]
 
     gamma_h = gamma ** lengths.to(dtype)                        # [B]
-    # Only a true termination removes the bootstrap; a timeout keeps it.
+    # Only real termination kills the bootstrap. A timeout keeps it.
     delta = (
         chunk_rewards
         + gamma_h * (~terminated) * chunk_next_value
