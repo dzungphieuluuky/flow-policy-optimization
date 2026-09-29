@@ -803,19 +803,16 @@ class SJFPOPolicy(PreTrainedPolicy):
 
         lengths = active["chunk_lengths"]
         chunk_starts = active["chunk_starts"]
-        step_states = active["step_states"]
-        step_next_states = active["step_next_states"]
         all_rewards = active["step_rewards"]
         actions = active["chunk_actions"]
-        states = step_states.index_select(0, chunk_starts)
+        states = active["chunk_state"]
 
         # Only the chunk's first and post-chunk states are read by the backup, so
         # the critic and preprocessor see 2 * n_chunks windows, not 2 * n_steps.
         # The obs normalizer updates separately from raw frames via
         # normalizer_observations.
         with torch.inference_mode():
-            last_step = chunk_starts + lengths - 1
-            next_states = step_next_states.index_select(0, last_step)
+            next_states = active["chunk_next_state"]
             all_chunk_states_n = self.preprocessor(
                 {OBS_STATE: torch.cat([states, next_states], dim=0)}
             )[OBS_STATE]
@@ -873,7 +870,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         # raw_returns and raw_values stay fp32: the critic's target and clip
         # snapshot, and the only stored tensors that are not O(1) (returns_rms
         # runs to 35). bf16 has 8 mantissa bits, so 1234.5 round-trips to
-        # 1232.0. Each is 256 elements, so fp32 is free, and step_states and
+        # 1232.0. Each is 256 elements, so fp32 is free, and chunk_state and
         # chunk_actions are already fp32, so storage_dtype never saved memory.
 
         action_is_pad = torch.arange(cfg.action_horizon, device=device).unsqueeze(
@@ -909,7 +906,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             "normalized_advantages": normalized_advantages,
             "raw_returns": raw_returns,
             "raw_values": raw_values,
-            "normalizer_observations": step_next_states[:, -1, :].detach(),
+            "normalizer_observations": active["step_frames"].detach(),
             # Diagnostics: how far the live critic moved from the bootstrap value
             # the targets were built with. With a target critic that gap is the
             # price of the slow teacher; without one it is the target's drift.

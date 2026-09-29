@@ -22,9 +22,10 @@ def _buffer(n_chunks: int = 1) -> ChunkBuffer:
 def _add(buf: ChunkBuffer, **kw) -> int:
     return buf.add_chunk(
         state=torch.zeros(1, 2),
+        next_state=torch.zeros(1, 2),
         action=torch.zeros(4, 1),
         rewards=torch.ones(4),
-        step_next_states=torch.zeros(4, 1, 2),
+        step_frames=torch.zeros(4, 2),
         **kw,
     )
 
