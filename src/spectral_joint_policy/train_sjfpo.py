@@ -161,36 +161,31 @@ def warm_observation_stats(policy, env, *, obs_dim: int, seed: int) -> int:
 
 
 @torch.no_grad()
-def measure_boot_value_drift(policy, batch, device) -> torch.Tensor:
-    """Relative RMS move of the live critic from the bootstrap value in use.
+def measure_value_drift(policy, batch, device) -> tuple[torch.Tensor, torch.Tensor]:
+    """Both critic-drift metrics from one critic forward.
 
-    Both branches store the ensemble min GAE bootstrapped with, so this reads
-    as target staleness without a target critic and as the slow teacher's lag
-    with one. Small means staleness is not what limits the critic.
+    - ``boot_value_delta``: relative RMS move of the live critic from the
+      bootstrap value in use. Both branches store the ensemble min GAE
+      bootstrapped with, so this reads as target staleness without a target
+      critic and as the slow teacher's lag with one. Small means staleness is
+      not what limits the critic.
+    - ``value_target_drift``: the same move in the value loss's units, a
+      fraction of target RMS. A drift can be large relative to V yet negligible
+      next to the return magnitude, which is what decides whether the stale
+      bootstrap matters for the regression.
+
+    One forward serves both: they differ only in the denominator, and the
+    forward is a full critic pass over ``2 * n_chunks`` windows.
     """
     # boot_observations is stored in the buffer's bf16; the critic's weights are
     # fp32 and this runs outside autocast, so cast up.
     boot_obs = batch["boot_observations"].to(device=device, dtype=torch.float32)
-    now = policy.critic(boot_obs).float().amin(dim=0)
     start = batch["boot_values_start"].to(device).reshape(-1)
-    return (now - start).pow(2).mean().sqrt() / (start.pow(2).mean().sqrt() + 1e-8)
-
-
-@torch.no_grad()
-def measure_value_target_drift(policy, batch, device) -> torch.Tensor:
-    """Same move, in the value loss's units: a fraction of target RMS.
-
-    A drift can be large relative to V yet negligible next to the return
-    magnitude. This is the number that decides whether the stale bootstrap
-    matters for the regression.
-    """
-    boot_obs = batch["boot_observations"].to(device=device, dtype=torch.float32)
-    delta = (
-        policy.critic(boot_obs).float().amin(dim=0)
-        - batch["boot_values_start"].to(device).reshape(-1)
-    )
-    return delta.pow(2).mean().sqrt() / (
-        batch["raw_returns"].to(device).pow(2).mean().sqrt() + 1e-8
+    delta = policy.critic(boot_obs).float().amin(dim=0) - start
+    drift_rms = delta.pow(2).mean().sqrt()
+    return (
+        drift_rms / (start.pow(2).mean().sqrt() + 1e-8),
+        drift_rms / (batch["raw_returns"].to(device).pow(2).mean().sqrt() + 1e-8),
     )
 
 
@@ -486,13 +481,14 @@ def train_sjfpo_run(
                     optimizer.zero_grad(set_to_none=True)
                     policy.step_count += 1
                     policy.update_target_critic()
-                    if cfg.log_drift_diagnostics:
-                        boot_deltas.append(
-                            measure_boot_value_drift(policy, batch, device)
+                    # A full critic pass over 2 * n_chunks windows per boundary,
+                    # for numbers only the tracker reads.
+                    if cfg.log_drift_diagnostics and tracker.enabled:
+                        boot_delta, target_drift = measure_value_drift(
+                            policy, batch, device
                         )
-                        target_drifts.append(
-                            measure_value_target_drift(policy, batch, device)
-                        )
+                        boot_deltas.append(boot_delta)
+                        target_drifts.append(target_drift)
                 if epoch_info is not None:
                     infos.append(epoch_info)
 

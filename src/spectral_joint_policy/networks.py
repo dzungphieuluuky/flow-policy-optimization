@@ -51,7 +51,7 @@ class _RMSNorm(nn.RMSNorm):
         with torch.autocast(device_type=x.device.type, enabled=False):
             y = F.rms_norm(
                 x.to(dtype=torch.float32),
-                self.normalised_shape,
+                self.normalized_shape,
                 self.weight.to(dtype=torch.float32),
                 self.eps,
             )
@@ -311,8 +311,14 @@ class RunningMeanStd(nn.Module):
         return torch.where(self._uninitialised.to(x.device), x, norm)
 
 def modulate(x: torch.Tensor, shift: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
-    """adaLN modulation: ``x * (1 + scale) + shift``."""
-    return x * (1.0 + scale) + shift
+    """adaLN modulation: ``x * (1 + scale) + shift``.
+
+    ``torch.addcmul(shift, x, 1 + scale)`` is the same value in one kernel
+    instead of three. Twelve call sites per training microbatch, on tensors
+    that are the widest thing in the DiT, so the saved pass over memory is the
+    point; the multiply is exact either way.
+    """
+    return torch.addcmul(shift, x, 1.0 + scale)
 
 
 class DiTBlock(nn.Module):

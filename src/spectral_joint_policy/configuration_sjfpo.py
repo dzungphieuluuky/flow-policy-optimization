@@ -107,8 +107,10 @@ class SJFPOConfig(PreTrainedConfig):
     # output, the regime a target network is meant to hold fixed.
     use_target_critic: bool = True
     # Each drift metric is a full critic forward over 2 * n_chunks windows, and
-    # the loop runs both per grad-accumulation boundary. That is real compute for
-    # numbers only the tracker reads, so turn it off for a throughput run.
+    # the loop runs it per grad-accumulation boundary. That is real compute for
+    # numbers only the tracker reads, so the loop also skips it whenever no
+    # tracker is enabled, and the flag is the manual override for a
+    # report_to=none run that still wants the numbers.
     log_drift_diagnostics: bool = True
 
     num_kept_tokens: int = 16  # DCT coefficients the flow sees; inert when use_dct_transform=False
@@ -118,7 +120,13 @@ class SJFPOConfig(PreTrainedConfig):
     optimizer_weight_decay: float = 1e-4
 
     # No separate warm-up. Stats initialize during the first rollout.
-    grad_accum_steps: int = 1  # >1 reduces GPU memory at cost of speed
+    # Groups consecutive minibatches into one optimizer step; it does NOT
+    # change peak memory. Every microbatch is batch_size chunks x
+    # num_mc_samples MC draws either way, and the DiT activations from one
+    # microbatch are the peak (1.6 GiB saved for backward at the defaults,
+    # batch_size=128 x num_mc_samples=16). The memory knobs are batch_size and
+    # num_mc_samples; grad_accum_steps only trades optimizer steps for fewer.
+    grad_accum_steps: int = 1
 
     # 12 episodes put the standard error of the mean near 60 return on
     # Humanoid, which is the same size as the regressions these knobs watch
