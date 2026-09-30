@@ -4,8 +4,6 @@ __pycache__/
 *.pt
 runs/
 outputs/
-wandb/
-tensorboard/
 uv.log
 .feynman/
 .pi-subagents/
