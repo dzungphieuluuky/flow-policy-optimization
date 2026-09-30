@@ -90,9 +90,19 @@ def _name(**kw) -> str:
 
 
 def test_run_name_keeps_the_readable_tags():
-    """The tags are the scan-friendly part; the hash only breaks ties."""
+    """The tags are the scan-friendly part; the hash only breaks ties.
+
+    Built from the config rather than written out, so a hyperparameter change
+    does not have to be mirrored here or the test fails for the wrong reason.
+    """
+    c = _cfg()
     name = _name()
-    assert name.startswith("sjfpo_Hopper-v5_s1_k16_d128x2_ep4_lr0.001_eps0.05_mc16")
+    prefix = (
+        f"sjfpo_Hopper-v5_s1_k{c.num_kept_tokens}_d{c.hidden_dim}x{c.dit_depth}"
+        f"_ep{c.num_learning_epochs}_lr{c.policy_lr:g}_eps{c.clip_param:g}"
+        f"_mc{c.num_mc_samples}"
+    )
+    assert name.startswith(prefix), (name, prefix)
 
 
 def test_run_name_is_stable_for_one_config():

@@ -35,7 +35,11 @@ class SJFPOConfig(PreTrainedConfig):
     num_euler_steps: int = 16
     num_inference_steps: int = 16
     chunks_per_update: int = 256
-    num_learning_epochs: int = 4
+    # 4 epochs per rollout accelerated the feature-rank decay that precedes the
+    # late-training collapse (PFO, NeurIPS 2024: more epochs per batch => faster
+    # pre-activation-norm growth and rank loss, and rank loss breaks the trust
+    # region). Same samples per update, half the reuse.
+    num_learning_epochs: int = 2
     batch_size: int = 128  # chunks per minibatch; num_mini_batches is derived
     num_envs: int = 64
 
@@ -65,7 +69,7 @@ class SJFPOConfig(PreTrainedConfig):
     log_ratio_cap: float = 10.0  # official cfm_diff_clamp_max (one-sided)
     normalize_advantage: bool = True
     use_clipped_value_loss: bool = (
-        False  # clip the value update against the rollout snapshot, as rsl-rl does
+        True  # clip the value update against the rollout snapshot, as rsl-rl does
     )
     min_timestep: float = 0.005
     max_timestep: float = 0.995
@@ -94,10 +98,23 @@ class SJFPOConfig(PreTrainedConfig):
     # of them. Bounds the per-sample gradient, which is what lets a few
     # large-residual chunks stop owning critic_grad_norm_preclip.
     value_huber_delta: float = 1.0
-    max_grad_norm: float = 200.0  # critic_grad_norm_preclip runs ~150x over 1.0
-    # Critic norms run ~45-170 against the actor's 0.14-3.7, so a clip shared
-    # with the actor does nothing for the actor and shrinks every critic step.
-    critic_max_grad_norm: float | None = 200.0
+    # rsl-rl's default. These were 200.0, which never bound: the comment below
+    # recorded the critic norm running ~45-170 and the actor's 0.14-3.7, and the
+    # bound was raised past both instead of lowered, so there was no gradient
+    # clipping at all and a joint norm could reach 400.
+    #
+    # A global rescale is close to a no-op under AdamW, which is why the old
+    # 200.0 was not harmless and why lowering it is not either: scaling every
+    # critic gradient by 1/170 moved the trajectory 1.2e-04 per parameter,
+    # while a single unclipped 1e4 spike moved it 9.0e-02, ~750x more. So the
+    # threshold does not set the critic's step size -- it decides whether a
+    # transient blow-up is allowed to pollute the second-moment estimate.
+    max_grad_norm: float = 1.0
+    # Clipped separately from the actor on purpose: the critic's norm is two
+    # orders larger, so a shared bound would be spent entirely on it. Under
+    # AdamW a shared rescale would not in fact starve the actor, but keeping the
+    # two bounds separate preserves the option of setting them differently.
+    critic_max_grad_norm: float | None = 1.0
 
     # qc and TD-JEPA use 0.005 but refresh over offline batches. This loop is
     # online and 0.005 left the teacher tens of rollouts behind; 0.05 is a
