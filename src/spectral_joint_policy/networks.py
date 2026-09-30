@@ -446,6 +446,16 @@ class StateConditioner(nn.Module):
     Known limit: ``freq_encoding`` runs on the feature axis, then
     mean-pools over frequency, so bins get no identity. See REPORT.md
     item 11.
+
+    The frame path carries ``frame_norm`` so the critic's trunk is normalized
+    the way the actor's DiT already is. Lyle et al. (2024) rank normalization
+    layers above last-layer resets and Shrink-and-Perturb for preserving
+    plasticity, and this module is the entirety of the critic's trunk --
+    ``num_critics`` independent copies of it. The same argument applied to the
+    same structure also normalizes the actor's conditioner.
+
+    Adding ``frame_norm`` means a checkpoint written before it carries no
+    ``frame_norm.weight``, so it will not load strict.
     """
 
     def __init__(self, obs_dim: int, hidden_dim: int):
@@ -456,6 +466,7 @@ class StateConditioner(nn.Module):
             raise ValueError("hidden_dim must be at least 2")
         self.obs_dim = obs_dim
         self.frame_proj = nn.Linear(obs_dim, hidden_dim)
+        self.frame_norm = _rms_norm(hidden_dim)
         self.frame_mlp = SwiGLU(hidden_dim, 4 * hidden_dim, hidden_dim)
         self.freq_norm = _rms_norm(obs_dim)
         self.freq_encoding = SinusoidalEncoding(obs_dim)
@@ -478,7 +489,7 @@ class StateConditioner(nn.Module):
             raise ValueError(
                 f"states feature dimension must be {self.obs_dim}, got {states.shape[2]}"
             )
-        raw = self.frame_mlp(self.frame_proj(states)).mean(dim=1)
+        raw = self.frame_mlp(self.frame_norm(self.frame_proj(states))).mean(dim=1)
         # M = T-1 keeps all T freqs, so the whole orthonormal transform.
         coeffs = extract_dct_coeffs(states, M=states.shape[1] - 1)
         spec = self.key_proj(self.freq_encoding(self.freq_norm(coeffs))).mean(dim=1)
