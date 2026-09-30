@@ -19,13 +19,18 @@ import torch
 from lerobot.configs.types import FeatureType, PolicyFeature
 from lerobot.utils.random_utils import set_seed
 
-from sjfpo.checkpointing import load_policy_checkpoint, save_policy_checkpoint
-from sjfpo.configuration_sjfpo import SJFPOConfig
-from sjfpo.evaluator import Evaluator, check_divergence, mean_chunk_jerk
-from sjfpo.modeling_sjfpo import SJFPOAborted, SJFPOPolicy, build_optimizer
+from spectral_joint_policy.checkpointing import load_policy_checkpoint, save_policy_checkpoint
+from spectral_joint_policy.configuration_sjfpo import SJFPOConfig
+from spectral_joint_policy.evaluator import (
+    Evaluator,
+    check_divergence,
+    check_regression,
+    mean_chunk_jerk,
+)
+from spectral_joint_policy.modeling_sjfpo import SJFPOAborted, SJFPOPolicy, build_optimizer
 from lerobot.utils.constants import CHECKPOINTS_DIR
-from sjfpo.utils import resolve_device, to_numpy_1d
-from sjfpo.tracking import build_tracker, eval_summary_metrics
+from spectral_joint_policy.utils import resolve_device, to_numpy_1d
+from spectral_joint_policy.tracking import build_tracker, eval_summary_metrics
 
 
 # Consecutive above-clamp updates before aborting. clamp() has zero gradient
@@ -163,7 +168,10 @@ def measure_boot_value_drift(policy, batch, device) -> torch.Tensor:
     as target staleness without a target critic and as the slow teacher's lag
     with one. Small means staleness is not what limits the critic.
     """
-    now = policy.critic(batch["boot_observations"].to(device)).float().amin(dim=0)
+    # boot_observations is stored in the buffer's bf16; the critic's weights are
+    # fp32 and this runs outside autocast, so cast up.
+    boot_obs = batch["boot_observations"].to(device=device, dtype=torch.float32)
+    now = policy.critic(boot_obs).float().amin(dim=0)
     start = batch["boot_values_start"].to(device).reshape(-1)
     return (now - start).pow(2).mean().sqrt() / (start.pow(2).mean().sqrt() + 1e-8)
 
@@ -176,8 +184,9 @@ def measure_value_target_drift(policy, batch, device) -> torch.Tensor:
     magnitude. This is the number that decides whether the stale bootstrap
     matters for the regression.
     """
+    boot_obs = batch["boot_observations"].to(device=device, dtype=torch.float32)
     delta = (
-        policy.critic(batch["boot_observations"].to(device)).float().amin(dim=0)
+        policy.critic(boot_obs).float().amin(dim=0)
         - batch["boot_values_start"].to(device).reshape(-1)
     )
     return delta.pow(2).mean().sqrt() / (
@@ -207,7 +216,7 @@ def random_baseline(
     return float(np.mean([r["return"] for r in results]))
 
 def _make_vec_env(env_name: str, num_envs: int):
-    """Vectorized training env, async workers preferred.
+    """vectorised training env, async workers preferred.
 
     ``AsyncVectorEnv`` parallelizes stepping across worker processes, the single
     biggest rollout-throughput win for ``num_envs > 1``. Falls back to
@@ -217,7 +226,7 @@ def _make_vec_env(env_name: str, num_envs: int):
     import gymnasium as gym
 
     env_fns = [lambda: gym.make(env_name) for _ in range(num_envs)]
-    # autoreset_mode must survive vectorization in either branch; the collector
+    # autoreset_mode must survive vectorisation in either branch; the collector
     # validates NEXT_STEP, see validate_autoreset_mode.
     try:
         return gym.vector.AsyncVectorEnv(env_fns)
@@ -241,7 +250,7 @@ def train_sjfpo_run(
 ) -> dict[str, Any]:
     """One SJFPO training run.
 
-    - vectorized env builds before any CUDA init
+    - vectorised env builds before any CUDA init
     - so forked workers do not inherit the parent's CUDA context
     - cleanrl / SB3 ordering
 
@@ -328,7 +337,9 @@ def train_sjfpo_run(
         f"params={sum(p.numel() for p in policy.parameters()):,}",
         file=sys.stderr,
     )
-    evaluator = Evaluator(env, eval_seed=10000 + seed, max_episodes=12)
+    evaluator = Evaluator(
+        env, eval_seed=10000 + seed, max_episodes=cfg.eval_max_episodes
+    )
     eval_policy = _EvalPolicy(policy)
     r_rand = random_baseline(evaluator, env)
     tracker = build_tracker(
@@ -345,13 +356,17 @@ def train_sjfpo_run(
 
     eval_count = 0
     consecutive_below = 0
+    consecutive_below_best = 0
+    lr_decays = 0
     above_clamp_updates = 0
     diverged = False
+    regressed = False
     best_return: float | None = None
     steps_to_best: int | None = None
     recent_eval_returns: deque[float] = deque(maxlen=10)
     all_eval_returns: list[float] = []
     artifacts: list[str] = []
+    best_artifact: str | None = None
     elapsed = 0.0
     fps = 0.0
     t_start = time.time()
@@ -396,7 +411,7 @@ def train_sjfpo_run(
             action_magnitude = float(batch["action"].abs().mean())
             if action_abs_max > 1.05:
                 raise ValueError(
-                    f"Unnormalized actions detected: max_abs={action_abs_max:.3f} "
+                    f"Unnormalised actions detected: max_abs={action_abs_max:.3f} "
                     "(expected scaled [-1, 1]; check rollout/action bounds)"
                 )
 
@@ -443,23 +458,22 @@ def train_sjfpo_run(
                     or micro_step + 1 == len(microbatches)
                 )
                 if is_boundary:
-                    if bool(finite_error):
-                        raise SJFPOAborted(
-                            "Non-finite loss detected during gradient accumulation"
-                        )
-                    finite_error.zero_()
                     pre_clip_actor = torch.nn.utils.clip_grad_norm_(
                         actor_params, cfg.max_grad_norm
                     )
                     actor_pre_norms.append(pre_clip_actor.detach())
                     if cfg.critic_max_grad_norm is None:
+                        # Same total norm clip_grad_norm_ computes, without the
+                        # per-param Python loop and its stack.
                         pre_clip_critic = torch.linalg.vector_norm(
                             torch.stack(
-                                [
-                                    p.grad.norm()
-                                    for p in critic_params
-                                    if p.grad is not None
-                                ]
+                                torch._foreach_norm(
+                                    [
+                                        p.grad
+                                        for p in critic_params
+                                        if p.grad is not None
+                                    ]
+                                )
                             )
                         )
                     else:
@@ -472,14 +486,23 @@ def train_sjfpo_run(
                     optimizer.zero_grad(set_to_none=True)
                     policy.step_count += 1
                     policy.update_target_critic()
-                    boot_deltas.append(
-                        measure_boot_value_drift(policy, batch, device)
-                    )
-                    target_drifts.append(
-                        measure_value_target_drift(policy, batch, device)
-                    )
+                    if cfg.log_drift_diagnostics:
+                        boot_deltas.append(
+                            measure_boot_value_drift(policy, batch, device)
+                        )
+                        target_drifts.append(
+                            measure_value_target_drift(policy, batch, device)
+                        )
                 if epoch_info is not None:
                     infos.append(epoch_info)
+
+            # Checked once per update, not per boundary: bool() on a device
+            # tensor is a sync, and NaN gradients make the clip a no-op anyway,
+            # so the run is already lost by the time this raises.
+            if bool(finite_error):
+                raise SJFPOAborted(
+                    "Non-finite loss detected during gradient accumulation"
+                )
 
             policy.update_ema(global_step)
 
@@ -506,8 +529,9 @@ def train_sjfpo_run(
                 data = {f"train/{k}": v for k, v in info.items()}
                 data["train/actor_grad_norm_preclip"] = actor_grad_norm_mean_pre
                 data["train/critic_grad_norm_preclip"] = critic_grad_norm_mean_pre
-                data["train/boot_value_delta"] = boot_drift_mean
-                data["train/value_target_drift"] = target_drift_mean
+                if cfg.log_drift_diagnostics:
+                    data["train/boot_value_delta"] = boot_drift_mean
+                    data["train/value_target_drift"] = target_drift_mean
                 if rollout_jerk is not None:
                     data["train/rollout_jerk"] = rollout_jerk
                 clip_counts = batch.get("chunk_clip_counts")
@@ -550,18 +574,40 @@ def train_sjfpo_run(
                 above_clamp_updates = 0
 
             diverged_now = False
+            regressed_now = False
             diverge_msg = ""
             if global_step >= next_eval or global_step >= total_steps:
-                eval_results = evaluator.evaluate(
-                    eval_policy, out_dir=out_dir, append_csv=True
-                )
+                # The EMA actor once it is warm: it is the same weights averaged
+                # over ~20 rollouts, which is what turns a curve this noisy into
+                # a readable one. The live weights are put back right after, so
+                # training never runs on the average.
+                displaced = policy.swap_in_ema(global_step)
+                try:
+                    eval_results = evaluator.evaluate(
+                        eval_policy, out_dir=out_dir, append_csv=True
+                    )
+                finally:
+                    policy.swap_out_ema(displaced)
                 mean_return = float(np.mean([r["return"] for r in eval_results]))
                 all_eval_returns.append(mean_return)
                 recent_eval_returns.append(mean_return)
                 eval_count += 1
-                if best_return is None or mean_return > best_return:
+                improved = best_return is None or mean_return > best_return
+                if improved:
                     best_return = mean_return
                     steps_to_best = global_step
+                    # The peak has to be on disk when it happens: with a
+                    # save_steps cadence the nearest periodic checkpoint can be
+                    # 100k steps away, and the run always ends on the last one.
+                    best_ckpt_dir = out_dir / CHECKPOINTS_DIR / "best"
+                    save_policy_checkpoint(
+                        best_ckpt_dir,
+                        policy=policy,
+                        optimizer=optimizer,
+                        global_step=global_step,
+                        ema_state=policy.ema_state_dict(),
+                    )
+                    best_artifact = str(best_ckpt_dir / "model.safetensors")
                 if tracker.enabled:
                     tracker.log(
                         eval_summary_metrics(
@@ -576,6 +622,15 @@ def train_sjfpo_run(
                         ),
                         step=global_step,
                     )
+                    tracker.log(
+                        {
+                            "eval/ema_active": float(bool(displaced)),
+                            "train/policy_lr": optimizer.param_groups[0]["lr"],
+                            "train/critic_lr": optimizer.param_groups[-1]["lr"],
+                            "train/lr_decays": lr_decays,
+                        },
+                        step=global_step,
+                    )
                     for b in tracker.backends:
                         getattr(b, "log_eval_table", lambda *_: None)(eval_results, global_step)
                 consecutive_below, diverged_now = check_divergence(
@@ -587,16 +642,53 @@ def train_sjfpo_run(
                         f"mean_return={mean_return:.2f} "
                         f"< 0.10*R_rand={0.10 * r_rand:.2f}"
                     )
+                consecutive_below_best, plateaued = check_regression(
+                    mean_return,
+                    best_return,
+                    consecutive_below_best,
+                    return_frac=cfg.stop_return_frac,
+                    patience=cfg.stop_patience,
+                )
+                if plateaued:
+                    if lr_decays < cfg.max_lr_decays:
+                        lr_decays += 1
+                        for group in optimizer.param_groups:
+                            group["lr"] *= cfg.lr_decay
+                        plateau_msg = (
+                            f"plateau at step {global_step}: mean_return="
+                            f"{mean_return:.2f} < {cfg.stop_return_frac:g}*best="
+                            f"{best_return:.2f} for {cfg.stop_patience} evals, "
+                            f"lr x{cfg.lr_decay:g} ({lr_decays}/"
+                            f"{cfg.max_lr_decays})"
+                        )
+                        print(plateau_msg, file=sys.stderr)
+                    else:
+                        regressed_now = True
+                        regress_msg = (
+                            f"REGRESSED at step {global_step}: mean_return="
+                            f"{mean_return:.2f} < {cfg.stop_return_frac:g}*best="
+                            f"{best_return:.2f} after {lr_decays} lr decays; "
+                            f"the best checkpoint is the artifact"
+                        )
                 next_eval = max(global_step + eval_steps, next_eval + eval_steps)
 
-            if diverged_now:
-                diverged = True
+            if diverged_now or regressed_now:
+                diverged = diverged_now
+                regressed = regressed_now
                 if tracker.enabled:
                     tracker.log(
-                        {"eval/diverged": 1, "eval/diverge_step": global_step},
+                        {
+                            "eval/diverged": float(diverged_now),
+                            "eval/diverge_step": global_step if diverged_now else 0,
+                            "eval/regressed": float(regressed_now),
+                            "eval/regression_step": global_step if regressed_now else 0,
+                        },
                         step=global_step,
                     )
-                print(diverge_msg)
+                if diverged_now:
+                    print(diverge_msg)
+                if regressed_now:
+                    print(regress_msg, file=sys.stderr)
                 break
 
             if global_step >= next_save or global_step >= total_steps:
@@ -632,6 +724,8 @@ def train_sjfpo_run(
         ema_state=policy.ema_state_dict(),
     )
     artifacts.append(str(ckpt_dir / "model.safetensors"))
+    if best_artifact is not None and best_artifact not in artifacts:
+        artifacts.append(best_artifact)
 
     csv_path = out_dir / "eval_history.csv"
     if csv_path.exists():
@@ -646,6 +740,10 @@ def train_sjfpo_run(
         ),
         "fps": fps,
         "artifacts": artifacts,
+        "best_artifact": best_artifact,
+        "best_return": best_return,
         "diverged": diverged,
+        "regressed": regressed,
+        "lr_decays": lr_decays,
         "global_step": global_step,
     }

@@ -23,7 +23,7 @@ class SJFPOConfig(PreTrainedConfig):
       used when the flow starts from sampled noise.
     """
 
-    report_to: str = "wandb"  # wandb | tensorboard | all | none
+    report_to: str = "all"  # wandb | tensorboard | all | none
     num_critics: int = 2  # ensemble members; min over members feeds the GAE backup
     n_obs_steps: int = 16
     action_horizon: int = 16
@@ -56,12 +56,12 @@ class SJFPOConfig(PreTrainedConfig):
     # 0.05 and must be swept. Read clipfrac first: near zero means clip_param
     # constrains nothing.
     cfm_loss_reduction: str = "mean"  # mean | sum | sqrt
-    cfm_clamp: float = 20.0
+    cfm_clamp: float = 200.0
     cfm_mask_unexecuted: bool = (
         True  # drop the unexecuted tail of a truncated chunk from the CFM loss
     )
     cfm_loss_clamp_negative_advantages: bool = True
-    cfm_loss_clamp_negative_advantages_max: float = 20.0
+    cfm_loss_clamp_negative_advantages_max: float = 200.0
     log_ratio_cap: float = 10.0  # official cfm_diff_clamp_max (one-sided)
     normalize_advantage: bool = True
     use_clipped_value_loss: bool = (
@@ -94,7 +94,7 @@ class SJFPOConfig(PreTrainedConfig):
     # of them. Bounds the per-sample gradient, which is what lets a few
     # large-residual chunks stop owning critic_grad_norm_preclip.
     value_huber_delta: float = 1.0
-    max_grad_norm: float = 20.0  # critic_grad_norm_preclip runs ~150x over 1.0
+    max_grad_norm: float = 200.0  # critic_grad_norm_preclip runs ~150x over 1.0
     # Critic norms run ~45-170 against the actor's 0.14-3.7, so a clip shared
     # with the actor does nothing for the actor and shrinks every critic step.
     critic_max_grad_norm: float | None = 200.0
@@ -106,6 +106,10 @@ class SJFPOConfig(PreTrainedConfig):
     # gamma ** action_horizon puts 0.85 of the value target on the critic's own
     # output, the regime a target network is meant to hold fixed.
     use_target_critic: bool = True
+    # Each drift metric is a full critic forward over 2 * n_chunks windows, and
+    # the loop runs both per grad-accumulation boundary. That is real compute for
+    # numbers only the tracker reads, so turn it off for a throughput run.
+    log_drift_diagnostics: bool = True
 
     num_kept_tokens: int = 16  # DCT coefficients the flow sees; inert when use_dct_transform=False
 
@@ -116,6 +120,20 @@ class SJFPOConfig(PreTrainedConfig):
     # No separate warm-up. Stats initialize during the first rollout.
     grad_accum_steps: int = 1  # >1 reduces GPU memory at cost of speed
 
+    # 12 episodes put the standard error of the mean near 60 return on
+    # Humanoid, which is the same size as the regressions these knobs watch
+    # for, and the max over hundreds of evals is biased well above the truth.
+    eval_max_episodes: int = 50
+    # Stop once the return has sat below this fraction of its own peak for
+    # stop_patience evals in a row, so the run ends on the peak region rather
+    # than on whatever the last rollout left behind.
+    stop_return_frac: float = 0.7
+    stop_patience: int = 5
+    # Each completed window of stop_patience bad evals cuts the lrs by
+    # lr_decay; the run stops once max_lr_decays of them have been spent.
+    lr_decay: float = 0.5
+    max_lr_decays: int = 3
+
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -123,6 +141,7 @@ class SJFPOConfig(PreTrainedConfig):
         self._validate_geometry()
         self._validate_loss_params()
         self._validate_optimizer()
+        self._validate_eval_schedule()
         self._validate_flags()
 
     def _resolve_n_action_steps(self) -> None:
@@ -170,6 +189,22 @@ class SJFPOConfig(PreTrainedConfig):
             raise ValueError(f"time_embed_dim={self.time_embed_dim} must be >= 1")
         if self.timestep_scale <= 0:
             raise ValueError(f"timestep_scale={self.timestep_scale} must be > 0")
+
+    def _validate_eval_schedule(self) -> None:
+        """Validate the eval budget and the plateau-driven stop and decay."""
+        if self.eval_max_episodes < 1:
+            raise ValueError(f"eval_max_episodes={self.eval_max_episodes} must be >= 1")
+        if not 0.0 < self.stop_return_frac <= 1.0:
+            raise ValueError(
+                f"stop_return_frac={self.stop_return_frac} must satisfy "
+                f"0 < frac <= 1"
+            )
+        if self.stop_patience < 1:
+            raise ValueError(f"stop_patience={self.stop_patience} must be >= 1")
+        if not 0.0 < self.lr_decay <= 1.0:
+            raise ValueError(f"lr_decay={self.lr_decay} must satisfy 0 < factor <= 1")
+        if self.max_lr_decays < 0:
+            raise ValueError(f"max_lr_decays={self.max_lr_decays} must be >= 0")
 
     def _validate_loss_params(self) -> None:
         """Validate discount, trust-region, clamp, and sampling parameters."""

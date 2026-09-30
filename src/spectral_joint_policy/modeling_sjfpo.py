@@ -29,13 +29,13 @@ from lerobot.policies import PreTrainedPolicy
 from lerobot.processor.converters import to_tensor
 from lerobot.utils.constants import ACTION, OBS_STATE
 
-from sjfpo.configuration_sjfpo import SJFPOConfig
-from sjfpo.collector import RolloutBuffer, collect_chunks, collect_chunks_vec
-from sjfpo.dct_utils import (
+from spectral_joint_policy.configuration_sjfpo import SJFPOConfig
+from spectral_joint_policy.collector import RolloutBuffer, collect_chunks, collect_chunks_vec
+from spectral_joint_policy.dct_utils import (
     velocity_to_action_steps,
     extract_dct_coeffs,
 )
-from sjfpo.fpo_core import (
+from spectral_joint_policy.fpo_core import (
     compute_aspo_surrogate,
     compute_cfm_loss,
     compute_policy_ratio,
@@ -44,15 +44,15 @@ from sjfpo.fpo_core import (
     sample_noise,
     sample_timesteps,
 )
-from sjfpo.gae import compute_chunk_advantages
-from sjfpo.networks import (
+from spectral_joint_policy.gae import compute_chunk_advantages
+from spectral_joint_policy.networks import (
     Critic,
     RunningMeanStd,
     SJFPOFlowModel,
     StateConditioner,
 )
-from sjfpo.processor_sjfpo import make_sjfpo_pre_post_processors
-from sjfpo.utils import (
+from spectral_joint_policy.processor_sjfpo import make_sjfpo_pre_post_processors
+from spectral_joint_policy.utils import (
     autocast_context,
     resolve_storage_dtype,
     to_device_async,
@@ -218,7 +218,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         self.target_critic = copy.deepcopy(self.critic).requires_grad_(False).eval()
         self._target_critic_initialised = False
         self._ema_shadow: dict[str, torch.Tensor] = {}
-        self._ema_initialized = False
+        self._ema_initialised = False
         self._rollout_buffer: RolloutBuffer | None = None
         self._device_rollout_buffer: RolloutBuffer | None = None
         self._rollout_h2d_event: torch.cuda.Event | None = None
@@ -325,14 +325,14 @@ class SJFPOPolicy(PreTrainedPolicy):
             self._ema_shadow = {
                 name: param.detach().clone() for name, param in current.items()
             }
-        if not self._ema_initialized and global_step >= self.config.ema_warmup_steps:
-            # >= and gated on _ema_initialized, not ==. global_step moves by a
+        if not self._ema_initialised and global_step >= self.config.ema_warmup_steps:
+            # >= and gated on _ema_initialised, not ==. global_step moves by a
             # whole rollout, so == 500 was never hit and ema_ready() stayed
             # false forever. The gate makes it one-shot; without it every later
             # call re-hard-copied and threw away the running average.
             for name, shadow in self._ema_shadow.items():
                 shadow.copy_(current[name].detach())
-            self._ema_initialized = True
+            self._ema_initialised = True
             return
         if global_step > self.config.ema_warmup_steps:
             for name, shadow in self._ema_shadow.items():
@@ -368,15 +368,47 @@ class SJFPOPolicy(PreTrainedPolicy):
         """Can the EMA shadow be used for evaluation yet?"""
         return (
             self.config.ema_decay > 0
-            and self._ema_initialized
+            and self._ema_initialised
             and global_step > self.config.ema_warmup_steps
         )
+
+    @torch.no_grad()
+    def swap_in_ema(self, global_step: int) -> dict[str, torch.Tensor]:
+        """Copy the EMA shadow into the actor, returning the live weights.
+
+        The caller holds the return and hands it back to
+        :meth:`swap_out_ema` after evaluating, so the live weights are never
+        lost. No-op returning ``{}`` when the shadow is not ready. Takes
+        ``global_step``, not ``step_count``: the shadow is warmed on the env-step
+        clock, so the optimizer-step counter would call it ready long before it
+        is.
+        """
+        if not self.ema_ready(global_step):
+            return {}
+        params = dict(self.actor.named_parameters())
+        displaced = {
+            name: param.detach().clone()
+            for name, param in params.items()
+            if name in self._ema_shadow
+        }
+        for name, shadow in self._ema_shadow.items():
+            params[name].copy_(shadow)
+        return displaced
+
+    @torch.no_grad()
+    def swap_out_ema(self, displaced: dict[str, torch.Tensor]) -> None:
+        """Put the weights :meth:`swap_in_ema` displaced back into the actor."""
+        if not displaced:
+            return
+        params = dict(self.actor.named_parameters())
+        for name, value in displaced.items():
+            params[name].copy_(value)
 
     def ema_state_dict(self) -> dict:
         """Export the EMA shadow. Returns decay, init flag, shadow params."""
         return {
             "decay": self.config.ema_decay,
-            "initialized": self._ema_initialized,
+            "initialised": self._ema_initialised,
             "shadow_params": self._ema_shadow,
         }
 
@@ -386,7 +418,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             name: value.detach().clone()
             for name, value in state["shadow_params"].items()
         }
-        self._ema_initialized = bool(state.get("initialized", True))
+        self._ema_initialised = bool(state.get("initialised", True))
 
     def get_actor_optim_params(self) -> dict:
         """Actor optimizer param groups.
@@ -501,7 +533,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         """Predict a full action chunk.
 
         Action perturbation runs before postprocessing, matching FPO++, so the
-        noise lands in normalized action space. ``zero_sampling=True`` integrates
+        noise lands in normalised action space. ``zero_sampling=True`` integrates
         from ``eps=0`` over ``num_inference_steps``; ``False`` integrates from
         sampled noise over ``num_euler_steps``, honouring
         ``noise_sampling_mode`` and ``noise_scaling_mode``. Returns
@@ -642,7 +674,7 @@ class SJFPOPolicy(PreTrainedPolicy):
 
     def _behavior_cfm_losses(
         self,
-        normalized_states: torch.Tensor,
+        normalised_states: torch.Tensor,
         actions: torch.Tensor,
         tau: torch.Tensor,
         eps: torch.Tensor,
@@ -668,7 +700,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         x_t = _mc_x_t(flatten_timestep, flatten_mc_noise, flatten_mc_action, flow_shape)
         actor_tau = flatten_timestep.squeeze(-1)
         with torch.inference_mode(), autocast_context(actions.device):
-            condition = self.old_conditioner(normalized_states)
+            condition = self.old_conditioner(normalised_states)
             condition_flat = einx.id(
                 "n d -> n m d", condition, m=num_mc
             ).reshape(num_mc * condition.shape[0], condition.shape[-1])
@@ -824,19 +856,19 @@ class SJFPOPolicy(PreTrainedPolicy):
         # normalizer_observations.
         with torch.inference_mode():
             next_states = active["chunk_next_state"]
-            all_chunk_states_n = self.preprocessor(
+            all_chunk_normalised_states = self.preprocessor(
                 {OBS_STATE: torch.cat([states, next_states], dim=0)}
             )[OBS_STATE]
-            normalized_states = all_chunk_states_n[:n_chunks]
+            normalised_states = all_chunk_normalised_states[:n_chunks]
             with autocast_context(device):
-                all_chunk_values = self.critic(all_chunk_states_n).float()
+                all_chunk_values = self.critic(all_chunk_normalised_states).float()
             # min over the ensemble, backup only. The loss trains every member
             # separately: min has no case inside a V loss, no max to counteract,
             # so it would only bias V low.
             chunk_value = all_chunk_values[:, :n_chunks].amin(dim=0)
             if cfg.use_target_critic:
                 with torch.inference_mode(), autocast_context(device):
-                    boot_values = self.target_critic(all_chunk_states_n[n_chunks:]).float()
+                    boot_values = self.target_critic(all_chunk_normalised_states[n_chunks:]).float()
                 chunk_next_value = boot_values.amin(dim=0)
             else:
                 chunk_next_value = all_chunk_values[:, n_chunks:].amin(dim=0)
@@ -846,7 +878,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         # returns, GAE subtracts them from raw rewards, the value target is the
         # raw return. No return normalizer, so V is the true expected return and
         # the target stops drifting as the return scale grows. The only
-        # normalization is the per-batch advantage whitening after the backup.
+        # normalisation is the per-batch advantage whitening after the backup.
         raw_advantages, raw_returns = compute_chunk_advantages(
             all_rewards,
             chunk_value,
@@ -861,9 +893,9 @@ class SJFPOPolicy(PreTrainedPolicy):
             lam=cfg.gae_lambda,
         )
         raw_values = chunk_value.detach()
-        normalized_advantages = raw_advantages
+        normalised_advantages = raw_advantages
         if cfg.normalize_advantage and raw_advantages.numel() > 0:
-            normalized_advantages = (raw_advantages - raw_advantages.mean()) / (
+            normalised_advantages = (raw_advantages - raw_advantages.mean()) / (
                 raw_advantages.std() + 1e-8
             )
         gae_diagnostics = _gae_diagnostics(
@@ -877,7 +909,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             else None,
         )
         raw_advantages = raw_advantages.to(storage_dtype)
-        normalized_advantages = normalized_advantages.to(storage_dtype)
+        normalised_advantages = normalised_advantages.to(storage_dtype)
         # raw_returns and raw_values stay fp32: the critic's target and clip
         # snapshot, and the only stored tensors that are not O(1) (returns_rms
         # runs to 35). bf16 has 8 mantissa bits, so 1234.5 round-trips to
@@ -906,7 +938,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         chunk_clip_counts = active["chunk_clip_counts"][:n_chunks]
 
         behavior_cfm_loss, behavior_cfm_loss_token = self._behavior_cfm_losses(
-            normalized_states, actions, tau, eps, action_is_pad
+            normalised_states, actions, tau, eps, action_is_pad
         )
 
         return {
@@ -914,14 +946,14 @@ class SJFPOPolicy(PreTrainedPolicy):
             ACTION: actions,
             "action_is_pad": action_is_pad,
             "raw_advantages": raw_advantages,
-            "normalized_advantages": normalized_advantages,
+            "normalised_advantages": normalised_advantages,
             "raw_returns": raw_returns,
             "raw_values": raw_values,
             "normalizer_observations": active["step_frames"].detach(),
             # Diagnostics: how far the live critic moved from the bootstrap value
             # the targets were built with. With a target critic that gap is the
             # price of the slow teacher; without one it is the target's drift.
-            "boot_observations": all_chunk_states_n[n_chunks:].to(storage_dtype),
+            "boot_observations": all_chunk_normalised_states[n_chunks:].to(storage_dtype),
             "boot_values_start": chunk_next_value.unsqueeze(1),
             "mc_tau": tau,
             "mc_eps": eps,
@@ -973,7 +1005,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         actions = to_device_async(to_tensor(batch[ACTION]), device).to(
             dtype=storage_dtype
         )
-        normalized_advantages = to_tensor(batch["normalized_advantages"]).to(
+        normalised_advantages = to_tensor(batch["normalised_advantages"]).to(
             device=device, dtype=storage_dtype
         )
         raw_returns = to_tensor(batch["raw_returns"]).to(
@@ -1007,7 +1039,7 @@ class SJFPOPolicy(PreTrainedPolicy):
 
         loss_mask: torch.Tensor = action_is_pad
 
-        spectral_action_tokens = (
+        dct_action_tokens = (
             extract_dct_coeffs(actions, M=M_modes) if cfg.use_dct_transform else actions
         )
 
@@ -1038,7 +1070,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             eps = _sample_spectral_eps(cfg, n, action_dim, device)
 
         flatten_timestep, flatten_mc_noise, flatten_mc_action, flow_shape, num_mc = (
-            run_monte_carlo_sampling(spectral_action_tokens, eps, tau)
+            run_monte_carlo_sampling(dct_action_tokens, eps, tau)
         )
         x_t_flat = _mc_x_t(
             flatten_timestep, flatten_mc_noise, flatten_mc_action, flow_shape
@@ -1088,13 +1120,13 @@ class SJFPOPolicy(PreTrainedPolicy):
                 )
 
         with torch.autocast(device_type=device.type, enabled=False):
-            v_star_f = self.compute_target_velocity(spectral_action_tokens, eps).float()
+            v_star_f = self.compute_target_velocity(dct_action_tokens, eps).float()
             v_new_r_f = v_new.reshape(n, num_mc, *flow_shape)
             loss_mask, (v_new_r_f, v_star_f) = self.prepare_cfm_loss_inputs(
                 cfg, action_is_pad, v_new_r_f, v_star_f
             )
 
-            adv_mc = normalized_advantages.float().unsqueeze(1)
+            adv_mc = normalised_advantages.float().unsqueeze(1)
             l_new_token = compute_cfm_loss(v_new_r_f, v_star_f, cfg, "token_mean", loss_mask)
             ratio_token = compute_policy_ratio(l_old_token, l_new_token, cfg)
 
@@ -1102,7 +1134,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             ratio = compute_policy_ratio(l_old, l_new, cfg, advantage=adv_mc)
             self.cfm_above_clamp_frac = (l_new > cfg.cfm_clamp).float().mean().detach()
 
-            surrogate = compute_aspo_surrogate(ratio, adv_mc, cfg, cfg.clip_param)
+            surrogate = compute_aspo_surrogate(ratio, adv_mc, cfg)
             policy_per_chunk = -surrogate.mean(dim=1)
 
         with autocast_context(device):
@@ -1169,7 +1201,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             raw_returns_flat=raw_returns_flat,
             policy_per_chunk=policy_per_chunk,
             value_loss_per_chunk=value_loss_per_chunk,
-            normalized_advantages=normalized_advantages,
+            normalised_advantages=normalised_advantages,
             cond_stats=cond_stats,
             cfg=cfg,
         )
@@ -1190,7 +1222,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         raw_returns_flat,
         policy_per_chunk,
         value_loss_per_chunk,
-        normalized_advantages,
+        normalised_advantages,
         cond_stats,
         cfg,
     ) -> dict[str, float]:

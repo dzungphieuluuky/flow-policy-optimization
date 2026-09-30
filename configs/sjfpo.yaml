@@ -17,7 +17,7 @@ num_learning_epochs: 4
 batch_size: 128  # chunks per minibatch; num_mini_batches = chunks_per_update / batch_size
 num_envs: 64
 
-# -- Optimization ------------------------------------------------------
+# -- Optimisation ------------------------------------------------------
 gamma: 0.99
 gae_lambda: 0.95
 clip_param: 0.05
@@ -45,7 +45,7 @@ dit_mlp_ratio: 4.0
 time_embed_dim: 128
 timestep_scale: 1000.0
 
-# -- Losses / optimization --------------------------------------------
+# -- Losses / optimisation --------------------------------------------
 value_loss_coef: 1.0
 value_huber_delta: 1.0  # Huber delta as a multiple of the batch return RMS
 max_grad_norm: 0.5

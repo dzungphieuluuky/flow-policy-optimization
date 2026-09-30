@@ -138,7 +138,7 @@ Two consequences, both unverified:
 ### S3 — `executed_total` counts recorded steps, not env steps
 
 `execution_limit = min(n_action_steps, targets[i] - executed_total[i])` and
-`executed_total[i] += n_exec` only on chunk finalization, while the vec env is
+`executed_total[i] += n_exec` only on chunk finalisation, while the vec env is
 stepped on every while-iteration regardless. Envs that are idle or `awaiting`
 are still stepped with zero actions. The true env step count therefore exceeds
 `total_steps` by an amount that grows with imbalance between envs. The recorded
@@ -372,7 +372,7 @@ DCT applied to the action chunk. No interaction.
 
 - `forward` re-applies `self.preprocessor` to the raw `batch[OBS_STATE]`, and
   `generate_rollout` stores the raw `states` in the batch while using
-  `normalized_states` internally. So the critic and the actor see the same
+  `normalised_states` internally. So the critic and the actor see the same
   preprocessing in the rollout and in the update. No double-normalisation, no
   skew between the two paths.
 - The condition vector is expanded `[n, D] -> [n*m, D]` so one conditioning
@@ -403,11 +403,11 @@ dumped `policy.state_dict()` to see what actually persists.
 `RunningMeanStd._load_from_state_dict` re-derives the latch from the count:
 
 ```python
-self._uninitialized.copy_(self.count.eq(0))
+self._uninitialised.copy_(self.count.eq(0))
 ```
 
 So a checkpoint **missing** `return_normalizer.*` loads cleanly with
-`count = 0`, `_uninitialized = True`, and the module then passes its input
+`count = 0`, `_uninitialised = True`, and the module then passes its input
 through unchanged in both directions. `unnormalize` becomes the identity, so the
 critic's regression target silently becomes raw returns and the GAE baseline
 silently loses its scale. No error, no warning.

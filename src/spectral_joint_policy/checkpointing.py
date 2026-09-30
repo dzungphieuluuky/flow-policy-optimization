@@ -84,7 +84,7 @@ def save_policy_checkpoint(
     ``ValueError`` if ``policy`` is not an SJFPO policy, ``global_step`` is
     negative, or ``optimizer`` is missing.
     """
-    from sjfpo.modeling_sjfpo import SJFPOPolicy  # lazy: import-light module
+    from spectral_joint_policy.modeling_sjfpo import SJFPOPolicy  # lazy: import-light module
 
     if not isinstance(policy, SJFPOPolicy):
         raise ValueError(
@@ -141,7 +141,7 @@ def _load_optimizer(policy, d: Path) -> torch.optim.Optimizer:
     instead of relying on ``load_state_dict``'s opaque errors. ``ResumeError``
     if the file will not unpickle or the state does not match the config.
     """
-    from sjfpo.modeling_sjfpo import build_optimizer  # lazy: import-light module
+    from spectral_joint_policy.modeling_sjfpo import build_optimizer  # lazy: import-light module
 
     optimizer = build_optimizer(policy)
 
@@ -215,7 +215,7 @@ def load_policy_checkpoint(
     or mismatched. ``ValueError`` if only one of ``action_low`` and
     ``action_high`` is given.
     """
-    from sjfpo.modeling_sjfpo import SJFPOPolicy  # lazy: import-light module
+    from spectral_joint_policy.modeling_sjfpo import SJFPOPolicy  # lazy: import-light module
 
     d = Path(dir_path)
     missing = [

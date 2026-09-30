@@ -2,7 +2,7 @@
 
 Key facts:
 * ``RunningMeanStd``: count fp64 (fp32 dies at 2^24 frames), mean/var fp32,
-  ``_uninitialized`` non-persistent so old checkpoints load.
+  ``_uninitialised`` non-persistent so old checkpoints load.
 * ``RunningMeanStd.forward``: out dtype = in dtype. No silent fp32 promote.
 * ``_RMSNorm``: reduce in fp32, take ``dtype=`` at build, never touch ``.data``.
 * ``StateConditioner``: per-frame MLP + DCT branch. No window attention.
@@ -27,7 +27,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from sjfpo.dct_utils import extract_dct_coeffs
+from spectral_joint_policy.dct_utils import extract_dct_coeffs
 
 
 class _RMSNorm(nn.RMSNorm):
@@ -51,7 +51,7 @@ class _RMSNorm(nn.RMSNorm):
         with torch.autocast(device_type=x.device.type, enabled=False):
             y = F.rms_norm(
                 x.to(dtype=torch.float32),
-                self.normalized_shape,
+                self.normalised_shape,
                 self.weight.to(dtype=torch.float32),
                 self.eps,
             )
@@ -243,7 +243,7 @@ class RunningMeanStd(nn.Module):
         self.register_buffer("var", torch.ones(dim, dtype=torch.float32))
         self.register_buffer("count", torch.tensor(0.0, dtype=torch.float64))
         self.register_buffer(
-            "_uninitialized", torch.tensor(True, dtype=torch.bool), persistent=False
+            "_uninitialised", torch.tensor(True, dtype=torch.bool), persistent=False
         )
         self.eps = eps
         self.clip = clip
@@ -283,7 +283,7 @@ class RunningMeanStd(nn.Module):
             / total
         )
         self.count.copy_(total)
-        self._uninitialized.fill_(False)
+        self._uninitialised.fill_(False)
 
     @torch.inference_mode()
     def reset(self) -> None:
@@ -291,7 +291,7 @@ class RunningMeanStd(nn.Module):
         self.mean.zero_()
         self.var.fill_(1.0)
         self.count.zero_()
-        self._uninitialized.fill_(True)
+        self._uninitialised.fill_(True)
 
     def _load_from_state_dict(self, *args, **kwargs):
         """Load state, re-derive the latch.
@@ -300,7 +300,7 @@ class RunningMeanStd(nn.Module):
         unchanged. Positional and keyword args go to ``nn.Module``.
         """
         super()._load_from_state_dict(*args, **kwargs)
-        self._uninitialized.copy_(self.count.eq(0))
+        self._uninitialised.copy_(self.count.eq(0))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Norm with frozen stats. Returns ``x`` unchanged until first update."""
@@ -308,7 +308,7 @@ class RunningMeanStd(nn.Module):
             self.var.to(x.device) + self.eps
         )
         norm = norm.clamp(-self.clip, self.clip).to(x.dtype)
-        return torch.where(self._uninitialized.to(x.device), x, norm)
+        return torch.where(self._uninitialised.to(x.device), x, norm)
 
 def modulate(x: torch.Tensor, shift: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
     """adaLN modulation: ``x * (1 + scale) + shift``."""
@@ -455,7 +455,7 @@ class StateConditioner(nn.Module):
         if states.dim() != 3:
             raise ValueError(
                 f"states must have shape [B, T, obs], got {tuple(states.shape)}"
-            )
+            )   
         if states.shape[0] < 1 or states.shape[1] < 1:
             raise ValueError("states must have positive batch and time dimensions")
         if states.shape[2] != self.obs_dim:

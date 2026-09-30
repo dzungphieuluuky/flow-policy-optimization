@@ -16,7 +16,7 @@ class TensorboardBackend:
     def __init__(self, log_dir: str):
         from torch.utils.tensorboard import SummaryWriter
 
-        self.writer = SummaryWriter(log_dir)
+        self.writer = SummaryWriter(log_dir, flush_secs=30)
 
     def log(self, data: dict[str, float], step: int) -> None:
         for key, value in data.items():

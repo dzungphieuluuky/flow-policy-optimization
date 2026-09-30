@@ -8,8 +8,8 @@ from typing import Any
 
 import torch
 
-from sjfpo.configuration_sjfpo import SJFPOConfig
-from sjfpo.utils import resolve_storage_dtype
+from spectral_joint_policy.configuration_sjfpo import SJFPOConfig
+from spectral_joint_policy.utils import resolve_storage_dtype
 
 
 def sample_timesteps(
@@ -237,7 +237,6 @@ def compute_aspo_surrogate(
     ratio: torch.Tensor,
     advantage: torch.Tensor,
     cfg: SJFPOConfig,
-    clip_param: float | torch.Tensor,
 ) -> torch.Tensor:
     """FPO++ trust region: PPO clipping, SPO, or asymmetric ASPO.
 
@@ -245,9 +244,9 @@ def compute_aspo_surrogate(
     likelihood ratio (rho in the paper). Returns the elementwise surrogate.
     """
     ratio_adv = ratio * advantage
-    ratio_clipped = torch.clamp(ratio, 1.0 - clip_param, 1.0 + clip_param)
+    ratio_clipped = torch.clamp(ratio, 1.0 - cfg.clip_param, 1.0 + cfg.clip_param)
     ppo = torch.min(ratio_adv, ratio_clipped * advantage)
-    spo = ratio_adv - (advantage.abs() / (2.0 * clip_param)) * torch.square(ratio - 1.0)
+    spo = ratio_adv - (advantage.abs() / (2.0 * cfg.clip_param)) * torch.square(ratio - 1.0)
 
     if cfg.trust_region_mode == "ppo":
         return ppo

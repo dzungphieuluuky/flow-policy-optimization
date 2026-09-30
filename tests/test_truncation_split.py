@@ -10,7 +10,7 @@ of a live episode looked truncated and linked_frac was pinned at zero.
 import numpy as np
 import torch
 
-from sjfpo.collector import RolloutBuffer as ChunkBuffer, collect_chunks
+from spectral_joint_policy.collector import RolloutBuffer as ChunkBuffer, collect_chunks
 
 
 def _buffer(n_chunks: int = 1) -> ChunkBuffer:

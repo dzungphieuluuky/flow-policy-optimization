@@ -18,7 +18,7 @@ members must not share a trunk, or min-over-members is meaningless.
 import pytest
 import torch
 
-from sjfpo.networks import Critic, StateConditioner
+from spectral_joint_policy.networks import Critic, StateConditioner
 
 OBS, HIDDEN, STEPS = 11, 32, 8
 
