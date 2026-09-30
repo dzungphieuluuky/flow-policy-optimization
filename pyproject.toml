@@ -44,6 +44,12 @@ dependencies = [
     "torchvision>=0.17.2",
     "wandb",
 ]
+
+# pytest is the only gate (scripts/AGENTS.md: no CI). It has to be declared or
+# `uv sync` prunes it and `pytest -q` stops working.
+[dependency-groups]
+dev = ["pytest"]
+
 [build-system]
 requires = ["uv_build>=0.12.13,<0.13.0"]
 build-backend = "uv_build"
