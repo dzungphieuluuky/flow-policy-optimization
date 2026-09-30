@@ -233,6 +233,14 @@ class RunningMeanStd(nn.Module):
     ``mean``/``var`` fp32. ``count`` fp64, else dies at 2^24 frames.
     ``forward`` keeps the input dtype, so half-precision callers are not
     silently promoted.
+
+    The warm-up latch is a plain Python bool, not a buffer. It never had to be
+    a buffer: it is non-persistent, so it is absent from every ``state_dict``
+    and re-derived on load. As a tensor it cost a full-size ``torch.where`` on
+    every forward plus three redundant ``.to(x.device)`` casts on buffers whose
+    device is fixed by ``.to()`` on the module. Reading a buffer as a Python
+    bool would be worse -- ``bool(tensor)`` is a dispatch *and* a D2H sync on
+    CUDA -- so it has to be mirrored in Python at the three places that set it.
     """
 
     def __init__(self, dim: int, eps: float = 1e-8, clip: float = 10.0):
@@ -242,9 +250,7 @@ class RunningMeanStd(nn.Module):
         self.register_buffer("mean", torch.zeros(dim, dtype=torch.float32))
         self.register_buffer("var", torch.ones(dim, dtype=torch.float32))
         self.register_buffer("count", torch.tensor(0.0, dtype=torch.float64))
-        self.register_buffer(
-            "_uninitialised", torch.tensor(True, dtype=torch.bool), persistent=False
-        )
+        self._uninitialised = True
         self.eps = eps
         self.clip = clip
 
@@ -283,7 +289,7 @@ class RunningMeanStd(nn.Module):
             / total
         )
         self.count.copy_(total)
-        self._uninitialised.fill_(False)
+        self._uninitialised = False
 
     @torch.inference_mode()
     def reset(self) -> None:
@@ -291,24 +297,28 @@ class RunningMeanStd(nn.Module):
         self.mean.zero_()
         self.var.fill_(1.0)
         self.count.zero_()
-        self._uninitialised.fill_(True)
+        self._uninitialised = True
 
     def _load_from_state_dict(self, *args, **kwargs):
         """Load state, re-derive the latch.
 
-        Latch is not persisted, so ``count == 0`` means pass frames through
+        The latch is not persisted, so ``count == 0`` means pass frames through
         unchanged. Positional and keyword args go to ``nn.Module``.
         """
         super()._load_from_state_dict(*args, **kwargs)
-        self._uninitialised.copy_(self.count.eq(0))
+        self._uninitialised = bool(self.count.item() == 0)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Norm with frozen stats. Returns ``x`` unchanged until first update."""
-        norm = (x - self.mean.to(x.device)) * torch.rsqrt(
-            self.var.to(x.device) + self.eps
-        )
-        norm = norm.clamp(-self.clip, self.clip).to(x.dtype)
-        return torch.where(self._uninitialised.to(x.device), x, norm)
+        """Norm with frozen stats. Returns ``x`` unchanged until first update.
+
+        ``x`` must already be on the module's device: ``mean`` and ``var`` are
+        buffers that ``.to()`` moves once, and the per-call casts this used to
+        do were no-ops whenever that held.
+        """
+        if self._uninitialised:
+            return x
+        norm = (x - self.mean) * torch.rsqrt(self.var + self.eps)
+        return norm.clamp(-self.clip, self.clip).to(x.dtype)
 
 def modulate(x: torch.Tensor, shift: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
     """adaLN modulation: ``x * (1 + scale) + shift``.
