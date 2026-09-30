@@ -110,6 +110,35 @@ def check_divergence(
     return consecutive, consecutive >= patience
 
 
+def check_regression(
+    mean_return: float,
+    best_return: float | None,
+    consecutive: int,
+    *,
+    return_frac: float,
+    patience: int,
+) -> tuple[int, bool]:
+    """Bump a below-peak streak; flag it once one ``patience`` window completes.
+
+    The caller spends a decay and resets the streak per window, so a plateau
+    gets a smaller step before it gets the last word. Any eval that matches or
+    beats the peak resets the streak to zero. ``best_return`` None leaves it
+    untouched.
+
+    Distinct from :func:`check_divergence`, which catches a collapse. This one
+    catches forgetting: a run that peaked and then drifted down to a third of
+    the peak never trips a floor set at a fraction of the random return.
+    """
+    if best_return is None or best_return <= 0:
+        return 0, False
+    if mean_return >= return_frac * best_return:
+        return 0, False
+    consecutive += 1
+    if consecutive < patience:
+        return consecutive, False
+    return 0, True
+
+
 def render_episode_frames(
     env_id: str,
     policy: Callable[[np.ndarray], np.ndarray],

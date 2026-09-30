@@ -13,7 +13,7 @@ from lerobot.configs import PipelineFeatureType, PolicyFeature
 from lerobot.processor.pipeline import ProcessorStep, ProcessorStepRegistry
 from lerobot.utils.constants import ACTION, OBS_STATE
 
-from sjfpo.networks import RunningMeanStd
+from spectral_joint_policy.networks import RunningMeanStd
 
 
 @ProcessorStepRegistry.register(name="sjfpo_observation_normalizer")

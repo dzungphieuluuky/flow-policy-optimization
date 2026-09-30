@@ -21,7 +21,7 @@ import torch
 
 from lerobot.utils.constants import DONE, OBS_STATE, REWARD, TRUNCATED
 
-from sjfpo.configuration_sjfpo import SJFPOConfig
+from spectral_joint_policy.configuration_sjfpo import SJFPOConfig
 
 __all__ = ["Transition", "collect_chunks", "collect_chunks_vec"]
 
@@ -66,7 +66,7 @@ class StepTransition(dict):
     ``step_next_states`` is a runtime-only convenience for callers that read
     the record list directly. It is deliberately not part of the eight-key
     :data:`Transition` contract and is not preserved by ``copy`` or
-    serialization. The buffer path does not use it: per-step windows live in
+    serialisation. The buffer path does not use it: per-step windows live in
     :class:`RolloutBuffer`.
     """
 

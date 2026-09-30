@@ -40,7 +40,7 @@ for i in range(torch.cuda.device_count()):
     print(f'device {i}   {p.name}  sm_{p.major}{p.minor}  '
           f'{p.total_memory/2**30:.1f} GiB  SMs={p.multi_processor_count}')
 import sys; sys.path.insert(0,'src')
-from sjfpo.utils import (is_rtx_1000_pro_blackwell, resolve_storage_dtype,
+from spectral_joint_policy.utils import (is_rtx_1000_pro_blackwell, resolve_storage_dtype,
                          resolve_compute_dtype, resolve_device)
 print('is_rtx_1000_pro_blackwell', is_rtx_1000_pro_blackwell())
 print('resolve_device            ', resolve_device())
@@ -69,18 +69,18 @@ CPU. Confirm each one fires rather than assume it.
 .venv/bin/python -c "
 import sys; sys.path.insert(0,'src')
 import torch, numpy as np
-from sjfpo.configuration_sjfpo import SJFPOConfig
-from sjfpo.train_sjfpo import build_policy
+from spectral_joint_policy.configuration_sjfpo import SJFPOConfig
+from spectral_joint_policy.train_sjfpo import build_policy
 cfg = SJFPOConfig()
 pol = build_policy(10, 2, cfg, device='cuda',
                    action_low=np.array([-2.,-2.]), action_high=np.array([2.,2.]))
-from sjfpo.modeling_sjfpo import build_optimizer
+from spectral_joint_policy.modeling_sjfpo import build_optimizer
 opt = build_optimizer(pol)
 print('optimizer impl     ', type(opt).__name__,
       'fused=' , [g.get('fused') for g in opt.param_groups])
 print('pinned staging     ', pol.obs_normalizer.mean.is_pinned() if hasattr(pol.obs_normalizer.mean,'is_pinned') else 'n/a')
 x = torch.randn(64,16,10, device='cuda')
-from sjfpo.utils import to_device_async, autocast_context
+from spectral_joint_policy.utils import to_device_async, autocast_context
 y = to_device_async(x, torch.device('cuda'))
 print('to_device_async    pinned_src=', y.is_cuda)
 print('autocast active    ', torch.is_autocast_enabled('cuda') if False else 'see below')
@@ -105,8 +105,8 @@ sys.path.insert(0, "src")
 import numpy as np, torch, gymnasium as gym
 import sjfpo.modeling_sjfpo as M
 import sjfpo.train_sjfpo as T
-from sjfpo.configuration_sjfpo import SJFPOConfig
-from sjfpo.train_sjfpo import build_policy
+from spectral_joint_policy.configuration_sjfpo import SJFPOConfig
+from spectral_joint_policy.train_sjfpo import build_policy
 from lerobot.utils.constants import OBS_STATE
 
 NE   = int(sys.argv[1]) if len(sys.argv) > 1 else 64
@@ -206,8 +206,8 @@ cat > ./tmp/prof_bwd.py <<'EOF'
 import sys; sys.path.insert(0, "src")
 import numpy as np, torch
 from torch.profiler import profile, ProfilerActivity, record_function
-from sjfpo.configuration_sjfpo import SJFPOConfig
-from sjfpo.train_sjfpo import build_policy
+from spectral_joint_policy.configuration_sjfpo import SJFPOConfig
+from spectral_joint_policy.train_sjfpo import build_policy
 import sjfpo.train_sjfpo as T
 
 cfg = SJFPOConfig()
@@ -222,7 +222,7 @@ full = {
   "action": torch.randn(n,H,A,generator=g).cuda(),
   "action_is_pad": torch.zeros(n,H,dtype=torch.bool).cuda(),
   "raw_advantages": torch.randn(n,generator=g).cuda(),
-  "normalized_advantages": torch.randn(n,generator=g).cuda(),
+  "normalised_advantages": torch.randn(n,generator=g).cuda(),
   "raw_returns": (torch.randn(n,generator=g)*10).cuda(),
   "raw_values": torch.randn(n,generator=g).cuda(),
   "normalizer_observations": torch.randn(n*H,D,generator=g).cuda(),
@@ -281,8 +281,8 @@ cat > ./tmp/prof_xfer.py <<'EOF'
 import sys; sys.path.insert(0, "src")
 import numpy as np, torch, gymnasium as gym
 from torch.profiler import profile, ProfilerActivity
-from sjfpo.configuration_sjfpo import SJFPOConfig
-from sjfpo.train_sjfpo import build_policy
+from spectral_joint_policy.configuration_sjfpo import SJFPOConfig
+from spectral_joint_policy.train_sjfpo import build_policy
 cfg = SJFPOConfig()
 NE = 64
 envs = gym.vector.SyncVectorEnv([lambda: gym.make("Reacher-v5") for _ in range(NE)])
@@ -330,7 +330,7 @@ cat > ./tmp/wavefront.py <<'EOF'
 import sys, collections; sys.path.insert(0, "src")
 import numpy as np, torch, gymnasium as gym
 import sjfpo.collector as C
-from sjfpo.collector import RolloutBuffer
+from spectral_joint_policy.collector import RolloutBuffer
 NE, H = int(sys.argv[1]), 16
 cfg   = C.get_default_config()
 envs  = gym.vector.SyncVectorEnv([lambda: gym.make(sys.argv[2]) for _ in range(NE)])
@@ -386,8 +386,8 @@ With DCT off it fails differently: `INTERNAL ASSERT FAILED at ATen/core/...`.
 cat > ./tmp/compile_probe.py <<'EOF'
 import sys, time; sys.path.insert(0, "src")
 import numpy as np, torch
-from sjfpo.configuration_sjfpo import SJFPOConfig
-from sjfpo.train_sjfpo import build_policy
+from spectral_joint_policy.configuration_sjfpo import SJFPOConfig
+from spectral_joint_policy.train_sjfpo import build_policy
 from lerobot.utils.constants import OBS_STATE
 cfg = SJFPOConfig()
 pol = build_policy(10, 2, cfg, device="cuda",
@@ -521,7 +521,7 @@ graph. Listed with the survey that found them so you can re-check the premise.
 | Site | Issue | Fix |
 |---|---|---|
 | `modeling_sjfpo.py:1129` | the **only** graph break in the codebase: `bool(torch.isfinite(loss).all())` | Hoist the finiteness guard out of the loss, or gate it on the tracker. Better than `capture_scalar_outputs=True`, which pulls a scalar sync into the graph. |
-| `networks.py:307-311` | the obs normalizer calls `.to(x.device)` on `mean`, `var`, and `_uninitialized` on **every forward** | These are buffers whose device never changes. Three redundant casts per forward. |
+| `networks.py:307-311` | the obs normalizer calls `.to(x.device)` on `mean`, `var`, and `_uninitialised` on **every forward** | These are buffers whose device never changes. Three redundant casts per forward. |
 | `dct_utils.py:36-38` | `_get_analysis_basis` rebuilds the DCT basis per call; it is `lru_cache`d but Dynamo **bypasses the cache and retraces it** (warns at `dct_utils.py:61` and `utils.py:93`, "silent incorrectness is a potential risk") | Precompute as a registered buffer. |
 
 ## Step 11 — allocator and VRAM

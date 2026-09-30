@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 from typing import Protocol
 
 import numpy as np
+
+_FEATURE_KEYS = ("input_features", "output_features")
 
 def compact_value(v) -> str:
     """Render a metric compactly for a wandb run name.
@@ -25,11 +28,28 @@ def compact_value(v) -> str:
     return str(v)
 
 
-def build_run_name(method: str, env_name: str, seed: int, cfg_dict: dict) -> str:
-    """wandb run name from method, env, seed, and key settings.
+def config_hash(cfg_dict: dict) -> str:
+    """Six hex chars over every config value, so no two configs share a name.
 
-    Only settings that distinguish runs get appended, so the name stays
-    readable in the UI. Form: ``method_env_sseed_tag_tag``.
+    The tags in ``build_run_name`` only cover the settings that usually vary, so
+    two runs differing in anything else (gamma, num_flow_tokens, tau) collided.
+    The feature dicts are excluded: they are fixed by the env and render badly
+    in a tensorboard path.
+    """
+    items = [
+        (key, compact_value(value))
+        for key, value in sorted(cfg_dict.items())
+        if key not in _FEATURE_KEYS
+    ]
+    return hashlib.sha256(repr(items).encode()).hexdigest()[:6]
+
+
+def build_run_name(method: str, env_name: str, seed: int, cfg_dict: dict) -> str:
+    """wandb run name from method, env, seed, key settings, and a config hash.
+
+    Form: ``method_env_sseed_tag_tag_hash``. The tags stay readable; the hash
+    makes the name unique per config, which is what tells two same-seed runs
+    apart in the UI.
     """
     tags: list[str] = []
     get = cfg_dict.get
@@ -45,8 +65,8 @@ def build_run_name(method: str, env_name: str, seed: int, cfg_dict: dict) -> str
         tags.append(f"eps{compact_value(v)}")
     if (v := get("num_mc_samples")) is not None:
         tags.append(f"mc{v}")
-    base = f"{method}_{env_name}_s{seed}"
-    return base if not tags else f"{base}_{'_'.join(tags)}"
+    parts = [f"{method}_{env_name}_s{seed}", *tags, config_hash(cfg_dict)]
+    return "_".join(parts)
 
 
 def eval_summary_metrics(

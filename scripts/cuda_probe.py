@@ -30,7 +30,7 @@ os.environ["WANDB_MODE"] = "offline"
 import torch  # noqa: E402
 import wandb  # noqa: E402
 
-from sjfpo.utils import is_rtx_1000_pro_blackwell, resolve_storage_dtype  # noqa: E402
+from spectral_joint_policy.utils import is_rtx_1000_pro_blackwell, resolve_storage_dtype  # noqa: E402
 
 KEEP = [
     # critic health: the primary signal

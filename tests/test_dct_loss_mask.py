@@ -5,10 +5,10 @@ import torch
 from lerobot.configs.types import FeatureType
 from lerobot.configs.policies import PolicyFeature
 
-from sjfpo.configuration_sjfpo import SJFPOConfig
-from sjfpo.dct_utils import velocity_to_action_steps
-from sjfpo.fpo_core import compute_cfm_loss
-from sjfpo.modeling_sjfpo import SJFPOPolicy
+from spectral_joint_policy.configuration_sjfpo import SJFPOConfig
+from spectral_joint_policy.dct_utils import velocity_to_action_steps
+from spectral_joint_policy.fpo_core import compute_cfm_loss
+from spectral_joint_policy.modeling_sjfpo import SJFPOPolicy
 
 HORIZON = 16
 ACTION_DIM = 3
