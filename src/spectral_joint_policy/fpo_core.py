@@ -183,14 +183,19 @@ def compute_cfm_loss(
     - divisor is ``action_dim``, the only axis a token aggregates
     - so masking cannot move the value
 
+    ``both`` returns ``(sample, token_mean)`` off one masked square. Callers
+    that want both would otherwise square and mask the ``[n, mc, K, d]``
+    difference twice.
+
     ``action_is_pad``: optional ``[batch, horizon]``, True where padded.
 
     - padded rows dropped
     - each sample renormalised by its executed count
     - so a short chunk keeps a full chunk's magnitude
 
-    Scalar for ``scalar``, else a per-sample loss tensor. ``ValueError`` if
-    velocity shapes disagree or ``reduce_mode`` is unknown.
+    Scalar for ``scalar``, a per-sample loss tensor for ``sample`` /
+    ``token_mean``, a pair for ``both``. ``ValueError`` if velocity shapes
+    disagree or ``reduce_mode`` is unknown.
     """
     if v_hat.shape != v_star.shape:
         raise ValueError(
@@ -213,23 +218,30 @@ def compute_cfm_loss(
     if reduce_mode == "scalar":
         return sq.mean() if n_valid is None else sq.sum() / n_valid.sum()
 
-    if reduce_mode == "sample":
+    if reduce_mode in ("sample", "both"):
         flat = sq.flatten(2)
         if cfg.cfm_loss_reduction == "mean":
-            return flat.mean(dim=-1) if n_valid is None else flat.sum(dim=-1) / n_valid
-        if cfg.cfm_loss_reduction == "sum":
-            return flat.sum(dim=-1)
-        total = flat.sum(dim=-1)
-        if n_valid is None:
-            return total / math.sqrt(flat.shape[-1])
-        return total / n_valid.sqrt()
+            sample = flat.mean(dim=-1) if n_valid is None else flat.sum(dim=-1) / n_valid
+        elif cfg.cfm_loss_reduction == "sum":
+            sample = flat.sum(dim=-1)
+        else:
+            total = flat.sum(dim=-1)
+            sample = (
+                total / math.sqrt(flat.shape[-1])
+                if n_valid is None
+                else total / n_valid.sqrt()
+            )
+        if reduce_mode == "sample":
+            return sample
+        return sample, sq.sum(dim=-1) / sq.shape[-1]
     if reduce_mode == "token_mean":
         # Per-token diagnostic. A token aggregates only action_dim, so dividing
         # by that keeps the value independent of token count. mask_sq already
         # zeroed the padded tokens.
         return sq.sum(dim=-1) / sq.shape[-1]
     raise ValueError(
-        f"reduce_mode={reduce_mode!r} must be 'scalar', 'sample', or 'token_mean'"
+        f"reduce_mode={reduce_mode!r} must be 'scalar', 'sample', 'token_mean', "
+        "or 'both'"
     )
 
 
@@ -320,5 +332,7 @@ def sample_action(
         for i in range(num_inference_steps):
             t_current = grid[i].reshape(1)
             v_hat = predict_velocity(x, t_current, condition)
-            x = x + dts[i] * v_hat
+            # addcmul, not x + dt*v: same value, one kernel instead of two, and
+            # this loop runs num_euler_steps times per policy call.
+            x = torch.addcmul(x, v_hat, dts[i])
     return x

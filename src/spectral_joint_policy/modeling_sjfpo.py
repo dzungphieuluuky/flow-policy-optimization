@@ -79,6 +79,17 @@ def value_huber_loss(
     )
 
 
+# Pack order of ``_gae_diagnostics``'s return dict, and the pack order of its
+# one device-to-host transfer. The trainer reads these by key.
+_GAE_DIAGNOSTIC_KEYS = (
+    "linked_frac",
+    "advantage_std",
+    "return_rms",
+    "advantage_std_fraction",
+    "budget_truncated_chunk_frac",
+)
+
+
 def _gae_diagnostics(
     env_id: torch.Tensor,
     terminated: torch.Tensor,
@@ -94,33 +105,38 @@ def _gae_diagnostics(
     nothing and the env_id sort is what makes the chain live.
     """
     n = env_id.numel()
-    linked = 0
-    if n > 1:
-        order = torch.argsort(env_id.to(torch.long), stable=True)
-        e = env_id.to(torch.long)[order]
-        t = terminated.to(torch.bool)[order]
-        u = truncated.to(torch.bool)[order]
-        linked = int(((e[1:] == e[:-1]) & ~(t[:-1] | u[:-1])).sum())
-    return {
-        "linked_frac": linked / max(n - 1, 1),
-        "advantage_std": float(advantages.float().std()) if n > 1 else 0.0,
-        "return_rms": float(raw_returns.float().pow(2).mean().sqrt()) if n else 0.0,
+    if n == 0:
+        return dict.fromkeys(_GAE_DIAGNOSTIC_KEYS, 0.0)
+    order = torch.argsort(env_id.to(torch.long), stable=True)
+    e = env_id.to(torch.long)[order]
+    ends = terminated.to(torch.bool)[order][:-1] | truncated.to(torch.bool)[order][:-1]
+    ret = raw_returns.float()
+    # Each field keeps the fp32 arithmetic it always had and is widened only
+    # here, so the packed values match the Python floats they replace exactly.
+    # The stack is float64; 5 numbers, so the wider transfer costs nothing.
+    zero = ret.double().new_zeros(())
+    # std is undefined below two samples; 0.0 there, as before. The fraction is
+    # 0/NaN without the guard, so it is gated on the same condition.
+    has_pair = n > 1
+    adv_std = advantages.float().std() if has_pair else zero
+    ret_std = ret.std().clamp_min(1e-8) if has_pair else zero
+    fields = [
+        # linked_frac: chunks the recursion joined, over the n-1 possible links.
+        ((e[1:] == e[:-1]) & ~ends).sum().double() / max(n - 1, 1),
+        adv_std,
+        ret.pow(2).mean().sqrt().double(),
         # A = R - V, so Var(A) <= Var(R), equal only when V is 0. 1.0 means the
         # critic is inert; it falls toward 1 - R^2 as the critic improves.
-        "advantage_std_fraction": (
-            float(advantages.float().std() / raw_returns.float().std().clamp_min(1e-8))
-            if n > 1
-            else 0.0
-        ),
+        adv_std / ret_std if has_pair else zero,
         # Budget cut, reported apart from chunk_truncated, the flag GAE reads.
         # Not truncated_chunk_frac: that one is derived from action_is_pad and
         # means "the chunk left action rows unexecuted".
-        "budget_truncated_chunk_frac": (
-            float(budget_truncated.to(torch.bool).float().mean())
-            if n and budget_truncated is not None
-            else 0.0
-        ),
-    }
+        budget_truncated.to(torch.bool).float().mean().double()
+        if budget_truncated is not None else zero,
+    ]
+    # One transfer, not one per field: float() on a device tensor is a blocking
+    # sync, and this runs once per rollout.
+    return dict(zip(_GAE_DIAGNOSTIC_KEYS, torch.stack(fields).tolist()))
 
 
 def _sample_spectral_eps(
@@ -169,7 +185,8 @@ def _mc_x_t(
     t = flatten_mc_timestep.expand(-1, -1, flow_shape[-1])
     noise = flatten_mc_noise.reshape(-1, *flow_shape)
     action = flatten_mc_action.reshape(-1, *flow_shape)
-    return (1.0 - t) * noise + t * action
+    # lerp, not (1-t)*noise + t*action: same value, one kernel instead of four.
+    return torch.lerp(noise, action, t)
 
 
 class SJFPOPolicy(PreTrainedPolicy):
@@ -330,13 +347,22 @@ class SJFPOPolicy(PreTrainedPolicy):
             # whole rollout, so == 500 was never hit and ema_ready() stayed
             # false forever. The gate makes it one-shot; without it every later
             # call re-hard-copied and threw away the running average.
-            for name, shadow in self._ema_shadow.items():
-                shadow.copy_(current[name].detach())
+            names = list(self._ema_shadow)
+            torch._foreach_copy_(
+                [self._ema_shadow[name] for name in names],
+                [current[name].detach() for name in names],
+            )
             self._ema_initialised = True
             return
         if global_step > self.config.ema_warmup_steps:
-            for name, shadow in self._ema_shadow.items():
-                shadow.mul_(decay).add_(current[name].detach(), alpha=1.0 - decay)
+            # One multi-tensor pass over the shadow rather than one per tensor.
+            names = list(self._ema_shadow)
+            torch._foreach_mul_([self._ema_shadow[name] for name in names], decay)
+            torch._foreach_add_(
+                [self._ema_shadow[name] for name in names],
+                [current[name].detach() for name in names],
+                alpha=1.0 - decay,
+            )
 
     @torch.no_grad()
     def update_target_critic(self) -> None:
@@ -355,14 +381,20 @@ class SJFPOPolicy(PreTrainedPolicy):
             self._target_critic_initialised = True
             return
         decay = self.config.critic_ema_decay
-        for target, online in zip(
-            self.target_critic.parameters(), self.critic.parameters()
-        ):
-            target.mul_(1.0 - decay).add_(online.detach(), alpha=decay)
-        for target, online in zip(
-            self.target_critic.buffers(), self.critic.buffers()
-        ):
-            target.copy_(online)
+        # Multi-tensor ops: the critic is 26 parameters, so a Python loop is 78
+        # launches per optimizer step against foreach's 28.
+        target_params = list(self.target_critic.parameters())
+        torch._foreach_mul_(target_params, 1.0 - decay)
+        torch._foreach_add_(
+            target_params, [p.detach() for p in self.critic.parameters()], alpha=decay
+        )
+        # The critic registers no buffers today (RMSNorm keeps a Parameter, and
+        # RunningMeanStd hangs off the policy), so this is usually empty --
+        # foreach rejects an empty list where the old zip() loop was a silent
+        # no-op. Kept so a future buffer follows the teacher.
+        target_buffers = list(self.target_critic.buffers())
+        if target_buffers:
+            torch._foreach_copy_(target_buffers, list(self.critic.buffers()))
 
     def ema_ready(self, global_step: int) -> bool:
         """Can the EMA shadow be used for evaluation yet?"""
@@ -386,13 +418,12 @@ class SJFPOPolicy(PreTrainedPolicy):
         if not self.ema_ready(global_step):
             return {}
         params = dict(self.actor.named_parameters())
-        displaced = {
-            name: param.detach().clone()
-            for name, param in params.items()
-            if name in self._ema_shadow
-        }
-        for name, shadow in self._ema_shadow.items():
-            params[name].copy_(shadow)
+        names = list(self._ema_shadow)
+        displaced = {name: params[name].detach().clone() for name in names}
+        torch._foreach_copy_(
+            [params[name] for name in names],
+            [self._ema_shadow[name] for name in names],
+        )
         return displaced
 
     @torch.no_grad()
@@ -401,8 +432,10 @@ class SJFPOPolicy(PreTrainedPolicy):
         if not displaced:
             return
         params = dict(self.actor.named_parameters())
-        for name, value in displaced.items():
-            params[name].copy_(value)
+        names = list(displaced)
+        torch._foreach_copy_(
+            [params[name] for name in names], [displaced[name] for name in names]
+        )
 
     def ema_state_dict(self) -> dict:
         """Export the EMA shadow. Returns decay, init flag, shadow params."""
@@ -713,10 +746,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             loss_mask, (v_old, v_star) = self.prepare_cfm_loss_inputs(
                 cfg, action_is_pad, v_old, v_star
             )
-            return (
-                compute_cfm_loss(v_old, v_star, cfg, "sample", loss_mask),
-                compute_cfm_loss(v_old, v_star, cfg, "token_mean", loss_mask),
-            )
+            return compute_cfm_loss(v_old, v_star, cfg, "both", loss_mask)
 
     def generate_rollout(
         self,
@@ -1127,10 +1157,10 @@ class SJFPOPolicy(PreTrainedPolicy):
             )
 
             adv_mc = normalised_advantages.float().unsqueeze(1)
-            l_new_token = compute_cfm_loss(v_new_r_f, v_star_f, cfg, "token_mean", loss_mask)
+            l_new, l_new_token = compute_cfm_loss(
+                v_new_r_f, v_star_f, cfg, "both", loss_mask
+            )
             ratio_token = compute_policy_ratio(l_old_token, l_new_token, cfg)
-
-            l_new = compute_cfm_loss(v_new_r_f, v_star_f, cfg, "sample", loss_mask)
             ratio = compute_policy_ratio(l_old, l_new, cfg, advantage=adv_mc)
             self.cfm_above_clamp_frac = (l_new > cfg.cfm_clamp).float().mean().detach()
 

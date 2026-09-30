@@ -164,6 +164,20 @@ This covers the large ones too: training output, profiler traces, and
 `torch.compile` caches. Point an existing tool at the repo path rather than
 letting it default elsewhere.
 
+Smoke and benchmark `scripts/train.py` runs go under `./tmp` with wandb
+offline, so nothing reaches the network:
+
+```
+WANDB_MODE=offline .venv/bin/python scripts/train.py \
+  --env Reacher-v5 --out_dir ./tmp/smoke --sjfpo.report_to all
+```
+
+`report_to` defaults to `all`, so the wandb import runs; `WANDB_MODE=offline`
+keeps it local (`./wandb/offline-run-*`). The tensorboard and wandb backends
+write to `./tensorboard` and `./wandb` in the repo root regardless of
+`--out_dir`, so those two directories collect the run output, not
+`--out_dir`.
+
 ## Diff Discipline
 
 Minimize the diff. Don't turn "Add X" into "rewrite the architecture." Before finishing: inspect the diff; remove unused imports, dead code, unnecessary comments/abstractions, and unrelated changes.

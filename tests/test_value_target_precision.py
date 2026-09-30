@@ -15,8 +15,7 @@ from lerobot.configs.types import FeatureType
 from spectral_joint_policy.configuration_sjfpo import SJFPOConfig
 from spectral_joint_policy.modeling_sjfpo import SJFPOPolicy
 from spectral_joint_policy.train_sjfpo import (
-    measure_boot_value_drift,
-    measure_value_target_drift,
+    measure_value_drift,
 )
 from spectral_joint_policy.utils import resolve_storage_dtype
 
@@ -86,7 +85,8 @@ def test_drift_diagnostics_take_the_bf16_observations_they_stored():
     """generate_rollout stores boot_observations in storage_dtype, bf16 on GPU.
 
     The diagnostics call the fp32-weight critic outside autocast, so they have to
-    cast up themselves. Both are called on GPU only, so CPU never caught it.
+    cast up themselves. Both metrics come off one forward, and both run on GPU
+    only, so CPU never caught it.
     """
     policy = _policy()
     obs = torch.randn(3, policy.config.n_obs_steps, 5)
@@ -95,6 +95,8 @@ def test_drift_diagnostics_take_the_bf16_observations_they_stored():
         "boot_values_start": policy.critic(obs).amin(dim=0).unsqueeze(1),
         "raw_returns": torch.randn(3),
     }
-    for drift in (measure_boot_value_drift, measure_value_target_drift):
-        value = drift(policy, batch, torch.device("cpu"))
-        assert torch.isfinite(value)
+    boot_delta, target_drift = measure_value_drift(
+        policy, batch, torch.device("cpu")
+    )
+    assert torch.isfinite(boot_delta)
+    assert torch.isfinite(target_drift)

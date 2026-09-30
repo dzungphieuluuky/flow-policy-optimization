@@ -295,7 +295,7 @@ class RolloutBuffer:
         other.n_steps = self.n_steps
         # The source may have grown past the destination's initial allocation.
         other.ensure_chunk_capacity(self.n_chunks)
-        for name in (
+        names = (
             "step_frames",
             "step_rewards",
             "step_terminated",
@@ -310,11 +310,19 @@ class RolloutBuffer:
             "chunk_budget_truncated",
             "chunk_clip_counts",
             "chunk_env_id",
-        ):
-            getattr(other, name)[: self.n_steps if name.startswith("step_") else self.n_chunks].copy_(
-                getattr(self, name)[: self.n_steps if name.startswith("step_") else self.n_chunks],
-                non_blocking=non_blocking,
-            )
+        )
+        # One multi-tensor copy rather than 14 launches. Only the active prefix
+        # moves, and step_* tensors are indexed by n_steps while the rest are
+        # indexed by n_chunks.
+        def prefix(buffer, name):
+            n = self.n_steps if name.startswith("step_") else self.n_chunks
+            return getattr(buffer, name)[:n]
+
+        torch._foreach_copy_(
+            [prefix(other, name) for name in names],
+            [prefix(self, name) for name in names],
+            non_blocking=non_blocking,
+        )
 
     def mark_incomplete(self, chunk_index: int) -> None:
         """Flag a chunk the rollout budget cut short.
@@ -396,17 +404,21 @@ def resolve_action_bounds(
 
 def scale_and_clip_chunk(
     proposed: torch.Tensor, low: torch.Tensor, range_: torch.Tensor
-) -> tuple[torch.Tensor, torch.Tensor, int]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Clamp a chunk to env bounds, then rescale to ``[-1, 1]``.
 
     ``range_`` is the precomputed ``high - low``, see :func:`resolve_action_bounds`.
-    Returns clipped actions, their rescaling, and the clipped element count.
+    ``proposed`` is ``[H, action_dim]`` for one chunk or ``[B, H, action_dim]``
+    for a whole policy wavefront, so the vec collector scales once per
+    wavefront instead of once per env.
+
+    Returns the clipped actions, their rescaling, and the clipped element count
+    per leading row: a 0-dim tensor for one chunk, ``[B]`` for a batch.
     """
     clip_mask = (proposed < low) | (proposed > low + range_)
-    clip_count = int(clip_mask.sum())
     executed = torch.clamp(proposed, min=low, max=low + range_)
     scaled = 2.0 * (executed - low) / range_ - 1.0
-    return executed, scaled, clip_count
+    return executed, scaled, clip_mask.sum(dim=(-2, -1))
 
 
 def build_warmup_window(
@@ -566,7 +578,7 @@ def propose_and_execute_chunk(
         scaled,
         rewards,
         done_kind,
-        clip_count,
+        int(clip_count),
         chunk_size,
         n_action_steps,
         step_next_states,
@@ -705,17 +717,19 @@ def collect_chunks_vec(
                         [torch.stack(tuple(windows[i]), dim=0) for i in need]
                     )
                 proposed = as_float_tensor(policy(states))
+                # One clamp-and-rescale for the whole wavefront, not one per
+                # env: the collector used to run B small tensor ops here.
+                executed_all, scaled_all, clip_counts_all = scale_and_clip_chunk(
+                    proposed, low, range_
+                )
                 for k, i in enumerate(need):
-                    executed, scaled, clip_count = scale_and_clip_chunk(
-                        proposed[k], low, range_
-                    )
                     execution_limit = min(
                         n_action_steps, targets[i] - executed_total[i]
                     )
                     cur[i] = (
-                        executed,
-                        scaled,
-                        clip_count,
+                        executed_all[k],
+                        scaled_all[k],
+                        int(clip_counts_all[k]),
                         states[k],
                         execution_limit,
                     )
@@ -892,7 +906,7 @@ def collect_chunks(
                     step_frames=step_frames[:n_exec],
                     terminated=done_kind == "terminated",
                     truncated=done_kind == "truncated",
-                    clip_count=clip_count,
+                    clip_count=int(clip_count),
                 )
                 if done_kind == "continue" and n_exec < n_action_steps:
                     # Cut short by the step budget. The env is still alive, so
