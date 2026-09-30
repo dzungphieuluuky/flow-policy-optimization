@@ -447,15 +447,13 @@ class StateConditioner(nn.Module):
     mean-pools over frequency, so bins get no identity. See REPORT.md
     item 11.
 
-    The frame path carries ``frame_norm`` so the critic's trunk is normalized
-    the way the actor's DiT already is. Lyle et al. (2024) rank normalization
-    layers above last-layer resets and Shrink-and-Perturb for preserving
-    plasticity, and this module is the entirety of the critic's trunk --
-    ``num_critics`` independent copies of it. The same argument applied to the
-    same structure also normalizes the actor's conditioner.
+    ``frame_norm`` normalizes the frame path. The critic's entire trunk is
+    ``num_critics`` copies of this module, and it was the one unnormalized
+    trunk in the model. Lyle et al. (2024) rank normalization above resets and
+    Shrink-and-Perturb for plasticity. Also normalizes the actor's conditioner.
 
-    Adding ``frame_norm`` means a checkpoint written before it carries no
-    ``frame_norm.weight``, so it will not load strict.
+    A checkpoint from before this has no ``frame_norm.weight`` and will not
+    resume; the failure surfaces as an optimizer group-size error.
     """
 
     def __init__(self, obs_dim: int, hidden_dim: int):

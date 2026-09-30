@@ -55,7 +55,7 @@ def mini_batch_indices(
     n_mb = max(1, min(int(num_mini_batches), n))
     device = torch.device(device)
     for _ in range(max(1, int(num_learning_epochs))):
-        perm = torch.randperm(n, device=device)          # <- move inside
+        perm = torch.randperm(n, device=device)
         for i in range(n_mb):
             start = (i * n) // n_mb
             stop = ((i + 1) * n) // n_mb

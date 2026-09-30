@@ -98,22 +98,13 @@ class SJFPOConfig(PreTrainedConfig):
     # of them. Bounds the per-sample gradient, which is what lets a few
     # large-residual chunks stop owning critic_grad_norm_preclip.
     value_huber_delta: float = 1.0
-    # rsl-rl's default. These were 200.0, which never bound: the comment below
-    # recorded the critic norm running ~45-170 and the actor's 0.14-3.7, and the
-    # bound was raised past both instead of lowered, so there was no gradient
-    # clipping at all and a joint norm could reach 400.
-    #
-    # A global rescale is close to a no-op under AdamW, which is why the old
-    # 200.0 was not harmless and why lowering it is not either: scaling every
-    # critic gradient by 1/170 moved the trajectory 1.2e-04 per parameter,
-    # while a single unclipped 1e4 spike moved it 9.0e-02, ~750x more. So the
-    # threshold does not set the critic's step size -- it decides whether a
-    # transient blow-up is allowed to pollute the second-moment estimate.
+    # rsl-rl's default. These were 200.0, which never bound a joint norm of up
+    # to 400. A global rescale is near-inert under AdamW, so the threshold does
+    # not set the step size; it decides whether a transient spike is allowed to
+    # pollute the second-moment estimate. Measured: a 1/170 rescale moved the
+    # trajectory 1.2e-04 per parameter, one 1e4 spike moved it 9.0e-02.
     max_grad_norm: float = 1.0
-    # Clipped separately from the actor on purpose: the critic's norm is two
-    # orders larger, so a shared bound would be spent entirely on it. Under
-    # AdamW a shared rescale would not in fact starve the actor, but keeping the
-    # two bounds separate preserves the option of setting them differently.
+    # Clipped separately from the actor: the critic's norm is two orders larger.
     critic_max_grad_norm: float | None = 1.0
 
     # qc and TD-JEPA use 0.005 but refresh over offline batches. This loop is

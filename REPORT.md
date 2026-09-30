@@ -46,18 +46,22 @@ single eval number settle nothing.
 
 | # | finding | status |
 |---|---|---|
-| 1 | Actor and critic clipped separately, so `max_grad_norm` is 2x loose | **live** — `train_sjfpo.py:473-487` |
+| 1 | Actor and critic clipped separately, so `max_grad_norm` is 2x loose | **resolved** — `critic_max_grad_norm` is a separate field; both are 1.0 (was 200.0, which never bound) |
 | 2 | Critic target non-stationary via `return_normalizer` | **resolved** — no `return_normalizer` in the tree; GAE and the value loss are both on raw returns |
 | 3 | `forward` docstring contradicts `cfm_mask_unexecuted` | **resolved** — docstring rewritten |
 | 4 | Missing `return_normalizer.*` key resumes silently inert | **resolved** — the key does not exist |
-| 5 | Stale `# <- move inside` marker | **live** — `train_sjfpo.py:74` |
+| 5 | Stale `# <- move inside` marker | **resolved** — deleted from `train_sjfpo.py` |
 | 6 | `collect_steps` vs `global_step` disagree | **resolved** — `collect_steps` is gone |
 | 7 | `compute_policy_loss` dead | **resolved** — deleted |
-| 8 | `reduction="none"` unreachable | **live** — `modeling_sjfpo.py:951` |
-| 9 | Value-loss docstring says MSE, code was Huber | **resolved** — the code is now `torch.square` (`modeling_sjfpo.py:1135`), so the docstring was right and is kept |
+| 8 | `reduction="none"` unreachable | **live** — `modeling_sjfpo.py:1208`. `reduction` is a separate param from `cfm_loss_reduction`, which is validated to `mean\|sum\|sqrt` and never reaches it |
+| 9 | Value-loss docstring says MSE, code was Huber | **resolved** — the code is now `torch.square`, so the docstring was right and is kept |
 | 10 | `top_p` in docstring | **resolved** — no `top_p` in the tree |
-| 11 | Conditioner spectral branch has no frequency identity | **live** — `freq_encoding` runs on the feature axis, then mean-pools over frequency |
-| 12 | `step_truncated` written but never read | **live** — now exported in `collector.py:309`; no consumer found |
+| 11 | Conditioner spectral branch has no frequency identity | **live** — `freq_encoding` runs on the feature axis, then mean-pools over frequency. `frame_norm` covers the frame path, not this |
+| 12 | `step_truncated` written but never read | **resolved** — both `step_terminated` and `step_truncated` deleted from the collector |
+| 13 | Critic trunk had no normalization | **resolved** — `frame_norm` added between `frame_proj` and `frame_mlp` |
+| 14 | `max_grad_norm` 200.0 gave no clipping at all | **resolved** — both bounds are 1.0; the actor clip now binds on 44% of updates |
+| 15 | `configs/sjfpo.yaml` did not parse and had drifted from the dataclass | **resolved** — regenerated from `SJFPOConfig`; 67 keys, zero mismatches |
+| 16 | Rollout collection did O(n_obs) work per env-step | **resolved** — ring-buffered obs window, batched writes, one gather for actions. 378 ms -> 114 ms at 64 envs |
 
 ### Still-open, worth doing
 
@@ -147,9 +151,44 @@ batch is consistent; the budget is not a true env-step budget.
 ### Not settled
 
 - The gymnasium autoreset semantics behind the S3 above.
-- Whether `step_truncated` should exist at all. It is written in two places and
-  read by nothing outside `as_dict`; after the split it is env-only and
-  diagnostics-only. Possibly dead state.
+
+---
+
+## Late-training regression (300k steps, `regressed=True`)
+
+Several runs peak near 300k steps, then deteriorate until the regression
+detector fires. Not classical catastrophic forgetting: this is single-task
+on-policy, so there is no earlier task to forget.
+
+Likely causes, ranked by the evidence available at 8k steps:
+
+| candidate | 8k-step evidence | verdict |
+|---|---|---|
+| trust region broke (PFO) | `clipfrac` 0.07-0.09, healthy | not at 8k; unread at 300k |
+| CFM loss saturated | `cfm_above_clamp_frac` 0.0000 | ruled out |
+| critic cannot track the target | `returns_rms` 9.7 -> 28.7 in 8k steps, 3x | strongest candidate |
+| normalization loss (Lyle 2024) | critic trunk had no norm; `explained_var` negative at 1M | partly addressed by `frame_norm` |
+
+`explained_var` flipped sign between two 8k-step runs (+0.106, -0.027) at one
+seed. It does not discriminate at that horizon. Read `clipfrac` and
+`explained_var` at 200k/300k/350k before choosing a fix.
+
+**Reward normalization: keep raw returns.** With `normalize_advantage=True`
+the whitened advantage is invariant to reward scale (max deviation 2.4e-7 over
+scales 0.01 to 100), so normalizing rewards cannot change the policy gradient.
+It can only affect the critic, and naive standardization measurably hurts it:
+at equal head scale, `explained_var` fell 0.60 -> 0.01, because the head must
+traverse the output scale that Adam cannot cover in the available steps.
+
+PopArt would fix the target scale while preserving predictions, but it is not a
+drop-in: `Critic.forward` returns the head output directly with no affine
+wrapper, so `V = y_norm * sigma + mu` is a restructuring, and it would break
+every checkpoint again. Deferred.
+
+Applied: gradient bounds 200.0 -> 1.0 (with the actor/critic split), clipped
+value loss on, `num_learning_epochs` 4 -> 2 (PFO shows more epochs per batch
+accelerate feature-rank loss), `frame_norm` on the critic trunk. None of these
+is verified against the 300k peak.
 
 ---
 
@@ -164,6 +203,11 @@ formula, checked the sort/gather/unsort ordering, and checked where the
 normalizer is updated relative to the values that consume it.
 
 ### S2 — the critic's regression target is non-stationary
+
+**Resolved.** The `return_normalizer` no longer exists; the critic regresses on
+raw returns. Kept because the *question* is still open: `returns_rms` still
+grows ~3x in the first 8k steps, so the target scale is still moving, just
+without a normalizer in the way. See "Late-training regression" above.
 
 The critic is trained to predict `return_normalizer(raw_returns)`, and
 `return_normalizer.update` is called **every rollout**, on that rollout's
@@ -448,31 +492,32 @@ general.
 
 **Historical.** Superseded by the "Current state" table at the top of this file.
 The findings below were true when written; several now describe deleted code.
+See the audit table near the top for current status.
 
 Five passes, one stage each. Nothing implemented; this pass list is findings
 only. 51 tests, no new failures.
 
 ## S2 — biases training, worth fixing
 
-| # | finding | pass |
-|---|---|---|
-| 1 | Actor and critic gradient-clipped **separately**, so `max_grad_norm` bounds each, not the joint. Logged gap is 12x, so the bound is 2x loose. rsl-rl clips jointly. | 3 |
-| 2 | The critic's regression target is **non-stationary**: `return_normalizer.update` runs every rollout, so the target's scale moves while the critic is fit to it. Consistent with `value_pred_std 0.44` vs `value_target_std 1.00`. | 2 |
-| 3 | `forward`'s docstring asserts the unexecuted suffix **must** contribute to the ratio. With `cfm_mask_unexecuted=True` (default) it is masked out. The docstring states the reverse of the code. | 4 |
-| 4 | A missing `return_normalizer.*` key in a checkpoint resumes **silently inert** rather than erroring. | 5 |
+| # | finding | pass | now |
+|---|---|---|---|
+| 1 | Actor and critic gradient-clipped **separately**, so `max_grad_norm` bounds each, not the joint. Logged gap is 12x, so the bound is 2x loose. rsl-rl clips jointly. | 3 | **resolved** — separate `critic_max_grad_norm`, both 1.0 |
+| 2 | The critic's regression target is **non-stationary**: `return_normalizer.update` runs every rollout, so the target's scale moves while the critic is fit to it. Consistent with `value_pred_std 0.44` vs `value_target_std 1.00`. | 2 | **resolved** — normalizer deleted |
+| 3 | `forward`'s docstring asserts the unexecuted suffix **must** contribute to the ratio. With `cfm_mask_unexecuted=True` (default) it is masked out. The docstring states the reverse of the code. | 4 | **resolved** — docstring rewritten |
+| 4 | A missing `return_normalizer.*` key in a checkpoint resumes **silently inert** rather than erroring. | 5 | **resolved** — the key does not exist |
 
 ## S3 — latent, cosmetic, or dead
 
-| # | finding | pass |
-|---|---|---|
-| 5 | Stale `# <- move inside` marker in `mini_batch_indices` | 2 |
-| 6 | `collect_steps` and `global_step` count nominal vs executed steps | 2 |
-| 7 | ~~`compute_policy_loss` is dead and duplicates the inline surrogate~~ **RESOLVED** (deleted) | 3 |
-| 8 | `reduction="none"` is unreachable and guarded against | 3 |
-| 9 | `forward` docstring: "value loss is a mean squared error" — it is Huber | 4 |
-| 10 | `forward` docstring: token count "derived from `top_p * H`" — no `top_p` exists | 4 |
-| 11 | The conditioner's spectral branch mean-pools over frequency and encodes along the feature axis, so it has no frequency identity | 4 |
-| 12 | `step_truncated` is written in two places, read by nothing | 1 |
+| # | finding | pass | now |
+|---|---|---|---|
+| 5 | Stale `# <- move inside` marker in `mini_batch_indices` | 2 | **resolved** — deleted |
+| 6 | `collect_steps` and `global_step` count nominal vs executed steps | 2 | **resolved** — `collect_steps` gone |
+| 7 | ~~`compute_policy_loss` is dead and duplicates the inline surrogate~~ **RESOLVED** (deleted) | 3 | — |
+| 8 | `reduction="none"` is unreachable and guarded against | 3 | **live** — `modeling_sjfpo.py:1208` |
+| 9 | `forward` docstring: "value loss is a mean squared error" — it is Huber | 4 | **resolved** — the code uses `torch.square`, the docstring was right |
+| 10 | `forward` docstring: token count "derived from `top_p * H`" — no `top_p` exists | 4 | **resolved** — no `top_p` in the tree |
+| 11 | The conditioner's spectral branch mean-pools over frequency and encodes along the feature axis, so it has no frequency identity | 4 | **live** — `frame_norm` covers the frame path, not this |
+| 12 | `step_truncated` is written in two places, read by nothing | 1 | **resolved** — both terminated/truncated deleted |
 
 ## Suspicions raised and then refuted
 
