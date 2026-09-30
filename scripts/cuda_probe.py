@@ -124,11 +124,11 @@ def main() -> None:
         "--eval_steps", os.environ.get("STEPS", "32768"),
         "--save_steps", os.environ.get("STEPS", "32768"),
         "--wandb_enabled", "true",
-        "--out_dir", os.environ.get("OUT_DIR", "/tmp/cuda_probe"),
+        "--out_dir", os.environ.get("OUT_DIR", "./tmp/cuda_probe"),
         "--sjfpo.chunks_per_update", "256",
         "--sjfpo.num_envs", "8",
         "--sjfpo.batch_size", "64",
-        "--sjfpo.num_learning_epochs", "4",
+        "--sjfpo.num_learning_epochs", "2",
         "--sjfpo.use_dct_transform", dct,
     ]
     if dct == "true":
