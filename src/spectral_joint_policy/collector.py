@@ -114,11 +114,20 @@ class RolloutBuffer:
         self.action_horizon = action_horizon
         self.action_dim = action_dim
         self.pin_memory = pin_memory
+        # Chunk capacity the previous rollout settled on; 0 until then.
+        self.last_chunk_capacity = 0
         if chunk_capacity is None:
             # A rollout runs one chunk per action_horizon steps, plus one per
             # episode end, because a chunk cut by a terminal is short. The +8
             # absorbs that; ensure_chunk_capacity covers the rest.
-            chunk_capacity = -(-max_steps // action_horizon) + 8
+            #
+            # After the first rollout, size from what the last one actually
+            # used: a policy that falls every 9 steps makes ~17x the chunks
+            # that max_steps // action_horizon predicts, and every miss
+            # reallocates and re-pins all ten chunk tensors.
+            chunk_capacity = self.last_chunk_capacity or (
+                -(-max_steps // action_horizon) + 8
+            )
         if chunk_capacity < 1:
             raise ValueError("chunk_capacity must be positive")
         self.chunk_capacity = chunk_capacity
@@ -126,10 +135,13 @@ class RolloutBuffer:
         # One frame per executed step. The obs windows live on the chunk axis:
         # envs interleave, so a chunk's obs_steps frames are not obs_steps
         # adjacent rows and cannot be gathered back out of a step timeline.
+        #
+        # There is deliberately no step_terminated / step_truncated pair: the
+        # collector wrote one row per chunk into a max_steps row tensor, and
+        # nothing ever read it back. The per-chunk chunk_terminated /
+        # chunk_truncated flags are what the GAE backup consumes.
         self.step_frames = self.zeros_for((max_steps, obs_dim), _OBS_DTYPE)
         self.step_rewards = self.zeros_for((max_steps,), _REWARD_DTYPE)
-        self.step_terminated = self.zeros_for((max_steps,), torch.bool)
-        self.step_truncated = self.zeros_for((max_steps,), torch.bool)
 
         self.chunk_state = self.zeros_for(
             (chunk_capacity, obs_steps, obs_dim), _OBS_DTYPE
@@ -154,10 +166,21 @@ class RolloutBuffer:
         self.n_chunks = 0
         self.n_steps = 0
 
+    # Pinning costs a cudaHostAlloc per tensor, so it is only worth it once the
+    # tensor is big enough to DMA. Three of the fourteen qualify; the rest are
+    # index and flag vectors under 300 KiB, where the pinning is pure overhead.
+    _PIN_MIN_BYTES = 1 << 20
+
     def zeros_for(self, shape: tuple[int, ...], dtype: torch.dtype) -> torch.Tensor:
         """One zero tensor in this buffer's layout, dtype and device."""
+        nbytes = dtype.itemsize
+        for dim in shape:
+            nbytes *= dim
         return torch.zeros(
-            *shape, dtype=dtype, device=self.device, pin_memory=self.pin_memory
+            *shape,
+            dtype=dtype,
+            device=self.device,
+            pin_memory=self.pin_memory and nbytes >= self._PIN_MIN_BYTES,
         )
 
     def ensure_chunk_capacity(self, needed: int) -> None:
@@ -212,7 +235,12 @@ class RolloutBuffer:
         )
 
     def reset(self) -> None:
-        """Reset cursors, keep the big storage tensors."""
+        """Reset cursors, keep the big storage tensors.
+
+        Remembers the capacity this rollout settled on so the next allocation
+        starts there instead of re-growing from the nominal step budget.
+        """
+        self.last_chunk_capacity = self.chunk_capacity
         self.n_chunks = 0
         self.n_steps = 0
 
@@ -278,8 +306,6 @@ class RolloutBuffer:
         self.chunk_budget_truncated[chunk_index] = False
         self.chunk_clip_counts[chunk_index] = int(clip_count)
         self.chunk_env_id[chunk_index] = int(env_id)
-        self.step_terminated[offset + n_exec - 1] = terminated
-        self.step_truncated[offset + n_exec - 1] = truncated
         self.n_chunks += 1
         self.n_steps += n_exec
         return chunk_index
@@ -298,8 +324,6 @@ class RolloutBuffer:
         names = (
             "step_frames",
             "step_rewards",
-            "step_terminated",
-            "step_truncated",
             "chunk_state",
             "chunk_next_state",
             "chunk_actions",
@@ -347,8 +371,6 @@ class RolloutBuffer:
         return {
             "step_frames": self.step_frames[:n_steps],
             "step_rewards": self.step_rewards[:n_steps],
-            "step_terminated": self.step_terminated[:n_steps],
-            "step_truncated": self.step_truncated[:n_steps],
             "chunk_state": self.chunk_state[:n_chunks],
             "chunk_next_state": self.chunk_next_state[:n_chunks],
             "chunk_actions": self.chunk_actions[:n_chunks],
@@ -666,11 +688,19 @@ def collect_chunks_vec(
 
     try:
         obs, _ = envs.reset(seed=[seed + i for i in range(n)])
+        obs_dim = int(obs.shape[-1])
+        # envs.step hands back a [n, obs] array. Everything below indexes it
+        # whole instead of row by row, and the obs window is a ring cursor
+        # rather than a per-step slide, so a vec step costs a handful of
+        # dispatches instead of twelve per env.
+        obs0 = torch.from_numpy(np.asarray(obs, dtype=np.float32))
         if buffer is not None:
-            obs_dim = int(obs.shape[-1])
             windows = torch.zeros(n, n_obs_steps, obs_dim, dtype=_OBS_DTYPE)
-            for i in range(n):
-                windows[i].copy_(as_float_tensor(obs[i]).expand_as(windows[i]))
+            windows.copy_(obs0[:, None, :].expand_as(windows))
+            # Slot the next frame of env i is written to. The window is kept
+            # chronological by rolling it left by wpos[i] when its chunk
+            # closes, so a write is O(1) rather than sliding n_obs rows.
+            wpos = torch.zeros(n, dtype=torch.long)
             # Reused per chunk: slot ``pos`` is overwritten on every chunk of
             # env i, so ``add_chunk`` must consume ``reward_windows[i,
             # :n_exec]`` before env i's next chunk.
@@ -683,7 +713,24 @@ def collect_chunks_vec(
             reward_windows = None
             step_frames = None
         cur: list = [None] * n
-        pos = [0] * n
+        pos_t = torch.zeros(n, dtype=torch.long)
+        # Action chunks for the wavefront, indexed by env. Row n is a zero row
+        # so an env with no chunk reads zeros, which is what the old
+        # actions_t.zero_() produced.
+        plan = torch.zeros(n + 1, chunk_size, act_dim, dtype=torch.float32)
+        env_rows = torch.arange(n)
+        live_t = torch.zeros(n, dtype=torch.bool)
+        # roll_table[w][j] == (w + j) % n_obs_steps, so restoring a window's
+        # chronological order is one row lookup instead of an arange, an add and
+        # a modulo per closing chunk. Rows that would wrap dominate when chunks
+        # are short, which is exactly when the old per-step slide was worst.
+        roll_table = (
+            torch.arange(n_obs_steps)[:, None]
+            + torch.arange(n_obs_steps)[None, :]
+        ) % n_obs_steps
+        # Recomputed only when the set of stepping envs changes, which is at
+        # chunk boundaries, not every step.
+        live_idx: torch.Tensor | None = None
         rewards: list[list[float]] | None = None if buffer is not None else [[] for _ in range(n)]
         step_states: list[list[torch.Tensor]] | None = (
             None if buffer is not None else [[] for _ in range(n)]
@@ -698,7 +745,10 @@ def collect_chunks_vec(
         prev_chunk_indices: list[int | None] = [None] * n
 
         actions_t = torch.zeros((n, act_dim), dtype=torch.float32)
-        while any(executed_total[i] < targets[i] for i in range(n)):
+        # The loop condition's whole job is how many env slots are still short.
+        # any(... for i in range(n)) rebuilt that every vec step.
+        remaining = sum(targets)
+        while remaining:
             need = [
                 i
                 for i in range(n)
@@ -711,6 +761,8 @@ def collect_chunks_vec(
             if need:
                 if buffer is not None:
                     # Advanced indexing already returns a copy, so no clone.
+                    # wpos is 0 here: the window was rolled when the previous
+                    # chunk of this env closed, or refilled on autoreset.
                     states = windows[need]
                 else:
                     states = torch.stack(
@@ -722,6 +774,9 @@ def collect_chunks_vec(
                 executed_all, scaled_all, clip_counts_all = scale_and_clip_chunk(
                     proposed, low, range_
                 )
+                if buffer is not None:
+                    plan[torch.as_tensor(need)] = executed_all
+                    pos_t[torch.as_tensor(need)] = 0
                 for k, i in enumerate(need):
                     execution_limit = min(
                         n_action_steps, targets[i] - executed_total[i]
@@ -733,16 +788,19 @@ def collect_chunks_vec(
                         states[k],
                         execution_limit,
                     )
-                    pos[i] = 0
+                    if buffer is not None:
+                        pos_t[i] = 0
+                        live_t[i] = True
                     if rewards is not None:
                         rewards[i] = []
                     if step_states is not None:
                         step_states[i] = []
+                live_idx = None  # the stepping set just changed
 
-            actions_t.zero_()
-            for i in range(n):
-                if cur[i] is not None:
-                    actions_t[i] = cur[i][0][pos[i]]
+            # One gather replaces the n select+copy_ pairs this used to be.
+            # Envs with no chunk read row n, the zero row.
+            row = torch.where(live_t, env_rows, torch.full_like(env_rows, n))
+            actions_t.copy_(plan[row, pos_t.clamp(max=chunk_size - 1)])
             # No early-out: envs flagged ``awaiting`` have ``cur[i] is None`` but
             # still need this step() to take their reset observation (NEXT_STEP).
             # The while exits once every env is done and no resets are pending.
@@ -753,45 +811,70 @@ def collect_chunks_vec(
             trunc_np = np.asarray(trunc, dtype=bool)
             done_np = term_np | trunc_np
             rew_np = np.asarray(rew, dtype=np.float32)
+            obs_t = torch.from_numpy(np.asarray(obs, dtype=np.float32))
+
+            if buffer is not None and live_idx is None:
+                live_idx = env_rows[live_t]
+            if buffer is not None and live_idx is not None and live_idx.numel():
+                # Three scatters for the whole vec step. The old loop rebuilt a
+                # tensor per env from obs[i] and slid the window per env per
+                # step; this is the same writes with the batch envs.step
+                # already handed us.
+                p = pos_t[live_idx]
+                reward_windows[live_idx, p] = torch.from_numpy(rew_np)[live_idx]
+                step_frames[live_idx, p] = obs_t[live_idx]
+                windows[live_idx, wpos[live_idx]] = obs_t[live_idx]
+                pos_t[live_idx] = p + 1
+                wpos[live_idx] += 1
 
             for i in range(n):
                 if awaiting[i]:
                     if buffer is not None:
-                        windows[i].copy_(as_float_tensor(obs[i]).expand_as(windows[i]))
+                        windows[i].copy_(obs_t[i].expand_as(windows[i]))
+                        wpos[i] = 0
                     else:
                         windows[i] = build_warmup_window(
                             as_float_tensor(obs[i]), n_obs_steps
                         )
                     awaiting[i] = False
+                    live_idx = None
                     continue
                 if cur[i] is None:
                     continue
                 if buffer is not None:
-                    reward_windows[i, pos[i]] = float(rew_np[i])
-                    windows[i, :-1].copy_(windows[i, 1:].clone())
-                    windows[i, -1].copy_(as_float_tensor(obs[i]))
-                    step_frames[i, pos[i]].copy_(windows[i, -1])
+                    pass  # reward, frame and window already written above
                 else:
                     rewards[i].append(float(rew_np[i]))
+                    pos_t[i] += 1
                     windows[i].append(as_float_tensor(obs[i]))
                     step_states[i].append(torch.stack(tuple(windows[i]), dim=0))
-                pos[i] += 1
+                n_exec = int(pos_t[i])
                 execution_limit = cur[i][4]
-                if done_np[i] or pos[i] >= execution_limit:
+                if done_np[i] or n_exec >= execution_limit:
                     _executed, scaled, clip_count, replan, _limit = cur[i]
-                    n_exec = pos[i]
                     if term_np[i]:
                         done_kind = "terminated"
                     elif trunc_np[i]:
                         done_kind = "truncated"
                     else:
                         done_kind = "continue"
+                    if buffer is not None:
+                        # Restore chronological order once per closing chunk.
+                        # Frames went in at slot 0, 1, ... n_exec, so a left roll
+                        # by the cursor puts the oldest frame back at row 0.
+                        windows[i].copy_(
+                            windows[i][roll_table[int(wpos[i]) % n_obs_steps]]
+                        )
+                        wpos[i] = 0
+                        live_t[i] = False
+                        live_idx = None
                     next_state = (
                         windows[i]
                         if buffer is not None
                         else torch.stack(tuple(windows[i]), dim=0)
                     )
                     executed_total[i] += n_exec
+                    remaining -= n_exec
                     if buffer is not None:
                         prev_chunk_indices[i] = buffer.add_chunk(
                             state=replan,
