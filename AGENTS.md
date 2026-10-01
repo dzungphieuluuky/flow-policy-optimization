@@ -265,9 +265,50 @@ State the builtin you checked against in the comment when the hand-rolled form
 would have been obvious. Verify the equivalence numerically once; do not assume
 it. If a builtin genuinely cannot express it, say so in the comment.
 
+## JAX builtins first
+
+Same rule for JAX code, and it matters more there: **memory of the `jnp` surface
+is not reliable in either direction.** During this port, in jax 0.11.2 /
+flax 0.12.10, all of these turned out to be wrong:
+
+| assumed | actual |
+|---|---|
+| `jax.nn.rms_norm(x, -1, w, eps)` | **does not exist.** flax has `RMSNorm`, but only as a Module, so it cannot hold a stacked `[num_members, hidden]` weight |
+| `jnp.lerp(a, b, t)` | **does not exist** |
+| `jnp.rsqrt(x)` | **does not exist** — use `1.0 / jnp.sqrt(x)` |
+| `jax.struct.PyTreeNode` | **does not exist** — `flax.struct.dataclass`, and a static field needs `field(pytree_node=False)` |
+| `jnp.clip(x, max=c)` (numpy-1 style) | **works**, numpy-2 keyword |
+| `nnx.vmap(SomeModule)` maps the call | it stacks the state and **not** the call |
+
+Before hand-writing anything in JAX:
+
+1. **Check the installed package.** `dir(jnp)`, `inspect.signature(fn)`, or read
+   the docstring. This is the only authoritative answer and it costs one command.
+   Assume nothing about what exists.
+2. **Search [lockwo/awesome-jax](https://github.com/lockwo/awesome-jax)** for a
+   library that already does it — Flax, Equinox, Brax, Orbax, chex, jaxtyping
+   and friends. That list is a directory of *libraries*, not of `jnp` functions,
+   so it answers "which package?" and never "does this function exist?".
+3. **Only then hand-roll**, and say in the comment which builtin and which library
+   you checked. One missed builtin here is not a slow kernel, it is a wrong
+   function: `F.huber_loss`'s linear branch is `delta * (|x| - 0.5*delta)`, not
+   `|x| - 0.5*delta`, and the two agree only at `delta == 1`.
+
+Two JAX-specific hazards that the equivalent hand-rolled torch code does not have:
+
+- **A Python-int-keyed cache over `jnp` values is not safe.** Whichever trace
+  fills it first stores a *tracer*, and the next trace to read it is handed a
+  value from a closed-over jaxpr. `@lru_cache` over a table of constants is a
+  latent `UnexpectedTracerError`.
+- **`bool()` on a traced value fails.** Value validation has to be skipped under
+  tracing, or moved outside `jit`. Shapes are static and can be checked freely.
+
 ## Anti-Patterns
 
 Avoid `SomethingManager`, `SomethingFactory`, `SomethingService`, wrapper chains, multi-layer config loading, broad `except Exception`, and long `isinstance` chains. Do not confuse abstraction with quality. Hand-rolled tensor math that a builtin already does.
+
+Also: hand-rolled JAX code that a library already does, and an `lru_cache` over
+traced `jnp` values (see **JAX builtins first**).
 
 ## Workflow
 
