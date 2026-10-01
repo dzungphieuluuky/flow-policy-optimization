@@ -575,12 +575,13 @@ class SJFPOFlowModel(nn.Module):
         the growth is what precedes the rank drop, so it moves earlier than
         performance does.
         """
-        total = torch.zeros((), dtype=torch.float32)
-        count = 0
-        for param in self.parameters():
-            total += param.detach().abs().sum(dtype=torch.float32)
-            count += param.numel()
-        return total / max(count, 1)
+        # Stacked rather than accumulated into a running total: an accumulator
+        # has to be allocated on the params' device, and a scalar literal like
+        # torch.zeros((), dtype=...) silently lands on CPU. torch.stack lets the
+        # device follow the first element instead.
+        magnitudes = [param.detach().abs().sum(dtype=torch.float32) for param in self.parameters()]
+        count = sum(param.numel() for param in self.parameters())
+        return torch.stack(magnitudes).sum() / max(count, 1)
 
     def forward(
         self,

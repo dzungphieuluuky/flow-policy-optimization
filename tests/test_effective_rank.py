@@ -9,9 +9,64 @@ inputs of known rank rather than against a reference implementation.
 import pytest
 import torch
 
-from spectral_joint_policy.networks import effective_rank
+from spectral_joint_policy.networks import SJFPOFlowModel, effective_rank
 
 N, HIDDEN = 128, 128
+
+
+def _flow_model(device: torch.device) -> SJFPOFlowModel:
+    torch.manual_seed(0)
+    return SJFPOFlowModel(
+        action_dim=3,
+        action_horizon=16,
+        hidden_dim=HIDDEN,
+        dit_depth=2,
+        dit_heads=4,
+        dit_mlp_ratio=4.0,
+        time_embed_dim=128,
+        timestep_scale=10000.0,
+    ).to(device)
+
+
+@pytest.mark.parametrize("device", ["cpu"] + (["cuda"] if torch.cuda.is_available() else []))
+def test_weight_magnitude_follows_the_parameters_onto_the_device(device):
+    """The metric is reduced over the module's own parameters, so the result has
+    to land on the device they are on.
+
+    A scalar accumulator written as ``torch.zeros((), dtype=...)`` defaults to
+    CPU, so the first ``+=`` against a CUDA parameter raises. That shipped: the
+    stats forward only runs when a tracker is enabled, so it reached Humanoid on
+    Kaggle and nothing else.
+    """
+    model = _flow_model(torch.device(device))
+    magnitude = model.weight_magnitude()
+    assert magnitude.device.type == torch.device(device).type
+    assert magnitude > 0
+
+
+def test_weight_magnitude_is_the_mean_absolute_value_not_the_sum():
+    """A scale change in one parameter has to move the figure, or the metric is
+    just reporting that parameters exist."""
+    model = _flow_model(torch.device("cpu"))
+    before = float(model.weight_magnitude())
+    with torch.no_grad():
+        for param in model.parameters():
+            param.mul_(2.0)
+    assert float(model.weight_magnitude()) == pytest.approx(2.0 * before, rel=1e-5)
+
+
+def test_the_stats_forward_returns_both_probes_on_one_device():
+    """``weight_magnitude`` is the only reduction in the dict that does not come
+    from ``h``, so it is the only one that can disagree with the rest."""
+    model = _flow_model(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
+    _, stats = model(
+        torch.randn(8, 16, 3),
+        torch.rand(8),
+        torch.randn(8, HIDDEN),
+        return_stats=True,
+    )
+    devices = {v.device.type for v in stats.values()}
+    assert len(devices) == 1, f"stats span {devices}"
 
 
 def _rank(matrix: torch.Tensor) -> torch.Tensor:
