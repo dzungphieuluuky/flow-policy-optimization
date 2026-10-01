@@ -7,7 +7,7 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from sjfpo.gae import compute_chunk_advantages
+from spectral_joint_policy.gae import compute_chunk_advantages
 
 GAMMA, LAM, H = 0.99, 0.95, 4
 
@@ -253,7 +253,7 @@ def test_returns_equal_advantages_plus_values_in_raw_space():
     """
     import torch
 
-    from sjfpo.gae import compute_chunk_advantages
+    from spectral_joint_policy.gae import compute_chunk_advantages
 
     chunk_size = 4
     rewards = torch.arange(1, 2 * chunk_size + 1, dtype=torch.float32)
@@ -279,12 +279,12 @@ def test_baseline_subtraction_scales_with_the_value():
     """A higher V must lower the advantage, and by the same amount it raised V.
 
     A unit-scale value sitting next to multi-unit rewards cannot do this, which is
-    exactly what the old normalized critic produced: the baseline contributed
+    exactly what the old normalised critic produced: the baseline contributed
     almost nothing and the advantage was effectively the raw reward.
     """
     import torch
 
-    from sjfpo.gae import compute_chunk_advantages
+    from spectral_joint_policy.gae import compute_chunk_advantages
 
     def advantage_for(value: float) -> torch.Tensor:
         advantages, _ = compute_chunk_advantages(
@@ -313,7 +313,7 @@ def test_baseline_subtraction_scales_with_the_value():
 def _gae(chunk_size, rewards, value, next_value, terminated, truncated):
     import torch
 
-    from sjfpo.gae import compute_chunk_advantages
+    from spectral_joint_policy.gae import compute_chunk_advantages
 
     n = len(value)
     return compute_chunk_advantages(
@@ -354,6 +354,6 @@ def test_budget_cut_does_not_reach_the_gae():
     """
     import inspect
 
-    from sjfpo.gae import compute_chunk_advantages
+    from spectral_joint_policy.gae import compute_chunk_advantages
 
     assert "budget" not in inspect.signature(compute_chunk_advantages).parameters

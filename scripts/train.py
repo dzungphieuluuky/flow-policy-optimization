@@ -37,11 +37,11 @@ import draccus
 # Make src/ importable before any sjfpo.* import.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from sjfpo.config import (  # noqa: E402
+from spectral_joint_policy.config import (  # noqa: E402
     KNOWN_ENVS,
     get_observation_action_dim,
 )
-from sjfpo.configuration_sjfpo import SJFPOConfig  # noqa: E402
+from spectral_joint_policy.configuration_sjfpo import SJFPOConfig  # noqa: E402
 
 
 VALID_ENVS = KNOWN_ENVS
@@ -259,7 +259,7 @@ def run_single(
                 f"{(live_obs, live_act)}"
             )
 
-        from sjfpo.train_sjfpo import train_sjfpo_run
+        from spectral_joint_policy.train_sjfpo import train_sjfpo_run
 
         if resume_from_checkpoint is not None and method != "sjfpo":
             raise ValueError(f"--resume is sjfpo-only, got method={method!r}")

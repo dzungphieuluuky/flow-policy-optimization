@@ -1,57 +1,87 @@
-# SJFPO configuration. Keep values aligned with SJFPOConfig.
-# Runtime overrides may come from CLI flags; this file is the experiment YAML source.
+# SJFPO configuration. Values mirror SJFPOConfig defaults.
+# Nothing reads this file at runtime: configs are built from the dataclass and
+# overridden by CLI flags. Regenerate from the dataclass rather than hand-edit.
 
-# -- Observation / action geometry -------------------------------------
+# -- Observation / action geometry -----------------------------
 n_obs_steps: 16
+use_peft: false
+push_to_hub: true
+repo_id: null
+private: null
+tags: null
+license: null
+report_to: all  # none keeps wandb offline
 action_horizon: 16
 n_action_steps: 16
 action_perturb_std: 0.02
 hidden_dim: 128
 
-# -- Monte-Carlo / rollout ---------------------------------------------
+# -- Rollout and batching ---------------------------------------
+num_envs: 64
 num_mc_samples: 16
+num_learning_epochs: 2
+chunks_per_update: 1024
+batch_size: 128  # chunks per minibatch; num_mini_batches = chunks_per_update / batch_size
+grad_accum_steps: 1
+
+# -- Flow sampling -----------------------------------------------
 num_euler_steps: 16
 num_inference_steps: 16
-chunks_per_update: 256
-num_learning_epochs: 4
-batch_size: 128  # chunks per minibatch; num_mini_batches = chunks_per_update / batch_size
-num_envs: 64
-
-# -- Optimization ------------------------------------------------------
-gamma: 0.99
-gae_lambda: 0.95
-clip_param: 0.05
-use_dct_transform: false
-trust_region_mode: aspo
-cfm_loss_reduction: mean
-ema_decay: 0.95
-ema_warmup_steps: 500
-cfm_clamp: 20.0
-log_ratio_cap: 10.0
-normalize_advantage: true
-use_clipped_value_loss: false
 min_timestep: 0.005
 max_timestep: 0.995
 timestep_sampling_mode: fpo_beta
 noise_sampling_mode: normal
+noise_scaling_mode: white  # white | freq_weighted; freq_weighted needs the DCT
 timestep_inverse_cdf_beta: 1.0
 timestep_beta_alpha: 2.0
 timestep_beta_beta: 2.0
 
-# -- DiT backbone ------------------------------------------------------
+# -- Trust region and CFM loss -----------------------------------
+use_amp: false
+gamma: 0.99
+gae_lambda: 0.95
+clip_param: 0.05
+trust_region_mode: aspo  # ppo | spo | aspo
+cfm_loss_reduction: mean
+cfm_clamp: 200.0
+cfm_mask_unexecuted: true
+cfm_loss_clamp_negative_advantages: true
+cfm_loss_clamp_negative_advantages_max: 200.0
+log_ratio_cap: 10.0
+normalize_advantage: true
+
+# -- Critic and value targets -----------------------------------
+num_critics: 2
+value_loss_coef: 1.0
+value_huber_delta: 1.0  # multiple of the batch return RMS, so the quadratic-to-linear transition tracks the target scale
+use_clipped_value_loss: true
+use_target_critic: true
+critic_ema_decay: 0.05
+
+# -- Spectral chunk encoding ------------------------------------
+use_dct_transform: true
+num_kept_tokens: 16  # == action_horizon is the full orthonormal DCT, a no-op on the loss
+
+# -- DiT backbone -----------------------------------------------
 dit_depth: 2
 dit_heads: 4
 dit_mlp_ratio: 4.0
 time_embed_dim: 128
-timestep_scale: 1000.0
+timestep_scale: 10000.0  # scales raw flow time into the network input range
 
-# -- Losses / optimization --------------------------------------------
-value_loss_coef: 1.0
-max_grad_norm: 0.5
-num_kept_tokens: 16
-policy_lr: 3.0e-4
-critic_lr: 9.0e-4
-optimizer_weight_decay: 1.0e-2
-grad_accum_steps: 1
-  report_to: none
-  num_critics: 2
+# -- Optimizer --------------------------------------------------
+policy_lr: 0.00001
+critic_lr: 0.00001
+optimizer_weight_decay: 0.0001
+max_grad_norm: 1.0  # rsl-rl default; 200.0 never bound a joint norm of up to 400
+critic_max_grad_norm: 1.0  # null disables critic clipping
+ema_decay: 0.95
+ema_warmup_steps: 500
+
+# -- Eval and early stopping ------------------------------------
+log_drift_diagnostics: true
+eval_max_episodes: 50
+stop_return_frac: 0.7
+stop_patience: 5
+lr_decay: 0.5
+max_lr_decays: 3

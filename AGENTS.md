@@ -164,6 +164,67 @@ This covers the large ones too: training output, profiler traces, and
 `torch.compile` caches. Point an existing tool at the repo path rather than
 letting it default elsewhere.
 
+Smoke and benchmark `scripts/train.py` runs go under `./tmp` with wandb
+offline, so nothing reaches the network:
+
+```
+WANDB_MODE=offline .venv/bin/python scripts/train.py \
+  --env Reacher-v5 --out_dir ./tmp/smoke --sjfpo.report_to all
+```
+
+Always run a smoke train after a change that touches the training path. A green
+`pytest` does not exercise the collector, the GAE backup, the CFM loss, or the
+Euler sampler.
+
+`report_to` defaults to `all`, so the wandb import runs; `WANDB_MODE=offline`
+keeps it local (`./wandb/offline-run-*`). The tensorboard and wandb backends
+write to `./tensorboard` and `./wandb` in the repo root regardless of
+`--out_dir`, so those two directories collect the run output, not
+`--out_dir`.
+
+Both directories are tracked in git, and `wandb/` in particular is worse than it
+looks: 1783 files are under version control, and merely running `pytest` dirties
+`wandb/debug.log`, `wandb/debug-internal.log`, and `wandb/latest-run`, because
+`tests/test_tracking.py` instantiates a real tracker. A training run goes
+further and can delete tracked `wandb/*.table.json` files.
+
+So after `pytest` or any training run:
+
+```
+git checkout -- wandb/
+```
+
+That reverts the run's side effects and leaves your own edits alone. Do not
+commit anything under `wandb/` or `tensorboard/`. The permanent fix is to
+untrack both directories and add them to `.gitignore`, which has not been done
+here.
+
+### wandb mode
+
+`WANDB_MODE=offline` is the current and supported mechanism. Verified on
+wandb 0.30.0:
+
+- `mode` is `Literal["online", "offline", "shared", "disabled", "dryrun",
+  "run"]` in `wandb/sdk/wandb_settings.py`, so `offline` is a first-class
+  value, not a legacy alias
+- env vars prefixed `WANDB_` override defaults, and `WANDB_MODE` is the one
+  for `mode`
+- an offline run writes `./wandb/offline-run-<ts>-<id>/` and prints the
+  `wandb sync` command to upload it later
+
+Upstream is `github.com/wandb/wandb` (Weights & Biases), actively maintained.
+If offline ever stops working, check the installed version and the upstream
+repo before assuming the env var moved:
+
+```
+.venv/bin/python -c "import wandb; print(wandb.__version__)"
+gh api repos/wandb/wandb --jq '{full_name, archived, pushed_at}'
+grep -n '"offline"' .venv/lib/python3.12/site-packages/wandb/sdk/wandb_settings.py
+```
+
+`--sjfpo.report_to none` is the alternative when no tracker output is wanted at
+all; it skips the wandb import entirely.
+
 ## Diff Discipline
 
 Minimize the diff. Don't turn "Add X" into "rewrite the architecture." Before finishing: inspect the diff; remove unused imports, dead code, unnecessary comments/abstractions, and unrelated changes.
@@ -175,14 +236,38 @@ When uncertain, prefer in order:
 1. Existing repository pattern
 2. Simple direct implementation
 3. Standard library solution
-4. Small helper
-5. Abstraction
+4. A torch builtin
+5. Small helper
+6. Abstraction
 
 Move down only when the simpler option is genuinely insufficient.
 
+## Torch builtins first
+
+Before writing a reduction, a normalisation, or any tensor math by hand, look
+for the builtin. One kernel beats three passes, and the builtin is usually
+better conditioned too.
+
+| hand-rolled | builtin |
+|---|---|
+| `x.square().mean().sqrt()` | `torch.linalg.vector_norm(x) / math.sqrt(x.numel())` |
+| `x.mean(dim=0)`, `x.var(dim=0, unbiased=False)` | `torch.var_mean(x, dim=0, unbiased=False)` |
+| `(a - b).square().sum() / n` | `torch.nn.functional.mse_loss(a, b)` (careful: its default reduction already divides) |
+| `a / b`, `a ** 0.5` | `torch.div`, `torch.sqrt` — prefer these over `//` and `**` in tensor paths |
+| `a / b` where `b` could be 0 | `b.clamp_min(eps)`, not `b + eps` |
+| `x.std()` | `x.std(correction=0)` unless you specifically want Bessel's correction |
+
+`F.rms_norm` is not a general RMS: it divides by the RMS and returns the input's
+shape, not the scalar. It is the right tool for a normalisation layer, not for
+reporting a magnitude.
+
+State the builtin you checked against in the comment when the hand-rolled form
+would have been obvious. Verify the equivalence numerically once; do not assume
+it. If a builtin genuinely cannot express it, say so in the comment.
+
 ## Anti-Patterns
 
-Avoid `SomethingManager`, `SomethingFactory`, `SomethingService`, wrapper chains, multi-layer config loading, broad `except Exception`, and long `isinstance` chains. Do not confuse abstraction with quality.
+Avoid `SomethingManager`, `SomethingFactory`, `SomethingService`, wrapper chains, multi-layer config loading, broad `except Exception`, and long `isinstance` chains. Do not confuse abstraction with quality. Hand-rolled tensor math that a builtin already does.
 
 ## Workflow
 
