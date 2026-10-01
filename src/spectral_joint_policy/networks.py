@@ -28,6 +28,7 @@ import torch.nn.functional as F
 from torch import nn
 
 from spectral_joint_policy.dct_utils import extract_dct_coeffs
+from spectral_joint_policy.utils import rms
 
 
 class _RMSNorm(nn.RMSNorm):
@@ -275,8 +276,8 @@ class RunningMeanStd(nn.Module):
         b = batch.shape[0]
         if b == 0:
             return
-        b_mean = batch.mean(dim=0)
-        b_var = batch.var(dim=0, unbiased=False)
+        # One pass for both moments; mean() then var() walked the batch twice.
+        b_var, b_mean = torch.var_mean(batch, dim=0, unbiased=False)
         delta = b_mean - self.mean
         total = self.count + b
         self.mean.add_((delta * b / total).to(self.mean.dtype))
@@ -427,10 +428,10 @@ class DiTBlock(nn.Module):
 
         with torch.inference_mode():
             stats = {
-                "gate_msa": gate_msa.square().mean().sqrt(),
-                "gate_mlp": gate_mlp.square().mean().sqrt(),
-                "scale_msa": (1.0 + scale_msa).square().mean().sqrt(),
-                "scale_mlp": (1.0 + scale_mlp).square().mean().sqrt(),
+                "gate_msa": rms(gate_msa),
+                "gate_mlp": rms(gate_mlp),
+                "scale_msa": rms(1.0 + scale_msa),
+                "scale_mlp": rms(1.0 + scale_mlp),
             }
         return out, stats
 
@@ -488,8 +489,8 @@ class StateConditioner(nn.Module):
                 f"states feature dimension must be {self.obs_dim}, got {states.shape[2]}"
             )
         raw = self.frame_mlp(self.frame_norm(self.frame_proj(states))).mean(dim=1)
-        # M = T-1 keeps all T freqs, so the whole orthonormal transform.
-        coeffs = extract_dct_coeffs(states, M=states.shape[1] - 1)
+        # num_modes == T keeps every frequency, the whole orthonormal transform.
+        coeffs = extract_dct_coeffs(states, num_modes=states.shape[1])
         spec = self.key_proj(self.freq_encoding(self.freq_norm(coeffs))).mean(dim=1)
         return self.fuse(torch.cat([raw, spec], dim=-1))
 
@@ -654,9 +655,9 @@ class SJFPOFlowModel(nn.Module):
             block_stats.append(s)
         with torch.inference_mode():
             stats = {
-                "temb": temb.square().mean().sqrt(),
-                "fused": condition.square().mean().sqrt(),
-                "c": c.square().mean().sqrt(),
+                "temb": rms(temb),
+                "fused": rms(condition),
+                "c": rms(c),
                 **{
                     k: torch.stack([s[k] for s in block_stats]).mean()
                     for k in ("gate_msa", "gate_mlp", "scale_msa", "scale_mlp")
@@ -676,7 +677,7 @@ class Critic(nn.Module):
 
     Each member is a ``StateConditioner`` plus a linear head, so the critic
     sees the window the way the actor does: per-frame mean-pool concatenated
-    with a full orthonormal DCT, fused to ``hidden_dim``. ``M = T - 1`` is
+    with a full orthonormal DCT, fused to ``hidden_dim``. ``num_modes == T`` is
     the whole basis, so nothing is truncated.
 
     Members stay independent or the ensemble is worthless: a shared trunk

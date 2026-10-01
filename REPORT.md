@@ -398,7 +398,7 @@ was deliberately reversed.
 ### S3 — the conditioner's spectral branch has no frequency identity
 
 ```python
-coeffs = extract_dct_coeffs(states, M=states.shape[1] - 1)     # [B, T, obs_dim]
+coeffs = extract_dct_coeffs(states, num_modes=states.shape[1])    # [B, T, obs_dim]
 spec = self.key_proj(self.freq_encoding(self.freq_norm(coeffs))).mean(dim=1)
 ```
 

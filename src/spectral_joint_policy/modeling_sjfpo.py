@@ -34,6 +34,7 @@ from spectral_joint_policy.collector import RolloutBuffer, collect_chunks, colle
 from spectral_joint_policy.dct_utils import (
     velocity_to_action_steps,
     extract_dct_coeffs,
+    spectral_energy_retained,
 )
 from spectral_joint_policy.fpo_core import (
     compute_aspo_surrogate,
@@ -55,6 +56,7 @@ from spectral_joint_policy.processor_sjfpo import make_sjfpo_pre_post_processors
 from spectral_joint_policy.utils import (
     autocast_context,
     resolve_storage_dtype,
+    rms,
     to_device_async,
     to_tensor_1d,
 )
@@ -115,19 +117,21 @@ def _gae_diagnostics(
     # here, so the packed values match the Python floats they replace exactly.
     # The stack is float64; 5 numbers, so the wider transfer costs nothing.
     zero = ret.double().new_zeros(())
-    # std is undefined below two samples; 0.0 there, as before. The fraction is
-    # 0/NaN without the guard, so it is gated on the same condition.
-    has_pair = n > 1
-    adv_std = advantages.float().std() if has_pair else zero
-    ret_std = ret.std().clamp_min(1e-8) if has_pair else zero
+    # Population std, matching the advantage normaliser, returns_var and
+    # _compute_info. The unbiased default is NaN at a single chunk and
+    # inflates by sqrt(n/(n-1)) elsewhere. correction=0 is defined at n == 1,
+    # so the n > 1 guard the unbiased form needed is gone: a lone chunk now
+    # falls out of clamp_min as 0/1e-8 = 0, the same 0.0 the guard produced.
+    adv_std = advantages.float().std(correction=0)
+    ret_std = ret.std(correction=0).clamp_min(1e-8)
     fields = [
         # linked_frac: chunks the recursion joined, over the n-1 possible links.
         ((e[1:] == e[:-1]) & ~ends).sum().double() / max(n - 1, 1),
         adv_std,
-        ret.pow(2).mean().sqrt().double(),
+        rms(ret).double(),
         # A = R - V, so Var(A) <= Var(R), equal only when V is 0. 1.0 means the
         # critic is inert; it falls toward 1 - R^2 as the critic improves.
-        adv_std / ret_std if has_pair else zero,
+        adv_std / ret_std,
         # Budget cut, reported apart from chunk_truncated, the flag GAE reads.
         # Not truncated_chunk_frac: that one is derived from action_is_pad and
         # means "the chunk left action rows unexecuted".
@@ -724,7 +728,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         cfg = self.config
         token_count = eps.shape[2]
         if cfg.use_dct_transform:
-            spectral_action = extract_dct_coeffs(actions, M=token_count - 1)
+            spectral_action = extract_dct_coeffs(actions, num_modes=token_count)
         else:
             spectral_action = actions
         flatten_timestep, flatten_mc_noise, flatten_mc_action, flow_shape, num_mc = (
@@ -924,9 +928,13 @@ class SJFPOPolicy(PreTrainedPolicy):
         )
         raw_values = chunk_value.detach()
         normalised_advantages = raw_advantages
+        # Population std, matching returns_var and _compute_info. The unbiased
+        # default is NaN at a single chunk, which a short final rollout
+        # produces, and inflates by sqrt(n/(n-1)) elsewhere. clamp_min is the
+        # torch guard; `+ 1e-8` only happened to agree when std > 0.
         if cfg.normalize_advantage and raw_advantages.numel() > 0:
             normalised_advantages = (raw_advantages - raw_advantages.mean()) / (
-                raw_advantages.std() + 1e-8
+                raw_advantages.std(correction=0).clamp_min(1e-8)
             )
         gae_diagnostics = _gae_diagnostics(
             active["chunk_env_id"][:n_chunks],
@@ -967,6 +975,15 @@ class SJFPOPolicy(PreTrainedPolicy):
 
         chunk_clip_counts = active["chunk_clip_counts"][:n_chunks]
 
+        # 1.0 at num_kept_tokens == action_horizon (the transform is then a
+        # rotation and this is a no-op), falling as the spectrum truncates.
+        # None when the DCT is off, so the tracker can skip the key.
+        spectral_energy = None
+        if cfg.use_dct_transform:
+            spectral_energy = float(
+                spectral_energy_retained(actions, cfg.num_flow_tokens)
+            )
+
         behavior_cfm_loss, behavior_cfm_loss_token = self._behavior_cfm_losses(
             normalised_states, actions, tau, eps, action_is_pad
         )
@@ -989,6 +1006,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             "mc_eps": eps,
             "chunk_clip_counts": chunk_clip_counts,
             "gae_diagnostics": gae_diagnostics,
+            "spectral_energy_retained": spectral_energy,
             "behavior_cfm_loss": behavior_cfm_loss,
             "behavior_cfm_loss_token": behavior_cfm_loss_token,
         }
@@ -1063,14 +1081,15 @@ class SJFPOPolicy(PreTrainedPolicy):
         states = self.preprocessor({OBS_STATE: states})[OBS_STATE]
 
         num_spectral_tokens_kept = cfg.num_flow_tokens
-        M_modes = num_spectral_tokens_kept - 1
         n = states.shape[0]
         action_dim = actions.shape[-1]
 
         loss_mask: torch.Tensor = action_is_pad
 
         dct_action_tokens = (
-            extract_dct_coeffs(actions, M=M_modes) if cfg.use_dct_transform else actions
+            extract_dct_coeffs(actions, num_modes=num_spectral_tokens_kept)
+            if cfg.use_dct_transform
+            else actions
         )
 
         has_mc_tau = "mc_tau" in batch
@@ -1182,7 +1201,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         # clipped prediction, and max() still takes the worse of the two.
         # Broadcasting against the [n, B] member axis trains every member; the
         # mean over both axes is the per-chunk loss.
-        returns_rms = raw_returns_flat.square().mean().sqrt()
+        returns_rms = rms(raw_returns_flat)
         huber_delta = cfg.value_huber_delta * returns_rms.clamp_min(1e-6)
         value_loss_per_chunk = value_huber_loss(
             raw_value_pred, raw_returns_flat, huber_delta
@@ -1333,7 +1352,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         ) / returns_var
         value_huber_max = mean_value_pred.sub(raw_returns_flat).abs().max()
         value_pred_max = mean_value_pred.abs().max()
-        v_star_rms = v_star_f.pow(2).mean().sqrt()
+        v_star_rms = rms(v_star_f)
 
         l_old_std = l_old.std(correction=0)
         l_new_std = l_new.std(correction=0)

@@ -50,7 +50,7 @@ class SJFPOConfig(PreTrainedConfig):
     # into one number per chunk, so no per-frequency ratio survives into the
     # loss to hang a different epsilon on.
     clip_param: float = 0.05
-    use_dct_transform: bool = False  # spectral chunk encoding; False = raw action chunk
+    use_dct_transform: bool = True  # spectral chunk encoding; False = raw action chunk
     # FPO++ trust region: ppo, spo, or aspo (official default).
     trust_region_mode: str = "aspo"
     # "mean" divides FPO++'s sum (Eq. 8 sums CFM losses over chunk timesteps) by
@@ -121,6 +121,9 @@ class SJFPOConfig(PreTrainedConfig):
     # report_to=none run that still wants the numbers.
     log_drift_diagnostics: bool = True
 
+    # At num_kept_tokens == action_horizon the transform is the full
+    # orthonormal DCT, so it is a rotation of the loss and a no-op up to
+    # numerics. A smaller value is what actually truncates the spectrum.
     num_kept_tokens: int = 16  # DCT coefficients the flow sees; inert when use_dct_transform=False
 
     policy_lr: float = 1e-3
