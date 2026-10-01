@@ -1,12 +1,12 @@
 [project]
 name = "spectral-joint-policy"
 version = "0.1.0"
-description = "Add your description here"
+description = "Flow-matching policy optimization (FPO++) with open-loop action chunking and optional DCT spectral chunk encoding, on LeRobot and PyTorch"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "accelerate>=1.15.0",
-    "av>=14.2.0,<14.3.0",  # lerobot imports av.option at module scope (gone in av
+    "av<15.0.0",  # lerobot imports av.option at module scope (gone in av
     # 17.1.0); 14.3+ is sdist-only, so the cap keeps a manylinux wheel
     "datasets>=5.0.1",
     "diffusers",
