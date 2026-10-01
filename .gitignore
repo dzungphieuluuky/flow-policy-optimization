@@ -8,3 +8,5 @@ uv.log
 .feynman/
 .pi-subagents/
 tmp/
+wandb/
+tensorboard/
