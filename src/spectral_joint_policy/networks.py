@@ -31,6 +31,22 @@ from spectral_joint_policy.dct_utils import extract_dct_coeffs
 from spectral_joint_policy.utils import rms
 
 
+def effective_rank(features: torch.Tensor) -> torch.Tensor:
+    """``exp`` of the spectral entropy of a ``[..., hidden]`` feature matrix.
+
+    Dohare et al. (arXiv:2306.13812) use this as the representation-collapse
+    probe: it falls as backprop converges onto a low-rank solution, which is
+    what they credit for the loss of plasticity. ``p_k = sigma_k / ||sigma||_1``
+    over the singular values, so the result is in ``[1, min(n, hidden)]``.
+
+    Tokens are the sample axis, so callers flatten to ``[n, hidden]`` first.
+    """
+    matrix = features.reshape(-1, features.shape[-1]).float()
+    sigma = torch.linalg.svdvals(matrix)
+    p = sigma / sigma.sum().clamp_min(1e-12)
+    return torch.exp(-(p * p.clamp_min(1e-12).log()).sum())
+
+
 class _RMSNorm(nn.RMSNorm):
     """RMSNorm computed in FP32, out dtype = in dtype.
 
@@ -551,6 +567,21 @@ class SJFPOFlowModel(nn.Module):
         nn.init.constant_(self.out.weight, 0.0)
         nn.init.constant_(self.out.bias, 0.0)
 
+    @torch.inference_mode()
+    def weight_magnitude(self) -> torch.Tensor:
+        """Mean absolute weight over every parameter, the norm-growth probe.
+
+        The other Dohare correlate: magnitudes grow under continual training and
+        the growth is what precedes the rank drop, so it moves earlier than
+        performance does.
+        """
+        total = torch.zeros((), dtype=torch.float32)
+        count = 0
+        for param in self.parameters():
+            total += param.detach().abs().sum(dtype=torch.float32)
+            count += param.numel()
+        return total / max(count, 1)
+
     def forward(
         self,
         x_t: torch.Tensor,
@@ -662,6 +693,8 @@ class SJFPOFlowModel(nn.Module):
                     k: torch.stack([s[k] for s in block_stats]).mean()
                     for k in ("gate_msa", "gate_mlp", "scale_msa", "scale_mlp")
                 },
+                "effective_rank": effective_rank(h),
+                "weight_magnitude": self.weight_magnitude(),
             }
         if token_axis:
             shift_out, scale_out = self.adaLN_out(c).chunk(2, dim=-1)

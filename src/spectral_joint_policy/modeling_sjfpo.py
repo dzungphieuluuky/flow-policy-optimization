@@ -113,15 +113,12 @@ def compute_gae_diagnostics(
     e = env_id.to(torch.long)[order]
     ends = terminated.to(torch.bool)[order][:-1] | truncated.to(torch.bool)[order][:-1]
     ret = raw_returns.float()
-    # Each field keeps the fp32 arithmetic it always had and is widened only
-    # here, so the packed values match the Python floats they replace exactly.
+    # Widened only here, so each field keeps the fp32 arithmetic it had in Python.
     # The stack is float64; 5 numbers, so the wider transfer costs nothing.
     zero = ret.double().new_zeros(())
-    # Population std, matching the advantage normaliser, returns_var and
-    # compute_info. The unbiased default is NaN at a single chunk and
-    # inflates by sqrt(n/(n-1)) elsewhere. correction=0 is defined at n == 1,
-    # so the n > 1 guard the unbiased form needed is gone: a lone chunk now
-    # falls out of clamp_min as 0/1e-8 = 0, the same 0.0 the guard produced.
+    # Population std, matching the advantage normaliser. The unbiased default is NaN
+    # at a single chunk and inflates by sqrt(n/(n-1)) elsewhere; correction=0 is
+    # defined at n == 1, where clamp_min gives the same 0.0 a guard would.
     adv_std = advantages.float().std(correction=0)
     ret_std = ret.std(correction=0).clamp_min(1e-8)
     fields = [
@@ -132,9 +129,8 @@ def compute_gae_diagnostics(
         # A = R - V, so Var(A) <= Var(R), equal only when V is 0. 1.0 means the
         # critic is inert; it falls toward 1 - R^2 as the critic improves.
         adv_std / ret_std,
-        # Budget cut, reported apart from chunk_truncated, the flag GAE reads.
-        # Not truncated_chunk_frac: that one is derived from action_is_pad and
-        # means "the chunk left action rows unexecuted".
+        # Budget cut. Not chunk_truncated, which is the flag GAE reads; not
+        # truncated_chunk_frac, which counts action rows the chunk left unexecuted.
         budget_truncated.to(torch.bool).float().mean().double()
         if budget_truncated is not None else zero,
     ]
@@ -167,6 +163,7 @@ def build_optimizer(policy: SJFPOPolicy) -> torch.optim.Optimizer:
     """
     kwargs = dataclasses.asdict(policy.config.get_optimizer_preset())
     kwargs.pop("grad_clip_norm", None)  # AdamW preset field; clipping is per role
+    kwargs["betas"] = policy.config.adam_betas
     if next(policy.parameters()).is_cuda:
         kwargs["fused"] = True
     groups = [
@@ -234,8 +231,8 @@ class SJFPOPolicy(PreTrainedPolicy):
             copy.deepcopy(self.conditioner).requires_grad_(False).eval()
         )
         # Polyak target for the GAE bootstrap, following qc and TD-JEPA. Kept even
-        # when use_target_critic is False so toggling the flag does not change
-        # which weights exist in the module.
+        # when use_target_critic is False so the flag does not change the module's
+        # weight set.
         self.target_critic = copy.deepcopy(self.critic).requires_grad_(False).eval()
         self._target_critic_initialised = False
         self._ema_shadow: dict[str, torch.Tensor] = {}
@@ -347,10 +344,8 @@ class SJFPOPolicy(PreTrainedPolicy):
                 name: param.detach().clone() for name, param in current.items()
             }
         if not self._ema_initialised and global_step >= self.config.ema_warmup_steps:
-            # >= and gated on _ema_initialised, not ==. global_step moves by a
-            # whole rollout, so == 500 was never hit and ema_ready() stayed
-            # false forever. The gate makes it one-shot; without it every later
-            # call re-hard-copied and threw away the running average.
+            # The _ema_initialised gate makes the hard copy one-shot. global_step
+            # moves by a whole rollout, so an == ema_warmup_steps test never fires.
             names = list(self._ema_shadow)
             torch._foreach_copy_(
                 [self._ema_shadow[name] for name in names],
@@ -392,10 +387,8 @@ class SJFPOPolicy(PreTrainedPolicy):
         torch._foreach_add_(
             target_params, [p.detach() for p in self.critic.parameters()], alpha=decay
         )
-        # The critic registers no buffers today (RMSNorm keeps a Parameter, and
-        # RunningMeanStd hangs off the policy), so this is usually empty --
-        # foreach rejects an empty list where the old zip() loop was a silent
-        # no-op. Kept so a future buffer follows the teacher.
+        # The critic registers no buffers today, so this is usually empty, and foreach
+        # rejects an empty list. Kept so a future buffer follows the teacher.
         target_buffers = list(self.target_critic.buffers())
         if target_buffers:
             torch._foreach_copy_(target_buffers, list(self.critic.buffers()))
@@ -591,11 +584,9 @@ class SJFPOPolicy(PreTrainedPolicy):
         with torch.inference_mode(), autocast_context(device):
             condition = self.conditioner(states)
             shape = (states.shape[0], num_spectral_tokens_kept, action_dim)
-            # zero_sampling starts the flow at eps=0, which is what FPO++ uses
-            # for eval and for the reported metrics. Otherwise start from
-            # sampled noise, drawn through sample_noise so noise_scaling_mode
-            # applies; the old path called torch.randn here and skipped it,
-            # so freq_weighted trained pink and rolled out white.
+            # zero_sampling starts the flow at eps=0, which is what FPO++ uses for eval
+            # and for the reported metrics. Otherwise start from sampled noise, drawn
+            # through sample_noise so noise_scaling_mode applies.
             if zero_sampling:
                 eps = torch.zeros(*shape, device=device)
                 num_steps = cfg.num_inference_steps
@@ -613,8 +604,8 @@ class SJFPOPolicy(PreTrainedPolicy):
 
         if cfg.use_dct_transform:
             # velocity_to_action_steps reads the coeffs back on the half-open grid
-            # t_j = j*H/H. linspace(0, 1, K) instead queries j = 0, 1.067, ..., K,
-            # which time-warps every executed action by K/(K-1).
+            # t_j = j*H/H; linspace(0, 1, K) would query j = 0, 1.067, ..., K and
+            # time-warp every executed action.
             scaled = velocity_to_action_steps(x0, cfg.action_horizon).clamp(-1.0, 1.0)
         else:
             scaled = x0[:, : cfg.action_horizon, :].clamp(-1.0, 1.0)
@@ -813,9 +804,8 @@ class SJFPOPolicy(PreTrainedPolicy):
         )
         if (
             self._rollout_buffer is None
-            # [:6] drops pin_memory, a device property not part of this key. The
-            # full tuple never matches, so the buffer was reallocated every
-            # rollout.
+            # [:6] drops pin_memory, a device property not part of this key; the
+            # full tuple would never match.
             or self._rollout_buffer.capacity_key()[:6] != buffer_key
         ):
             self._rollout_buffer = RolloutBuffer(
@@ -908,11 +898,9 @@ class SJFPOPolicy(PreTrainedPolicy):
                 chunk_next_value = all_chunk_values[:, n_chunks:].amin(dim=0)
 
         # One chunk is one macro-transition: sum the chunk's rewards, discount
-        # gamma ** h. One space throughout, as rsl-rl: the critic predicts raw
-        # returns, GAE subtracts them from raw rewards, the value target is the
-        # raw return. No return normalizer, so V is the true expected return and
-        # the target stops drifting as the return scale grows. The only
-        # normalisation is the per-batch advantage whitening after the backup.
+        # gamma ** h. One space throughout, as rsl-rl: V predicts raw returns and the
+        # target is the raw return, so V is the true expected return. No return
+        # normalizer; the only normalisation is the advantage whitening below.
         raw_advantages, raw_returns = compute_chunk_advantages(
             all_rewards,
             chunk_value,
@@ -928,10 +916,9 @@ class SJFPOPolicy(PreTrainedPolicy):
         )
         raw_values = chunk_value.detach()
         normalised_advantages = raw_advantages
-        # Population std, matching returns_var and compute_info. The unbiased
-        # default is NaN at a single chunk, which a short final rollout
-        # produces, and inflates by sqrt(n/(n-1)) elsewhere. clamp_min is the
-        # torch guard; `+ 1e-8` only happened to agree when std > 0.
+        # Population std, matching returns_var. The unbiased default is NaN at a
+        # single chunk, which a short final rollout produces, and inflates by
+        # sqrt(n/(n-1)) elsewhere.
         if cfg.normalize_advantage and raw_advantages.numel() > 0:
             normalised_advantages = (raw_advantages - raw_advantages.mean()) / (
                 raw_advantages.std(correction=0).clamp_min(1e-8)
@@ -949,10 +936,9 @@ class SJFPOPolicy(PreTrainedPolicy):
         raw_advantages = raw_advantages.to(storage_dtype)
         normalised_advantages = normalised_advantages.to(storage_dtype)
         # raw_returns and raw_values stay fp32: the critic's target and clip
-        # snapshot, and the only stored tensors that are not O(1) (returns_rms
-        # runs to 35). bf16 has 8 mantissa bits, so 1234.5 round-trips to
-        # 1232.0. Each is 256 elements, so fp32 is free, and chunk_state and
-        # chunk_actions are already fp32, so storage_dtype never saved memory.
+        # snapshot, and the only stored tensors that are not O(1) (returns_rms runs
+        # to 35). bf16 has 8 mantissa bits, so 1234.5 round-trips to 1232.0, and
+        # chunk_state and chunk_actions are already fp32 anyway.
 
         action_is_pad = torch.arange(cfg.action_horizon, device=device).unsqueeze(
             0
@@ -1164,8 +1150,11 @@ class SJFPOPolicy(PreTrainedPolicy):
         cond_stats = None
         if compute_info:
             with torch.inference_mode(), autocast_context(device):
+                # 8 chunks x 16 tokens = 128 rows against a 128-wide layer, so the
+                # effective rank is measured on a square-ish matrix. One sample
+                # would give 16 rows, and the rank could not exceed 16.
                 _, cond_stats = self.actor(
-                    x_t_flat[:1], actor_tau[:1], cond_flat[:1], return_stats=True
+                    x_t_flat[:8], actor_tau[:8], cond_flat[:8], return_stats=True
                 )
 
         with torch.autocast(device_type=device.type, enabled=False):
@@ -1195,12 +1184,10 @@ class SJFPOPolicy(PreTrainedPolicy):
                 f"{tuple(raw_value_pred.shape)}, raw_returns="
                 f"{tuple(raw_returns_flat.shape)}"
             )
-        # rsl-rl's value loss, with squared error replaced by Huber: quadratic
-        # inside delta, linear outside, so one large-residual chunk cannot
-        # dominate the gradient. The clipped branch is the same penalty on the
-        # clipped prediction, and max() still takes the worse of the two.
-        # Broadcasting against the [n, B] member axis trains every member; the
-        # mean over both axes is the per-chunk loss.
+        # rsl-rl's value loss, with squared error replaced by Huber: quadratic inside
+        # delta, linear outside, so one large-residual chunk cannot dominate the
+        # gradient. The clipped branch is the same penalty on the clipped prediction,
+        # and max() still takes the worse of the two.
         returns_rms = rms(raw_returns_flat)
         huber_delta = cfg.value_huber_delta * returns_rms.clamp_min(1e-6)
         value_loss_per_chunk = compute_value_huber_loss(
@@ -1308,10 +1295,9 @@ class SJFPOPolicy(PreTrainedPolicy):
             .float()
             .mean()
         )
-        # One epsilon for the whole token axis, the same bound the surrogate
-        # uses. A per-frequency epsilon had nothing to bind to: the loss runs the
-        # "sample" reduction, averaging every token into one number per chunk, so
-        # per-frequency ratios exist only in this diagnostic.
+        # One epsilon for the whole token axis, the same bound the surrogate uses. A
+        # per-frequency epsilon had nothing to bind to: the "sample" reduction averages
+        # every token into one number per chunk, so such ratios exist only here.
         low_slice = ratio_token[..., :split]
         ratio_token_low_outside = (
             ((low_slice < 1.0 - cfg.clip_param) | (low_slice > 1.0 + cfg.clip_param))
