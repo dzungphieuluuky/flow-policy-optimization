@@ -182,15 +182,22 @@ write to `./tensorboard` and `./wandb` in the repo root regardless of
 `--out_dir`, so those two directories collect the run output, not
 `--out_dir`.
 
-Both directories are tracked in git, so a smoke run dirties the working tree
-and can delete tracked `wandb/*.table.json` files. After a smoke run:
+Both directories are tracked in git, and `wandb/` in particular is worse than it
+looks: 1783 files are under version control, and merely running `pytest` dirties
+`wandb/debug.log`, `wandb/debug-internal.log`, and `wandb/latest-run`, because
+`tests/test_tracking.py` instantiates a real tracker. A training run goes
+further and can delete tracked `wandb/*.table.json` files.
+
+So after `pytest` or any training run:
 
 ```
 git checkout -- wandb/
 ```
 
 That reverts the run's side effects and leaves your own edits alone. Do not
-commit anything under `wandb/` or `tensorboard/`.
+commit anything under `wandb/` or `tensorboard/`. The permanent fix is to
+untrack both directories and add them to `.gitignore`, which has not been done
+here.
 
 ### wandb mode
 
