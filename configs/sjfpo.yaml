@@ -31,7 +31,7 @@ use_amp: false
 gamma: 0.99
 gae_lambda: 0.95
 clip_param: 0.05
-use_dct_transform: false
+use_dct_transform: true
 trust_region_mode: aspo
 cfm_loss_reduction: mean
 cfm_clamp: 200.0
