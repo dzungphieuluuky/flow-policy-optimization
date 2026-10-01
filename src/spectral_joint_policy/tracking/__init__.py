@@ -6,14 +6,14 @@ from pathlib import Path
 from .base import (
     ExperimentTracker,
     ExperimentTrackerBackend,
-    eval_summary_metrics,
+    compute_eval_summary_metrics,
 )
 
 __all__ = [
     "ExperimentTracker",
     "ExperimentTrackerBackend",
     "build_tracker",
-    "eval_summary_metrics",
+    "compute_eval_summary_metrics",
 ]
 
 _REPORT_TO = ("wandb", "tensorboard", "all", "none")

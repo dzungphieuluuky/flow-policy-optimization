@@ -1,7 +1,7 @@
 """SJFPO evaluator: deterministic rollouts, ``eval_history.csv``.
 
 Rollouts call ``env.reset(seed=...)`` and step to termination, truncation, or
-the step budget. Actions store per step in fp32. ``action_jerk`` is the mean
+the step budget. Actions store per step in fp32. ``compute_action_jerk`` is the mean
 squared second-difference, a scale-free smoothness probe.
 """
 
@@ -42,7 +42,7 @@ def write_eval_csv(
     return csv_path
 
 
-def action_jerk(actions: np.ndarray) -> float | None:
+def compute_action_jerk(actions: np.ndarray) -> float | None:
     """Mean squared second-difference of actions ``[T, D]``. None if T < 3.
 
     Scale-free: constant or constant-velocity motion gives exactly ``0.0``,
@@ -65,8 +65,8 @@ def extract_success(info: dict) -> float | None:
     return float(bool(info["success"]))
 
 
-def mean_chunk_jerk(actions: np.ndarray, action_is_pad: np.ndarray) -> float | None:
-    """Mean ``action_jerk`` over chunks' executed prefixes.
+def compute_mean_chunk_jerk(actions: np.ndarray, action_is_pad: np.ndarray) -> float | None:
+    """Mean ``compute_action_jerk`` over chunks' executed prefixes.
 
     ``actions`` is ``[N, H, D]`` real-space chunks, ``action_is_pad`` is
     ``[N, H]`` with True past the executed prefix. Chunks under 3 executed steps
@@ -84,7 +84,7 @@ def mean_chunk_jerk(actions: np.ndarray, action_is_pad: np.ndarray) -> float | N
     for chunk, mask in zip(a, pad):
         n_exec = int((~mask).sum())
         if n_exec >= 3:
-            j = action_jerk(chunk[:n_exec])
+            j = compute_action_jerk(chunk[:n_exec])
             if j is not None:
                 jerks.append(j)
     return float(np.mean(jerks)) if jerks else None
@@ -235,7 +235,7 @@ class Evaluator:
             success = extract_success(info)
             if success is not None:
                 ep_success = success
-        jerk = action_jerk(np.stack(ep_actions)) if ep_actions else None
+        jerk = compute_action_jerk(np.stack(ep_actions)) if ep_actions else None
         return (
             {
                 "episode": episode,

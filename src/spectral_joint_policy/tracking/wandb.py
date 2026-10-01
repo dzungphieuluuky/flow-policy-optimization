@@ -5,7 +5,7 @@ import os
 import wandb
 
 from .base import build_run_name
-from .tensorboard import _stack
+from .tensorboard import stack_frames
 
 
 
@@ -35,7 +35,7 @@ class WandbBackend:
         wandb.log(data, step=step)
 
     def log_video(self, frames: list, step: int, *, fps: int = 30) -> None:
-        video = _stack(frames)
+        video = stack_frames(frames)
         if video is None:
             return
         try:

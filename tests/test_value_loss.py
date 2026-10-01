@@ -7,7 +7,7 @@ contributes a bounded gradient instead of owning critic_grad_norm_preclip.
 
 import torch
 
-from spectral_joint_policy.modeling_sjfpo import value_huber_loss
+from spectral_joint_policy.modeling_sjfpo import compute_value_huber_loss
 
 
 def test_huber_is_quadratic_inside_delta_and_linear_outside():
@@ -20,7 +20,7 @@ def test_huber_is_quadratic_inside_delta_and_linear_outside():
     pred = torch.tensor([1.0, 3.0])
     target = torch.zeros(2)
     torch.testing.assert_close(
-        value_huber_loss(pred, target, delta), torch.tensor([0.5, 4.0])
+        compute_value_huber_loss(pred, target, delta), torch.tensor([0.5, 4.0])
     )
 
 
@@ -33,8 +33,8 @@ def test_delta_scales_with_the_return_rms():
     """
     pred = torch.tensor([[3.0]])
     target = torch.tensor([0.0])
-    small = value_huber_loss(pred, target, 1.0 * torch.tensor(1.0))
-    large = value_huber_loss(pred, target, 1.0 * torch.tensor(10.0))
+    small = compute_value_huber_loss(pred, target, 1.0 * torch.tensor(1.0))
+    large = compute_value_huber_loss(pred, target, 1.0 * torch.tensor(10.0))
     assert float(small[0, 0]) == 2.5
     assert float(large[0, 0]) == 4.5
 
@@ -42,7 +42,7 @@ def test_delta_scales_with_the_return_rms():
 def test_target_broadcasts_over_the_member_axis():
     pred = torch.zeros(3, 4)
     target = torch.tensor([1.0, 2.0, 3.0, 4.0])
-    out = value_huber_loss(pred, target, 1.0 * torch.tensor(1.0))
+    out = compute_value_huber_loss(pred, target, 1.0 * torch.tensor(1.0))
     assert out.shape == (3, 4)
     assert torch.allclose(out[0], out[1]) and torch.allclose(out[1], out[2])
 
@@ -60,7 +60,7 @@ def test_clipped_branch_takes_the_worse_of_the_two():
 
     def penalty(pred: torch.Tensor) -> torch.Tensor:
         # [1, 1] so the per-chunk mean(dim=0) keeps a length-1 axis to index.
-        return value_huber_loss(pred.view(1, 1), torch.zeros(1), delta).mean(dim=0)
+        return compute_value_huber_loss(pred.view(1, 1), torch.zeros(1), delta).mean(dim=0)
 
     # Clipping helps: pred 5 clipped to 1, target 0, and 1 is inside delta, so
     # the clipped penalty is the smaller quadratic term and max must take the raw.

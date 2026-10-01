@@ -33,7 +33,7 @@ class ResumeError(RuntimeError):
     """Unresumable checkpoint: missing or corrupt files."""
 
 
-def _atomic_write_bytes(path: Path, data: bytes) -> None:
+def write_bytes_atomically(path: Path, data: bytes) -> None:
     """Write bytes to a path atomically, durable across a crash."""
     with tempfile.NamedTemporaryFile(
         mode="wb", dir=path.parent, prefix=f".{path.name}.", delete=False
@@ -45,7 +45,7 @@ def _atomic_write_bytes(path: Path, data: bytes) -> None:
     os.replace(tmp_name, path)
 
 
-def _atomic_torch_save(path: Path, obj) -> None:
+def save_torch_atomically(path: Path, obj) -> None:
     """Pickle to a path atomically, cleaning up on failure.
 
     Re-raises whatever ``torch.save`` raised, after removing the temp file.
@@ -112,15 +112,15 @@ def save_policy_checkpoint(
                 state_dict[full_name] = shadow.detach().clone()
     policy.save_pretrained(d, state_dict=state_dict)
     if ema_state is not None:
-        _atomic_torch_save(d / "ema.pt", ema_state)
+        save_torch_atomically(d / "ema.pt", ema_state)
 
-    _atomic_torch_save(d / OPTIMIZER_FILE, optimizer.state_dict())
+    save_torch_atomically(d / OPTIMIZER_FILE, optimizer.state_dict())
 
     counters = {
         "global_step": int(global_step),
         "step_count": int(getattr(policy, "step_count", 0)),
     }
-    _atomic_write_bytes(
+    write_bytes_atomically(
         d / COUNTERS_FILE,
         json.dumps(counters, indent=2).encode("utf-8"),
     )
@@ -129,10 +129,10 @@ def save_policy_checkpoint(
         rng = {"torch": torch.get_rng_state()}
         if torch.cuda.is_available():
             rng["cuda"] = torch.cuda.get_rng_state_all()
-        _atomic_torch_save(d / RNG_FILE, rng)
+        save_torch_atomically(d / RNG_FILE, rng)
 
 
-def _load_optimizer(policy, d: Path) -> torch.optim.Optimizer:
+def load_optimizer(policy, d: Path) -> torch.optim.Optimizer:
     """Rebuild the optimizer from the policy, then load its state.
 
     Builds through :func:`sjfpo.modeling_sjfpo.build_optimizer`, the same call
@@ -177,7 +177,7 @@ def _load_optimizer(policy, d: Path) -> torch.optim.Optimizer:
     return optimizer
 
 
-def _load_rng(d: Path) -> None:
+def load_rng(d: Path) -> None:
     """Restore torch and CUDA RNG state, best effort.
 
     A missing or corrupt file is ignored. Losing bit-reproducibility should not
@@ -238,7 +238,7 @@ def load_policy_checkpoint(
     if action_low is not None:
         policy.set_action_bounds(action_low, action_high)
 
-    optimizer = _load_optimizer(policy, d)
+    optimizer = load_optimizer(policy, d)
 
     ema_path = d / "ema.pt"
     if ema_path.is_file():
@@ -263,7 +263,7 @@ def load_policy_checkpoint(
     policy.step_count = step_count
 
     if restore_rng:
-        _load_rng(d)
+        load_rng(d)
 
     counters = {"global_step": global_step, "step_count": step_count}
     return policy, optimizer, counters

@@ -69,7 +69,7 @@ def build_run_name(method: str, env_name: str, seed: int, cfg_dict: dict) -> str
     return "_".join(parts)
 
 
-def eval_summary_metrics(
+def compute_eval_summary_metrics(
     mean_return: float,
     eval_results: list[dict],
     all_eval_returns: list[float],
@@ -95,7 +95,7 @@ def eval_summary_metrics(
     if steps_to_best is not None:
         data["eval/steps_to_best"] = int(steps_to_best)
     if r_rand is not None:
-        data["eval/random_baseline"] = float(r_rand)
+        data["eval/sample_random_baseline"] = float(r_rand)
     if len(all_eval_returns) >= 2 and all_eval_returns[-1] == mean_return:
         prev = all_eval_returns[-2]
         data["eval/reward_improvement"] = float(mean_return - prev)

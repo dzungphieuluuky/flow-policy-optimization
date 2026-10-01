@@ -6,7 +6,7 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from spectral_joint_policy.train_sjfpo import rollout_diagnostics
+from spectral_joint_policy.train_sjfpo import compute_rollout_diagnostics
 
 N, H, D = 8, 4, 3
 
@@ -29,7 +29,7 @@ def make_batch(with_clip_counts=True):
 def test_matches_the_unbatched_reductions():
     """One transfer, but the same numbers as the float()s it replaced."""
     batch = make_batch()
-    out = rollout_diagnostics(batch)
+    out = compute_rollout_diagnostics(batch)
     action = batch["action"]
     assert out["step_delta"] == int((~batch["action_is_pad"]).sum())
     assert out["action_abs_max"] == float(action.abs().max())
@@ -42,7 +42,7 @@ def test_matches_the_unbatched_reductions():
 def test_step_delta_counts_executed_steps():
     """step_delta drives global_step, so a padded row must contribute nothing."""
     batch = make_batch()
-    out = rollout_diagnostics(batch)
+    out = compute_rollout_diagnostics(batch)
     assert out["step_delta"] == sum(
         int((~pad).sum()) for pad in batch["action_is_pad"]
     )
@@ -50,5 +50,5 @@ def test_step_delta_counts_executed_steps():
 
 def test_clip_counts_is_optional():
     """generate_rollout always emits it, but the helper must not require it."""
-    out = rollout_diagnostics(make_batch(with_clip_counts=False))
+    out = compute_rollout_diagnostics(make_batch(with_clip_counts=False))
     assert set(out) == {"step_delta", "action_abs_max", "action_magnitude"}

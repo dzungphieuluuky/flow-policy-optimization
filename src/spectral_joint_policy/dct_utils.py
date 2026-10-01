@@ -7,14 +7,14 @@ from functools import lru_cache
 
 import torch
 
-def _normalize_device(device: torch.device | str | None) -> torch.device:
+def normalize_device(device: torch.device | str | None) -> torch.device:
     target = torch.device("cpu") if device is None else torch.device(device)
     if target.type == "cuda" and target.index is None:
         target = torch.device("cuda", torch.cuda.current_device())
     return target
 
 
-def _dct_norm(count: int, sequence_length: int, device: torch.device) -> torch.Tensor:
+def compute_dct_norm(count: int, sequence_length: int, device: torch.device) -> torch.Tensor:
     if count < 1 or sequence_length < 1:
         raise ValueError("count and sequence_length must be positive")
     norm = torch.full(
@@ -26,7 +26,7 @@ def _dct_norm(count: int, sequence_length: int, device: torch.device) -> torch.T
 
 
 @lru_cache(maxsize=64)
-def _get_analysis_basis(
+def get_analysis_basis(
     K: int, num_modes: int, device: torch.device
 ) -> tuple[torch.Tensor, torch.Tensor]:
     if K < 1:
@@ -39,7 +39,7 @@ def _get_analysis_basis(
     j = torch.arange(K, dtype=torch.float32, device=device)
     k = torch.arange(num_modes, dtype=torch.float32, device=device)
     basis = torch.cos(math.pi * k[:, None] * (j[None, :] + 0.5) / K)
-    return basis, _dct_norm(num_modes, K, device)
+    return basis, compute_dct_norm(num_modes, K, device)
 
 
 def extract_dct_coeffs(v_star: torch.Tensor, num_modes: int) -> torch.Tensor:
@@ -65,14 +65,14 @@ def extract_dct_coeffs(v_star: torch.Tensor, num_modes: int) -> torch.Tensor:
     if d < 1:
         raise ValueError(f"v_star feature dimension must be positive, got {d}")
 
-    basis, norm = _get_analysis_basis(K, num_modes, _normalize_device(v_star.device))
+    basis, norm = get_analysis_basis(K, num_modes, normalize_device(v_star.device))
     with torch.autocast(device_type=v_star.device.type, enabled=False):
         coeffs = torch.einsum("mk,bkd->bmd", basis, v_star.float())
     coeffs = (coeffs * norm[None, :, None]).to(v_star.dtype)
     return coeffs.squeeze(0) if squeeze else coeffs
 
 
-def spectral_energy_retained(v: torch.Tensor, num_modes: int) -> torch.Tensor:
+def compute_spectral_energy_retained(v: torch.Tensor, num_modes: int) -> torch.Tensor:
     """Fraction of a chunk's energy carried by the kept ``num_modes``.
 
     The analysis basis is orthonormal, so by Parseval the coefficient energy
@@ -143,8 +143,8 @@ def decode_coeffs_to_velocity(
     if not math.isfinite(T) or T <= 0:
         raise ValueError(f"T must be finite and positive, got {T}")
 
-    device = _normalize_device(coeffs.device)
-    norm = _dct_norm(num_modes, K_original, device)
+    device = normalize_device(coeffs.device)
+    norm = compute_dct_norm(num_modes, K_original, device)
     k = torch.arange(num_modes, dtype=torch.float32, device=device)
 
     if tau.dim() == 1:

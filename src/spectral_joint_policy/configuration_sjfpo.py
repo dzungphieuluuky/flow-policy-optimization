@@ -23,26 +23,47 @@ class SJFPOConfig(PreTrainedConfig):
       used when the flow starts from sampled noise.
     """
 
+    # -- Observation / action geometry -----------------------------
     report_to: str = "all"  # wandb | tensorboard | all | none
-    num_critics: int = 2  # ensemble members; min over members feeds the GAE backup
     n_obs_steps: int = 16
     action_horizon: int = 16
-    n_action_steps: int = 16  # falls back to action_horizon when None
+    n_action_steps: int = 16
     action_perturb_std: float = 0.02
     hidden_dim: int = 128
 
+    # -- Rollout and batching ---------------------------------------
+    num_envs: int = 64
     num_mc_samples: int = 16
-    num_euler_steps: int = 16
-    num_inference_steps: int = 16
-    chunks_per_update: int = 256
     # 4 epochs per rollout accelerated the feature-rank decay that precedes the
     # late-training collapse (PFO, NeurIPS 2024: more epochs per batch => faster
     # pre-activation-norm growth and rank loss, and rank loss breaks the trust
     # region). Same samples per update, half the reuse.
     num_learning_epochs: int = 2
-    batch_size: int = 128  # chunks per minibatch; num_mini_batches is derived
-    num_envs: int = 64
+    chunks_per_update: int = 1024
+    batch_size: int = 128
+    # Groups consecutive minibatches into one optimizer step; it does NOT change
+    # peak memory. Every microbatch is batch_size chunks x num_mc_samples MC
+    # draws either way, and one microbatch's DiT activations are the peak. The
+    # memory knobs are batch_size and num_mc_samples; this only trades
+    # optimizer steps for fewer.
+    grad_accum_steps: int = 1
 
+    # -- Flow sampling -----------------------------------------------
+    num_euler_steps: int = 16
+    num_inference_steps: int = 16
+    min_timestep: float = 0.005
+    max_timestep: float = 0.995
+    timestep_sampling_mode: str = "fpo_beta"
+    noise_sampling_mode: str = "normal"
+    # Per-mode std over the token axis. "white" is 1.0. "freq_weighted" is NEED's
+    # beta=1 coloring, which pushes base variance into the low DCT modes; it
+    # requires use_dct_transform, since the token axis is time without the DCT.
+    noise_scaling_mode: str = "white"
+    timestep_inverse_cdf_beta: float = 1.0
+    timestep_beta_alpha: float = 2.0
+    timestep_beta_beta: float = 2.0
+
+    # -- Trust region and CFM loss -----------------------------------
     gamma: float = 0.99
     gae_lambda: float = 0.95
     # One epsilon for the whole chunk. No per-frequency clipping: the trust
@@ -50,9 +71,7 @@ class SJFPOConfig(PreTrainedConfig):
     # into one number per chunk, so no per-frequency ratio survives into the
     # loss to hang a different epsilon on.
     clip_param: float = 0.05
-    use_dct_transform: bool = True  # spectral chunk encoding; False = raw action chunk
-    # FPO++ trust region: ppo, spo, or aspo (official default).
-    trust_region_mode: str = "aspo"
+    trust_region_mode: str = "aspo"  # ppo | spo | aspo, FPO++'s default
     # "mean" divides FPO++'s sum (Eq. 8 sums CFM losses over chunk timesteps) by
     # tokens*action_dim, keeping the loss O(1) so cfm_clamp stays a real guard.
     # The cost: the loss scale IS the trust-region temperature, since
@@ -61,43 +80,48 @@ class SJFPOConfig(PreTrainedConfig):
     # constrains nothing.
     cfm_loss_reduction: str = "mean"  # mean | sum | sqrt
     cfm_clamp: float = 200.0
-    cfm_mask_unexecuted: bool = (
-        True  # drop the unexecuted tail of a truncated chunk from the CFM loss
-    )
+    cfm_mask_unexecuted: bool = True
     cfm_loss_clamp_negative_advantages: bool = True
     cfm_loss_clamp_negative_advantages_max: float = 200.0
-    log_ratio_cap: float = 10.0  # official cfm_diff_clamp_max (one-sided)
+    log_ratio_cap: float = 10.0  # official cfm_diff_clamp_max, one-sided
+
+    # -- Critic and value targets -----------------------------------
+    num_critics: int = 2
     normalize_advantage: bool = True
-    use_clipped_value_loss: bool = (
-        True  # clip the value update against the rollout snapshot, as rsl-rl does
-    )
-    min_timestep: float = 0.005
-    max_timestep: float = 0.995
-    timestep_sampling_mode: str = "fpo_beta"
-    noise_sampling_mode: str = "normal"
-    # Per-mode std over the token axis: "white" (1.0), or NEED's beta=1 1/f
-    # coloring, which pushes base variance into the low DCT modes.
-    noise_scaling_mode: str = "white"
-    timestep_inverse_cdf_beta: float = 1.0
-    timestep_beta_alpha: float = 2.0
-    timestep_beta_beta: float = 2.0
-
-    dit_depth: int = 2
-    dit_heads: int = 4
-    dit_mlp_ratio: float = 4.0
-    time_embed_dim: int = 128
-    timestep_scale: float = 10000.0
-
-    ema_decay: float = 0.95
-    ema_warmup_steps: int = 500
-
-    value_loss_coef: float = 1.0  # rsl-rl's default; the target is raw returns
+    value_loss_coef: float = 1.0  # the regression target is the raw return
     # Huber delta as a multiple of the batch return RMS, so the quadratic-to-
     # linear transition tracks the target's own scale (returns_rms runs ~2.9 on
     # InvertedPendulum, ~15 on Hopper) instead of a constant that is 5x off on one
     # of them. Bounds the per-sample gradient, which is what lets a few
     # large-residual chunks stop owning critic_grad_norm_preclip.
     value_huber_delta: float = 1.0
+    use_clipped_value_loss: bool = True
+    # gamma ** action_horizon puts 0.85 of the value target on the critic's own
+    # output, the regime a target network is meant to hold fixed.
+    use_target_critic: bool = True
+    # qc and TD-JEPA use 0.005 but refresh over offline batches. This loop is
+    # online and 0.005 left the teacher tens of rollouts behind; 0.05 is a
+    # ~2.5-rollout time constant, damped within a rollout and still tracking.
+    critic_ema_decay: float = 0.05
+
+    # -- Spectral chunk encoding ------------------------------------
+    use_dct_transform: bool = True
+    # At num_kept_tokens == action_horizon the transform is the full
+    # orthonormal DCT, so it is a rotation of the loss and a no-op up to
+    # numerics. A smaller value is what actually truncates the spectrum.
+    num_kept_tokens: int = 16
+
+    # -- DiT backbone -----------------------------------------------
+    dit_depth: int = 2
+    dit_heads: int = 4
+    dit_mlp_ratio: float = 4.0
+    time_embed_dim: int = 128
+    timestep_scale: float = 10000.0
+
+    # -- Optimizer --------------------------------------------------
+    policy_lr: float = 1e-5
+    critic_lr: float = 1e-5  # legacy split-checkpoint compatibility
+    optimizer_weight_decay: float = 1e-4
     # rsl-rl's default. These were 200.0, which never bound a joint norm of up
     # to 400. A global rescale is near-inert under AdamW, so the threshold does
     # not set the step size; it decides whether a transient spike is allowed to
@@ -106,39 +130,10 @@ class SJFPOConfig(PreTrainedConfig):
     max_grad_norm: float = 1.0
     # Clipped separately from the actor: the critic's norm is two orders larger.
     critic_max_grad_norm: float | None = 1.0
+    ema_decay: float = 0.95
+    ema_warmup_steps: int = 500
 
-    # qc and TD-JEPA use 0.005 but refresh over offline batches. This loop is
-    # online and 0.005 left the teacher tens of rollouts behind; 0.05 is a
-    # ~2.5-rollout time constant, damped within a rollout and still tracking.
-    critic_ema_decay: float = 0.05
-    # gamma ** action_horizon puts 0.85 of the value target on the critic's own
-    # output, the regime a target network is meant to hold fixed.
-    use_target_critic: bool = True
-    # Each drift metric is a full critic forward over 2 * n_chunks windows, and
-    # the loop runs it per grad-accumulation boundary. That is real compute for
-    # numbers only the tracker reads, so the loop also skips it whenever no
-    # tracker is enabled, and the flag is the manual override for a
-    # report_to=none run that still wants the numbers.
-    log_drift_diagnostics: bool = True
-
-    # At num_kept_tokens == action_horizon the transform is the full
-    # orthonormal DCT, so it is a rotation of the loss and a no-op up to
-    # numerics. A smaller value is what actually truncates the spectrum.
-    num_kept_tokens: int = 16  # DCT coefficients the flow sees; inert when use_dct_transform=False
-
-    policy_lr: float = 1e-3
-    critic_lr: float = 1e-3  # legacy split-checkpoint compatibility
-    optimizer_weight_decay: float = 1e-4
-
-    # No separate warm-up. Stats initialize during the first rollout.
-    # Groups consecutive minibatches into one optimizer step; it does NOT
-    # change peak memory. Every microbatch is batch_size chunks x
-    # num_mc_samples MC draws either way, and the DiT activations from one
-    # microbatch are the peak (1.6 GiB saved for backward at the defaults,
-    # batch_size=128 x num_mc_samples=16). The memory knobs are batch_size and
-    # num_mc_samples; grad_accum_steps only trades optimizer steps for fewer.
-    grad_accum_steps: int = 1
-
+    # -- Eval and early stopping ------------------------------------
     # 12 episodes put the standard error of the mean near 60 return on
     # Humanoid, which is the same size as the regressions these knobs watch
     # for, and the max over hundreds of evals is biased well above the truth.
@@ -153,22 +148,26 @@ class SJFPOConfig(PreTrainedConfig):
     lr_decay: float = 0.5
     max_lr_decays: int = 3
 
+    # -- Diagnostics ------------------------------------------------
+    # Each drift metric is a full critic forward over 2 * n_chunks windows. The
+    # loop skips it whenever no tracker is enabled, so the flag is the manual
+    # override for a report_to=none run that still wants the numbers.
+    log_drift_diagnostics: bool = True
+
 
     def __post_init__(self) -> None:
         super().__post_init__()
-        self._resolve_n_action_steps()
-        self._validate_geometry()
-        self._validate_loss_params()
-        self._validate_optimizer()
-        self._validate_eval_schedule()
-        self._validate_flags()
-
-    def _resolve_n_action_steps(self) -> None:
-        """If ``n_action_steps`` is None, use ``action_horizon`` as the default."""
+        # n_action_steps is optional, so it resolves here rather than in the
+        # validators that read it. Everything below can assume it is an int.
         if self.n_action_steps is None:
             self.n_action_steps = self.action_horizon
+        self.validate_geometry()
+        self.validate_loss_params()
+        self.validate_optimizer()
+        self.validate_eval_schedule()
+        self.validate_flags()
 
-    def _validate_geometry(self) -> None:
+    def validate_geometry(self) -> None:
         """Validate observation, action, and DiT shape parameters."""
         if self.n_obs_steps < 1:
             raise ValueError(f"n_obs_steps={self.n_obs_steps} must be >= 1")
@@ -209,7 +208,7 @@ class SJFPOConfig(PreTrainedConfig):
         if self.timestep_scale <= 0:
             raise ValueError(f"timestep_scale={self.timestep_scale} must be > 0")
 
-    def _validate_eval_schedule(self) -> None:
+    def validate_eval_schedule(self) -> None:
         """Validate the eval budget and the plateau-driven stop and decay."""
         if self.eval_max_episodes < 1:
             raise ValueError(f"eval_max_episodes={self.eval_max_episodes} must be >= 1")
@@ -225,7 +224,7 @@ class SJFPOConfig(PreTrainedConfig):
         if self.max_lr_decays < 0:
             raise ValueError(f"max_lr_decays={self.max_lr_decays} must be >= 0")
 
-    def _validate_loss_params(self) -> None:
+    def validate_loss_params(self) -> None:
         """Validate discount, trust-region, clamp, and sampling parameters."""
         if not 0.0 < self.gamma <= 1.0:
             raise ValueError(f"gamma={self.gamma} must satisfy 0 < gamma <= 1")
@@ -285,7 +284,7 @@ class SJFPOConfig(PreTrainedConfig):
                 f"value_huber_delta={self.value_huber_delta} must be > 0"
             )
 
-    def _validate_optimizer(self) -> None:
+    def validate_optimizer(self) -> None:
         """Validate learning rates, clipping, and batch-shaping parameters."""
         if self.policy_lr <= 0:
             raise ValueError(f"policy_lr={self.policy_lr} must be > 0")
@@ -325,7 +324,7 @@ class SJFPOConfig(PreTrainedConfig):
         if self.num_mc_samples < 1:
             raise ValueError(f"num_mc_samples={self.num_mc_samples} must be >= 1")
 
-    def _validate_flags(self) -> None:
+    def validate_flags(self) -> None:
         """Validate step counts, spectral token fraction, and flag combinations."""
         if self.num_euler_steps < 1:
             raise ValueError(f"num_euler_steps={self.num_euler_steps} must be >= 1")

@@ -4,7 +4,7 @@ import numpy as np
 import torch
 
 
-def _stack(frames: list):
+def stack_frames(frames: list):
     try:
         video = np.stack([np.asarray(f, dtype=np.uint8) for f in frames])
     except (ValueError, TypeError):
@@ -25,7 +25,7 @@ class TensorboardBackend:
             self.writer.add_scalar(key, float(value), step)
 
     def log_video(self, frames: list, step: int, *, fps: int = 30) -> None:
-        video = _stack(frames)
+        video = stack_frames(frames)
         if video is None:
             return
         try:
