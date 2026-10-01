@@ -29,7 +29,7 @@ from spectral_joint_policy.evaluator import (
 )
 from spectral_joint_policy.modeling_sjfpo import SJFPOAborted, SJFPOPolicy, build_optimizer
 from lerobot.utils.constants import CHECKPOINTS_DIR
-from spectral_joint_policy.utils import resolve_device, to_numpy_1d
+from spectral_joint_policy.utils import resolve_device, rms, to_numpy_1d
 from spectral_joint_policy.tracking import build_tracker, eval_summary_metrics
 
 
@@ -62,10 +62,18 @@ def mini_batch_indices(
             yield perm[start:stop]
 
 class _EvalPolicy:
-    """Single-action eval adapter over ``SJFPOPolicy.select_action``."""
+    """Single-action eval adapter over ``SJFPOPolicy.select_action``.
 
-    def __init__(self, policy: SJFPOPolicy):
+    ``zero_sampling`` picks the flow's start point. ``True`` integrates from
+    ``eps=0``, which is what eval and the reported metrics use; ``False``
+    integrates from sampled noise, which is what the training rollouts use.
+    Running both, over the same episode seeds, is the only way to see the two
+    distributions diverge.
+    """
+
+    def __init__(self, policy: SJFPOPolicy, zero_sampling: bool = True):
         self.policy = policy
+        self.zero_sampling = zero_sampling
 
     def reset(self) -> None:
         """Drop the policy's cached chunk state before a new episode."""
@@ -75,7 +83,9 @@ class _EvalPolicy:
         was_training = self.policy.training
         self.policy.eval()
         try:
-            action = self.policy.select_action({"observation.state": obs})
+            action = self.policy.select_action(
+                {"observation.state": obs}, zero_sampling=self.zero_sampling
+            )
         finally:
             self.policy.train(was_training)
         return to_numpy_1d(action)
@@ -121,12 +131,15 @@ def sample_minibatch(
 
     ``normalizer_observations`` passes through unsliced: one row per executed env
     step, not per chunk, and the normalizer updates once from the whole rollout
-    batch. ``gae_diagnostics`` is a plain dict of scalars, same reason.
+    batch. ``gae_diagnostics`` is a plain dict of scalars, same reason, and so
+    is the ``spectral_energy_retained`` float beside it.
     """
     if out is None:
         out = {}
+    passthrough = ("normalizer_observations", "gae_diagnostics",
+                   "spectral_energy_retained")
     for k, v in batch.items():
-        if k == "normalizer_observations" or k == "gae_diagnostics":
+        if k in passthrough:
             out[k] = v
         else:
             out[k] = v[indices]
@@ -161,6 +174,32 @@ def warm_observation_stats(policy, env, *, obs_dim: int, seed: int) -> int:
 
 
 @torch.no_grad()
+def rollout_diagnostics(batch: dict[str, torch.Tensor]) -> dict[str, float]:
+    """Post-rollout scalars in one device->host transfer.
+
+    Every entry used to be its own ``float()``/``int()``, so a rollout paid one
+    CUDA sync per scalar and the ``action_abs_max`` guard blocked on one. They
+    share a device and are all 0-dim, so one ``torch.stack`` covers them.
+    ``_compute_info`` and ``_gae_diagnostics`` already work this way.
+
+    ``step_delta`` is the executed env-step count the caller advances by, so it
+    rides along rather than syncing on its own.
+    """
+    action = batch["action"].float()
+    scalars = [
+        (~batch["action_is_pad"]).sum(),
+        action.abs().max(),
+        action.abs().mean(),
+    ]
+    keys = ["step_delta", "action_abs_max", "action_magnitude"]
+    clip_counts = batch.get("chunk_clip_counts")
+    if clip_counts is not None:
+        scalars.append(clip_counts.float().mean())
+        keys.append("chunk_clip_counts")
+    return dict(zip(keys, torch.stack(scalars).tolist()))
+
+
+@torch.no_grad()
 def measure_value_drift(policy, batch, device) -> tuple[torch.Tensor, torch.Tensor]:
     """Both critic-drift metrics from one critic forward.
 
@@ -182,10 +221,10 @@ def measure_value_drift(policy, batch, device) -> tuple[torch.Tensor, torch.Tens
     boot_obs = batch["boot_observations"].to(device=device, dtype=torch.float32)
     start = batch["boot_values_start"].to(device).reshape(-1)
     delta = policy.critic(boot_obs).float().amin(dim=0) - start
-    drift_rms = delta.pow(2).mean().sqrt()
+    drift_rms = rms(delta)
     return (
-        drift_rms / (start.pow(2).mean().sqrt() + 1e-8),
-        drift_rms / (batch["raw_returns"].to(device).pow(2).mean().sqrt() + 1e-8),
+        drift_rms / (rms(start) + 1e-8),
+        drift_rms / (rms(batch["raw_returns"].to(device)) + 1e-8),
     )
 
 
@@ -336,6 +375,10 @@ def train_sjfpo_run(
         env, eval_seed=10000 + seed, max_episodes=cfg.eval_max_episodes
     )
     eval_policy = _EvalPolicy(policy)
+    # Same adapter, opposite start point. The rollouts that build the critic's
+    # targets and the advantages come from sampled noise, so the eps=0 return
+    # above is measuring a different distribution than the one being trained.
+    stochastic_eval_policy = _EvalPolicy(policy, zero_sampling=False)
     r_rand = random_baseline(evaluator, env)
     tracker = build_tracker(
         cfg,
@@ -388,7 +431,8 @@ def train_sjfpo_run(
                 action_low=action_low,
                 action_high=action_high,
             )
-            step_delta = int((~batch["action_is_pad"]).sum())
+            rollout = rollout_diagnostics(batch)
+            step_delta = int(rollout["step_delta"])
             if step_delta <= 0:
                 raise RuntimeError(
                     "rollout returned zero executed steps; aborting to avoid "
@@ -402,8 +446,7 @@ def train_sjfpo_run(
                     batch["action"].detach().cpu().numpy(),
                     batch["action_is_pad"].detach().cpu().numpy(),
                 )
-            action_abs_max = float(batch["action"].abs().max())
-            action_magnitude = float(batch["action"].abs().mean())
+            action_abs_max = rollout["action_abs_max"]
             if action_abs_max > 1.05:
                 raise ValueError(
                     f"Unnormalised actions detected: max_abs={action_abs_max:.3f} "
@@ -416,8 +459,6 @@ def train_sjfpo_run(
             actor_pre_norms: list[torch.Tensor] = []
             critic_pre_norms: list[torch.Tensor] = []
             above_clamp_fracs: list[torch.Tensor] = []
-            boot_deltas: list[torch.Tensor] = []
-            target_drifts: list[torch.Tensor] = []
             n_chunks = batch["raw_advantages"].shape[0]
             microbatches = list(
                 mini_batch_indices(
@@ -481,14 +522,6 @@ def train_sjfpo_run(
                     optimizer.zero_grad(set_to_none=True)
                     policy.step_count += 1
                     policy.update_target_critic()
-                    # A full critic pass over 2 * n_chunks windows per boundary,
-                    # for numbers only the tracker reads.
-                    if cfg.log_drift_diagnostics and tracker.enabled:
-                        boot_delta, target_drift = measure_value_drift(
-                            policy, batch, device
-                        )
-                        boot_deltas.append(boot_delta)
-                        target_drifts.append(target_drift)
                 if epoch_info is not None:
                     infos.append(epoch_info)
 
@@ -500,6 +533,14 @@ def train_sjfpo_run(
                     "Non-finite loss detected during gradient accumulation"
                 )
 
+            # Once per rollout, not per boundary: a full critic pass over
+            # 2 * n_chunks windows, and the number it reads is the same at
+            # every boundary -- the live critic's move from the bootstrap it
+            # was built with, which only grows with steps taken.
+            drift = None
+            if cfg.log_drift_diagnostics and tracker.enabled:
+                drift = measure_value_drift(policy, batch, device)
+
             policy.update_ema(global_step)
 
             policy.update_observation_stats(batch["normalizer_observations"])
@@ -508,32 +549,39 @@ def train_sjfpo_run(
                 info = {k: sum(d[k] for d in infos) / len(infos) for k in infos[0]}
             else:
                 info = None
-            actor_grad_norm_mean_pre = (
-                float(torch.stack(actor_pre_norms).mean()) if actor_pre_norms else 0.0
-            )
-            critic_grad_norm_mean_pre = (
-                float(torch.stack(critic_pre_norms).mean()) if critic_pre_norms else 0.0
-            )
-            boot_drift_mean = (
-                float(torch.stack(boot_deltas).mean()) if boot_deltas else 0.0
-            )
-            target_drift_mean = (
-                float(torch.stack(target_drifts).mean()) if target_drifts else 0.0
-            )
+            # One transfer for every scalar the update produced. Each was its
+            # own float() on a device tensor, so an update paid one sync per
+            # boundary plus one per mean.
+            scalars = [
+                torch.stack(actor_pre_norms).mean(),
+                torch.stack(critic_pre_norms).mean(),
+                torch.stack(above_clamp_fracs).mean(),
+            ]
+            if drift is not None:
+                scalars.extend(drift)
+            (
+                actor_grad_norm_mean_pre,
+                critic_grad_norm_mean_pre,
+                above_clamp_frac,
+                *drift_means,
+            ) = torch.stack(scalars).tolist()
 
             if tracker.enabled and info is not None:
                 data = {f"train/{k}": v for k, v in info.items()}
                 data["train/actor_grad_norm_preclip"] = actor_grad_norm_mean_pre
                 data["train/critic_grad_norm_preclip"] = critic_grad_norm_mean_pre
-                if cfg.log_drift_diagnostics:
-                    data["train/boot_value_delta"] = boot_drift_mean
-                    data["train/value_target_drift"] = target_drift_mean
+                if cfg.log_drift_diagnostics and drift_means:
+                    data["train/boot_value_delta"] = drift_means[0]
+                    data["train/value_target_drift"] = drift_means[1]
                 if rollout_jerk is not None:
                     data["train/rollout_jerk"] = rollout_jerk
-                clip_counts = batch.get("chunk_clip_counts")
-                if clip_counts is not None:
-                    data["train/chunk_clip_counts"] = float(clip_counts.float().mean())
-                data["train/action_magnitude"] = action_magnitude
+                if "chunk_clip_counts" in rollout:
+                    data["train/chunk_clip_counts"] = rollout["chunk_clip_counts"]
+                data["train/action_magnitude"] = rollout["action_magnitude"]
+                if batch.get("spectral_energy_retained") is not None:
+                    data["train/spectral_energy_retained"] = batch[
+                        "spectral_energy_retained"
+                    ]
                 gae_diag = batch.get("gae_diagnostics")
                 if gae_diag:
                     data["train/gae_linked_frac"] = gae_diag["linked_frac"]
@@ -550,11 +598,6 @@ def train_sjfpo_run(
                 )
                 tracker.log(data, step=global_step)
 
-            above_clamp_frac = (
-                float(torch.stack(above_clamp_fracs).mean())
-                if above_clamp_fracs
-                else 0.0
-            )
             if above_clamp_frac > 0.5:
                 above_clamp_updates += 1
                 if above_clamp_updates >= ABOVE_CLAMP_ABORT_UPDATES:
@@ -582,9 +625,19 @@ def train_sjfpo_run(
                     eval_results = evaluator.evaluate(
                         eval_policy, out_dir=out_dir, append_csv=True
                     )
+                    # Same seeds, same evaluator, so the episode pairs line up.
+                    # No out_dir: this is a diagnostic, not a history entry.
+                    stochastic_results = evaluator.evaluate(
+                        stochastic_eval_policy
+                    )
                 finally:
                     policy.swap_out_ema(displaced)
                 mean_return = float(np.mean([r["return"] for r in eval_results]))
+                stochastic_mean_return = (
+                    float(np.mean([r["return"] for r in stochastic_results]))
+                    if stochastic_results
+                    else None
+                )
                 all_eval_returns.append(mean_return)
                 recent_eval_returns.append(mean_return)
                 eval_count += 1
@@ -624,6 +677,11 @@ def train_sjfpo_run(
                             "train/policy_lr": optimizer.param_groups[0]["lr"],
                             "train/critic_lr": optimizer.param_groups[-1]["lr"],
                             "train/lr_decays": lr_decays,
+                            **(
+                                {"train/stochastic_mean_return": stochastic_mean_return}
+                                if stochastic_mean_return is not None
+                                else {}
+                            ),
                         },
                         step=global_step,
                     )
