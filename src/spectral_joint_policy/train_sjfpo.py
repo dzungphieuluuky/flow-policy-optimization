@@ -534,9 +534,7 @@ def train_sjfpo_run(
                 )
 
             # Once per rollout, not per boundary: a full critic pass over
-            # 2 * n_chunks windows, and the number it reads is the same at
-            # every boundary -- the live critic's move from the bootstrap it
-            # was built with, which only grows with steps taken.
+            # 2 * n_chunks windows, and the number only grows with steps taken.
             drift = None
             if cfg.log_drift_diagnostics and tracker.enabled:
                 drift = measure_value_drift(policy, batch, device)
@@ -549,9 +547,7 @@ def train_sjfpo_run(
                 info = {k: sum(d[k] for d in infos) / len(infos) for k in infos[0]}
             else:
                 info = None
-            # One transfer for every scalar the update produced. Each was its
-            # own float() on a device tensor, so an update paid one sync per
-            # boundary plus one per mean.
+            # One transfer for every scalar the update produced.
             scalars = [
                 torch.stack(actor_pre_norms).mean(),
                 torch.stack(critic_pre_norms).mean(),
@@ -616,10 +612,9 @@ def train_sjfpo_run(
             regressed_now = False
             diverge_msg = ""
             if global_step >= next_eval or global_step >= total_steps:
-                # The EMA actor once it is warm: it is the same weights averaged
-                # over ~20 rollouts, which is what turns a curve this noisy into
-                # a readable one. The live weights are put back right after, so
-                # training never runs on the average.
+                # The EMA actor once it is warm: the same weights averaged over ~20
+                # rollouts, which turns a curve this noisy into a readable one. The
+                # live weights go back right after, so training never runs on it.
                 displaced = policy.swap_in_ema(global_step)
                 try:
                     eval_results = evaluator.evaluate(

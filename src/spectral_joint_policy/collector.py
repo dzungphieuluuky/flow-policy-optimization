@@ -117,14 +117,11 @@ class RolloutBuffer:
         # Chunk capacity the previous rollout settled on; 0 until then.
         self.last_chunk_capacity = 0
         if chunk_capacity is None:
-            # A rollout runs one chunk per action_horizon steps, plus one per
-            # episode end, because a chunk cut by a terminal is short. The +8
-            # absorbs that; ensure_chunk_capacity covers the rest.
-            #
-            # After the first rollout, size from what the last one actually
-            # used: a policy that falls every 9 steps makes ~17x the chunks
-            # that max_steps // action_horizon predicts, and every miss
-            # reallocates and re-pins all ten chunk tensors.
+            # One chunk per action_horizon steps, plus one per episode end since a
+            # chunk cut short by a terminal still counts; +8 absorbs that. After the
+            # first rollout, size from what the last one used: a policy that falls
+            # every 9 steps makes ~17x what max_steps // action_horizon predicts, and
+            # every miss re-pins all ten chunk tensors.
             chunk_capacity = self.last_chunk_capacity or (
                 -(-max_steps // action_horizon) + 8
             )
@@ -132,14 +129,10 @@ class RolloutBuffer:
             raise ValueError("chunk_capacity must be positive")
         self.chunk_capacity = chunk_capacity
 
-        # One frame per executed step. The obs windows live on the chunk axis:
-        # envs interleave, so a chunk's obs_steps frames are not obs_steps
-        # adjacent rows and cannot be gathered back out of a step timeline.
-        #
-        # There is deliberately no step_terminated / step_truncated pair: the
-        # collector wrote one row per chunk into a max_steps row tensor, and
-        # nothing ever read it back. The per-chunk chunk_terminated /
-        # chunk_truncated flags are what the GAE backup consumes.
+        # One frame per executed step. The obs windows live on the chunk axis: envs
+        # interleave, so a chunk's obs_steps frames are not adjacent rows and cannot be
+        # gathered back out of a step timeline. Deliberately no step_terminated /
+        # step_truncated pair; the per-chunk flags are what the GAE backup consumes.
         self.step_frames = self.zeros_for((max_steps, obs_dim), _OBS_DTYPE)
         self.step_rewards = self.zeros_for((max_steps,), _REWARD_DTYPE)
 
@@ -689,21 +682,17 @@ def collect_chunks_vec(
     try:
         obs, _ = envs.reset(seed=[seed + i for i in range(n)])
         obs_dim = int(obs.shape[-1])
-        # envs.step hands back a [n, obs] array. Everything below indexes it
-        # whole instead of row by row, and the obs window is a ring cursor
-        # rather than a per-step slide, so a vec step costs a handful of
-        # dispatches instead of twelve per env.
+        # envs.step hands back a [n, obs] array. Everything below indexes it whole
+        # rather than row by row, and the obs window is a ring cursor, not a slide.
         obs0 = torch.from_numpy(np.asarray(obs, dtype=np.float32))
         if buffer is not None:
             windows = torch.zeros(n, n_obs_steps, obs_dim, dtype=_OBS_DTYPE)
             windows.copy_(obs0[:, None, :].expand_as(windows))
-            # Slot the next frame of env i is written to. The window is kept
-            # chronological by rolling it left by wpos[i] when its chunk
-            # closes, so a write is O(1) rather than sliding n_obs rows.
+            # Slot the next frame of env i goes to. Rolling the window left by wpos[i]
+            # when its chunk closes keeps it chronological, so a write is O(1).
             wpos = torch.zeros(n, dtype=torch.long)
-            # Reused per chunk: slot ``pos`` is overwritten on every chunk of
-            # env i, so ``add_chunk`` must consume ``reward_windows[i,
-            # :n_exec]`` before env i's next chunk.
+            # Reused per chunk: slot ``pos`` is overwritten on every chunk of env i, so
+            # ``add_chunk`` must consume ``reward_windows[i, :n_exec]`` first.
             reward_windows = torch.zeros(n, chunk_size, dtype=_REWARD_DTYPE)
             # One frame per step, not one window per step. The window the chunk
             # ends on is already in hand when the chunk closes.
@@ -714,16 +703,14 @@ def collect_chunks_vec(
             step_frames = None
         cur: list = [None] * n
         pos_t = torch.zeros(n, dtype=torch.long)
-        # Action chunks for the wavefront, indexed by env. Row n is a zero row
-        # so an env with no chunk reads zeros, which is what the old
-        # actions_t.zero_() produced.
+        # Action chunks for the wavefront, indexed by env. Row n is a zero row so an
+        # env with no chunk reads zeros.
         plan = torch.zeros(n + 1, chunk_size, act_dim, dtype=torch.float32)
         env_rows = torch.arange(n)
         live_t = torch.zeros(n, dtype=torch.bool)
         # roll_table[w][j] == (w + j) % n_obs_steps, so restoring a window's
-        # chronological order is one row lookup instead of an arange, an add and
-        # a modulo per closing chunk. Rows that would wrap dominate when chunks
-        # are short, which is exactly when the old per-step slide was worst.
+        # chronological order is one row lookup, and the wrapping rows dominate when
+        # chunks are short.
         roll_table = (
             torch.arange(n_obs_steps)[:, None]
             + torch.arange(n_obs_steps)[None, :]
@@ -746,7 +733,6 @@ def collect_chunks_vec(
 
         actions_t = torch.zeros((n, act_dim), dtype=torch.float32)
         # The loop condition's whole job is how many env slots are still short.
-        # any(... for i in range(n)) rebuilt that every vec step.
         remaining = sum(targets)
         while remaining:
             need = [
@@ -769,8 +755,7 @@ def collect_chunks_vec(
                         [torch.stack(tuple(windows[i]), dim=0) for i in need]
                     )
                 proposed = as_float_tensor(policy(states))
-                # One clamp-and-rescale for the whole wavefront, not one per
-                # env: the collector used to run B small tensor ops here.
+                # One clamp-and-rescale for the whole wavefront, not one per env.
                 executed_all, scaled_all, clip_counts_all = scale_and_clip_chunk(
                     proposed, low, range_
                 )
@@ -797,13 +782,11 @@ def collect_chunks_vec(
                         step_states[i] = []
                 live_idx = None  # the stepping set just changed
 
-            # One gather replaces the n select+copy_ pairs this used to be.
             # Envs with no chunk read row n, the zero row.
             row = torch.where(live_t, env_rows, torch.full_like(env_rows, n))
             actions_t.copy_(plan[row, pos_t.clamp(max=chunk_size - 1)])
-            # No early-out: envs flagged ``awaiting`` have ``cur[i] is None`` but
-            # still need this step() to take their reset observation (NEXT_STEP).
-            # The while exits once every env is done and no resets are pending.
+            # No early-out: envs flagged ``awaiting`` still need this step() to take
+            # their reset observation.
             actions_np = actions_t.cpu().numpy()
 
             obs, rew, term, trunc, _ = envs.step(actions_np)
@@ -816,9 +799,7 @@ def collect_chunks_vec(
             if buffer is not None and live_idx is None:
                 live_idx = env_rows[live_t]
             if buffer is not None and live_idx is not None and live_idx.numel():
-                # Three scatters for the whole vec step. The old loop rebuilt a
-                # tensor per env from obs[i] and slid the window per env per
-                # step; this is the same writes with the batch envs.step
+                # Three scatters for the whole vec step, over the batch envs.step
                 # already handed us.
                 p = pos_t[live_idx]
                 reward_windows[live_idx, p] = torch.from_numpy(rew_np)[live_idx]
@@ -992,12 +973,10 @@ def collect_chunks(
                     clip_count=int(clip_count),
                 )
                 if done_kind == "continue" and n_exec < n_action_steps:
-                    # Cut short by the step budget. The env is still alive, so
-                    # this is not a truncation: flagging it as one made GAE treat
-                    # every live chunk as an episode end and drop the chain to the
-                    # next chunk, leaving linked_frac at zero.
-                    # done_kind is required: a short chunk is also what an early
-                    # termination produces, and the vec path gates the same way.
+                    # Cut short by the step budget. The env is still alive, so this is
+                    # not a truncation: that would make GAE treat every live chunk as an
+                    # episode end and drop the chain to the next chunk. done_kind is
+                    # required, since an early termination also produces a short chunk.
                     buffer.mark_incomplete(chunk_index)
                 executed_total += n_exec
                 if done_kind != "continue":

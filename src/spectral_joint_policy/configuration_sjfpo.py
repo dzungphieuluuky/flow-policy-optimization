@@ -34,18 +34,16 @@ class SJFPOConfig(PreTrainedConfig):
     # -- Rollout and batching ---------------------------------------
     num_envs: int = 64
     num_mc_samples: int = 16
-    # 4 epochs per rollout accelerated the feature-rank decay that precedes the
-    # late-training collapse (PFO, NeurIPS 2024: more epochs per batch => faster
-    # pre-activation-norm growth and rank loss, and rank loss breaks the trust
-    # region). Same samples per update, half the reuse.
-    num_learning_epochs: int = 2
+    # 1, not 2: reuse is what accelerates the feature-rank decay that precedes the
+    # late-training collapse (PFO, NeurIPS 2024: more epochs => faster rank loss, and
+    # rank loss breaks the trust region). Same samples per update, no reuse, so
+    # rank decays at half the rate for the same env steps.
+    num_learning_epochs: int = 1
     chunks_per_update: int = 1024
     batch_size: int = 128
-    # Groups consecutive minibatches into one optimizer step; it does NOT change
-    # peak memory. Every microbatch is batch_size chunks x num_mc_samples MC
-    # draws either way, and one microbatch's DiT activations are the peak. The
-    # memory knobs are batch_size and num_mc_samples; this only trades
-    # optimizer steps for fewer.
+    # Groups consecutive minibatches into one optimizer step. Does NOT change peak
+    # memory: one microbatch's DiT activations are the peak either way, so
+    # batch_size and num_mc_samples are the memory knobs.
     grad_accum_steps: int = 1
 
     # -- Flow sampling -----------------------------------------------
@@ -66,18 +64,13 @@ class SJFPOConfig(PreTrainedConfig):
     # -- Trust region and CFM loss -----------------------------------
     gamma: float = 0.99
     gae_lambda: float = 0.95
-    # One epsilon for the whole chunk. No per-frequency clipping: the trust
-    # region applies to the "sample" CFM reduction, which averages every token
-    # into one number per chunk, so no per-frequency ratio survives into the
-    # loss to hang a different epsilon on.
+    # One epsilon for the whole chunk. Per-frequency clipping has nothing to bind to:
+    # the "sample" reduction averages every token into one number per chunk.
     clip_param: float = 0.05
     trust_region_mode: str = "aspo"  # ppo | spo | aspo, FPO++'s default
-    # "mean" divides FPO++'s sum (Eq. 8 sums CFM losses over chunk timesteps) by
-    # tokens*action_dim, keeping the loss O(1) so cfm_clamp stays a real guard.
-    # The cost: the loss scale IS the trust-region temperature, since
-    # ratio = exp(l_old - l_new), so clip_param is not comparable to FPO++'s
-    # 0.05 and must be swept. Read clipfrac first: near zero means clip_param
-    # constrains nothing.
+    # "mean" divides FPO++'s sum (Eq. 8) by tokens*action_dim, keeping the loss O(1)
+    # so cfm_clamp stays a real guard. The cost: the loss scale IS the trust-region
+    # temperature, so clip_param is not comparable to FPO++'s 0.05 and must be swept.
     cfm_loss_reduction: str = "mean"  # mean | sum | sqrt
     cfm_clamp: float = 200.0
     cfm_mask_unexecuted: bool = True
@@ -89,26 +82,23 @@ class SJFPOConfig(PreTrainedConfig):
     num_critics: int = 2
     normalize_advantage: bool = True
     value_loss_coef: float = 1.0  # the regression target is the raw return
-    # Huber delta as a multiple of the batch return RMS, so the quadratic-to-
-    # linear transition tracks the target's own scale (returns_rms runs ~2.9 on
-    # InvertedPendulum, ~15 on Hopper) instead of a constant that is 5x off on one
-    # of them. Bounds the per-sample gradient, which is what lets a few
+    # Huber delta as a multiple of the batch return RMS, so the quadratic-to-linear
+    # transition tracks the target's own scale (returns_rms runs ~2.9 on
+    # InvertedPendulum, ~15 on Hopper). Bounds the per-sample gradient, so a few
     # large-residual chunks stop owning critic_grad_norm_preclip.
     value_huber_delta: float = 1.0
     use_clipped_value_loss: bool = True
     # gamma ** action_horizon puts 0.85 of the value target on the critic's own
     # output, the regime a target network is meant to hold fixed.
     use_target_critic: bool = True
-    # qc and TD-JEPA use 0.005 but refresh over offline batches. This loop is
-    # online and 0.005 left the teacher tens of rollouts behind; 0.05 is a
-    # ~2.5-rollout time constant, damped within a rollout and still tracking.
+    # qc and TD-JEPA use 0.005 but refresh over offline batches; online that left the
+    # teacher tens of rollouts behind. 0.05 is a ~2.5-rollout time constant.
     critic_ema_decay: float = 0.05
 
     # -- Spectral chunk encoding ------------------------------------
     use_dct_transform: bool = True
-    # At num_kept_tokens == action_horizon the transform is the full
-    # orthonormal DCT, so it is a rotation of the loss and a no-op up to
-    # numerics. A smaller value is what actually truncates the spectrum.
+    # At num_kept_tokens == action_horizon the transform is the full orthonormal DCT,
+    # a rotation of the loss and a no-op up to numerics. Smaller truncates.
     num_kept_tokens: int = 16
 
     # -- DiT backbone -----------------------------------------------
@@ -122,11 +112,16 @@ class SJFPOConfig(PreTrainedConfig):
     policy_lr: float = 1e-5
     critic_lr: float = 1e-5  # legacy split-checkpoint compatibility
     optimizer_weight_decay: float = 1e-4
-    # rsl-rl's default. These were 200.0, which never bound a joint norm of up
-    # to 400. A global rescale is near-inert under AdamW, so the threshold does
-    # not set the step size; it decides whether a transient spike is allowed to
-    # pollute the second-moment estimate. Measured: a 1/170 rescale moved the
-    # trajectory 1.2e-04 per parameter, one 1e4 spike moved it 9.0e-02.
+    # Decay rates of Adam's two gradient-moment running averages. Equal by default:
+    # Dohare et al. (arXiv:2306.13812) report Adam exacerbating loss of plasticity and
+    # policy collapse being mitigated by using the same value for both moments, so the
+    # asymmetric (0.9, 0.999) pair is the thing to suspect. Kept as the raw pair so any
+    # asymmetry is still expressible.
+    adam_betas: tuple[float, float] = (0.999, 0.999)
+    # rsl-rl's default. Under AdamW the threshold does not set the step size; it
+    # decides whether a transient spike may pollute the second-moment estimate.
+    # Measured: a 1/170 rescale moved the trajectory 1.2e-04 per parameter, one
+    # 1e4 spike moved it 9.0e-02.
     max_grad_norm: float = 1.0
     # Clipped separately from the actor: the critic's norm is two orders larger.
     critic_max_grad_norm: float | None = 1.0
@@ -134,13 +129,12 @@ class SJFPOConfig(PreTrainedConfig):
     ema_warmup_steps: int = 500
 
     # -- Eval and early stopping ------------------------------------
-    # 12 episodes put the standard error of the mean near 60 return on
-    # Humanoid, which is the same size as the regressions these knobs watch
-    # for, and the max over hundreds of evals is biased well above the truth.
+    # The max over hundreds of evals is biased well above the truth, and too few
+    # episodes puts the standard error near the size of the regressions these knobs
+    # watch for.
     eval_max_episodes: int = 50
     # Stop once the return has sat below this fraction of its own peak for
-    # stop_patience evals in a row, so the run ends on the peak region rather
-    # than on whatever the last rollout left behind.
+    # stop_patience evals in a row, so the run ends on the peak region.
     stop_return_frac: float = 0.7
     stop_patience: int = 5
     # Each completed window of stop_patience bad evals cuts the lrs by
@@ -294,6 +288,8 @@ class SJFPOConfig(PreTrainedConfig):
             raise ValueError(
                 f"optimizer_weight_decay={self.optimizer_weight_decay} must be >= 0"
             )
+        if not all(0.0 < b < 1.0 for b in self.adam_betas):
+            raise ValueError(f"adam_betas={self.adam_betas} must each be in (0, 1)")
         if self.max_grad_norm <= 0:
             raise ValueError(f"max_grad_norm={self.max_grad_norm} must be > 0")
         if self.critic_max_grad_norm is not None and self.critic_max_grad_norm <= 0:
