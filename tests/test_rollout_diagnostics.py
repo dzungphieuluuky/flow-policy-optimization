@@ -1,0 +1,54 @@
+"""Tests for the batched rollout diagnostics (``sjfpo.train_sjfpo``)."""
+import sys
+from pathlib import Path
+
+import torch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from spectral_joint_policy.train_sjfpo import rollout_diagnostics
+
+N, H, D = 8, 4, 3
+
+
+def make_batch(with_clip_counts=True):
+    """One rollout's action/mask, every chunk executing a different prefix."""
+    g = torch.Generator().manual_seed(0)
+    batch = {
+        "action": torch.randn(N, H, D, generator=g),
+        "action_is_pad": torch.zeros(N, H, dtype=torch.bool),
+        "chunk_clip_counts": torch.randint(0, 5, (N,), generator=g),
+    }
+    for i in range(N):
+        batch["action_is_pad"][i, i % H + 1 :] = True
+    if not with_clip_counts:
+        del batch["chunk_clip_counts"]
+    return batch
+
+
+def test_matches_the_unbatched_reductions():
+    """One transfer, but the same numbers as the float()s it replaced."""
+    batch = make_batch()
+    out = rollout_diagnostics(batch)
+    action = batch["action"]
+    assert out["step_delta"] == int((~batch["action_is_pad"]).sum())
+    assert out["action_abs_max"] == float(action.abs().max())
+    assert out["action_magnitude"] == float(action.abs().mean())
+    assert out["chunk_clip_counts"] == float(
+        batch["chunk_clip_counts"].float().mean()
+    )
+
+
+def test_step_delta_counts_executed_steps():
+    """step_delta drives global_step, so a padded row must contribute nothing."""
+    batch = make_batch()
+    out = rollout_diagnostics(batch)
+    assert out["step_delta"] == sum(
+        int((~pad).sum()) for pad in batch["action_is_pad"]
+    )
+
+
+def test_clip_counts_is_optional():
+    """generate_rollout always emits it, but the helper must not require it."""
+    out = rollout_diagnostics(make_batch(with_clip_counts=False))
+    assert set(out) == {"step_delta", "action_abs_max", "action_magnitude"}
