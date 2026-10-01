@@ -27,20 +27,27 @@ def _dct_norm(count: int, sequence_length: int, device: torch.device) -> torch.T
 
 @lru_cache(maxsize=64)
 def _get_analysis_basis(
-    K: int, M: int, device: torch.device
+    K: int, num_modes: int, device: torch.device
 ) -> tuple[torch.Tensor, torch.Tensor]:
     if K < 1:
         raise ValueError(f"K must be positive, got {K}")
-    if M < 0 or M >= K:
-        raise ValueError(f"M must satisfy 0 <= M < K, got M={M}, K={K}")
+    if not 1 <= num_modes <= K:
+        raise ValueError(
+            f"num_modes must satisfy 1 <= num_modes <= K, "
+            f"got num_modes={num_modes}, K={K}"
+        )
     j = torch.arange(K, dtype=torch.float32, device=device)
-    k = torch.arange(M + 1, dtype=torch.float32, device=device)
+    k = torch.arange(num_modes, dtype=torch.float32, device=device)
     basis = torch.cos(math.pi * k[:, None] * (j[None, :] + 0.5) / K)
-    return basis, _dct_norm(M + 1, K, device)
+    return basis, _dct_norm(num_modes, K, device)
 
 
-def extract_dct_coeffs(v_star: torch.Tensor, M: int) -> torch.Tensor:
-    """Extract the first M+1 DCT-II coefficients of a velocity sequence."""
+def extract_dct_coeffs(v_star: torch.Tensor, num_modes: int) -> torch.Tensor:
+    """Extract the first ``num_modes`` DCT-II coefficients of a velocity sequence.
+
+    ``num_modes`` is a count, not a highest index, so ``num_modes == K`` keeps
+    every frequency and the transform is the full orthonormal one.
+    """
     squeeze = False
     if v_star.dim() == 3:
         B, K, d = v_star.shape
@@ -58,11 +65,26 @@ def extract_dct_coeffs(v_star: torch.Tensor, M: int) -> torch.Tensor:
     if d < 1:
         raise ValueError(f"v_star feature dimension must be positive, got {d}")
 
-    basis, norm = _get_analysis_basis(K, M, _normalize_device(v_star.device))
+    basis, norm = _get_analysis_basis(K, num_modes, _normalize_device(v_star.device))
     with torch.autocast(device_type=v_star.device.type, enabled=False):
         coeffs = torch.einsum("mk,bkd->bmd", basis, v_star.float())
     coeffs = (coeffs * norm[None, :, None]).to(v_star.dtype)
     return coeffs.squeeze(0) if squeeze else coeffs
+
+
+def spectral_energy_retained(v: torch.Tensor, num_modes: int) -> torch.Tensor:
+    """Fraction of a chunk's energy carried by the kept ``num_modes``.
+
+    The analysis basis is orthonormal, so by Parseval the coefficient energy
+    equals the signal energy and this is 1.0 at ``num_modes == v.shape[1]``.
+    Below that it is the share of the chunk the truncation actually discards,
+    which is the number that says whether a smaller ``num_kept_tokens`` is
+    doing anything.
+    """
+    coeffs = extract_dct_coeffs(v, num_modes=num_modes)
+    # square().sum() rather than an rms: this is a Parseval share, so the
+    # divisor must be the total energy, not a per-element average.
+    return coeffs.float().square().sum() / v.float().square().sum().clamp_min(1e-12)
 
 
 def velocity_to_action_steps(vel: torch.Tensor, num_rows: int) -> torch.Tensor:
@@ -96,34 +118,34 @@ def decode_coeffs_to_velocity(
     """
     squeeze = False
     if coeffs.dim() == 3:
-        B, M_plus_1, d = coeffs.shape
+        B, num_modes, d = coeffs.shape
     elif coeffs.dim() == 2:
-        M_plus_1, d = coeffs.shape
+        num_modes, d = coeffs.shape
         coeffs = coeffs.unsqueeze(0)
         B = 1
         squeeze = True
     else:
         raise ValueError(
-            f"coeffs must be 2D (M+1, d) or 3D (B, M+1, d), got shape {coeffs.shape}"
+            f"coeffs must be 2D (num_modes, d) or 3D (B, num_modes, d), "
+            f"got shape {coeffs.shape}"
         )
 
-    if B < 1 or M_plus_1 < 1 or d < 1:
+    if B < 1 or num_modes < 1 or d < 1:
         raise ValueError(
             "coeffs must have positive batch, frequency, and feature dimensions"
         )
     if K_original < 1:
         raise ValueError(f"K_original must be positive, got {K_original}")
-    if M_plus_1 > K_original:
+    if num_modes > K_original:
         raise ValueError(
-            f"number of coefficients {M_plus_1} cannot exceed K_original={K_original}"
+            f"number of coefficients {num_modes} cannot exceed K_original={K_original}"
         )
     if not math.isfinite(T) or T <= 0:
         raise ValueError(f"T must be finite and positive, got {T}")
 
-    M = M_plus_1 - 1
     device = _normalize_device(coeffs.device)
-    norm = _dct_norm(M + 1, K_original, device)
-    k = torch.arange(M + 1, dtype=torch.float32, device=device)
+    norm = _dct_norm(num_modes, K_original, device)
+    k = torch.arange(num_modes, dtype=torch.float32, device=device)
 
     if tau.dim() == 1:
         tau_q = tau.to(device=device, dtype=torch.float32)

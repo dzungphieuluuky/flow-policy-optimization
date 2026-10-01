@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import math
 import os
 from functools import lru_cache
 
@@ -98,6 +99,17 @@ def autocast_context(device=None):
     if dev_type != "cuda":
         return contextlib.nullcontext()
     return torch.autocast(device_type="cuda", dtype=torch.bfloat16)
+
+
+def rms(x: torch.Tensor) -> torch.Tensor:
+    """Root mean square over every element.
+
+    ``torch.linalg.vector_norm`` in one reduction, rather than
+    ``square().mean().sqrt()`` which walks the tensor three times.
+    ``F.rms_norm`` is not a substitute: it divides by the RMS and returns
+    the input's shape, not the scalar.
+    """
+    return torch.linalg.vector_norm(x) / math.sqrt(x.numel())
 
 
 def to_device_async(x: torch.Tensor, device) -> torch.Tensor:
