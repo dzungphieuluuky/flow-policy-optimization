@@ -189,14 +189,38 @@ When uncertain, prefer in order:
 1. Existing repository pattern
 2. Simple direct implementation
 3. Standard library solution
-4. Small helper
-5. Abstraction
+4. A torch builtin
+5. Small helper
+6. Abstraction
 
 Move down only when the simpler option is genuinely insufficient.
 
+## Torch builtins first
+
+Before writing a reduction, a normalisation, or any tensor math by hand, look
+for the builtin. One kernel beats three passes, and the builtin is usually
+better conditioned too.
+
+| hand-rolled | builtin |
+|---|---|
+| `x.square().mean().sqrt()` | `torch.linalg.vector_norm(x) / math.sqrt(x.numel())` |
+| `x.mean(dim=0)`, `x.var(dim=0, unbiased=False)` | `torch.var_mean(x, dim=0, unbiased=False)` |
+| `(a - b).square().sum() / n` | `torch.nn.functional.mse_loss(a, b)` (careful: its default reduction already divides) |
+| `a / b`, `a ** 0.5` | `torch.div`, `torch.sqrt` — prefer these over `//` and `**` in tensor paths |
+| `a / b` where `b` could be 0 | `b.clamp_min(eps)`, not `b + eps` |
+| `x.std()` | `x.std(correction=0)` unless you specifically want Bessel's correction |
+
+`F.rms_norm` is not a general RMS: it divides by the RMS and returns the input's
+shape, not the scalar. It is the right tool for a normalisation layer, not for
+reporting a magnitude.
+
+State the builtin you checked against in the comment when the hand-rolled form
+would have been obvious. Verify the equivalence numerically once; do not assume
+it. If a builtin genuinely cannot express it, say so in the comment.
+
 ## Anti-Patterns
 
-Avoid `SomethingManager`, `SomethingFactory`, `SomethingService`, wrapper chains, multi-layer config loading, broad `except Exception`, and long `isinstance` chains. Do not confuse abstraction with quality.
+Avoid `SomethingManager`, `SomethingFactory`, `SomethingService`, wrapper chains, multi-layer config loading, broad `except Exception`, and long `isinstance` chains. Do not confuse abstraction with quality. Hand-rolled tensor math that a builtin already does.
 
 ## Workflow
 
