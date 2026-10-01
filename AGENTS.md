@@ -172,11 +172,51 @@ WANDB_MODE=offline .venv/bin/python scripts/train.py \
   --env Reacher-v5 --out_dir ./tmp/smoke --sjfpo.report_to all
 ```
 
+Always run a smoke train after a change that touches the training path. A green
+`pytest` does not exercise the collector, the GAE backup, the CFM loss, or the
+Euler sampler.
+
 `report_to` defaults to `all`, so the wandb import runs; `WANDB_MODE=offline`
 keeps it local (`./wandb/offline-run-*`). The tensorboard and wandb backends
 write to `./tensorboard` and `./wandb` in the repo root regardless of
 `--out_dir`, so those two directories collect the run output, not
 `--out_dir`.
+
+Both directories are tracked in git, so a smoke run dirties the working tree
+and can delete tracked `wandb/*.table.json` files. After a smoke run:
+
+```
+git checkout -- wandb/
+```
+
+That reverts the run's side effects and leaves your own edits alone. Do not
+commit anything under `wandb/` or `tensorboard/`.
+
+### wandb mode
+
+`WANDB_MODE=offline` is the current and supported mechanism. Verified on
+wandb 0.30.0:
+
+- `mode` is `Literal["online", "offline", "shared", "disabled", "dryrun",
+  "run"]` in `wandb/sdk/wandb_settings.py`, so `offline` is a first-class
+  value, not a legacy alias
+- env vars prefixed `WANDB_` override defaults, and `WANDB_MODE` is the one
+  for `mode`
+- an offline run writes `./wandb/offline-run-<ts>-<id>/` and prints the
+  `wandb sync` command to upload it later
+
+Upstream is `github.com/wandb/wandb` (Weights & Biases), actively maintained.
+If offline ever stops working, check the installed version and the upstream
+repo before assuming the env var moved:
+
+```
+.venv/bin/python -c "import wandb; print(wandb.__version__)"
+gh api repos/wandb/wandb --jq '{full_name, archived, pushed_at}'
+grep -n '"offline"' .venv/lib/python3.12/site-packages/wandb/sdk/wandb_settings.py
+```
+
+`--sjfpo.report_to none` is the alternative when no tracker output is wanted at
+all; it skips the wandb import entirely.
 
 ## Diff Discipline
 
