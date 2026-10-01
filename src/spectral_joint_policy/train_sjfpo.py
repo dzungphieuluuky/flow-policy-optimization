@@ -25,12 +25,12 @@ from spectral_joint_policy.evaluator import (
     Evaluator,
     check_divergence,
     check_regression,
-    mean_chunk_jerk,
+    compute_mean_chunk_jerk,
 )
 from spectral_joint_policy.modeling_sjfpo import SJFPOAborted, SJFPOPolicy, build_optimizer
 from lerobot.utils.constants import CHECKPOINTS_DIR
 from spectral_joint_policy.utils import resolve_device, rms, to_numpy_1d
-from spectral_joint_policy.tracking import build_tracker, eval_summary_metrics
+from spectral_joint_policy.tracking import build_tracker, compute_eval_summary_metrics
 
 
 # Consecutive above-clamp updates before aborting. clamp() has zero gradient
@@ -38,7 +38,7 @@ from spectral_joint_policy.tracking import build_tracker, eval_summary_metrics
 ABOVE_CLAMP_ABORT_UPDATES = 5
 
 
-def mini_batch_indices(
+def generate_mini_batch_indices(
     n: int,
     num_mini_batches: int,
     device: torch.device | str,
@@ -132,12 +132,12 @@ def sample_minibatch(
     ``normalizer_observations`` passes through unsliced: one row per executed env
     step, not per chunk, and the normalizer updates once from the whole rollout
     batch. ``gae_diagnostics`` is a plain dict of scalars, same reason, and so
-    is the ``spectral_energy_retained`` float beside it.
+    is the ``compute_spectral_energy_retained`` float beside it.
     """
     if out is None:
         out = {}
     passthrough = ("normalizer_observations", "gae_diagnostics",
-                   "spectral_energy_retained")
+                   "compute_spectral_energy_retained")
     for k, v in batch.items():
         if k in passthrough:
             out[k] = v
@@ -174,13 +174,13 @@ def warm_observation_stats(policy, env, *, obs_dim: int, seed: int) -> int:
 
 
 @torch.no_grad()
-def rollout_diagnostics(batch: dict[str, torch.Tensor]) -> dict[str, float]:
+def compute_rollout_diagnostics(batch: dict[str, torch.Tensor]) -> dict[str, float]:
     """Post-rollout scalars in one device->host transfer.
 
     Every entry used to be its own ``float()``/``int()``, so a rollout paid one
     CUDA sync per scalar and the ``action_abs_max`` guard blocked on one. They
     share a device and are all 0-dim, so one ``torch.stack`` covers them.
-    ``_compute_info`` and ``_gae_diagnostics`` already work this way.
+    ``compute_info`` and ``compute_gae_diagnostics`` already work this way.
 
     ``step_delta`` is the executed env-step count the caller advances by, so it
     rides along rather than syncing on its own.
@@ -228,7 +228,7 @@ def measure_value_drift(policy, batch, device) -> tuple[torch.Tensor, torch.Tens
     )
 
 
-def random_baseline(
+def sample_random_baseline(
     evaluator: Evaluator, env: Any, max_episodes: int = 30
 ) -> float:
     """Random-policy return, the divergence reference.
@@ -249,7 +249,7 @@ def random_baseline(
         return 0.0
     return float(np.mean([r["return"] for r in results]))
 
-def _make_vec_env(env_name: str, num_envs: int):
+def make_vec_env(env_name: str, num_envs: int):
     """vectorised training env, async workers preferred.
 
     ``AsyncVectorEnv`` parallelizes stepping across worker processes, the single
@@ -313,7 +313,7 @@ def train_sjfpo_run(
 
     train_env = env
     if cfg.num_envs > 1 and env_name != "unknown":
-        train_env = _make_vec_env(env_name, cfg.num_envs)
+        train_env = make_vec_env(env_name, cfg.num_envs)
 
     action_low = np.atleast_1d(np.asarray(env.action_space.low, dtype=np.float32))
     action_high = np.atleast_1d(np.asarray(env.action_space.high, dtype=np.float32))
@@ -379,7 +379,7 @@ def train_sjfpo_run(
     # targets and the advantages come from sampled noise, so the eps=0 return
     # above is measuring a different distribution than the one being trained.
     stochastic_eval_policy = _EvalPolicy(policy, zero_sampling=False)
-    r_rand = random_baseline(evaluator, env)
+    r_rand = sample_random_baseline(evaluator, env)
     tracker = build_tracker(
         cfg,
         out_dir=out_dir,
@@ -431,7 +431,7 @@ def train_sjfpo_run(
                 action_low=action_low,
                 action_high=action_high,
             )
-            rollout = rollout_diagnostics(batch)
+            rollout = compute_rollout_diagnostics(batch)
             step_delta = int(rollout["step_delta"])
             if step_delta <= 0:
                 raise RuntimeError(
@@ -442,7 +442,7 @@ def train_sjfpo_run(
 
             rollout_jerk = None
             if "action" in batch and "action_is_pad" in batch:
-                rollout_jerk = mean_chunk_jerk(
+                rollout_jerk = compute_mean_chunk_jerk(
                     batch["action"].detach().cpu().numpy(),
                     batch["action_is_pad"].detach().cpu().numpy(),
                 )
@@ -461,7 +461,7 @@ def train_sjfpo_run(
             above_clamp_fracs: list[torch.Tensor] = []
             n_chunks = batch["raw_advantages"].shape[0]
             microbatches = list(
-                mini_batch_indices(
+                generate_mini_batch_indices(
                     n_chunks,
                     cfg.num_mini_batches,
                     batch["raw_advantages"].device,
@@ -578,9 +578,9 @@ def train_sjfpo_run(
                 if "chunk_clip_counts" in rollout:
                     data["train/chunk_clip_counts"] = rollout["chunk_clip_counts"]
                 data["train/action_magnitude"] = rollout["action_magnitude"]
-                if batch.get("spectral_energy_retained") is not None:
-                    data["train/spectral_energy_retained"] = batch[
-                        "spectral_energy_retained"
+                if batch.get("compute_spectral_energy_retained") is not None:
+                    data["train/compute_spectral_energy_retained"] = batch[
+                        "compute_spectral_energy_retained"
                     ]
                 gae_diag = batch.get("gae_diagnostics")
                 if gae_diag:
@@ -659,7 +659,7 @@ def train_sjfpo_run(
                     best_artifact = str(best_ckpt_dir / "model.safetensors")
                 if tracker.enabled:
                     tracker.log(
-                        eval_summary_metrics(
+                        compute_eval_summary_metrics(
                             mean_return,
                             eval_results,
                             all_eval_returns,

@@ -56,7 +56,7 @@ def sample_timesteps(
     )
 
 
-def _freq_weighted_std(num_modes: int, horizon: int, device) -> torch.Tensor:
+def compute_freq_weighted_std(num_modes: int, horizon: int, device) -> torch.Tensor:
     """Per-mode std of pink (1/f) noise over DCT-II modes.
 
     NEED (Eberhard et al. 2023): beta=1 coloring beats white and OU for
@@ -91,7 +91,7 @@ def sample_noise(
     if cfg.noise_scaling_mode == "freq_weighted":
         # Axis -2 holds the DCT coeffs. Broadcast the per-mode std over the
         # leading batch/MC axes and the trailing action dim.
-        std = _freq_weighted_std(shape[-2], cfg.action_horizon, device)
+        std = compute_freq_weighted_std(shape[-2], cfg.action_horizon, device)
         return eps * std.view(*(1,) * (eps.dim() - 2), -1, 1)
     raise ValueError(
         f"mode={cfg.noise_scaling_mode!r} unknown; expected 'white' or 'freq_weighted'"

@@ -34,7 +34,7 @@ from spectral_joint_policy.collector import RolloutBuffer, collect_chunks, colle
 from spectral_joint_policy.dct_utils import (
     velocity_to_action_steps,
     extract_dct_coeffs,
-    spectral_energy_retained,
+    compute_spectral_energy_retained,
 )
 from spectral_joint_policy.fpo_core import (
     compute_aspo_surrogate,
@@ -69,7 +69,7 @@ class SJFPOAborted(RuntimeError):
         self.message = message
 
 
-def value_huber_loss(
+def compute_value_huber_loss(
     pred: torch.Tensor, target: torch.Tensor, delta: torch.Tensor
 ) -> torch.Tensor:
     """Elementwise Huber penalty, broadcasting ``target`` over the member axis.
@@ -81,7 +81,7 @@ def value_huber_loss(
     )
 
 
-# Pack order of ``_gae_diagnostics``'s return dict, and the pack order of its
+# Pack order of ``compute_gae_diagnostics``'s return dict, and the pack order of its
 # one device-to-host transfer. The trainer reads these by key.
 _GAE_DIAGNOSTIC_KEYS = (
     "linked_frac",
@@ -92,7 +92,7 @@ _GAE_DIAGNOSTIC_KEYS = (
 )
 
 
-def _gae_diagnostics(
+def compute_gae_diagnostics(
     env_id: torch.Tensor,
     terminated: torch.Tensor,
     truncated: torch.Tensor,
@@ -118,7 +118,7 @@ def _gae_diagnostics(
     # The stack is float64; 5 numbers, so the wider transfer costs nothing.
     zero = ret.double().new_zeros(())
     # Population std, matching the advantage normaliser, returns_var and
-    # _compute_info. The unbiased default is NaN at a single chunk and
+    # compute_info. The unbiased default is NaN at a single chunk and
     # inflates by sqrt(n/(n-1)) elsewhere. correction=0 is defined at n == 1,
     # so the n > 1 guard the unbiased form needed is gone: a lone chunk now
     # falls out of clamp_min as 0/1e-8 = 0, the same 0.0 the guard produced.
@@ -143,7 +143,7 @@ def _gae_diagnostics(
     return dict(zip(_GAE_DIAGNOSTIC_KEYS, torch.stack(fields).tolist()))
 
 
-def _sample_spectral_eps(
+def sample_spectral_eps(
     cfg: SJFPOConfig,
     n: int,
     action_dim: int,
@@ -176,7 +176,7 @@ def build_optimizer(policy: SJFPOPolicy) -> torch.optim.Optimizer:
     return torch.optim.AdamW(groups, **kwargs)
 
 
-def _mc_x_t(
+def compute_mc_xt(
     flatten_mc_timestep: torch.Tensor,
     flatten_mc_noise: torch.Tensor,
     flatten_mc_action: torch.Tensor,
@@ -709,7 +709,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         mask = None if cfg.use_dct_transform else action_is_pad
         return mask, velocities
 
-    def _behavior_cfm_losses(
+    def compute_behavior_cfm_losses(
         self,
         normalised_states: torch.Tensor,
         actions: torch.Tensor,
@@ -734,7 +734,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         flatten_timestep, flatten_mc_noise, flatten_mc_action, flow_shape, num_mc = (
             run_monte_carlo_sampling(spectral_action, eps, tau)
         )
-        x_t = _mc_x_t(flatten_timestep, flatten_mc_noise, flatten_mc_action, flow_shape)
+        x_t = compute_mc_xt(flatten_timestep, flatten_mc_noise, flatten_mc_action, flow_shape)
         actor_tau = flatten_timestep.squeeze(-1)
         with torch.inference_mode(), autocast_context(actions.device):
             condition = self.old_conditioner(normalised_states)
@@ -928,7 +928,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         )
         raw_values = chunk_value.detach()
         normalised_advantages = raw_advantages
-        # Population std, matching returns_var and _compute_info. The unbiased
+        # Population std, matching returns_var and compute_info. The unbiased
         # default is NaN at a single chunk, which a short final rollout
         # produces, and inflates by sqrt(n/(n-1)) elsewhere. clamp_min is the
         # torch guard; `+ 1e-8` only happened to agree when std > 0.
@@ -936,7 +936,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             normalised_advantages = (raw_advantages - raw_advantages.mean()) / (
                 raw_advantages.std(correction=0).clamp_min(1e-8)
             )
-        gae_diagnostics = _gae_diagnostics(
+        gae_diagnostics = compute_gae_diagnostics(
             active["chunk_env_id"][:n_chunks],
             active["chunk_terminated"][:n_chunks],
             active["chunk_truncated"][:n_chunks],
@@ -964,7 +964,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             device,
             None,
         ).unsqueeze(-1)
-        eps = _sample_spectral_eps(cfg, n_chunks, action_dim, device)
+        eps = sample_spectral_eps(cfg, n_chunks, action_dim, device)
 
         expected_eps_shape = (n_chunks, cfg.num_mc_samples, num_spectral_tokens_kept, action_dim)
         if tuple(eps.shape) != expected_eps_shape:
@@ -981,10 +981,10 @@ class SJFPOPolicy(PreTrainedPolicy):
         spectral_energy = None
         if cfg.use_dct_transform:
             spectral_energy = float(
-                spectral_energy_retained(actions, cfg.num_flow_tokens)
+                compute_spectral_energy_retained(actions, cfg.num_flow_tokens)
             )
 
-        behavior_cfm_loss, behavior_cfm_loss_token = self._behavior_cfm_losses(
+        behavior_cfm_loss, behavior_cfm_loss_token = self.compute_behavior_cfm_losses(
             normalised_states, actions, tau, eps, action_is_pad
         )
 
@@ -1006,7 +1006,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             "mc_eps": eps,
             "chunk_clip_counts": chunk_clip_counts,
             "gae_diagnostics": gae_diagnostics,
-            "spectral_energy_retained": spectral_energy,
+            "compute_spectral_energy_retained": spectral_energy,
             "behavior_cfm_loss": behavior_cfm_loss,
             "behavior_cfm_loss_token": behavior_cfm_loss_token,
         }
@@ -1116,12 +1116,12 @@ class SJFPOPolicy(PreTrainedPolicy):
                 device,
                 None,
             ).unsqueeze(-1)
-            eps = _sample_spectral_eps(cfg, n, action_dim, device)
+            eps = sample_spectral_eps(cfg, n, action_dim, device)
 
         flatten_timestep, flatten_mc_noise, flatten_mc_action, flow_shape, num_mc = (
             run_monte_carlo_sampling(dct_action_tokens, eps, tau)
         )
-        x_t_flat = _mc_x_t(
+        x_t_flat = compute_mc_xt(
             flatten_timestep, flatten_mc_noise, flatten_mc_action, flow_shape
         )
         actor_tau = flatten_timestep.squeeze(-1)
@@ -1203,7 +1203,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         # mean over both axes is the per-chunk loss.
         returns_rms = rms(raw_returns_flat)
         huber_delta = cfg.value_huber_delta * returns_rms.clamp_min(1e-6)
-        value_loss_per_chunk = value_huber_loss(
+        value_loss_per_chunk = compute_value_huber_loss(
             raw_value_pred, raw_returns_flat, huber_delta
         ).mean(dim=0)
         if cfg.use_clipped_value_loss and "raw_values" in batch:
@@ -1215,7 +1215,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             ).clamp(-cfg.clip_param, cfg.clip_param)
             value_loss_per_chunk = torch.maximum(
                 value_loss_per_chunk,
-                value_huber_loss(
+                compute_value_huber_loss(
                     clipped_value_pred, raw_returns_flat, huber_delta
                 ).mean(dim=0),
             )
@@ -1239,7 +1239,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         if not compute_info:
             return loss, None
 
-        info = self._compute_info(
+        info = self.compute_info(
             l_old=l_old,
             l_new=l_new,
             ratio=ratio,
@@ -1258,7 +1258,7 @@ class SJFPOPolicy(PreTrainedPolicy):
 
 
     @torch.inference_mode()
-    def _compute_info(
+    def compute_info(
         self,
         *,
         l_old,

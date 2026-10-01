@@ -59,7 +59,7 @@ class _RMSNorm(nn.RMSNorm):
         return y.to(dtype=input_dtype)
 
 
-def _rms_norm(hidden_dim: int, eps: float = 1e-6) -> nn.RMSNorm:
+def build_rms_norm(hidden_dim: int, eps: float = 1e-6) -> nn.RMSNorm:
     """fp32-safe RMS norm over the given width."""
     return _RMSNorm(hidden_dim, eps=eps)
 
@@ -111,7 +111,7 @@ class SinusoidalEncoding(nn.Module):
         self.half = dim // 2
         self._freq_cache: OrderedDict[torch.device, torch.Tensor] = OrderedDict()
 
-    def _freqs(self, device: torch.device) -> torch.Tensor:
+    def compute_freqs(self, device: torch.device) -> torch.Tensor:
         """Cached ``[half]`` freq table for a device.
 
         Holds 4 devices max, drops the LRU past that.
@@ -132,7 +132,7 @@ class SinusoidalEncoding(nn.Module):
         """Add sinusoidal codes at ``positions``, growing ``[..., L, D]``."""
         ang = (positions.to(dtype=torch.float32) * self.scale).unsqueeze(
             -1
-        ) * self._freqs(x.device)
+        ) * self.compute_freqs(x.device)
         pe = torch.cat([ang.sin(), ang.cos()], dim=-1)
         if pe.shape[-1] < self.dim:
             pe = F.pad(pe, (0, self.dim - pe.shape[-1]))
@@ -143,7 +143,7 @@ class SinusoidalEncoding(nn.Module):
         if not isinstance(t, torch.Tensor):
             t = torch.as_tensor(t, dtype=torch.float32)
         t = t.to(dtype=torch.float32) * self.scale
-        ang = t.unsqueeze(-1) * self._freqs(t.device)
+        ang = t.unsqueeze(-1) * self.compute_freqs(t.device)
         emb = torch.cat([ang.sin(), ang.cos()], dim=-1)
         if self.dim % 2:
             emb = F.pad(emb, (0, 1))
@@ -349,9 +349,9 @@ class DiTBlock(nn.Module):
             or int(hidden_dim * mlp_ratio) < 1
         ):
             raise ValueError("mlp_ratio must produce a positive hidden width")
-        self.norm1 = _rms_norm(hidden_dim)
+        self.norm1 = build_rms_norm(hidden_dim)
         self.attn = SelfAttention(hidden_dim, n_heads)
-        self.norm2 = _rms_norm(hidden_dim)
+        self.norm2 = build_rms_norm(hidden_dim)
         mlp_hidden = int(hidden_dim * mlp_ratio)
         self.mlp = SwiGLU(hidden_dim, mlp_hidden, hidden_dim)
         self.adaLN = CondMLP(hidden_dim, hidden_dim, 6 * hidden_dim)
@@ -465,9 +465,9 @@ class StateConditioner(nn.Module):
             raise ValueError("hidden_dim must be at least 2")
         self.obs_dim = obs_dim
         self.frame_proj = nn.Linear(obs_dim, hidden_dim)
-        self.frame_norm = _rms_norm(hidden_dim)
+        self.frame_norm = build_rms_norm(hidden_dim)
         self.frame_mlp = SwiGLU(hidden_dim, 4 * hidden_dim, hidden_dim)
-        self.freq_norm = _rms_norm(obs_dim)
+        self.freq_norm = build_rms_norm(obs_dim)
         self.freq_encoding = SinusoidalEncoding(obs_dim)
         self.key_proj = nn.Linear(obs_dim, hidden_dim)
         self.fuse = nn.Linear(2 * hidden_dim, hidden_dim)
@@ -543,7 +543,7 @@ class SJFPOFlowModel(nn.Module):
         self.blocks = nn.ModuleList(
             DiTBlock(hidden_dim, dit_heads, dit_mlp_ratio) for _ in range(dit_depth)
         )
-        self.norm_out = _rms_norm(hidden_dim)
+        self.norm_out = build_rms_norm(hidden_dim)
         self.adaLN_out = nn.Linear(hidden_dim, 2 * hidden_dim)
         nn.init.constant_(self.adaLN_out.weight, 0.0)
         nn.init.constant_(self.adaLN_out.bias, 0.0)

@@ -88,7 +88,7 @@ class SJFPOActionPostprocessorStep(ProcessorStep):
         self._scale_cache.clear()
         self._bias_cache.clear()
 
-    def _coefs_for(self, ref: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def compute_coefs_for(self, ref: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Cached affine coefficients for a reference tensor.
 
         Fills the cache on first use for that device and dtype.
@@ -123,7 +123,7 @@ class SJFPOActionPostprocessorStep(ProcessorStep):
     @torch.inference_mode()
     def unnormalize(self, scaled: torch.Tensor) -> torch.Tensor:
         """Unscale a chunk into real env bounds. Identity at +/-1."""
-        scale, bias = self._coefs_for(scaled)
+        scale, bias = self.compute_coefs_for(scaled)
         return torch.addcmul(bias, scale, scaled)
 
     @torch.inference_mode()
