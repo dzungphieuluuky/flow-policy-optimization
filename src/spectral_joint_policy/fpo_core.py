@@ -56,15 +56,22 @@ def sample_timesteps(
     )
 
 
-def compute_freq_weighted_std(num_modes: int, horizon: int, device) -> torch.Tensor:
-    """Per-mode std of pink (1/f) noise over DCT-II modes.
+def compute_freq_weighted_std(
+    num_modes: int, horizon: int, device, beta: float = 1.0
+) -> torch.Tensor:
+    """Per-mode std of 1/f^beta noise over DCT-II modes.
 
-    NEED (Eberhard et al. 2023): beta=1 coloring beats white and OU for
-    continuous control. Chunks are band-limited, so base variance belongs in
-    the low modes, not spread evenly over the coefficient axis.
+    NEED (Eberhard et al. 2023): beta=1 (pink) beats white and OU off-policy.
+    Colored-noise PPO (Rückstieß et al., AAAI 2024, 20480 runs) finds beta=0.5
+    best *on-policy*, with the optimum drifting to larger beta as the update
+    batch grows -- which is this policy's regime.
+
+    beta=0 gives std 1.0, i.e. exactly noise_scaling_mode="white"; beta=1 is
+    the original hardcoded pink. The exponent is -beta/2 because the std of a
+    1/f^beta *variance* is 1/f^(beta/2), and it keeps both endpoints exact.
     """
     k = torch.arange(num_modes, dtype=torch.float32, device=device)
-    return torch.rsqrt(1.0 + (k * (math.pi / horizon)) ** 2)
+    return (1.0 + (k * (math.pi / horizon)) ** 2) ** (-0.5 * beta)
 
 
 def sample_noise(
@@ -91,7 +98,9 @@ def sample_noise(
     if cfg.noise_scaling_mode == "freq_weighted":
         # Axis -2 holds the DCT coeffs. Broadcast the per-mode std over the
         # leading batch/MC axes and the trailing action dim.
-        std = compute_freq_weighted_std(shape[-2], cfg.action_horizon, device)
+        std = compute_freq_weighted_std(
+            shape[-2], cfg.action_horizon, device, cfg.noise_scaling_beta
+        )
         return eps * std.view(*(1,) * (eps.dim() - 2), -1, 1)
     raise ValueError(
         f"mode={cfg.noise_scaling_mode!r} unknown; expected 'white' or 'freq_weighted'"
