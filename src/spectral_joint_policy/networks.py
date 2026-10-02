@@ -32,15 +32,9 @@ from spectral_joint_policy.utils import rms
 
 
 def effective_rank(features: torch.Tensor) -> torch.Tensor:
-    """``exp`` of the spectral entropy of a ``[..., hidden]`` feature matrix.
-
-    Dohare et al. (arXiv:2306.13812) use this as the representation-collapse
-    probe: it falls as backprop converges onto a low-rank solution, which is
-    what they credit for the loss of plasticity. ``p_k = sigma_k / ||sigma||_1``
-    over the singular values, so the result is in ``[1, min(n, hidden)]``.
-
-    Tokens are the sample axis, so callers flatten to ``[n, hidden]`` first.
-    """
+    """``exp`` spectral entropy of ``[n, hidden]``. Dohare et al. (2306.13812)
+    collapse probe: falls as backprop settles on a low-rank solution. In
+    ``[1, min(n, hidden)]``."""
     matrix = features.reshape(-1, features.shape[-1]).float()
     sigma = torch.linalg.svdvals(matrix)
     p = sigma / sigma.sum().clamp_min(1e-12)
@@ -48,22 +42,14 @@ def effective_rank(features: torch.Tensor) -> torch.Tensor:
 
 
 class _RMSNorm(nn.RMSNorm):
-    """RMSNorm computed in FP32, out dtype = in dtype.
-
-    Params start FP32. Activations may be FP16/BF16 under autocast, but the
-    result goes back to the input dtype. Norm must not change the model-wide
-    precision policy.
-    """
+    """RMSNorm in fp32, out dtype = in dtype. Norm must not move the
+    model-wide precision policy."""
 
     def __init__(self, hidden_dim: int, eps: float = 1e-6):
         super().__init__(hidden_dim, eps=eps, dtype=torch.float32)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Norm trailing dims with the learned scale.
-
-        Reduce in fp32, cast back on exit, so a module moved to a lower param
-        dtype by ``.to()`` still norms right. Returns normalised, input dtype.
-        """
+        """Norm trailing dims with the learned scale, reduce in fp32, cast back."""
         input_dtype = x.dtype
         with torch.autocast(device_type=x.device.type, enabled=False):
             y = F.rms_norm(
@@ -81,11 +67,8 @@ def build_rms_norm(hidden_dim: int, eps: float = 1e-6) -> nn.RMSNorm:
 
 
 class SwiGLU(nn.Module):
-    """Gated SiLU feedforward: down(silu(gate(x)) * up(x)).
-
-    Gate+up fused into one ``gate_up`` GEMM. torch weight is ``[out, in]``,
-    so fused = ``cat([gate.weight, up.weight], dim=0)``.
-    """
+    """down(silu(gate(x)) * up(x)). Gate+up fused into one GEMM; torch weight is
+    ``[out, in]`` so fused = ``cat([gate.weight, up.weight], dim=0)``."""
 
     def __init__(self, in_dim: int, hidden_dim: int, out_dim: int):
         super().__init__()
@@ -175,12 +158,9 @@ class SinusoidalEncoding(nn.Module):
 
 
 class SelfAttention(nn.Module):
-    """Multi-head self-attention on SDPA.
-
-    ``attention_mask`` is ``[B, L]`` key-padding. 1/True = keep,
-    0/False = ignore. Each row is forced to keep key 0 when empty, else
-    SDPA NaNs. Arbitrary query/key masks not supported.
-    """
+    """SDPA self-attention. ``attention_mask`` ``[B, L]`` key-padding, 1 = keep.
+    Only that mask shape: arbitrary query/key masks unsupported, and an
+    all-masked row NaNs unless key 0 is forced."""
 
     def __init__(self, hidden_dim: int, n_heads: int):
         super().__init__()
@@ -200,16 +180,8 @@ class SelfAttention(nn.Module):
         x: torch.Tensor,
         attention_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """Multi-head self attention.
-
-        ``attention_mask``: ``[B, L]``, 1 = keep.
-
-        - HF inverts SDPA's mask, so invert first
-        - all-masked row emits NaN, so force one key
-        - fused ``[B, L, H*D]`` proj uses view + transpose, not permute
-
-        ``ValueError`` if ``x`` is not 3D, or mask length != seq length.
-        """
+        """Self-attention. ``attention_mask`` ``[B, L]``, 1 = keep. HF inverts
+        SDPA's mask, so invert first; all-masked row NaNs, so force one key."""
         if x.dim() != 3:
             raise ValueError(f"x must have shape [B, L, D], got {tuple(x.shape)}")
         b, l, _ = x.shape
@@ -245,19 +217,12 @@ class SelfAttention(nn.Module):
 
 
 class RunningMeanStd(nn.Module):
-    """Per-dim running mean/var over raw obs frames.
+    """Per-dim running mean/var over raw obs frames. fp32 stats, fp64 ``count``
+    (fp32 dies at 2^24 frames). ``forward`` keeps the input dtype.
 
-    ``mean``/``var`` fp32. ``count`` fp64, else dies at 2^24 frames.
-    ``forward`` keeps the input dtype, so half-precision callers are not
-    silently promoted.
-
-    The warm-up latch is a plain Python bool, not a buffer. It never had to be
-    a buffer: it is non-persistent, so it is absent from every ``state_dict``
-    and re-derived on load. As a tensor it cost a full-size ``torch.where`` on
-    every forward plus three redundant ``.to(x.device)`` casts on buffers whose
-    device is fixed by ``.to()`` on the module. Reading a buffer as a Python
-    bool would be worse -- ``bool(tensor)`` is a dispatch *and* a D2H sync on
-    CUDA -- so it has to be mirrored in Python at the three places that set it.
+    Warm-up latch is a Python bool, not a buffer: non-persistent, so absent
+    from ``state_dict`` and re-derived on load. A tensor cost a full-size
+    ``torch.where`` per forward; reading one as a bool is a D2H sync.
     """
 
     def __init__(self, dim: int, eps: float = 1e-8, clip: float = 10.0):
@@ -273,13 +238,8 @@ class RunningMeanStd(nn.Module):
 
     @torch.inference_mode()
     def update(self, x: torch.Tensor) -> None:
-        """Fold raw frames into the running stats.
-
-        Chan et al. parallel variance merge in fp64, cast back to fp32, so
-        incremental updates do not drift. Latch is non-persistent, so
-        pre-change checkpoints load. ``ValueError`` if the trailing dim
-        != tracked obs size.
-        """
+        """Fold raw frames into the running stats. Chan et al. parallel variance
+        merge in fp64, cast back to fp32, so updates do not drift."""
         if x.shape[-1] != self.mean.numel():
             raise ValueError(
                 f"update got last dim {x.shape[-1]}, expected {self.mean.numel()}"
@@ -317,34 +277,23 @@ class RunningMeanStd(nn.Module):
         self._uninitialised = True
 
     def _load_from_state_dict(self, *args, **kwargs):
-        """Load state, re-derive the latch.
-
-        The latch is not persisted, so ``count == 0`` means pass frames through
-        unchanged. Positional and keyword args go to ``nn.Module``.
-        """
+        """Load state, re-derive the latch. It is not persisted, so
+        ``count == 0`` passes frames through."""
         super()._load_from_state_dict(*args, **kwargs)
         self._uninitialised = bool(self.count.item() == 0)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Norm with frozen stats. Returns ``x`` unchanged until first update.
-
-        ``x`` must already be on the module's device: ``mean`` and ``var`` are
-        buffers that ``.to()`` moves once, and the per-call casts this used to
-        do were no-ops whenever that held.
-        """
+        ``x`` must already be on the module's device."""
         if self._uninitialised:
             return x
         norm = (x - self.mean) * torch.rsqrt(self.var + self.eps)
         return norm.clamp(-self.clip, self.clip).to(x.dtype)
 
 def modulate(x: torch.Tensor, shift: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
-    """adaLN modulation: ``x * (1 + scale) + shift``.
-
-    ``torch.addcmul(shift, x, 1 + scale)`` is the same value in one kernel
-    instead of three. Twelve call sites per training microbatch, on tensors
-    that are the widest thing in the DiT, so the saved pass over memory is the
-    point; the multiply is exact either way.
-    """
+    """adaLN: ``x * (1 + scale) + shift``. ``torch.addcmul(shift, x, 1 + scale)``
+    is the same value in one kernel instead of three, on the widest tensor in
+    the DiT, twelve times per microbatch."""
     return torch.addcmul(shift, x, 1.0 + scale)
 
 
@@ -379,14 +328,9 @@ class DiTBlock(nn.Module):
     ) -> torch.Tensor | tuple[torch.Tensor, dict[str, torch.Tensor]]:
         """Run the DiT stack over the action tokens.
 
-        - modulation head zero-init (adaLN-Zero), so the stack starts as
-          identity, a no-op
-        - layout ``[B, K, D_a, H]``: attention runs over the K action tokens
-          per action dim. Only the batch/attn axis is reshaped.
-        - modulation params use reshape + unbind, no ``[B, 1, 6H]`` intermediate
-
-        ``c``: ``[B, D]`` or ``[B, K, D]``. Returns tokens, plus stats if
-        ``return_stats``.
+        Layout ``[B, K, D_a, H]``: attention runs over the K action tokens per
+        action dim. Modulation head is zero-init (adaLN-Zero), so the stack
+        starts as identity.
         """
         coordinate_axis = x.dim() == 4
         token_axis = not coordinate_axis and c.dim() == 3
@@ -453,24 +397,17 @@ class DiTBlock(nn.Module):
 
 
 class StateConditioner(nn.Module):
-    """Fuse a mean-pooled per-frame state with DCT-frequency features.
+    """Fuse mean-pooled per-frame state with DCT-frequency features.
 
-    Raw path is per-frame MLP + mean-pool, not attention: the spectral
-    branch already encodes time, and the caller mean-pools anyway, so
-    attention is redundant. ``freq_norm`` norms each DCT frequency across
-    the obs-feature axis before coding and projection.
+    Raw path is per-frame MLP + mean-pool, not attention: the spectral branch
+    encodes time and the caller mean-pools anyway.
 
-    Known limit: ``freq_encoding`` runs on the feature axis, then
-    mean-pools over frequency, so bins get no identity. See REPORT.md
-    item 11.
+    Known limit: ``freq_encoding`` runs on the feature axis, then mean-pools
+    over frequency, so bins get no identity. See REPORT.md item 11.
 
-    ``frame_norm`` normalizes the frame path. The critic's entire trunk is
-    ``num_critics`` copies of this module, and it was the one unnormalized
-    trunk in the model. Lyle et al. (2024) rank normalization above resets and
-    Shrink-and-Perturb for plasticity. Also normalizes the actor's conditioner.
-
-    A checkpoint from before this has no ``frame_norm.weight`` and will not
-    resume; the failure surfaces as an optimizer group-size error.
+    ``frame_norm`` covers the frame path. It was the one unnormalised trunk in
+    the model; Lyle et al. (2024) rank norm above resets and
+    Shrink-and-Perturb. A pre-frame_norm checkpoint will not resume.
     """
 
     def __init__(self, obs_dim: int, hidden_dim: int):
@@ -569,12 +506,9 @@ class SJFPOFlowModel(nn.Module):
 
     @torch.inference_mode()
     def weight_magnitude(self) -> torch.Tensor:
-        """Mean absolute weight over every parameter, the norm-growth probe.
-
-        The other Dohare correlate: magnitudes grow under continual training and
-        the growth is what precedes the rank drop, so it moves earlier than
-        performance does.
-        """
+        """Mean absolute weight over every parameter. Dohare's other
+        correlate: magnitudes grow under continual training, and that growth
+        precedes the rank drop, so it moves earlier than performance does."""
         # Stacked rather than accumulated into a running total: an accumulator
         # has to be allocated on the params' device, and a scalar literal like
         # torch.zeros((), dtype=...) silently lands on CPU. torch.stack lets the
@@ -590,23 +524,10 @@ class SJFPOFlowModel(nn.Module):
         condition: torch.Tensor,
         return_stats: bool = False,
     ) -> torch.Tensor | tuple[torch.Tensor, dict[str, torch.Tensor]]:
-        """Predict velocity from token actions and per-token times.
-
-        ``t``: scalar, ``[B]``, or ``[B, K, 1]``. One time per token, shared
-        across that token's action dims.
-
-        Two input paths:
-
-        - raw: per-frame MLP, then mean-pool
-        - spectral: slice the learned positional table to the token count
-
-        Last layer is zero-init, so untrained predicts near-zero velocity.
-
-        Returns ``[B, K, action_dim]``, plus stats if ``return_stats``.
-        ``ValueError`` if ``x_t`` is not ``[B, K, action_dim]`` with positive
-        dims, if tokens exceed the horizon, or if ``condition`` mismatches
-        batch size or hidden width.
-        """
+        """Predict velocity from token actions and per-token times. ``t``:
+        scalar, ``[B]``, or ``[B, K, 1]``, one time per token shared across its
+        action dims. Last layer zero-init, so untrained predicts near-zero
+        velocity. Returns ``[B, K, action_dim]``, plus stats if asked."""
         if x_t.dim() != 3:
             raise ValueError(f"x_t must have shape [B, K, D], got {tuple(x_t.shape)}")
         if x_t.shape[0] < 1 or x_t.shape[1] < 1:
@@ -707,19 +628,12 @@ class SJFPOFlowModel(nn.Module):
 
 
 class Critic(nn.Module):
-    """V(s) over the full window.
+    """V(s) over the full window. ``[num_critics, B]``, unaggregated: caller
+    picks ``min`` for the GAE backup, ``mean`` for the value loss. ``min``
+    inside a loss would only train the lowest member.
 
-    Each member is a ``StateConditioner`` plus a linear head, so the critic
-    sees the window the way the actor does: per-frame mean-pool concatenated
-    with a full orthonormal DCT, fused to ``hidden_dim``. ``num_modes == T`` is
-    the whole basis, so nothing is truncated.
-
-    Members stay independent or the ensemble is worthless: a shared trunk
+    Members must stay independent or the ensemble is worthless: a shared trunk
     leaves only a linear map differing, and ``min`` over that means nothing.
-
-    Returns ``[num_critics, B]``, unaggregated. Caller picks ``min`` for the
-    GAE backup, ``mean`` for the value loss. ``min`` inside a loss would only
-    train the lowest member.
     """
 
     def __init__(

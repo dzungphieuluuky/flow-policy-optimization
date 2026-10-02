@@ -66,13 +66,9 @@ def extract_success(info: dict) -> float | None:
 
 
 def compute_mean_chunk_jerk(actions: np.ndarray, action_is_pad: np.ndarray) -> float | None:
-    """Mean ``compute_action_jerk`` over chunks' executed prefixes.
-
-    ``actions`` is ``[N, H, D]`` real-space chunks, ``action_is_pad`` is
-    ``[N, H]`` with True past the executed prefix. Chunks under 3 executed steps
-    are skipped. None if no chunk qualifies, or shapes are not ``[N, H, D]``
-    and ``[N, H]``.
-    """
+    """Mean :func:`compute_action_jerk` over chunks' executed prefixes.
+    ``actions`` ``[N, H, D]``, ``action_is_pad`` ``[N, H]``. Chunks under 3
+    executed steps skipped. None if none qualify."""
     a = np.asarray(actions)
     pad = np.asarray(action_is_pad, dtype=bool)
     if a.ndim != 3 or pad.shape != a.shape[:2]:
@@ -120,14 +116,10 @@ def check_regression(
 ) -> tuple[int, bool]:
     """Bump a below-peak streak; flag it once one ``patience`` window completes.
 
-    The caller spends a decay and resets the streak per window, so a plateau
-    gets a smaller step before it gets the last word. Any eval that matches or
-    beats the peak resets the streak to zero. ``best_return`` None leaves it
-    untouched.
-
-    Distinct from :func:`check_divergence`, which catches a collapse. This one
-    catches forgetting: a run that peaked and then drifted down to a third of
-    the peak never trips a floor set at a fraction of the random return.
+    Any eval matching the peak resets the streak. Catches forgetting, not
+    collapse: :func:`check_divergence` does that, and a run that peaked then
+    drifted to a third of its peak never trips a floor set at a fraction of the
+    random return.
     """
     if best_return is None or best_return <= 0:
         return 0, False
