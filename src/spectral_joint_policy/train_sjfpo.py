@@ -44,12 +44,9 @@ def generate_mini_batch_indices(
     device: torch.device | str,
     num_learning_epochs: int = 1,
 ):
-    """Shuffled minibatch index tensors, one per epoch.
-
-    Every epoch reshuffles, so repeats do not see the same order. Splits are
-    proportional (``(i * n) // n_mb``), so a remainder spreads over the
-    frequencies instead of being dropped. Count clamped to ``[1, n]``.
-    """
+    """Shuffled minibatch indices, one tensor per epoch. Every epoch reshuffles;
+    splits are proportional ``(i * n) // n_mb`` so a remainder spreads over the
+    frequencies instead of being dropped."""
     if n < 1:
         raise ValueError(f"n={n} must be >= 1")
     n_mb = max(1, min(int(num_mini_batches), n))
@@ -62,13 +59,12 @@ def generate_mini_batch_indices(
             yield perm[start:stop]
 
 class _EvalPolicy:
-    """Single-action eval adapter over ``SJFPOPolicy.select_action``.
+    """Single-action eval adapter over :meth:`SJFPOPolicy.select_action`.
 
-    ``zero_sampling`` picks the flow's start point. ``True`` integrates from
-    ``eps=0``, which is what eval and the reported metrics use; ``False``
-    integrates from sampled noise, which is what the training rollouts use.
-    Running both, over the same episode seeds, is the only way to see the two
-    distributions diverge.
+    ``zero_sampling`` picks the flow's start point: ``True`` from ``eps=0``, what
+    eval and the reported metrics use; ``False`` from sampled noise, what the
+    training rollouts use. Running both over the same seeds is the only way to
+    see the two distributions diverge.
     """
 
     def __init__(self, policy: SJFPOPolicy, zero_sampling: bool = True):
@@ -123,16 +119,11 @@ def sample_minibatch(
     indices: torch.Tensor,
     out: dict[str, torch.Tensor] | None = None,
 ) -> dict[str, torch.Tensor]:
-    """Slice the leading dim of every per-chunk batch value.
+    """Slice the leading dim of every per-chunk batch value; they are all
+    ``[B, ...]``, so one index tensor keeps them consistent.
 
-    Each is ``[B, ...]``, so one index tensor slices them all consistently.
-    ``mc_tau`` ``[B,M,K,1]`` and ``mc_eps`` ``[B,M,K,d]`` are per chunk/MC draw
-    and slice with the minibatch.
-
-    ``normalizer_observations`` passes through unsliced: one row per executed env
-    step, not per chunk, and the normalizer updates once from the whole rollout
-    batch. ``gae_diagnostics`` is a plain dict of scalars, same reason, and so
-    is the ``compute_spectral_energy_retained`` float beside it.
+    ``normalizer_observations`` and ``gae_diagnostics`` pass through: one row
+    per executed env step, not per chunk.
     """
     if out is None:
         out = {}
@@ -150,13 +141,9 @@ _OBS_WARMUP_STEPS = 128
 
 
 def warm_observation_stats(policy, env, *, obs_dim: int, seed: int) -> int:
-    """Fold random-policy frames into the running obs stats before training.
-
-    The normalizer is identity until its first update, and updates only after a
-    rollout, so without this the whole first rollout runs on raw obs. cleanrl
-    and SB3 pay one step of that; here it would be a whole rollout. The env is
-    reset after, so training starts on a clean episode.
-    """
+    """Fold random-policy frames into the running obs stats. The normalizer is
+    identity until its first update and updates only after a rollout, so without
+    this the whole first rollout runs on raw obs. Env is reset after."""
     env.action_space.seed(seed)
     obs, _ = env.reset()
     frames = []
@@ -175,16 +162,8 @@ def warm_observation_stats(policy, env, *, obs_dim: int, seed: int) -> int:
 
 @torch.no_grad()
 def compute_rollout_diagnostics(batch: dict[str, torch.Tensor]) -> dict[str, float]:
-    """Post-rollout scalars in one device->host transfer.
-
-    Every entry used to be its own ``float()``/``int()``, so a rollout paid one
-    CUDA sync per scalar and the ``action_abs_max`` guard blocked on one. They
-    share a device and are all 0-dim, so one ``torch.stack`` covers them.
-    ``compute_info`` and ``compute_gae_diagnostics`` already work this way.
-
-    ``step_delta`` is the executed env-step count the caller advances by, so it
-    rides along rather than syncing on its own.
-    """
+    """Post-rollout scalars in one device->host transfer. Separate ``float()``
+    calls cost one CUDA sync each, and ``action_abs_max`` blocks on one."""
     action = batch["action"].float()
     scalars = [
         (~batch["action_is_pad"]).sum(),
@@ -201,20 +180,12 @@ def compute_rollout_diagnostics(batch: dict[str, torch.Tensor]) -> dict[str, flo
 
 @torch.no_grad()
 def measure_value_drift(policy, batch, device) -> tuple[torch.Tensor, torch.Tensor]:
-    """Both critic-drift metrics from one critic forward.
+    """Both critic-drift metrics off one critic forward.
 
-    - ``boot_value_delta``: relative RMS move of the live critic from the
-      bootstrap value in use. Both branches store the ensemble min GAE
-      bootstrapped with, so this reads as target staleness without a target
-      critic and as the slow teacher's lag with one. Small means staleness is
-      not what limits the critic.
-    - ``value_target_drift``: the same move in the value loss's units, a
-      fraction of target RMS. A drift can be large relative to V yet negligible
-      next to the return magnitude, which is what decides whether the stale
-      bootstrap matters for the regression.
-
-    One forward serves both: they differ only in the denominator, and the
-    forward is a full critic pass over ``2 * n_chunks`` windows.
+    ``boot_value_delta``: relative RMS move of the live critic from the
+    bootstrap value in use. Small means staleness is not what limits the critic.
+    ``value_target_drift``: the same move in value-loss units, a fraction of
+    target RMS. Large against V can still be negligible against the return.
     """
     # boot_observations is stored in the buffer's bf16; the critic's weights are
     # fp32 and this runs outside autocast, so cast up.
@@ -250,13 +221,8 @@ def sample_random_baseline(
     return float(np.mean([r["return"] for r in results]))
 
 def make_vec_env(env_name: str, num_envs: int):
-    """vectorised training env, async workers preferred.
-
-    ``AsyncVectorEnv`` parallelizes stepping across worker processes, the single
-    biggest rollout-throughput win for ``num_envs > 1``. Falls back to
-    ``SyncVectorEnv`` when async is unavailable (no ``/dev/shm``, env-factory
-    pickling failure).
-    """
+    """Vectorised env, async workers preferred. Falls back to ``SyncVectorEnv``
+    when async is unavailable (no ``/dev/shm``, env-factory pickling failure)."""
     import gymnasium as gym
 
     env_fns = [lambda: gym.make(env_name) for _ in range(num_envs)]
@@ -282,20 +248,12 @@ def train_sjfpo_run(
     resume_from_checkpoint: str | Path | None = None,
     policy_cls: type[SJFPOPolicy] = SJFPOPolicy,
 ) -> dict[str, Any]:
-    """One SJFPO training run.
+    """One SJFPO training run. Env builds before any CUDA init, so forked
+    workers do not inherit the parent's CUDA context (cleanrl / SB3 ordering).
 
-    - vectorised env builds before any CUDA init
-    - so forked workers do not inherit the parent's CUDA context
-    - cleanrl / SB3 ordering
-
-    Accelerate accumulation contract:
-
-    - backward every microbatch
-    - sync and step only at the boundary
-    - always flush a final partial group
-
-    Gradients clip per optimizer, not jointly. The critic's norm is orders of
-    magnitude larger, so a shared clip would spend the whole budget on it.
+    Accelerate contract: backward every microbatch, sync and step only at the
+    group boundary, always flush a final partial group. Gradients clip per
+    optimizer, not jointly, since the critic's norm owns a shared budget.
     """
     cfg = cfg or SJFPOConfig()
     out_dir = Path(out_dir)
@@ -547,7 +505,6 @@ def train_sjfpo_run(
                 info = {k: sum(d[k] for d in infos) / len(infos) for k in infos[0]}
             else:
                 info = None
-            # One transfer for every scalar the update produced.
             scalars = [
                 torch.stack(actor_pre_norms).mean(),
                 torch.stack(critic_pre_norms).mean(),

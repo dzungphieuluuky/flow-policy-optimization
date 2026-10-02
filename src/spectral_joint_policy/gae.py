@@ -78,10 +78,10 @@ def compute_chunk_advantages(
     # One shot gather, then discount by gamma^k. A cumsum diff would need
     # gamma**-s_i, which loses all fp32 precision once s_i hits a few thousand.
     offsets = torch.arange(chunk_size, device=device)
-    window = starts.unsqueeze(1) + offsets                      # [B, chunk_size]
-    gathered = rewards[window.clamp(max=rewards.numel() - 1)]  # [B, chunk_size]
-    valid = offsets.unsqueeze(0) < lengths.unsqueeze(1)        # [B, chunk_size]
-    chunk_rewards = (gathered * valid * (gamma**offsets)).sum(dim=1)   # [B]
+    window = starts.unsqueeze(1) + offsets
+    gathered = rewards[window.clamp(max=rewards.numel() - 1)]
+    valid = offsets.unsqueeze(0) < lengths.unsqueeze(1)
+    chunk_rewards = (gathered * valid * (gamma**offsets)).sum(dim=1)
 
     # Wavefront order puts one env's chunks n_envs apart, never adjacent, so an
     # adjacency mask finds no links. A stable sort groups each env and keeps
@@ -94,13 +94,9 @@ def compute_chunk_advantages(
     chunk_value, chunk_next_value = chunk_value[order], chunk_next_value[order]
     same_env_sorted = env_id[1:] == env_id[:-1]
 
-    gamma_h = gamma ** lengths.to(dtype)                        # [B]
+    gamma_h = gamma ** lengths.to(dtype)
     # Only real termination kills the bootstrap. A timeout keeps it.
-    delta = (
-        chunk_rewards
-        + gamma_h * (~terminated) * chunk_next_value
-        - chunk_value
-    )                                                           # [B]
+    delta = chunk_rewards + gamma_h * (~terminated) * chunk_next_value - chunk_value
 
     continuation_factor = torch.zeros(n_chunks, device=device, dtype=dtype)
     if n_chunks > 1:

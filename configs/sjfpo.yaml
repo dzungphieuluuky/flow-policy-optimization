@@ -32,6 +32,7 @@ max_timestep: 0.995
 timestep_sampling_mode: fpo_beta
 noise_sampling_mode: normal
 noise_scaling_mode: white  # white | freq_weighted; freq_weighted needs the DCT
+noise_scaling_beta: 1.0  # freq_weighted only: 0.0 white, 0.5 on-policy sweet spot, 1.0 pink
 timestep_inverse_cdf_beta: 1.0
 timestep_beta_alpha: 2.0
 timestep_beta_beta: 2.0

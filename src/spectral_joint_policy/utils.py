@@ -66,13 +66,9 @@ def resolve_storage_dtype(
 
 
 def resolve_compute_dtype() -> torch.dtype:
-    """Matmul/autocast dtype, honouring ``SJFPO_DTYPE``.
-
-    ``SJFPO_DTYPE`` parses before the Blackwell fast path, so ``fp32`` is
-    honoured there too. BF16 only when CUDA supports it, so this never
-    returns BF16 without CUDA. ``ValueError`` unless ``SJFPO_DTYPE`` is
-    ``auto``, ``fp32``, or ``bf16``.
-    """
+    """Matmul/autocast dtype, honouring ``SJFPO_DTYPE``. Parsed before the
+    Blackwell fast path, so ``fp32`` is honoured there too. BF16 only with
+    CUDA support."""
     want = os.environ.get("SJFPO_DTYPE", "auto").lower()
     if want not in {"auto", "fp32", "bf16"}:
         raise ValueError(
@@ -102,22 +98,17 @@ def autocast_context(device=None):
 
 
 def rms(x: torch.Tensor) -> torch.Tensor:
-    """Root mean square over every element.
-
-    ``torch.linalg.vector_norm`` in one reduction, rather than
-    ``square().mean().sqrt()`` which walks the tensor three times.
-    ``F.rms_norm`` is not a substitute: it divides by the RMS and returns
-    the input's shape, not the scalar.
-    """
+    """Root mean square over every element. ``torch.linalg.vector_norm`` in one
+    reduction, not ``square().mean().sqrt()``'s three passes. ``F.rms_norm`` is
+    no substitute: it divides by the RMS and returns the input's shape."""
     return torch.linalg.vector_norm(x) / math.sqrt(x.numel())
 
 
 def to_device_async(x: torch.Tensor, device) -> torch.Tensor:
-    """Move a tensor to device, overlapping the copy with CPU work on CUDA.
+    """Move to device, overlapping the copy with CPU work on CUDA.
 
-    Pinned staging + ``non_blocking=True`` lets the DMA engine copy while
-    Python runs. The caller must sync before reading: any ``.item()``,
-    ``.cpu()``, or numpy conversion syncs implicitly.
+    Caller must sync before reading: any ``.item()``, ``.cpu()`` or numpy
+    conversion syncs implicitly.
     """
     device = torch.device(device)
     if device.type == "cuda" and x.device != device:
