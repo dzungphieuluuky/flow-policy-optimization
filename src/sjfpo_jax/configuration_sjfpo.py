@@ -11,7 +11,11 @@ Two differences from the torch original, both forced rather than chosen:
   is gone, along with the properties that read ``input_features``.
 * **Dims are plain ints.** torch reads them off ``PolicyFeature`` shapes
   (``modeling_sjfpo.py:205-206``); a dataclass cannot mirror that, and
-  ``scripts/train.py`` already resolves both before dispatch.
+  ``scripts/train.py`` already resolves both before dispatch. They default to 0
+  and are **not** validated here, because draccus constructs this dataclass
+  during ``parse()`` -- before the env is known -- so requiring them at
+  construction would make ``--method sjfpo_jax`` unparseable.
+  :func:`state.build_state` is the gate.
 
 The full validator suite of the torch config is **not** ported. Only the
 invariants the learner itself depends on are checked here -- the ones whose
@@ -53,11 +57,9 @@ FEATURE_PROPERTIES = frozenset(
 class SJFPOConfig:
     """SJFPO hyperparameters. Field-for-field with the torch config otherwise."""
 
-    # -- Dims, which torch reads off PolicyFeature shapes -------------------
     obs_dim: int = 0
     action_dim: int = 0
 
-    # -- Observation / action geometry --------------------------------------
     report_to: str = "all"
     n_obs_steps: int = 16
     action_horizon: int = 16
@@ -65,15 +67,17 @@ class SJFPOConfig:
     action_perturb_std: float = 0.02
     hidden_dim: int = 128
 
-    # -- Rollout and batching ----------------------------------------------
     num_envs: int = 64
     num_mc_samples: int = 16
-    num_learning_epochs: int = 2
+    # 1, not 2: reuse is what accelerates the feature-rank decay that precedes the
+    # late-training collapse (PFO, NeurIPS 2024: more epochs => faster rank loss, and
+    # rank loss breaks the trust region). Same samples per update, no reuse, so
+    # rank decays at half the rate for the same env steps.
+    num_learning_epochs: int = 1
     chunks_per_update: int = 1024
     batch_size: int = 128
     grad_accum_steps: int = 1
 
-    # -- Flow sampling ------------------------------------------------------
     num_euler_steps: int = 16
     num_inference_steps: int = 16
     min_timestep: float = 0.005
@@ -86,7 +90,6 @@ class SJFPOConfig:
     timestep_beta_alpha: float = 2.0
     timestep_beta_beta: float = 2.0
 
-    # -- Trust region and CFM loss -----------------------------------------
     gamma: float = 0.99
     gae_lambda: float = 0.95
     clip_param: float = 0.05
@@ -98,7 +101,6 @@ class SJFPOConfig:
     cfm_loss_clamp_negative_advantages_max: float = 200.0
     log_ratio_cap: float = 10.0
 
-    # -- Critic and value targets ------------------------------------------
     num_critics: int = 2
     normalize_advantage: bool = True
     value_loss_coef: float = 1.0
@@ -107,27 +109,29 @@ class SJFPOConfig:
     use_target_critic: bool = True
     critic_ema_decay: float = 0.05
 
-    # -- Spectral chunk encoding -------------------------------------------
     use_dct_transform: bool = True
     num_kept_tokens: int = 16
 
-    # -- DiT backbone -------------------------------------------------------
     dit_depth: int = 2
     dit_heads: int = 4
     dit_mlp_ratio: float = 4.0
     time_embed_dim: int = 128
     timestep_scale: float = 10000.0
 
-    # -- Optimizer ----------------------------------------------------------
     policy_lr: float = 1e-5
     critic_lr: float = 1e-5
     optimizer_weight_decay: float = 1e-4
+    # Decay rates of Adam's two gradient-moment running averages. Equal by default:
+    # Dohare et al. (arXiv:2306.13812) report Adam exacerbating loss of plasticity and
+    # policy collapse being mitigated by using the same value for both moments, so the
+    # asymmetric (0.9, 0.999) pair is the thing to suspect. Kept as the raw pair so any
+    # asymmetry is still expressible.
+    adam_betas: tuple[float, float] = (0.999, 0.999)
     max_grad_norm: float = 1.0
     critic_max_grad_norm: float | None = 1.0
     ema_decay: float = 0.95
     ema_warmup_steps: int = 500
 
-    # -- Eval and early stopping --------------------------------------------
     eval_max_episodes: int = 50
     stop_return_frac: float = 0.7
     stop_patience: int = 5
@@ -173,11 +177,11 @@ class SJFPOConfig:
                 f"require 0 <= min_timestep < max_timestep <= 1, got "
                 f"({self.min_timestep}, {self.max_timestep})"
             )
-        if self.obs_dim < 1 or self.action_dim < 1:
-            raise ValueError(
-                f"obs_dim={self.obs_dim} and action_dim={self.action_dim} must be "
-                "set; the JAX config cannot read them off a PolicyFeature"
-            )
+        # obs_dim / action_dim are deliberately *not* checked here. A JAX config
+        # cannot read them off a PolicyFeature, so they arrive from the env
+        # registry at dispatch time -- which is after draccus has already
+        # constructed this dataclass, so requiring them at construction would
+        # make the CLI unparseable. build_state is the gate.
 
     @property
     def num_mini_batches(self) -> int:

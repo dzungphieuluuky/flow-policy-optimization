@@ -171,6 +171,36 @@ def test_buffer_rejects_bad_shapes():
         buffer.add_chunk(**{**good, "rewards": jnp.zeros((20,), dtype=jnp.float32)})
 
 
+def test_writing_past_the_chunk_capacity_raises():
+    """The guard must bound on ``chunk_capacity``, the array length.
+
+    ``_write`` goes through ``.at[index].set()``, whose default mode is
+    promise_in_bounds, so a write past the end is **dropped in silence** while
+    ``n_chunks`` keeps counting. The buffer used to guard on ``max_chunks``
+    instead, which is a different number, and a rollout with enough terminals
+    produced chunks whose keys disagreed on their length -- which the chunk
+    backup then read as a length mismatch, far from the write that lost them.
+    """
+    buffer = J.RolloutBuffer(
+        max_chunks=64, max_steps=64, obs_steps=OBS_STEPS, obs_dim=OBS_DIM,
+        action_horizon=HORIZON, action_dim=ACTION_DIM, chunk_capacity=2,
+    )
+    assert buffer.chunk_capacity == 2 and buffer.max_chunks == 64, "the two must differ here"
+    chunk = {
+        "state": jnp.zeros((OBS_STEPS, OBS_DIM), dtype=jnp.float32),
+        "next_state": jnp.zeros((OBS_STEPS, OBS_DIM), dtype=jnp.float32),
+        "action": jnp.zeros((HORIZON, ACTION_DIM), dtype=jnp.float32),
+        "rewards": jnp.zeros((3,), dtype=jnp.float32),
+        "step_frames": jnp.zeros((3, OBS_DIM), dtype=jnp.float32),
+        "terminated": False,
+        "truncated": False,
+        "clip_count": 0,
+    }
+    assert [buffer.add_chunk(**chunk) for _ in range(2)] == [0, 1]
+    with pytest.raises(RuntimeError, match="chunk capacity"):
+        buffer.add_chunk(**chunk)
+
+
 def test_action_bounds_must_strictly_bracket():
     with pytest.raises(ValueError, match="high > low"):
         J.resolve_action_bounds(np.array([0.0, 0.0]), np.array([0.0, 1.0]))

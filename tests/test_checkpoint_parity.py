@@ -14,22 +14,24 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-import torch
+from flax import nnx
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tests"))
 
 from safetensors.torch import load_file
+from test_optimizer_parity import apply_torch_grads, torch_grads
+from test_policy_parity import CFG, pair
+from torch_jax_weights import to_jax_tree
 
 from sjfpo_jax import checkpointing as JCK
 from sjfpo_jax.configuration_sjfpo import SJFPOConfig
 from sjfpo_jax.state import build_optimizer, build_state, optimizer_params
 from spectral_joint_policy.checkpointing import save_policy_checkpoint
-from spectral_joint_policy.modeling_sjfpo import build_optimizer as torch_build_optimizer
-from test_optimizer_parity import apply_torch_grads, torch_grads
-from test_policy_parity import CFG, pair
-from torch_jax_weights import to_jax_tree
+from spectral_joint_policy.modeling_sjfpo import (
+    build_optimizer as torch_build_optimizer,
+)
 
 CKPT = ROOT / "tmp" / "_parity_ckpt"
 
@@ -111,10 +113,58 @@ def test_the_normalizer_buffers_and_latch_survive(tmp_path):
     assert restored.obs_normalizer.count.dtype == jnp.float64
 
 
+def test_the_ema_shadow_and_both_latches_survive_a_round_trip(tmp_path):
+    """A resume that loses the shadow throws the running average away.
+
+    ``ema_shadow`` used to be checkpointed under the key ``shadow`` while
+    ``policy.load_ema_state_dict`` reads ``shadow_params``. The lookup missed,
+    ``load_ema_state_dict`` took its "no shadow" branch, and the run came back
+    with ``ema_shadow=None`` and a cleared latch -- indistinguishable from a
+    policy whose EMA had never warmed. So the latches and the shadow are
+    asserted here, not just the weights.
+    """
+    from sjfpo_jax.policy import update_ema
+
+    cfg = SJFPOConfig(obs_dim=11, action_dim=2, ema_warmup_steps=2)
+    state = build_state(cfg, 11, 2, jax.random.key(0))
+    # Past the warmup end, so the shadow exists and has been averaged at least
+    # once. global_step is what gates it.
+    state = update_ema(state, cfg, 5)
+    assert state.ema_shadow is not None
+    assert state.ema_initialised is True
+
+    chain, opt_state = build_optimizer(cfg, optimizer_params(state))
+    JCK.save_checkpoint(tmp_path / "ckpt", state, opt_state, cfg, step=11)
+    restored, _, _, _ = JCK.load_checkpoint(tmp_path / "ckpt")
+
+    assert restored.ema_initialised is True
+    assert restored.ema_shadow is not None
+    saved = JCK.flatten(nnx.to_pure_dict(state.ema_shadow))
+    got = JCK.flatten(nnx.to_pure_dict(restored.ema_shadow))
+    assert set(saved) == set(got) and saved, "the shadow must not come back empty"
+    for key in saved:
+        np.testing.assert_allclose(
+            np.asarray(got[key]), np.asarray(saved[key]), rtol=1e-6, atol=1e-8
+        )
+    del chain
+
+
+def test_an_absent_shadow_stays_absent(tmp_path):
+    """The other direction: a policy whose EMA never warmed must not gain one."""
+    cfg = SJFPOConfig(obs_dim=11, action_dim=2)
+    state = build_state(cfg, 11, 2, jax.random.key(0))
+    assert state.ema_shadow is None
+    chain, opt_state = build_optimizer(cfg, optimizer_params(state))
+    JCK.save_checkpoint(tmp_path / "ckpt", state, opt_state, cfg, step=1)
+    restored, _, _, _ = JCK.load_checkpoint(tmp_path / "ckpt")
+    assert restored.ema_shadow is None
+    assert restored.ema_initialised is False
+    del chain
+
+
 def test_loading_a_missing_checkpoint_raises(tmp_path):
     with pytest.raises(FileNotFoundError):
         JCK.load_checkpoint(tmp_path / "nothing_here")
-
 
 def test_unflatten_like_reports_the_missing_leaves():
     template = {"a": jnp.zeros(2), "b": {"c": jnp.zeros(3)}}

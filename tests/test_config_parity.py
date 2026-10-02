@@ -73,7 +73,7 @@ def test_n_action_steps_falls_back_to_the_horizon():
 
 
 def test_the_load_bearing_invariants_raise():
-    """These four compute something else rather than erroring, so they are checked."""
+    """These compute something else rather than erroring, so they are checked."""
     base = {"obs_dim": 11, "action_dim": 2}
     with pytest.raises(ValueError, match="num_kept_tokens"):
         SJFPOConfig(**base, action_horizon=8, num_kept_tokens=16)
@@ -85,8 +85,32 @@ def test_the_load_bearing_invariants_raise():
         SJFPOConfig(**base, gamma=0.0)
     with pytest.raises(ValueError, match="min_timestep"):
         SJFPOConfig(**base, min_timestep=0.9, max_timestep=0.5)
+
+
+def test_unset_dims_are_allowed_here_and_rejected_by_build_state():
+    """The dims gate moved, and this is why.
+
+    draccus constructs this dataclass during ``parse()``, before the env is known,
+    so raising on ``obs_dim=0`` at construction made ``--method sjfpo_jax``
+    unparseable. ``build_state`` is the gate instead, because that is where the
+    widths are actually consumed.
+    """
+    import jax
+
+    from sjfpo_jax.state import build_state
+
+    # Parseable: no raise.
+    assert SJFPOConfig().obs_dim == 0
+    assert SJFPOConfig(action_dim=2).obs_dim == 0
+
     with pytest.raises(ValueError, match="obs_dim"):
-        SJFPOConfig(action_dim=2)
+        build_state(SJFPOConfig(), 0, 2, jax.random.key(0))
+    with pytest.raises(ValueError, match="action_dim"):
+        build_state(SJFPOConfig(), 11, 0, jax.random.key(0))
+    # And the real call still works.
+    state = build_state(SJFPOConfig(), 11, 2, jax.random.key(0))
+    assert state.obs_normalizer.mean.shape == (11,)
+    assert state.action_low.shape == (2,)
 
 
 def test_it_stays_a_plain_dataclass():

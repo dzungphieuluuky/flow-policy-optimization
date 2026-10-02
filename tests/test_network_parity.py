@@ -185,6 +185,39 @@ def test_actor_forward_time_layouts(t_shape):
     assert_same(t_actor(xt_t, t_t, cond_t), j_actor(xt_j, t_j, cond_j))
 
 
+def test_actor_forward_with_the_modulation_woken():
+    """The residual is the *un-modulated* x, and only a woken adaLN can see it.
+
+    ``adaLN.fc2`` and ``out`` are both zero-init, so a fresh actor is the
+    identity on the tokens and predicts zero velocity. That makes every forward
+    test above compare two zeros, and it makes the modulated and un-modulated
+    residual identical -- so a block that fed the modulated ``h`` back as the
+    residual would pass all of them. The first optimizer step moves ``adaLN.fc2``
+    off zero, which is exactly when the two differ.
+    """
+    t_actor, j_actor = build_actor()
+    t_cond, j_cond = build_conditioner()
+    obs_t, obs_j = obs_batch()
+    xt_t, xt_j = action_batch()
+    cond_t, cond_j = t_cond(obs_t), j_cond(obs_j)
+
+    torch.manual_seed(7)
+    with torch.no_grad():
+        heads = [t_actor.out] + [b.adaLN.fc2 for b in t_actor.blocks]
+        for module in heads:
+            module.weight.normal_(0.0, 0.1)
+            module.bias.normal_(0.0, 0.1)
+    # Prove the zeros are gone, or this test cannot fail.
+    assert float(t_actor.out.weight.abs().sum()) > 0
+    assert float(t_actor.blocks[0].adaLN.fc2.weight.abs().sum()) > 0
+    j_actor = load(j_actor, to_jax_tree(t_actor.state_dict()))
+
+    times = np.random.default_rng(2).uniform(0.05, 0.95, size=(MC, K, 1))
+    t_t = torch.tensor(times, dtype=torch.float32)
+    j_t = jnp.asarray(np.asarray(t_t))
+    assert_same(t_actor(xt_t, t_t, cond_t), j_actor(xt_j, j_t, cond_j))
+
+
 def test_actor_rejects_a_time_layout_neither_framework_understands():
     """[B, 1] is neither scalar, [B], nor [B, K, 1]; both sides must refuse it."""
     t_actor, j_actor = build_actor()
@@ -210,7 +243,8 @@ def test_actor_return_stats():
     _, jax_stats = j_actor(xt_j, j_times, cond_j, return_stats=True)
     assert set(torch_stats) == set(jax_stats)
     assert set(torch_stats) == {
-        "temb", "fused", "c", "gate_msa", "gate_mlp", "scale_msa", "scale_mlp"
+        "temb", "fused", "c", "gate_msa", "gate_mlp", "scale_msa", "scale_mlp",
+        "effective_rank", "weight_magnitude",
     }
     assert_same({k: v for k, v in torch_stats.items()}, jax_stats)
 

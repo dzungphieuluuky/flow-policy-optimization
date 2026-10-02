@@ -419,7 +419,7 @@ def test_compute_info_matches_torch_key_for_key():
     assert set(j_info) == set(t_info), (
         sorted(set(j_info) - set(t_info)), sorted(set(t_info) - set(j_info))
     )
-    assert len(j_info) == 35, f"28 scalars + 7 cond_*, got {len(j_info)}"
+    assert len(j_info) == 37, f"28 scalars + 9 cond_*, got {len(j_info)}"
     assert_same({k: np.asarray(v) for k, v in j_info.items()}, t_info)
 
 

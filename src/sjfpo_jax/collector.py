@@ -182,8 +182,15 @@ class RolloutBuffer:
         slot, because the buffer appends in wavefront order and the backup uses it
         to find trajectory boundaries.
         """
-        if self.n_chunks >= self.max_chunks:
-            raise RuntimeError("RolloutBuffer chunk capacity exceeded")
+        if self.n_chunks >= self.chunk_capacity:
+            # The *array* bound, not max_chunks. `_write` goes through
+            # `.at[index].set()`, whose default mode is promise_in_bounds, so a
+            # write past the end is dropped in silence while n_chunks keeps
+            # counting -- and every chunk key then disagrees on its length. The
+            # caller sizes chunk_capacity from the requested step budget.
+            raise RuntimeError(
+                f"RolloutBuffer chunk capacity exceeded: {self.chunk_capacity} chunks"
+            )
         n_exec = int(np.asarray(rewards).reshape(-1).shape[0])
         if n_exec < 1 or self.n_steps + n_exec > self.max_steps:
             raise RuntimeError("RolloutBuffer step capacity exceeded")

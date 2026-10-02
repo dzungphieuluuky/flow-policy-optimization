@@ -28,11 +28,12 @@ from pathlib import Path
 from typing import Any
 
 import jax
+import jax.numpy as jnp
 import orbax.checkpoint as ocp
 from flax import nnx
 
 from sjfpo_jax.configuration_sjfpo import SJFPOConfig
-from sjfpo_jax.state import SJFPOState, build_state
+from sjfpo_jax.state import SJFPOState, build_optimizer, build_state, optimizer_params
 
 # Subtrees that are trainable parameters, and the one that is a buffer.
 PARAM_FIELDS = ("actor", "conditioner", "critic")
@@ -75,17 +76,32 @@ def checkpoint_tree(state: SJFPOState, opt_state, cfg: SJFPOConfig, step: int) -
     No config here: Orbax's StandardSave cannot serialise the config's string
     fields, so the config goes out as a sibling ``config.json``, which is also
     where the torch checkpoint keeps it.
+
+    ``opt_state`` is stored **flattened**, and that is not a stylistic choice.
+    Orbax round-trips a namedtuple into a plain dict, turns optax's ``EmptyState``
+    into ``None``, and hands the outer tuple back as a list -- a 133-leaf Adam
+    state came back as 66 leaves, so a resumed run's optimizer was unusable. The
+    container types are all rebuildable from ``chain.init(params)``, so only the
+    leaves are worth keeping; :func:`restore_from_tree` unflattens onto a fresh
+    template.
     """
     return {
         "step": int(step),
         "counters": {"global_step": int(state.global_step), "step_count": 0},
         "params": params_to_pure(state),
-        "opt_state": opt_state,
+        "opt_state": flatten(opt_state),
         "ema": {
             "decay": float(cfg.ema_decay),
             "initialised": bool(state.ema_initialised),
             "target_critic_initialised": bool(state.target_critic_initialised),
-            "shadow": None if state.ema_shadow is None else nnx.to_pure_dict(state.ema_shadow),
+            # Keyed ``shadow_params`` because that is what
+            # ``policy.load_ema_state_dict`` reads. It used to be ``shadow``, and
+            # the lookup silently missed, so a resumed run came back with no
+            # shadow and a cleared latch -- and re-hard-copied, throwing the
+            # running average away.
+            "shadow_params": None
+            if state.ema_shadow is None
+            else nnx.to_pure_dict(state.ema_shadow),
         },
     }
 
@@ -98,11 +114,12 @@ def restore_from_tree(tree: dict, cfg: SJFPOConfig) -> tuple[SJFPOState, Any, di
         global_step=int(tree["counters"]["global_step"]),
         target_critic_initialised=bool(tree["ema"]["target_critic_initialised"]),
     )
-    if tree["ema"]["shadow"] is not None:
+    if tree["ema"]["shadow_params"] is not None:
         from sjfpo_jax.policy import load_ema_state_dict
 
         state = load_ema_state_dict(state, tree["ema"])
-    return state, tree["opt_state"], tree["counters"]
+    _, template = build_optimizer(cfg, optimizer_params(state))
+    return state, unflatten_like(template, tree["opt_state"]), tree["counters"]
 
 
 def _manager(path: str | Path, keep: int = 2) -> ocp.CheckpointManager:
@@ -164,11 +181,29 @@ def flatten(tree) -> dict:
 
 
 def unflatten_like(template, flat: dict):
-    """Rebuild ``template``'s structure from a flat ``{key: array}`` dict."""
-    paths = list(flatten(template))
+    """Rebuild ``template``'s structure from a flat ``{key: array}`` dict.
+
+    Shape-checked, because a wrong-rank leaf is exactly the failure this port
+    made twice: the converter used to write one critic member's moments over the
+    whole stacked array, and a kernel's moments were never transposed to
+    ``[in, out]``. Both passed a pure key lookup and only showed up as a
+    corrupted optimizer state much later.
+    """
+    entries = jax.tree_util.tree_flatten_with_path(template)[0]
+    paths = [jax.tree_util.keystr(path).removesuffix(".value") for path, _ in entries]
     missing = [k for k in paths if k not in flat]
     if missing:
         raise KeyError(f"flat tree is missing {len(missing)} leaves, e.g. {missing[:3]}")
+    mismatched = [
+        (key, tuple(jnp.shape(flat[key])), tuple(leaf.shape))
+        for key, (_, leaf) in zip(paths, entries)
+        if tuple(jnp.shape(flat[key])) != tuple(leaf.shape)
+    ]
+    if mismatched:
+        raise ValueError(
+            f"{len(mismatched)} leaves have the wrong shape, e.g. "
+            f"{mismatched[0][0]}: got {mismatched[0][1]}, template wants {mismatched[0][2]}"
+        )
     return jax.tree_util.tree_unflatten(
         jax.tree_util.tree_structure(template), [flat[path] for path in paths]
     )

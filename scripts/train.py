@@ -37,12 +37,14 @@ import draccus
 # Make src/ importable before any sjfpo.* import.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from spectral_joint_policy.config import (  # noqa: E402
+from sjfpo_jax.configuration_sjfpo import (
+    SJFPOConfig as JaxSJFPOConfig,
+)
+from spectral_joint_policy.config import (
     KNOWN_ENVS,
     get_observation_action_dim,
 )
-from spectral_joint_policy.configuration_sjfpo import SJFPOConfig  # noqa: E402
-
+from spectral_joint_policy.configuration_sjfpo import SJFPOConfig
 
 VALID_ENVS = KNOWN_ENVS
 
@@ -54,7 +56,7 @@ def configure_torch_cuda() -> bool:
     environment still reaches the import error further down with context.
     """
     try:
-        import torch  # noqa: F401
+        import torch
     except ImportError:
         return False
     if not torch.cuda.is_available():
@@ -78,7 +80,7 @@ def configure_torch_cuda() -> bool:
 class TrainConfig:
     """Run one training job (single values only)."""
 
-    method: Literal["sjfpo"] = "sjfpo"
+    method: Literal["sjfpo", "sjfpo_jax"] = "sjfpo"
     env: str | None = None
     seed: int = 3407
     total_steps: int | None = None
@@ -94,6 +96,10 @@ class TrainConfig:
     # budget.
     resume: str | None = None
     sjfpo: SJFPOConfig = field(default_factory=SJFPOConfig)
+    # The JAX learner, same algorithm, own config prefix. It is a *separate*
+    # dataclass rather than a shared one because the JAX config adds obs_dim /
+    # action_dim, which torch reads off a PolicyFeature.
+    sjfpo_jax: JaxSJFPOConfig = field(default_factory=JaxSJFPOConfig)
 
 
 def load_yaml_dict(path: str | Path) -> dict:
@@ -141,10 +147,15 @@ def apply_flat_yaml(
     return dataclasses.replace(method_cfg, **overrides) if overrides else method_cfg
 
 
-def _sjfpo_cli_fields(argv: list[str]) -> set[str]:
-    """Return SJFPO config fields explicitly present on the command line."""
+def _method_cli_fields(argv: list[str], method: str) -> set[str]:
+    """Return the method's config fields explicitly present on the command line.
+
+    ``--method sjfpo`` reads ``--sjfpo.*``; ``--method sjfpo_jax`` reads
+    ``--sjfpo_jax.*``. The prefix follows the method string, so a flat YAML
+    overlay lands on the backend the user actually asked for.
+    """
     fields: set[str] = set()
-    prefix = "--sjfpo."
+    prefix = f"--{method}."
     for index, token in enumerate(argv):
         if not token.startswith(prefix):
             continue
@@ -154,13 +165,19 @@ def _sjfpo_cli_fields(argv: list[str]) -> set[str]:
     return fields
 
 
+def _sjfpo_cli_fields(argv: list[str]) -> set[str]:
+    """``_method_cli_fields`` for ``--method sjfpo``. Kept for the tests."""
+    return _method_cli_fields(argv, "sjfpo")
+
+
 def select_method_cfg(
     args: TrainConfig, yaml_dict: dict, cli_fields: set[str] | None = None
 ):
     """Nested draccus sub-config for the method, overlaid with flat YAML.
 
     """
-    return apply_flat_yaml(args.sjfpo, yaml_dict, cli_fields=cli_fields)
+    method_cfg = args.sjfpo_jax if args.method == "sjfpo_jax" else args.sjfpo
+    return apply_flat_yaml(method_cfg, yaml_dict, cli_fields=cli_fields)
 
 
 def default_intervals(
@@ -259,10 +276,13 @@ def run_single(
                 f"{(live_obs, live_act)}"
             )
 
-        from spectral_joint_policy.train_sjfpo import train_sjfpo_run
-
-        if resume_from_checkpoint is not None and method != "sjfpo":
-            raise ValueError(f"--resume is sjfpo-only, got method={method!r}")
+        # The two imports stay inside their own branches on purpose: hoisting the
+        # torch one would put torch in the JAX process, and
+        # test_train_run_parity asserts it stays out.
+        if method == "sjfpo_jax":
+            from sjfpo_jax.train_sjfpo import train_sjfpo_run
+        else:
+            from spectral_joint_policy.train_sjfpo import train_sjfpo_run
 
         return train_sjfpo_run(
             env=env,
@@ -300,9 +320,11 @@ def main(argv: list[str] | None = None) -> int:
 
     eval_s = default_intervals(total, args.eval_steps, yaml_dict, "eval_steps", 1000)
     ckpt_i = default_intervals(total, args.save_steps, yaml_dict, "save_steps", 1000)
-    cfg = select_method_cfg(args, yaml_dict, _sjfpo_cli_fields(argv))
+    cfg = select_method_cfg(
+        args, yaml_dict, _method_cli_fields(argv, args.method)
+    )
 
-    if args.resume and args.method != "sjfpo":
+    if args.resume and args.method not in ("sjfpo", "sjfpo_jax"):
         print(
             f"ERROR: --resume is sjfpo-only, got --method {args.method!r}",
             file=sys.stderr,

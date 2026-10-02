@@ -10,10 +10,11 @@ trace time with ``nnx.merge(*pair)``.
 mutated once per rollout and read inside the loss. They live and die with the
 step, not with the process.
 
-The PRNG key is deliberately **not** here. It is threaded as its own argument
-(``update_step(state, batch, key)``, §10) because a typed key is not a
-differentiable leaf: keeping it in the state makes ``jax.grad(state)`` refuse to
-run. Nothing in the loss needs randomness -- the MC draws arrive in the batch.
+No PRNG key is kept here, and none is threaded through
+``policy.build_update_step``: a typed key is not a differentiable leaf, so
+putting it on the state would make ``jax.grad(state)`` refuse to run, and there
+is nothing for it to sample anyway -- the MC draws arrive in the batch and the
+loss, the gradients and the optimizer are all deterministic given it.
 """
 from __future__ import annotations
 
@@ -71,11 +72,23 @@ def build_state(cfg, obs_dim: int, action_dim: int, key: jax.Array) -> SJFPOStat
     so they can never alias the live trees. Both are overwritten by
     ``snapshot_behavior_policy`` before the first rollout anyway.
 
+    ``obs_dim`` / ``action_dim`` are the gate the config deliberately is not: a
+    JAX config cannot read them off a ``PolicyFeature``, they arrive from the env
+    registry after ``parse()``, and requiring them here would make the CLI
+    unparseable.
+
     The normalizer's ``uninitialised`` latch is a Python bool, so flipping it on
     the first update changes the pytree structure. That is fine here -- the update
     happens once per rollout, outside ``jit`` -- but it means the first update
     costs one retrace.
     """
+    if obs_dim < 1 or action_dim < 1:
+        raise ValueError(
+            f"obs_dim={obs_dim}, action_dim={action_dim} must both be positive. "
+            "A JAX config cannot read them off a PolicyFeature, so they come from "
+            "the env registry at dispatch; this is where they are consumed."
+        )
+
     def build_flow(name):
         module = SJFPOFlowModel(
             action_dim,
@@ -272,7 +285,7 @@ def build_optimizer(cfg, params):
         # Moments only. The decay and the rate are separate steps so they can be
         # masked and per-leaf respectively; optax's own `mask` argument would
         # zero the whole update and freeze the no-decay parameters instead.
-        optax.adamw(learning_rate=1.0, b1=0.9, b2=0.999, eps=1e-8),
+        optax.adamw(learning_rate=1.0, b1=cfg.adam_betas[0], b2=cfg.adam_betas[1], eps=1e-8),
         decay,
         scale_by_lr(lr_tree),
     )
@@ -282,6 +295,53 @@ def build_optimizer(cfg, params):
 def pre_clip_norms(opt_state):
     """The two pre-clip grad norms, for the trainer's two log lines."""
     return {role: float(state.pre_clip_norm) for role, state in opt_state[0].items()}
+
+
+def assign(node, tree) -> None:
+    """Write a nested pure dict over a module's parameters, in place.
+
+    ``nnx.replace_by_pure_dict`` is the documented way and it silently no-ops on
+    an ``nnx.state(module, nnx.Param)`` view, so the attribute tree is walked.
+    Dicts *and* lists recurse: the mapper builds real lists for the ModuleList
+    indices, so ``blocks`` arrives as a list of block dicts.
+
+    Merge-then-assign, rather than ``nnx.merge(graphdef, plain_dict)``: the
+    latter unflattens the dict against the graphdef's node types and does not
+    accept a hand-nested one -- ``nnx.State(tree)`` instead reports
+    "Incorrect number of leaves, expected 40, but got 13" on a tree whose leaf
+    paths match the graphdef exactly. Only this walk is correct.
+    """
+    if isinstance(tree, list):
+        for index, item in enumerate(tree):
+            assign(node[index], item)
+        return
+    for key, value in tree.items():
+        index = int(key) if isinstance(node, list) else key
+        child = node[index] if isinstance(node, list) else (
+            node[key] if isinstance(node, dict) else getattr(node, key)
+        )
+        if isinstance(value, (dict, list)):
+            assign(child, value)
+        else:
+            param = nnx.Param(jnp.asarray(value))
+            if isinstance(node, list):
+                node[index] = param
+            elif isinstance(node, dict):
+                node[key] = param
+            else:
+                setattr(node, key, param)
+
+
+def load(module, params):
+    """Apply ``params`` to a module in place, and return it."""
+    assign(module, params)
+    return module
+
+
+def load_pair(pair, params):
+    """Apply ``params`` to a ``(graphdef, state)`` pair and re-split it."""
+    graphdef, state = pair
+    return nnx.split(load(nnx.merge(graphdef, state), params), nnx.Param)
 
 
 def optimizer_params(state: SJFPOState):

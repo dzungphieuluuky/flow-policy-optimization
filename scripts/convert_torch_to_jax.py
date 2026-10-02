@@ -41,12 +41,16 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import torch
-from flax import nnx
 from safetensors.torch import load_file
 
 from sjfpo_jax import checkpointing as JCK
 from sjfpo_jax.configuration_sjfpo import SJFPOConfig
-from sjfpo_jax.state import build_optimizer, build_state, optimizer_params
+from sjfpo_jax.state import (
+    build_optimizer,
+    build_state,
+    load_pair,
+    optimizer_params,
+)
 
 # The four torch param groups, in the order build_optimizer emits them
 # (modeling_sjfpo.py:460-495). Only the ordering matters here.
@@ -115,58 +119,16 @@ def nest(flat: dict) -> dict:
     return root
 
 
-def assign(node, tree) -> None:
-    """Write a nested pure dict over a module's parameters, in place.
-
-    ``nnx.replace_by_pure_dict`` is the documented way and it silently no-ops on
-    an ``nnx.state(module, nnx.Param)`` view, so the attribute tree is walked.
-    Dicts *and* lists recurse: the mapper builds real lists for the ModuleList
-    indices, so ``blocks`` arrives as a list of block dicts.
-
-    Merge-then-assign, rather than ``nnx.merge(graphdef, plain_dict)``: the
-    latter unflattens against the graphdef's *node* types, and a hand-nested dict
-    does not always match them even when every leaf key does.
-    """
-    if isinstance(tree, list):
-        for index, item in enumerate(tree):
-            assign(node[index], item)
-        return
-    for key, value in tree.items():
-        index = int(key) if isinstance(node, list) else key
-        child = node[index] if isinstance(node, list) else (
-            node[key] if isinstance(node, dict) else getattr(node, key)
-        )
-        if isinstance(value, (dict, list)):
-            assign(child, value)
-        else:
-            param = nnx.Param(jnp.asarray(value))
-            if isinstance(node, list):
-                node[index] = param
-            elif isinstance(node, dict):
-                node[key] = param
-            else:
-                setattr(node, key, param)
-
-
-def load_pair(pair, params):
-    """Apply ``params`` to a ``(graphdef, state)`` pair and re-split it."""
-    graphdef, state = pair
-    module = nnx.merge(graphdef, state)
-    load(module, params)
-    return nnx.split(module, nnx.Param)
-
-
-def load(module, params):
-    """Apply ``params`` to a module in place, and return it."""
-    assign(module, params)
-    return module
-
-
 def to_jax_tree(sd, stack=()) -> tuple[dict, dict]:
-    """torch state_dict -> ``(nested NNX tree, {torch name: flat jax key})``.
+    """torch state_dict -> ``(nested NNX tree, {torch name: (flat key, slot)})``.
 
     The name table is what lets the optimizer converter address a torch param by
     name: it is built from leaf identity, so it cannot drift from the tree.
+
+    The **slot** is the position on the stacked leading axis. The critic's members
+    share one JAX leaf, so two torch names map to the same key at different slots;
+    a converter that ignores the slot writes member 0's moments and then
+    overwrites them with member 1's. Non-stacked leaves carry slot 0.
     """
     members = {name: STACKED[name] for name in stack}
     leaves: dict = {}
@@ -199,13 +161,13 @@ def to_jax_tree(sd, stack=()) -> tuple[dict, dict]:
     paths = [jax.tree_util.keystr(p).removesuffix(".value")
              for p, _ in jax.tree_util.tree_flatten_with_path(nested)[0]]
     flat_key_of = {id(leaf): key for leaf, key in zip(leaves, paths)}
-    name_to_flat = {}
+    name_to_leaf = {}
     for renamed, originals_list in originals.items():
         dotted = _dotted_leaf(nested, renamed)
         key = flat_key_of[id(dotted)]
-        for original in originals_list:
-            name_to_flat[original] = key
-    return nested, name_to_flat
+        for slot, original in enumerate(originals_list):
+            name_to_leaf[original] = (key, slot)
+    return nested, name_to_leaf
 
 
 def _dotted_leaf(nested, dotted: str):
@@ -274,7 +236,8 @@ def convert(src: Path, dst: Path) -> int:
     # names path segments *inside* a module: "critic.conditioners.0.x" has to
     # arrive as "conditioners.0.x" or the member index is never dropped and the
     # critic ends up unstacked.
-    trees, name_to_flat = {}, {}
+    trees, name_to_leaf = {}, {}
+    optimizer_tree = optimizer_params(build_state(cfg, obs_dim, action_dim, jax.random.key(0)))
     for module, stack in (
         ("actor", ()),
         ("conditioner", ()),
@@ -286,7 +249,13 @@ def convert(src: Path, dst: Path) -> int:
         trees[module] = sub_tree
         # Re-add the prefix: optimizer.pt names the parameters "actor.…", while
         # the mapper saw them with it stripped.
-        name_to_flat.update({f"{prefix}{name}": key for name, key in sub_names.items()})
+        leaves_prefix = _optimizer_prefix(optimizer_tree, module)
+        name_to_leaf.update(
+            {
+                f"{prefix}{name}": (f"{leaves_prefix}{key}", slot)
+                for name, (key, slot) in sub_names.items()
+            }
+        )
     tree = trees
 
     state = build_state(cfg, obs_dim, action_dim, jax.random.key(0))
@@ -295,18 +264,16 @@ def convert(src: Path, dst: Path) -> int:
     state = _restore_target_critic_latch(state, src)
 
     chain, opt_state = build_optimizer(cfg, optimizer_params(state))
-    opt_state = _convert_optimizer(torch_opt, names, name_to_flat, opt_state)
+    opt_state = _convert_optimizer(torch_opt, names, name_to_leaf, opt_state)
 
     ema = torch.load(src / "ema.pt", map_location="cpu", weights_only=True) if (src / "ema.pt").is_file() else None
     if ema is not None:
-        # The shadow is keyed by the *actor's* parameter names, so the same
-        # prefix stripping applies.
-        shadow_sd = {
-            k[len("actor."):]: v
-            for k, v in ema["shadow_params"].items()
-            if k.startswith("actor.")
-        }
-        shadow_tree, _ = to_jax_tree(shadow_sd)
+        # ``ema_state_dict`` keys the shadow by the **actor module's own**
+        # parameter names ("token_pos", "in_proj.weight"), already stripped of
+        # any module prefix. This used to filter on an "actor." prefix that is
+        # not there, which matched nothing and silently converted an empty
+        # shadow -- a resumed run then re-hard-copied and lost the average.
+        shadow_tree, _ = to_jax_tree(ema["shadow_params"])
         from sjfpo_jax.policy import load_ema_state_dict
 
         state = load_ema_state_dict(state, {**ema, "shadow_params": shadow_tree})
@@ -314,6 +281,22 @@ def convert(src: Path, dst: Path) -> int:
     JCK.save_checkpoint(dst, state, opt_state, cfg, step=int(counters["global_step"]))
     print(f"wrote {dst} at step {counters['global_step']} ({len(names)} params)")
     return 0
+
+
+def _optimizer_prefix(optimizer_tree: dict, module: str) -> str:
+    """Where ``optimizer_params`` hangs ``module``'s leaves, as a keystr prefix.
+
+    The weight mapper saw each module with its prefix stripped, but the
+    optimizer's tree is regrouped by *role* (``{"actor": {"actor", "conditioner"},
+    "critic": {"critic"}}``). Joining the two prefixes is what makes the flat
+    moment keys address real leaves; without it every moment is written to a
+    key nothing reads and the run resumes with all-zero Adam state. Read off the
+    tree rather than hardcoded, so a regrouping cannot silently drift.
+    """
+    for role, sub in optimizer_tree.items():
+        if module in sub:
+            return f"['{role}']['{module}']"
+    raise KeyError(f"{module!r} is not in the optimizer tree")
 
 
 def _load_from_tree(state, tree: dict, weights: dict):
@@ -339,41 +322,80 @@ def _restore_target_critic_latch(state, src: Path):
     return state.replace(target_critic_initialised=False)
 
 
-def _convert_optimizer(torch_opt: dict, names: list[str], name_to_flat: dict, opt_state):
+def _convert_optimizer(torch_opt: dict, names: list[str], name_to_leaf: dict, opt_state):
     """Copy exp_avg / exp_avg_sq / step onto the optax AdamW state.
 
     optax 0.2.8's adamw state is a ``(count, mu, nu)`` triple at index
     ``ADAMW_AT`` of the chain, with ``mu``/``nu`` as NNX States (the chain is
     built from NNX params, so the moments follow their structure).
+
+    Two layout facts, both of which were silently wrong before:
+
+    * **The critic's members share one leaf.** ``name_to_leaf`` carries the slot
+      on the stacked leading axis, so the moments are collected per slot and
+      stacked. Writing each member over the whole array loses member 0 and
+      leaves the leaf with the wrong rank.
+    * **Kernels are transposed.** Every 2-D leaf is a Linear kernel, stored
+      ``[in, out]`` in JAX and ``[out, in]`` in torch, exactly as the weight
+      mapper does. Biases and norm scales are 1-D and are not transposed.
+      ``unflatten_like`` is shape-checked, so a miss here raises instead of
+      quietly poisoning the run.
     """
-    count, mu, nu = opt_state[ADAMW_AT][0].count, opt_state[ADAMW_AT][0].mu, opt_state[ADAMW_AT][0].nu
-    # mu/nu mirror the parameter tree, which is plain nested dicts of States, so
-    # flatten them directly -- to_pure_dict only accepts a single State.
-    flat_mu = JCK.flatten(mu)
-    flat_nu = JCK.flatten(nu)
+    adam = opt_state[ADAMW_AT][0]
+    flat_mu = JCK.flatten(adam.mu)
+    flat_nu = JCK.flatten(adam.nu)
+    mu_slots: dict = {}
+    nu_slots: dict = {}
     steps = []
     for position, name in enumerate(names):
         entry = torch_opt["state"].get(position)
         if entry is None:
             continue
-        key = name_to_flat.get(name)
-        if key is None:
+        located = name_to_leaf.get(name)
+        if located is None:
             raise KeyError(f"optimizer param {name!r} has no JAX counterpart")
-        flat_mu[key] = jnp.asarray(entry["exp_avg"].numpy(), dtype=jnp.float32)
-        flat_nu[key] = jnp.asarray(entry["exp_avg_sq"].numpy(), dtype=jnp.float32)
+        key, slot = located
+        mu_slots.setdefault(key, {})[slot] = entry["exp_avg"]
+        nu_slots.setdefault(key, {})[slot] = entry["exp_avg_sq"]
         steps.append(int(entry["step"]))
     if not steps:
         return opt_state
-    new_adamw_state = opt_state[ADAMW_AT][0]._replace(
-        count=jnp.asarray(max(steps), dtype=jnp.asarray(count).dtype),
-        mu=JCK.unflatten_like(mu, flat_mu),
-        nu=JCK.unflatten_like(nu, flat_nu),
+    for key, per_slot in mu_slots.items():
+        flat_mu[key] = _stack_moments(per_slot, key)
+    for key, per_slot in nu_slots.items():
+        flat_nu[key] = _stack_moments(per_slot, key)
+    new_adamw_state = adam._replace(
+        count=jnp.asarray(max(steps), dtype=jnp.asarray(adam.count).dtype),
+        mu=JCK.unflatten_like(adam.mu, flat_mu),
+        nu=JCK.unflatten_like(adam.nu, flat_nu),
     )
     return (
         opt_state[:ADAMW_AT]
         + ((new_adamw_state,) + opt_state[ADAMW_AT][1:],)
         + opt_state[ADAMW_AT + 1:]
     )
+
+
+def _stack_moments(per_slot: dict, key: str):
+    """``{slot: moment}`` -> one fp32 leaf in the NNX layout.
+
+    * **Members stack.** The critic's members share one leaf on a leading axis. A
+      single-slot entry is a plain actor parameter, which must *not* gain a size-1
+      axis.
+    * **Kernels transpose.** Every leaf the mapper renamed to ``kernel`` was a
+      torch ``[out, in]`` weight and wants ``[in, out]`` here. Keying off the name
+      rather than the rank is deliberate: one member stacks a 1-D bias up to
+      ndim 2, which is otherwise indistinguishable from a kernel, and came out as
+      ``[256, 1]``.
+    """
+    # numpy, not jnp: the entries are torch tensors, and jnp.stack rejects them.
+    slots = sorted(per_slot)
+    stacked = np.stack([np.asarray(per_slot[slot]) for slot in slots])
+    if len(slots) == 1:
+        stacked = stacked[0]
+    if key.endswith("['kernel']"):
+        stacked = stacked.swapaxes(-1, -2)
+    return jnp.asarray(stacked, dtype=jnp.float32)
 
 
 def main() -> int:

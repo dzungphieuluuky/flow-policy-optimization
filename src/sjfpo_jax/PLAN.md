@@ -18,15 +18,99 @@ Line references are `src/spectral_joint_policy/` unless stated otherwise.
 | device layer (`runtime.py`) | **done** | 22 tests; **every CUDA branch unverified** |
 | §5 — optimizer | **done** | 6 tests: pre-clip norms match torch, one step is ~lr and agrees in direction, no-decay leaves still train, `critic_max_grad_norm=None` measures without clipping |
 | `configuration_sjfpo.py` | **done** | 9 tests: field set, defaults, the two properties, four load-bearing invariants |
-| 3 — collector | not started | |
-| 4 — train loop + `scripts/train.py` branch | not started | needs a GPU for the number |
+| 3 — collector | **done** | 9 parity tests on `Reacher-v5` with `num_envs=4`: identical `chunk_state` / `chunk_actions` / `action_is_pad` / `step_rewards` across a terminal, an autoreset, and a budget cut |
+| 6 — checkpointing + converter | **done**, and it had three silent bugs | 6 tests: weights, Adam moments, converted policy agrees with torch, the name table covers every optimizer parameter |
+| 4 — train loop + `scripts/train.py` branch | **done (4.1–4.6)** | every step parity-gated: gradients and applied step match torch tree-for-tree, pre-clip norms match `clip_grad_norm_`, jit == eager, executed actions match step-by-step across a terminal, and the run logs **the same 72 W&B keys torch does** |
 | 5 — throughput | not started | **needs a GPU; decides whether the port is worth anything** |
-| 6 — checkpointing + converter | not started | |
 
-`251 passed` on CPU as of this writing (`140` added by this port). The loss
-compiles: `jit(forward_loss)` matches eager, and `jit(grad)` runs. No GPU exists on
-the development box, so every CUDA path stays unverified until a T4 or Blackwell
-box exists (`JAX_MIGRATION.md` §0c).
+`371 passed` on CPU as of this writing. The loss compiles: `jit(forward_loss)`
+matches eager, and `jit(grad)` runs. No GPU exists on the development box, so
+every CUDA path stays unverified until a T4 or Blackwell box exists
+(`JAX_MIGRATION.md` §0c).
+
+### Milestone 4, step by step
+
+| step | what | where | gate |
+|---|---|---|---|
+| 4.1 | `generate_rollout`, `compute_gae_diagnostics` | `policy.py`, `gae.py` | every batch key the backup produces matches torch on a seeded rollout; the MC draws are shape-checked, then torch's are injected and the behaviour losses compared |
+| 4.2 | `generate_mini_batch_indices`, `sample_minibatch`, `compute_rollout_diagnostics`, `measure_value_drift` | `train_sjfpo.py` | coverage and passthrough contracts, not index-stream parity (the two frameworks draw from different generators) |
+| 4.3 | `build_update_step` | `policy.py` | **both halves**: gradients tree-for-tree, and the applied step parameter-for-parameter |
+| 4.4 | `select_action` + `ActionBuffer` | `policy.py` | done. Same obs stream one frame per call, with a terminal mid-episode and both buffers cleared: the executed action matches torch at every step. Also end-to-end through `Evaluator` on `Reacher-v5` |
+| 4.5 | `train_sjfpo_run` | `train_sjfpo.py` | done. CPU smoke: loss finite, `action_abs_max <= 1.05`, eval in range, artifacts on disk. Reuses `evaluator.py` and `tracking/` as they are -- both are numpy-only |
+| 4.6 | `--method sjfpo_jax` | `scripts/train.py` | done. Prefix `--sjfpo_jax.`, `--resume` allowed for both backends. Runs offline end to end, 128 steps then resume to 192 |
+
+### Two things 4.4 settled that are worth writing down
+
+* **The chunk plays in reverse.** torch refills `_action_buffer` with
+  `chunk[0, i]` for `i` from `n_execute - 1` **down to 0** and pops from the front,
+  so the first action executed is `chunk[0, n_action_steps - 1]` and the last is
+  `chunk[0, 0]`. Writing the ring forward and reading forward gets the same set of
+  actions in the opposite order, which looks right and is not.
+* **A partly filled obs window repeats its *first* frame, and does not rotate.**
+  torch's `deque(maxlen=n)` evicts the oldest, which is that repeat, so the
+  window is `frames[0] * (n - len)` followed by `frames[:len]`. Zero padding feeds
+  the conditioner a window that does not exist. Once the ring is full the write
+  cursor is mid-array, so the window has to be **rotated** or the oldest
+  `n_obs_steps` observations replay for the rest of the episode.
+
+`ActionBuffer` is a `flax.struct` dataclass of fixed-size arrays, so the step is
+one traced program. That means two branches exist in `_chronological_frames` -- a
+Python one on a concrete `frame_len` and a `jnp.where` under tracing -- and
+`test_the_traced_window_matches_the_eager_one` exists to keep them equal. Note
+that a traced cursor cannot be a slice bound: `frames[pos:]` raises
+`IndexError` under `jit`, so the rotation is a `jnp.roll` and the fill is a gather
+with `clamp(i - (n - len), 0, n - 1)`.
+
+**Resume is answered "yes" but is 4.5 work.** `checkpointing.py` restores the
+Adam moments, the EMA shadow and both latches, and `params_to_pure` already
+carries `obs_normalizer.{mean,var,count}`, so the normaliser needs no raw frames
+on resume -- a claim worth checking against the code before relying on it.
+
+### What 4.5 and 4.6 settled
+
+* **x64 promotes every unpinned call to fp64.** `runtime.configure_device`
+  enables `jax_enable_x64` because `RunningMeanStd`'s counts are fp64, and
+  flax's `variance_scaling` default follows it. So the conditioner's output came
+  back fp64, `sample_action`'s `lax.scan` carry changed dtype mid-scan, and the
+  run would not compile -- **the first time anything had built a network with
+  x64 on**, because no test enabled it. Both construction sites now pin fp32.
+* **The trainer has to write `global_step` into the state.** `checkpoint_tree`
+  reads `state.global_step`, and the loop only ever held it in a local, so every
+  checkpoint recorded 0 and `--resume` restarted the run from the beginning.
+* **`swap_in_ema` returns `(state, displaced)`.** Treating it as the state and
+  calling `swap_out_ema(displaced)` reads `ema_shadow` off a tuple.
+* **Torch-freedom is a *library* property, not a CLI one.** `sjfpo_jax` and
+  everything it imports leave torch and lerobot out of `sys.modules` (gated in a
+  subprocess). `scripts/train.py` does not, and cannot without restructuring its
+  own module-level torch config import for the `--method sjfpo` branch. What the
+  CLI gate asserts is the part it controls: a `sjfpo_jax` dispatch never imports
+  `spectral_joint_policy.train_sjfpo`.
+* **`CHECKPOINTS_DIR` and `set_seed` are load-bearing local constants.** Both live
+  under `lerobot` in the torch tree, and importing either pulls torch in.
+* **The dims check moved from the config to `build_state`.** draccus constructs
+  the nested config during `parse()`, before the env is known, so raising on
+  `obs_dim=0` at construction made `--method sjfpo_jax` unparseable.
+* **A fresh actor has 40 of 80 leaves with a structurally zero gradient.** The
+  zero-init `adaLN` holds the gates at 0, so attention and the modulation heads
+  are off the loss path entirely and their Adam state legitimately stays zero.
+  Any gate that asserts "all moments non-zero" is wrong for a from-scratch run;
+  the critic's 14 are the ones that must move.
+
+Two deviations from the plan, both forced:
+
+* **`build_update_step(cfg, params)` is a factory, not `update_step(state, ...)`.**
+  The chain, the decay mask and the per-leaf lr tree depend only on `cfg` and the
+  parameter structure, and `build_optimizer` walks every leaf three times — so
+  building it per step would triple the traversal count of the hot path for
+  nothing.
+* **No `key` argument.** `forward_loss` is a deterministic function of the batch
+  (the MC draws arrive in it) and the optimizer is too, so there is nowhere for a
+  key to go. `state.py`'s docstring still says `update_step(state, batch, key)`;
+  that line is stale.
+* **`update_ema` is outside the step.** torch calls it once per rollout
+  (`train_sjfpo.py:519`) and `global_step` is a static field on the state, so
+  folding it in would retrace the step once per rollout. `update_target_critic`
+  *is* inside, because it is per optimizer step.
 
 ## The four rules that have bitten already
 
@@ -42,6 +126,22 @@ box exists (`JAX_MIGRATION.md` §0c).
    losses in this port were green for the wrong reason: the two sides ran
    different configs, and the DCT was never actually truncating. When a gate is
    added, check it fails when the code is wrong.
+
+## Four more, found 2026-10-02 while fixing a red suite
+
+Every one of these was green before it, and each one is the same species: the
+test could not fail, or nothing downstream looked at the value.
+
+| what | why it was invisible |
+|---|---|
+| the DiT block fed the **modulated** `h` back as the residual instead of the un-modulated `x` | at adaLN-Zero `modulate(x, 0, 0) == x`, so the two agree **exactly at initialisation** — and the actor's zero-init output layer means the forward tests compare two zeros regardless. The first optimizer step moves `adaLN.fc2` off zero and the two diverge. `test_actor_forward_with_the_modulation_woken` now wakes `adaLN.fc2` *and* `out`, and fails without the fix |
+| `compute_info`'s `cond_stats` used **one** row where torch uses **eight** | with one row `h` is `[16, hidden]` and the effective rank cannot exceed 16, so the Dohare collapse probe was capped and `cond_fused` / `cond_c` reduced over a different population than torch. Also `num_learning_epochs` had drifted to 2 against torch's 1 |
+| the converter's flat moment keys were **module-relative** while the optimizer tree is regrouped **by role** | every moment was written to a key nothing read, so a converted run resumed with **all-zero** Adam state. `unflatten_like` now checks shapes, and the moments are matched against `optimizer_params`, not `params_to_pure` |
+| Orbax **mangled the optax state** on save/restore | namedtuples came back as dicts, `EmptyState` as `None`, and a 133-leaf Adam state as 66 leaves — a resumed run's optimizer was unusable and nothing noticed. `checkpoint_tree` now stores the opt_state **flattened** and `restore_from_tree` unflattens it onto a fresh `chain.init(params)` |
+| the EMA shadow was checkpointed under `shadow` while `load_ema_state_dict` reads `shadow_params`, and the converter filtered on an `actor.` prefix torch never writes | the lookup missed twice over, so a converted or resumed run came back with **no shadow and a cleared latch** — indistinguishable from a policy whose EMA never warmed, so it would re-hard-copy and throw the running average away. The converter's test also passed `ema_state=None`, so `ema.pt` was absent and that whole path never ran |
+| `nnx.merge(graphdef, plain_dict)` cannot load a hand-nested tree | it reports "Incorrect number of leaves, expected 40, but got 13" on a tree whose leaf paths match the graphdef exactly; `nnx.State(tree)` fails identically. Only the `assign` walk works, so it now lives once in `state.py` and both the converter and the EMA shadow go through it |
+| `RolloutBuffer.add_chunk` guarded on `max_chunks`, but wrote to arrays sized by `chunk_capacity` | `_write` goes through `.at[index].set()`, whose default mode is **promise_in_bounds**, so a write past the end is dropped in silence while `n_chunks` keeps counting. A rollout with enough terminals produced chunks whose keys disagreed on their length, and the chunk backup read that as a length mismatch, far from the write that lost them. torch grows its arrays instead (`ensure_chunk_capacity`); the guard now bounds on the array, and `generate_rollout` sizes `chunk_capacity` from the step budget |
+| `wake_actor` leaves 50 of 80 leaves with an **exactly zero** gradient | `adaLN.fc2` is zero-init as well as `out`, so the DiT blocks stay the identity and nothing upstream of them is on the loss path. The update-step gate wakes both heads, and asserts the gradient is dense — otherwise a step compared against 50 zeros agrees on almost nothing |
 
 ---
 

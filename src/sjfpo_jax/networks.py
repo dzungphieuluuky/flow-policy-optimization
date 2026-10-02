@@ -74,9 +74,16 @@ def vmapped_members(module, fn, x):
 
 
 def linear_init(rngs, *shape):
-    """Variance-scaling ``[in, out]`` kernel; ``in_axis=-2`` also fits a stack."""
+    """Variance-scaling ``[in, out]`` kernel; ``in_axis=-2`` also fits a stack.
+
+    ``dtype`` is pinned because flax's default follows ``jax_enable_x64``, which
+    :func:`runtime.configure_device` turns on (the running-mean counts need fp64).
+    An fp64 kernel here makes the conditioner's output fp64, and the Euler
+    sampler's ``lax.scan`` carry then changes dtype mid-scan and refuses to
+    compile.
+    """
     return nnx.initializers.variance_scaling(
-        1.0, "fan_in", "truncated_normal", in_axis=-2
+        1.0, "fan_in", "truncated_normal", in_axis=-2, dtype=jnp.float32
     )(rngs.params(), shape)
 
 
@@ -350,9 +357,13 @@ def dit_block_forward(p, x, c, return_stats=False):
 
     normed = rms_norm(x, p["norm1"]["scale"])
     h = modulate(normed, shift_msa, scale_msa)
-    h = h + gate_msa * self_attention_forward(p["attn"], h)
-    normed = rms_norm(h, p["norm2"]["scale"])
-    out = h + gate_mlp * swiglu_forward(p["mlp"], modulate(normed, shift_mlp, scale_mlp))
+    # The residual is the *un-modulated* x, as in all three torch branches. The
+    # modulated h feeds only the gated branch: with adaLN-Zero the two coincide,
+    # so a fresh model cannot tell them apart, and the first optimizer step moves
+    # adaLN.fc2 off zero and makes them diverge.
+    x = x + gate_msa * self_attention_forward(p["attn"], h)
+    normed = rms_norm(x, p["norm2"]["scale"])
+    out = x + gate_mlp * swiglu_forward(p["mlp"], modulate(normed, shift_mlp, scale_mlp))
 
     if not return_stats:
         return out
@@ -403,6 +414,29 @@ def rms(x):
     tensor three times.
     """
     return jnp.linalg.norm(x) / math.sqrt(x.size)
+
+
+def effective_rank(features):
+    """``exp`` spectral entropy of ``[n, hidden]``. Dohare et al. (2306.13812)
+    collapse probe: falls as backprop settles on a low-rank solution. In
+    ``[1, min(n, hidden)]``."""
+    matrix = jnp.reshape(features, (-1, features.shape[-1])).astype(jnp.float32)
+    # jnp.linalg.svdvals is the builtin, and in jax 0.11.2 it takes the matrix
+    # only -- there is no compute_uv flag, unlike torch's.
+    sigma = jnp.linalg.svdvals(matrix)
+    p = sigma / jnp.maximum(sigma.sum(), 1e-12)
+    return jnp.exp(-(p * jnp.log(jnp.maximum(p, 1e-12))).sum())
+
+
+def weight_magnitude(p):
+    """Mean absolute weight over every parameter. Dohare's other correlate:
+    magnitudes grow under continual training, and that growth precedes the rank
+    drop, so it moves earlier than performance does."""
+    # Summed in one fp32 accumulator rather than a per-leaf stack: this only ever
+    # runs once per update, on one row, for a log line.
+    leaves = jax.tree_util.tree_leaves(p)
+    total = sum(jnp.abs(leaf).sum(dtype=jnp.float32) for leaf in leaves)
+    return total / max(sum(leaf.size for leaf in leaves), 1)
 
 
 def rms_norm_forward(p, x):
@@ -492,12 +526,17 @@ class StateConditioner(nnx.Module):
         return self.apply(params_of(self), states)
 
 
-def flow_model_forward(p, x_t, t, condition, token_horizon, return_stats=False):
+def flow_model_forward(p, module, x_t, t, condition, token_horizon, return_stats=False):
     """Predict velocity from token actions and per-token times.
 
     ``t``: scalar, ``[B]``, or ``[B, K, 1]``. One time per token, shared across
     that token's action dims. The last layer is zero-init, so an untrained model
     predicts near-zero velocity.
+
+    ``p`` is the flattened forward view, and it carries the static scalars and
+    the sinusoidal module alongside the parameters, so it cannot answer
+    ``weight_magnitude``. That comes off ``module`` instead, which is why both
+    are passed.
     """
     x_t = jnp.asarray(x_t, dtype=jnp.float32)
     t = jnp.asarray(t, dtype=jnp.float32)
@@ -558,6 +597,9 @@ def flow_model_forward(p, x_t, t, condition, token_horizon, return_stats=False):
         if return_stats:
             h, stats = h
             block_stats.append(stats)
+    # Read off the pre-norm h, as torch does: its stats block runs before the
+    # norm_out projection, so the rank probe sees the block output.
+    h_pre_norm = h
     h = rms_norm(h, p["norm_out"]["scale"])
     out = linear(modulate(h, shift_out, scale_out), p["out"]["kernel"], p["out"]["bias"])
     if not return_stats:
@@ -570,6 +612,8 @@ def flow_model_forward(p, x_t, t, condition, token_horizon, return_stats=False):
             k: jnp.mean(jnp.stack([s[k] for s in block_stats]))
             for k in ("gate_msa", "gate_mlp", "scale_msa", "scale_mlp")
         },
+        "effective_rank": effective_rank(h_pre_norm),
+        "weight_magnitude": weight_magnitude(params_of(module)),
     }
     return out, stats
 
@@ -620,7 +664,10 @@ class SJFPOFlowModel(nnx.Module):
             "bias": nnx.Param(jnp.zeros((hidden_dim,), dtype=jnp.float32)),
         }
         self.token_pos = nnx.Param(
-            0.02 * jax.random.normal(rngs.params(), (1, action_horizon, hidden_dim))
+            0.02
+            * jax.random.normal(
+                rngs.params(), (1, action_horizon, hidden_dim), dtype=jnp.float32
+            )
         )
         self.time_mlp = CondMLP(time_embed_dim, 4 * hidden_dim, hidden_dim, rngs)
         self.blocks = [
@@ -651,7 +698,7 @@ class SJFPOFlowModel(nnx.Module):
             "hidden_dim": self.hidden_dim,
             "action_dim": self.action_dim,
         }
-        return flow_model_forward(p, x_t, t, condition, self.action_horizon, return_stats)
+        return flow_model_forward(p, self, x_t, t, condition, self.action_horizon, return_stats)
 
 
 def critic_member_forward(p, states):

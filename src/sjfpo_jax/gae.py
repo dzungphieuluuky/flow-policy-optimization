@@ -6,9 +6,22 @@ mathematics; the only difference is that the backward recursion over
 """
 from __future__ import annotations
 
+import math
+
 import jax
 import jax.numpy as jnp
 from jax import lax
+
+# The batch payload's diagnostic block, and its order. Mirrors
+# ``modeling_sjfpo._GAE_DIAGNOSTIC_KEYS``; the trainer stacks the dict's values
+# in this order, so it is an interface, not a convenience.
+GAE_DIAGNOSTIC_KEYS = (
+    "linked_frac",
+    "advantage_std",
+    "return_rms",
+    "advantage_std_fraction",
+    "budget_truncated_chunk_frac",
+)
 
 
 def compute_chunk_advantages(
@@ -110,3 +123,61 @@ def compute_chunk_advantages(
 
     advantages = advantages[unsort]
     return advantages, advantages + sorted_values[unsort]
+
+
+def rms(x):
+    """Root mean square over every element, one reduction."""
+    return jnp.linalg.vector_norm(x) / math.sqrt(x.size)
+
+
+def compute_gae_diagnostics(
+    env_id: jax.Array,
+    terminated: jax.Array,
+    truncated: jax.Array,
+    advantages: jax.Array,
+    raw_returns: jax.Array,
+    budget_truncated: jax.Array | None = None,
+) -> dict[str, jax.Array]:
+    """Trace-liveness and scale probes for the chunk backup, as 0-dim arrays.
+
+    ``linked_frac`` is the one that matters: the share of chunk pairs the
+    recursion joined. Chunks arrive in wavefront order, so raw adjacency joins
+    nothing and the ``env_id`` sort is what makes the chain live.
+
+    0-dim arrays rather than floats, like :func:`policy.compute_info`: the
+    trainer does one ``device_get`` over the whole dict, and inside ``jit`` there
+    is no ``tolist()``.
+    """
+    n = env_id.shape[0]
+    zeros = jnp.zeros((), dtype=jnp.float64)
+    if n == 0:
+        return {key: zeros for key in GAE_DIAGNOSTIC_KEYS}
+
+    order = jnp.argsort(env_id.astype(jnp.int64), stable=True)
+    env_sorted = env_id.astype(jnp.int64)[order]
+    ends = (terminated.astype(jnp.bool_) | truncated.astype(jnp.bool_))[order][:-1]
+
+    ret = raw_returns.astype(jnp.float32)
+    adv = advantages.astype(jnp.float32)
+    # Population std, matching the advantage normaliser and returns_var. The
+    # unbiased default is NaN at a single chunk; correction=0 is defined at
+    # n == 1, where clamp_min gives the same 0.0 a guard would.
+    adv_std = jnp.std(adv, ddof=0)
+    ret_std = jnp.clip(jnp.std(ret, ddof=0), min=1e-8)
+    linked = jnp.sum((env_sorted[1:] == env_sorted[:-1]) & ~ends)
+    fields = [
+        # Each field keeps the fp32 arithmetic torch gave it and is widened only
+        # here, so the stack is one dtype without changing any reduction.
+        linked.astype(jnp.float64) / max(n - 1, 1),
+        adv_std.astype(jnp.float64),
+        rms(ret).astype(jnp.float64),
+        # A = R - V, so Var(A) <= Var(R), equal only when V is 0. 1.0 means the
+        # critic is inert; it falls toward 1 - R^2 as the critic improves.
+        (adv_std / ret_std).astype(jnp.float64),
+        (
+            jnp.mean(budget_truncated.astype(jnp.float32)).astype(jnp.float64)
+            if budget_truncated is not None
+            else zeros
+        ),
+    ]
+    return dict(zip(GAE_DIAGNOSTIC_KEYS, fields))
