@@ -315,6 +315,24 @@ def test_freq_weighted_noise_pours_variance_into_the_low_modes():
     np.testing.assert_allclose(per_mode, expected, rtol=0.05)
 
 
+@pytest.mark.parametrize("beta", [0.0, 0.5, 1.0])
+def test_noise_scaling_beta_hits_both_endpoints_and_the_middle(beta):
+    """beta=0 is white, beta>0 tilts down the spectrum, and both frameworks agree."""
+    cfg = cfg_with(noise_scaling_mode="freq_weighted", noise_scaling_beta=beta)
+    out = T_fpo.sample_noise(
+        (20000, 16, 8, 2), cfg, torch.device("cpu"), torch.Generator().manual_seed(2)
+    )
+    per_mode = out.std(dim=(0, 1, 3)).numpy()
+    assert_same(
+        T_fpo.compute_freq_weighted_std(8, cfg.action_horizon, torch.device("cpu"), beta),
+        J_fpo.compute_freq_weighted_std(8, cfg.action_horizon, beta),
+    )
+    if beta == 0.0:
+        np.testing.assert_allclose(per_mode, 1.0, rtol=0.05)
+    else:
+        assert per_mode[0] > per_mode[-1]
+
+
 # ------------------------------------------------------------------------- the DCT
 
 

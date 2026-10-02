@@ -53,10 +53,14 @@ class SJFPOConfig(PreTrainedConfig):
     max_timestep: float = 0.995
     timestep_sampling_mode: str = "fpo_beta"
     noise_sampling_mode: str = "normal"
-    # Per-mode std over the token axis. "white" is 1.0. "freq_weighted" is NEED's
-    # beta=1 coloring, which pushes base variance into the low DCT modes; it
-    # requires use_dct_transform, since the token axis is time without the DCT.
+    # Per-mode std over the token axis. "white" is 1.0. "freq_weighted" pours base
+    # variance into the low DCT modes; it requires use_dct_transform, since the token
+    # axis is time without the DCT. Only read when the mode is "freq_weighted".
     noise_scaling_mode: str = "white"
+    # Coloring exponent for "freq_weighted": std_k = (1 + (k*pi/H)^2)^(-beta/2).
+    # 0.0 is white noise, 1.0 is NEED's pink. Colored-noise PPO puts the on-policy
+    # optimum at 0.5; 1.0 is the default so existing runs keep their meaning.
+    noise_scaling_beta: float = 1.0
     timestep_inverse_cdf_beta: float = 1.0
     timestep_beta_alpha: float = 2.0
     timestep_beta_beta: float = 2.0
@@ -265,6 +269,8 @@ class SJFPOConfig(PreTrainedConfig):
                 "use_dct_transform=True (the token axis is time, not frequency, "
                 "without the DCT)"
             )
+        if self.noise_scaling_beta < 0:
+            raise ValueError(f"noise_scaling_beta must be >= 0, got {self.noise_scaling_beta}")
         if self.timestep_inverse_cdf_beta <= 0:
             raise ValueError("timestep_inverse_cdf_beta must be > 0")
         if self.timestep_beta_alpha <= 0 or self.timestep_beta_beta <= 0:
