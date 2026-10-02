@@ -8,6 +8,7 @@ from functools import lru_cache
 import torch
 
 def normalize_device(device: torch.device | str | None) -> torch.device:
+    """Resolve a device, filling in the current CUDA index."""
     target = torch.device("cpu") if device is None else torch.device(device)
     if target.type == "cuda" and target.index is None:
         target = torch.device("cuda", torch.cuda.current_device())
@@ -15,6 +16,7 @@ def normalize_device(device: torch.device | str | None) -> torch.device:
 
 
 def compute_dct_norm(count: int, sequence_length: int, device: torch.device) -> torch.Tensor:
+    """Orthonormal DCT-II norms: sqrt(2/K), halved at k=0."""
     if count < 1 or sequence_length < 1:
         raise ValueError("count and sequence_length must be positive")
     norm = torch.full(
@@ -29,6 +31,7 @@ def compute_dct_norm(count: int, sequence_length: int, device: torch.device) -> 
 def get_analysis_basis(
     K: int, num_modes: int, device: torch.device
 ) -> tuple[torch.Tensor, torch.Tensor]:
+    """Cached ``[num_modes, K]`` DCT-II basis and its norms."""
     if K < 1:
         raise ValueError(f"K must be positive, got {K}")
     if not 1 <= num_modes <= K:
@@ -73,14 +76,9 @@ def extract_dct_coeffs(v_star: torch.Tensor, num_modes: int) -> torch.Tensor:
 
 
 def compute_spectral_energy_retained(v: torch.Tensor, num_modes: int) -> torch.Tensor:
-    """Fraction of a chunk's energy carried by the kept ``num_modes``.
-
-    The analysis basis is orthonormal, so by Parseval the coefficient energy
-    equals the signal energy and this is 1.0 at ``num_modes == v.shape[1]``.
-    Below that it is the share of the chunk the truncation actually discards,
-    which is the number that says whether a smaller ``num_kept_tokens`` is
-    doing anything.
-    """
+    """Share of a chunk's energy the kept ``num_modes`` carry. Orthonormal
+    basis, so Parseval makes this 1.0 at ``num_modes == v.shape[1]``; below
+    that it is what the truncation actually discards."""
     coeffs = extract_dct_coeffs(v, num_modes=num_modes)
     # square().sum() rather than an rms: this is a Parseval share, so the
     # divisor must be the total energy, not a per-element average.
@@ -88,13 +86,9 @@ def compute_spectral_energy_retained(v: torch.Tensor, num_modes: int) -> torch.T
 
 
 def velocity_to_action_steps(vel: torch.Tensor, num_rows: int) -> torch.Tensor:
-    """Expand DCT coeffs back onto the half-open grid ``t_j = j*H/H``.
-
-    Takes any leading batch axes, so ``[n, mc, K, d]`` and ``[n, K, d]`` both
-    work. Inverse of :func:`extract_dct_coeffs` for a full-length signal: read
-    coeffs as time samples, velocity in row space, so a per-row execution mask
-    can index it.
-    """
+    """Expand DCT coeffs onto the half-open grid ``t_j = j*H/H``, any leading
+    batch axes. Inverse of :func:`extract_dct_coeffs` for a full-length signal,
+    in row space, so a per-row execution mask can index it."""
     lead, k, d = vel.shape[:-2], vel.shape[-2], vel.shape[-1]
     tau = torch.arange(num_rows, device=vel.device, dtype=torch.float32) / num_rows
     with torch.autocast(device_type=vel.device.type, enabled=False):
@@ -110,12 +104,9 @@ def decode_coeffs_to_velocity(
     T: float,
     K_original: int,
 ) -> torch.Tensor:
-    """Decode DCT coeffs at query times.
-
-    Times use ``t_j = j*T/K``, so a query maps to ``j = tau*K/T``. ``tau = T``
-    gives the DCT-II even-symmetric extension (mirror of the last sample), not
-    a periodic wrap.
-    """
+    """Decode DCT coeffs at query times ``t_j = j*T/K``, so a query maps to
+    ``j = tau*K/T``. ``tau = T`` gives the DCT-II even-symmetric extension, not
+    a periodic wrap."""
     squeeze = False
     if coeffs.dim() == 3:
         B, num_modes, d = coeffs.shape

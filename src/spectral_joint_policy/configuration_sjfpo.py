@@ -15,15 +15,12 @@ __all__ = ["SJFPOConfig"]
 class SJFPOConfig(PreTrainedConfig):
     """SJFPO hyperparameters.
 
-    Notes
-    -----
-    * ``action_horizon`` is the full predicted chunk length (training) and the
-      executed prefix length (eval); ``n_action_steps`` falls back to it.
-    * ``num_inference_steps`` is used for zero-sampling; ``num_euler_steps`` is
-      used when the flow starts from sampled noise.
+    ``action_horizon`` is the predicted chunk length in training and the
+    executed prefix at eval; ``n_action_steps`` falls back to it.
+    ``num_inference_steps`` is for zero-sampling, ``num_euler_steps`` for a
+    sampled-noise start.
     """
 
-    # -- Observation / action geometry -----------------------------
     report_to: str = "all"  # wandb | tensorboard | all | none
     n_obs_steps: int = 16
     action_horizon: int = 16
@@ -31,7 +28,6 @@ class SJFPOConfig(PreTrainedConfig):
     action_perturb_std: float = 0.02
     hidden_dim: int = 128
 
-    # -- Rollout and batching ---------------------------------------
     num_envs: int = 64
     num_mc_samples: int = 16
     # 1, not 2: reuse is what accelerates the feature-rank decay that precedes the
@@ -46,7 +42,6 @@ class SJFPOConfig(PreTrainedConfig):
     # batch_size and num_mc_samples are the memory knobs.
     grad_accum_steps: int = 1
 
-    # -- Flow sampling -----------------------------------------------
     num_euler_steps: int = 16
     num_inference_steps: int = 16
     min_timestep: float = 0.005
@@ -65,7 +60,6 @@ class SJFPOConfig(PreTrainedConfig):
     timestep_beta_alpha: float = 2.0
     timestep_beta_beta: float = 2.0
 
-    # -- Trust region and CFM loss -----------------------------------
     gamma: float = 0.99
     gae_lambda: float = 0.95
     # One epsilon for the whole chunk. Per-frequency clipping has nothing to bind to:
@@ -82,7 +76,6 @@ class SJFPOConfig(PreTrainedConfig):
     cfm_loss_clamp_negative_advantages_max: float = 200.0
     log_ratio_cap: float = 10.0  # official cfm_diff_clamp_max, one-sided
 
-    # -- Critic and value targets -----------------------------------
     num_critics: int = 2
     normalize_advantage: bool = True
     value_loss_coef: float = 1.0  # the regression target is the raw return
@@ -99,20 +92,17 @@ class SJFPOConfig(PreTrainedConfig):
     # teacher tens of rollouts behind. 0.05 is a ~2.5-rollout time constant.
     critic_ema_decay: float = 0.05
 
-    # -- Spectral chunk encoding ------------------------------------
     use_dct_transform: bool = True
     # At num_kept_tokens == action_horizon the transform is the full orthonormal DCT,
     # a rotation of the loss and a no-op up to numerics. Smaller truncates.
     num_kept_tokens: int = 16
 
-    # -- DiT backbone -----------------------------------------------
     dit_depth: int = 2
     dit_heads: int = 4
     dit_mlp_ratio: float = 4.0
     time_embed_dim: int = 128
     timestep_scale: float = 10000.0
 
-    # -- Optimizer --------------------------------------------------
     policy_lr: float = 1e-5
     critic_lr: float = 1e-5  # legacy split-checkpoint compatibility
     optimizer_weight_decay: float = 1e-4
@@ -132,7 +122,6 @@ class SJFPOConfig(PreTrainedConfig):
     ema_decay: float = 0.95
     ema_warmup_steps: int = 500
 
-    # -- Eval and early stopping ------------------------------------
     # The max over hundreds of evals is biased well above the truth, and too few
     # episodes puts the standard error near the size of the regressions these knobs
     # watch for.
@@ -146,7 +135,6 @@ class SJFPOConfig(PreTrainedConfig):
     lr_decay: float = 0.5
     max_lr_decays: int = 3
 
-    # -- Diagnostics ------------------------------------------------
     # Each drift metric is a full critic forward over 2 * n_chunks windows. The
     # loop skips it whenever no tracker is enabled, so the flag is the manual
     # override for a report_to=none run that still wants the numbers.
@@ -382,12 +370,9 @@ class SJFPOConfig(PreTrainedConfig):
 
     @property
     def num_flow_tokens(self) -> int:
-        """Token count the flow model operates on.
-
-        ``num_kept_tokens`` with the DCT on, otherwise the full action horizon.
-        ``num_kept_tokens`` is inert without the DCT rather than an error: the
-        token axis is time there, so there is no frequency count to keep.
-        """
+        """Token count the flow runs on: ``num_kept_tokens`` with the DCT on,
+        else the full action horizon. Inert without the DCT, where the token
+        axis is time and there is no frequency count to keep."""
         return self.num_kept_tokens if self.use_dct_transform else self.action_horizon
 
     @property

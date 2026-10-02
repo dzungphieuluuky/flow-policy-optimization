@@ -63,11 +63,9 @@ Transition = TypedDict(
 class StepTransition(dict):
     """Transition dict holding post-step windows outside the public keys.
 
-    ``step_next_states`` is a runtime-only convenience for callers that read
-    the record list directly. It is deliberately not part of the eight-key
-    :data:`Transition` contract and is not preserved by ``copy`` or
-    serialisation. The buffer path does not use it: per-step windows live in
-    :class:`RolloutBuffer`.
+    ``step_next_states`` is runtime-only, deliberately not part of the eight-key
+    :data:`Transition` contract, and not preserved by ``copy``. The buffer path
+    does not use it: per-step windows live in :class:`RolloutBuffer`.
     """
 
     def __init__(self, record: Transition, step_next_states: torch.Tensor):
@@ -80,13 +78,9 @@ class StepTransition(dict):
 class RolloutBuffer:
     """Fixed-capacity CPU storage for chunk and executed-step rollout data.
 
-    The active training path reuses one instance per capacity/device. The
-    collector writes chunks; ``SJFPOPolicy.generate_rollout`` reads views of the
-    used prefix and moves those contiguous tensors to the device.
-
     Two axes: the chunk axis holds one obs window per chunk, so it wants
-    ``total_steps // action_horizon`` rows, not ``total_steps``. The step axis
-    holds one frame per executed step, so ``total_steps`` rows is right.
+    ``total_steps // action_horizon`` rows; the step axis holds one frame per
+    executed step, so ``total_steps`` rows is right.
     """
 
     def __init__(
@@ -114,7 +108,6 @@ class RolloutBuffer:
         self.action_horizon = action_horizon
         self.action_dim = action_dim
         self.pin_memory = pin_memory
-        # Chunk capacity the previous rollout settled on; 0 until then.
         self.last_chunk_capacity = 0
         if chunk_capacity is None:
             # One chunk per action_horizon steps, plus one per episode end since a
@@ -177,13 +170,9 @@ class RolloutBuffer:
         )
 
     def ensure_chunk_capacity(self, needed: int) -> None:
-        """Grow every chunk-major tensor so it can hold ``needed`` rows.
-
-        The chunk count is data-dependent and no static bound is both safe and
-        tight: an episode ending mid-chunk makes a short chunk, so the count
-        runs past ``max_steps // action_horizon``. Overshooting is harmless, so
-        double and carry on.
-        """
+        """Grow every chunk-major tensor to hold ``needed`` rows. The chunk count
+        is data-dependent: an episode ending mid-chunk makes a short chunk, so
+        it runs past ``max_steps // action_horizon``. Overshoot is harmless."""
         if needed <= self.chunk_capacity:
             return
         capacity = max(needed, 2 * self.chunk_capacity)
@@ -252,16 +241,12 @@ class RolloutBuffer:
     ) -> int:
         """Append one executed chunk.
 
-        ``state`` is the obs window the policy saw, ``next_state`` the window
-        the chunk ran to, and ``step_frames`` the raw observation after each of
-        the chunk's executed steps. The window chains across the chunk, so the
-        collector supplies only the two ends plus one frame per step. ``env_id``
-        is the vec slot that produced the chunk: the buffer appends in wavefront
-        order, so consecutive entries usually belong to different envs, and the
-        chunk backup uses this to find trajectory boundaries.
-
-        ``RuntimeError`` if chunk or step capacity is spent. ``ValueError`` if
-        any tensor shape misses the buffer layout.
+        ``state`` is the obs window the policy saw, ``next_state`` the window the
+        chunk ran to, ``step_frames`` the raw observation after each executed step.
+        The window chains across the chunk, so the collector supplies only the two
+        ends plus one frame per step. ``env_id`` is the vec slot: appends are in
+        wavefront order, so consecutive entries usually belong to different envs,
+        and the chunk backup uses this to find trajectory boundaries.
         """
         if self.n_chunks >= self.max_chunks:
             raise RuntimeError("RolloutBuffer chunk capacity exceeded")
@@ -342,15 +327,9 @@ class RolloutBuffer:
         )
 
     def mark_incomplete(self, chunk_index: int) -> None:
-        """Flag a chunk the rollout budget cut short.
-
-        Not ``chunk_truncated``: the episode went on.
-
-        - the env's next chunk is this one's successor
-        - GAE must chain to it
-        - sharing that flag read a live episode as finished
-        - and dropped the handoff
-        """
+        """Flag a chunk the rollout budget cut short. Not ``chunk_truncated``:
+        the episode went on, the env's next chunk is this one's successor, and
+        sharing that flag made GAE read a live episode as finished."""
         if not 0 <= chunk_index < self.n_chunks:
             raise IndexError(f"chunk index {chunk_index} out of range")
         self.chunk_budget_truncated[chunk_index] = True
@@ -392,14 +371,10 @@ def resolve_action_bounds(
     low: float | np.ndarray | torch.Tensor,
     high: float | np.ndarray | torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Coerce and validate env action bounds into fp32 tensors.
+    """Coerce env action bounds into fp32 tensors, strict ``high > low``.
 
-    Enforces strict ``high > low``, matching the collector's scaling contract.
-    ``SJFPOPolicy.set_action_bounds`` must use the same convention, else a
+    :meth:`SJFPOPolicy.set_action_bounds` must use the same convention, else a
     policy can build a degenerate dim that only fails on the first rollout.
-
-    Returns ``(low, high - low)``. ``ValueError`` if shapes disagree or any dim
-    fails ``high > low``.
     """
     lo = torch.as_tensor(
         np.asarray(low, dtype=np.float32), dtype=torch.float32
@@ -422,13 +397,8 @@ def scale_and_clip_chunk(
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Clamp a chunk to env bounds, then rescale to ``[-1, 1]``.
 
-    ``range_`` is the precomputed ``high - low``, see :func:`resolve_action_bounds`.
-    ``proposed`` is ``[H, action_dim]`` for one chunk or ``[B, H, action_dim]``
-    for a whole policy wavefront, so the vec collector scales once per
-    wavefront instead of once per env.
-
-    Returns the clipped actions, their rescaling, and the clipped element count
-    per leading row: a 0-dim tensor for one chunk, ``[B]`` for a batch.
+    ``proposed`` is ``[H, action_dim]`` or ``[B, H, action_dim]``, so the vec
+    collector scales once per wavefront instead of once per env.
     """
     clip_mask = (proposed < low) | (proposed > low + range_)
     executed = torch.clamp(proposed, min=low, max=low + range_)
@@ -732,7 +702,6 @@ def collect_chunks_vec(
         prev_chunk_indices: list[int | None] = [None] * n
 
         actions_t = torch.zeros((n, act_dim), dtype=torch.float32)
-        # The loop condition's whole job is how many env slots are still short.
         remaining = sum(targets)
         while remaining:
             need = [
@@ -782,7 +751,6 @@ def collect_chunks_vec(
                         step_states[i] = []
                 live_idx = None  # the stepping set just changed
 
-            # Envs with no chunk read row n, the zero row.
             row = torch.where(live_t, env_rows, torch.full_like(env_rows, n))
             actions_t.copy_(plan[row, pos_t.clamp(max=chunk_size - 1)])
             # No early-out: envs flagged ``awaiting`` still need this step() to take

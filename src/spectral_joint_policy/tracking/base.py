@@ -80,6 +80,7 @@ def compute_eval_summary_metrics(
     best_return: float | None = None,
     steps_to_best: int | None = None,
 ) -> dict:
+    """Eval scalars for one eval window, plus peak/streak figures when given."""
     returns = [r["return"] for r in eval_results]
     lengths = [r["length"] for r in eval_results]
     successes = [r["success"] for r in eval_results if r.get("success") is not None]

@@ -74,15 +74,11 @@ def save_policy_checkpoint(
 ) -> None:
     """Save through LeRobot ``HubMixin``, plus optimizer.pt and counters.json.
 
-    ``model.safetensors`` holds eager keys, so a fresh ``SJFPOFlowModel`` in
-    :func:`load_policy_checkpoint` finds every key it expects. Frozen behavior
-    snapshots are runtime-only, so their duplicate params are dropped.
-
-    ``optimizer`` keeps actor and critic in separate param groups, so one
-    ``step`` drives both while grad clipping stays per role.
-
-    ``ValueError`` if ``policy`` is not an SJFPO policy, ``global_step`` is
-    negative, or ``optimizer`` is missing.
+    ``model.safetensors`` holds eager keys so a fresh ``SJFPOFlowModel`` finds
+    every key it expects; frozen behavior snapshots are runtime-only and their
+    duplicate params are dropped. ``optimizer`` keeps actor and critic in
+    separate param groups, so one ``step`` drives both while clipping stays
+    per role.
     """
     from spectral_joint_policy.modeling_sjfpo import SJFPOPolicy  # lazy: import-light module
 
@@ -135,11 +131,10 @@ def save_policy_checkpoint(
 def load_optimizer(policy, d: Path) -> torch.optim.Optimizer:
     """Rebuild the optimizer from the policy, then load its state.
 
-    Builds through :func:`sjfpo.modeling_sjfpo.build_optimizer`, the same call
-    the training loop makes, so saved and rebuilt param groups cannot drift.
-    Fails loudly on any structural mismatch (wrong group count, wrong key set)
-    instead of relying on ``load_state_dict``'s opaque errors. ``ResumeError``
-    if the file will not unpickle or the state does not match the config.
+    Builds through :func:`spectral_joint_policy.modeling_sjfpo.build_optimizer`,
+    the call the training loop makes, so saved and rebuilt param groups cannot
+    drift. Fails loudly on a structural mismatch instead of relying on
+    ``load_state_dict``'s opaque errors.
     """
     from spectral_joint_policy.modeling_sjfpo import build_optimizer  # lazy: import-light module
 
@@ -204,16 +199,12 @@ def load_policy_checkpoint(
     action_low=None,
     action_high=None,
 ):
-    """Load a checkpoint from :func:`save_policy_checkpoint`.
+    """Load a checkpoint from :func:`save_policy_checkpoint` ->
+    ``(policy, optimizer, counters)``.
 
     Rebuilds every component from ``config.json``, no caller-supplied dims.
     Action bounds are runtime state: pass both ``action_low`` and ``action_high``
-    to restore the postprocessor mapping. Returns
-    ``(policy, optimizer, counters)``.
-
-    ``ResumeError`` if the checkpoint is incomplete or any component is corrupt
-    or mismatched. ``ValueError`` if only one of ``action_low`` and
-    ``action_high`` is given.
+    to restore the postprocessor mapping.
     """
     from spectral_joint_policy.modeling_sjfpo import SJFPOPolicy  # lazy: import-light module
 
