@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """Convert a torch SJFPO checkpoint to the JAX learner's Orbax format.
 
-    python scripts/convert_torch_to_jax.py --to-jax SRC DST
+    python scripts/convert_torch_to_jax.py --to-jax SRC DST --env ENV_ID
 
     SRC  a torch checkpoint dir: model.safetensors, optimizer.pt, ema.pt,
          counters.json, config.json
     DST  where to write the JAX checkpoint
+    ENV_ID  the gymnasium id the checkpoint was trained on, e.g. Humanoid-v5.
+         Action bounds are runtime state, so a checkpoint carries none and the
+         env is the only source. Humanoid-v5 is +-0.4, not +-1.
 
 What it reads, and why (JAX_MIGRATION.md §8):
 
@@ -214,8 +217,21 @@ def observed_dims(weights: dict) -> tuple[int, int]:
     return obs_dim, action_dim
 
 
-def convert(src: Path, dst: Path) -> int:
+def convert(src: Path, dst: Path, env_id: str | None = None) -> int:
     from spectral_joint_policy.checkpointing import load_policy_checkpoint
+
+    # None keeps the +-1 default, which is only right for the synthetic
+    # single-env checkpoints the weight tests build.
+    action_low, action_high = None, None
+    if env_id is not None:
+        import gymnasium as gym
+
+        if env_id.startswith("AdroitHand"):
+            import gymnasium_robotics  # noqa: F401 (registers Adroit env ids)
+        env = gym.make(env_id)
+        action_low = np.atleast_1d(np.asarray(env.action_space.low, dtype=np.float32))
+        action_high = np.atleast_1d(np.asarray(env.action_space.high, dtype=np.float32))
+        env.close()
 
     weights = load_file(str(src / "model.safetensors"))
     obs_dim, action_dim = observed_dims(weights)
@@ -261,6 +277,11 @@ def convert(src: Path, dst: Path) -> int:
     state = build_state(cfg, obs_dim, action_dim, jax.random.key(0))
     state = _load_from_tree(state, tree, weights)
     state = state.replace(global_step=int(counters["global_step"]))
+    if action_low is not None:
+        state = state.replace(
+            action_low=jnp.asarray(action_low, dtype=jnp.float32),
+            action_high=jnp.asarray(action_high, dtype=jnp.float32),
+        )
     state = _restore_target_critic_latch(state, src)
 
     chain, opt_state = build_optimizer(cfg, optimizer_params(state))
@@ -401,12 +422,18 @@ def _stack_moments(per_slot: dict, key: str):
 def main() -> int:
     parser = argparse.ArgumentParser(description="Convert a torch SJFPO checkpoint to the JAX format.")
     parser.add_argument("--to-jax", required=True, nargs=2, metavar=("SRC", "DST"))
+    parser.add_argument(
+        "--env",
+        required=True,
+        help="gymnasium id the checkpoint was trained on, e.g. Humanoid-v5. "
+        "Supplies the action bounds, which the checkpoint does not store.",
+    )
     args = parser.parse_args()
     src, dst = Path(args.to_jax[0]), Path(args.to_jax[1])
     if not (src / "model.safetensors").is_file():
         print(f"ERROR: {src} has no model.safetensors", file=sys.stderr)
         return 1
-    return convert(src, dst)
+    return convert(src, dst, env_id=args.env)
 
 
 if __name__ == "__main__":

@@ -75,14 +75,21 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    print(f"Loading checkpoint from: {args.checkpoint}")
-    policy, _, counters = load_policy_checkpoint(args.checkpoint, device=args.device)
-    policy.eval()
-    print(f"Checkpoint loaded (global_step={counters.get('global_step', '?')})")
-
     import gymnasium as gym  # noqa: E402
 
     env = gym.make(args.env, render_mode=args.render_mode)
+    print(f"Loading checkpoint from: {args.checkpoint}")
+    # Action bounds are runtime state and travel in no checkpoint, so the env
+    # has to supply them: Humanoid-v5 is +-0.4 and InvertedPendulum-v5 +-3.
+    policy, _, counters = load_policy_checkpoint(
+        args.checkpoint,
+        device=args.device,
+        action_low=np.atleast_1d(np.asarray(env.action_space.low, dtype=np.float32)),
+        action_high=np.atleast_1d(np.asarray(env.action_space.high, dtype=np.float32)),
+    )
+    policy.eval()
+    print(f"Checkpoint loaded (global_step={counters.get('global_step', '?')})")
+
     try:
         evaluator = Evaluator(
             env=env,
