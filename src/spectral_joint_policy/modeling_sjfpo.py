@@ -886,7 +886,6 @@ class SJFPOPolicy(PreTrainedPolicy):
             chunk_size=cfg.action_horizon,
             gamma=cfg.gamma,
         )
-        raw_values = chunk_q.detach()
         normalised_advantages = raw_advantages
         # Population std, matching returns_var. The unbiased default is NaN at a
         # single chunk, which a short final rollout produces, and inflates by
@@ -907,10 +906,10 @@ class SJFPOPolicy(PreTrainedPolicy):
         )
         raw_advantages = raw_advantages.to(storage_dtype)
         normalised_advantages = normalised_advantages.to(storage_dtype)
-        # raw_returns and raw_values stay fp32: the critic's target and clip
-        # snapshot, and the only stored tensors that are not O(1) (returns_rms runs
-        # to 35). bf16 has 8 mantissa bits, so 1234.5 round-trips to 1232.0, and
-        # chunk_state and chunk_actions are already fp32 anyway.
+        # raw_returns stays fp32: the critic's regression target and the only
+        # stored tensor that is not O(1) (returns_rms runs to 35). bf16 has 8
+        # mantissa bits, so 1234.5 round-trips to 1232.0, and chunk_state and
+        # chunk_actions are already fp32 anyway.
 
         action_is_pad = torch.arange(cfg.action_horizon, device=device).unsqueeze(
             0
@@ -953,7 +952,6 @@ class SJFPOPolicy(PreTrainedPolicy):
             "raw_advantages": raw_advantages,
             "normalised_advantages": normalised_advantages,
             "raw_returns": raw_returns,
-            "raw_values": raw_values,
             "normalizer_observations": active["step_frames"].detach(),
             # Diagnostics: how far the live critic moved from the bootstrap value
             # the targets were built with. With a target critic that gap is the
@@ -1148,26 +1146,12 @@ class SJFPOPolicy(PreTrainedPolicy):
             )
         # rsl-rl's value loss, with squared error replaced by Huber: quadratic inside
         # delta, linear outside, so one large-residual chunk cannot dominate the
-        # gradient. The clipped branch is the same penalty on the clipped prediction,
-        # and max() still takes the worse of the two.
+        # gradient. The delta tracks the batch's own return RMS.
         returns_rms = rms(raw_returns_flat)
         huber_delta = cfg.value_huber_delta * returns_rms.clamp_min(1e-6)
         value_loss_per_chunk = compute_value_huber_loss(
             raw_value_pred, raw_returns_flat, huber_delta
         ).mean(dim=0)
-        if cfg.use_clipped_value_loss and "raw_values" in batch:
-            rollout_values = to_tensor(
-                batch["raw_values"], dtype=torch.float32, device=device
-            )
-            clipped_value_pred = rollout_values.unsqueeze(0) + (
-                raw_value_pred - rollout_values.unsqueeze(0)
-            ).clamp(-cfg.clip_param, cfg.clip_param)
-            value_loss_per_chunk = torch.maximum(
-                value_loss_per_chunk,
-                compute_value_huber_loss(
-                    clipped_value_pred, raw_returns_flat, huber_delta
-                ).mean(dim=0),
-            )
 
         if reduction == "mean":
             policy_loss = policy_per_chunk.mean()

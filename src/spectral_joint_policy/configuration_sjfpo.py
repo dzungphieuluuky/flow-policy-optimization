@@ -78,7 +78,9 @@ class SJFPOConfig(PreTrainedConfig):
     cfm_loss_clamp_negative_advantages_max: float = 200.0
     log_ratio_cap: float = 10.0  # official cfm_diff_clamp_max, one-sided
 
-    num_critics: int = 2
+    # QC runs a single Q. The ensemble stays available at 2 as an ablation;
+    # at 1 the amin over members is a no-op.
+    num_critics: int = 1
     normalize_advantage: bool = True
     value_loss_coef: float = 1.0  # the regression target is the raw return
     # Huber delta as a multiple of the batch return RMS, so the quadratic-to-linear
@@ -86,7 +88,6 @@ class SJFPOConfig(PreTrainedConfig):
     # InvertedPendulum, ~15 on Hopper). Bounds the per-sample gradient, so a few
     # large-residual chunks stop owning critic_grad_norm_preclip.
     value_huber_delta: float = 1.0
-    use_clipped_value_loss: bool = True
     # gamma ** action_horizon puts 0.85 of the value target on the critic's own
     # output, the regime a target network is meant to hold fixed.
     use_target_critic: bool = True

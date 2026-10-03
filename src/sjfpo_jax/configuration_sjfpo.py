@@ -98,11 +98,10 @@ class SJFPOConfig:
     log_ratio_cap: float = 10.0
 
     # -- Critic and value targets ------------------------------------------
-    num_critics: int = 2
+    num_critics: int = 1
     normalize_advantage: bool = True
     value_loss_coef: float = 1.0
     value_huber_delta: float = 1.0
-    use_clipped_value_loss: bool = True
     use_target_critic: bool = True
     critic_ema_decay: float = 0.05
 

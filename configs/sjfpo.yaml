@@ -51,10 +51,9 @@ log_ratio_cap: 10.0
 normalize_advantage: true
 
 # -- Critic and value targets -----------------------------------
-num_critics: 2
+num_critics: 1
 value_loss_coef: 1.0
 value_huber_delta: 1.0  # multiple of the batch return RMS, so the quadratic-to-linear transition tracks the target scale
-use_clipped_value_loss: true
 use_target_critic: true
 critic_ema_decay: 0.05
 

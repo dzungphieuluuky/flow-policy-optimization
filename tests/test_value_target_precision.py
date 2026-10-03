@@ -53,7 +53,12 @@ def test_source_does_not_cast_the_value_target_to_storage_dtype():
     assert "storage_dtype" not in value_block, (
         "the critic's value path must stay fp32; it regresses on raw returns"
     )
-    assert "torch.float32" in value_block
+    # The promotion to fp32 has to sit on the critic's own output, which is the
+    # only tensor here that arrives in the storage dtype.
+    critic_line = next(
+        line for line in value_block.splitlines() if "raw_value_pred = " in line
+    )
+    assert critic_line.rstrip().endswith(".float()  # [num_critics, n]"), critic_line
 
 
 def test_resolve_storage_dtype_is_fp32_on_cpu():

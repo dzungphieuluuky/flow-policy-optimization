@@ -263,17 +263,16 @@ def test_behavior_cfm_loss_uses_the_frozen_snapshot():
         {},
         {"use_dct_transform": False},
         {"cfm_mask_unexecuted": False},
-        {"use_clipped_value_loss": False},
         {"trust_region_mode": "ppo"},
         {"trust_region_mode": "spo"},
         {"cfm_loss_reduction": "sum"},
         {"cfm_loss_reduction": "sqrt"},
-        {"num_critics": 1},
+        {"num_critics": 2},
         {"num_critics": 3},
     ],
     ids=[
-        "default", "dct_off", "mask_off", "no_value_clip", "ppo", "spo",
-        "cfm_sum", "cfm_sqrt", "one_critic", "three_critics",
+        "default", "dct_off", "mask_off", "ppo", "spo",
+        "cfm_sum", "cfm_sqrt", "two_critics", "three_critics",
     ],
 )
 def test_forward_loss_matches_torch(overrides):
