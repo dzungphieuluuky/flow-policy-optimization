@@ -119,7 +119,7 @@ def test_untagged_config_still_gets_a_hash():
 def test_one_changed_value_changes_the_name():
     """The collision this exists to fix: gamma is not in any tag."""
     assert _name() != _name(gamma=0.95)
-    assert _name(gae_lambda=0.5) != _name(gae_lambda=0.95)
+    assert _name(num_envs=8) != _name(num_envs=64)
 
 
 def test_feature_dicts_do_not_change_the_name():

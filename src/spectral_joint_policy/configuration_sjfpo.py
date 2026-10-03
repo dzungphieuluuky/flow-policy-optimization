@@ -64,7 +64,6 @@ class SJFPOConfig(PreTrainedConfig):
     timestep_beta_beta: float = 2.0
 
     gamma: float = 0.99
-    gae_lambda: float = 0.95
     # One epsilon for the whole chunk. Per-frequency clipping has nothing to bind to:
     # the "sample" reduction averages every token into one number per chunk.
     clip_param: float = 0.05
@@ -218,10 +217,6 @@ class SJFPOConfig(PreTrainedConfig):
         """Validate discount, trust-region, clamp, and sampling parameters."""
         if not 0.0 < self.gamma <= 1.0:
             raise ValueError(f"gamma={self.gamma} must satisfy 0 < gamma <= 1")
-        if not 0.0 < self.gae_lambda <= 1.0:
-            raise ValueError(
-                f"gae_lambda={self.gae_lambda} must satisfy 0 < lambda <= 1"
-            )
         if not 0.0 < self.clip_param < 1.0:
             raise ValueError(
                 f"clip_param={self.clip_param} must satisfy 0 < eps < 1"

@@ -88,7 +88,6 @@ class SJFPOConfig:
 
     # -- Trust region and CFM loss -----------------------------------------
     gamma: float = 0.99
-    gae_lambda: float = 0.95
     clip_param: float = 0.05
     trust_region_mode: str = "aspo"
     cfm_loss_reduction: str = "mean"
@@ -166,8 +165,8 @@ class SJFPOConfig:
                 f"hidden_dim={self.hidden_dim} must be divisible by "
                 f"dit_heads={self.dit_heads}"
             )
-        if not 0 < self.gamma <= 1.0 or not 0 < self.gae_lambda <= 1.0:
-            raise ValueError("gamma and gae_lambda must be in (0, 1]")
+        if not 0 < self.gamma <= 1.0:
+            raise ValueError("gamma must be in (0, 1]")
         if not 0.0 <= self.min_timestep < self.max_timestep <= 1.0:
             raise ValueError(
                 f"require 0 <= min_timestep < max_timestep <= 1, got "

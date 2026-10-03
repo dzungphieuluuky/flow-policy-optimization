@@ -883,11 +883,8 @@ class SJFPOPolicy(PreTrainedPolicy):
             chunk_starts,
             lengths,
             chunk_terminated=active["chunk_terminated"],
-            chunk_truncated=active["chunk_truncated"],
-            chunk_env_id=active["chunk_env_id"],
             chunk_size=cfg.action_horizon,
             gamma=cfg.gamma,
-            lam=cfg.gae_lambda,
         )
         raw_values = chunk_q.detach()
         normalised_advantages = raw_advantages
