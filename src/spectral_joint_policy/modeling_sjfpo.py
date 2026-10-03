@@ -821,16 +821,16 @@ class SJFPOPolicy(PreTrainedPolicy):
         actions = active["chunk_actions"]
         states = active["chunk_state"]
 
-        # Only the chunk's first and post-chunk states are read by the backup, so
-        # the critic and preprocessor see 2 * n_chunks windows, not 2 * n_steps.
-        # The obs normalizer updates separately from raw frames via
+        # The backup reads two obs windows per chunk, the one it started from and
+        # the one it ended at, so the preprocessor sees 2 * n_chunks windows and
+        # not 2 * n_steps. The normalizer updates separately from raw frames via
         # normalizer_observations.
-        # The bootstrap chunk. For every chunk but a rollout tail this is the
-        # chunk the collector actually executed from the successor state -- the
-        # successor row, found by the same env_id sort the backup uses. A tail
-        # chunk was cut by the budget, so nothing was ever proposed from its
-        # next state; QC's target wants a chunk from the policy there, so one
-        # extra flow sample per env is drawn.
+        #
+        # The bootstrap chunk a' is drawn fresh from the policy at each chunk's
+        # end state, which is QC's target. Rows whose bootstrap is zeroed (the
+        # chunk terminated) keep the chunk itself as a filler: the proposal is
+        # batched over the surviving rows only, which is what keeps it cheap when
+        # most chunks terminate.
         with torch.inference_mode():
             next_states = active["chunk_next_state"]
             # Seeded from the chunk itself so every row is a real action tensor: an
@@ -861,9 +861,9 @@ class SJFPOPolicy(PreTrainedPolicy):
             normalised_next_states = all_chunk_normalised_states[n_chunks:]
             with autocast_context(device):
                 chunk_q = self.critic(normalised_states, actions).float().amin(dim=0)
-            # min over the ensemble, backup only. The loss trains every member
-            # separately: min has no case inside a Q loss, no max to counteract,
-            # so it would only bias Q low.
+            # amin is a no-op at the default single critic. It is kept so
+            # num_critics=2 remains one flag away as an ablation, and min is the
+            # right aggregator there: backup only, never inside the loss.
             if cfg.use_target_critic:
                 with torch.inference_mode(), autocast_context(device):
                     boot_q = self.target_critic(
