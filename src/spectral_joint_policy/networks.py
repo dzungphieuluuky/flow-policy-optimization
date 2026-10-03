@@ -5,9 +5,9 @@ Key facts:
   ``_uninitialised`` non-persistent so old checkpoints load.
 * ``RunningMeanStd.forward``: out dtype = in dtype. No silent fp32 promote.
 * ``_RMSNorm``: reduce in fp32, take ``dtype=`` at build, never touch ``.data``.
-* ``StateEncoder``: frame tokens -> 1 self-attention -> mean-pool; DCT coeffs concat at fuse.
-* ``SelfAttention``: ``[B, L]`` key-padding mask, 1 = keep. NaN rows
-  (all-masked) zeroed after SDPA.
+* ``StateEncoder``: flattened window -> one SiLU MLP. The flatten reads frame
+  order, which a mean-pool cannot.
+* ``SelfAttention``: maskless SDPA. The action tokens are the only sequence.
 * ``temb`` broadcast, not ``expand``: a scalar ``t`` runs the time MLP once.
 
 Speed:
@@ -26,7 +26,6 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from spectral_joint_policy.dct_utils import extract_dct_coeffs
 from spectral_joint_policy.utils import rms
 
 
@@ -157,8 +156,7 @@ class SinusoidalEncoding(nn.Module):
 
 
 class SelfAttention(nn.Module):
-    """SDPA self-attention. ``attention_mask`` ``[B, L]`` key-padding, 1 = keep.
-    All-masked rows NaN from SDPA; zeroed after."""
+    """SDPA self-attention. Maskless: the action tokens are the only sequence."""
 
     def __init__(self, hidden_dim: int, n_heads: int):
         super().__init__()
@@ -173,13 +171,8 @@ class SelfAttention(nn.Module):
         self.qkv = nn.Linear(hidden_dim, 3 * hidden_dim)
         self.out = nn.Linear(hidden_dim, hidden_dim)
 
-    def forward(
-        self,
-        x: torch.Tensor,
-        attention_mask: torch.Tensor | None = None,
-    ) -> torch.Tensor:
-        """Self-attention. ``attention_mask`` ``[B, L]``, 1 = keep. All-masked
-        rows NaN from SDPA; zeroed after."""
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Self-attention over the ``L`` action tokens. ``[B, L, D]`` -> ``[B, L, D]``."""
         if x.dim() != 3:
             raise ValueError(f"x must have shape [B, L, D], got {tuple(x.shape)}")
         b, l, _ = x.shape
@@ -196,22 +189,7 @@ class SelfAttention(nn.Module):
         k = k.view(b, l, h, d).transpose(1, 2)
         v = v.view(b, l, h, d).transpose(1, 2)
 
-        mask = None
-        if attention_mask is not None:
-            keep = torch.as_tensor(
-                attention_mask, dtype=torch.bool, device=x.device
-            ).clone()
-            if keep.shape != (b, l):
-                raise ValueError(
-                    f"attention_mask must have shape [B, L] = {(b, l)}, "
-                    f"got {tuple(keep.shape)}"
-                )
-            mask = keep[:, None, None, :]
-
-        y = F.scaled_dot_product_attention(q, k, v, attn_mask=mask)
-        # Fully-masked rows come back NaN from SDPA; zero them instead of
-        # forcing key 0 to be kept (which contaminates every row).
-        y = torch.nan_to_num(y, 0.0)
+        y = F.scaled_dot_product_attention(q, k, v)
         y = y.transpose(1, 2).reshape(b, l, h * d)
         return self.out(y)
 
@@ -377,26 +355,24 @@ class DiTBlock(nn.Module):
 
 
 class StateEncoder(nn.Module):
-    """Frame tokens -> 1 self-attention over T -> mean-pool; flattened DCT
-    coeffs concat to the pooled feature before the final Linear."""
+    """Flattened window -> one SiLU MLP -> the conditioning vector.
+
+    The orthonormal DCT of the window that used to be concatenated before
+    ``fuse`` was an exact rotation of this flatten (the DCT-II analysis matrix
+    has all singular values 1), so it spanned the same subspace and only
+    pre-conditioned the Linear. The flatten also reads frame order: a permuted
+    window is a different input vector, and an MLP is not permutation-invariant.
+    """
 
     def __init__(self, obs_dim: int, hidden_dim: int, max_obs_steps: int):
         super().__init__()
-        if obs_dim < 2:
-            raise ValueError("StateEncoder obs_dim must be at least 2")
         if hidden_dim < 2:
             raise ValueError("hidden_dim must be at least 2")
         if max_obs_steps < 1:
             raise ValueError(f"max_obs_steps must be >= 1, got {max_obs_steps}")
         self.obs_dim = obs_dim
         self.max_obs_steps = max_obs_steps
-        n_heads = max(1, hidden_dim // 32)
-        self.frame_proj = nn.Linear(obs_dim, hidden_dim)
-        self.frame_pos = nn.Parameter(torch.zeros(1, max_obs_steps, hidden_dim))
-        nn.init.normal_(self.frame_pos, std=0.02)
-        self.norm = build_rms_norm(hidden_dim)
-        self.attn = SelfAttention(hidden_dim, n_heads)
-        self.fuse = nn.Linear(hidden_dim + max_obs_steps * obs_dim, hidden_dim)
+        self.net = CondMLP(max_obs_steps * obs_dim, hidden_dim, hidden_dim)
 
     def forward(self, states: torch.Tensor) -> torch.Tensor:
         """Window ``[B, T, obs]`` -> one ``[B, hidden]`` conditioning vector."""
@@ -416,12 +392,7 @@ class StateEncoder(nn.Module):
                 f"states has {T} time steps, this encoder was built for "
                 f"max_obs_steps={self.max_obs_steps}"
             )
-        h = self.frame_proj(states) + self.frame_pos
-        h = h + self.attn(self.norm(h))
-        pooled = h.mean(dim=1)
-        # num_modes == T keeps every frequency, the whole orthonormal transform.
-        coeffs = extract_dct_coeffs(states, num_modes=T).flatten(1)
-        return self.fuse(torch.cat([pooled, coeffs], dim=-1))
+        return self.net(states.flatten(1))
 
 
 class SJFPOFlowModel(nn.Module):
@@ -631,11 +602,8 @@ class Critic(nn.Module):
         self.obs_dim = obs_dim
         self.n_obs_steps = n_obs_steps
         self.num_critics = num_critics
-        self.encoders = nn.ModuleList(
-            [StateEncoder(obs_dim, hidden_dim, n_obs_steps) for _ in range(num_critics)]
-        )
-        self.heads = nn.ModuleList(
-            [nn.Linear(hidden_dim, 1) for _ in range(num_critics)]
+        self.networks = nn.ModuleList(
+            [CondMLP(n_obs_steps * obs_dim, hidden_dim, 1) for _ in range(num_critics)]
         )
 
     def forward(self, states: torch.Tensor) -> torch.Tensor:
@@ -658,9 +626,5 @@ class Critic(nn.Module):
                 f"for n_obs_steps={self.n_obs_steps}; the collector builds windows "
                 "to the declared length"
             )
-        return torch.stack(
-            [
-                head(conditioner(states)).squeeze(-1)
-                for conditioner, head in zip(self.encoders, self.heads)
-            ]
-        )
+        window = states.flatten(1)
+        return torch.stack([net(window).squeeze(-1) for net in self.networks])

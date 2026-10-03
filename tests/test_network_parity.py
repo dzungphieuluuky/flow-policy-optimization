@@ -265,47 +265,6 @@ def test_adaln_zero_leaves_the_stack_as_the_identity_at_init():
     )
 
 
-# ------------------------------------------------------------------- attention mask
-
-
-def test_attention_mask_inverts_correctly_and_never_nans():
-    """SDPA's bool mask is the opposite of JAX's additive bias.
-
-    A kept key must contribute and a masked one must not, and an all-masked row
-    must still be finite -- SDPA emits NaN there unless a key is forced.
-    """
-    torch.manual_seed(0)
-    t_attn = T.SelfAttention(HIDDEN, HEADS)
-    j_attn = load(J.SelfAttention(HIDDEN, HEADS, nnx.Rngs(0)), to_jax_tree(t_attn.state_dict()))
-
-    values = np.random.default_rng(3).standard_normal((2, K, HIDDEN), dtype=np.float32)
-    x_t, x_j = torch.from_numpy(values.copy()), jnp.asarray(values)
-    keep = np.array([[1] * K, [1] * 8 + [0] * (K - 8)], dtype=bool)
-    torch_mask = torch.from_numpy(keep)
-    jax_mask = jnp.asarray(keep)
-
-    torch_out = t_attn(x_t, torch_mask)
-    jax_out = j_attn(x_j, jax_mask)
-    assert torch.isfinite(torch_out).all()
-    assert bool(jnp.isfinite(jax_out).all())
-    assert_same(torch_out, jax_out)
-
-    # Masking a key must change the answer: an inverted bias would not.
-    assert not np.allclose(np.asarray(jax_out[1]), np.asarray(j_attn(x_j)[1]))
-
-    # An empty row must still be finite on both sides.
-    empty = np.zeros((2, K), dtype=bool)
-    assert torch.isfinite(t_attn(x_t, torch.from_numpy(empty))).all()
-    assert bool(jnp.isfinite(j_attn(x_j, jnp.asarray(empty))).all())
-
-
-def test_attention_mask_must_match_the_sequence_length():
-    j_attn = J.SelfAttention(HIDDEN, HEADS, nnx.Rngs(0))
-    _, x_j = obs_batch(batch=2, steps=K)
-    with pytest.raises(ValueError):
-        j_attn(x_j, jnp.ones((2, K - 1), dtype=jnp.bool_))
-
-
 # -------------------------------------------------------------------- RunningMeanStd
 
 

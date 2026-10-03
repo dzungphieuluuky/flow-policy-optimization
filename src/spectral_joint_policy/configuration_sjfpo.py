@@ -26,7 +26,8 @@ class SJFPOConfig(PreTrainedConfig):
     action_horizon: int = 16
     n_action_steps: int = 16
     action_perturb_std: float = 0.02
-    hidden_dim: int = 128
+    # Depth, not width, was the deficit: RDT-1B is a width-128 DiT with 31 blocks.
+    hidden_dim: int = 256
 
     num_envs: int = 64
     num_mc_samples: int = 16
@@ -42,8 +43,10 @@ class SJFPOConfig(PreTrainedConfig):
     # batch_size and num_mc_samples are the memory knobs.
     grad_accum_steps: int = 1
 
+    # HDP3 measures the denoising error as saturated after ~2 reverse steps on
+    # robot trajectories, so the 16-step Euler sampler was paying for nothing.
     num_euler_steps: int = 16
-    num_inference_steps: int = 16
+    num_inference_steps: int = 4
     min_timestep: float = 0.005
     max_timestep: float = 0.995
     timestep_sampling_mode: str = "fpo_beta"
@@ -93,11 +96,12 @@ class SJFPOConfig(PreTrainedConfig):
     critic_ema_decay: float = 0.05
 
     use_dct_transform: bool = True
-    # At num_kept_tokens == action_horizon the transform is the full orthonormal DCT,
-    # a rotation of the loss and a no-op up to numerics. Smaller truncates.
-    num_kept_tokens: int = 16
+    # Truncating is the whole point: at num_kept_tokens == action_horizon the
+    # transform is the full orthonormal DCT, a no-op on the loss. HDP3 measures
+    # 98.5% of robot action energy in the first two modes (mode 1 alone 93.2%).
+    num_kept_tokens: int = 4
 
-    dit_depth: int = 2
+    dit_depth: int = 6
     dit_heads: int = 4
     dit_mlp_ratio: float = 4.0
     time_embed_dim: int = 128

@@ -10,15 +10,17 @@ A mean-pool satisfies neither in the way that matters: it ignores order entirely
 so the permutation would be a no-op. That is the failure mode this file exists to
 prevent.
 
-The critic is now a per-member StateEncoder, so it also gets the actor's
-orthonormal DCT of the window. The ensemble property is the load-bearing one here:
-members must not share a trunk, or min-over-members is meaningless.
+The critic is now a per-member SiLU MLP over the flattened window, so the
+window properties are structural rather than incidental: a permuted window is a
+different input vector to the first Linear. The ensemble property is the
+load-bearing one here: members must not share a trunk, or min-over-members is
+meaningless.
 """
 
 import pytest
 import torch
 
-from spectral_joint_policy.networks import Critic, StateEncoder
+from spectral_joint_policy.networks import Critic
 
 OBS, HIDDEN, STEPS = 11, 32, 8
 
@@ -72,19 +74,14 @@ def test_frame_order_matters():
 def test_temporal_frequency_content_is_visible():
     """Two windows with identical per-frame value multisets must separate.
 
-    A mean-pool cannot do this at all. A flatten could, but only by accident:
-    the DCT path is what makes it structural rather than incidental.
+    The flatten makes this structural: a permutation is a different input to
+    the first Linear, and an MLP is not permutation-invariant.
     """
     critic = _critic()
     w = _window()
     shuffled = w[:, torch.randperm(STEPS, generator=torch.Generator().manual_seed(7))]
     torch.testing.assert_close(w.sum(1), shuffled.sum(1))
     assert not torch.allclose(critic(w), critic(shuffled), atol=1e-6)
-
-
-def test_obs_dim_must_allow_a_frequency_encoding():
-    with pytest.raises(ValueError, match="at least 2"):
-        Critic(1, HIDDEN, STEPS)
 
 
 def test_n_obs_steps_must_be_positive():
@@ -95,7 +92,7 @@ def test_n_obs_steps_must_be_positive():
 def test_parameter_count_is_proportionate():
     """The per-member conditioner is the dominant cost; guard against widening it."""
     n = sum(p.numel() for p in Critic(11, 128, 16, 2).parameters())
-    assert n == pytest.approx(217_858, abs=2_000), f"critic is {n} params"
+    assert n == pytest.approx(45_570, abs=2_000), f"critic is {n} params"
 
 
 # --- ensemble -------------------------------------------------------------
@@ -111,18 +108,18 @@ def test_members_are_independent_not_one_wide_mlp():
     w = _window()
     before = critic(w).clone()
     with torch.no_grad():
-        critic.encoders[1].fuse.weight.add_(1.0)
+        critic.networks[1].fc2.weight.add_(1.0)
     after = critic(w)
     torch.testing.assert_close(after[0], before[0])
     assert not torch.allclose(after[1], before[1]), "member 1 did not move at all"
 
 
-def test_per_member_conditioner_has_no_shared_parameters():
+def test_per_member_network_has_no_shared_parameters():
     """The independence above is structural, not just numerically lucky."""
     critic = _critic(seed=3, num_critics=2)
-    assert critic.encoders[0] is not critic.encoders[1]
-    ids = {id(p) for c in critic.encoders for p in c.parameters()}
-    assert len(ids) == sum(1 for c in critic.encoders for p in c.parameters())
+    assert critic.networks[0] is not critic.networks[1]
+    ids = {id(p) for net in critic.networks for p in net.parameters()}
+    assert len(ids) == sum(1 for net in critic.networks for p in net.parameters())
 
 
 def test_permuting_every_member_permutes_the_output():
@@ -131,11 +128,10 @@ def test_permuting_every_member_permutes_the_output():
     w = _window()
     before = critic(w).clone()
     with torch.no_grad():
-        critic.encoders[0], critic.encoders[1] = (
-            critic.encoders[1],
-            critic.encoders[0],
+        critic.networks[0], critic.networks[1] = (
+            critic.networks[1],
+            critic.networks[0],
         )
-        critic.heads[0], critic.heads[1] = critic.heads[1], critic.heads[0]
     after = critic(w)
     torch.testing.assert_close(after[0], before[1])
     torch.testing.assert_close(after[1], before[0])
@@ -150,21 +146,22 @@ def test_members_differ_at_init():
 def test_gradient_reaches_every_member():
     critic = _critic(seed=4, num_critics=2)
     critic(_window()).sum().backward()
-    # Every member's conditioner must carry signal, not just one of them.
-    for conditioner in critic.encoders:
-        grads = [p.grad for p in conditioner.parameters() if p.grad is not None]
+    # Every member must carry signal, not just one of them.
+    for net in critic.networks:
+        grads = [p.grad for p in net.parameters() if p.grad is not None]
         assert grads, "a member received no gradient at all"
         assert sum(g.abs().sum() for g in grads) > 0
 
 
-def test_critic_reuses_the_actor_spectral_path():
-    """The critic and the actor must encode the window the same way.
+def test_critic_member_reads_the_whole_window_at_the_actor_encoder_width():
+    """The critic must encode the window the actor conditions on, at the same width.
 
-    If this drifts, the critic silently becomes a weaker approximator of the
+    If these drift, the critic silently becomes a weaker approximator of the
     policy it is critiquing, which is the failure this design exists to prevent.
     """
-    critic = _critic()
-    assert isinstance(critic.encoders[0], StateEncoder)
+    member = _critic().networks[0]
+    assert member.fc1.in_features == STEPS * OBS
+    assert member.fc1.out_features == HIDDEN
 
 
 def test_num_critics_must_be_positive():

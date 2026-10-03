@@ -1071,11 +1071,15 @@ class SJFPOPolicy(PreTrainedPolicy):
         cond_stats = None
         if compute_info:
             with torch.inference_mode(), autocast_context(device):
-                # 8 chunks x 16 tokens = 128 rows against a 128-wide layer, so the
-                # effective rank is measured on a square-ish matrix. One sample
-                # would give 16 rows, and the rank could not exceed 16.
+                # Keep the rank probe's matrix square-ish: chunk rows x
+                # num_flow_tokens rows against a hidden_dim-wide layer, so the
+                # sample count tracks the token width instead of assuming it.
+                probe = max(1, cfg.hidden_dim // cfg.num_flow_tokens)
                 _, cond_stats = self.actor(
-                    x_t_flat[:8], actor_tau[:8], cond_flat[:8], return_stats=True
+                    x_t_flat[:probe],
+                    actor_tau[:probe],
+                    cond_flat[:probe],
+                    return_stats=True,
                 )
 
         with torch.autocast(device_type=device.type, enabled=False):

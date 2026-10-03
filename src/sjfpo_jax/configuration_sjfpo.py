@@ -63,7 +63,7 @@ class SJFPOConfig:
     action_horizon: int = 16
     n_action_steps: int | None = 16
     action_perturb_std: float = 0.02
-    hidden_dim: int = 128
+    hidden_dim: int = 256
 
     # -- Rollout and batching ----------------------------------------------
     num_envs: int = 64
@@ -75,7 +75,7 @@ class SJFPOConfig:
 
     # -- Flow sampling ------------------------------------------------------
     num_euler_steps: int = 16
-    num_inference_steps: int = 16
+    num_inference_steps: int = 4
     min_timestep: float = 0.005
     max_timestep: float = 0.995
     timestep_sampling_mode: str = "fpo_beta"
@@ -109,10 +109,10 @@ class SJFPOConfig:
 
     # -- Spectral chunk encoding -------------------------------------------
     use_dct_transform: bool = True
-    num_kept_tokens: int = 16
+    num_kept_tokens: int = 4
 
     # -- DiT backbone -------------------------------------------------------
-    dit_depth: int = 2
+    dit_depth: int = 6
     dit_heads: int = 4
     dit_mlp_ratio: float = 4.0
     time_embed_dim: int = 128

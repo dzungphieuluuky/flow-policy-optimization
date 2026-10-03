@@ -54,13 +54,13 @@ def test_the_properties_the_learner_reads_agree():
                  "action_delta_indices", "reward_delta_indices"):
         assert getattr(jax_cfg, name) == getattr(torch_cfg, name), name
     assert jax_cfg.num_mini_batches == 8
-    assert jax_cfg.num_flow_tokens == 16
+    assert jax_cfg.num_flow_tokens == 4
 
 
 def test_num_flow_tokens_ignores_num_kept_tokens_without_the_dct():
     """Without the DCT the token axis is time, so there is nothing to keep."""
     torch_cfg, jax_cfg = TorchConfig(), SJFPOConfig(obs_dim=11, action_dim=2)
-    assert jax_cfg.num_flow_tokens == 16
+    assert jax_cfg.num_flow_tokens == 4
     for cfg in (torch_cfg, jax_cfg):
         cfg.use_dct_transform = False
         cfg.num_kept_tokens = 8
