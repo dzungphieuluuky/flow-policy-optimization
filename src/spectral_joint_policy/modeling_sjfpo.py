@@ -30,7 +30,13 @@ from lerobot.processor.converters import to_tensor
 from lerobot.utils.constants import ACTION, OBS_STATE
 
 from spectral_joint_policy.configuration_sjfpo import SJFPOConfig
-from spectral_joint_policy.collector import RolloutBuffer, collect_chunks, collect_chunks_vec
+from spectral_joint_policy.collector import (
+    RolloutBuffer,
+    collect_chunks,
+    collect_chunks_vec,
+    resolve_action_bounds,
+    scale_and_clip_chunk,
+)
 from spectral_joint_policy.dct_utils import (
     velocity_to_action_steps,
     extract_dct_coeffs,
@@ -45,10 +51,7 @@ from spectral_joint_policy.fpo_core import (
     sample_noise,
     sample_timesteps,
 )
-from spectral_joint_policy.gae import (
-    compute_chunk_advantages,
-    compute_chunk_successors,
-)
+from spectral_joint_policy.gae import compute_chunk_advantages
 from spectral_joint_policy.networks import (
     Critic,
     RunningMeanStd,
@@ -830,28 +833,26 @@ class SJFPOPolicy(PreTrainedPolicy):
         # extra flow sample per env is drawn.
         with torch.inference_mode():
             next_states = active["chunk_next_state"]
-            successor, no_successor = compute_chunk_successors(
-                active["chunk_env_id"][:n_chunks]
-            )
-            # Seeded from the chunk itself so every row is a real action tensor:
-            # an uninitialised row would be garbage, and the backup multiplies it
+            # Seeded from the chunk itself so every row is a real action tensor: an
+            # uninitialised row would be garbage, and the backup multiplies it
             # by ~terminated, and 0 * NaN is NaN.
             boot_actions = actions.clone()
-            if successor.numel():
-                linked = successor >= 0
-                boot_actions[linked] = actions[successor[linked]]
-                # Only a live chunk needs a real proposal: a terminated chunk's
-                # bootstrap is zeroed, so its action never reaches the backup.
-                needs_proposal = no_successor & ~active["chunk_terminated"]
-                if bool(needs_proposal.any()):
-                    boot_actions[needs_proposal] = self.predict_action_chunk(
-                        {
-                            OBS_STATE: to_device_async(
-                                next_states[needs_proposal], device
-                            )
-                        },
-                        zero_sampling=False,
-                    )
+            # Only a live chunk needs a real proposal: a terminated chunk's
+            # bootstrap is zeroed, so its action never reaches the backup.
+            needs_proposal = ~active["chunk_terminated"]
+            if bool(needs_proposal.any()):
+                # predict_action_chunk returns actions in env bounds, while
+                # chunk_actions holds them scaled to [-1, 1]. The critic is fed
+                # the scaled form, so the proposal has to go through the same
+                # affine the collector applies.
+                proposed = self.predict_action_chunk(
+                    {OBS_STATE: to_device_async(next_states[needs_proposal], device)},
+                    zero_sampling=False,
+                )
+                low_t, range_t = resolve_action_bounds(action_low, action_high)
+                boot_actions[needs_proposal] = scale_and_clip_chunk(
+                    proposed, low_t.to(proposed.device), range_t.to(proposed.device)
+                )[1]
 
             all_chunk_normalised_states = self.preprocessor(
                 {OBS_STATE: torch.cat([states, next_states], dim=0)}

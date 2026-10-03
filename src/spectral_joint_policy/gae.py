@@ -27,38 +27,6 @@ from __future__ import annotations
 import torch
 
 
-def compute_chunk_successors(chunk_env_id: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    """Row index of the chunk executed from this chunk's next state.
-
-    Wavefront order puts one env's chunks ``num_envs`` apart, never adjacent, so
-    the same stable ``env_id`` sort the backup uses is what puts them back in
-    temporal order. ``-1`` where the rollout ended before anything was proposed
-    from that next state.
-
-    Returns ``(successor, needs_proposal)``; the mask marks the rows a caller has
-    to supply an action for.
-    """
-    env_id = chunk_env_id.reshape(-1).to(torch.long)
-    n = env_id.numel()
-    device = env_id.device
-    if n == 0:
-        return (
-            torch.empty(0, dtype=torch.long, device=device),
-            torch.zeros(0, dtype=torch.bool, device=device),
-        )
-    order = torch.argsort(env_id, stable=True)
-    sorted_env = env_id[order]
-    successor_sorted = torch.full((n,), -1, dtype=torch.long, device=device)
-    if n > 1:
-        linked = sorted_env[1:] == sorted_env[:-1]
-        successor_sorted[:-1] = torch.where(
-            linked, order[1:], torch.full_like(order[1:], -1)
-        )
-    successor = torch.empty_like(successor_sorted)
-    successor[order] = successor_sorted
-    return successor, successor < 0
-
-
 @torch.no_grad()
 def compute_chunk_advantages(
     step_rewards: torch.Tensor,
