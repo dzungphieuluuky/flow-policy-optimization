@@ -1,12 +1,18 @@
 """Chunk-level GAE: one chunk is one macro-transition.
 
 A chunk is ``h`` open-loop steps, so backup at chunk granularity, not per step.
-Chunk ``i`` at step ``s_i`` running ``h_i`` steps:
+Chunk ``i`` at step ``s_i`` running ``h_i`` steps, with ``a_i`` the chunk it
+executed and ``a_{i+1}`` the chunk the collector executed from
+``s_{s_i + h_i}``:
 
     R_i     = sum_{k < h_i} gamma^k * r_{s_i + k}
-    delta_i = R_i + gamma^{h_i} * (1 - terminated_i) * V(s_{s_i + h_i}) - V(s_{s_i})
+    delta_i = R_i + gamma^{h_i} * (1 - terminated_i) * Q(s_{s_i + h_i}, a_{i+1}) - Q(s_{s_i}, a_i)
     A_i     = delta_i + gamma^{h_i} * lam * continue_i * A_{i+1}
-    return_i = A_i + V(s_{s_i})
+    return_i = A_i + Q(s_{s_i}, a_i)
+
+Both sides condition on the chunk, which is what makes the backup an unbiased
+``h``-step target (Li, Zhou, Levine 2025) rather than an n-step return: the
+Q that produced the rewards is the Q being backed up from.
 
 Timeout keeps the bootstrap. Only real termination zeroes it. The collector
 always ends a chunk on a terminal, so ``~terminated`` matches QC's
@@ -21,11 +27,43 @@ from __future__ import annotations
 import torch
 
 
+def compute_chunk_successors(chunk_env_id: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """Row index of the chunk executed from this chunk's next state.
+
+    Wavefront order puts one env's chunks ``num_envs`` apart, never adjacent, so
+    the same stable ``env_id`` sort the backup uses is what puts them back in
+    temporal order. ``-1`` where the rollout ended before anything was proposed
+    from that next state.
+
+    Returns ``(successor, needs_proposal)``; the mask marks the rows a caller has
+    to supply an action for.
+    """
+    env_id = chunk_env_id.reshape(-1).to(torch.long)
+    n = env_id.numel()
+    device = env_id.device
+    if n == 0:
+        return (
+            torch.empty(0, dtype=torch.long, device=device),
+            torch.zeros(0, dtype=torch.bool, device=device),
+        )
+    order = torch.argsort(env_id, stable=True)
+    sorted_env = env_id[order]
+    successor_sorted = torch.full((n,), -1, dtype=torch.long, device=device)
+    if n > 1:
+        linked = sorted_env[1:] == sorted_env[:-1]
+        successor_sorted[:-1] = torch.where(
+            linked, order[1:], torch.full_like(order[1:], -1)
+        )
+    successor = torch.empty_like(successor_sorted)
+    successor[order] = successor_sorted
+    return successor, successor < 0
+
+
 @torch.no_grad()
 def compute_chunk_advantages(
     step_rewards: torch.Tensor,
-    chunk_value: torch.Tensor,
-    chunk_next_value: torch.Tensor,
+    chunk_q: torch.Tensor,
+    chunk_next_q: torch.Tensor,
     chunk_starts: torch.Tensor,
     chunk_lengths: torch.Tensor,
     *,
@@ -38,21 +76,23 @@ def compute_chunk_advantages(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Chunk-level GAE over a rollout's executed chunks.
 
-    All chunk tensors must be the same length. Returns per-chunk advantages and
-    ``values + advantages``, the value target. ``ValueError`` if ``gamma`` or
-    ``lam`` leaves ``[0, 1]``, or lengths disagree.
+    ``chunk_q[i]`` is Q(s_i, a_i) and ``chunk_next_q[i]`` is Q(s_{i+1}, a_{i+1})
+    for the chunk the collector actually executed from the successor state.
+    Returns per-chunk advantages and ``chunk_q + advantages``, the value
+    target. ``ValueError`` if ``gamma`` or ``lam`` leaves ``[0, 1]``, or lengths
+    disagree.
     """
     if not 0.0 <= gamma <= 1.0:
         raise ValueError(f"gamma must be in [0, 1], got {gamma}")
     if not 0.0 <= lam <= 1.0:
         raise ValueError(f"lam must be in [0, 1], got {lam}")
 
-    device = chunk_value.device
+    device = chunk_q.device
     dtype = torch.float32
 
     rewards = step_rewards.to(device=device, dtype=dtype).reshape(-1)
-    chunk_value = chunk_value.to(device=device, dtype=dtype).reshape(-1)
-    chunk_next_value = chunk_next_value.to(device=device, dtype=dtype).reshape(-1)
+    chunk_q = chunk_q.to(device=device, dtype=dtype).reshape(-1)
+    chunk_next_q = chunk_next_q.to(device=device, dtype=dtype).reshape(-1)
     starts = chunk_starts.to(device=device, dtype=torch.long).reshape(-1)
     lengths = chunk_lengths.to(device=device, dtype=torch.long).reshape(-1)
     terminated = chunk_terminated.to(device=device, dtype=torch.bool).reshape(-1)
@@ -65,8 +105,8 @@ def compute_chunk_advantages(
         ("chunk_terminated", terminated),
         ("chunk_truncated", truncated),
         ("chunk_env_id", env_id),
-        ("chunk_value", chunk_value),
-        ("chunk_next_value", chunk_next_value),
+        ("chunk_q", chunk_q),
+        ("chunk_next_q", chunk_next_q),
     ):
         if tensor.numel() != n_chunks:
             raise ValueError(f"{name} must have {n_chunks} entries, got {tensor.numel()}")
@@ -91,12 +131,12 @@ def compute_chunk_advantages(
     lengths, env_id = lengths[order], env_id[order]
     terminated, truncated = terminated[order], truncated[order]
     chunk_rewards = chunk_rewards[order]
-    chunk_value, chunk_next_value = chunk_value[order], chunk_next_value[order]
+    chunk_q, chunk_next_q = chunk_q[order], chunk_next_q[order]
     same_env_sorted = env_id[1:] == env_id[:-1]
 
     gamma_h = gamma ** lengths.to(dtype)
     # Only real termination kills the bootstrap. A timeout keeps it.
-    delta = chunk_rewards + gamma_h * (~terminated) * chunk_next_value - chunk_value
+    delta = chunk_rewards + gamma_h * (~terminated) * chunk_next_q - chunk_q
 
     continuation_factor = torch.zeros(n_chunks, device=device, dtype=dtype)
     if n_chunks > 1:
@@ -110,4 +150,4 @@ def compute_chunk_advantages(
         advantages[index] = next_advantage
 
     advantages = advantages[unsort]
-    return advantages, advantages + chunk_value[unsort]
+    return advantages, advantages + chunk_q[unsort]

@@ -165,8 +165,8 @@ def test_no_fp32_precision_loss_at_large_offsets():
 
 def test_rejects_out_of_range_discounts():
     args = dict(
-        step_rewards=torch.ones(H), chunk_value=torch.zeros(1),
-        chunk_next_value=torch.zeros(1),
+        step_rewards=torch.ones(H), chunk_q=torch.zeros(1),
+        chunk_next_q=torch.zeros(1),
         chunk_starts=torch.zeros(1, dtype=torch.long),
         chunk_lengths=torch.tensor([H]),
         chunk_terminated=torch.zeros(1, dtype=torch.bool),
@@ -232,13 +232,13 @@ def test_rejects_value_arrays_of_the_wrong_length():
         chunk_env_id=torch.zeros(n, dtype=torch.long),
         chunk_size=4,
     )
-    with pytest.raises(ValueError, match="chunk_value"):
+    with pytest.raises(ValueError, match="chunk_q"):
         compute_chunk_advantages(
-            chunk_value=torch.zeros(16), chunk_next_value=torch.zeros(n), **common
+            chunk_q=torch.zeros(16), chunk_next_q=torch.zeros(n), **common
         )
-    with pytest.raises(ValueError, match="chunk_next_value"):
+    with pytest.raises(ValueError, match="chunk_next_q"):
         compute_chunk_advantages(
-            chunk_value=torch.zeros(n), chunk_next_value=torch.zeros(16), **common
+            chunk_q=torch.zeros(n), chunk_next_q=torch.zeros(16), **common
         )
 
 
@@ -257,12 +257,12 @@ def test_returns_equal_advantages_plus_values_in_raw_space():
 
     chunk_size = 4
     rewards = torch.arange(1, 2 * chunk_size + 1, dtype=torch.float32)
-    chunk_value = torch.tensor([0.0, 5.0])
-    chunk_next_value = torch.tensor([0.0, 5.0])
+    chunk_q = torch.tensor([0.0, 5.0])
+    chunk_next_q = torch.tensor([0.0, 5.0])
     advantages, returns = compute_chunk_advantages(
         rewards,
-        chunk_value,
-        chunk_next_value,
+        chunk_q,
+        chunk_next_q,
         torch.tensor([0, chunk_size]),
         torch.tensor([chunk_size, chunk_size]),
         chunk_terminated=torch.tensor([False, True]),
@@ -272,7 +272,7 @@ def test_returns_equal_advantages_plus_values_in_raw_space():
         gamma=0.99,
         lam=0.95,
     )
-    torch.testing.assert_close(returns, advantages + chunk_value)
+    torch.testing.assert_close(returns, advantages + chunk_q)
 
 
 def test_baseline_subtraction_scales_with_the_value():

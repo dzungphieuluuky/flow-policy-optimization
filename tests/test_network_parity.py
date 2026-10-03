@@ -54,7 +54,7 @@ def build_conditioner(seed=0):
 
 def build_critic(seed=0, num_critics=2, n_obs_steps=16):
     torch.manual_seed(seed)
-    t = T.Critic(OBS, HIDDEN, n_obs_steps, num_critics)
+    t = T.Critic(OBS, HIDDEN, ACTION, n_obs_steps, K, num_critics)
     j = J.Critic(OBS, HIDDEN, n_obs_steps, num_critics, nnx.Rngs(seed))
     return t, j
 
@@ -119,42 +119,51 @@ def test_conditioner_rejects_a_malformed_window():
 
 
 @pytest.mark.parametrize("num_critics", [1, 2, 3])
-@pytest.mark.skip(reason="JAX port lacks frame_pos/freq_pos; torch critic diverged on purpose")
+@pytest.mark.skip(reason="Torch critic is action-conditioned now; the JAX port is not mirrored")
 def test_critic_forward(num_critics):
     t, j = build_critic(num_critics=num_critics)
     obs_t, obs_j = obs_batch()
-    torch_out, jax_out = t(obs_t), j(obs_j)
+    act_t, act_j = action_batch()
+    torch_out, jax_out = t(obs_t, act_t), j(obs_j)
     assert tuple(jax_out.shape) == (num_critics, MC)
     assert_same(torch_out, jax_out)
 
 
-@pytest.mark.skip(reason="JAX port lacks frame_pos/freq_pos; torch critic diverged on purpose")
+@pytest.mark.skip(reason="Torch critic is action-conditioned now; the JAX port is not mirrored")
 def test_critic_members_stay_independent():
     """A shared trunk would leave only a linear map differing, and min() over that
     means nothing -- so the ensemble has to be num_critics full conditioners."""
     t, j = build_critic(num_critics=3)
     obs_t, obs_j = obs_batch()
+    act_t, act_j = action_batch()
     out = np.asarray(j(obs_j))
     assert not np.allclose(out[0], out[1])
     assert not np.allclose(out[1], out[2])
     # And the stack really is the torch ensemble, member for member.
-    assert_same(t(obs_t), out)
+    assert_same(t(obs_t, act_t), out)
 
 
 def test_critic_rejects_a_window_it_was_not_built_for():
-    _, j = build_critic(n_obs_steps=16)
-    _, obs_j = obs_batch()
+    """Torch-side only: the JAX port still takes a bare window."""
+    t, _ = build_critic(n_obs_steps=16)
+    obs_t, _ = obs_batch()
+    act_t, _ = action_batch()
     with pytest.raises(ValueError):
-        j(obs_j[:, :8])
+        t(obs_t[:, :8], act_t)
+    with pytest.raises(ValueError):
+        t(obs_t, act_t[:, : K - 1])
 
 
 def test_critic_gradient_reaches_every_member():
-    t, j = build_critic(num_critics=2)
-    obs_t, obs_j = obs_batch()
-    torch.autograd.grad(t(obs_t).sum(), list(t.parameters()))[0]
-    grads = jax.grad(lambda x: j(x).sum())(obs_j)
-    assert grads.shape == obs_j.shape
-    assert float(jnp.abs(grads).sum()) > 0
+    """Torch-side only, and every branch of the FiLM member."""
+    t, _ = build_critic(num_critics=2)
+    obs_t, _ = obs_batch()
+    act_t, _ = action_batch()
+    torch.autograd.backward(t(obs_t, act_t).sum())
+    for member in t.networks:
+        for branch in (member.state_enc, member.act_enc, member.head):
+            grads = [p.grad for p in branch.parameters() if p.grad is not None]
+            assert grads and sum(g.abs().sum() for g in grads) > 0
 
 
 @pytest.mark.skip(reason="Torch conditioner is now flatten+MLP; JAX port diverged by design")

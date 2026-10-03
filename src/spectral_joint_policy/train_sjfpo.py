@@ -187,11 +187,12 @@ def measure_value_drift(policy, batch, device) -> tuple[torch.Tensor, torch.Tens
     ``value_target_drift``: the same move in value-loss units, a fraction of
     target RMS. Large against V can still be negligible against the return.
     """
-    # boot_observations is stored in the buffer's bf16; the critic's weights are
-    # fp32 and this runs outside autocast, so cast up.
+    # boot_observations and boot_actions are stored in the buffer's storage dtype;
+    # the critic's weights are fp32 and this runs outside autocast, so cast up.
     boot_obs = batch["boot_observations"].to(device=device, dtype=torch.float32)
+    boot_actions = batch["boot_actions"].to(device=device, dtype=torch.float32)
     start = batch["boot_values_start"].to(device).reshape(-1)
-    delta = policy.critic(boot_obs).float().amin(dim=0) - start
+    delta = policy.critic(boot_obs, boot_actions).float().amin(dim=0) - start
     drift_rms = rms(delta)
     return (
         drift_rms / (rms(start) + 1e-8),

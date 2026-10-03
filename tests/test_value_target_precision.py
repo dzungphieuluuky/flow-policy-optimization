@@ -82,17 +82,19 @@ def test_generate_rollout_does_not_cast_the_value_target():
 
 
 def test_drift_diagnostics_take_the_bf16_observations_they_stored():
-    """generate_rollout stores boot_observations in storage_dtype, bf16 on GPU.
+    """generate_rollout stores boot_observations/boot_actions in storage_dtype.
 
     The diagnostics call the fp32-weight critic outside autocast, so they have to
-    cast up themselves. Both metrics come off one forward, and both run on GPU
-    only, so CPU never caught it.
+    cast both up themselves. Both metrics come off one forward, and both run on
+    GPU only, so CPU never caught it.
     """
     policy = _policy()
     obs = torch.randn(3, policy.config.n_obs_steps, 5)
+    actions = torch.randn(3, policy.config.action_horizon, 2)
     batch = {
         "boot_observations": obs.to(torch.bfloat16),
-        "boot_values_start": policy.critic(obs).amin(dim=0).unsqueeze(1),
+        "boot_actions": actions.to(torch.bfloat16),
+        "boot_values_start": policy.critic(obs, actions).amin(dim=0).unsqueeze(1),
         "raw_returns": torch.randn(3),
     }
     boot_delta, target_drift = measure_value_drift(

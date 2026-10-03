@@ -575,10 +575,49 @@ class SJFPOFlowModel(nn.Module):
         return out, stats
 
 
+class CriticMember(nn.Module):
+    """One Q(s, a_{t:t+h}) head: the chunk modulates the state feature.
+
+    FiLM, so Q is not additive in (s, a). QC and DQC both concatenate the
+    chunk onto the state instead; this is a deliberate departure, and the
+    non-additivity is the only reason to prefer it over a wider concat.
+    """
+
+    def __init__(
+        self,
+        obs_dim: int,
+        action_dim: int,
+        hidden_dim: int,
+        n_obs_steps: int,
+        action_horizon: int,
+    ):
+        super().__init__()
+        if action_dim < 1:
+            raise ValueError("action_dim must be positive")
+        if action_horizon < 1:
+            raise ValueError(f"action_horizon must be positive, got {action_horizon}")
+        self.obs_dim = obs_dim
+        self.action_dim = action_dim
+        self.n_obs_steps = n_obs_steps
+        self.action_horizon = action_horizon
+        self.state_enc = CondMLP(n_obs_steps * obs_dim, hidden_dim, hidden_dim)
+        self.act_enc = CondMLP(action_horizon * action_dim, hidden_dim, 2 * hidden_dim)
+        self.head = CondMLP(hidden_dim, hidden_dim, 1)
+
+    def forward(self, states: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
+        """``[B, T, obs]`` and ``[B, H, action_dim]`` -> ``[B]``."""
+        h = self.state_enc(states.flatten(1))
+        shift, scale = self.act_enc(actions.flatten(1)).chunk(2, dim=-1)
+        return self.head(h * (1 + scale) + shift).squeeze(-1)
+
+
 class Critic(nn.Module):
-    """V(s) over the full window. ``[num_critics, B]``, unaggregated: caller
-    picks ``min`` for the GAE backup, ``mean`` for the value loss. ``min``
+    """Q(s_t, a_{t:t+h}) over the full window. ``[num_critics, B]``, unaggregated:
+    caller picks ``min`` for the GAE backup, ``mean`` for the value loss. ``min``
     inside a loss would only train the lowest member.
+
+    The chunk is the executed action sequence, so Q is the value of the actions
+    the environment actually took -- the target QC backs up to.
 
     Members must stay independent or the ensemble is worthless: a shared trunk
     leaves only a linear map differing, and ``min`` over that means nothing.
@@ -588,7 +627,9 @@ class Critic(nn.Module):
         self,
         obs_dim: int,
         hidden_dim: int,
-        n_obs_steps: int = 1,
+        action_dim: int,
+        n_obs_steps: int,
+        action_horizon: int,
         num_critics: int = 1,
     ):
         super().__init__()
@@ -601,17 +642,26 @@ class Critic(nn.Module):
         if num_critics < 1:
             raise ValueError(f"num_critics must be >= 1, got {num_critics}")
         self.obs_dim = obs_dim
+        self.action_dim = action_dim
         self.n_obs_steps = n_obs_steps
+        self.action_horizon = action_horizon
         self.num_critics = num_critics
         self.networks = nn.ModuleList(
-            [CondMLP(n_obs_steps * obs_dim, hidden_dim, 1) for _ in range(num_critics)]
+            [
+                CriticMember(
+                    obs_dim, action_dim, hidden_dim, n_obs_steps, action_horizon
+                )
+                for _ in range(num_critics)
+            ]
         )
 
-    def forward(self, states: torch.Tensor) -> torch.Tensor:
-        """``[B, T, obs]`` -> ``[num_critics, B]``.
+    def forward(
+        self, states: torch.Tensor, actions: torch.Tensor
+    ) -> torch.Tensor:
+        """``[B, T, obs]``, ``[B, H, action_dim]`` -> ``[num_critics, B]``.
 
-        ``ValueError`` if rank != 3, ``obs_dim`` mismatched, or
-        ``T != n_obs_steps``.
+        ``ValueError`` if rank != 3, ``obs_dim``/``action_dim`` mismatch, or
+        ``T != n_obs_steps`` / ``H != action_horizon``.
         """
         if states.dim() != 3:
             raise ValueError(
@@ -627,5 +677,22 @@ class Critic(nn.Module):
                 f"for n_obs_steps={self.n_obs_steps}; the collector builds windows "
                 "to the declared length"
             )
-        window = states.flatten(1)
-        return torch.stack([net(window).squeeze(-1) for net in self.networks])
+        if actions.dim() != 3:
+            raise ValueError(
+                f"actions must have shape [B, H, action_dim], got {tuple(actions.shape)}"
+            )
+        if actions.shape[0] != states.shape[0]:
+            raise ValueError(
+                f"actions batch {actions.shape[0]} != states batch {states.shape[0]}"
+            )
+        if actions.shape[1] != self.action_horizon:
+            raise ValueError(
+                f"actions has {actions.shape[1]} steps but the critic was built "
+                f"for action_horizon={self.action_horizon}"
+            )
+        if actions.shape[2] != self.action_dim:
+            raise ValueError(
+                f"actions feature dimension must be {self.action_dim}, "
+                f"got {actions.shape[2]}"
+            )
+        return torch.stack([net(states, actions) for net in self.networks])

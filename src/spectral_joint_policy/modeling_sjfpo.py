@@ -45,7 +45,10 @@ from spectral_joint_policy.fpo_core import (
     sample_noise,
     sample_timesteps,
 )
-from spectral_joint_policy.gae import compute_chunk_advantages
+from spectral_joint_policy.gae import (
+    compute_chunk_advantages,
+    compute_chunk_successors,
+)
 from spectral_joint_policy.networks import (
     Critic,
     RunningMeanStd,
@@ -208,7 +211,12 @@ class SJFPOPolicy(PreTrainedPolicy):
         )
         self.encoder = StateEncoder(obs_dim, config.hidden_dim, config.n_obs_steps)
         self.critic = Critic(
-            obs_dim, config.hidden_dim, config.n_obs_steps, config.num_critics
+            obs_dim,
+            config.hidden_dim,
+            action_dim,
+            config.n_obs_steps,
+            config.action_horizon,
+            config.num_critics,
         )
         self.obs_normalizer = RunningMeanStd(obs_dim)
 
@@ -814,33 +822,63 @@ class SJFPOPolicy(PreTrainedPolicy):
         # the critic and preprocessor see 2 * n_chunks windows, not 2 * n_steps.
         # The obs normalizer updates separately from raw frames via
         # normalizer_observations.
+        # The bootstrap chunk. For every chunk but a rollout tail this is the
+        # chunk the collector actually executed from the successor state -- the
+        # successor row, found by the same env_id sort the backup uses. A tail
+        # chunk was cut by the budget, so nothing was ever proposed from its
+        # next state; QC's target wants a chunk from the policy there, so one
+        # extra flow sample per env is drawn.
         with torch.inference_mode():
             next_states = active["chunk_next_state"]
+            successor, no_successor = compute_chunk_successors(
+                active["chunk_env_id"][:n_chunks]
+            )
+            # Seeded from the chunk itself so every row is a real action tensor:
+            # an uninitialised row would be garbage, and the backup multiplies it
+            # by ~terminated, and 0 * NaN is NaN.
+            boot_actions = actions.clone()
+            if successor.numel():
+                linked = successor >= 0
+                boot_actions[linked] = actions[successor[linked]]
+                # Only a live chunk needs a real proposal: a terminated chunk's
+                # bootstrap is zeroed, so its action never reaches the backup.
+                needs_proposal = no_successor & ~active["chunk_terminated"]
+                if bool(needs_proposal.any()):
+                    boot_actions[needs_proposal] = self.predict_action_chunk(
+                        {
+                            OBS_STATE: to_device_async(
+                                next_states[needs_proposal], device
+                            )
+                        },
+                        zero_sampling=False,
+                    )
+
             all_chunk_normalised_states = self.preprocessor(
                 {OBS_STATE: torch.cat([states, next_states], dim=0)}
             )[OBS_STATE]
             normalised_states = all_chunk_normalised_states[:n_chunks]
+            normalised_next_states = all_chunk_normalised_states[n_chunks:]
             with autocast_context(device):
-                all_chunk_values = self.critic(all_chunk_normalised_states).float()
+                chunk_q = self.critic(normalised_states, actions).float().amin(dim=0)
             # min over the ensemble, backup only. The loss trains every member
-            # separately: min has no case inside a V loss, no max to counteract,
-            # so it would only bias V low.
-            chunk_value = all_chunk_values[:, :n_chunks].amin(dim=0)
+            # separately: min has no case inside a Q loss, no max to counteract,
+            # so it would only bias Q low.
             if cfg.use_target_critic:
                 with torch.inference_mode(), autocast_context(device):
-                    boot_values = self.target_critic(all_chunk_normalised_states[n_chunks:]).float()
-                chunk_next_value = boot_values.amin(dim=0)
+                    boot_q = self.target_critic(
+                        normalised_next_states, boot_actions
+                    ).float().amin(dim=0)
             else:
-                chunk_next_value = all_chunk_values[:, n_chunks:].amin(dim=0)
+                boot_q = chunk_q
 
         # One chunk is one macro-transition: sum the chunk's rewards, discount
-        # gamma ** h. One space throughout, as rsl-rl: V predicts raw returns and the
-        # target is the raw return, so V is the true expected return. No return
-        # normalizer; the only normalisation is the advantage whitening below.
+        # gamma ** h. One space throughout, as rsl-rl: Q predicts raw returns and
+        # the target is the raw return, so Q is the true expected return. No
+        # return normalizer; the only normalisation is the advantage whitening.
         raw_advantages, raw_returns = compute_chunk_advantages(
             all_rewards,
-            chunk_value,
-            chunk_next_value,
+            chunk_q,
+            boot_q,
             chunk_starts,
             lengths,
             chunk_terminated=active["chunk_terminated"],
@@ -850,7 +888,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             gamma=cfg.gamma,
             lam=cfg.gae_lambda,
         )
-        raw_values = chunk_value.detach()
+        raw_values = chunk_q.detach()
         normalised_advantages = raw_advantages
         # Population std, matching returns_var. The unbiased default is NaN at a
         # single chunk, which a short final rollout produces, and inflates by
@@ -923,7 +961,8 @@ class SJFPOPolicy(PreTrainedPolicy):
             # the targets were built with. With a target critic that gap is the
             # price of the slow teacher; without one it is the target's drift.
             "boot_observations": all_chunk_normalised_states[n_chunks:].to(storage_dtype),
-            "boot_values_start": chunk_next_value.unsqueeze(1),
+            "boot_actions": boot_actions.to(storage_dtype),
+            "boot_values_start": boot_q.unsqueeze(1),
             "mc_tau": tau,
             "mc_eps": eps,
             "chunk_clip_counts": chunk_clip_counts,
@@ -1101,7 +1140,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             policy_per_chunk = -surrogate.mean(dim=1)
 
         with autocast_context(device):
-            raw_value_pred = self.critic(states).float()  # [num_critics, n]
+            raw_value_pred = self.critic(states, actions).float()  # [num_critics, n]
         raw_returns_flat = raw_returns.reshape(-1)
         if raw_value_pred.shape[-1] != raw_returns_flat.shape[0]:
             raise ValueError(
