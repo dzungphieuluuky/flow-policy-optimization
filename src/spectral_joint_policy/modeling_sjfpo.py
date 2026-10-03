@@ -50,7 +50,7 @@ from spectral_joint_policy.networks import (
     Critic,
     RunningMeanStd,
     SJFPOFlowModel,
-    StateConditioner,
+    StateEncoder,
 )
 from spectral_joint_policy.processor_sjfpo import make_sjfpo_pre_post_processors
 from spectral_joint_policy.utils import (
@@ -206,7 +206,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             config.time_embed_dim,
             config.timestep_scale,
         )
-        self.conditioner = StateConditioner(obs_dim, config.hidden_dim)
+        self.encoder = StateEncoder(obs_dim, config.hidden_dim, config.n_obs_steps)
         self.critic = Critic(
             obs_dim, config.hidden_dim, config.n_obs_steps, config.num_critics
         )
@@ -221,8 +221,8 @@ class SJFPOPolicy(PreTrainedPolicy):
 
 
         self.old_actor = copy.deepcopy(self.actor).requires_grad_(False).eval()
-        self.old_conditioner = (
-            copy.deepcopy(self.conditioner).requires_grad_(False).eval()
+        self.old_encoder = (
+            copy.deepcopy(self.encoder).requires_grad_(False).eval()
         )
         # Polyak target for the GAE bootstrap, following qc and TD-JEPA. Kept even
         # when use_target_critic is False so the flag does not change the module's
@@ -248,7 +248,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         """Set the module mode, frozen snapshot stays in eval. Chains."""
         super().train(mode)
         self.old_actor.eval()
-        self.old_conditioner.eval()
+        self.old_encoder.eval()
         return self
 
     def reset(self):
@@ -310,12 +310,12 @@ class SJFPOPolicy(PreTrainedPolicy):
         ``copy.deepcopy``-ing the live ones over them.
         """
         self.old_actor.load_state_dict(self.actor.state_dict())
-        self.old_conditioner.load_state_dict(self.conditioner.state_dict())
+        self.old_encoder.load_state_dict(self.encoder.state_dict())
 
         self.old_actor.requires_grad_(False)
         self.old_actor.eval()
-        self.old_conditioner.requires_grad_(False)
-        self.old_conditioner.eval()
+        self.old_encoder.requires_grad_(False)
+        self.old_encoder.eval()
 
     @torch.inference_mode()
     def update_ema(self, global_step: int) -> None:
@@ -455,7 +455,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             "params": [
                 {"params": decay, "lr": policy_lr},
                 {"params": no_decay, "weight_decay": 0.0, "lr": policy_lr},
-                {"params": list(self.conditioner.parameters()), "lr": policy_lr},
+                {"params": list(self.encoder.parameters()), "lr": policy_lr},
             ]
         }
 
@@ -549,7 +549,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         actor = self.actor
 
         with torch.inference_mode(), autocast_context(device):
-            condition = self.conditioner(states)
+            condition = self.encoder(states)
             shape = (states.shape[0], num_spectral_tokens_kept, action_dim)
             # zero_sampling starts the flow at eps=0, which is what FPO++ uses for eval
             # and for the reported metrics. Otherwise start from sampled noise, drawn
@@ -668,7 +668,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         x_t = compute_mc_xt(flatten_timestep, flatten_mc_noise, flatten_mc_action, flow_shape)
         actor_tau = flatten_timestep.squeeze(-1)
         with torch.inference_mode(), autocast_context(actions.device):
-            condition = self.old_conditioner(normalised_states)
+            condition = self.old_encoder(normalised_states)
             condition_flat = einx.id(
                 "n d -> n m d", condition, m=num_mc
             ).reshape(num_mc * condition.shape[0], condition.shape[-1])
@@ -1036,7 +1036,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         with autocast_context(device):
             cond_flat = einx.id(
                 "n m d -> (n m) d",
-                einx.id("n d -> n m d", self.conditioner(states), m=num_mc),
+                einx.id("n d -> n m d", self.encoder(states), m=num_mc),
             )
         if "behavior_cfm_loss" not in batch or "behavior_cfm_loss_token" not in batch:
             raise KeyError(

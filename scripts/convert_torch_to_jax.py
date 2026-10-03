@@ -9,13 +9,13 @@
 
 What it reads, and why (JAX_MIGRATION.md §8):
 
-* ``model.safetensors`` -- live ``actor.*`` / ``conditioner.*`` / ``critic.*`` /
-  ``obs_normalizer.*``. The frozen ``old_actor``, ``old_conditioner`` and
+* ``model.safetensors`` -- live ``actor.*`` / ``encoder.*`` / ``critic.*`` /
+  ``obs_normalizer.*``. The frozen ``old_actor``, ``old_encoder`` and
   ``target_critic`` are **not** in the file and are not needed: the snapshot is
   refreshed once per rollout, and the target critic is a Polyak shadow that
   hard-copies from the critic on its first update.
 * ``optimizer.pt`` -- one AdamW ``state_dict`` over four param groups
-  (actor-decay, actor-no-decay, conditioner, critic), with ``state`` keyed by a
+  (actor-decay, actor-no-decay, encoder, critic), with ``state`` keyed by a
   **flat index** that runs through the groups in order. The moments are mapped
   onto the optax tree, so a resumed run continues the trajectory rather than
   restarting every moment from zero.
@@ -69,7 +69,7 @@ ADAMW_AT = 1
 # down; ``tests/torch_jax_weights.py`` is the same function and a test asserts
 # the two agree.
 
-STACKED = {"conditioners": "conditioners", "heads": "head"}
+STACKED = {"encoders": "conditioners", "heads": "head"}
 
 
 def rename_leaf(path: str, array) -> str:
@@ -247,7 +247,7 @@ def observed_dims(weights: dict) -> tuple[int, int]:
     weight puts the obs width on the *input* axis. ``out`` is
     ``hidden_dim -> action_dim``, so the action width is its output axis.
     """
-    obs_dim = int(weights["critic.conditioners.0.frame_proj.weight"].shape[1])
+    obs_dim = int(weights["critic.encoders.0.frame_proj.weight"].shape[1])
     action_dim = int(weights["actor.out.weight"].shape[0])
     return obs_dim, action_dim
 
@@ -271,14 +271,14 @@ def convert(src: Path, dst: Path) -> int:
 
     model_sd = {k: v for k, v in weights.items() if not k.startswith("obs_normalizer.")}
     # One call per module, with the module prefix stripped, because ``stack``
-    # names path segments *inside* a module: "critic.conditioners.0.x" has to
+    # names path segments *inside* a module: "critic.encoders.0.x" has to
     # arrive as "conditioners.0.x" or the member index is never dropped and the
     # critic ends up unstacked.
     trees, name_to_flat = {}, {}
     for module, stack in (
         ("actor", ()),
-        ("conditioner", ()),
-        ("critic", ("conditioners", "heads")),
+        ("encoder", ()),
+        ("critic", ("encoders", "heads")),
     ):
         prefix = f"{module}."
         sub_sd = {k[len(prefix):]: v for k, v in model_sd.items() if k.startswith(prefix)}
@@ -317,7 +317,7 @@ def convert(src: Path, dst: Path) -> int:
 
 
 def _load_from_tree(state, tree: dict, weights: dict):
-    for name in ("actor", "conditioner", "critic"):
+    for name in ("actor", "encoder", "critic"):
         state = state.replace(**{name: load_pair(getattr(state, name), tree[name])})
     normalizer = state.obs_normalizer
     saved = {k[len("obs_normalizer."):]: v for k, v in weights.items() if k.startswith("obs_normalizer.")}

@@ -98,7 +98,7 @@ def save_policy_checkpoint(
         name: tensor
         for name, tensor in policy.state_dict().items()
         if not name.startswith(
-            ("old_actor.", "old_conditioner.", "target_critic.")
+            ("old_actor.", "old_encoder.", "target_critic.")
         )
     }
     if ema_state is not None and policy.ema_ready(global_step):

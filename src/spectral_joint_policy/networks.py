@@ -5,10 +5,9 @@ Key facts:
   ``_uninitialised`` non-persistent so old checkpoints load.
 * ``RunningMeanStd.forward``: out dtype = in dtype. No silent fp32 promote.
 * ``_RMSNorm``: reduce in fp32, take ``dtype=`` at build, never touch ``.data``.
-* ``StateConditioner``: per-frame MLP + DCT branch. No window attention.
-* ``SelfAttention``: ``[B, L]`` key-padding mask, 1 = keep. Inverts for SDPA,
-  whose bool mask is the opposite of HF. Empty row is forced to keep key 0,
-  else NaN.
+* ``StateEncoder``: frame tokens -> 1 self-attention -> mean-pool; DCT coeffs concat at fuse.
+* ``SelfAttention``: ``[B, L]`` key-padding mask, 1 = keep. NaN rows
+  (all-masked) zeroed after SDPA.
 * ``temb`` broadcast, not ``expand``: a scalar ``t`` runs the time MLP once.
 
 Speed:
@@ -78,7 +77,7 @@ class SwiGLU(nn.Module):
         self.down = nn.Linear(hidden_dim, out_dim)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Gated GELU. ``[..., in_dim]`` -> ``[..., hidden_dim]``."""
+        """Gated SiLU. ``[..., in_dim]`` -> ``[..., out_dim]``."""
         g, u = self.gate_up(x).chunk(2, dim=-1)
         return self.down(F.silu(g) * u)
 
@@ -121,7 +120,7 @@ class SinusoidalEncoding(nn.Module):
             self._freq_cache.move_to_end(device)
             return cached
         i = torch.arange(self.half, device=device, dtype=torch.float32)
-        cached = torch.exp(-math.log(10000.0) * i / max(self.half - 1, 1))
+        cached = torch.exp(-math.log(10000.0) * i / max(self.half, 1))
         self._freq_cache[device] = cached
         if len(self._freq_cache) > 4:
             self._freq_cache.popitem(last=False)
@@ -159,8 +158,7 @@ class SinusoidalEncoding(nn.Module):
 
 class SelfAttention(nn.Module):
     """SDPA self-attention. ``attention_mask`` ``[B, L]`` key-padding, 1 = keep.
-    Only that mask shape: arbitrary query/key masks unsupported, and an
-    all-masked row NaNs unless key 0 is forced."""
+    All-masked rows NaN from SDPA; zeroed after."""
 
     def __init__(self, hidden_dim: int, n_heads: int):
         super().__init__()
@@ -180,8 +178,8 @@ class SelfAttention(nn.Module):
         x: torch.Tensor,
         attention_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """Self-attention. ``attention_mask`` ``[B, L]``, 1 = keep. HF inverts
-        SDPA's mask, so invert first; all-masked row NaNs, so force one key."""
+        """Self-attention. ``attention_mask`` ``[B, L]``, 1 = keep. All-masked
+        rows NaN from SDPA; zeroed after."""
         if x.dim() != 3:
             raise ValueError(f"x must have shape [B, L, D], got {tuple(x.shape)}")
         b, l, _ = x.shape
@@ -208,10 +206,12 @@ class SelfAttention(nn.Module):
                     f"attention_mask must have shape [B, L] = {(b, l)}, "
                     f"got {tuple(keep.shape)}"
                 )
-            keep[:, 0] = True
             mask = keep[:, None, None, :]
 
         y = F.scaled_dot_product_attention(q, k, v, attn_mask=mask)
+        # Fully-masked rows come back NaN from SDPA; zero them instead of
+        # forcing key 0 to be kept (which contaminates every row).
+        y = torch.nan_to_num(y, 0.0)
         y = y.transpose(1, 2).reshape(b, l, h * d)
         return self.out(y)
 
@@ -328,35 +328,15 @@ class DiTBlock(nn.Module):
     ) -> torch.Tensor | tuple[torch.Tensor, dict[str, torch.Tensor]]:
         """Run the DiT stack over the action tokens.
 
-        Layout ``[B, K, D_a, H]``: attention runs over the K action tokens per
-        action dim. Modulation head is zero-init (adaLN-Zero), so the stack
-        starts as identity.
+        Layout ``[B, K, H]``: attention runs over the K action tokens.
+        Modulation head is zero-init (adaLN-Zero), so the stack starts
+        as identity.
         """
-        coordinate_axis = x.dim() == 4
-        token_axis = not coordinate_axis and c.dim() == 3
+        if x.dim() != 3:
+            raise ValueError(f"x must have shape [B, K, H], got {tuple(x.shape)}")
+        token_axis = c.dim() == 3
         b = c.shape[0]
-        if coordinate_axis:
-            _, k, action_axis, _ = x.shape
-            parts = self.adaLN(c).view(b, k, action_axis, 6, -1)
-            (
-                shift_msa,
-                scale_msa,
-                gate_msa,
-                shift_mlp,
-                scale_mlp,
-                gate_mlp,
-            ) = parts.unbind(dim=3)
-            h = modulate(self.norm1(x), shift_msa, scale_msa)
-            h_attn = h.permute(0, 2, 1, 3).reshape(
-                b * action_axis, k, h.shape[-1]
-            )
-            attn_out = self.attn(h_attn)
-            attn_out = attn_out.reshape(b, action_axis, k, -1).permute(0, 2, 1, 3)
-            x = x + gate_msa * attn_out
-            out = x + gate_mlp * self.mlp(
-                modulate(self.norm2(x), shift_mlp, scale_mlp)
-            )
-        elif token_axis:
+        if token_axis:
             _, k, _ = x.shape
             parts = self.adaLN(c).view(b, k, 6, -1)
             (
@@ -396,56 +376,52 @@ class DiTBlock(nn.Module):
         return out, stats
 
 
-class StateConditioner(nn.Module):
-    """Fuse mean-pooled per-frame state with DCT-frequency features.
+class StateEncoder(nn.Module):
+    """Frame tokens -> 1 self-attention over T -> mean-pool; flattened DCT
+    coeffs concat to the pooled feature before the final Linear."""
 
-    Raw path is per-frame MLP + mean-pool, not attention: the spectral branch
-    encodes time and the caller mean-pools anyway.
-
-    Known limit: ``freq_encoding`` runs on the feature axis, then mean-pools
-    over frequency, so bins get no identity. See REPORT.md item 11.
-
-    ``frame_norm`` covers the frame path. It was the one unnormalised trunk in
-    the model; Lyle et al. (2024) rank norm above resets and
-    Shrink-and-Perturb. A pre-frame_norm checkpoint will not resume.
-    """
-
-    def __init__(self, obs_dim: int, hidden_dim: int):
+    def __init__(self, obs_dim: int, hidden_dim: int, max_obs_steps: int):
         super().__init__()
         if obs_dim < 2:
-            raise ValueError("StateConditioner obs_dim must be at least 2")
+            raise ValueError("StateEncoder obs_dim must be at least 2")
         if hidden_dim < 2:
             raise ValueError("hidden_dim must be at least 2")
+        if max_obs_steps < 1:
+            raise ValueError(f"max_obs_steps must be >= 1, got {max_obs_steps}")
         self.obs_dim = obs_dim
+        self.max_obs_steps = max_obs_steps
+        n_heads = max(1, hidden_dim // 32)
         self.frame_proj = nn.Linear(obs_dim, hidden_dim)
-        self.frame_norm = build_rms_norm(hidden_dim)
-        self.frame_mlp = SwiGLU(hidden_dim, 4 * hidden_dim, hidden_dim)
-        self.freq_norm = build_rms_norm(obs_dim)
-        self.freq_encoding = SinusoidalEncoding(obs_dim)
-        self.key_proj = nn.Linear(obs_dim, hidden_dim)
-        self.fuse = nn.Linear(2 * hidden_dim, hidden_dim)
+        self.frame_pos = nn.Parameter(torch.zeros(1, max_obs_steps, hidden_dim))
+        nn.init.normal_(self.frame_pos, std=0.02)
+        self.norm = build_rms_norm(hidden_dim)
+        self.attn = SelfAttention(hidden_dim, n_heads)
+        self.fuse = nn.Linear(hidden_dim + max_obs_steps * obs_dim, hidden_dim)
 
     def forward(self, states: torch.Tensor) -> torch.Tensor:
-        """Window ``[B, T, obs]`` -> one ``[B, D]`` conditioning vector.
-
-        ``ValueError`` if rank != 3, batch or time dim < 1, or ``obs_dim``
-        disagrees with the config.
-        """
+        """Window ``[B, T, obs]`` -> one ``[B, hidden]`` conditioning vector."""
         if states.dim() != 3:
             raise ValueError(
                 f"states must have shape [B, T, obs], got {tuple(states.shape)}"
-            )   
-        if states.shape[0] < 1 or states.shape[1] < 1:
-            raise ValueError("states must have positive batch and time dimensions")
+            )
+        if states.shape[0] < 1:
+            raise ValueError("states must have a positive batch dimension")
         if states.shape[2] != self.obs_dim:
             raise ValueError(
                 f"states feature dimension must be {self.obs_dim}, got {states.shape[2]}"
             )
-        raw = self.frame_mlp(self.frame_norm(self.frame_proj(states))).mean(dim=1)
+        T = states.shape[1]
+        if T != self.max_obs_steps:
+            raise ValueError(
+                f"states has {T} time steps, this encoder was built for "
+                f"max_obs_steps={self.max_obs_steps}"
+            )
+        h = self.frame_proj(states) + self.frame_pos
+        h = h + self.attn(self.norm(h))
+        pooled = h.mean(dim=1)
         # num_modes == T keeps every frequency, the whole orthonormal transform.
-        coeffs = extract_dct_coeffs(states, num_modes=states.shape[1])
-        spec = self.key_proj(self.freq_encoding(self.freq_norm(coeffs))).mean(dim=1)
-        return self.fuse(torch.cat([raw, spec], dim=-1))
+        coeffs = extract_dct_coeffs(states, num_modes=T).flatten(1)
+        return self.fuse(torch.cat([pooled, coeffs], dim=-1))
 
 
 class SJFPOFlowModel(nn.Module):
@@ -655,8 +631,8 @@ class Critic(nn.Module):
         self.obs_dim = obs_dim
         self.n_obs_steps = n_obs_steps
         self.num_critics = num_critics
-        self.conditioners = nn.ModuleList(
-            [StateConditioner(obs_dim, hidden_dim) for _ in range(num_critics)]
+        self.encoders = nn.ModuleList(
+            [StateEncoder(obs_dim, hidden_dim, n_obs_steps) for _ in range(num_critics)]
         )
         self.heads = nn.ModuleList(
             [nn.Linear(hidden_dim, 1) for _ in range(num_critics)]
@@ -685,6 +661,6 @@ class Critic(nn.Module):
         return torch.stack(
             [
                 head(conditioner(states)).squeeze(-1)
-                for conditioner, head in zip(self.conditioners, self.heads)
+                for conditioner, head in zip(self.encoders, self.heads)
             ]
         )

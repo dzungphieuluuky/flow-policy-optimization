@@ -10,7 +10,7 @@ A mean-pool satisfies neither in the way that matters: it ignores order entirely
 so the permutation would be a no-op. That is the failure mode this file exists to
 prevent.
 
-The critic is now a per-member StateConditioner, so it also gets the actor's
+The critic is now a per-member StateEncoder, so it also gets the actor's
 orthonormal DCT of the window. The ensemble property is the load-bearing one here:
 members must not share a trunk, or min-over-members is meaningless.
 """
@@ -18,7 +18,7 @@ members must not share a trunk, or min-over-members is meaningless.
 import pytest
 import torch
 
-from spectral_joint_policy.networks import Critic, StateConditioner
+from spectral_joint_policy.networks import Critic, StateEncoder
 
 OBS, HIDDEN, STEPS = 11, 32, 8
 
@@ -95,7 +95,7 @@ def test_n_obs_steps_must_be_positive():
 def test_parameter_count_is_proportionate():
     """The per-member conditioner is the dominant cost; guard against widening it."""
     n = sum(p.numel() for p in Critic(11, 128, 16, 2).parameters())
-    assert n == pytest.approx(467_736, abs=2_000), f"critic is {n} params"
+    assert n == pytest.approx(217_858, abs=2_000), f"critic is {n} params"
 
 
 # --- ensemble -------------------------------------------------------------
@@ -111,7 +111,7 @@ def test_members_are_independent_not_one_wide_mlp():
     w = _window()
     before = critic(w).clone()
     with torch.no_grad():
-        critic.conditioners[1].fuse.weight.add_(1.0)
+        critic.encoders[1].fuse.weight.add_(1.0)
     after = critic(w)
     torch.testing.assert_close(after[0], before[0])
     assert not torch.allclose(after[1], before[1]), "member 1 did not move at all"
@@ -120,9 +120,9 @@ def test_members_are_independent_not_one_wide_mlp():
 def test_per_member_conditioner_has_no_shared_parameters():
     """The independence above is structural, not just numerically lucky."""
     critic = _critic(seed=3, num_critics=2)
-    assert critic.conditioners[0] is not critic.conditioners[1]
-    ids = {id(p) for c in critic.conditioners for p in c.parameters()}
-    assert len(ids) == sum(1 for c in critic.conditioners for p in c.parameters())
+    assert critic.encoders[0] is not critic.encoders[1]
+    ids = {id(p) for c in critic.encoders for p in c.parameters()}
+    assert len(ids) == sum(1 for c in critic.encoders for p in c.parameters())
 
 
 def test_permuting_every_member_permutes_the_output():
@@ -131,9 +131,9 @@ def test_permuting_every_member_permutes_the_output():
     w = _window()
     before = critic(w).clone()
     with torch.no_grad():
-        critic.conditioners[0], critic.conditioners[1] = (
-            critic.conditioners[1],
-            critic.conditioners[0],
+        critic.encoders[0], critic.encoders[1] = (
+            critic.encoders[1],
+            critic.encoders[0],
         )
         critic.heads[0], critic.heads[1] = critic.heads[1], critic.heads[0]
     after = critic(w)
@@ -151,7 +151,7 @@ def test_gradient_reaches_every_member():
     critic = _critic(seed=4, num_critics=2)
     critic(_window()).sum().backward()
     # Every member's conditioner must carry signal, not just one of them.
-    for conditioner in critic.conditioners:
+    for conditioner in critic.encoders:
         grads = [p.grad for p in conditioner.parameters() if p.grad is not None]
         assert grads, "a member received no gradient at all"
         assert sum(g.abs().sum() for g in grads) > 0
@@ -164,7 +164,7 @@ def test_critic_reuses_the_actor_spectral_path():
     policy it is critiquing, which is the failure this design exists to prevent.
     """
     critic = _critic()
-    assert isinstance(critic.conditioners[0], StateConditioner)
+    assert isinstance(critic.encoders[0], StateEncoder)
 
 
 def test_num_critics_must_be_positive():

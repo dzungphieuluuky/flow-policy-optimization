@@ -15,7 +15,7 @@ import jax.numpy as jnp
 import numpy as np
 from flax import nnx
 
-STACKED = {"conditioners": "conditioners", "heads": "head"}
+STACKED = {"encoders": "conditioners", "heads": "head"}
 
 
 def rename_leaf(path: str, array) -> str:
