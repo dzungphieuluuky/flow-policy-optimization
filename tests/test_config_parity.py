@@ -93,7 +93,7 @@ def test_it_stays_a_plain_dataclass():
     """draccus parses it and `build_tracker` calls `dataclasses.asdict`."""
     assert dataclasses.is_dataclass(SJFPOConfig)
     as_dict = dataclasses.asdict(SJFPOConfig(obs_dim=11, action_dim=2))
-    assert isinstance(as_dict, dict) and as_dict["policy_lr"] == 1e-5
+    assert isinstance(as_dict, dict) and as_dict["policy_lr"] == 1e-4
 
 
 def test_it_does_not_import_torch():

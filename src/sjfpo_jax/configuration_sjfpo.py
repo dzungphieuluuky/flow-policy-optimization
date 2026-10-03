@@ -74,7 +74,7 @@ class SJFPOConfig:
     grad_accum_steps: int = 1
 
     # -- Flow sampling ------------------------------------------------------
-    num_euler_steps: int = 16
+    num_euler_steps: int = 4
     num_inference_steps: int = 4
     min_timestep: float = 0.005
     max_timestep: float = 0.995
@@ -117,7 +117,7 @@ class SJFPOConfig:
     timestep_scale: float = 10000.0
 
     # -- Optimizer ----------------------------------------------------------
-    policy_lr: float = 1e-5
+    policy_lr: float = 1e-4
     critic_lr: float = 1e-5
     optimizer_weight_decay: float = 1e-4
     max_grad_norm: float = 1.0
