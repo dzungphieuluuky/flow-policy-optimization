@@ -7,6 +7,7 @@ from collections.abc import Callable
 from typing import Any
 
 import torch
+import torch.nn.functional as F
 
 from spectral_joint_policy.configuration_sjfpo import SJFPOConfig
 from spectral_joint_policy.utils import resolve_storage_dtype
@@ -176,7 +177,9 @@ def compute_cfm_loss(
         raise ValueError(
             f"v_hat shape {tuple(v_hat.shape)} != v_star shape {tuple(v_star.shape)}"
         )
-    sq = torch.square(v_hat - v_star)
+    # F.mse_loss with reduction="none" is exactly square(v_hat - v_star); the
+    # default reduction would divide, which the masking below already does.
+    sq = F.mse_loss(v_hat, v_star, reduction="none")
     n_valid = None
     if action_is_pad is not None:
         # action_is_pad marks what to drop, so flip it: keep is 1 on executed
@@ -207,12 +210,12 @@ def compute_cfm_loss(
             )
         if reduce_mode == "sample":
             return sample
-        return sample, sq.sum(dim=-1) / sq.shape[-1]
+        return sample, sq.mean(dim=-1)
     if reduce_mode == "token_mean":
         # Per-token diagnostic. A token aggregates only action_dim, so dividing
         # by that keeps the value independent of token count. mask_sq already
         # zeroed the padded tokens.
-        return sq.sum(dim=-1) / sq.shape[-1]
+        return sq.mean(dim=-1)
     raise ValueError(
         f"reduce_mode={reduce_mode!r} must be 'scalar', 'sample', 'token_mean', "
         "or 'both'"

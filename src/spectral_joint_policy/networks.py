@@ -36,7 +36,8 @@ def effective_rank(features: torch.Tensor) -> torch.Tensor:
     matrix = features.reshape(-1, features.shape[-1]).float()
     sigma = torch.linalg.svdvals(matrix)
     p = sigma / sigma.sum().clamp_min(1e-12)
-    return torch.exp(-(p * p.clamp_min(1e-12).log()).sum())
+    # entr(0) is 0 by convention, so the rank-deficient case needs no clamp.
+    return torch.exp(torch.special.entr(p).sum())
 
 
 class _RMSNorm(nn.RMSNorm):

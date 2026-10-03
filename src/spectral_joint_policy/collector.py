@@ -400,8 +400,9 @@ def scale_and_clip_chunk(
     ``proposed`` is ``[H, action_dim]`` or ``[B, H, action_dim]``, so the vec
     collector scales once per wavefront instead of once per env.
     """
-    clip_mask = (proposed < low) | (proposed > low + range_)
-    executed = torch.clamp(proposed, min=low, max=low + range_)
+    high = low + range_
+    clip_mask = (proposed < low) | (proposed > high)
+    executed = torch.clamp(proposed, min=low, max=high)
     scaled = 2.0 * (executed - low) / range_ - 1.0
     return executed, scaled, clip_mask.sum(dim=(-2, -1))
 
