@@ -73,8 +73,6 @@ single eval number settle nothing.
 - `np.float_` was removed in NumPy 2.0 and `wandb` still calls it. The default
   `report_to="wandb"` path **fails outright**; every run needs an explicit
   `--sjfpo.report_to tensorboard`. Pre-existing, breaks `tests/test_tracking.py`.
-- `configs/sjfpo.yaml` has orphaned indented `report_to` and `num_critics` lines
-  near line 56.
 
 ---
 

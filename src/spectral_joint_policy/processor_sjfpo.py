@@ -1,8 +1,7 @@
 """SJFPO pre/post processors (LeRobot style): norm obs, unscale action.
 
-``ProcessorStep`` is not an ``torch.nn.Module``, so no ``register_buffer``.
-Bounds are plain attributes plus a small per-``(device, dtype)`` cache, so
-``unnormalize`` skips a per-call ``.to()``.
+``ProcessorStep`` is not an ``nn.Module``, so bounds stay plain attributes with
+a per-``(device, dtype)`` cache and ``unnormalize`` needs no per-call ``.to()``.
 """
 
 from __future__ import annotations
@@ -18,14 +17,10 @@ from spectral_joint_policy.networks import RunningMeanStd
 
 @ProcessorStepRegistry.register(name="sjfpo_observation_normalizer")
 class SJFPOObservationProcessorStep(ProcessorStep):
-    """Norm ``observation.state`` with the shared live ``RunningMeanStd``.
-
-    Holds a **reference** to the policy's normalizer, not a copy, so stat
-    updates fold into the same buffers the policy reads at forward time.
-    """
+    """Holds a reference to the policy's ``RunningMeanStd``, not a copy, so stat
+    updates fold into the buffers the policy reads at forward time."""
 
     def __init__(self, normalizer: RunningMeanStd):
-        """Bind to the policy's live normalizer."""
         self.normalizer = normalizer
 
     @torch.no_grad()
@@ -48,13 +43,8 @@ class SJFPOObservationProcessorStep(ProcessorStep):
 
 @ProcessorStepRegistry.register(name="sjfpo_action_unnormalizer")
 class SJFPOActionPostprocessorStep(ProcessorStep):
-    """Unscale action chunks from ``[-1, 1]`` to real env bounds.
-
-    ``set_action_bounds()`` updates bounds atomically. A tiny
-    per-``(device, dtype)`` cache keeps ``_scale`` / ``_bias`` local to whatever
-    device the chunk is on, so ``unnormalize`` is one FMA with no per-call
-    ``.to()``. Updating bounds clears both caches.
-    """
+    """Unscale action chunks from ``[-1, 1]`` to env bounds.
+    ``set_action_bounds`` clears both caches."""
 
     def __init__(self, action_low: torch.Tensor, action_high: torch.Tensor):
         self._scale_cache: dict[tuple[str, torch.dtype], torch.Tensor] = {}
@@ -66,10 +56,7 @@ class SJFPOActionPostprocessorStep(ProcessorStep):
         action_low: torch.Tensor,
         action_high: torch.Tensor,
     ) -> None:
-        """Set the action bounds, invalidate cached coefficients.
-
-        ``ValueError`` if shapes disagree or any high sits below its low.
-        """
+        """Set the action bounds, invalidate cached coefficients."""
         low = torch.as_tensor(action_low, dtype=torch.float32).reshape(-1).clone()
         high = torch.as_tensor(action_high, dtype=torch.float32).reshape(-1).clone()
         if low.shape != high.shape:
@@ -89,10 +76,7 @@ class SJFPOActionPostprocessorStep(ProcessorStep):
         self._bias_cache.clear()
 
     def compute_coefs_for(self, ref: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """Cached affine coefficients for a reference tensor.
-
-        Fills the cache on first use for that device and dtype.
-        """
+        """Cached affine coefficients for a reference tensor's device and dtype."""
         key = (str(ref.device), ref.dtype)
         scale = self._scale_cache.get(key)
         if scale is None:
@@ -103,11 +87,8 @@ class SJFPOActionPostprocessorStep(ProcessorStep):
         return scale, self._bias_cache[key]
 
     def to(self, device: torch.device | str) -> "SJFPOActionPostprocessorStep":
-        """Eager move: pre-populate the cache for ``device``.
-
-        Not required, ``unnormalize`` fills it on first call, but it keeps the
-        transfer out of the hot path.
-        """
+        """Pre-populate the cache for ``device``. ``unnormalize`` would fill it on
+        first call; this keeps the transfer out of the hot path."""
         device = torch.device(device)
         key = (str(device), torch.float32)
         self._scale_cache.setdefault(
@@ -119,7 +100,7 @@ class SJFPOActionPostprocessorStep(ProcessorStep):
         self.action_low = self.action_low.to(device=device)
         self.action_high = self.action_high.to(device=device)
         return self
-    
+
     @torch.inference_mode()
     def unnormalize(self, scaled: torch.Tensor) -> torch.Tensor:
         """Unscale a chunk into real env bounds. Identity at +/-1."""
@@ -142,12 +123,7 @@ class SJFPOActionPostprocessorStep(ProcessorStep):
 def make_sjfpo_pre_post_processors(
     policy,
 ) -> tuple[SJFPOObservationProcessorStep, SJFPOActionPostprocessorStep]:
-    """Build the pre/post pair. The policy setter syncs action bounds.
-
-    The obs step reads and updates the policy's ``obs_normalizer`` buffers in
-    place. The action step owns its validated affine cache, and
-    ``SJFPOPolicy.set_action_bounds()`` updates it atomically.
-    """
+    """Build the pre/post pair. The policy setter syncs action bounds."""
     return (
         SJFPOObservationProcessorStep(policy.obs_normalizer),
         SJFPOActionPostprocessorStep(policy.action_low, policy.action_high),

@@ -35,7 +35,6 @@
 - `build_notebook.py` writes `spectral_joint_flow.ipynb`, which is not in the tree. The only tracked notebook is `sjfpo_online.ipynb`.
 - `configs/shared.yaml` does not exist. Only `configs/envs.yaml` and `configs/sjfpo.yaml`.
 - `tests/test_config_yaml_parity.py` does not exist, so YAML parity is **untested**.
-- `configs/sjfpo.yaml` has orphaned indented `report_to` and `num_critics` lines near line 56.
 - `requirements-linux.txt:100` carries a machine-absolute `file://` self-ref.
 - `.gitignore` ignores `*.ipynb`; `sjfpo_online.ipynb` is tracked anyway. New notebooks stay invisible.
 - No CI. `pytest -q` is the only gate.

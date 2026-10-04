@@ -15,10 +15,9 @@ __all__ = ["SJFPOConfig"]
 class SJFPOConfig(PreTrainedConfig):
     """SJFPO hyperparameters.
 
-    ``action_horizon`` is the predicted chunk length in training and the
-    executed prefix at eval; ``n_action_steps`` falls back to it.
-    ``num_inference_steps`` is for zero-sampling, ``num_euler_steps`` for a
-    sampled-noise start.
+    ``n_action_steps`` is the executed prefix at eval and defaults to
+    ``action_horizon``. ``num_inference_steps`` is for zero-sampling,
+    ``num_euler_steps`` for a sampled-noise start.
     """
 
     report_to: str = "all"  # wandb | tensorboard | all | none
@@ -31,49 +30,41 @@ class SJFPOConfig(PreTrainedConfig):
 
     num_envs: int = 64
     num_mc_samples: int = 16
-    # 1, not 2: reuse is what accelerates the feature-rank decay that precedes the
-    # late-training collapse (PFO, NeurIPS 2024: more epochs => faster rank loss, and
-    # rank loss breaks the trust region). Same samples per update, no reuse, so
-    # rank decays at half the rate for the same env steps.
+    # Reuse accelerates the feature-rank decay that precedes late collapse
+    # (PFO, NeurIPS 2024), and rank loss breaks the trust region.
     num_learning_epochs: int = 1
     chunks_per_update: int = 1024
     batch_size: int = 128
-    # Groups consecutive minibatches into one optimizer step. Does NOT change peak
-    # memory: one microbatch's DiT activations are the peak either way, so
-    # batch_size and num_mc_samples are the memory knobs.
+    # Does not change peak memory: one microbatch's DiT activations are the peak
+    # either way, so batch_size and num_mc_samples are the memory knobs.
     grad_accum_steps: int = 1
 
-    # HDP3 measures the denoising error as saturated after ~2 reverse steps on
-    # robot trajectories, so the 16-step Euler sampler was paying for nothing.
-    # Equal to num_inference_steps so the rollout sampler and the eval sampler
-    # cost the same. Measured on Hopper at 16384 steps, lr 1e-4: return 211.7 vs
-    # 212.0, and the eval-vs-stochastic gap unchanged at 12.5x, for 32% more fps.
+    # Denoising error saturates after ~2 reverse steps on robot trajectories
+    # (HDP3); measured 211.7 vs 212.0 return on Hopper for 32% more fps.
     num_euler_steps: int = 4
     num_inference_steps: int = 4
     min_timestep: float = 0.005
     max_timestep: float = 0.995
     timestep_sampling_mode: str = "fpo_beta"
     noise_sampling_mode: str = "normal"
-    # Per-mode std over the token axis. "white" is 1.0. "freq_weighted" pours base
-    # variance into the low DCT modes; it requires use_dct_transform, since the token
-    # axis is time without the DCT. Only read when the mode is "freq_weighted".
+    # Per-mode std over the token axis. "freq_weighted" requires use_dct_transform:
+    # without the DCT the token axis is time, so there is no frequency to weight.
     noise_scaling_mode: str = "white"
-    # Coloring exponent for "freq_weighted": std_k = (1 + (k*pi/H)^2)^(-beta/2).
-    # 0.0 is white noise, 1.0 is NEED's pink. Colored-noise PPO puts the on-policy
-    # optimum at 0.5; 1.0 is the default so existing runs keep their meaning.
+    # std_k = (1 + (k*pi/H)^2)^(-beta/2). 1.0 is NEED's pink noise; colored-noise
+    # PPO puts the on-policy optimum at 0.5.
     noise_scaling_beta: float = 1.0
     timestep_inverse_cdf_beta: float = 1.0
     timestep_beta_alpha: float = 2.0
     timestep_beta_beta: float = 2.0
 
     gamma: float = 0.99
-    # One epsilon for the whole chunk. Per-frequency clipping has nothing to bind to:
-    # the "sample" reduction averages every token into one number per chunk.
+    # One epsilon for the whole chunk. Per-frequency clipping has nothing to bind
+    # to: the "sample" reduction averages every token into one number.
     clip_param: float = 0.05
     trust_region_mode: str = "aspo"  # ppo | spo | aspo, FPO++'s default
-    # "mean" divides FPO++'s sum (Eq. 8) by tokens*action_dim, keeping the loss O(1)
-    # so cfm_clamp stays a real guard. The cost: the loss scale IS the trust-region
-    # temperature, so clip_param is not comparable to FPO++'s 0.05 and must be swept.
+    # "mean" divides FPO++'s sum (Eq. 8) by tokens*action_dim to keep the loss O(1).
+    # The loss scale IS the trust-region temperature, so clip_param is not
+    # comparable to FPO++'s 0.05 and must be swept.
     cfm_loss_reduction: str = "mean"  # mean | sum | sqrt
     cfm_clamp: float = 200.0
     cfm_mask_unexecuted: bool = True
@@ -81,27 +72,26 @@ class SJFPOConfig(PreTrainedConfig):
     cfm_loss_clamp_negative_advantages_max: float = 200.0
     log_ratio_cap: float = 10.0  # official cfm_diff_clamp_max, one-sided
 
-    # QC runs a single Q. The ensemble stays available at 2 as an ablation;
-    # at 1 the amin over members is a no-op.
+    # A real ensemble: members stay independent, so the caller aggregates with min
+    # for the backup and mean for the value loss. At 1 the amin is a no-op.
     num_critics: int = 2
     normalize_advantage: bool = True
     value_loss_coef: float = 1.0  # the regression target is the raw return
-    # Huber delta as a multiple of the batch return RMS, so the quadratic-to-linear
-    # transition tracks the target's own scale (returns_rms runs ~2.9 on
-    # InvertedPendulum, ~15 on Hopper). Bounds the per-sample gradient, so a few
+    # A multiple of the batch return RMS, so the quadratic-to-linear transition
+    # tracks the target's scale. Bounds the per-sample gradient, so a few
     # large-residual chunks stop owning critic_grad_norm_preclip.
     value_huber_delta: float = 1.0
     # gamma ** action_horizon puts 0.85 of the value target on the critic's own
     # output, the regime a target network is meant to hold fixed.
     use_target_critic: bool = True
-    # qc and TD-JEPA use 0.005 but refresh over offline batches; online that left the
-    # teacher tens of rollouts behind. 0.05 is a ~2.5-rollout time constant.
+    # qc and TD-JEPA's 0.005 assumes offline batches; online it left the teacher
+    # tens of rollouts behind. 0.05 is a ~2.5-rollout time constant.
     critic_ema_decay: float = 0.05
 
     use_dct_transform: bool = True
-    # Truncating is the whole point: at num_kept_tokens == action_horizon the
-    # transform is the full orthonormal DCT, a no-op on the loss. HDP3 measures
-    # 98.5% of robot action energy in the first two modes (mode 1 alone 93.2%).
+    # At num_kept_tokens == action_horizon the transform is the full orthonormal
+    # DCT, a no-op on the loss. HDP3 measures 98.5% of robot action energy in the
+    # first two modes (mode 1 alone 93.2%).
     num_kept_tokens: int = 4
 
     dit_depth: int = 6
@@ -110,51 +100,37 @@ class SJFPOConfig(PreTrainedConfig):
     time_embed_dim: int = 128
     timestep_scale: float = 10000.0
 
-    # 1e-5 was sized for ~1e5 updates. A rollout is 16384 env steps, so a 1M-step
-    # run is 61 updates; measured at lr 1e-4 the critic grad norm drops 29 -> 10
-    # with the return unchanged.
+    # 1e-5 was sized for ~1e5 updates; a 1M-step run is 61. Measured at 1e-4 the
+    # critic grad norm drops 29 -> 10 with the return unchanged.
     policy_lr: float = 1e-4
     critic_lr: float = 1e-5  # legacy split-checkpoint compatibility
     optimizer_weight_decay: float = 1e-4
-    # Decay rates of Adam's two gradient-moment running averages. Equal by default:
-    # Dohare et al. (arXiv:2306.13812) report Adam exacerbating loss of plasticity and
-    # policy collapse being mitigated by using the same value for both moments, so the
-    # asymmetric (0.9, 0.999) pair is the thing to suspect. Kept as the raw pair so any
-    # asymmetry is still expressible.
+    # Equal by default: Dohare et al. (2306.13812) report policy collapse being
+    # mitigated by matching Adam's two moment decays, so (0.9, 0.999) is suspect.
     adam_betas: tuple[float, float] = (0.999, 0.999)
-    # rsl-rl's default. Under AdamW the threshold does not set the step size; it
-    # decides whether a transient spike may pollute the second-moment estimate.
-    # Measured: a 1/170 rescale moved the trajectory 1.2e-04 per parameter, one
-    # 1e4 spike moved it 9.0e-02.
+    # Under AdamW the threshold does not set the step size; it decides whether a
+    # transient spike may pollute the second-moment estimate.
     max_grad_norm: float = 1.0
     # Clipped separately from the actor: the critic's norm is two orders larger.
     critic_max_grad_norm: float | None = 1.0
     ema_decay: float = 0.95
     ema_warmup_steps: int = 500
 
-    # The max over hundreds of evals is biased well above the truth, and too few
-    # episodes puts the standard error near the size of the regressions these knobs
-    # watch for.
+    # Too few episodes puts the standard error near the size of the regressions
+    # these knobs watch for.
     eval_max_episodes: int = 50
-    # Stop once the return has sat below this fraction of its own peak for
-    # stop_patience evals in a row, so the run ends on the peak region.
+    # The run ends on the peak region rather than the plateau after it.
     stop_return_frac: float = 0.7
     stop_patience: int = 5
-    # Each completed window of stop_patience bad evals cuts the lrs by
-    # lr_decay; the run stops once max_lr_decays of them have been spent.
     lr_decay: float = 0.5
     max_lr_decays: int = 3
 
-    # Each drift metric is a full critic forward over 2 * n_chunks windows. The
-    # loop skips it whenever no tracker is enabled, so the flag is the manual
-    # override for a report_to=none run that still wants the numbers.
     log_drift_diagnostics: bool = True
-
 
     def __post_init__(self) -> None:
         super().__post_init__()
         # n_action_steps is optional, so it resolves here rather than in the
-        # validators that read it. Everything below can assume it is an int.
+        # validators that read it.
         if self.n_action_steps is None:
             self.n_action_steps = self.action_horizon
         self.validate_geometry()
@@ -259,9 +235,7 @@ class SJFPOConfig(PreTrainedConfig):
             raise ValueError("noise_scaling_mode must be 'white' or 'freq_weighted'")
         if self.noise_scaling_mode == "freq_weighted" and not self.use_dct_transform:
             raise ValueError(
-                "noise_scaling_mode='freq_weighted' requires "
-                "use_dct_transform=True (the token axis is time, not frequency, "
-                "without the DCT)"
+                "noise_scaling_mode='freq_weighted' requires use_dct_transform=True"
             )
         if self.noise_scaling_beta < 0:
             raise ValueError(f"noise_scaling_beta must be >= 0, got {self.noise_scaling_beta}")
@@ -336,20 +310,15 @@ class SJFPOConfig(PreTrainedConfig):
 
 
     def validate_features(self) -> None:
-        """Require the ``observation.state`` and ``action`` features.
-
-        The base class skips this check, so it is enforced here.
-        """
+        """Require the ``observation.state`` and ``action`` features; the base
+        class skips this check."""
         if self.robot_state_feature is None:
             raise ValueError("SJFPO requires 'observation.state' in input_features.")
         if self.action_feature is None:
             raise ValueError("SJFPO requires 'action' in output_features.")
 
     def get_optimizer_preset(self, lr: float | None = None) -> AdamWConfig:
-        """Build the AdamW preset used for the actor and critic.
-
-        ``lr`` overrides ``policy_lr`` when given.
-        """
+        """Build the AdamW preset. ``lr`` overrides ``policy_lr`` when given."""
         kwargs = dict(
             lr=self.policy_lr if lr is None else float(lr),
             weight_decay=self.optimizer_weight_decay,
@@ -358,27 +327,18 @@ class SJFPOConfig(PreTrainedConfig):
         return AdamWConfig(**kwargs)
 
     def get_scheduler_preset(self):
-        """Return the learning-rate scheduler, if any.
-
-        None; training runs without a scheduler unless a subclass overrides it.
-        """
+        """None; training runs without a scheduler unless a subclass overrides."""
         return None
-
 
     @property
     def num_mini_batches(self) -> int:
-        """Minibatches per epoch: ``chunks_per_update // batch_size``, floored at one.
-
-        Computed on access rather than in ``__post_init__`` so it cannot go
-        stale if ``chunks_per_update`` or ``batch_size`` is reassigned later.
-        """
+        """``chunks_per_update // batch_size``, floored at one. Computed on access
+        so it cannot go stale if either input is reassigned."""
         return max(1, self.chunks_per_update // self.batch_size)
 
     @property
     def num_flow_tokens(self) -> int:
-        """Token count the flow runs on: ``num_kept_tokens`` with the DCT on,
-        else the full action horizon. Inert without the DCT, where the token
-        axis is time and there is no frequency count to keep."""
+        """``num_kept_tokens`` with the DCT on, else the full action horizon."""
         return self.num_kept_tokens if self.use_dct_transform else self.action_horizon
 
     @property

@@ -183,6 +183,110 @@ def compute_mc_xt(
     return torch.lerp(noise, action, t)
 
 
+def compute_ratio_metrics(
+    *,
+    ratio: torch.Tensor,
+    ratio_token: torch.Tensor,
+    delta: torch.Tensor,
+    action_is_pad: torch.Tensor,
+    cfg: SJFPOConfig,
+) -> dict[str, torch.Tensor]:
+    """Trust-region diagnostics, including the per-token low/high-frequency split.
+
+    ``log_ratio_*`` reads the raw delta, not the clamped one, so it is never a
+    clamp artefact. ``clipfrac`` near zero means the trust region never binds and
+    ``clip_param`` constrains nothing.
+    """
+    log_ratio_abs = delta.abs()
+    log_ratio_clip_frac = (log_ratio_abs > cfg.log_ratio_cap).float().mean()
+
+    ratio_token_mean = ratio_token.mean(dim=(0, 1))
+    num_tokens = ratio_token_mean.numel()
+    split = max(1, num_tokens // 2)
+    # One epsilon for the whole token axis, the same bound the surrogate uses. A
+    # per-frequency epsilon had nothing to bind to: the "sample" reduction
+    # averages every token into one number per chunk, so such ratios exist only here.
+    def outside(t: torch.Tensor) -> torch.Tensor:
+        return ((t < 1.0 - cfg.clip_param) | (t > 1.0 + cfg.clip_param)).float().mean()
+
+    low_outside = outside(ratio_token[..., :split])
+    high_outside = outside(ratio_token[..., split:]) if num_tokens > 1 else low_outside
+
+    return {
+        "mean_log_ratio": delta.mean(),
+        "log_ratio_max": log_ratio_abs.max(),
+        "log_ratio_clip_frac": log_ratio_clip_frac,
+        "clipfrac": outside(ratio),
+        "flow_ratio_mean": ratio.mean(),
+        "flow_ratio_std": ratio.std(correction=0),
+        "flow_ratio_token_range": ratio_token_mean.max() - ratio_token_mean.min(),
+        "flow_ratio_token_lowfreq": ratio_token_mean[:split].mean(),
+        "flow_ratio_token_highfreq": (
+            ratio_token_mean[split:].mean() if num_tokens > 1 else ratio_token_mean.mean()
+        ),
+        "flow_ratio_token_outside_frac": outside(ratio_token),
+        "flow_ratio_token_low_outside_frac": low_outside,
+        "flow_ratio_token_high_outside_frac": high_outside,
+        # Chunks with any never-executed action row. Those rows still enter the
+        # DCT target, so this bounds the contamination.
+        "truncated_chunk_frac": action_is_pad.any(dim=1).float().mean(),
+        # Share of action rows the chunk ran. With cfm_mask_unexecuted on, this is
+        # the fraction of CFM loss surviving the mask.
+        "executed_action_step_frac": (~action_is_pad).float().mean(),
+    }
+
+
+def compute_value_metrics(
+    *,
+    raw_value_pred: torch.Tensor,
+    raw_returns_flat: torch.Tensor,
+    policy_per_chunk: torch.Tensor,
+    value_loss_per_chunk: torch.Tensor,
+) -> dict[str, torch.Tensor]:
+    """Critic diagnostics. ``explained_var`` scores the member mean, not the min
+    the backup uses: min is biased low, so scoring it would flatter the critic.
+    """
+    mean_value_pred = raw_value_pred.mean(dim=0)
+    returns_var = raw_returns_flat.var(correction=0).clamp_min(1e-8)
+    return {
+        "policy_loss": policy_per_chunk.mean(),
+        "value_loss": value_loss_per_chunk.mean(),
+        "explained_var": 1.0
+        - (raw_returns_flat - mean_value_pred).var(correction=0) / returns_var,
+        "value_huber_max": mean_value_pred.sub(raw_returns_flat).abs().max(),
+        "value_pred_max": mean_value_pred.abs().max(),
+        "value_target_std": raw_returns_flat.std(correction=0),
+        "value_pred_std": raw_value_pred.std(correction=0),
+    }
+
+
+def compute_cfm_metrics(
+    *,
+    l_old: torch.Tensor,
+    l_new: torch.Tensor,
+    v_star_f: torch.Tensor,
+    cfg: SJFPOConfig,
+) -> dict[str, torch.Tensor]:
+    """Flow-matching loss diagnostics.
+
+    ``cfm_above_clamp_frac`` matters because samples above ``cfm_clamp``
+    contribute no gradient, so a run that stays high trains the critic only.
+    """
+    l_old_std = l_old.std(correction=0)
+    l_new_std = l_new.std(correction=0)
+    corr_denom = l_old_std * l_new_std + 1e-8
+    return {
+        "flow_v_star_rms": rms(v_star_f),
+        "l_old_mean": l_old.mean(),
+        "l_new_mean": l_new.mean(),
+        "l_old_std": l_old_std,
+        "l_new_std": l_new_std,
+        "cfm_above_clamp_frac": (l_new > cfg.cfm_clamp).float().mean(),
+        "l_old_new_corr": ((l_old - l_old.mean()) * (l_new - l_new.mean())).mean()
+        / corr_denom,
+    }
+
+
 class SJFPOPolicy(PreTrainedPolicy):
     config_class = SJFPOConfig
     name = "sjfpo"
@@ -1175,13 +1279,13 @@ class SJFPOPolicy(PreTrainedPolicy):
             raw_returns_flat=raw_returns_flat,
             policy_per_chunk=policy_per_chunk,
             value_loss_per_chunk=value_loss_per_chunk,
-            normalised_advantages=normalised_advantages,
             cond_stats=cond_stats,
             cfg=cfg,
         )
         return loss, info
 
 
+    @torch.inference_mode()
     @torch.inference_mode()
     def compute_info(
         self,
@@ -1196,130 +1300,39 @@ class SJFPOPolicy(PreTrainedPolicy):
         raw_returns_flat,
         policy_per_chunk,
         value_loss_per_chunk,
-        normalised_advantages,
         cond_stats,
         cfg,
     ) -> dict[str, float]:
-        """Every diagnostic reduction, batched into one sync.
+        """Merge the three metric groups and pack them into one device transfer.
 
-        Log ratio is taken on the raw delta, not the clamped one, so the figure
-        is never a clamp artefact. The clamp-saturation fraction matters because
-        samples above ``cfm_clamp`` contribute no gradient, so a run that stays
-        high trains the critic only.
+        ``float()`` on a device tensor is a blocking sync, so the whole
+        diagnostic pass costs one, not one per metric.
         """
-        delta = l_old - l_new
-        log_ratio_abs = delta.abs()
-        log_ratio_max = log_ratio_abs.max()
-        log_ratio_clip_frac = (log_ratio_abs > cfg.log_ratio_cap).float().mean()
-        cfm_above_clamp_frac = (l_new > cfg.cfm_clamp).float().mean()
-
-        ratio_mean = ratio.mean()
-        ratio_std = ratio.std(correction=0)
-
-        ratio_token_mean = ratio_token.mean(dim=(0, 1))
-        num_tokens = ratio_token_mean.numel()
-        split = max(1, num_tokens // 2)
-        ratio_token_range = ratio_token_mean.max() - ratio_token_mean.min()
-        ratio_token_low = ratio_token_mean[:split].mean()
-        ratio_token_high = (
-            ratio_token_mean[split:].mean() if num_tokens > 1 else ratio_token_mean.mean()
-        )
-        ratio_token_outside = (
-            ((ratio_token < 1.0 - cfg.clip_param) | (ratio_token > 1.0 + cfg.clip_param))
-            .float()
-            .mean()
-        )
-        # One epsilon for the whole token axis, the same bound the surrogate uses. A
-        # per-frequency epsilon had nothing to bind to: the "sample" reduction averages
-        # every token into one number per chunk, so such ratios exist only here.
-        low_slice = ratio_token[..., :split]
-        ratio_token_low_outside = (
-            ((low_slice < 1.0 - cfg.clip_param) | (low_slice > 1.0 + cfg.clip_param))
-            .float()
-            .mean()
-        )
-        if num_tokens > 1:
-            high_slice = ratio_token[..., split:]
-            ratio_token_high_outside = (
-                ((high_slice < 1.0 - cfg.clip_param) | (high_slice > 1.0 + cfg.clip_param))
-                .float()
-                .mean()
+        scalars = {
+            **compute_ratio_metrics(
+                ratio=ratio,
+                ratio_token=ratio_token,
+                delta=l_old - l_new,
+                action_is_pad=action_is_pad,
+                cfg=cfg,
+            ),
+            **compute_value_metrics(
+                raw_value_pred=raw_value_pred,
+                raw_returns_flat=raw_returns_flat,
+                policy_per_chunk=policy_per_chunk,
+                value_loss_per_chunk=value_loss_per_chunk,
+            ),
+            **compute_cfm_metrics(
+                l_old=l_old, l_new=l_new, v_star_f=v_star_f, cfg=cfg
+            ),
+        }
+        if cond_stats:
+            scalars.update(
+                {
+                    f"cond_{k}": torch.as_tensor(cond_stats[k], device=ratio.device)
+                    for k in cond_stats
+                }
             )
-        else:
-            ratio_token_high_outside = ratio_token_low_outside
+        packed = torch.stack([s.detach().reshape(()) for s in scalars.values()])
+        return dict(zip(scalars.keys(), packed.float().cpu().tolist()))
 
-        # Does the trust region ever bind? clipfrac near zero means the ratio
-        # stays well inside the band and clip_param constrains nothing, whatever
-        # its value. Read it before trusting clip_param.
-        clipfrac = (
-            (ratio < 1.0 - cfg.clip_param) | (ratio > 1.0 + cfg.clip_param)
-        ).float().mean()
-        # Chunks with any never-executed action row. Those rows still enter the
-        # DCT target, so this bounds the contamination.
-        truncated_chunk_frac = action_is_pad.any(dim=1).float().mean()
-        # Share of action rows the chunk ran. With cfm_mask_unexecuted on, this
-        # is the fraction of CFM loss surviving the mask, so the two together say
-        # how much of the batch the row mask drops.
-        executed_action_step_frac = (~action_is_pad).float().mean()
-
-        # explained_var scores the member mean, not the min the backup uses: min
-        # is biased low, so scoring it would flatter the critic. Not comparable
-        # in absolute terms to single-critic runs, but the trend is.
-        mean_value_pred = raw_value_pred.mean(dim=0)
-        returns_var = raw_returns_flat.var(correction=0).clamp_min(1e-8)
-        explained_var = 1.0 - (raw_returns_flat - mean_value_pred).var(
-            correction=0
-        ) / returns_var
-        value_huber_max = mean_value_pred.sub(raw_returns_flat).abs().max()
-        value_pred_max = mean_value_pred.abs().max()
-        v_star_rms = rms(v_star_f)
-
-        l_old_std = l_old.std(correction=0)
-        l_new_std = l_new.std(correction=0)
-        corr_denom = l_old_std * l_new_std + 1e-8
-        l_old_new_corr = (
-            (l_old - l_old.mean()) * (l_new - l_new.mean())
-        ).mean() / corr_denom
-
-        cond_keys = list(cond_stats.keys()) if cond_stats else []
-        scalars = [
-            ("policy_loss", policy_per_chunk.mean()),
-            ("value_loss", value_loss_per_chunk.mean()),
-            ("explained_var", explained_var),
-            ("mean_log_ratio", delta.mean()),
-            ("log_ratio_max", log_ratio_max),
-            ("log_ratio_clip_frac", log_ratio_clip_frac),
-            ("clipfrac", clipfrac),
-            ("value_huber_max", value_huber_max),
-            ("value_pred_max", value_pred_max),
-            ("flow_ratio_mean", ratio_mean),
-            ("flow_ratio_std", ratio_std),
-            ("flow_ratio_token_range", ratio_token_range),
-            ("flow_ratio_token_lowfreq", ratio_token_low),
-            ("flow_ratio_token_highfreq", ratio_token_high),
-            ("flow_ratio_token_outside_frac", ratio_token_outside),
-            ("flow_ratio_token_low_outside_frac", ratio_token_low_outside),
-            ("flow_ratio_token_high_outside_frac", ratio_token_high_outside),
-            ("flow_v_star_rms", v_star_rms),
-            ("l_old_mean", l_old.mean()),
-            ("l_new_mean", l_new.mean()),
-            ("l_old_std", l_old_std),
-            ("l_new_std", l_new_std),
-            ("cfm_above_clamp_frac", cfm_above_clamp_frac),
-            ("l_old_new_corr", l_old_new_corr),
-            ("truncated_chunk_frac", truncated_chunk_frac),
-            ("executed_action_step_frac", executed_action_step_frac),
-            ("value_target_std", raw_returns_flat.std(correction=0)),
-            ("value_pred_std", raw_value_pred.std(correction=0)),
-        ]
-        scalars.extend(
-            (f"cond_{k}", cond_stats[k].detach()
-             if torch.is_tensor(cond_stats[k])
-             else torch.tensor(float(cond_stats[k]), device=delta.device))
-            for k in cond_keys
-        )
-        # One transfer, then zip names against it: two parallel lists would
-        # desync silently the first time one side grows.
-        names = [k for k, _ in scalars]
-        packed = torch.stack([s.detach().reshape(()) for _, s in scalars]).float().cpu()
-        return dict(zip(names, packed.tolist()))
