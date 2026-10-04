@@ -113,8 +113,25 @@ def test_temporal_frequency_content_is_visible():
 # --- the chunk is a first-class input ---------------------------------------
 
 
-def test_every_action_step_influences_the_output():
+def test_film_starts_as_identity():
+    """Zero-init FiLM head: at step 0 the chunk must not modulate the state
+    feature, so Q is chunk-independent until a gradient step un-zeroes it."""
     critic = _critic()
+    s = _window()
+    assert torch.allclose(critic(s, _chunk()), critic(s, _chunk(seed=9)), atol=1e-6)
+
+
+def _unzero_film(critic: Critic) -> Critic:
+    """Stand-in for 'after one training step': FiLM head is zero-init, so
+    un-perturb it to exercise the chunk dependence these probes check for."""
+    with torch.no_grad():
+        for net in critic.networks:
+            net.act_enc.fc2.weight.normal_(0, 0.05)
+    return critic
+
+
+def test_every_action_step_influences_the_output():
+    critic = _unzero_film(_critic())
     base, chunk = _window(), _chunk()
     for step in range(H):
         moved = chunk.clone()
@@ -126,7 +143,7 @@ def test_every_action_step_influences_the_output():
 
 def test_chunk_order_matters():
     """An order-insensitive chunk encoder could not tell a reversed chunk."""
-    critic = _critic()
+    critic = _unzero_film(_critic())
     w, c = _window(), _chunk()
     assert not torch.allclose(critic(w, c), critic(w, c.flip(1)), atol=1e-6)
 
@@ -137,7 +154,7 @@ def test_q_is_not_additive_in_state_and_chunk():
     If Q(s1,a1) + Q(s2,a2) == Q(s1,a2) + Q(s2,a1) held everywhere, the
     interaction collapsed to a sum and the extra parameters bought nothing.
     """
-    critic = _critic(seed=5)
+    critic = _unzero_film(_critic(seed=5))
     s1, s2 = _window(seed=11), _window(seed=12)
     a1, a2 = _chunk(seed=13), _chunk(seed=14)
     cross = (critic(s1, a1) + critic(s2, a2)) - (critic(s1, a2) + critic(s2, a1))

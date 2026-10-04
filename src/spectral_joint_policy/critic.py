@@ -31,6 +31,10 @@ class CriticMember(nn.Module):
         self.state_enc = CondMLP(n_obs_steps * obs_dim, hidden_dim, hidden_dim)
         self.act_enc = CondMLP(action_horizon * action_dim, hidden_dim, 2 * hidden_dim)
         self.head = CondMLP(hidden_dim, hidden_dim, 1)
+        # Zero the FiLM head so the chunk starts as identity (FiLM = adaLN-Zero):
+        # scale==0, shift==0, and the state feature passes through unchanged.
+        nn.init.constant_(self.act_enc.fc2.weight, 0.0)
+        nn.init.constant_(self.act_enc.fc2.bias, 0.0)
 
     def forward(self, states: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
         """``[B, T, obs]`` and ``[B, H, action_dim]`` -> ``[B]``."""
@@ -41,10 +45,11 @@ class CriticMember(nn.Module):
 
 class Critic(nn.Module):
     """Q(s_t, a_{t:t+h}) over the full window; the chunk is the executed action
-    sequence, so Q is the value the QC target backs up to. ``[num_critics, B]``,
-    unaggregated: caller picks ``min`` for the GAE backup, ``mean`` for the value
-    loss. Members are fully independent conditioners -- a shared trunk would
-    make ``min`` meaningless."""
+    sequence, so Q is the value the QC target backs up to. Returns
+    ``[num_critics, B]``; the default ``num_critics=1`` is a single head and
+    the caller needs no aggregation. With ``num_critics>1`` members must stay
+    fully independent, and the caller picks ``min`` for the backup, ``mean``
+    for the value loss -- never ``min`` inside the loss."""
 
     def __init__(
         self,

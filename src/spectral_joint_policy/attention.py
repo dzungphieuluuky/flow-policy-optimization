@@ -77,6 +77,8 @@ class DiTBlock(nn.Module):
         b = c.shape[0]
         if token_axis:
             _, k, _ = x.shape
+            if c.shape[1] != k:
+                raise ValueError(f"c has {c.shape[1]} conditioning tokens but x has {k}")
             parts = self.adaLN(c).view(b, k, 6, -1)
             (
                 shift_msa,
