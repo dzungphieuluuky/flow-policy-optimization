@@ -856,11 +856,10 @@ class SJFPOPolicy(PreTrainedPolicy):
             )[OBS_STATE]
             normalised_states = all_chunk_normalised_states[:n_chunks]
             normalised_next_states = all_chunk_normalised_states[n_chunks:]
+            # amin across the num_critics=2 members: backup only, never inside
+            # the loss. The value loss averages the same two members.
             with autocast_context(device):
                 chunk_q = self.critic(normalised_states, actions).float().amin(dim=0)
-            # amin is a no-op at the default single critic. It is kept so
-            # num_critics=2 remains one flag away as an ablation, and min is the
-            # right aggregator there: backup only, never inside the loss.
             if cfg.use_target_critic:
                 with torch.inference_mode(), autocast_context(device):
                     boot_q = self.target_critic(

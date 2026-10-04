@@ -48,10 +48,10 @@ class CriticMember(nn.Module):
 class Critic(nn.Module):
     """Q(s_t, a_{t:t+h}) over the full window; the chunk is the executed action
     sequence, so Q is the value the QC target backs up to. Returns
-    ``[num_critics, B]``; the default ``num_critics=1`` is a single head and
-    the caller needs no aggregation. With ``num_critics>1`` members must stay
-    fully independent, and the caller picks ``min`` for the backup, ``mean``
-    for the value loss -- never ``min`` inside the loss."""
+    ``[num_critics, B]``; the default ``num_critics=2`` is a real ensemble,
+    so the caller must aggregate: members stay fully independent, and use
+    ``min`` for the backup, ``mean`` for the value loss -- never ``min``
+    inside the loss."""
 
     def __init__(
         self,
@@ -60,7 +60,7 @@ class Critic(nn.Module):
         action_dim: int,
         n_obs_steps: int,
         action_horizon: int,
-        num_critics: int = 1,
+        num_critics: int = 2,
     ):
         super().__init__()
         if obs_dim <= 0:

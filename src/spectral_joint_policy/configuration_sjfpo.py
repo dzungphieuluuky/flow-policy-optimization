@@ -83,7 +83,7 @@ class SJFPOConfig(PreTrainedConfig):
 
     # QC runs a single Q. The ensemble stays available at 2 as an ablation;
     # at 1 the amin over members is a no-op.
-    num_critics: int = 1
+    num_critics: int = 2
     normalize_advantage: bool = True
     value_loss_coef: float = 1.0  # the regression target is the raw return
     # Huber delta as a multiple of the batch return RMS, so the quadratic-to-linear
