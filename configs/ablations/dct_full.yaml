@@ -1,0 +1,7 @@
+# Full orthonormal DCT: K == action_horizon, so the transform is a rotation and
+# the loss is unchanged in value -- it just is not a truncation. Separates
+# "the DCT helped" from "dropping 12 of 16 modes did not hurt".
+#
+#   .venv/bin/python scripts/train.py --env Hopper-v5 --config configs/ablations/dct_full.yaml
+use_dct_transform: true
+num_kept_tokens: 16

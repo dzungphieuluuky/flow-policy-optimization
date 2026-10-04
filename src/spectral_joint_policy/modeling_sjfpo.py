@@ -1228,8 +1228,18 @@ class SJFPOPolicy(PreTrainedPolicy):
             ratio = compute_policy_ratio(l_old, l_new, cfg, advantage=adv_mc)
             self.cfm_above_clamp_frac = (l_new > cfg.cfm_clamp).float().mean().detach()
 
-            surrogate = compute_aspo_surrogate(ratio, adv_mc, cfg)
-            policy_per_chunk = -surrogate.mean(dim=1)
+            # FPO Eq 9 exponentiates after the (tau, eps) average, giving one
+            # ratio per chunk. FPO++ Eq 10 exponentiates per sample, so each
+            # (tau, eps) pair clips independently -- a finer trust region once
+            # the run is off-policy. Same gradients when ratio == 1 throughout.
+            if cfg.ratio_granularity == "per_sample":
+                surrogate = compute_aspo_surrogate(
+                    ratio_token, adv_mc.unsqueeze(-1), cfg
+                )
+                policy_per_chunk = -surrogate.mean(dim=(1, 2))
+            else:
+                surrogate = compute_aspo_surrogate(ratio, adv_mc, cfg)
+                policy_per_chunk = -surrogate.mean(dim=1)
 
         with autocast_context(device):
             raw_value_pred = self.critic(states, actions).float()  # [num_critics, n]

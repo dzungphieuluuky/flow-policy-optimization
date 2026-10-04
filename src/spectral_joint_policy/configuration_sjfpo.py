@@ -62,6 +62,10 @@ class SJFPOConfig(PreTrainedConfig):
     # to: the "sample" reduction averages every token into one number.
     clip_param: float = 0.05
     trust_region_mode: str = "aspo"  # ppo | spo | aspo, FPO++'s default
+    # FPO Eq 9 exponentiates after averaging the (tau, eps) losses, giving one
+    # ratio per chunk. FPO++ Eq 10 exponentiates each loss separately, so every
+    # (tau, eps) pair is clipped on its own. Identical gradients on-policy.
+    ratio_granularity: str = "per_sample"  # per_action | per_sample
     # "mean" divides FPO++'s sum (Eq. 8) by tokens*action_dim to keep the loss O(1).
     # The loss scale IS the trust-region temperature, so clip_param is not
     # comparable to FPO++'s 0.05 and must be swept.
@@ -206,6 +210,10 @@ class SJFPOConfig(PreTrainedConfig):
             )
         if self.trust_region_mode not in {"ppo", "spo", "aspo"}:
             raise ValueError("trust_region_mode must be 'ppo', 'spo', or 'aspo'")
+        if self.ratio_granularity not in {"per_action", "per_sample"}:
+            raise ValueError(
+                "ratio_granularity must be 'per_action' or 'per_sample'"
+            )
         if self.cfm_loss_reduction not in {"mean", "sum", "sqrt"}:
             raise ValueError("cfm_loss_reduction must be 'mean', 'sum', or 'sqrt'")
         if self.cfm_clamp <= 0:

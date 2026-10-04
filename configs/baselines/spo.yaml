@@ -1,0 +1,7 @@
+# SPO on both advantage signs (arXiv 2602.02481 Eq 11), with FPO's per-sample
+# ratio. Isolates the asymmetric trust region: compare against fpo_pp.yaml, which
+# differs only in the A>0 branch.
+#
+#   .venv/bin/python scripts/train.py --env Hopper-v5 --config configs/baselines/spo.yaml
+trust_region_mode: spo
+ratio_granularity: per_sample

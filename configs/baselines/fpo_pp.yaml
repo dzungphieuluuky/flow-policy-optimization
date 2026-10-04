@@ -1,0 +1,10 @@
+# FPO++ (arXiv 2602.02481) -- both of its changes to FPO.
+#   1. per-sample ratio, Eq 10: exponentiate each loss separately so every
+#      (tau, eps) pair clips independently.
+#   2. ASPO, Eq 12: PPO where A>0, SPO where A<0.
+# Identical gradients to FPO on-policy (every ratio == 1); they separate once the
+# run is off-policy, i.e. once num_learning_epochs > 1 or the run drifts.
+#
+#   .venv/bin/python scripts/train.py --env Hopper-v5 --config configs/baselines/fpo_pp.yaml
+trust_region_mode: aspo
+ratio_granularity: per_sample

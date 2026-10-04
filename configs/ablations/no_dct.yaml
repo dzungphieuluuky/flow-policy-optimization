@@ -1,0 +1,7 @@
+# Actor and critic identical to the default; the action chunk is NOT transformed.
+# num_flow_tokens falls back to action_horizon, so the flow runs on the 16 raw
+# steps. This is the control for the DCT claim: same parameters, same trust
+# region, no spectral basis.
+#
+#   .venv/bin/python scripts/train.py --env Hopper-v5 --config configs/ablations/no_dct.yaml
+use_dct_transform: false

@@ -148,8 +148,19 @@ def load_yaml_dict(path: str | Path) -> dict:
 
 
 def coerce_value(cfg_cls: type, raw: dict) -> dict:
-    """Keep only fields the target dataclass knows; coerce list->tuple."""
+    """Keep only fields the target dataclass knows; coerce list->tuple.
+
+    Unknown keys are dropped with a warning. Silently dropping them made a
+    typo'd baseline file run the defaults while looking configured.
+    """
     fields = {f.name for f in dataclasses.fields(cfg_cls)}
+    unknown = sorted(set(raw) - fields)
+    if unknown:
+        print(
+            f"WARNING: config keys not in {cfg_cls.__name__}, ignored: "
+            f"{', '.join(unknown)}",
+            file=sys.stderr,
+        )
     out = {k: v for k, v in raw.items() if k in fields}
     for key in ("hidden",):
         if isinstance(out.get(key), list):

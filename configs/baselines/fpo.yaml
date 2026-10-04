@@ -1,0 +1,11 @@
+# FPO (Flow Matching Policy Gradients, Choi et al., arXiv 2507.21053).
+# Objective Eq 4/5: PPO-clip on exp(L_CFM_old - L_CFM_new).
+# Ratio Eq 9: exponentiate AFTER averaging the (tau, eps) losses -> one ratio per
+# chunk, so all N_mc samples of a chunk are clipped together or not at all.
+#
+#   .venv/bin/python scripts/train.py --env Hopper-v5 --config configs/baselines/fpo.yaml
+#
+# Caveat: the advantage here is QC's one-chunk backup (gae.py), not FPO's own
+# estimator. Same surrogate and ratio, different critic.
+trust_region_mode: ppo
+ratio_granularity: per_action
