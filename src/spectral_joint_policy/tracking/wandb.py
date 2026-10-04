@@ -8,7 +8,6 @@ from .base import build_run_name
 from .tensorboard import stack_frames
 
 
-
 class WandbBackend:
     def __init__(
         self,

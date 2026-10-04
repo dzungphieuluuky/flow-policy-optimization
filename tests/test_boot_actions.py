@@ -12,7 +12,6 @@ right and the value is finite.
 import dataclasses
 
 import pytest
-import torch
 from lerobot.configs.policies import PolicyFeature
 from lerobot.configs.types import FeatureType
 

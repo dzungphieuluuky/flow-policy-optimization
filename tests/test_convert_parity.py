@@ -10,7 +10,6 @@ moments, and that the converted policy's forward matches the torch policy's.
 import sys
 from pathlib import Path
 
-import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest

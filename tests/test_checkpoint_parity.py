@@ -17,7 +17,6 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 pytestmark = pytest.mark.skip(reason="Torch StateEncoder diverged from the JAX port; parity conversion disabled.")
-import torch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
@@ -62,7 +61,6 @@ def test_saved_tree_is_values_only_and_round_trips(tmp_path):
     cfg = SJFPOConfig(obs_dim=11, action_dim=2)
 
     jax_state = build_state(cfg, 11, 2, jax.random.key(0))
-    params = optimizer_params(jax_state)
     # Overwrite from the torch weights, then save and restore.
     loaded = to_jax_tree(
         {k: v for k, v in weights.items() if not k.startswith("obs_normalizer.")}
