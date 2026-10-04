@@ -118,17 +118,6 @@ def build_state(cfg, obs_dim: int, action_dim: int, key: jax.Array) -> SJFPOStat
     )
 
 
-def update_normalizer(state: SJFPOState, frames: jax.Array) -> SJFPOState:
-    """Fold raw frames into the running obs stats. Once per rollout, unjitted.
-
-    Functional, not in-place: the counts are fp64 and the merge is a read-modify-
-    write over device arrays, which is exactly the shape that breaks under
-    ``jit`` without donation.
-    """
-    state.obs_normalizer.update(frames)
-    return state
-
-
 # ----------------------------------------------------------------- the optimizer
 #
 # One AdamW over the whole tree, with per-role lr, per-role decay and a per-role
