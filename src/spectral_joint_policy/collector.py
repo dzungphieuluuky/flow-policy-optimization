@@ -60,21 +60,6 @@ Transition = TypedDict(
 )
 
 
-class StepTransition(dict):
-    """Transition dict holding post-step windows outside the public keys.
-
-    ``step_next_states`` is runtime-only, deliberately not part of the eight-key
-    :data:`Transition` contract, and not preserved by ``copy``. The buffer path
-    does not use it: per-step windows live in :class:`RolloutBuffer`.
-    """
-
-    def __init__(self, record: Transition, step_next_states: torch.Tensor):
-        super().__init__(record)
-        # Keep the public eight-key Transition contract while retaining the
-        # state window after every executed action, for step-level GAE.
-        self.step_next_states = step_next_states
-
-
 class RolloutBuffer:
     """Fixed-capacity CPU storage for chunk and executed-step rollout data.
 
@@ -420,8 +405,6 @@ def build_warmup_window(
     return deque((shared for _ in range(n_obs_steps)), maxlen=n_obs_steps)
 
 
-
-
 def finalize_transition(
     state: torch.Tensor,
     next_state: torch.Tensor,
@@ -431,12 +414,10 @@ def finalize_transition(
     clip_count: int,
     chunk_size: int,
     n_action_steps: int,
-    step_next_states: torch.Tensor,
 ) -> Transition:
     """Build the transition record for one executed chunk.
 
-    ``ValueError`` if the chunk, ``n_action_steps``, or ``step_next_states``
-    shape is inconsistent.
+    ``ValueError`` if the chunk or ``n_action_steps`` is inconsistent.
     """
     if scaled.shape[0] != chunk_size:
         raise ValueError(
@@ -452,11 +433,6 @@ def finalize_transition(
         np.asarray(rewards, dtype=np.float32), dtype=_REWARD_DTYPE
     )
     n_executed = int(reward_t.shape[0])
-    if step_next_states.shape != (n_executed, *next_state.shape):
-        raise ValueError(
-            f"step_next_states shape {tuple(step_next_states.shape)} != "
-            f"{(n_executed, *next_state.shape)}"
-        )
     record: Transition = {
         OBS_STATE: state,
         "action": scaled,
@@ -467,7 +443,7 @@ def finalize_transition(
         "executed_n_action_steps": torch.tensor(n_executed, dtype=_INDEX_DTYPE),
         "clip_count": torch.tensor(clip_count, dtype=_INDEX_DTYPE),
     }
-    return StepTransition(record, step_next_states)  # type: ignore[return-value]
+    return record
 
 
 def execute_open_loop_steps(
@@ -477,14 +453,13 @@ def execute_open_loop_steps(
     executed_total: int,
     total_steps: int,
     n_action_steps: int,
-) -> tuple[list[float], str, torch.Tensor]:
+) -> tuple[list[float], str]:
     """Execute a chunk's executed prefix, one env step at a time.
 
     ``executed_np`` stays on the host, so stepping never syncs device to host
     per step. The obs window advances after every step and stops at the budget.
     """
     rewards: list[float] = []
-    step_next_states: list[torch.Tensor] = []
     done_kind = "continue"
     for i in range(n_action_steps):
         if executed_total >= total_steps:
@@ -493,14 +468,13 @@ def execute_open_loop_steps(
         executed_total += 1
         rewards.append(float(reward))
         window.append(as_float_tensor(obs))
-        step_next_states.append(torch.stack(tuple(window), dim=0))
         if terminated:
             done_kind = "terminated"
             break
         if truncated:
             done_kind = "truncated"
             break
-    return rewards, done_kind, torch.stack(step_next_states, dim=0)
+    return rewards, done_kind
 
 
 def execute_open_loop_steps_into(
@@ -554,7 +528,7 @@ def propose_and_execute_chunk(
     proposed = as_float_tensor(policy(state))
     executed, scaled, clip_count = scale_and_clip_chunk(proposed, low, range_)
     executed_np = executed.detach().cpu().numpy()
-    rewards, done_kind, step_next_states = execute_open_loop_steps(
+    rewards, done_kind = execute_open_loop_steps(
         env, executed_np, window, executed_total, total_steps, n_action_steps
     )
     next_state = torch.stack(tuple(window), dim=0)
@@ -567,7 +541,6 @@ def propose_and_execute_chunk(
         int(clip_count),
         chunk_size,
         n_action_steps,
-        step_next_states,
     )
     return record, done_kind
 

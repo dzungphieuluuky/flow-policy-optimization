@@ -89,7 +89,7 @@ def test_step_frames_are_the_per_step_observations():
 
 def test_chunk_state_is_the_window_the_policy_saw():
     """A recording policy captures what it was handed; the buffer must match."""
-    gym = pytest.importorskip("gymnasium")
+    pytest.importorskip("gymnasium")
     envs = _pendulum_vec()
     buffer = RolloutBuffer(
         max_chunks=1000,
@@ -146,8 +146,6 @@ def test_next_state_frames_agree_across_chunks():
     catches a regression to exactly that mistake.
     """
     buf = _collect()
-    starts = buf.chunk_starts[: buf.n_chunks]
-    lengths = buf.chunk_lengths[: buf.n_chunks]
     env_id = buf.chunk_env_id[: buf.n_chunks].to(torch.long)
 
     checked = 0
