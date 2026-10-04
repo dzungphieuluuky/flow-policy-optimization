@@ -1,9 +1,12 @@
 # PLAN.md — execution plan for the SJFPO JAX port
 
-The design lives in `JAX_MIGRATION.md` at the repo root. This file is the
-**ordered, checkable** version: what to write, what proves it, and what will bite.
-Read it before each step and update it when reality disagrees — a plan that is
-quietly wrong is worse than no plan.
+This file is the **ordered, checkable** version: what to write, what proves it,
+and what will bite. Read it before each step and update it when reality disagrees
+— a plan that is quietly wrong is worse than no plan.
+
+`JAX_MIGRATION.md`, which held the original design, was deleted. This file and
+`scripts/check_claims.py` are what remain, so `§N` below always means this
+file's own `## Step N` heading.
 
 Line references are `src/spectral_joint_policy/` unless stated otherwise.
 
@@ -16,7 +19,7 @@ Line references are `src/spectral_joint_policy/` unless stated otherwise.
 | 2b steps 1–5 — state + loss | **done** | 26 tests incl. gradient parity |
 | 2b steps 6–9 — info, chunk, EMA, validation | **done** | 26 more; 52 in the file |
 | device layer (`runtime.py`) | **done** | 22 tests; **every CUDA branch unverified** |
-| §5 — optimizer | **done** | 6 tests: pre-clip norms match torch, one step is ~lr and agrees in direction, no-decay leaves still train, `critic_max_grad_norm=None` measures without clipping |
+| Step 1 — the optimizer | **done** | 6 tests: pre-clip norms match torch, one step is ~lr and agrees in direction, no-decay leaves still train, `critic_max_grad_norm=None` measures without clipping |
 | `configuration_sjfpo.py` | **done** | 9 tests: field set, defaults, the two properties, four load-bearing invariants |
 | 3 — collector | not started | |
 | 4 — train loop + `scripts/train.py` branch | not started | needs a GPU for the number |
@@ -26,7 +29,7 @@ Line references are `src/spectral_joint_policy/` unless stated otherwise.
 `251 passed` on CPU as of this writing (`140` added by this port). The loss
 compiles: `jit(forward_loss)` matches eager, and `jit(grad)` runs. No GPU exists on
 the development box, so every CUDA path stays unverified until a T4 or Blackwell
-box exists (`JAX_MIGRATION.md` §0c).
+box exists.
 
 ## The four rules that have bitten already
 
@@ -53,13 +56,13 @@ down.
 
 ## Step 6 — `compute_info`
 
-**Port.** `compute_info` (`modeling_sjfpo.py:1261-1436`) reduced over the
+**Port.** `compute_info` (`modeling_sjfpo.py:1190-1329`) reduced over the
 `terms` dict `forward_loss` already returns. **No second forward pass.**
 
 28 named scalars plus `cond_*` from the actor's `return_stats`. The key list is
-at `:1403-1432` and is an **interface**: the trainer logs by name
-(`train_sjfpo.py:570-600`), so a renamed key silently stops a metric appearing on
-W&B.
+assembled into `names` at `:1327-1329` and is an **interface**: the trainer logs
+by name (`train_sjfpo.py:570-600`), so a renamed key silently stops a metric
+appearing on W&B.
 
 ```python
 def compute_info(terms, cfg):
@@ -218,10 +221,11 @@ Decisions (2026-10-01): **one optax chain with mask-based decay**, **a Python-lo
 trainer first** rather than the fused `lax.scan`, and **`--to-jax` only** for the
 converter.
 
-Why the Python loop even though `JAX_MIGRATION.md` §10 specifies one compiled
-program: this machine is for runtime-error debugging, and a loop is the debuggable
-shape. Fuse to `lax.scan` after a GPU shows it pays. A scan bug and a loop bug
-look identical from the outside, and there is no GPU here to tell them apart.
+Why the Python loop rather than the single compiled program the original design
+called for: this machine is for runtime-error debugging, and a loop is the
+debuggable shape. Fuse to `lax.scan` after a GPU shows it pays. A scan bug and a
+loop bug look identical from the outside, and there is no GPU here to tell them
+apart.
 
 ## The optimizer's shape, and why
 
@@ -309,8 +313,9 @@ terminal **and** an autoreset.
 
 `checkpointing.py` (Orbax `CheckpointManager`) and
 `scripts/convert_torch_to_jax.py --to-jax`. The weight mapper already exists in
-`tests/torch_jax_weights.py` and graduates from there; §8's table of what the
-torch checkpoint actually stores is the input spec.
+`tests/torch_jax_weights.py` and graduates from there; the table at the top of
+`src/sjfpo_jax/checkpointing.py`, which lists what the torch checkpoint actually
+stores, is the input spec.
 
 **Gate.** A converted torch checkpoint reproduces the torch eval return. Needs a
 real torch checkpoint, so the test trains a tiny CPU run first.
@@ -332,7 +337,7 @@ Not planned here, but the order is:
 
 1. **`state.py`'s optimizer** — `build_optimizer` + `global_norm_and_clip`, the
    per-role clip. One AdamW over actor (decay / no-decay / conditioner) and critic,
-   two clip norms, critic clip optional. `JAX_MIGRATION.md` §5.
+   two clip norms, critic clip optional.
 2. **`configuration_sjfpo.py`** — the plain-dataclass mirror, without the
    LeRobot-only fields, with `obs_dim`/`action_dim`. Needed by the trainer, not by
    the loss.

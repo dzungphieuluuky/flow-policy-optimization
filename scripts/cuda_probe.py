@@ -15,8 +15,7 @@ Environment:
   EXTRA   extra --sjfpo.* flags, space separated
 
 Every metric below is a per-update training metric. explained_var and
-advantage_std_fraction are the two that decide whether the critic is wired up;
-see BUGS.md.
+advantage_std_fraction are the two that decide whether the critic is wired up.
 """
 
 import os

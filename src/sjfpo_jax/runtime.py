@@ -6,9 +6,9 @@ which device a process uses, and what "fp32" means on it. Those are the
 decisions in this module, and each one is a pure function of a device so the
 logic is testable on a CPU-only box.
 
-Multi-GPU is data-parallel by env (JAX_MIGRATION.md §0d): one process per GPU,
-each owning ``num_envs / N`` envs. So the job here is to give each process
-exactly one device, and to fail loudly when it cannot.
+Multi-GPU is data-parallel by env: one process per GPU, each owning ``num_envs / N``
+envs. So the job here is to give each process exactly one device, and to fail
+loudly when it cannot.
 
 Nothing else in the package imports this module; the trainer composes it.
 """
@@ -59,10 +59,10 @@ def matmul_precision_for(capability: str | None) -> str | None:
     """``'highest'`` where fp32 could mean TF32, ``None`` where it cannot.
 
     XLA's f32 dot default on Ampere and later is not consistent across versions,
-    so pin it rather than infer it. The port is fp32 throughout
-    (JAX_MIGRATION.md §7), and a silent TF32 makes the Blackwell parity run
-    meaningless -- the cost of pinning is a throughput number we measure, the
-    cost of not pinning is numbers nobody can reproduce.
+    so pin it rather than infer it. The port is fp32 throughout, and a silent
+    TF32 makes the Blackwell parity run meaningless -- the cost of pinning is a
+    throughput number we measure, the cost of not pinning is numbers nobody can
+    reproduce.
     """
     return "highest" if has_tf32(capability) else None
 

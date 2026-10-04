@@ -12,9 +12,9 @@ Two structural differences, both required by JAX rather than chosen:
   module-level function of ``(params, x)``, and ``__call__`` extracts its own
   state and calls it, so the actor path and the vmapped critic path share one
   implementation.
-* **The critic is one stacked param set, not a ``ModuleList``** (JAX_MIGRATION.md
-  §6a). A Python loop over members inside the jitted loss is the compile-time
-  blow-up jax discussion #23200 is about.
+* **The critic is one stacked param set, not a ``ModuleList``**. A Python loop
+  over members inside the jitted loss is the compile-time blow-up jax discussion
+  #23200 is about.
 
 Kernels are stored ``[in, out]`` where torch stores ``[out, in]``, so the
 checkpoint converter transposes every Linear. ``SinusoidalEncoding``'s frequency

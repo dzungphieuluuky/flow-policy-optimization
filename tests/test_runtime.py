@@ -3,7 +3,7 @@
 Everything here is a pure function of a device or an env dict, so the logic is
 checked on a CPU box even though the hardware it targets is not present. What is
 *not* checked here is the CUDA branch: `should_donate()` and the TF32 pin can
-only be verified on a real T4 or Blackwell box (JAX_MIGRATION.md §0c).
+only be verified on a real T4 or Blackwell box.
 """
 import sys
 from dataclasses import dataclass

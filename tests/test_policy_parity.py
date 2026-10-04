@@ -2,9 +2,9 @@
 
 
 
-Steps 1-5 of JAX_MIGRATION.md §11b. The torch ``SJFPOPolicy.forward`` is the
-oracle; both sides are handed the same batch dict, built the way
-``generate_rollout`` builds it, including the frozen-snapshot losses.
+The torch ``SJFPOPolicy.forward`` is the oracle; both sides are handed the same
+batch dict, built the way ``generate_rollout`` builds it, including the
+frozen-snapshot losses.
 
 Two gates beyond the forward value:
 
@@ -43,8 +43,8 @@ N = 6
 RTOL, ATOL = 1e-4, 1e-5
 # num_kept_tokens < action_horizon so the DCT actually truncates: at the default
 # 16 == action_horizon it is the full orthonormal transform and a no-op on the
-# loss, so it would prove nothing (JAX_MIGRATION.md §11). num_mc_samples is cut
-# to 4 purely for test speed; the loss is linear in the MC axis.
+# loss, so it would prove nothing. num_mc_samples is cut to 4 purely for test
+# speed; the loss is linear in the MC axis.
 CFG = SJFPOConfig(num_mc_samples=4, num_kept_tokens=8)
 MC = CFG.num_mc_samples
 LOW = np.array([-2.0, -2.0], dtype=np.float32)

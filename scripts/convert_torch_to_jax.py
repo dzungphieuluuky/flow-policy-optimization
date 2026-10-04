@@ -7,7 +7,7 @@
          counters.json, config.json
     DST  where to write the JAX checkpoint
 
-What it reads, and why (JAX_MIGRATION.md §8):
+What it reads, and why:
 
 * ``model.safetensors`` -- live ``actor.*`` / ``encoder.*`` / ``critic.*`` /
   ``obs_normalizer.*``. The frozen ``old_actor``, ``old_encoder`` and
