@@ -52,12 +52,9 @@ from spectral_joint_policy.fpo_core import (
     sample_timesteps,
 )
 from spectral_joint_policy.gae import compute_chunk_advantages
-from spectral_joint_policy.networks import (
-    Critic,
-    RunningMeanStd,
-    SJFPOFlowModel,
-    StateEncoder,
-)
+from spectral_joint_policy.critic import Critic
+from spectral_joint_policy.encoder import RunningMeanStd, StateEncoder
+from spectral_joint_policy.flow import SJFPOFlowModel
 from spectral_joint_policy.processor_sjfpo import make_sjfpo_pre_post_processors
 from spectral_joint_policy.utils import (
     autocast_context,
