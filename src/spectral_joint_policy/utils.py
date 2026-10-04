@@ -34,6 +34,36 @@ def is_rtx_1000_pro_blackwell() -> bool:
     return "rtx pro 1000" in name and "blackwell" in name
 
 
+@lru_cache(maxsize=1)
+def detect_gpu() -> dict | None:
+    """Device name, compute capability, and what that architecture supports.
+
+    ``None`` when CUDA is unusable. Capability-derived rather than
+    name-matched, so it stays correct for a GPU released tomorrow and for any
+    SKU spelled differently by the host (Kaggle's ``machine_shape``, a cloud
+    provider, a vGPU profile).
+
+    Thresholds: FP16 tensor cores from Volta (sm_70); bf16 and TF32 from
+    Ampere (sm_80). See the NVIDIA architecture whitepapers.
+    """
+    if not cuda_available():
+        return None
+    try:
+        name = torch.cuda.get_device_name(0)
+        major, minor = torch.cuda.get_device_capability(0)
+    except Exception:
+        return None
+    return {
+        "device_name": name,
+        "compute_capability": [major, minor],
+        "supports": {
+            "bf16": major >= 8,
+            "tf32": major >= 8,
+            "fp16_tensor_cores": major >= 7,
+        },
+    }
+
+
 def resolve_device() -> torch.device:
     """Execution device from ``SJFPO_DEVICE``.
 

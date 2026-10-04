@@ -5,7 +5,7 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from spectral_joint_policy.layers import CondMLP
+from spectral_joint_policy.layers import CondMLP, modulate
 
 class CriticMember(nn.Module):
     """One Q(s, a_{t:t+h}) head: FiLM from the chunk, so Q is not additive in
@@ -42,7 +42,7 @@ class CriticMember(nn.Module):
         shift, scale = self.act_enc(actions.flatten(1)).chunk(2, dim=-1)
         # Bound the gain so FiLM cannot flip the sign of the state feature.
         scale = scale.clamp(-2.0, 2.0)
-        return self.head(h * (1 + scale) + shift).squeeze(-1)
+        return self.head(modulate(h, shift, scale)).squeeze(-1)
 
 
 class Critic(nn.Module):

@@ -56,19 +56,56 @@ def configure_torch_cuda() -> bool:
         return False
     if not torch.cuda.is_available():
         return False
-    torch.backends.cuda.matmul.fp32_precision = "ieee"
-    torch.backends.cudnn.fp32_precision = "ieee"
     torch.backends.cudnn.conv.fp32_precision = "tf32"
     torch.backends.cudnn.rnn.fp32_precision = "tf32"
     torch.backends.cudnn.benchmark = True
-    # TF32 for leftover fp32 GEMMs; autocast still handles bf16 matmuls.
-    torch.set_float32_matmul_precision("high")
     # Memory allocation hint (harmless if already set by user env).
     os.environ.setdefault(
         "PYTORCH_CUDA_ALLOC_CONF",
         "max_split_size_mb:128,expandable_segments:True",
     )
     return True
+
+
+def apply_runtime_settings() -> dict:
+    """Apply the settings that are no-ops where the arch lacks the hardware.
+
+    Only settings whose sole effect on unsupported hardware is nothing. Precision
+    is deliberately not touched: ``resolve_storage_dtype`` and
+    ``resolve_compute_dtype`` are the operator's choice, so a T4 run and a
+    Blackwell run from one config stay comparable.
+
+    Returns what was applied, for ``run_metadata.json``.
+    """
+    import torch
+
+    from spectral_joint_policy.utils import (
+        detect_gpu,
+        resolve_compute_dtype,
+        resolve_storage_dtype,
+    )
+
+    gpu = detect_gpu()
+    tf32 = bool(gpu and gpu["supports"]["tf32"])
+    # TF32 is an sm_80+ instruction set. Asking for it on Turing is accepted and
+    # ignored, so the "highest" branch exists to make that no-op visible in the
+    # metadata rather than to change behaviour.
+    torch.set_float32_matmul_precision("high" if tf32 else "highest")
+    # Past 8 shape variants dynamo silently falls back to eager: you keep paying
+    # compile cost and get none of the benefit. The rollout's chunk count varies
+    # every run, so the default of 8 is reached quickly.
+    torch._dynamo.config.cache_size_limit = 32
+
+    settings = {
+        "gpu": gpu,
+        "tf32_enabled": tf32,
+        "tf32_matmul_precision": torch.get_float32_matmul_precision(),
+        "dynamo_cache_size_limit": torch._dynamo.config.cache_size_limit,
+        "storage_dtype": str(resolve_storage_dtype()),
+        "compute_dtype": str(resolve_compute_dtype()),
+    }
+    print(f"runtime settings: {json.dumps(settings, sort_keys=True)}", flush=True)
+    return settings
 
 
 @dataclass
@@ -225,6 +262,7 @@ def run_single(
     obs_dim: int | None,
     action_dim: int | None,
     resume_from_checkpoint: str | None = None,
+    runtime: dict | None = None,
 ) -> dict:
     """Dispatch one run to the matching backend's training entry."""
     import gymnasium as gym
@@ -272,6 +310,7 @@ def run_single(
             obs_dim=obs_dim,
             action_dim=action_dim,
             resume_from_checkpoint=resume_from_checkpoint,
+            runtime=runtime,
         )
     finally:
         env.close()
@@ -279,6 +318,7 @@ def run_single(
 
 def main(argv: list[str] | None = None) -> int:
     configure_torch_cuda()
+    runtime = apply_runtime_settings()
 
     argv = list(sys.argv[1:] if argv is None else argv)
     args = draccus.parse(config_class=TrainConfig, args=argv)
@@ -336,6 +376,7 @@ def main(argv: list[str] | None = None) -> int:
             args.obs_dim,
             args.action_dim,
             args.resume,
+            runtime,
         )
     except Exception as exc:
         traceback.print_exc(file=sys.stderr)

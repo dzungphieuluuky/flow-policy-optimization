@@ -47,7 +47,10 @@ class SwiGLU(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         g, u = self.gate_up(x).chunk(2, dim=-1)
-        return self.down(F.silu(g) * u)
+        # mul_ into silu's output rather than a second tensor: silu's backward
+        # reads its input, not its output, so this is autograd-safe and drops
+        # one activation the size of gate_up's output.
+        return self.down(F.silu(g).mul_(u))
 
 
 class CondMLP(nn.Module):
@@ -105,6 +108,7 @@ class SinusoidalEncoding(nn.Module):
 def modulate(x: torch.Tensor, shift: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
     """adaLN: ``x * (1 + scale) + shift``. ``torch.addcmul(shift, x, 1 + scale)``
     is the same value in one kernel instead of three, on the widest tensor in
-    the DiT, twelve times per microbatch."""
+    the DiT, twelve times per microbatch. Reads the raw ``scale``, so callers
+    that bound the gain must clamp before calling."""
     return torch.addcmul(shift, x, 1.0 + scale)
 

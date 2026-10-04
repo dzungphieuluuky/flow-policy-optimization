@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import math
-from functools import lru_cache
 
 import torch
 
@@ -27,11 +26,17 @@ def compute_dct_norm(count: int, sequence_length: int, device: torch.device) -> 
     return norm
 
 
-@lru_cache(maxsize=64)
+_BASIS_CACHE: dict[tuple[int, int, torch.device], tuple[torch.Tensor, torch.Tensor]] = {}
+
+
 def get_analysis_basis(
     K: int, num_modes: int, device: torch.device
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Cached ``[num_modes, K]`` DCT-II basis and its norms."""
+    """Cached ``[num_modes, K]`` DCT-II basis and its norms.
+
+    A module-level dict, not ``functools.lru_cache``: dynamo ignores a cache
+    wrapper, traces the wrapped body on every call, and warns about it.
+    """
     if K < 1:
         raise ValueError(f"K must be positive, got {K}")
     if not 1 <= num_modes <= K:
@@ -39,10 +44,16 @@ def get_analysis_basis(
             f"num_modes must satisfy 1 <= num_modes <= K, "
             f"got num_modes={num_modes}, K={K}"
         )
+    key = (K, num_modes, device)
+    hit = _BASIS_CACHE.get(key)
+    if hit is not None:
+        return hit
     j = torch.arange(K, dtype=torch.float32, device=device)
     k = torch.arange(num_modes, dtype=torch.float32, device=device)
     basis = torch.cos(math.pi * k[:, None] * (j[None, :] + 0.5) / K)
-    return basis, compute_dct_norm(num_modes, K, device)
+    out = (basis, compute_dct_norm(num_modes, K, device))
+    _BASIS_CACHE[key] = out
+    return out
 
 
 def extract_dct_coeffs(v_star: torch.Tensor, num_modes: int) -> torch.Tensor:
@@ -88,7 +99,11 @@ def compute_spectral_energy_retained(v: torch.Tensor, num_modes: int) -> torch.T
 def velocity_to_action_steps(vel: torch.Tensor, num_rows: int) -> torch.Tensor:
     """Expand DCT coeffs onto the half-open grid ``t_j = j*H/H``, any leading
     batch axes. Inverse of :func:`extract_dct_coeffs` for a full-length signal,
-    in row space, so a per-row execution mask can index it."""
+    in row space, so a per-row execution mask can index it.
+
+    Owns the query grid, so ``tau`` lands in ``[0, 1)`` and the range contract
+    :func:`decode_coeffs_to_velocity` documents always holds from here.
+    """
     lead, k, d = vel.shape[:-2], vel.shape[-2], vel.shape[-1]
     tau = torch.arange(num_rows, device=vel.device, dtype=torch.float32) / num_rows
     with torch.autocast(device_type=vel.device.type, enabled=False):
@@ -106,7 +121,13 @@ def decode_coeffs_to_velocity(
 ) -> torch.Tensor:
     """Decode DCT coeffs at query times ``t_j = j*T/K``, so a query maps to
     ``j = tau*K/T``. ``tau = T`` gives the DCT-II even-symmetric extension, not
-    a periodic wrap."""
+    a periodic wrap.
+
+    ``tau`` must lie in ``[0, T]``. That is not checked here: the check is a
+    ``bool()`` on a device tensor, i.e. a sync, and this sits in the CFM-loss
+    path. :func:`velocity_to_action_steps` is the only caller and builds its own
+    grid inside the range.
+    """
     squeeze = False
     if coeffs.dim() == 3:
         B, num_modes, d = coeffs.shape
@@ -142,8 +163,6 @@ def decode_coeffs_to_velocity(
         tau_q = tau.to(device=device, dtype=torch.float32)
         if tau_q.numel() == 0:
             raise ValueError("tau must contain at least one query time")
-        if not bool(torch.all((tau_q >= 0) & (tau_q <= T))):
-            raise ValueError("tau must lie in [0, T]")
         j = tau_q * (K_original / T)
         basis = torch.cos(math.pi * k[:, None] * (j[None, :] + 0.5) / K_original)
         with torch.autocast(device_type=device.type, enabled=False):
@@ -156,8 +175,6 @@ def decode_coeffs_to_velocity(
         tau_q = tau.to(device=device, dtype=torch.float32)
         if tau_q.numel() == 0:
             raise ValueError("tau must contain at least one query time")
-        if not bool(torch.all((tau_q >= 0) & (tau_q <= T))):
-            raise ValueError("tau must lie in [0, T]")
         j = tau_q * (K_original / T)
         basis = torch.cos(
             math.pi * k[None, :, None] * (j[:, None, :] + 0.5) / K_original

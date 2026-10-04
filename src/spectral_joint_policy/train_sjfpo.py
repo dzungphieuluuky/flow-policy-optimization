@@ -222,7 +222,7 @@ def sample_random_baseline(
         return 0.0
     return float(np.mean([r["return"] for r in results]))
 
-def make_vec_env(env_name: str, num_envs: int):
+def make_vec_env(env_name: str, num_envs: int, record: dict | None = None):
     """Vectorised env with ``forkserver`` workers.
 
     ``context="forkserver"``, not the platform default. Linux defaults to
@@ -244,7 +244,10 @@ def make_vec_env(env_name: str, num_envs: int):
     # autoreset_mode must survive vectorisation in either branch; the collector
     # validates NEXT_STEP, see validate_autoreset_mode.
     try:
-        return gym.vector.AsyncVectorEnv(env_fns, context="forkserver")
+        env = gym.vector.AsyncVectorEnv(env_fns, context="forkserver")
+        if record is not None:
+            record["vector_env"] = "forkserver"
+        return env
     except Exception as exc:
         warnings.warn(
             f"AsyncVectorEnv(env_name={env_name!r}, num_envs={num_envs}, "
@@ -254,6 +257,8 @@ def make_vec_env(env_name: str, num_envs: int):
             RuntimeWarning,
             stacklevel=2,
         )
+        if record is not None:
+            record["vector_env"] = "sync"
         return gym.vector.SyncVectorEnv(env_fns)
 
 
@@ -270,6 +275,7 @@ def train_sjfpo_run(
     action_dim: int | None = None,
     resume_from_checkpoint: str | Path | None = None,
     policy_cls: type[SJFPOPolicy] = SJFPOPolicy,
+    runtime: dict | None = None,
 ) -> dict[str, Any]:
     """One SJFPO training run. Env builds before any CUDA init, so forked
     workers do not inherit the parent's CUDA context (cleanrl / SB3 ordering).
@@ -294,7 +300,13 @@ def train_sjfpo_run(
 
     train_env = env
     if cfg.num_envs > 1 and env_name != "unknown":
-        train_env = make_vec_env(env_name, cfg.num_envs)
+        train_env = make_vec_env(env_name, cfg.num_envs, record=runtime)
+    if runtime is not None:
+        # Audits every auto-applied decision, so a run is self-describing after
+        # the fact. Written before the first rollout, not at the end.
+        (out_dir / "run_metadata.json").write_text(
+            json.dumps(runtime, indent=2, sort_keys=True), encoding="utf-8"
+        )
 
     action_low = np.atleast_1d(np.asarray(env.action_space.low, dtype=np.float32))
     action_high = np.atleast_1d(np.asarray(env.action_space.high, dtype=np.float32))
