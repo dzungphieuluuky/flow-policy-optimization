@@ -67,10 +67,6 @@ from spectral_joint_policy.utils import (
 class SJFPOAborted(RuntimeError):
     """Non-finite training loss. The message names the offending term."""
 
-    def __init__(self, message: str):
-        super().__init__(message)
-        self.message = message
-
 
 def compute_value_huber_loss(
     pred: torch.Tensor, target: torch.Tensor, delta: torch.Tensor
