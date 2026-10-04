@@ -440,7 +440,6 @@ full = {
   "raw_advantages": torch.randn(n,generator=g).cuda(),
   "normalised_advantages": torch.randn(n,generator=g).cuda(),
   "raw_returns": (torch.randn(n,generator=g)*10).cuda(),
-  "raw_values": torch.randn(n,generator=g).cuda(),
   "normalizer_observations": torch.randn(n*H,D,generator=g).cuda(),
   "boot_observations": torch.randn(n,H,D,generator=g).cuda(),
   "boot_values_start": torch.randn(n,1,generator=g).cuda(),

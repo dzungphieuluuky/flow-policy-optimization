@@ -254,7 +254,6 @@ def make_batch(cfg, C, device):
         "action_is_pad": torch.zeros(C, H, dtype=torch.bool, device=device),
         "normalised_advantages": r(C),
         "raw_returns": r(C) * 10,
-        "raw_values": r(C) * 10,
         "mc_tau": torch.rand(C, M, K, 1, generator=g).to(device),
         "mc_eps": r(C, M, K, D),
         "behavior_cfm_loss": torch.rand(C, M, generator=g).to(device),

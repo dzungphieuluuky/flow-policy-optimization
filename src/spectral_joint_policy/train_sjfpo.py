@@ -10,6 +10,7 @@ import dataclasses
 import json
 import sys
 import time
+import warnings
 from collections import deque
 from pathlib import Path
 from typing import Any
@@ -222,16 +223,37 @@ def sample_random_baseline(
     return float(np.mean([r["return"] for r in results]))
 
 def make_vec_env(env_name: str, num_envs: int):
-    """Vectorised env, async workers preferred. Falls back to ``SyncVectorEnv``
-    when async is unavailable (no ``/dev/shm``, env-factory pickling failure)."""
+    """Vectorised env with ``forkserver`` workers.
+
+    ``context="forkserver"``, not the platform default. Linux defaults to
+    ``fork``, and ``resolve_device()`` has already called ``cuda_available()``
+    by the time this runs; forking a process with a CUDA runtime is
+    unsupported and can deadlock or corrupt the context in the child.
+    ``forkserver`` forks from a clean single-threaded server instead, and is
+    cheaper than ``spawn`` because workers do not re-import the world.
+
+    Falls back to ``SyncVectorEnv`` with a warning, not silently: the sync path
+    is one to two orders of magnitude slower and the ``fps`` field is the only
+    other tell.
+    """
     import gymnasium as gym
 
+    # The lambda is fine: gymnasium wraps env_fns in CloudpickleWrapper, which
+    # serialises by value.
     env_fns = [lambda: gym.make(env_name) for _ in range(num_envs)]
     # autoreset_mode must survive vectorisation in either branch; the collector
     # validates NEXT_STEP, see validate_autoreset_mode.
     try:
-        return gym.vector.AsyncVectorEnv(env_fns)
-    except Exception:
+        return gym.vector.AsyncVectorEnv(env_fns, context="forkserver")
+    except Exception as exc:
+        warnings.warn(
+            f"AsyncVectorEnv(env_name={env_name!r}, num_envs={num_envs}, "
+            f"context='forkserver') failed: {exc!r}. Falling back to "
+            "SyncVectorEnv, which runs the envs serially in this process. "
+            "Expect a large fps drop; the run is otherwise correct.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
         return gym.vector.SyncVectorEnv(env_fns)
 
 

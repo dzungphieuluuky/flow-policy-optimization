@@ -56,11 +56,13 @@ down.
 
 ## Step 6 — `compute_info`
 
-**Port.** `compute_info` (`modeling_sjfpo.py:1190-1329`) reduced over the
+**Port.** `compute_info` (`modeling_sjfpo.py:1290-1338`) reduced over the
 `terms` dict `forward_loss` already returns. **No second forward pass.**
 
-28 named scalars plus `cond_*` from the actor's `return_stats`. The key list is
-assembled into `names` at `:1327-1329` and is an **interface**: the trainer logs
+28 named scalars plus `cond_*` from the actor's `return_stats`. The 28 come from
+three module-level functions — `compute_ratio_metrics` (14), `compute_value_metrics`
+(7), `compute_cfm_metrics` (7) — merged by `**` and packed by one
+`torch.stack` at `:1336-1337`. The keys are an **interface**: the trainer logs
 by name (`train_sjfpo.py:570-600`), so a renamed key silently stops a metric
 appearing on W&B.
 
@@ -76,13 +78,14 @@ traced program.
 
 Worked from `terms`: `policy_per_chunk`, `value_loss_per_chunk`, `l_old`, `l_new`,
 `ratio`, `ratio_token`, `action_is_pad`, `v_star`, `raw_value_pred`, `raw_returns`,
-`normalised_advantages`, `returns_rms`, `cond_stats`.
+`returns_rms`, `cond_stats`. `normalised_advantages` is **not** among them: it was
+a `compute_info` parameter that the body never read, and `da799b7` dropped it.
 
 Needs one more input ``terms`` does not yet carry:
 
 - **`cond_stats`** — `temb`, `fused`, `c`, `gate_msa`, `gate_mlp`, `scale_msa`,
   `scale_mlp`, logged as `cond_*`. torch runs the actor once on a single row with
-  `return_stats=True` (`:1168`); the port runs it inside `forward_loss` on
+  `return_stats=True` (`:1213`); the port runs it inside `forward_loss` on
   `x_t[:1]` and puts the dict in `terms`, so the reduction stays a pure function
   over already-computed intermediates.
 
