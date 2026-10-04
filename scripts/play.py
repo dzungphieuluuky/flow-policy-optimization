@@ -37,7 +37,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--env",
         default="Hopper-v5",
-        help="Gym env name (must be in VALID_ENVS).",
+        help="Gym env name (must be in KNOWN_ENVS).",
     )
     parser.add_argument(
         "--checkpoint",

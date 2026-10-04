@@ -16,11 +16,7 @@ except Exception:
     _ENV_REGISTRY = {}
 
 _REGISTRY_KEYS = list(_ENV_REGISTRY.keys()) if isinstance(_ENV_REGISTRY, dict) else []
-ENVS = tuple(k for k in _REGISTRY_KEYS if _ENV_REGISTRY[k].get("tier") == "core")
-PROTOTYPE_ENVS = tuple(
-    k for k in _REGISTRY_KEYS if _ENV_REGISTRY[k].get("tier") != "core"
-)
-KNOWN_ENVS = ENVS + PROTOTYPE_ENVS
+KNOWN_ENVS = tuple(_REGISTRY_KEYS)
 
 
 def get_observation_action_dim(env_id: str) -> tuple[int, int]:

@@ -44,9 +44,6 @@ from spectral_joint_policy.config import (  # noqa: E402
 from spectral_joint_policy.configuration_sjfpo import SJFPOConfig  # noqa: E402
 
 
-VALID_ENVS = KNOWN_ENVS
-
-
 def configure_torch_cuda() -> bool:
     """Apply torch CUDA tuning when torch is importable and CUDA is present.
 
@@ -288,9 +285,9 @@ def main(argv: list[str] | None = None) -> int:
     if not args.env:
         print("ERROR: --env is required", file=sys.stderr)
         return 1
-    if args.env not in VALID_ENVS:
+    if args.env not in KNOWN_ENVS:
         print(
-            f"ERROR: unknown env {args.env!r}; choices: {', '.join(VALID_ENVS)}",
+            f"ERROR: unknown env {args.env!r}; choices: {', '.join(KNOWN_ENVS)}",
             file=sys.stderr,
         )
         return 1
