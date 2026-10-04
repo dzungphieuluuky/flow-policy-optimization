@@ -27,7 +27,9 @@ class SJFPOFlowModel(nn.Module):
 
     ``return_stats=True`` gives ``(velocity, stats)`` plus per-block gate and
     scale RMS reductions. Default path returns velocity only, nothing
-    reduced.
+    reduced. The stats path also runs an SVD (``effective_rank``) and a
+    full parameter sweep (``weight_magnitude``); call it at eval cadence,
+    not per optimizer step.
     """
 
     def __init__(

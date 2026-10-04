@@ -10,11 +10,12 @@ import torch.nn.functional as F
 from torch import nn
 
 class _RMSNorm(nn.RMSNorm):
-    """RMSNorm in fp32, out dtype = in dtype. Norm must not move the
-    model-wide precision policy."""
+    """RMSNorm whose *compute* runs in fp32; the stored weight follows the model
+    dtype. A ``.to(bfloat16)`` on the owner intentionally downcasts the weight;
+    the forward-time fp32 cast is a numerical guard, not a precision policy."""
 
     def __init__(self, hidden_dim: int, eps: float = 1e-6):
-        super().__init__(hidden_dim, eps=eps, dtype=torch.float32)
+        super().__init__(hidden_dim, eps=eps)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Norm trailing dims with the learned scale, reduce in fp32, cast back."""
@@ -92,35 +93,14 @@ class SinusoidalEncoding(nn.Module):
             self._freq_cache.popitem(last=False)
         return cached
 
-    def add_to(self, x: torch.Tensor, positions: torch.Tensor) -> torch.Tensor:
-        """Add sinusoidal codes at ``positions``, growing ``[..., L, D]``."""
-        ang = (positions.to(dtype=torch.float32) * self.scale).unsqueeze(
-            -1
-        ) * self.compute_freqs(x.device)
-        pe = torch.cat([ang.sin(), ang.cos()], dim=-1)
-        if pe.shape[-1] < self.dim:
-            pe = F.pad(pe, (0, self.dim - pe.shape[-1]))
-        return x + pe.to(dtype=x.dtype)
-
     def encode_times(self, t: torch.Tensor) -> torch.Tensor:
         """Sinusoidal embed of continuous times. ``[N]`` -> ``[N, 2 * half]``."""
-        if not isinstance(t, torch.Tensor):
-            t = torch.as_tensor(t, dtype=torch.float32)
         t = t.to(dtype=torch.float32) * self.scale
         ang = t.unsqueeze(-1) * self.compute_freqs(t.device)
         emb = torch.cat([ang.sin(), ang.cos()], dim=-1)
         if self.dim % 2:
             emb = F.pad(emb, (0, 1))
         return emb
-
-    def positions(self, length: int, device) -> torch.Tensor:
-        """``[length]`` index holding ``0..length-1``, for slot or frame codes."""
-        return torch.arange(length, dtype=torch.float32, device=device)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Add slot-indexed position codes to ``[..., L, D]``."""
-        return self.add_to(x, self.positions(x.shape[-2], x.device))
-
 
 def modulate(x: torch.Tensor, shift: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
     """adaLN: ``x * (1 + scale) + shift``. ``torch.addcmul(shift, x, 1 + scale)``

@@ -40,6 +40,8 @@ class CriticMember(nn.Module):
         """``[B, T, obs]`` and ``[B, H, action_dim]`` -> ``[B]``."""
         h = self.state_enc(states.flatten(1))
         shift, scale = self.act_enc(actions.flatten(1)).chunk(2, dim=-1)
+        # Bound the gain so FiLM cannot flip the sign of the state feature.
+        scale = scale.clamp(-2.0, 2.0)
         return self.head(h * (1 + scale) + shift).squeeze(-1)
 
 

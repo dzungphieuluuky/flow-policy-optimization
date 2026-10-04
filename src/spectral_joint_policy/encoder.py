@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import warnings
+
 import torch
 from torch import nn
 
@@ -20,6 +22,7 @@ class RunningMeanStd(nn.Module):
         self.register_buffer("var", torch.ones(dim, dtype=torch.float32))
         self.register_buffer("count", torch.tensor(0.0, dtype=torch.float64))
         self._uninitialised = True
+        self._passthrough_warned = False
         self.eps = eps
         self.clip = clip
 
@@ -60,6 +63,7 @@ class RunningMeanStd(nn.Module):
         self.var.fill_(1.0)
         self.count.zero_()
         self._uninitialised = True
+        self._passthrough_warned = False
 
     def _load_from_state_dict(self, *args, **kwargs):
         """Load state, re-derive the latch. It is not persisted, so
@@ -68,9 +72,16 @@ class RunningMeanStd(nn.Module):
         self._uninitialised = bool(self.count.item() == 0)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Norm with frozen stats. Returns ``x`` unchanged until first update.
-        ``x`` must already be on the module's device."""
+        """Norm with frozen stats. Returns ``x`` unchanged until first update;
+        the collector is supposed to call ``update()`` first, so warn once if
+        we ever see a call before that."""
         if self._uninitialised:
+            if not self._passthrough_warned:
+                warnings.warn(
+                    f"{type(self).__name__}: forward before the first update(); "
+                    "returning raw input", stacklevel=2,
+                )
+                self._passthrough_warned = True
             return x
         norm = (x - self.mean) * torch.rsqrt(self.var + self.eps)
         return norm.clamp(-self.clip, self.clip).to(x.dtype)

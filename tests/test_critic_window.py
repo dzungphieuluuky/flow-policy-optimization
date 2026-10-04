@@ -166,6 +166,16 @@ def test_q_is_not_additive_in_state_and_chunk():
 # --- ensemble --------------------------------------------------------------
 
 
+def test_num_critics_two_min_le_mean_contract():
+    """The caller's aggregator contract holds for the 2-member ensemble:
+    min (backup) is never above mean (value loss), members stay distinct."""
+    out = _critic(seed=3, num_critics=2)(_window(), _chunk())
+    assert out.shape == (2, 4)
+    assert not torch.allclose(out[0], out[1])
+    assert (out.amin(dim=0) <= out.mean(dim=0)).all()
+
+
+
 def test_members_are_independent_not_one_wide_mlp():
     """Perturbing one member must not move the other member.
 

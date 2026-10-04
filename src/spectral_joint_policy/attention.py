@@ -94,6 +94,8 @@ class DiTBlock(nn.Module):
                 modulate(self.norm2(x), shift_mlp, scale_mlp)
             )
         else:
+            if c.dim() != 2 or c.shape[0] != b or c.shape[1] != self.adaLN.fc1.in_features:
+                raise ValueError(f"c must have shape [{b}, {self.adaLN.fc1.in_features}], got {tuple(c.shape)}")
             parts = self.adaLN(c).view(b, 6, -1)
             shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = parts.unbind(
                 dim=1
