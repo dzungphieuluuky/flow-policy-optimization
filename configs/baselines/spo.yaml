@@ -1,7 +1,16 @@
 # SPO on both advantage signs (arXiv 2602.02481 Eq 11), with FPO's per-sample
 # ratio. Isolates the asymmetric trust region: compare against fpo_pp.yaml, which
-# differs only in the A>0 branch.
+# differs only in the A>0 branch. Like both, it flow-matches the raw action chunk,
+# so the DCT is off.
+#
+# Shares fpo.yaml's paper hyperparameters: lr 3e-4, 10 sampling steps,
+# num_learning_epochs 2.
 #
 #   .venv/bin/python scripts/train.py --env Hopper-v5 --config configs/baselines/spo.yaml
 trust_region_mode: spo
 ratio_granularity: per_sample
+use_dct_transform: false
+num_learning_epochs: 2
+policy_lr: 0.0003
+num_euler_steps: 10
+num_inference_steps: 10

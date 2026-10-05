@@ -1,0 +1,12 @@
+# FPO's trust region (ppo / per_action) with the DCT ON, K=4.
+# Pairs with configs/baselines/fpo.yaml, which differs only in
+# use_dct_transform: false -> isolates the trust region under the DCT.
+# Same paper hyperparameters as fpo.yaml (lr 3e-4, 10 sampling steps,
+# num_learning_epochs 2), so the DCT is the only difference between the two.
+trust_region_mode: ppo
+ratio_granularity: per_action
+use_dct_transform: true
+num_learning_epochs: 2
+policy_lr: 0.0003
+num_euler_steps: 10
+num_inference_steps: 10

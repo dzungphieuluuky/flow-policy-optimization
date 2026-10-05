@@ -2,9 +2,21 @@
 #   1. per-sample ratio, Eq 10: exponentiate each loss separately so every
 #      (tau, eps) pair clips independently.
 #   2. ASPO, Eq 12: PPO where A>0, SPO where A<0.
-# Identical gradients to FPO on-policy (every ratio == 1); they separate once the
-# run is off-policy, i.e. once num_learning_epochs > 1 or the run drifts.
+# Like FPO it flow-matches the raw action chunk, so the DCT is off; only the
+# trust region and the ratio differ from fpo.yaml. Identical gradients to FPO
+# on-policy (every ratio == 1); they separate once the run is off-policy, i.e.
+# once num_learning_epochs > 1 or the run drifts.
+#
+# Shares fpo.yaml's paper hyperparameters: lr 3e-4, 10 sampling steps,
+# num_learning_epochs 2. The DCT is this repo's contribution, not FPO++'s, so
+# the DCT-on comparison against the default SJFPO config is the interesting one
+# and this file is the DCT-off half of it.
 #
 #   .venv/bin/python scripts/train.py --env Hopper-v5 --config configs/baselines/fpo_pp.yaml
 trust_region_mode: aspo
 ratio_granularity: per_sample
+use_dct_transform: false
+num_learning_epochs: 2
+policy_lr: 0.0003
+num_euler_steps: 10
+num_inference_steps: 10

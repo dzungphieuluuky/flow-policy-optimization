@@ -2,6 +2,16 @@
 # Objective Eq 4/5: PPO-clip on exp(L_CFM_old - L_CFM_new).
 # Ratio Eq 9: exponentiate AFTER averaging the (tau, eps) losses -> one ratio per
 # chunk, so all N_mc samples of a chunk are clipped together or not at all.
+# FPO flow-matches the raw action chunk, so the DCT is off and num_flow_tokens
+# falls back to action_horizon.
+#
+# Paper hyperparameters (Sec 4.2): lr 3e-4, 10 sampling steps, eps_clip 0.05,
+# 8 (tau, eps) pairs, 1024 chunks x 16 updates. num_mc_samples is left at the
+# default 16 (more pairs only helps) and eps_clip already matches.
+# num_learning_epochs: 2 is below FPO's 16 updates per batch, but 1 makes every
+# trust region identical on-policy -- spo - ppo = -(|A|/2eps)(rho-1)^2 is 0 at
+# rho=1 -- so the baseline cannot separate at all. Both samplers move to 10:
+# rollouts use num_euler_steps, eval uses num_inference_steps, and FPO has one.
 #
 #   .venv/bin/python scripts/train.py --env Hopper-v5 --config configs/baselines/fpo.yaml
 #
@@ -9,3 +19,8 @@
 # estimator. Same surrogate and ratio, different critic.
 trust_region_mode: ppo
 ratio_granularity: per_action
+use_dct_transform: false
+num_learning_epochs: 2
+policy_lr: 0.0003
+num_euler_steps: 10
+num_inference_steps: 10

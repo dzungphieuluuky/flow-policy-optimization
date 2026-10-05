@@ -20,82 +20,51 @@ class SJFPOConfig(PreTrainedConfig):
     ``num_euler_steps`` for a sampled-noise start.
     """
 
-    report_to: str = "all"  # wandb | tensorboard | all | none
+    report_to: str = "all"
     n_obs_steps: int = 16
     action_horizon: int = 16
     n_action_steps: int = 16
     action_perturb_std: float = 0.02
-    # Depth, not width, was the deficit: RDT-1B is a width-128 DiT with 31 blocks.
     hidden_dim: int = 256
 
     num_envs: int = 64
     num_mc_samples: int = 16
-    # Reuse accelerates the feature-rank decay that precedes late collapse
-    # (PFO, NeurIPS 2024), and rank loss breaks the trust region.
     num_learning_epochs: int = 1
     chunks_per_update: int = 1024
     batch_size: int = 128
-    # Does not change peak memory: one microbatch's DiT activations are the peak
-    # either way, so batch_size and num_mc_samples are the memory knobs.
     grad_accum_steps: int = 1
 
-    # Denoising error saturates after ~2 reverse steps on robot trajectories
-    # (HDP3); measured 211.7 vs 212.0 return on Hopper for 32% more fps.
     num_euler_steps: int = 4
     num_inference_steps: int = 4
     min_timestep: float = 0.005
     max_timestep: float = 0.995
     timestep_sampling_mode: str = "fpo_beta"
     noise_sampling_mode: str = "normal"
-    # Per-mode std over the token axis. "freq_weighted" requires use_dct_transform:
-    # without the DCT the token axis is time, so there is no frequency to weight.
     noise_scaling_mode: str = "white"
-    # std_k = (1 + (k*pi/H)^2)^(-beta/2). 1.0 is NEED's pink noise; colored-noise
-    # PPO puts the on-policy optimum at 0.5.
     noise_scaling_beta: float = 1.0
     timestep_inverse_cdf_beta: float = 1.0
     timestep_beta_alpha: float = 2.0
     timestep_beta_beta: float = 2.0
 
     gamma: float = 0.99
-    # One epsilon for the whole chunk. Per-frequency clipping has nothing to bind
-    # to: the "sample" reduction averages every token into one number.
     clip_param: float = 0.05
-    trust_region_mode: str = "aspo"  # ppo | spo | aspo, FPO++'s default
-    # FPO Eq 9 exponentiates after averaging the (tau, eps) losses, giving one
-    # ratio per chunk. FPO++ Eq 10 exponentiates each loss separately, so every
-    # (tau, eps) pair is clipped on its own. Identical gradients on-policy.
-    ratio_granularity: str = "per_sample"  # per_action | per_sample
-    # "mean" divides FPO++'s sum (Eq. 8) by tokens*action_dim to keep the loss O(1).
-    # The loss scale IS the trust-region temperature, so clip_param is not
-    # comparable to FPO++'s 0.05 and must be swept.
-    cfm_loss_reduction: str = "mean"  # mean | sum | sqrt
+    trust_region_mode: str = "aspo"
+    ratio_granularity: str = "per_sample"
+    cfm_loss_reduction: str = "mean"
     cfm_clamp: float = 200.0
     cfm_mask_unexecuted: bool = True
     cfm_loss_clamp_negative_advantages: bool = True
     cfm_loss_clamp_negative_advantages_max: float = 200.0
-    log_ratio_cap: float = 10.0  # official cfm_diff_clamp_max, one-sided
+    log_ratio_cap: float = 10.0
 
-    # A real ensemble: members stay independent, so the caller aggregates with min
-    # for the backup and mean for the value loss. At 1 the amin is a no-op.
     num_critics: int = 2
     normalize_advantage: bool = True
-    value_loss_coef: float = 1.0  # the regression target is the raw return
-    # A multiple of the batch return RMS, so the quadratic-to-linear transition
-    # tracks the target's scale. Bounds the per-sample gradient, so a few
-    # large-residual chunks stop owning critic_grad_norm_preclip.
+    value_loss_coef: float = 1.0
     value_huber_delta: float = 1.0
-    # gamma ** action_horizon puts 0.85 of the value target on the critic's own
-    # output, the regime a target network is meant to hold fixed.
     use_target_critic: bool = True
-    # qc and TD-JEPA's 0.005 assumes offline batches; online it left the teacher
-    # tens of rollouts behind. 0.05 is a ~2.5-rollout time constant.
     critic_ema_decay: float = 0.05
 
     use_dct_transform: bool = True
-    # At num_kept_tokens == action_horizon the transform is the full orthonormal
-    # DCT, a no-op on the loss. HDP3 measures 98.5% of robot action energy in the
-    # first two modes (mode 1 alone 93.2%).
     num_kept_tokens: int = 4
 
     dit_depth: int = 6
@@ -104,26 +73,16 @@ class SJFPOConfig(PreTrainedConfig):
     time_embed_dim: int = 128
     timestep_scale: float = 10000.0
 
-    # 1e-5 was sized for ~1e5 updates; a 1M-step run is 61. Measured at 1e-4 the
-    # critic grad norm drops 29 -> 10 with the return unchanged.
     policy_lr: float = 1e-4
-    critic_lr: float = 1e-5  # legacy split-checkpoint compatibility
+    critic_lr: float = 1e-5
     optimizer_weight_decay: float = 1e-4
-    # Equal by default: Dohare et al. (2306.13812) report policy collapse being
-    # mitigated by matching Adam's two moment decays, so (0.9, 0.999) is suspect.
     adam_betas: tuple[float, float] = (0.999, 0.999)
-    # Under AdamW the threshold does not set the step size; it decides whether a
-    # transient spike may pollute the second-moment estimate.
     max_grad_norm: float = 1.0
-    # Clipped separately from the actor: the critic's norm is two orders larger.
     critic_max_grad_norm: float | None = 1.0
     ema_decay: float = 0.95
     ema_warmup_steps: int = 500
 
-    # Too few episodes puts the standard error near the size of the regressions
-    # these knobs watch for.
     eval_max_episodes: int = 50
-    # The run ends on the peak region rather than the plateau after it.
     stop_return_frac: float = 0.7
     stop_patience: int = 5
     lr_decay: float = 0.5
@@ -133,8 +92,6 @@ class SJFPOConfig(PreTrainedConfig):
 
     def __post_init__(self) -> None:
         super().__post_init__()
-        # n_action_steps is optional, so it resolves here rather than in the
-        # validators that read it.
         if self.n_action_steps is None:
             self.n_action_steps = self.action_horizon
         self.validate_geometry()
@@ -315,7 +272,6 @@ class SJFPOConfig(PreTrainedConfig):
                 f"num_kept_tokens={self.num_kept_tokens} must satisfy "
                 f"1 <= K <= action_horizon={self.action_horizon}"
             )
-
 
     def validate_features(self) -> None:
         """Require the ``observation.state`` and ``action`` features; the base
