@@ -49,7 +49,7 @@ class SJFPOConfig(PreTrainedConfig):
     gamma: float = 0.99
     clip_param: float = 0.05
     trust_region_mode: str = "aspo"
-    ratio_granularity: str = "per_sample"
+    ratio_granularity: str = "per_sample"  # per_chunk | per_action | per_sample
     cfm_loss_reduction: str = "mean"
     cfm_clamp: float = 200.0
     cfm_mask_unexecuted: bool = True
@@ -167,9 +167,11 @@ class SJFPOConfig(PreTrainedConfig):
             )
         if self.trust_region_mode not in {"ppo", "spo", "aspo"}:
             raise ValueError("trust_region_mode must be 'ppo', 'spo', or 'aspo'")
-        if self.ratio_granularity not in {"per_action", "per_sample"}:
+        if self.ratio_granularity not in {"per_chunk", "per_action", "per_sample"}:
             raise ValueError(
-                "ratio_granularity must be 'per_action' or 'per_sample'"
+                "ratio_granularity must be 'per_chunk' (FPO Eq 9, one ratio per "
+                "chunk), 'per_action' (FPO++ Eq 10, one per (tau, eps) pair), or "
+                "'per_sample' (one per token)"
             )
         if self.cfm_loss_reduction not in {"mean", "sum", "sqrt"}:
             raise ValueError("cfm_loss_reduction must be 'mean', 'sum', or 'sqrt'")

@@ -1,11 +1,14 @@
-# FPO's trust region (ppo / per_action) with the DCT ON, K=4.
-# Pairs with configs/baselines/fpo.yaml, which differs only in
-# use_dct_transform: false -> isolates the trust region under the DCT.
-# Same paper hyperparameters as fpo.yaml (lr 3e-4, 10 sampling steps,
-# num_learning_epochs 2), so the DCT is the only difference between the two.
+# FPO's trust region with the DCT on, K=4. Differs from
+# configs/baselines/fpo.yaml only in use_dct_transform, so the pair isolates the
+# DCT; cfm_mask_unexecuted expands the 4 coeffs back onto 16 action steps, so the
+# loss still sums 16 x 3 elements and max_grad_norm 48 carries over.
+#
+#   .venv/bin/python scripts/train.py --env Hopper-v5 --config configs/ablations/dct_ppo.yaml
 trust_region_mode: ppo
-ratio_granularity: per_action
+ratio_granularity: per_chunk
 use_dct_transform: true
+cfm_loss_reduction: sum
+max_grad_norm: 48.0
 num_learning_epochs: 2
 policy_lr: 0.0003
 num_euler_steps: 10

@@ -280,9 +280,9 @@ def train_sjfpo_run(
     """One SJFPO training run. Env builds before any CUDA init, so forked
     workers do not inherit the parent's CUDA context (cleanrl / SB3 ordering).
 
-    Accelerate contract: backward every microbatch, sync and step only at the
-    group boundary, always flush a final partial group. Gradients clip per
-    optimizer, not jointly, since the critic's norm owns a shared budget.
+    Accumulation contract: backward every microbatch, step only at the group
+    boundary, always flush a final partial group. Gradients clip per optimizer,
+    not jointly, since the critic's norm owns a shared budget.
     """
     cfg = cfg or SJFPOConfig()
     out_dir = Path(out_dir)
@@ -604,9 +604,9 @@ def train_sjfpo_run(
             regressed_now = False
             diverge_msg = ""
             if global_step >= next_eval or global_step >= total_steps:
-                # The EMA actor once it is warm: the same weights averaged over ~20
-                # rollouts, which turns a curve this noisy into a readable one. The
-                # live weights go back right after, so training never runs on it.
+                # The EMA actor once it is warm: at decay 0.95 the shadow averages
+                # the last ~20 optimizer steps, which smooths a curve this noisy.
+                # The live weights go back right after.
                 displaced = policy.swap_in_ema(global_step)
                 try:
                     eval_results = evaluator.evaluate(

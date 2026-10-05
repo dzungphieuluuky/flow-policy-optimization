@@ -174,7 +174,7 @@ def compute_mc_xt(
 ) -> torch.Tensor:
     """Interpolate noise to action to form the flow point.
 
-    Returns ``[-1, *flow_shape]``.
+    Returns ``[B * M, *flow_shape]``.
     """
     t = flatten_mc_timestep.expand(-1, -1, flow_shape[-1])
     noise = flatten_mc_noise.reshape(-1, *flow_shape)
@@ -469,17 +469,18 @@ class SJFPOPolicy(PreTrainedPolicy):
     def update_target_critic(self) -> None:
         """Polyak the target critic toward the live one. First call hard-copies.
 
-        ``gamma ** action_horizon`` puts 0.85 of every value target on the live
-        critic's own output, so a slow teacher is the guard; qc and TD-JEPA use
-        the same one at ``tau=0.005``.
+        ``critic_ema_decay`` is the copy *rate*, so the teacher keeps
+        ``1 - decay`` of itself per optimizer step: 0.05 lags a few updates and
+        tracks the rollout closely, which is what the config's ~2.5-rollout time
+        constant means. qc and TD-JEPA instead use 0.005.
         """
         if not self._target_critic_initialised:
             self.target_critic.load_state_dict(self.critic.state_dict())
             self._target_critic_initialised = True
             return
         decay = self.config.critic_ema_decay
-        # Multi-tensor ops: the critic is 26 parameters, so a Python loop is 78
-        # launches per optimizer step against foreach's 28.
+        # One foreach pass over the shadow and its source instead of two launches
+        # per tensor.
         target_params = list(self.target_critic.parameters())
         torch._foreach_mul_(target_params, 1.0 - decay)
         torch._foreach_add_(
@@ -741,6 +742,10 @@ class SJFPOPolicy(PreTrainedPolicy):
         Mask and layout return together because they are only consistent with
         each other, and a mask over unexpanded velocities lands on the wrong axis
         and fails silently. Both ``l_old`` and ``l_new`` must come through here.
+
+        ``cfm_mask_unexecuted`` only gates the DCT-on path: with the DCT off the
+        velocities already are the action steps, so the mask is applied either
+        way and the flag reads as honoured when it is not.
         """
         if cfg.use_dct_transform and cfg.cfm_mask_unexecuted:
             steps = self.get_token_count_for_cfm_loss(cfg)
@@ -1072,12 +1077,13 @@ class SJFPOPolicy(PreTrainedPolicy):
         compute_info: bool = True,
         check_finite: bool = True,
     ) -> tuple[torch.Tensor, dict | None]:
-        """ASPO policy and value losses for one minibatch -> ``(loss, info)``.
+        """ASPO policy and Huber value losses for one minibatch -> ``(loss, info)``.
 
         One chunk is one macro-action. ``action_is_pad`` masks unrun steps out
         of the CFM loss, so a short chunk is never fitted on them. CFM losses run
-        under target velocities in fp32; the value loss is MSE against the raw
-        return (FPO++).
+        under target velocities in fp32; ``ratio_granularity`` picks the trust
+        region: ``per_chunk`` is FPO Eq 9, ``per_action`` FPO++ Eq 10, and
+        ``per_sample`` clips per token.
 
         ``compute_info=False`` skips the reductions and returns ``info=None``.
         """
@@ -1220,7 +1226,8 @@ class SJFPOPolicy(PreTrainedPolicy):
                 cfg, action_is_pad, v_new_r_f, v_star_f
             )
 
-            adv_mc = normalised_advantages.float().unsqueeze(1)
+            adv = normalised_advantages.float()
+            adv_mc = adv.unsqueeze(1)
             l_new, l_new_token = compute_cfm_loss(
                 v_new_r_f, v_star_f, cfg, "both", loss_mask
             )
@@ -1228,18 +1235,23 @@ class SJFPOPolicy(PreTrainedPolicy):
             ratio = compute_policy_ratio(l_old, l_new, cfg, advantage=adv_mc)
             self.cfm_above_clamp_frac = (l_new > cfg.cfm_clamp).float().mean().detach()
 
-            # FPO Eq 9 exponentiates after the (tau, eps) average, giving one
-            # ratio per chunk. FPO++ Eq 10 exponentiates per sample, so each
-            # (tau, eps) pair clips independently -- a finer trust region once
-            # the run is off-policy. Same gradients when ratio == 1 throughout.
-            if cfg.ratio_granularity == "per_sample":
-                surrogate = compute_aspo_surrogate(
+            if cfg.ratio_granularity == "per_chunk":
+                # FPO Eq 9: mean the MC losses, THEN exponentiate. One ratio per
+                # chunk, so all its (tau, eps) pairs clip together or not at all.
+                l_old_c, l_new_c = l_old.mean(dim=1), l_new.mean(dim=1)
+                delta = l_old_c - l_new_c
+                ratio = compute_policy_ratio(l_old_c, l_new_c, cfg, advantage=adv)
+                policy_per_chunk = -compute_aspo_surrogate(ratio, adv, cfg)
+            elif cfg.ratio_granularity == "per_sample":
+                # One ratio per token: finer than either paper's trust region.
+                delta = l_old - l_new
+                policy_per_chunk = -compute_aspo_surrogate(
                     ratio_token, adv_mc.unsqueeze(-1), cfg
-                )
-                policy_per_chunk = -surrogate.mean(dim=(1, 2))
+                ).mean(dim=(1, 2))
             else:
-                surrogate = compute_aspo_surrogate(ratio, adv_mc, cfg)
-                policy_per_chunk = -surrogate.mean(dim=1)
+                # FPO++ Eq 10: one ratio per (tau, eps) pair.
+                delta = l_old - l_new
+                policy_per_chunk = -compute_aspo_surrogate(ratio, adv_mc, cfg).mean(dim=1)
 
         with autocast_context(device):
             raw_value_pred = self.critic(states, actions).float()  # [num_critics, n]
@@ -1283,6 +1295,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             l_new=l_new,
             ratio=ratio,
             ratio_token=ratio_token,
+            delta=delta,
             action_is_pad=action_is_pad,
             v_star_f=v_star_f,
             raw_value_pred=raw_value_pred,
@@ -1304,6 +1317,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         l_new,
         ratio,
         ratio_token,
+        delta,
         action_is_pad,
         v_star_f,
         raw_value_pred,
@@ -1322,7 +1336,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             **compute_ratio_metrics(
                 ratio=ratio,
                 ratio_token=ratio_token,
-                delta=l_old - l_new,
+                delta=delta,
                 action_is_pad=action_is_pad,
                 cfg=cfg,
             ),

@@ -108,7 +108,7 @@ class SinusoidalEncoding(nn.Module):
 def modulate(x: torch.Tensor, shift: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
     """adaLN: ``x * (1 + scale) + shift``. ``torch.addcmul(shift, x, 1 + scale)``
     is the same value in one kernel instead of three, on the widest tensor in
-    the DiT, twelve times per microbatch. Reads the raw ``scale``, so callers
-    that bound the gain must clamp before calling."""
+    the DiT, once per block. Reads the raw ``scale``, so callers that bound the
+    gain must clamp before calling."""
     return torch.addcmul(shift, x, 1.0 + scale)
 

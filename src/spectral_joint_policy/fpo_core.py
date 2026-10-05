@@ -169,9 +169,11 @@ def compute_cfm_loss(
     ``token_mean``: divide by action_dim only, so masking cannot move it.
     ``both``: pair off one masked square. ``scalar``: one number.
 
-    ``action_is_pad`` ``[n, horizon]`` True where padded: zero those rows and
-    renormalise each sample by its executed count, so a short chunk keeps a
-    full chunk's magnitude.
+    ``action_is_pad`` ``[n, horizon]`` True where padded: zero those rows and,
+    for every reduction but ``sum``, renormalise by the executed count, so a
+    short chunk keeps a full chunk's magnitude. ``sum`` deliberately does not
+    renormalise -- it is Eq. 8's squared norm over the whole chunk -- so a short
+    chunk's loss, and the trust region it carries, scale with its length.
     """
     if v_hat.shape != v_star.shape:
         raise ValueError(
@@ -246,7 +248,11 @@ def compute_policy_ratio(
     cfg: SJFPOConfig,
     advantage: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """FPO++ ratio exp(l_old - l_new), standing in for a log-prob ratio.
+    """Ratio exp(l_old - l_new), standing in for a log-prob ratio.
+
+    Elementwise, so the caller's reduction fixes the granularity: ``per_chunk``
+    passes the MC means (one ratio per chunk), ``per_action`` the per-pair
+    losses, ``per_sample`` the per-token losses.
 
     Clamp both losses, optionally clamp l_new harder on A<0, then cap the
     log-ratio one-sided with an STE: capped forward, original backward.

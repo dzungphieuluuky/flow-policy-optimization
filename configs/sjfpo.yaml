@@ -42,9 +42,10 @@ use_amp: false
 gamma: 0.99
 clip_param: 0.05
 trust_region_mode: aspo  # ppo | spo | aspo
-cfm_loss_reduction: mean
+ratio_granularity: per_sample  # per_chunk (FPO Eq 9) | per_action (FPO++ Eq 10) | per_sample (per token)
+cfm_loss_reduction: mean  # mean | sum | sqrt; 'sum' is FPO Eq 8 and rescales the trust region
 cfm_clamp: 200.0
-cfm_mask_unexecuted: true
+cfm_mask_unexecuted: true  # DCT-on only: with the DCT off the mask applies either way
 cfm_loss_clamp_negative_advantages: true
 cfm_loss_clamp_negative_advantages_max: 200.0
 log_ratio_cap: 10.0
@@ -72,6 +73,7 @@ timestep_scale: 10000.0  # scales raw flow time into the network input range
 policy_lr: 0.0001
 critic_lr: 0.00001
 optimizer_weight_decay: 0.0001
+adam_betas: [0.999, 0.999]  # symmetric: Dohare et al. (2306.13812) on policy collapse
 max_grad_norm: 1.0  # rsl-rl default; 200.0 never bound a joint norm of up to 400
 critic_max_grad_norm: 1.0  # null disables critic clipping
 ema_decay: 0.95
