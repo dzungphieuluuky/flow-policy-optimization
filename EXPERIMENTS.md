@@ -171,6 +171,60 @@ represents. Could be noise. It is cheap.
 
 ---
 
+## E6 — Baseline comparison (FPO / FPO++ / SPO / SJFPO)
+
+One config per variant. Pairs that differ in exactly one field are the ones that
+answer a question; the rest are context.
+
+| variant | config | isolated question |
+|---|---|---|
+| SJFPO | none (dataclass defaults) | — |
+| FPO++ | `configs/baselines/fpo_pp.yaml` | vs SPO: the A>0 branch alone |
+| SPO | `configs/baselines/spo.yaml` | vs FPO++: the asymmetric trust region |
+| FPO | `configs/baselines/fpo.yaml` | vs FPO++: the whole FPO++ delta |
+| FPO+DCT | `configs/ablations/dct_ppo.yaml` | vs FPO: the DCT alone |
+
+The three baseline configs carry FPO's paper hyperparameters (lr 3e-4, 10 sampling
+steps, `num_learning_epochs: 2`). `num_learning_epochs: 1` is not usable for a
+comparison: `spo - ppo = -(|A|/2eps)(rho-1)^2` is 0 at rho=1, so all three trust
+regions collapse to one loss on-policy.
+
+```bash
+ENVS="Hopper-v5 Walker2d-v5 HalfCheetah-v5"
+SEEDS="0 1 2"
+STEPS=1000000; EVAL=5000
+VARIANTS="sjfpo fpo:configs/baselines/fpo.yaml fpo_pp:configs/baselines/fpo_pp.yaml spo:configs/baselines/spo.yaml dct_ppo:configs/ablations/dct_ppo.yaml"
+
+for v in $VARIANTS; do
+  name=${v%%:*}; cfg=${v#*:}; [ "$cfg" = "$name" ] && cfg=""
+  for e in $ENVS; do for s in $SEEDS; do
+    [ -n "$cfg" ] && cfg_arg="--config $cfg" || cfg_arg=""
+    WANDB_MODE=offline .venv/bin/python scripts/train.py \
+      --env $e --seed $s --total_steps $STEPS --eval_steps $EVAL \
+      $cfg_arg --out_dir ./tmp/e6/$name --sjfpo.report_to none
+  done; done
+done
+```
+
+Read `eval_history.csv` in each run dir; `best_artifact` is in the stdout JSON. Each
+run dir is `tmp/e6/<variant>/sjfpo_<env>_seed<seed>`.
+
+Two confounds to state in any table built from this:
+
+- **Default SJFPO vs `fpo_pp.yaml` differs in 5 fields**, not one: the DCT plus the
+  four paper hyperparameters above. Give the `sjfpo` arm the same four on the CLI and
+  the DCT becomes the only difference:
+  `--sjfpo.policy_lr 0.0003 --sjfpo.num_learning_epochs 2 --sjfpo.num_euler_steps 10 --sjfpo.num_inference_steps 10`.
+  `fpo.yaml` vs `dct_ppo.yaml` already isolates the DCT with no CLI flags.
+- **`stop_return_frac: 0.7` ends a run on its plateau**, at different wall-clock per
+  arm. Report the step count each arm consumed, not just the return.
+
+Locomotion is the wrong place for the DCT claim (near constant-velocity actions, see
+E4). E6 settles the baselines; the DCT result needs the contact-rich task discussed in
+`README.md` before it means anything.
+
+---
+
 ## Expected outcome, ranked
 
 1. **The collapse.** Large, and not a DCT result. Fix likely in the trust region or
@@ -182,7 +236,8 @@ represents. Could be noise. It is cheap.
 ## Do not spend time on
 
 - **Capacity.** 20.7M params on a 3-dim action space is not the constraint.
-- **`num_euler_steps`.** 4 ≈ 16 already measured (211.7 vs 212.0). Saturated.
+- **`num_euler_steps`.** 4 ≈ 16 already measured (211.7 vs 212.0). Saturated. The
+  baselines use 10 anyway, for faithfulness to the paper, not because 10 is better.
 - **Longer chunks.** `n_action_steps == action_horizon == 16` already runs the whole
   chunk open-loop.
 
