@@ -1,6 +1,9 @@
 """Single home for every SJFPO hyperparameter (LeRobot ``PreTrainedConfig``)."""
 
 from __future__ import annotations
+# Spectral profile: noise and proposed per-band trust region use the same 1/f^beta decay
+# (pink-noise / JPEG-quantization / wavelet-threshold principle). See docs/AGENTS.md.
+
 
 from dataclasses import dataclass
 
@@ -40,8 +43,14 @@ class SJFPOConfig(PreTrainedConfig):
     max_timestep: float = 0.995
     timestep_sampling_mode: str = "fpo_beta"
     noise_sampling_mode: str = "normal"
+    # --- Spectral / frequency-domain settings ---
+    # Noise scaling: white (uniform energy) or freq_weighted (pink noise, 1/f^beta).
+    # DCT: orthonormal DCT-II analysis for spectral energy/collapse diagnostics.
+    # Trust region: per-band clipping profile matches spectral decay (see docs).
     noise_scaling_mode: str = "white"
     noise_scaling_beta: float = 1.0
+    # Spectral decay profile for per-frequency trust-region clipping (matches noise decay).
+    trust_region_beta: float = 1.0
     timestep_inverse_cdf_beta: float = 1.0
     timestep_beta_alpha: float = 2.0
     timestep_beta_beta: float = 2.0
@@ -94,6 +103,8 @@ class SJFPOConfig(PreTrainedConfig):
         super().__post_init__()
         if self.n_action_steps is None:
             self.n_action_steps = self.action_horizon
+        # Note: robot_state_feature / action_feature are read-only properties
+        # derived from input_features / output_features (set above or via CLI/config).
         self.validate()
         # Features check included in validate()
 

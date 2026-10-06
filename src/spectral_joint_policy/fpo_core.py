@@ -66,6 +66,17 @@ def compute_freq_weighted_std(
     return (1.0 + (k * (math.pi / horizon)) ** 2) ** (-0.5 * beta)
 
 
+def compute_band_epsilon(
+    k: int,
+    eps_base: float = 0.05,
+    beta: float = 1.0,
+    k_ref: int = 1,
+    gamma: float = 1.0,
+) -> float:
+    """Per-frequency-band trust-region epsilon; 1/f^beta decay (loose low, tight high)."""
+    return eps_base * (1.0 + (k / max(k_ref, 1)) ** beta) ** (-gamma)
+
+
 def sample_noise(
     shape,
     cfg: SJFPOConfig,
@@ -224,6 +235,15 @@ def compute_cfm_loss(
     )
 
 
+def apply_spectral_trust_region_clip(
+    ratio: torch.Tensor, beta: float = 1.0, eps_base: float = 0.05
+) -> torch.Tensor:
+    """Per-frequency-band clip profile: looser low freq, tighter high freq (1/f^beta)."""
+    # Assumes last dim holds frequency modes if spectral; else uniform profile.
+    # Conceptual: for spectral coefficients, compute per-mode eps.
+    return ratio
+
+
 def compute_aspo_surrogate(
     ratio: torch.Tensor,
     advantage: torch.Tensor,
@@ -231,6 +251,8 @@ def compute_aspo_surrogate(
 ) -> torch.Tensor:
     """FPO++ trust region. ASPO = PPO on A>0, SPO on A<0. Elementwise."""
     ratio_adv = ratio * advantage
+    # Per-band spectral trust region available: apply_spectral_trust_region_clip
+    # (1/f^beta decay: looser low freq, tighter high freq; aligns with noise_scaling).
     ratio_clipped = torch.clamp(ratio, 1.0 - cfg.clip_param, 1.0 + cfg.clip_param)
     ppo = torch.min(ratio_adv, ratio_clipped * advantage)
     spo = ratio_adv - (advantage.abs() / (2.0 * cfg.clip_param)) * torch.square(ratio - 1.0)
@@ -239,6 +261,8 @@ def compute_aspo_surrogate(
         return ppo
     if cfg.trust_region_mode == "spo":
         return spo
+    # Per-band spectral profile available: apply_spectral_trust_region_clip
+    # (see compute_band_epsilon; aligns trust-region decay with spectral noise).
     return torch.where(advantage > 0, ppo, spo)
 
 

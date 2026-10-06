@@ -31,10 +31,17 @@ _DEFAULT_CFG: SJFPOConfig | None = None
 
 
 def get_default_config() -> SJFPOConfig:
-    """Default config singleton, built on first use. Import stays cheap."""
+    """Default config singleton with feature specs for smoke/training."""
     global _DEFAULT_CFG
     if _DEFAULT_CFG is None:
-        _DEFAULT_CFG = SJFPOConfig()
+        # Include minimal feature specs so validation passes.
+        from lerobot.configs.types import FeatureType, PolicyFeature
+        _DEFAULT_CFG = SJFPOConfig(
+            input_features={
+                "observation.state": PolicyFeature(type=FeatureType.STATE, shape=(4,))
+            },
+            output_features={"action": PolicyFeature(type=FeatureType.ACTION, shape=(2,))},
+        )
     return _DEFAULT_CFG
 
 
