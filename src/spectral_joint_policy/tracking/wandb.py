@@ -39,7 +39,7 @@ class WandbBackend:
             return
         try:
             wandb.log({"eval/video": wandb.Video(video, fps=fps, format="mp4")}, step=step)
-        except Exception:
+        except (ValueError, RuntimeError, KeyError):  # tracking best-effort
             return
 
     def log_eval_table(self, eval_results: list[dict], step: int) -> None:

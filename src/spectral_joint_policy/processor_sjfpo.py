@@ -9,13 +9,12 @@ from __future__ import annotations
 import torch
 
 from lerobot.configs import PipelineFeatureType, PolicyFeature
-from lerobot.processor.pipeline import ProcessorStep, ProcessorStepRegistry
+from lerobot.processor.pipeline import ProcessorStep
 from lerobot.utils.constants import ACTION, OBS_STATE
 
-from spectral_joint_policy.networks import RunningMeanStd
+from spectral_joint_policy.encoder import RunningMeanStd
 
 
-@ProcessorStepRegistry.register(name="sjfpo_observation_normalizer")
 class SJFPOObservationProcessorStep(ProcessorStep):
     """Holds a reference to the policy's ``RunningMeanStd``, not a copy, so stat
     updates fold into the buffers the policy reads at forward time."""
@@ -41,14 +40,11 @@ class SJFPOObservationProcessorStep(ProcessorStep):
         return features
 
 
-@ProcessorStepRegistry.register(name="sjfpo_action_unnormalizer")
 class SJFPOActionPostprocessorStep(ProcessorStep):
     """Unscale action chunks from ``[-1, 1]`` to env bounds.
     ``set_action_bounds`` clears both caches."""
 
     def __init__(self, action_low: torch.Tensor, action_high: torch.Tensor):
-        self._scale_cache: dict[tuple[str, torch.dtype], torch.Tensor] = {}
-        self._bias_cache: dict[tuple[str, torch.dtype], torch.Tensor] = {}
         self.set_action_bounds(action_low, action_high)
 
     def set_action_bounds(
@@ -72,39 +68,12 @@ class SJFPOActionPostprocessorStep(ProcessorStep):
 
         self._scale_cpu = 0.5 * (high - low)
         self._bias_cpu = 0.5 * (high + low)
-        self._scale_cache.clear()
-        self._bias_cache.clear()
-
-    def compute_coefs_for(self, ref: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """Cached affine coefficients for a reference tensor's device and dtype."""
-        key = (str(ref.device), ref.dtype)
-        scale = self._scale_cache.get(key)
-        if scale is None:
-            scale = self._scale_cpu.to(device=ref.device, dtype=ref.dtype)
-            bias = self._bias_cpu.to(device=ref.device, dtype=ref.dtype)
-            self._scale_cache[key] = scale
-            self._bias_cache[key] = bias
-        return scale, self._bias_cache[key]
-
-    def to(self, device: torch.device | str) -> "SJFPOActionPostprocessorStep":
-        """Pre-populate the cache for ``device``. ``unnormalize`` would fill it on
-        first call; this keeps the transfer out of the hot path."""
-        device = torch.device(device)
-        key = (str(device), torch.float32)
-        self._scale_cache.setdefault(
-            key, self._scale_cpu.to(device=device, dtype=torch.float32)
-        )
-        self._bias_cache.setdefault(
-            key, self._bias_cpu.to(device=device, dtype=torch.float32)
-        )
-        self.action_low = self.action_low.to(device=device)
-        self.action_high = self.action_high.to(device=device)
-        return self
 
     @torch.inference_mode()
     def unnormalize(self, scaled: torch.Tensor) -> torch.Tensor:
-        """Unscale a chunk into real env bounds. Identity at +/-1."""
-        scale, bias = self.compute_coefs_for(scaled)
+        """Unscale a chunk into real env bounds. Direct, no cache."""
+        scale = self._scale_cpu.to(device=scaled.device, dtype=scaled.dtype)
+        bias = self._bias_cpu.to(device=scaled.device, dtype=scaled.dtype)
         return torch.addcmul(bias, scale, scaled)
 
     @torch.inference_mode()

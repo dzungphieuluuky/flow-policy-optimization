@@ -36,7 +36,7 @@ class TensorboardBackend:
             buf = io.BytesIO()
             write_video(buf, video.permute(0, 3, 1, 2), fps=fps, format="mp4")
             self.writer.add_video("eval/video", torch.frombuffer(buf.getvalue(), dtype=torch.uint8), fps, step)
-        except Exception:
+        except (ValueError, RuntimeError, KeyError):  # tracking best-effort
             return
 
     def finish(self, exit_code: int) -> None:

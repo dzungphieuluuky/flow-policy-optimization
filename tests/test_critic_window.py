@@ -26,7 +26,7 @@ member perturbed in its chunk branch must move its own output only.
 import pytest
 import torch
 
-from spectral_joint_policy.networks import Critic
+from spectral_joint_policy.critic import Critic
 
 OBS, HIDDEN, STEPS, ACT, H = 11, 32, 8, 3, 6
 

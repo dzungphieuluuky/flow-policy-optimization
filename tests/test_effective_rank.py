@@ -9,7 +9,7 @@ inputs of known rank rather than against a reference implementation.
 import pytest
 import torch
 
-from spectral_joint_policy.networks import SJFPOFlowModel, effective_rank
+from spectral_joint_policy.flow import SJFPOFlowModel, effective_rank
 
 N, HIDDEN = 128, 128
 

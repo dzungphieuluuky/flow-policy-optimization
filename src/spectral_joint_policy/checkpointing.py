@@ -80,7 +80,8 @@ def save_policy_checkpoint(
     separate param groups, so one ``step`` drives both while clipping stays
     per role.
     """
-    from spectral_joint_policy.modeling_sjfpo import SJFPOPolicy  # lazy: import-light module
+    # Deferred import: circular dependency checkpointing <-> modeling_sjfpo.
+    from spectral_joint_policy.modeling_sjfpo import SJFPOPolicy
 
     if not isinstance(policy, SJFPOPolicy):
         raise ValueError(
@@ -136,7 +137,8 @@ def load_optimizer(policy, d: Path) -> torch.optim.Optimizer:
     drift. Fails loudly on a structural mismatch instead of relying on
     ``load_state_dict``'s opaque errors.
     """
-    from spectral_joint_policy.modeling_sjfpo import build_optimizer  # lazy: import-light module
+    # Deferred import (circular: checkpointing uses modeling_sjfpo optimizer).
+    from spectral_joint_policy.modeling_sjfpo import build_optimizer
 
     optimizer = build_optimizer(policy)
 
@@ -144,7 +146,7 @@ def load_optimizer(policy, d: Path) -> torch.optim.Optimizer:
         opt_state = torch.load(
             d / OPTIMIZER_FILE, map_location="cpu", weights_only=True
         )
-    except Exception as e:
+    except (OSError, RuntimeError, ValueError) as e:
         raise ResumeError(
             f"failed to unpickle {d / OPTIMIZER_FILE}: {e}. "
             "If the optimizer was subclassed with non-tensor state, re-save "
@@ -167,7 +169,7 @@ def load_optimizer(policy, d: Path) -> torch.optim.Optimizer:
         )
     try:
         optimizer.load_state_dict(opt_state)
-    except Exception as e:
+    except (ValueError, RuntimeError, KeyError) as e:
         raise ResumeError(f"optimizer.load_state_dict failed: {e}") from e
     return optimizer
 

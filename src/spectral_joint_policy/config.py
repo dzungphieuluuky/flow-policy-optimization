@@ -4,18 +4,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import yaml
 
 ENV_REGISTRY_PATH = Path(__file__).resolve().parents[2] / "configs" / "envs.yaml"
 
-try:
-    import yaml
+with open(ENV_REGISTRY_PATH) as f:
+    _ENV_REGISTRY = yaml.safe_load(f) or {}
 
-    with open(ENV_REGISTRY_PATH) as f:
-        _ENV_REGISTRY = yaml.safe_load(f) or {}
-except Exception:
-    _ENV_REGISTRY = {}
-
-_REGISTRY_KEYS = list(_ENV_REGISTRY.keys()) if isinstance(_ENV_REGISTRY, dict) else []
+_REGISTRY_KEYS = list(_ENV_REGISTRY.keys())
 KNOWN_ENVS = tuple(_REGISTRY_KEYS)
 
 
@@ -25,14 +21,11 @@ def get_observation_action_dim(env_id: str) -> tuple[int, int]:
     ``RuntimeError`` if PyYAML is missing. ``KeyError`` if ``env_id`` is not
     in the registry.
     """
-    try:
-        import yaml
-    except ImportError:
-        raise RuntimeError("pyyaml required for --env lookup (pip install pyyaml)")
     with open(ENV_REGISTRY_PATH) as f:
         registry = yaml.safe_load(f)
-    try:
-        entry = registry[env_id]
-    except KeyError:
+    if not registry:
+        raise KeyError(f"registry empty at {ENV_REGISTRY_PATH}")
+    entry = registry.get(env_id)
+    if entry is None:
         raise KeyError(f"unknown env {env_id!r}; add it to {ENV_REGISTRY_PATH}")
     return int(entry["obs_dim"]), int(entry["action_dim"])

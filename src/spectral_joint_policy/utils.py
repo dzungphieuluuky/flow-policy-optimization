@@ -29,7 +29,7 @@ def is_rtx_1000_pro_blackwell() -> bool:
         return False
     try:
         name = torch.cuda.get_device_name(0).lower()
-    except Exception:
+    except (RuntimeError, ValueError):
         return False
     return "rtx pro 1000" in name and "blackwell" in name
 
@@ -51,7 +51,7 @@ def detect_gpu() -> dict | None:
     try:
         name = torch.cuda.get_device_name(0)
         major, minor = torch.cuda.get_device_capability(0)
-    except Exception:
+    except (RuntimeError, ValueError, AttributeError):
         return None
     return {
         "device_name": name,

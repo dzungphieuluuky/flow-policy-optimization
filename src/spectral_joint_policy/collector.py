@@ -556,7 +556,7 @@ def flush_on_collection_error(
     if on_error_flush is not None:
         try:
             on_error_flush()
-        except Exception:
+        except (ValueError, RuntimeError):
             pass
 
 
@@ -842,7 +842,7 @@ def collect_chunks_vec(
             return buffer
         return [r for traj in records for r in traj]  # type: ignore[union-attr]
 
-    except Exception:
+    except (ValueError, RuntimeError, KeyError):
         flush_on_collection_error(on_error_flush)
         raise
 
@@ -946,6 +946,6 @@ def collect_chunks(
         if buffer is not None:
             return buffer
         return records  # type: ignore[return-value]
-    except Exception:
+    except (ValueError, RuntimeError, KeyError):
         flush_on_collection_error(on_error_flush)
         raise

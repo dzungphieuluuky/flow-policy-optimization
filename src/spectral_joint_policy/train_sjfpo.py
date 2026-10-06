@@ -248,7 +248,8 @@ def make_vec_env(env_name: str, num_envs: int, record: dict | None = None):
         if record is not None:
             record["vector_env"] = "forkserver"
         return env
-    except Exception as exc:
+    except (ValueError, RuntimeError, ImportError) as exc:
+        # Fallback only on env/vectorisation errors, not user interruption.
         warnings.warn(
             f"AsyncVectorEnv(env_name={env_name!r}, num_envs={num_envs}, "
             f"context='forkserver') failed: {exc!r}. Falling back to "

@@ -94,14 +94,12 @@ class SJFPOConfig(PreTrainedConfig):
         super().__post_init__()
         if self.n_action_steps is None:
             self.n_action_steps = self.action_horizon
-        self.validate_geometry()
-        self.validate_loss_params()
-        self.validate_optimizer()
-        self.validate_eval_schedule()
-        self.validate_flags()
+        self.validate()
+        # Features check included in validate()
 
-    def validate_geometry(self) -> None:
-        """Validate observation, action, and DiT shape parameters."""
+    def validate(self) -> None:
+        """All checks inline; no extra method names."""
+        # Geometry / shape
         if self.n_obs_steps < 1:
             raise ValueError(f"n_obs_steps={self.n_obs_steps} must be >= 1")
         if self.report_to not in ("wandb", "tensorboard", "all", "none"):
@@ -140,9 +138,7 @@ class SJFPOConfig(PreTrainedConfig):
             raise ValueError(f"time_embed_dim={self.time_embed_dim} must be >= 1")
         if self.timestep_scale <= 0:
             raise ValueError(f"timestep_scale={self.timestep_scale} must be > 0")
-
-    def validate_eval_schedule(self) -> None:
-        """Validate the eval budget and the plateau-driven stop and decay."""
+        # Eval schedule
         if self.eval_max_episodes < 1:
             raise ValueError(f"eval_max_episodes={self.eval_max_episodes} must be >= 1")
         if not 0.0 < self.stop_return_frac <= 1.0:
@@ -156,9 +152,7 @@ class SJFPOConfig(PreTrainedConfig):
             raise ValueError(f"lr_decay={self.lr_decay} must satisfy 0 < factor <= 1")
         if self.max_lr_decays < 0:
             raise ValueError(f"max_lr_decays={self.max_lr_decays} must be >= 0")
-
-    def validate_loss_params(self) -> None:
-        """Validate discount, trust-region, clamp, and sampling parameters."""
+        # Loss params
         if not 0.0 < self.gamma <= 1.0:
             raise ValueError(f"gamma={self.gamma} must satisfy 0 < gamma <= 1")
         if not 0.0 < self.clip_param < 1.0:
@@ -169,9 +163,7 @@ class SJFPOConfig(PreTrainedConfig):
             raise ValueError("trust_region_mode must be 'ppo', 'spo', or 'aspo'")
         if self.ratio_granularity not in {"per_chunk", "per_action", "per_sample"}:
             raise ValueError(
-                "ratio_granularity must be 'per_chunk' (FPO Eq 9, one ratio per "
-                "chunk), 'per_action' (FPO++ Eq 10, one per (tau, eps) pair), or "
-                "'per_sample' (one per token)"
+                "ratio_granularity must be 'per_chunk' (FPO Eq 9), 'per_action' (FPO++ Eq 10), or 'per_sample'"
             )
         if self.cfm_loss_reduction not in {"mean", "sum", "sqrt"}:
             raise ValueError("cfm_loss_reduction must be 'mean', 'sum', or 'sqrt'")
@@ -186,15 +178,9 @@ class SJFPOConfig(PreTrainedConfig):
                 "require 0 <= min_timestep < max_timestep <= 1, got "
                 f"({self.min_timestep}, {self.max_timestep})"
             )
-        if self.timestep_sampling_mode not in {
-            "uniform",
-            "normal",
-            "beta",
-            "fpo_beta",
-        }:
+        if self.timestep_sampling_mode not in {"uniform", "normal", "beta", "fpo_beta"}:
             raise ValueError(
-                "timestep_sampling_mode must be 'uniform', 'normal', 'beta', "
-                "or 'fpo_beta'"
+                "timestep_sampling_mode must be 'uniform', 'normal', 'beta', or 'fpo_beta'"
             )
         if self.noise_sampling_mode not in {"normal", "uniform"}:
             raise ValueError("noise_sampling_mode must be 'normal' or 'uniform'")
@@ -211,16 +197,10 @@ class SJFPOConfig(PreTrainedConfig):
         if self.timestep_beta_alpha <= 0 or self.timestep_beta_beta <= 0:
             raise ValueError("timestep beta alpha/beta must be > 0")
         if self.value_loss_coef < 0:
-            raise ValueError(
-                f"value_loss_coef={self.value_loss_coef} must be >= 0"
-            )
+            raise ValueError(f"value_loss_coef={self.value_loss_coef} must be >= 0")
         if self.value_huber_delta <= 0:
-            raise ValueError(
-                f"value_huber_delta={self.value_huber_delta} must be > 0"
-            )
-
-    def validate_optimizer(self) -> None:
-        """Validate learning rates, clipping, and batch-shaping parameters."""
+            raise ValueError(f"value_huber_delta={self.value_huber_delta} must be > 0")
+        # Optimizer
         if self.policy_lr <= 0:
             raise ValueError(f"policy_lr={self.policy_lr} must be > 0")
         if self.critic_lr <= 0:
@@ -260,9 +240,7 @@ class SJFPOConfig(PreTrainedConfig):
             raise ValueError(f"num_envs={self.num_envs} must be >= 1")
         if self.num_mc_samples < 1:
             raise ValueError(f"num_mc_samples={self.num_mc_samples} must be >= 1")
-
-    def validate_flags(self) -> None:
-        """Validate step counts, spectral token fraction, and flag combinations."""
+        # Flags
         if self.num_euler_steps < 1:
             raise ValueError(f"num_euler_steps={self.num_euler_steps} must be >= 1")
         if self.num_inference_steps < 1:
@@ -274,50 +252,9 @@ class SJFPOConfig(PreTrainedConfig):
                 f"num_kept_tokens={self.num_kept_tokens} must satisfy "
                 f"1 <= K <= action_horizon={self.action_horizon}"
             )
-
-    def validate_features(self) -> None:
-        """Require the ``observation.state`` and ``action`` features; the base
-        class skips this check."""
+        # Features
         if self.robot_state_feature is None:
             raise ValueError("SJFPO requires 'observation.state' in input_features.")
         if self.action_feature is None:
             raise ValueError("SJFPO requires 'action' in output_features.")
 
-    def get_optimizer_preset(self, lr: float | None = None) -> AdamWConfig:
-        """Build the AdamW preset. ``lr`` overrides ``policy_lr`` when given."""
-        kwargs = dict(
-            lr=self.policy_lr if lr is None else float(lr),
-            weight_decay=self.optimizer_weight_decay,
-            grad_clip_norm=self.max_grad_norm,
-        )
-        return AdamWConfig(**kwargs)
-
-    def get_scheduler_preset(self):
-        """None; training runs without a scheduler unless a subclass overrides."""
-        return None
-
-    @property
-    def num_mini_batches(self) -> int:
-        """``chunks_per_update // batch_size``, floored at one. Computed on access
-        so it cannot go stale if either input is reassigned."""
-        return max(1, self.chunks_per_update // self.batch_size)
-
-    @property
-    def num_flow_tokens(self) -> int:
-        """``num_kept_tokens`` with the DCT on, else the full action horizon."""
-        return self.num_kept_tokens if self.use_dct_transform else self.action_horizon
-
-    @property
-    def observation_delta_indices(self) -> list[int] | None:
-        """The ``n_obs_steps`` past-frame offsets ending at the current step."""
-        return list(range(1 - self.n_obs_steps, 1))
-
-    @property
-    def action_delta_indices(self) -> list[int]:
-        """One offset per step of a full action chunk."""
-        return list(range(self.action_horizon))
-
-    @property
-    def reward_delta_indices(self) -> None:
-        """None, because rollouts supply executed-step rewards directly."""
-        return None
