@@ -258,3 +258,41 @@ class SJFPOConfig(PreTrainedConfig):
         if self.action_feature is None:
             raise ValueError("SJFPO requires 'action' in output_features.")
 
+    def validate_features(self) -> None:
+        if self.robot_state_feature is None:
+            raise ValueError("SJFPO requires 'observation.state' in input_features.")
+        if self.action_feature is None:
+            raise ValueError("SJFPO requires 'action' in output_features.")
+
+    def get_optimizer_preset(self, lr: float | None = None) -> "AdamWConfig":
+        from lerobot.optim import AdamWConfig
+        kwargs = dict(
+            lr=self.policy_lr if lr is None else float(lr),
+            weight_decay=self.optimizer_weight_decay,
+            grad_clip_norm=self.max_grad_norm,
+        )
+        return AdamWConfig(**kwargs)
+
+    def get_scheduler_preset(self):
+        return None
+
+    @property
+    def num_mini_batches(self) -> int:
+        return max(1, self.chunks_per_update // self.batch_size)
+
+    @property
+    def num_flow_tokens(self) -> int:
+        return self.num_kept_tokens if self.use_dct_transform else self.action_horizon
+
+    @property
+    def observation_delta_indices(self) -> list[int] | None:
+        return list(range(1 - self.n_obs_steps, 1))
+
+    @property
+    def action_delta_indices(self) -> list[int]:
+        return list(range(self.action_horizon))
+
+    @property
+    def reward_delta_indices(self) -> None:
+        return None
+
