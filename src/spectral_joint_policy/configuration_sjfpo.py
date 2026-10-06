@@ -9,6 +9,7 @@ from dataclasses import dataclass
 
 from lerobot.configs import PreTrainedConfig
 from lerobot.optim import AdamWConfig
+from spectral_joint_policy.config import get_observation_action_dim
 
 __all__ = ["SJFPOConfig"]
 
@@ -103,10 +104,29 @@ class SJFPOConfig(PreTrainedConfig):
         super().__post_init__()
         if self.n_action_steps is None:
             self.n_action_steps = self.action_horizon
+        # Auto-read from env registry when env specified
+        env_name = getattr(self, 'env_name', None)
+        if env_name and env_name != '':
+            try:
+                self._auto_read_features_from_env(env_name)
+            except Exception:
+                pass  # Fallback to manually set features
         # Note: robot_state_feature / action_feature are read-only properties
         # derived from input_features / output_features (set above or via CLI/config).
         self.validate()
-        # Features check included in validate()
+
+    def _auto_read_features_from_env(self, env_name: str) -> None:
+        """Auto-set feature specs from env registry."""
+        from spectral_joint_policy.config import get_observation_action_dim
+        from lerobot.configs.types import FeatureType, PolicyFeature
+        if env_name in __import__('spectral_joint_policy.config', fromlist=[''])._ENV_REGISTRY:
+            obs_dim, action_dim = get_observation_action_dim(env_name)
+            self.input_features = {
+                "observation.state": PolicyFeature(type=FeatureType.STATE, shape=(obs_dim,))
+            }
+            self.output_features = {
+                "action": PolicyFeature(type=FeatureType.ACTION, shape=(action_dim,))
+            }
 
     def validate(self) -> None:
         """All checks inline; no extra method names."""

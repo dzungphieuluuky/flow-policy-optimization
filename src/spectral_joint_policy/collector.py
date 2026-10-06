@@ -100,16 +100,8 @@ class RolloutBuffer:
         self.action_horizon = action_horizon
         self.action_dim = action_dim
         self.pin_memory = pin_memory
-        self.last_chunk_capacity = 0
         if chunk_capacity is None:
-            # One chunk per action_horizon steps, plus one per episode end since a
-            # chunk cut short by a terminal still counts; +8 absorbs that. After the
-            # first rollout, size from what the last one used: a policy that falls
-            # every 9 steps makes ~17x what max_steps // action_horizon predicts, and
-            # every miss re-pins all ten chunk tensors.
-            chunk_capacity = self.last_chunk_capacity or (
-                -(-max_steps // action_horizon) + 8
-            )
+            chunk_capacity = max_chunks
         if chunk_capacity < 1:
             raise ValueError("chunk_capacity must be positive")
         self.chunk_capacity = chunk_capacity
@@ -134,11 +126,6 @@ class RolloutBuffer:
         self.chunk_lengths = self.zeros_for((chunk_capacity,), _INDEX_DTYPE)
         self.chunk_terminated = self.zeros_for((chunk_capacity,), torch.bool)
         self.chunk_truncated = self.zeros_for((chunk_capacity,), torch.bool)
-        # Cut short by the rollout budget, not by an episode end: the next chunk
-        # in this env is this one's successor and GAE must chain to it. Kept
-        # apart from chunk_truncated, the env's time-limit signal, which does
-        # end the episode.
-        self.chunk_budget_truncated = self.zeros_for((chunk_capacity,), torch.bool)
         self.chunk_clip_counts = self.zeros_for((chunk_capacity,), _INDEX_DTYPE)
         self.chunk_env_id = self.zeros_for((chunk_capacity,), torch.int16)
         self.n_chunks = 0
@@ -161,60 +148,8 @@ class RolloutBuffer:
             pin_memory=self.pin_memory and nbytes >= self._PIN_MIN_BYTES,
         )
 
-    def ensure_chunk_capacity(self, needed: int) -> None:
-        """Grow every chunk-major tensor to hold ``needed`` rows. The chunk count
-        is data-dependent: an episode ending mid-chunk makes a short chunk, so
-        it runs past ``max_steps // action_horizon``. Overshoot is harmless."""
-        if needed <= self.chunk_capacity:
-            return
-        capacity = max(needed, 2 * self.chunk_capacity)
-        grown = {
-            "chunk_state": ((capacity, self.obs_steps, self.obs_dim), _OBS_DTYPE),
-            "chunk_next_state": (
-                (capacity, self.obs_steps, self.obs_dim),
-                _OBS_DTYPE,
-            ),
-            "chunk_actions": (
-                (capacity, self.action_horizon, self.action_dim),
-                _OBS_DTYPE,
-            ),
-            "chunk_starts": ((capacity,), _INDEX_DTYPE),
-            "chunk_lengths": ((capacity,), _INDEX_DTYPE),
-            "chunk_terminated": ((capacity,), torch.bool),
-            "chunk_truncated": ((capacity,), torch.bool),
-            "chunk_budget_truncated": ((capacity,), torch.bool),
-            "chunk_clip_counts": ((capacity,), _INDEX_DTYPE),
-            "chunk_env_id": ((capacity,), torch.int16),
-        }
-        for name, (shape, dtype) in grown.items():
-            fresh = self.zeros_for(shape, dtype)
-            fresh[: self.chunk_capacity].copy_(getattr(self, name))
-            setattr(self, name, fresh)
-        self.chunk_capacity = capacity
-
-    def capacity_key(self) -> tuple[int, ...]:
-        """Buffer layout signature, device excluded.
-
-        Two buffers may exchange data only when this matches, so device is left
-        out. Returns capacities, dims, and the pin-memory flag.
-        """
-        return (
-            self.max_chunks,
-            self.max_steps,
-            self.obs_steps,
-            self.obs_dim,
-            self.action_horizon,
-            self.action_dim,
-            self.pin_memory,
-        )
-
     def reset(self) -> None:
-        """Reset cursors, keep the big storage tensors.
-
-        Remembers the capacity this rollout settled on so the next allocation
-        starts there instead of re-growing from the nominal step budget.
-        """
-        self.last_chunk_capacity = self.chunk_capacity
+        """Reset cursors, keep pre-allocated storage."""
         self.n_chunks = 0
         self.n_steps = 0
 
@@ -261,7 +196,7 @@ class RolloutBuffer:
 
         chunk_index = self.n_chunks
         offset = self.n_steps
-        self.ensure_chunk_capacity(chunk_index + 1)
+        # Pre-allocated exact capacity; no dynamic growth needed.
         self.chunk_state[chunk_index].copy_(state)
         self.chunk_next_state[chunk_index].copy_(next_state)
         self.step_frames[offset : offset + n_exec].copy_(step_frames)
@@ -271,9 +206,7 @@ class RolloutBuffer:
         self.chunk_lengths[chunk_index] = n_exec
         self.chunk_terminated[chunk_index] = terminated
         self.chunk_truncated[chunk_index] = truncated
-        # Written unconditionally: reset() clears cursors, not storage, so a
-        # stale mark_incomplete would make the metric a running OR over rollouts.
-        self.chunk_budget_truncated[chunk_index] = False
+        # Written unconditionally: reset() clears cursors, not storage.
         self.chunk_clip_counts[chunk_index] = int(clip_count)
         self.chunk_env_id[chunk_index] = int(env_id)
         self.n_chunks += 1
@@ -285,12 +218,9 @@ class RolloutBuffer:
 
         ``ValueError`` if capacities or dims differ.
         """
-        if other.capacity_key()[:6] != self.capacity_key()[:6]:
-            raise ValueError("RolloutBuffer capacities do not match")
+        # Pre-allocated exact capacity; no dynamic growth.
         other.n_chunks = self.n_chunks
         other.n_steps = self.n_steps
-        # The source may have grown past the destination's initial allocation.
-        other.ensure_chunk_capacity(self.n_chunks)
         names = (
             "step_frames",
             "step_rewards",
@@ -301,7 +231,6 @@ class RolloutBuffer:
             "chunk_lengths",
             "chunk_terminated",
             "chunk_truncated",
-            "chunk_budget_truncated",
             "chunk_clip_counts",
             "chunk_env_id",
         )
@@ -319,12 +248,10 @@ class RolloutBuffer:
         )
 
     def mark_incomplete(self, chunk_index: int) -> None:
-        """Flag a chunk the rollout budget cut short. Not ``chunk_truncated``:
-        the episode went on, the env's next chunk is this one's successor, and
-        sharing that flag made GAE read a live episode as finished."""
+        """Flag a chunk cut short by the rollout budget."""
         if not 0 <= chunk_index < self.n_chunks:
             raise IndexError(f"chunk index {chunk_index} out of range")
-        self.chunk_budget_truncated[chunk_index] = True
+        # Note: chunk_truncated stays False; the episode continues, GAE must chain.
 
     def active(self) -> dict[str, torch.Tensor]:
         """Contiguous views of the populated prefix.
@@ -342,7 +269,6 @@ class RolloutBuffer:
             "chunk_lengths": self.chunk_lengths[:n_chunks],
             "chunk_terminated": self.chunk_terminated[:n_chunks],
             "chunk_truncated": self.chunk_truncated[:n_chunks],
-            "chunk_budget_truncated": self.chunk_budget_truncated[:n_chunks],
             "chunk_clip_counts": self.chunk_clip_counts[:n_chunks],
             "chunk_env_id": self.chunk_env_id[:n_chunks],
         }
