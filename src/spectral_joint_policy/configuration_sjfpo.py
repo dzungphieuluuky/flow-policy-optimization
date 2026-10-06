@@ -9,7 +9,6 @@ from dataclasses import dataclass
 
 from lerobot.configs import PreTrainedConfig
 from lerobot.optim import AdamWConfig
-from spectral_joint_policy.config import get_observation_action_dim
 
 __all__ = ["SJFPOConfig"]
 
@@ -104,32 +103,18 @@ class SJFPOConfig(PreTrainedConfig):
         super().__post_init__()
         if self.n_action_steps is None:
             self.n_action_steps = self.action_horizon
-        # Auto-read from env registry when env specified
-        env_name = getattr(self, 'env_name', None)
-        if env_name and env_name != '':
-            try:
-                self._auto_read_features_from_env(env_name)
-            except Exception:
-                pass  # Fallback to manually set features
-        # Note: robot_state_feature / action_feature are read-only properties
-        # derived from input_features / output_features (set above or via CLI/config).
         self.validate()
 
-    def _auto_read_features_from_env(self, env_name: str) -> None:
-        """Auto-set feature specs from env registry."""
-        from spectral_joint_policy.config import get_observation_action_dim
-        from lerobot.configs.types import FeatureType, PolicyFeature
-        if env_name in __import__('spectral_joint_policy.config', fromlist=[''])._ENV_REGISTRY:
-            obs_dim, action_dim = get_observation_action_dim(env_name)
-            self.input_features = {
-                "observation.state": PolicyFeature(type=FeatureType.STATE, shape=(obs_dim,))
-            }
-            self.output_features = {
-                "action": PolicyFeature(type=FeatureType.ACTION, shape=(action_dim,))
-            }
-
     def validate(self) -> None:
-        """All checks inline; no extra method names."""
+        """All checks inline; no extra method names.
+
+        Feature shapes are NOT checked here: ``input_features`` /
+        ``output_features`` are empty on a bare config and are filled in at
+        runtime by ``build_policy`` from the env registry dims, which
+        ``train.py`` cross-checks against the live observation/action spaces.
+        The requirement is enforced by ``validate_features`` instead, from
+        ``SJFPOPolicy.__init__``, i.e. after the features are attached.
+        """
         # Geometry / shape
         if self.n_obs_steps < 1:
             raise ValueError(f"n_obs_steps={self.n_obs_steps} must be >= 1")
@@ -283,13 +268,9 @@ class SJFPOConfig(PreTrainedConfig):
                 f"num_kept_tokens={self.num_kept_tokens} must satisfy "
                 f"1 <= K <= action_horizon={self.action_horizon}"
             )
-        # Features
-        if self.robot_state_feature is None:
-            raise ValueError("SJFPO requires 'observation.state' in input_features.")
-        if self.action_feature is None:
-            raise ValueError("SJFPO requires 'action' in output_features.")
 
     def validate_features(self) -> None:
+        """Require the runtime features; called from SJFPOPolicy.__init__."""
         if self.robot_state_feature is None:
             raise ValueError("SJFPO requires 'observation.state' in input_features.")
         if self.action_feature is None:
