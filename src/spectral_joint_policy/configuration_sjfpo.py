@@ -73,8 +73,8 @@ class SJFPOConfig(PreTrainedConfig):
     use_target_critic: bool = True
     critic_ema_decay: float = 0.05
 
-    use_dct_transform: bool = True
-    num_kept_tokens: int = 4
+    use_dct_transform: bool = False
+    num_kept_tokens: int = 16
 
     dit_depth: int = 6
     dit_heads: int = 4
@@ -83,7 +83,7 @@ class SJFPOConfig(PreTrainedConfig):
     timestep_scale: float = 10000.0
 
     policy_lr: float = 1e-4
-    critic_lr: float = 1e-5
+    critic_lr: float = 3e-4
     optimizer_weight_decay: float = 1e-4
     adam_betas: tuple[float, float] = (0.999, 0.999)
     max_grad_norm: float = 1.0
