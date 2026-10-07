@@ -25,10 +25,10 @@ class SJFPOConfig(PreTrainedConfig):
 
     report_to: str = "all"
     n_obs_steps: int = 16
-    action_horizon: int = 16
-    n_action_steps: int = 16
+    action_horizon: int = 8
+    n_action_steps: int = 8
     action_perturb_std: float = 0.02
-    hidden_dim: int = 256
+    hidden_dim: int = 128
 
     num_envs: int = 64
     num_mc_samples: int = 16
@@ -74,12 +74,12 @@ class SJFPOConfig(PreTrainedConfig):
     critic_ema_decay: float = 0.05
 
     use_dct_transform: bool = False
-    num_kept_tokens: int = 16
+    num_kept_tokens: int = 8
 
-    dit_depth: int = 6
-    dit_heads: int = 4
-    dit_mlp_ratio: float = 4.0
-    time_embed_dim: int = 128
+    dit_depth: int = 3
+    dit_heads: int = 2
+    dit_mlp_ratio: float = 2.0
+    time_embed_dim: int = 64
     timestep_scale: float = 10000.0
 
     policy_lr: float = 1e-4
