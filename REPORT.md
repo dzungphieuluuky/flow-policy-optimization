@@ -227,12 +227,6 @@ for a fixed number of rollouts, or normalise the critic's **output layer**
 instead of its target so the target stays in raw units and the loss stays
 O(1) by construction.
 
-### S3 — stale marker left in `mini_batch_indices`
-
-`train_sjfpo.py:74` carries the comment `perm = torch.randperm(n, device=device)
-# <- move inside`. The `randperm` is already inside the epoch loop; the marker is
-a leftover. Harmless, but it reads as an outstanding task.
-
 ### S3 — `collect_steps` and `global_step` count different things
 
 `collect_steps = chunks_per_update * action_horizon` is a nominal step budget,
@@ -383,15 +377,6 @@ There is also no `receding_horizon` config field in the repo; only
 `select_action`'s "receding through a cached chunk" docstring at line 530 is
 real. So the sentence cites a setting that does not exist and a behaviour that
 was deliberately reversed.
-
-### S3 — two more stale claims in the same docstring
-
-- "the value loss is a mean squared error, as the official FPO++ does" — it is
-  `smooth_l1_loss` with `beta=1.0` since `0c9a87f`. Someone reasoning about the
-  critic's loss scale from this would be reasoning about a loss that no longer
-  exists.
-- "a token count of `M+1` derived from `top_p * H`" — `top_p` was replaced by
-  `num_kept_tokens` in `37ab3e0`. No `top_p` remains anywhere in the package.
 
 ### S3 — the conditioner's spectral branch has no frequency identity
 

@@ -41,12 +41,6 @@ autocast_context             NONE
 would have covered this work. **Each step below therefore carries its own
 test, written before the change.**
 
-Also live in `tests/__pycache__/`: 11 orphaned `.pyc` from deleted test
-modules, including `test_train_run_parity`, `test_update_step_parity`,
-`test_select_action_parity`, `test_train_cli`. Harmless, but they are what is
-left of the coverage that was removed. Worth one `find` cleanup.
-
----
 
 ## Step 0 — harness bug (blocks the measurement for every later step)
 
@@ -93,10 +87,8 @@ Last call wins, so the `ieee` line is dead code and the effective setting is
 `high`. Inductor reads the same setting.
 
 - Decide which one is wanted and delete the other. **Open question for you:**
-  `ieee` is the numerically strict choice, `high` is the ~8× faster one, and
-  the comment ("TF32 for leftover fp32 GEMMs; autocast still handles bf16")
-  says `high` was deliberate. My read is that `high` was intended and `ieee`
-  is the leftover, but this changes fp32 GEMM numerics on any sm_80+ GPU, so
+  `ieee` is the numerically strict choice, `high` is the ~8× faster one.
+  My read is that `high` was intended and `ieee` is the leftover, but this changes fp32 GEMM numerics on any sm_80+ GPU, so
   it is your call and not mine to make silently.
 - Test: assert the effective value after `configure_torch_cuda()`, so the
   surviving line and the intended setting cannot drift apart again.
