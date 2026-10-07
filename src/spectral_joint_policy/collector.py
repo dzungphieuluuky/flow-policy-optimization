@@ -148,6 +148,18 @@ class RolloutBuffer:
             pin_memory=self.pin_memory and nbytes >= self._PIN_MIN_BYTES,
         )
 
+    def capacity_key(self) -> tuple[int, ...]:
+        """Buffer layout signature, device excluded."""
+        return (
+            self.max_chunks,
+            self.max_steps,
+            self.obs_steps,
+            self.obs_dim,
+            self.action_horizon,
+            self.action_dim,
+            self.pin_memory,
+        )
+
     def reset(self) -> None:
         """Reset cursors, keep pre-allocated storage."""
         self.n_chunks = 0
