@@ -102,12 +102,12 @@ def save_policy_checkpoint(
             ("old_actor.", "old_encoder.", "target_critic.")
         )
     }
-    if ema_state is not None and policy.ema_ready(global_step):
-        for name, shadow in ema_state["shadow_params"].items():
-            full_name = f"actor.{name}"
-            if full_name in state_dict:
-                state_dict[full_name] = shadow.detach().clone()
     policy.save_pretrained(d, state_dict=state_dict)
+    # EMA shadow is saved separately in ema.pt, NOT overlaid onto actor.* here:
+    # the logical weights in model.safetensors stay the live policy, matching
+    # FPO++ (finetune_online_rl.py) which resumes live and EMA independently.
+    # Overwriting actor.* with the shadow made the restored live policy equal
+    # the old EMA policy, silently changing the resumed training trajectory.
     if ema_state is not None:
         save_torch_atomically(d / "ema.pt", ema_state)
 
