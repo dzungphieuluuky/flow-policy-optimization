@@ -99,7 +99,7 @@ class SinusoidalEncoding(nn.Module):
     def encode_times(self, t: torch.Tensor) -> torch.Tensor:
         """Sinusoidal embed of continuous times. ``[N]`` -> ``[N, 2 * half]``."""
         t = t.to(dtype=torch.float32) * self.scale
-        ang = t.unsqueeze(-1) * self.compute_freqs(t.device)
+        ang = t.unsqueeze(-1) * self.compute_freqs(t.device).clone()
         emb = torch.cat([ang.sin(), ang.cos()], dim=-1)
         if self.dim % 2:
             emb = F.pad(emb, (0, 1))
