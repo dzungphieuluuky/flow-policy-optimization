@@ -113,8 +113,8 @@ def build_policy(
     if action_low is not None and action_high is not None:
         policy.set_action_bounds(action_low, action_high)
     if getattr(cfg, "compile", False):
-        # Capability-based mode (PyTorch docs): sm_89+ (major>=8, minor>=9)
-        # -> max-autotune (autotune + cudagraphs); lower -> default.
+        # Capability-based mode (PyTorch docs): sm_89+ -> max-autotune;
+        # lower -> default/reduce-overhead. fullgraph=True requires static graphs.
         mode = "default"
         try:
             if device.type == "cuda":
@@ -127,9 +127,9 @@ def build_policy(
         except Exception:
             pass
         # Assignment breaks EMA/state_dict identity (gate 0b/0c).
-        policy.actor = torch.compile(policy.actor, dynamic=True, mode=mode)
-        policy.encoder = torch.compile(policy.encoder, dynamic=True, mode=mode)
-        policy.critic = torch.compile(policy.critic, dynamic=True, mode=mode)
+        policy.actor = torch.compile(policy.actor, dynamic=True, mode=mode, fullgraph=True)
+        policy.encoder = torch.compile(policy.encoder, dynamic=True, mode=mode, fullgraph=True)
+        policy.critic = torch.compile(policy.critic, dynamic=True, mode=mode, fullgraph=True)
     return policy
 
 
