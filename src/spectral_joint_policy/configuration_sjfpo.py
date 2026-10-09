@@ -31,14 +31,14 @@ class SJFPOConfig(PreTrainedConfig):
     hidden_dim: int = 128
 
     num_envs: int = 64
-    num_mc_samples: int = 16
-    num_learning_epochs: int = 1
+    num_mc_samples: int = 8
+    num_learning_epochs: int = 2
     chunks_per_update: int = 1024
     batch_size: int = 128
     grad_accum_steps: int = 1
 
-    num_euler_steps: int = 4
-    num_inference_steps: int = 4
+    num_euler_steps: int = 10
+    num_inference_steps: int = 10
     min_timestep: float = 0.005
     max_timestep: float = 0.995
     timestep_sampling_mode: str = "fpo_beta"
@@ -58,8 +58,8 @@ class SJFPOConfig(PreTrainedConfig):
     gamma: float = 0.99
     clip_param: float = 0.05
     trust_region_mode: str = "aspo"
-    ratio_granularity: str = "per_sample"  # per_chunk | per_action | per_sample
-    cfm_loss_reduction: str = "mean"
+    ratio_granularity: str = "per_action"  # per_chunk | per_action | per_sample
+    cfm_loss_reduction: str = "sum"
     cfm_clamp: float = 200.0
     cfm_mask_unexecuted: bool = True
     cfm_loss_clamp_negative_advantages: bool = True
@@ -83,11 +83,11 @@ class SJFPOConfig(PreTrainedConfig):
     time_embed_dim: int = 64
     timestep_scale: float = 10000.0
 
-    policy_lr: float = 1e-4
+    policy_lr: float = 3e-4
     critic_lr: float = 3e-4
     optimizer_weight_decay: float = 1e-4
     adam_betas: tuple[float, float] = (0.999, 0.999)
-    max_grad_norm: float = 1.0
+    max_grad_norm: float = 48.0
     critic_max_grad_norm: float | None = 1.0
     ema_decay: float = 0.95
     ema_warmup_steps: int = 500
