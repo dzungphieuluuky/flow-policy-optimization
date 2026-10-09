@@ -113,11 +113,23 @@ def build_policy(
     if action_low is not None and action_high is not None:
         policy.set_action_bounds(action_low, action_high)
     if getattr(cfg, "compile", False):
-        # Assignment breaks EMA/state_dict identity (gate 0b/0c); safe for
-        # encoder/critic (no EMA dependency), risky for actor.
-        policy.actor = torch.compile(policy.actor, dynamic=True)
-        policy.encoder = torch.compile(policy.encoder, dynamic=True)
-        policy.critic = torch.compile(policy.critic, dynamic=True)
+        # Capability-based mode (PyTorch docs): sm_89+ (major>=8, minor>=9)
+        # -> max-autotune (autotune + cudagraphs); lower -> default.
+        mode = "default"
+        try:
+            if device.type == "cuda":
+                idx = int(device.index or 0)
+                props = torch.cuda.get_device_properties(idx)
+                if (props.major, props.minor) >= (8, 9):
+                    mode = "max-autotune"
+                elif props.major >= 7:
+                    mode = "reduce-overhead"
+        except Exception:
+            pass
+        # Assignment breaks EMA/state_dict identity (gate 0b/0c).
+        policy.actor = torch.compile(policy.actor, dynamic=True, mode=mode)
+        policy.encoder = torch.compile(policy.encoder, dynamic=True, mode=mode)
+        policy.critic = torch.compile(policy.critic, dynamic=True, mode=mode)
     return policy
 
 
