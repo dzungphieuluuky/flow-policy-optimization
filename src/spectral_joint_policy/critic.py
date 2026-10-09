@@ -5,11 +5,11 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from spectral_joint_policy.layers import CondMLP, modulate
+
 
 class CriticMember(nn.Module):
-    """One Q(s, a_{t:t+h}) head: FiLM from the chunk, so Q is not additive in
-    (s, a). QC/DQC concatenate the chunk instead; this departure is deliberate."""
+    """One Q(s, a_{t:t+h}) head: concat MLP, no FiLM modulation. Keeps the
+    same input contracts but drops the deliberate non-additive conditioning."""
 
     def __init__(
         self,
@@ -28,21 +28,19 @@ class CriticMember(nn.Module):
         self.action_dim = action_dim
         self.n_obs_steps = n_obs_steps
         self.action_horizon = action_horizon
-        self.state_enc = CondMLP(n_obs_steps * obs_dim, hidden_dim, hidden_dim)
-        self.act_enc = CondMLP(action_horizon * action_dim, hidden_dim, 2 * hidden_dim)
-        self.head = CondMLP(hidden_dim, hidden_dim, 1)
-        # Zero the FiLM head so the chunk starts as identity (FiLM = adaLN-Zero):
-        # scale==0, shift==0, and the state feature passes through unchanged.
-        nn.init.constant_(self.act_enc.fc2.weight, 0.0)
-        nn.init.constant_(self.act_enc.fc2.bias, 0.0)
+        in_dim = n_obs_steps * obs_dim + action_horizon * action_dim
+        self.mlp = nn.Sequential(
+            nn.Linear(in_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, 1),
+        )
 
     def forward(self, states: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
         """``[B, T, obs]`` and ``[B, H, action_dim]`` -> ``[B]``."""
-        h = self.state_enc(states.flatten(1))
-        shift, scale = self.act_enc(actions.flatten(1)).chunk(2, dim=-1)
-        # Bound the gain so FiLM cannot flip the sign of the state feature.
-        scale = scale.clamp(-2.0, 2.0)
-        return self.head(modulate(h, shift, scale)).squeeze(-1)
+        x = torch.cat([states.flatten(1), actions.flatten(1)], dim=-1)
+        return self.mlp(x).squeeze(-1)
 
 
 class Critic(nn.Module):
