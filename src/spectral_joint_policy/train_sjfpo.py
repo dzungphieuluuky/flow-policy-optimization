@@ -112,6 +112,12 @@ def build_policy(
     policy = policy_cls(policy_cfg).to(device)
     if action_low is not None and action_high is not None:
         policy.set_action_bounds(action_low, action_high)
+    if getattr(cfg, "compile", False):
+        # Assignment breaks EMA/state_dict identity (gate 0b/0c); safe for
+        # encoder/critic (no EMA dependency), risky for actor.
+        policy.actor = torch.compile(policy.actor, dynamic=True)
+        policy.encoder = torch.compile(policy.encoder, dynamic=True)
+        policy.critic = torch.compile(policy.critic, dynamic=True)
     return policy
 
 

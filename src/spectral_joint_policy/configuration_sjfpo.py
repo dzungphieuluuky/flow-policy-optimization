@@ -73,6 +73,7 @@ class SJFPOConfig(PreTrainedConfig):
     use_target_critic: bool = True
     critic_ema_decay: float = 0.05
 
+    compile: bool = True
     use_dct_transform: bool = False
     num_kept_tokens: int = 8
 

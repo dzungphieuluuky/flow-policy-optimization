@@ -417,8 +417,11 @@ class SJFPOPolicy(PreTrainedPolicy):
         Copies weights into the existing modules instead of
         ``copy.deepcopy``-ing the live ones over them.
         """
-        self.old_actor.load_state_dict(self.actor.state_dict())
-        self.old_encoder.load_state_dict(self.encoder.state_dict())
+        def _state_dict(module):
+            # Compiled modules (torch.compile) wrap with _orig_mod prefix.
+            return module._orig_mod.state_dict() if hasattr(module, "_orig_mod") else module.state_dict()
+        self.old_actor.load_state_dict(_state_dict(self.actor))
+        self.old_encoder.load_state_dict(_state_dict(self.encoder))
 
         self.old_actor.requires_grad_(False)
         self.old_actor.eval()
@@ -474,8 +477,10 @@ class SJFPOPolicy(PreTrainedPolicy):
         tracks the rollout closely, which is what the config's ~2.5-rollout time
         constant means. qc and TD-JEPA instead use 0.005.
         """
+        def _state_dict(module):
+            return module._orig_mod.state_dict() if hasattr(module, "_orig_mod") else module.state_dict()
         if not self._target_critic_initialised:
-            self.target_critic.load_state_dict(self.critic.state_dict())
+            self.target_critic.load_state_dict(_state_dict(self.critic))
             self._target_critic_initialised = True
             return
         decay = self.config.critic_ema_decay
