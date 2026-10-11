@@ -214,9 +214,9 @@ def compute_cfm_loss(
             return sample
         return sample, sq.mean(dim=-1)
     if reduce_mode == "token_mean":
-        # Per-token diagnostic. A token aggregates only action_dim, so dividing
-        # by that keeps the value independent of token count. mask_sq already
-        # zeroed the padded tokens.
+        # Per-token (or per-frequency-coefficient when DCT is on) diagnostic.
+        # A token aggregates only action_dim, so dividing by that keeps the
+        # value independent of token count. mask_sq already zeroed padded rows.
         return sq.mean(dim=-1)
     raise ValueError(
         f"reduce_mode={reduce_mode!r} must be 'scalar', 'sample', 'token_mean', "

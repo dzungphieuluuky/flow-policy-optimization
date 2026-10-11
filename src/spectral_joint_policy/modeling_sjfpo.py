@@ -1314,7 +1314,6 @@ class SJFPOPolicy(PreTrainedPolicy):
 
 
     @torch.inference_mode()
-    @torch.inference_mode()
     def compute_info(
         self,
         *,

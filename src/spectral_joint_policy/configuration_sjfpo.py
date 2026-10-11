@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 # Spectral profile: noise and proposed per-band trust region use the same 1/f^beta decay
-# (pink-noise / JPEG-quantization / wavelet-threshold principle). See docs/AGENTS.md.
+# (pink-noise / JPEG-quantization / wavelet-threshold principle).
 
 
 from dataclasses import dataclass

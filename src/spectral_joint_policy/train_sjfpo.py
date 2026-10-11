@@ -126,10 +126,11 @@ def build_policy(
                     mode = "reduce-overhead"
         except Exception:
             pass
+        # fullgraph=False avoids recompilation on varying chunk/MC shapes.
         # Assignment breaks EMA/state_dict identity (gate 0b/0c).
-        policy.actor = torch.compile(policy.actor, dynamic=True, mode=mode, fullgraph=True)
-        policy.encoder = torch.compile(policy.encoder, dynamic=True, mode=mode, fullgraph=True)
-        policy.critic = torch.compile(policy.critic, dynamic=True, mode=mode, fullgraph=True)
+        policy.actor = torch.compile(policy.actor, dynamic=True, mode=mode, fullgraph=False)
+        policy.encoder = torch.compile(policy.encoder, dynamic=True, mode=mode, fullgraph=False)
+        policy.critic = torch.compile(policy.critic, dynamic=True, mode=mode, fullgraph=False)
     return policy
 
 
@@ -256,9 +257,33 @@ def make_vec_env(env_name: str, num_envs: int, record: dict | None = None):
     """
     import gymnasium as gym
 
-    # The lambda is fine: gymnasium wraps env_fns in CloudpickleWrapper, which
-    # serialises by value.
-    env_fns = [lambda: gym.make(env_name) for _ in range(num_envs)]
+    def make_one():
+        """Build one worker env, registering third-party namespaces locally.
+
+        ``gymnasium_robotics`` registers the ``AdroitHand*`` ids as a side
+        effect of ``import``, and ``scripts/train.py`` does that import in the
+        *parent* process only. Under ``forkserver`` the workers are forked from
+        a clean interpreter that never ran it, so the lambda's
+        ``gym.make("AdroitHandDoor-v1")`` raised
+        ``NameNotFound: Environment 'AdroitHandDoor' doesn't exist``, the
+        worker died, and the parent surfaced a misleading
+        ``ConnectionResetError: [Errno 104]``.
+
+        Importing inside the closure fixes it at the source: each worker
+        performs the registration itself, so parent and children agree on the
+        registry regardless of start method. Harmless for MuJoCo ids, which
+        gymnasium registers at core import.
+        """
+        if env_name.startswith("AdroitHand"):
+            try:
+                import gymnasium_robotics  # noqa: F401
+            except ImportError as exc:
+                raise RuntimeError(
+                    f"{env_name} needs gymnasium-robotics: {exc}"
+                ) from exc
+        return gym.make(env_name)
+
+    env_fns = [make_one for _ in range(num_envs)]
     # autoreset_mode must survive vectorisation in either branch; the collector
     # validates NEXT_STEP, see validate_autoreset_mode.
     try:
