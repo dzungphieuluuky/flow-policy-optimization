@@ -191,11 +191,14 @@ def compute_ratio_metrics(
     action_is_pad: torch.Tensor,
     cfg: SJFPOConfig,
 ) -> dict[str, torch.Tensor]:
-    """Trust-region diagnostics, including the per-token low/high-frequency split.
+    """Trust-region diagnostics, including the per-token axis split.
 
     ``log_ratio_*`` reads the raw delta, not the clamped one, so it is never a
-    clamp artefact. ``clipfrac`` near zero means the trust region never binds and
-    ``clip_param`` constrains nothing.
+    clamp artefact. ``clipfrac`` near zero means the trust region never binds.
+
+    The token axis is frequencies only when ``cfg.use_dct_transform`` is true;
+    otherwise it is the chunk's time steps. ``token_axis_is_spectral`` records
+    which, and the ``*_pos_*`` keys name the split explicitly.
     """
     log_ratio_abs = delta.abs()
     log_ratio_clip_frac = (log_ratio_abs > cfg.log_ratio_cap).float().mean()
@@ -203,6 +206,7 @@ def compute_ratio_metrics(
     ratio_token_mean = ratio_token.mean(dim=(0, 1))
     num_tokens = ratio_token_mean.numel()
     split = max(1, num_tokens // 2)
+    is_spectral = cfg.use_dct_transform
     # One epsilon for the whole token axis, the same bound the surrogate uses. A
     # per-frequency epsilon had nothing to bind to: the "sample" reduction
     # averages every token into one number per chunk, so such ratios exist only here.
@@ -212,6 +216,11 @@ def compute_ratio_metrics(
     low_outside = outside(ratio_token[..., :split])
     high_outside = outside(ratio_token[..., split:]) if num_tokens > 1 else low_outside
 
+    low_mean = ratio_token_mean[:split].mean()
+    high_mean = (
+        ratio_token_mean[split:].mean() if num_tokens > 1 else ratio_token_mean.mean()
+    )
+
     return {
         "mean_log_ratio": delta.mean(),
         "log_ratio_max": log_ratio_abs.max(),
@@ -220,9 +229,18 @@ def compute_ratio_metrics(
         "flow_ratio_mean": ratio.mean(),
         "flow_ratio_std": ratio.std(correction=0),
         "flow_ratio_token_range": ratio_token_mean.max() - ratio_token_mean.min(),
-        "flow_ratio_token_lowfreq": ratio_token_mean[:split].mean(),
-        "flow_ratio_token_highfreq": (
-            ratio_token_mean[split:].mean() if num_tokens > 1 else ratio_token_mean.mean()
+        # Legacy keys: always the positional split, kept for existing
+        # dashboards. The *_pos_* and *_spectral_* keys name it correctly.
+        "flow_ratio_token_lowfreq": low_mean,
+        "flow_ratio_token_highfreq": high_mean,
+        "flow_ratio_token_pos_low": low_mean,
+        "flow_ratio_token_pos_high": high_mean,
+        "flow_ratio_token_spectral_low": low_mean if is_spectral else float("nan"),
+        "flow_ratio_token_spectral_high": high_mean if is_spectral else float("nan"),
+        "flow_ratio_token_pos_low_outside_frac": low_outside,
+        "flow_ratio_token_pos_high_outside_frac": high_outside,
+        "token_axis_is_spectral": torch.tensor(
+            float(is_spectral), device=ratio.device
         ),
         "flow_ratio_token_outside_frac": outside(ratio_token),
         "flow_ratio_token_low_outside_frac": low_outside,
@@ -243,20 +261,33 @@ def compute_value_metrics(
     policy_per_chunk: torch.Tensor,
     value_loss_per_chunk: torch.Tensor,
 ) -> dict[str, torch.Tensor]:
-    """Critic diagnostics. ``explained_var`` scores the member mean, not the min
-    the backup uses: min is biased low, so scoring it would flatter the critic.
+    """Critic diagnostics.
+
+    ``explained_var`` scores the member mean, which is what the value loss
+    trains; the TD backup uses ``amin``. ``explained_var_min`` is that
+    pessimistic reading, and is never higher.
     """
     mean_value_pred = raw_value_pred.mean(dim=0)
+    min_value_pred = raw_value_pred.amin(dim=0)
     returns_var = raw_returns_flat.var(correction=0).clamp_min(1e-8)
     return {
         "policy_loss": policy_per_chunk.mean(),
         "value_loss": value_loss_per_chunk.mean(),
         "explained_var": 1.0
         - (raw_returns_flat - mean_value_pred).var(correction=0) / returns_var,
+        # The pessimism the backup actually uses.
+        "explained_var_min": 1.0
+        - (raw_returns_flat - min_value_pred).var(correction=0) / returns_var,
         "value_huber_max": mean_value_pred.sub(raw_returns_flat).abs().max(),
         "value_pred_max": mean_value_pred.abs().max(),
         "value_target_std": raw_returns_flat.std(correction=0),
+        # Pooled over [num_critics, n], so it mixes within-member spread with
+        # between-member disagreement.
         "value_pred_std": raw_value_pred.std(correction=0),
+        "value_pred_std_member_mean": raw_value_pred.std(dim=1, correction=0).mean(),
+        "value_pred_member_gap": (
+            raw_value_pred.amax(dim=0) - raw_value_pred.amin(dim=0)
+        ).mean(),
     }
 
 
@@ -1334,7 +1365,8 @@ class SJFPOPolicy(PreTrainedPolicy):
         """Merge the three metric groups and pack them into one device transfer.
 
         ``float()`` on a device tensor is a blocking sync, so the whole
-        diagnostic pass costs one, not one per metric.
+        diagnostic pass costs one. Plain floats are accepted alongside tensors:
+        NaN marks a metric that does not apply on this run.
         """
         scalars = {
             **compute_ratio_metrics(
@@ -1361,6 +1393,11 @@ class SJFPOPolicy(PreTrainedPolicy):
                     for k in cond_stats
                 }
             )
-        packed = torch.stack([s.detach().reshape(()) for s in scalars.values()])
-        return dict(zip(scalars.keys(), packed.float().cpu().tolist()))
+        packed = [
+            s.detach().reshape(())
+            if isinstance(s, torch.Tensor)
+            else torch.as_tensor(float(s))
+            for s in scalars.values()
+        ]
+        return dict(zip(scalars.keys(), torch.stack(packed).float().cpu().tolist()))
 

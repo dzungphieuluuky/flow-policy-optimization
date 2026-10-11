@@ -45,14 +45,44 @@ def write_eval_csv(
 def compute_action_jerk(actions: np.ndarray) -> float | None:
     """Mean squared second-difference of actions ``[T, D]``. None if T < 3.
 
-    Scale-free: constant or constant-velocity motion gives exactly ``0.0``,
-    larger values mean jitter between steps. None if the input is not 2D.
+    Scales with amplitude squared, so compare within a run, never across action
+    scales. Exactly ``0.0`` for constant or constant-velocity motion.
     """
     a = np.asarray(actions, dtype=np.float32)
     if a.ndim != 2 or a.shape[0] < 3:
         return None
     second_diff = a[2:] - 2.0 * a[1:-1] + a[:-2]
     return float(np.square(second_diff).mean())
+
+
+def compute_seam_jerk(actions: np.ndarray, action_is_pad: np.ndarray) -> float | None:
+    """Mean squared second-difference *across* consecutive chunk boundaries.
+
+    ``actions`` ``[N, H, D]``, ``action_is_pad`` ``[N, H]``. A seam needs two
+    executed steps before it and one after. None if none qualify.
+
+    :func:`compute_mean_chunk_jerk` reduces inside each chunk and so scores 0
+    for a policy that steps at every seam. The buffer appends in wavefront
+    order, so consecutive rows are often different envs and this over-counts:
+    a conservative upper bound, never a false negative.
+    """
+    a = np.asarray(actions)
+    pad = np.asarray(action_is_pad, dtype=bool)
+    if a.ndim != 3 or pad.shape != a.shape[:2]:
+        raise ValueError(
+            f"expected actions [N, H, D] and action_is_pad [N, H]; "
+            f"got {a.shape} and {pad.shape}"
+        )
+    n = a.shape[0]
+    seams: list[float] = []
+    for i in range(n - 1):
+        tail = np.nonzero(~pad[i])[0]
+        head = np.nonzero(~pad[i + 1])[0]
+        if tail.size < 2 or head.size < 1:
+            continue
+        window = np.stack([a[i, tail[-2]], a[i, tail[-1]], a[i + 1, head[0]]])
+        seams.append(float(np.square(window[2:] - 2.0 * window[1:-1] + window[:-2]).mean()))
+    return float(np.mean(seams)) if seams else None
 
 
 def extract_success(info: dict) -> float | None:
@@ -67,8 +97,11 @@ def extract_success(info: dict) -> float | None:
 
 def compute_mean_chunk_jerk(actions: np.ndarray, action_is_pad: np.ndarray) -> float | None:
     """Mean :func:`compute_action_jerk` over chunks' executed prefixes.
+
     ``actions`` ``[N, H, D]``, ``action_is_pad`` ``[N, H]``. Chunks under 3
-    executed steps skipped. None if none qualify."""
+    executed steps skipped. None if none qualify. Chunk-internal only; pair
+    with :func:`compute_seam_jerk` for the boundaries between them.
+    """
     a = np.asarray(actions)
     pad = np.asarray(action_is_pad, dtype=bool)
     if a.ndim != 3 or pad.shape != a.shape[:2]:

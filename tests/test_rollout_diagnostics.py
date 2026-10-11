@@ -2,6 +2,7 @@
 import sys
 from pathlib import Path
 
+import pytest
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -51,4 +52,24 @@ def test_step_delta_counts_executed_steps():
 def test_clip_counts_is_optional():
     """generate_rollout always emits it, but the helper must not require it."""
     out = compute_rollout_diagnostics(make_batch(with_clip_counts=False))
-    assert set(out) == {"step_delta", "action_abs_max", "action_magnitude"}
+    assert set(out) == {
+        "step_delta",
+        "action_abs_max",
+        "action_magnitude",
+        "action_magnitude_executed",
+        "action_abs_max_executed",
+    }
+
+
+def test_executed_only_keys_use_the_executed_rows():
+    """The legacy keys keep their all-rows meaning; the new ones mask first."""
+    batch = make_batch()
+    out = compute_rollout_diagnostics(batch)
+    action = batch["action"]
+    exec_action = action[~batch["action_is_pad"]]
+    assert out["action_magnitude"] == float(action.abs().mean())
+    assert out["action_magnitude_executed"] == float(exec_action.abs().mean())
+    assert out["action_abs_max"] == float(action.abs().max())
+    assert out["action_abs_max_executed"] == float(exec_action.abs().max())
+    # With padding holding real values, the two means must genuinely differ.
+    assert out["action_magnitude"] != pytest.approx(out["action_magnitude_executed"])

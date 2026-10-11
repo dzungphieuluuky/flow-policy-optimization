@@ -27,6 +27,7 @@ from spectral_joint_policy.evaluator import (
     check_divergence,
     check_regression,
     compute_mean_chunk_jerk,
+    compute_seam_jerk,
 )
 from spectral_joint_policy.modeling_sjfpo import SJFPOAborted, SJFPOPolicy, build_optimizer
 from lerobot.utils.constants import CHECKPOINTS_DIR
@@ -183,19 +184,58 @@ def warm_observation_stats(policy, env, *, obs_dim: int, seed: int) -> int:
 @torch.no_grad()
 def compute_rollout_diagnostics(batch: dict[str, torch.Tensor]) -> dict[str, float]:
     """Post-rollout scalars in one device->host transfer. Separate ``float()``
-    calls cost one CUDA sync each, and ``action_abs_max`` blocks on one."""
+    calls cost one CUDA sync each, and ``action_abs_max`` blocks on one.
+
+    The collector stores the full scaled chunk, so unexecuted rows still carry
+    a real proposed action. Legacy keys keep their all-rows meaning; the
+    ``_executed`` ones mask first.
+    """
     action = batch["action"].float()
+    is_pad = batch["action_is_pad"]
+    executed = (~is_pad)
+    exec_action = action[executed]
     scalars = [
-        (~batch["action_is_pad"]).sum(),
+        executed.sum(),
         action.abs().max(),
         action.abs().mean(),
+        exec_action.abs().mean(),
+        exec_action.abs().max(),
     ]
-    keys = ["step_delta", "action_abs_max", "action_magnitude"]
+    keys = [
+        "step_delta",
+        "action_abs_max",
+        "action_magnitude",
+        "action_magnitude_executed",
+        "action_abs_max_executed",
+    ]
     clip_counts = batch.get("chunk_clip_counts")
     if clip_counts is not None:
         scalars.append(clip_counts.float().mean())
         keys.append("chunk_clip_counts")
     return dict(zip(keys, torch.stack(scalars).tolist()))
+
+
+@torch.no_grad()
+def compute_action_clip_rate(batch: dict[str, torch.Tensor]) -> dict[str, float]:
+    """How much of the proposal the action bounds had to truncate.
+
+    Replaces the ``action_abs_max > 1.05`` guard, which could never fire:
+    ``scale_and_clip_chunk`` clamps into [-1, 1] before the value reaches the
+    buffer, so the observable magnitude is capped at 1.0 whatever the policy
+    proposed. Saturation has to be read off the clip count instead.
+    ``action_clip_frac`` is over all proposed coordinates, so it compares
+    across envs and action dims.
+    """
+    clip_counts = batch.get("chunk_clip_counts")
+    if clip_counts is None:
+        return {}
+    total = float(clip_counts.sum())
+    rows = max(1, int(batch["action_is_pad"].numel()))
+    dims = int(batch["action"].shape[-1])
+    return {
+        "action_clip_count": total,
+        "action_clip_frac": total / (rows * dims),
+    }
 
 
 @torch.no_grad()
@@ -476,18 +516,23 @@ def train_sjfpo_run(
                     "an infinite training loop."
                 )
             global_step += step_delta
+            action_abs_max = rollout["action_abs_max"]
 
             rollout_jerk = None
+            rollout_seam_jerk = None
             if "action" in batch and "action_is_pad" in batch:
-                rollout_jerk = compute_mean_chunk_jerk(
-                    batch["action"].detach().cpu().numpy(),
-                    batch["action_is_pad"].detach().cpu().numpy(),
-                )
-            action_abs_max = rollout["action_abs_max"]
-            if action_abs_max > 1.05:
+                jerk_action = batch["action"].detach().cpu().numpy()
+                jerk_pad = batch["action_is_pad"].detach().cpu().numpy()
+                rollout_jerk = compute_mean_chunk_jerk(jerk_action, jerk_pad)
+                rollout_seam_jerk = compute_seam_jerk(jerk_action, jerk_pad)
+            clip_metrics = compute_action_clip_rate(batch)
+            if action_abs_max > 1.0 + 1e-3:
+                # Only reachable if the scaling affine itself is wrong.
                 raise ValueError(
-                    f"Unnormalised actions detected: max_abs={action_abs_max:.3f} "
-                    "(expected scaled [-1, 1]; check rollout/action bounds)"
+                    f"Post-clip action magnitude exceeded 1: max_abs="
+                    f"{action_abs_max:.3f}. The stored chunk should already be "
+                    "scaled to [-1, 1]; check scale_and_clip_chunk and the "
+                    "action bounds."
                 )
 
             policy.train()
@@ -607,9 +652,20 @@ def train_sjfpo_run(
                     data["train/value_target_drift"] = drift_means[1]
                 if rollout_jerk is not None:
                     data["train/rollout_jerk"] = rollout_jerk
+                if rollout_seam_jerk is not None:
+                    # Non-zero here with a zero rollout_jerk is the
+                    # stale-input / missing-RTC signature.
+                    data["train/rollout_seam_jerk"] = rollout_seam_jerk
                 if "chunk_clip_counts" in rollout:
                     data["train/chunk_clip_counts"] = rollout["chunk_clip_counts"]
                 data["train/action_magnitude"] = rollout["action_magnitude"]
+                data["train/action_magnitude_executed"] = rollout[
+                    "action_magnitude_executed"
+                ]
+                data["train/action_abs_max_executed"] = rollout[
+                    "action_abs_max_executed"
+                ]
+                data.update({f"train/{k}": v for k, v in clip_metrics.items()})
                 if batch.get("compute_spectral_energy_retained") is not None:
                     data["train/compute_spectral_energy_retained"] = batch[
                         "compute_spectral_energy_retained"
