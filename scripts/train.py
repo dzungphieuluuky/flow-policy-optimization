@@ -37,6 +37,11 @@ import draccus
 # Make src/ importable before any sjfpo.* import.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from spectral_joint_policy.baselines import (  # noqa: E402
+    BASELINES,
+    apply_baseline,
+    baseline_report,
+)
 from spectral_joint_policy.config import (  # noqa: E402
     KNOWN_ENVS,
     get_observation_action_dim,
@@ -120,6 +125,7 @@ class TrainConfig:
     save_steps: int | None = None
     obs_dim: int | None = None
     action_dim: int | None = None
+    baseline: str | None = None
     out_dir: str = "outputs/"
     config: str | None = None  # legacy flat YAML overlay for the method config
     # Resume an sjfpo checkpoint dir (checkpoint_<step>/ or
@@ -336,6 +342,13 @@ def main(argv: list[str] | None = None) -> int:
     if not args.env:
         print("ERROR: --env is required", file=sys.stderr)
         return 1
+    if args.baseline is not None and args.baseline.strip().lower() not in BASELINES:
+        print(
+            f"ERROR: unknown --baseline {args.baseline!r}; choices: "
+            f"{', '.join(BASELINES)}",
+            file=sys.stderr,
+        )
+        return 1
     if args.env not in KNOWN_ENVS:
         print(
             f"ERROR: unknown env {args.env!r}; choices: {', '.join(KNOWN_ENVS)}",
@@ -349,6 +362,18 @@ def main(argv: list[str] | None = None) -> int:
     eval_s = default_intervals(total, args.eval_steps, yaml_dict, "eval_steps", 1000)
     ckpt_i = default_intervals(total, args.save_steps, yaml_dict, "save_steps", 1000)
     cfg = select_method_cfg(args, yaml_dict, _sjfpo_cli_fields(argv))
+
+    # Baseline last, after CLI and YAML have both landed, so it wins over both.
+    # A baseline is a config diff, not a branch: everything it does not
+    # override stays whatever the caller set. Print the diff so a run that
+    # says "--baseline fpo" is auditable rather than a promise.
+    if args.baseline is not None:
+        # Report against the pre-baseline config, or every field reads
+        # "unchanged" and the diff says nothing.
+        print(baseline_report(cfg, args.baseline), file=sys.stderr)
+        cfg, provenance = apply_baseline(cfg, args.baseline)
+        if runtime is not None:
+            runtime["baseline"] = provenance
 
     if args.resume and args.method != "sjfpo":
         print(
@@ -407,6 +432,7 @@ def main(argv: list[str] | None = None) -> int:
         if not Path(artifact).exists():
             print(f"MISSING ARTIFACT: {artifact}", file=sys.stderr)
             return 4
+    result["baseline"] = args.baseline
     print(json.dumps(result))
     return 0
 
