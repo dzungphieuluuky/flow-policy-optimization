@@ -771,6 +771,12 @@ def train_sjfpo_run(
                     tracker.log(
                         {
                             "eval/ema_active": float(bool(displaced)),
+                            # Logged every eval even though they almost always
+                            # read 0. A flag that appears only when true leaves a
+                            # gap, and a gap is indistinguishable from the
+                            # tracker dropping the key.
+                            "eval/diverged": 0.0,
+                            "eval/regressed": 0.0,
                             "train/policy_lr": optimizer.param_groups[0]["lr"],
                             "train/critic_lr": optimizer.param_groups[-1]["lr"],
                             "train/lr_decays": lr_decays,
@@ -827,12 +833,23 @@ def train_sjfpo_run(
                 diverged = diverged_now
                 regressed = regressed_now
                 if tracker.enabled:
+                    # The only eval where these fire; the loop breaks here, so
+                    # this is their last observation. The step keys are emitted
+                    # only now because 0 would read as "diverged at step 0".
                     tracker.log(
                         {
                             "eval/diverged": float(diverged_now),
-                            "eval/diverge_step": global_step if diverged_now else 0,
                             "eval/regressed": float(regressed_now),
-                            "eval/regression_step": global_step if regressed_now else 0,
+                            **(
+                                {"eval/diverge_step": global_step}
+                                if diverged_now
+                                else {}
+                            ),
+                            **(
+                                {"eval/regression_step": global_step}
+                                if regressed_now
+                                else {}
+                            ),
                         },
                         step=global_step,
                     )

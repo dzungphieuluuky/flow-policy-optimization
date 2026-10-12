@@ -239,7 +239,7 @@ def test_value_pred_std_member_mean_is_within_member_spread():
     )
 
 
-# --- F. the token axis declares whether it is spectral ----------------
+# --- F. the token axis is positional, and says so -----------------------
 def _ratio_metrics(cfg, N=32, MC=8, TOK=8):
     ratio = torch.rand(N, MC, TOK) * 2.0
     return compute_ratio_metrics(
@@ -248,39 +248,45 @@ def _ratio_metrics(cfg, N=32, MC=8, TOK=8):
     ), ratio
 
 
-def test_the_token_axis_is_never_spectral():
-    """The DCT is gone, so the flag is pinned at 0 and the spectral keys NaN.
+def test_the_token_axis_split_is_named_for_what_it_splits():
+    """The DCT is gone, so early/late is not low/high frequency.
 
-    They stay in the dict on purpose: an old dashboard reading
-    flow_ratio_token_spectral_low under the old name would otherwise silently
-    pick up the positional split instead.
-    """
-    c = _cfg(action_horizon=8)
-    m, _ = _ratio_metrics(c)
-    assert m["token_axis_is_spectral"].item() == 0.0
-    assert math.isnan(m["flow_ratio_token_spectral_low"])
-    assert math.isnan(m["flow_ratio_token_spectral_high"])
-    assert not math.isnan(m["flow_ratio_token_pos_low"])
-
-
-def test_legacy_lowfreq_keys_survive_and_match_the_positional_split():
-    """Old dashboards keep working; the new keys say what the split means.
-
-    The lowfreq/highfreq names are now positional, not spectral. That is a
-    deliberate lie kept for compatibility, which is why the *_spectral_* keys
-    are pinned to NaN rather than also reporting the positional split.
+    A key reading ``lowfreq`` would promise a spectral cut this does not
+    perform, and ``token_axis_is_spectral`` would be a constant carrying that
+    claim. Both are gone rather than pinned, so nothing survives that could be
+    read as a spectral statement.
     """
     c = _cfg(action_horizon=8)
     m, ratio = _ratio_metrics(c)
     per_token = ratio.mean(dim=(0, 1))
-    assert m["flow_ratio_token_lowfreq"] == pytest.approx(per_token[:4].mean().item())
-    assert m["flow_ratio_token_highfreq"] == pytest.approx(per_token[4:].mean().item())
-    assert m["flow_ratio_token_pos_low"] == pytest.approx(
-        m["flow_ratio_token_lowfreq"].item()
-    )
-    assert m["flow_ratio_token_pos_high"] == pytest.approx(
-        m["flow_ratio_token_highfreq"].item()
-    )
+    assert m["flow_ratio_token_pos_low"] == pytest.approx(per_token[:4].mean().item())
+    assert m["flow_ratio_token_pos_high"] == pytest.approx(per_token[4:].mean().item())
+    gone = {
+        "flow_ratio_token_lowfreq",
+        "flow_ratio_token_highfreq",
+        "flow_ratio_token_spectral_low",
+        "flow_ratio_token_spectral_high",
+        "token_axis_is_spectral",
+    }
+    assert not gone & set(m)
+
+
+def test_no_logged_key_is_a_constant_or_an_always_nan():
+    """A key that can never move is noise on a dashboard.
+
+    ``token_axis_is_spectral`` was pinned at 0 and the ``*_spectral_*`` pair at
+    NaN purely so old dashboards could not misread them. Both are removed
+    instead, so the check is that no such key comes back.
+    """
+    c = _cfg(action_horizon=8)
+    m, _ = _ratio_metrics(c)
+    dead = {
+        k: v
+        for k, v in m.items()
+        if torch.as_tensor(v).reshape(()).numel() == 1
+        and math.isnan(float(torch.as_tensor(v).reshape(())))
+    }
+    assert not dead, f"always-NaN keys: {sorted(dead)}"
 
 
 # --- G. reward_improvement_pct on negative returns ----------------------
@@ -296,6 +302,60 @@ def test_reward_improvement_pct_reads_wrong_on_a_negative_baseline():
     )
     assert out["eval/reward_improvement"] == pytest.approx(500.0)  # correct
     assert out["eval/reward_improvement_pct"] == pytest.approx(0.5)  # reads as +50%
+
+
+# --- H. empty eval windows report NaN, not 0.0 ---------------------------
+def test_stats_over_an_empty_eval_window_are_nan_not_zero():
+    """0.0 would assert a measurement: "all episodes had the same length"."""
+    out = compute_eval_summary_metrics(
+        mean_return=0.0, eval_results=[], all_eval_returns=[0.0], eval_count=0,
+    )
+    for key in (
+        "eval/min_return",
+        "eval/max_return",
+        "eval/std_return",
+        "eval/mean_length",
+        "eval/max_length",
+        "eval/std_length",
+    ):
+        assert math.isnan(out[key]), f"{key} = {out[key]}, should be NaN"
+
+
+def test_stats_over_a_real_eval_window_are_finite():
+    out = compute_eval_summary_metrics(
+        mean_return=2.0,
+        eval_results=[
+            {"return": 1.0, "length": 10, "success": None, "jerk": 0.1},
+            {"return": 3.0, "length": 20, "success": None, "jerk": 0.3},
+        ],
+        all_eval_returns=[2.0],
+        eval_count=2,
+    )
+    for key in ("eval/min_return", "eval/max_return", "eval/mean_length"):
+        assert math.isfinite(out[key]), f"{key} = {out[key]}"
+
+
+# --- I. the diverge/regress step is never a bare 0 ------------------------
+def test_the_diverge_step_is_not_reported_as_zero_when_nothing_fired():
+    """Step 0 is pre-training, so a 0 there is a step that never happened.
+
+    The step keys are emitted only on the eval where the flag fires, and the
+    trainer breaks out of the eval loop at that point, so their absence is the
+    honest signal.
+    """
+    import inspect
+    import re
+
+    import spectral_joint_policy.train_sjfpo as T
+
+    src = inspect.getsource(T)
+    # No "global_step if diverged_now else 0" style fallback anywhere.
+    assert not re.search(r"diverge_step.*else 0", src)
+    assert not re.search(r"regression_step.*else 0", src)
+    # And the flags themselves are logged on the ordinary eval path too, so a
+    # 0 is recorded rather than a gap appearing.
+    assert '"eval/diverged": 0.0' in src
+    assert '"eval/regressed": 0.0' in src
 
 
 if __name__ == "__main__":

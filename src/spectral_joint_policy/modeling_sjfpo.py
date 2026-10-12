@@ -204,10 +204,10 @@ def compute_ratio_metrics(
     ``log_ratio_*`` reads the raw delta, not the clamped one, so it is never a
     clamp artefact. ``clipfrac`` near zero means the trust region never binds.
 
-    The token axis is the chunk's action steps. The ``*_spectral_*`` keys are
-    retained as always-NaN so an old dashboard does not silently read a different
-    quantity under the same name: the DCT that made them meaningful is gone, and
-    the split here is early-late within the chunk, not low-high frequency.
+    The token axis is the chunk's action steps, split early/late. Those keys say
+    ``pos`` because that is what the split is: the DCT that would have made the
+    axis frequency-ordered is gone, so a name reading ``lowfreq`` would promise a
+    spectral cut the split does not perform.
     """
     log_ratio_abs = delta.abs()
     log_ratio_clip_frac = (log_ratio_abs > cfg.log_ratio_cap).float().mean()
@@ -237,20 +237,11 @@ def compute_ratio_metrics(
         "flow_ratio_mean": ratio.mean(),
         "flow_ratio_std": ratio.std(correction=0),
         "flow_ratio_token_range": ratio_token_mean.max() - ratio_token_mean.min(),
-        # Legacy keys: always the positional split, kept for existing
-        # dashboards. The *_pos_* keys name it correctly.
-        "flow_ratio_token_lowfreq": low_mean,
-        "flow_ratio_token_highfreq": high_mean,
         "flow_ratio_token_pos_low": low_mean,
         "flow_ratio_token_pos_high": high_mean,
-        "flow_ratio_token_spectral_low": float("nan"),
-        "flow_ratio_token_spectral_high": float("nan"),
         "flow_ratio_token_pos_low_outside_frac": low_outside,
         "flow_ratio_token_pos_high_outside_frac": high_outside,
-        "token_axis_is_spectral": torch.zeros((), device=ratio.device),
         "flow_ratio_token_outside_frac": outside(ratio_token),
-        "flow_ratio_token_low_outside_frac": low_outside,
-        "flow_ratio_token_high_outside_frac": high_outside,
         # Chunks with any never-executed action row. The mask drops those rows from
         # the CFM target, so this bounds what it is dropping.
         "truncated_chunk_frac": action_is_pad.any(dim=1).float().mean(),

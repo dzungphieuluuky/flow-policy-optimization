@@ -86,16 +86,25 @@ def compute_eval_summary_metrics(
     best_return: float | None = None,
     steps_to_best: int | None = None,
 ) -> dict:
-    """Eval scalars for one eval window, plus peak/streak figures when given."""
+    """Eval scalars for one eval window, plus peak/streak figures when given.
+
+    Statistics over an empty window are NaN, not 0.0. ``std_length = 0.0``
+    reads as "every episode had the same length", which is a claim about the
+    data; with no episodes there is no such claim to make.
+    """
     returns = [r["return"] for r in eval_results]
     lengths = [r["length"] for r in eval_results]
     successes = [r["success"] for r in eval_results if r.get("success") is not None]
     jerks = [r["jerk"] for r in eval_results if r.get("jerk") is not None]
+
+    def stat(values, fn):
+        return float(fn(values)) if values else float("nan")
+
     data = {
         "eval/mean_return": float(mean_return),
-        "eval/min_return": float(np.min(returns)) if returns else 0.0,
-        "eval/max_return": float(np.max(returns)) if returns else 0.0,
-        "eval/std_return": float(np.std(returns)) if returns else 0.0,
+        "eval/min_return": stat(returns, np.min),
+        "eval/max_return": stat(returns, np.max),
+        "eval/std_return": stat(returns, np.std),
     }
     if best_return is not None:
         data["eval/best_mean_return"] = float(best_return)
@@ -103,6 +112,9 @@ def compute_eval_summary_metrics(
         data["eval/steps_to_best"] = int(steps_to_best)
     if r_rand is not None:
         data["eval/sample_random_baseline"] = float(r_rand)
+    # Only when the last recorded mean is this window's, i.e. the series has no
+    # gap between them; otherwise prev is a different eval and the delta is not
+    # a delta.
     if len(all_eval_returns) >= 2 and all_eval_returns[-1] == mean_return:
         prev = all_eval_returns[-2]
         data["eval/reward_improvement"] = float(mean_return - prev)
@@ -113,17 +125,17 @@ def compute_eval_summary_metrics(
         data["eval/consecutive_below"] = int(consecutive_below)
     data.update(
         {
-            "eval/mean_length": float(np.mean(lengths)) if lengths else 0.0,
-            "eval/max_length": float(np.max(lengths)) if lengths else 0.0,
-            "eval/std_length": float(np.std(lengths)) if lengths else 0.0,
+            "eval/mean_length": stat(lengths, np.mean),
+            "eval/max_length": stat(lengths, np.max),
+            "eval/std_length": stat(lengths, np.std),
             "eval/episode_count": int(eval_count),
         }
     )
     if successes:
         data["eval/success_rate"] = float(np.mean(successes))
     if jerks:
-        data["eval/mean_jerk"] = float(np.mean(jerks)) if jerks else 0.0
-        data["eval/max_jerk"] = float(np.max(jerks)) if jerks else 0.0
+        data["eval/mean_jerk"] = float(np.mean(jerks))
+        data["eval/max_jerk"] = float(np.max(jerks))
     return data
 
 
