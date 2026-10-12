@@ -4,7 +4,7 @@
 loudly -- it silently reverts the run to settings the code no longer documents.
 The file already drifted once: it claimed "values mirror SJFPOConfig defaults"
 while differing on nine fields, and passing it would have re-enabled
-``use_dct_transform``, ``hidden_dim: 256``, ``num_learning_epochs: 1`` and five
+``hidden_dim: 256``, ``num_learning_epochs: 1`` and five
 others.
 
 The file is generated (scripts/gen_sjfpo_config.py); this is what stops it

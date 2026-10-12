@@ -19,7 +19,7 @@ from spectral_joint_policy.modeling_sjfpo import SJFPOPolicy
 
 def _policy(**kw) -> SJFPOPolicy:
     cfg = dataclasses.replace(
-        SJFPOConfig(use_dct_transform=True, num_kept_tokens=4, **kw),
+        SJFPOConfig(**kw),
         input_features={"observation.state": PolicyFeature(FeatureType.STATE, (5,))},
         output_features={"action": PolicyFeature(FeatureType.ACTION, (2,))},
     )

@@ -70,7 +70,6 @@ SECTIONS: list[tuple[str, list[str]]] = [
             "ratio_granularity",
             "cfm_loss_reduction",
             "cfm_clamp",
-            "cfm_mask_unexecuted",
             "cfm_loss_clamp_negative_advantages",
             "cfm_loss_clamp_negative_advantages_max",
             "log_ratio_cap",
@@ -89,10 +88,6 @@ SECTIONS: list[tuple[str, list[str]]] = [
             "use_target_critic",
             "critic_ema_decay",
         ],
-    ),
-    (
-        "Spectral chunk encoding",
-        ["use_dct_transform", "num_kept_tokens"],
     ),
     (
         "DiT backbone",

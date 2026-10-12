@@ -248,40 +248,39 @@ def _ratio_metrics(cfg, N=32, MC=8, TOK=8):
     ), ratio
 
 
-def test_token_axis_flag_is_false_when_dct_is_off():
-    c = _cfg(use_dct_transform=False, action_horizon=8, num_kept_tokens=8)
+def test_the_token_axis_is_never_spectral():
+    """The DCT is gone, so the flag is pinned at 0 and the spectral keys NaN.
+
+    They stay in the dict on purpose: an old dashboard reading
+    flow_ratio_token_spectral_low under the old name would otherwise silently
+    pick up the positional split instead.
+    """
+    c = _cfg(action_horizon=8)
     m, _ = _ratio_metrics(c)
     assert m["token_axis_is_spectral"].item() == 0.0
     assert math.isnan(m["flow_ratio_token_spectral_low"])
     assert math.isnan(m["flow_ratio_token_spectral_high"])
-    # The positional keys are always populated, spectral or not.
     assert not math.isnan(m["flow_ratio_token_pos_low"])
 
 
-def test_token_axis_flag_is_true_when_dct_is_on():
-    c = _cfg(use_dct_transform=True, action_horizon=8, num_kept_tokens=8)
-    m, _ = _ratio_metrics(c)
-    assert m["token_axis_is_spectral"].item() == 1.0
-    per_token_pos = m["flow_ratio_token_pos_low"]
-    assert m["flow_ratio_token_spectral_low"].item() == pytest.approx(
-        per_token_pos.item()
-    )
-
-
 def test_legacy_lowfreq_keys_survive_and_match_the_positional_split():
-    """Old dashboards keep working; the new keys say what the split means."""
-    for use_dct in (False, True):
-        c = _cfg(use_dct_transform=use_dct, action_horizon=8, num_kept_tokens=8)
-        m, ratio = _ratio_metrics(c)
-        per_token = ratio.mean(dim=(0, 1))
-        assert m["flow_ratio_token_lowfreq"] == pytest.approx(per_token[:4].mean().item())
-        assert m["flow_ratio_token_highfreq"] == pytest.approx(per_token[4:].mean().item())
-        assert m["flow_ratio_token_pos_low"] == pytest.approx(
-            m["flow_ratio_token_lowfreq"].item()
-        )
-        assert m["flow_ratio_token_pos_high"] == pytest.approx(
-            m["flow_ratio_token_highfreq"].item()
-        )
+    """Old dashboards keep working; the new keys say what the split means.
+
+    The lowfreq/highfreq names are now positional, not spectral. That is a
+    deliberate lie kept for compatibility, which is why the *_spectral_* keys
+    are pinned to NaN rather than also reporting the positional split.
+    """
+    c = _cfg(action_horizon=8)
+    m, ratio = _ratio_metrics(c)
+    per_token = ratio.mean(dim=(0, 1))
+    assert m["flow_ratio_token_lowfreq"] == pytest.approx(per_token[:4].mean().item())
+    assert m["flow_ratio_token_highfreq"] == pytest.approx(per_token[4:].mean().item())
+    assert m["flow_ratio_token_pos_low"] == pytest.approx(
+        m["flow_ratio_token_lowfreq"].item()
+    )
+    assert m["flow_ratio_token_pos_high"] == pytest.approx(
+        m["flow_ratio_token_highfreq"].item()
+    )
 
 
 # --- G. reward_improvement_pct on negative returns ----------------------

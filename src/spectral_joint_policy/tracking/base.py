@@ -32,7 +32,7 @@ def config_hash(cfg_dict: dict) -> str:
     """Six hex chars over every config value, so no two configs share a name.
 
     The tags in ``build_run_name`` only cover the settings that usually vary, so
-    two runs differing in anything else (gamma, num_flow_tokens, tau) collided.
+    two runs differing in anything else (gamma, action_horizon, tau) collided.
     The feature dicts are excluded: they are fixed by the env and render badly
     in a tensorboard path.
     """
@@ -53,8 +53,14 @@ def build_run_name(method: str, env_name: str, seed: int, cfg_dict: dict) -> str
     """
     tags: list[str] = []
     get = cfg_dict.get
-    if (v := get("num_kept_tokens")) is not None:
-        tags.append(f"k{compact_value(v)}")
+    # h is the token count now that the DCT is gone: the loss reduces over the
+    # chunk's action steps, so it is always the horizon.
+    if (v := get("action_horizon")) is not None:
+        tags.append(f"h{v}")
+    # b separates the spectral-prior arms, which are otherwise identical names.
+    if get("noise_scaling_mode") == "freq_weighted_time":
+        if (v := get("noise_scaling_beta")) is not None:
+            tags.append(f"b{v}")
     if (v := get("hidden_dim")) is not None and (d := get("dit_depth")) is not None:
         tags.append(f"d{v}x{d}")
     if (v := get("num_learning_epochs", get("num_epochs"))) is not None:

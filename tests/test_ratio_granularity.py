@@ -33,7 +33,6 @@ def _cfg(**overrides):
     return dataclasses.replace(
         SJFPOConfig(
             num_mc_samples=MC,
-            num_kept_tokens=8,
             action_horizon=HORIZON,
             value_loss_coef=0.0,
             input_features={"observation.state": PolicyFeature(FeatureType.STATE, (OBS,))},
@@ -70,13 +69,13 @@ def _policy_and_batch(cfg, seed=0):
             (rng.standard_normal(N, dtype=np.float32) * 10.0)
         ),
         "mc_tau": torch.from_numpy(
-            rng.uniform(0.05, 0.95, size=(N, MC, cfg.num_flow_tokens, 1)).astype(
+            rng.uniform(0.05, 0.95, size=(N, MC, cfg.action_horizon, 1)).astype(
                 np.float32
             )
         ),
         "mc_eps": torch.from_numpy(
             rng.standard_normal(
-                (N, MC, cfg.num_flow_tokens, ACT), dtype=np.float32
+                (N, MC, cfg.action_horizon, ACT), dtype=np.float32
             )
         ),
     }
@@ -156,18 +155,35 @@ def test_an_unknown_granularity_is_rejected():
         _cfg(ratio_granularity="per_action_chunk").validate_loss_params()
 
 
-def test_the_baseline_configs_select_the_trust_regions_they_name():
-    """A file that names an equation must load the ratio that implements it."""
+def test_the_baselines_select_the_trust_regions_they_name():
+    """A baseline that names an equation must select the ratio implementing it.
+
+    Checked through baselines.apply_baseline, which is now the only source of
+    baseline config. The configs/baselines/*.yaml files are gone; they disagreed
+    with this registry (max_grad_norm 48.0 vs 1.0), so keeping them would have
+    left two ways to run "the same" baseline with different gradient clipping.
+    """
+    from spectral_joint_policy.baselines import apply_baseline
+
     expected = {
-        "configs/baselines/fpo.yaml": ("ppo", "per_chunk"),
-        "configs/ablations/dct_ppo.yaml": ("ppo", "per_chunk"),
-        "configs/baselines/fpo_pp.yaml": ("aspo", "per_action"),
-        "configs/baselines/spo.yaml": ("spo", "per_action"),
+        "fpo": ("ppo", "per_chunk"),
+        "fpo++": ("aspo", "per_action"),
     }
-    for path, (mode, granularity) in expected.items():
-        values = yaml.safe_load((ROOT / path).read_text())
-        cfg = SJFPOConfig(**values)
-        assert (cfg.trust_region_mode, cfg.ratio_granularity) == (mode, granularity), path
+    for name, (mode, granularity) in expected.items():
+        cfg, _ = apply_baseline(SJFPOConfig(), name)
+        assert (cfg.trust_region_mode, cfg.ratio_granularity) == (mode, granularity), name
         # Eq 8's loss is a sum over the chunk, so the paper's eps_clip only means
         # what it says with a sum reduction.
-        assert cfg.cfm_loss_reduction == "sum", path
+        assert cfg.cfm_loss_reduction == "sum", name
+
+
+def test_a_baseline_cannot_inherit_the_default_it_is_been_compared_against():
+    """The reason fpo++ got explicit overrides.
+
+    Every baseline pins its identifying fields, so moving a default cannot
+    silently redefine what the baseline is.
+    """
+    from spectral_joint_policy.baselines import BASELINES, _OVERRIDES
+
+    for name in BASELINES:
+        assert _OVERRIDES[name], f"{name} inherits the default config verbatim"

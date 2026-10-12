@@ -8,9 +8,9 @@ on wandb.log to read them out. Nothing in the repo is modified.
 Environment:
   ENV     gymnasium id                      (default Hopper-v5)
   SEED    int                               (default 3407)
-  DCT     true|false                        (default true)
   STEPS   int                               (default 32768)
-  KEPT    num_kept_tokens when DCT is true  (default 16)
+  NOISE_MODE  white|freq_weighted_time     (default white)
+  BETA        1/f^beta for freq_weighted_time (default 1.0)
   OUT_DIR path                              (default /tmp/cuda_probe)
   EXTRA   extra --sjfpo.* flags, space separated
 
@@ -112,7 +112,8 @@ def _preflight() -> None:
 def main() -> None:
     _preflight()
     env = os.environ.get("ENV", "Hopper-v5")
-    dct = os.environ.get("DCT", "true")
+    noise_mode = os.environ.get("NOISE_MODE", "white")
+    beta = os.environ.get("BETA", "1.0")
     extra = os.environ.get("EXTRA", "").split()
     args = [
         "train.py",
@@ -128,10 +129,9 @@ def main() -> None:
         "--sjfpo.num_envs", "8",
         "--sjfpo.batch_size", "64",
         "--sjfpo.num_learning_epochs", "2",
-        "--sjfpo.use_dct_transform", dct,
+        "--sjfpo.noise_scaling_mode", noise_mode,
+        "--sjfpo.noise_scaling_beta", beta,
     ]
-    if dct == "true":
-        args += ["--sjfpo.num_kept_tokens", os.environ.get("KEPT", "16")]
     args += extra
     print(f"args: {' '.join(args)}\n", flush=True)
     sys.argv = args

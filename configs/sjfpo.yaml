@@ -42,7 +42,6 @@ trust_region_mode: 'aspo'
 ratio_granularity: 'per_action'
 cfm_loss_reduction: 'mean'
 cfm_clamp: 200.0
-cfm_mask_unexecuted: True
 cfm_loss_clamp_negative_advantages: True
 cfm_loss_clamp_negative_advantages_max: 200.0
 log_ratio_cap: 10.0
@@ -57,10 +56,6 @@ value_loss_coef: 1.0
 value_huber_delta: 1.0
 use_target_critic: True
 critic_ema_decay: 0.05
-
-# -- Spectral chunk encoding -----------------------------------
-use_dct_transform: False
-num_kept_tokens: 8
 
 # -- DiT backbone ----------------------------------------------
 dit_depth: 3

@@ -44,7 +44,6 @@ SHAPE = (B, M, H, ACT)
 def _cfg(**kw):
     base = dict(
         action_horizon=H,
-        use_dct_transform=False,
         noise_scaling_mode="freq_weighted_time",
     )
     base.update(kw)
@@ -264,7 +263,7 @@ def test_the_prior_is_reachable_with_the_dct_off():
 
 def test_dct_domain_mode_still_requires_the_dct():
     # __post_init__ validates, so the raise happens at construction.
-    with pytest.raises(ValueError, match="requires use_dct_transform=True"):
+    with pytest.raises(ValueError, match="no longer exists"):
         _cfg(noise_scaling_mode="freq_weighted")
 
 

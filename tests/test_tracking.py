@@ -98,7 +98,7 @@ def test_run_name_keeps_the_readable_tags():
     c = _cfg()
     name = _name()
     prefix = (
-        f"sjfpo_Hopper-v5_s1_k{c.num_kept_tokens}_d{c.hidden_dim}x{c.dit_depth}"
+        f"sjfpo_Hopper-v5_s1_h{c.action_horizon}_d{c.hidden_dim}x{c.dit_depth}"
         f"_ep{c.num_learning_epochs}_lr{c.policy_lr:g}_eps{c.clip_param:g}"
         f"_mc{c.num_mc_samples}"
     )
@@ -112,8 +112,10 @@ def test_run_name_is_stable_for_one_config():
 
 def test_untagged_config_still_gets_a_hash():
     """No tags must not mean no name: two such runs still need to differ."""
-    name = _name(num_kept_tokens=1)
-    assert name.endswith(config_hash(dataclasses.asdict(_cfg(num_kept_tokens=1))))
+    name = _name(noise_scaling_mode="freq_weighted_time")
+    assert name.endswith(
+        config_hash(dataclasses.asdict(_cfg(noise_scaling_mode="freq_weighted_time")))
+    )
 
 
 def test_one_changed_value_changes_the_name():

@@ -73,7 +73,6 @@ class SJFPOConfig(PreTrainedConfig):
     # Both baselines pin "sum"; see baselines.py.
     cfm_loss_reduction: str = "mean"
     cfm_clamp: float = 200.0
-    cfm_mask_unexecuted: bool = True
     cfm_loss_clamp_negative_advantages: bool = True
     cfm_loss_clamp_negative_advantages_max: float = 200.0
     log_ratio_cap: float = 10.0
@@ -98,8 +97,6 @@ class SJFPOConfig(PreTrainedConfig):
     critic_ema_decay: float = 0.05
 
     compile: bool = True
-    use_dct_transform: bool = False
-    num_kept_tokens: int = 8
 
     dit_depth: int = 3
     dit_heads: int = 2
@@ -242,14 +239,13 @@ class SJFPOConfig(PreTrainedConfig):
                 "noise_scaling_mode must be 'white', 'freq_weighted', or "
                 "'freq_weighted_time'"
             )
-        if self.noise_scaling_mode == "freq_weighted" and not self.use_dct_transform:
-            # This one multiplies DCT coefficients, so it has no meaning on the
-            # action-step grid. 'freq_weighted_time' is the time-domain filter
-            # and is deliberately NOT gated: it is the mode that works with the
-            # DCT off.
+        if self.noise_scaling_mode == "freq_weighted":
+            # Multiplies DCT coefficients, and the DCT is gone. Caught here
+            # rather than silently falling through to white.
             raise ValueError(
-                "noise_scaling_mode='freq_weighted' requires use_dct_transform=True; "
-                "use 'freq_weighted_time' for the action-step grid"
+                "noise_scaling_mode='freq_weighted' was the DCT-coefficient mode "
+                "and no longer exists; use 'freq_weighted_time' for the "
+                "action-step grid, or 'white'"
             )
         if self.noise_scaling_beta < 0:
             raise ValueError(f"noise_scaling_beta must be >= 0, got {self.noise_scaling_beta}")
@@ -308,11 +304,6 @@ class SJFPOConfig(PreTrainedConfig):
             raise ValueError(
                 f"num_inference_steps={self.num_inference_steps} must be >= 1"
             )
-        if not 1 <= self.num_kept_tokens <= self.action_horizon:
-            raise ValueError(
-                f"num_kept_tokens={self.num_kept_tokens} must satisfy "
-                f"1 <= K <= action_horizon={self.action_horizon}"
-            )
 
     def validate_features(self) -> None:
         """Require the runtime features; called from SJFPOPolicy.__init__."""
@@ -336,10 +327,6 @@ class SJFPOConfig(PreTrainedConfig):
     @property
     def num_mini_batches(self) -> int:
         return max(1, self.chunks_per_update // self.batch_size)
-
-    @property
-    def num_flow_tokens(self) -> int:
-        return self.num_kept_tokens if self.use_dct_transform else self.action_horizon
 
     @property
     def observation_delta_indices(self) -> list[int] | None:

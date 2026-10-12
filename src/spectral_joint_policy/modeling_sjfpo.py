@@ -37,11 +37,6 @@ from spectral_joint_policy.collector import (
     resolve_action_bounds,
     scale_and_clip_chunk,
 )
-from spectral_joint_policy.dct_utils import (
-    velocity_to_action_steps,
-    extract_dct_coeffs,
-    compute_spectral_energy_retained,
-)
 from spectral_joint_policy.fpo_core import (
     compute_aspo_surrogate,
     compute_cfm_loss,
@@ -146,7 +141,7 @@ def sample_spectral_eps(
 
     ``[n, num_mc_samples, tokens, action_dim]``.
     """
-    shape = (n, cfg.num_mc_samples, cfg.num_flow_tokens, action_dim)
+    shape = (n, cfg.num_mc_samples, cfg.action_horizon, action_dim)
     return sample_noise(shape, cfg, device, None)
 
 
@@ -197,9 +192,10 @@ def compute_ratio_metrics(
     ``log_ratio_*`` reads the raw delta, not the clamped one, so it is never a
     clamp artefact. ``clipfrac`` near zero means the trust region never binds.
 
-    The token axis is frequencies only when ``cfg.use_dct_transform`` is true;
-    otherwise it is the chunk's time steps. ``token_axis_is_spectral`` records
-    which, and the ``*_pos_*`` keys name the split explicitly.
+    The token axis is the chunk's action steps. The ``*_spectral_*`` keys are
+    retained as always-NaN so an old dashboard does not silently read a different
+    quantity under the same name: the DCT that made them meaningful is gone, and
+    the split here is early-late within the chunk, not low-high frequency.
     """
     log_ratio_abs = delta.abs()
     log_ratio_clip_frac = (log_ratio_abs > cfg.log_ratio_cap).float().mean()
@@ -207,9 +203,8 @@ def compute_ratio_metrics(
     ratio_token_mean = ratio_token.mean(dim=(0, 1))
     num_tokens = ratio_token_mean.numel()
     split = max(1, num_tokens // 2)
-    is_spectral = cfg.use_dct_transform
     # One epsilon for the whole token axis, the same bound the surrogate uses. A
-    # per-frequency epsilon had nothing to bind to: the "sample" reduction
+    # per-band epsilon had nothing to bind to: the "sample" reduction
     # averages every token into one number per chunk, so such ratios exist only here.
     def outside(t: torch.Tensor) -> torch.Tensor:
         return ((t < 1.0 - cfg.clip_param) | (t > 1.0 + cfg.clip_param)).float().mean()
@@ -231,26 +226,24 @@ def compute_ratio_metrics(
         "flow_ratio_std": ratio.std(correction=0),
         "flow_ratio_token_range": ratio_token_mean.max() - ratio_token_mean.min(),
         # Legacy keys: always the positional split, kept for existing
-        # dashboards. The *_pos_* and *_spectral_* keys name it correctly.
+        # dashboards. The *_pos_* keys name it correctly.
         "flow_ratio_token_lowfreq": low_mean,
         "flow_ratio_token_highfreq": high_mean,
         "flow_ratio_token_pos_low": low_mean,
         "flow_ratio_token_pos_high": high_mean,
-        "flow_ratio_token_spectral_low": low_mean if is_spectral else float("nan"),
-        "flow_ratio_token_spectral_high": high_mean if is_spectral else float("nan"),
+        "flow_ratio_token_spectral_low": float("nan"),
+        "flow_ratio_token_spectral_high": float("nan"),
         "flow_ratio_token_pos_low_outside_frac": low_outside,
         "flow_ratio_token_pos_high_outside_frac": high_outside,
-        "token_axis_is_spectral": torch.tensor(
-            float(is_spectral), device=ratio.device
-        ),
+        "token_axis_is_spectral": torch.zeros((), device=ratio.device),
         "flow_ratio_token_outside_frac": outside(ratio_token),
         "flow_ratio_token_low_outside_frac": low_outside,
         "flow_ratio_token_high_outside_frac": high_outside,
-        # Chunks with any never-executed action row. Those rows still enter the
-        # DCT target, so this bounds the contamination.
+        # Chunks with any never-executed action row. The mask drops those rows from
+        # the CFM target, so this bounds what it is dropping.
         "truncated_chunk_frac": action_is_pad.any(dim=1).float().mean(),
-        # Share of action rows the chunk ran. With cfm_mask_unexecuted on, this is
-        # the fraction of CFM loss surviving the mask.
+        # Share of action rows the chunk ran: the fraction of CFM loss that
+        # survives the mask.
         "executed_action_step_frac": (~action_is_pad).float().mean(),
     }
 
@@ -711,7 +704,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         states = to_device_async(states, device)
         states = self.preprocessor({OBS_STATE: states})[OBS_STATE]
 
-        num_spectral_tokens_kept = cfg.num_flow_tokens
+        num_spectral_tokens_kept = cfg.action_horizon
         action_dim = int(self.config.action_feature.shape[0])
         actor = self.actor
 
@@ -736,13 +729,7 @@ class SJFPOPolicy(PreTrainedPolicy):
                 device=device,
             ).float()
 
-        if cfg.use_dct_transform:
-            # velocity_to_action_steps reads the coeffs back on the half-open grid
-            # t_j = j*H/H; linspace(0, 1, K) would query j = 0, 1.067, ..., K and
-            # time-warp every executed action.
-            scaled = velocity_to_action_steps(x0, cfg.action_horizon).clamp(-1.0, 1.0)
-        else:
-            scaled = x0[:, : cfg.action_horizon, :].clamp(-1.0, 1.0)
+        scaled = x0[:, : cfg.action_horizon, :].clamp(-1.0, 1.0)
 
         if self.training and cfg.action_perturb_std > 0:
             scaled = scaled + cfg.action_perturb_std * torch.randn_like(scaled)
@@ -785,11 +772,13 @@ class SJFPOPolicy(PreTrainedPolicy):
 
     @staticmethod
     def get_token_count_for_cfm_loss(cfg: SJFPOConfig) -> int:
-        """Tokens the CFM loss reduces over: action-step grid when the loss runs
-        on rows, frequencies when it does not. The two must agree or the ratio
-        compares different-width vectors."""
-        on_action_grid = not cfg.use_dct_transform or cfg.cfm_mask_unexecuted
-        return cfg.action_horizon if on_action_grid else cfg.num_flow_tokens
+        """Tokens the CFM loss reduces over.
+
+        The token axis is the chunk's action steps, so this is always the
+        horizon. It survived the DCT because the ratio compares vectors of this
+        width against the stored per-token losses, and the two have to agree.
+        """
+        return cfg.action_horizon
 
     def prepare_cfm_loss_inputs(
         self,
@@ -797,31 +786,15 @@ class SJFPOPolicy(PreTrainedPolicy):
         action_is_pad: torch.Tensor,
         *velocities: torch.Tensor,
     ) -> tuple[torch.Tensor | None, tuple[torch.Tensor, ...]]:
-        """Execution mask plus velocities that mask can index.
+        """Execution mask plus the velocities that mask indexes.
 
-        A mask only indexes a velocity laid out over the ``action_horizon``
-        steps, so DCT-on velocities (``num_flow_tokens`` coeffs, every step
-        mapping to every coeff) expand back onto the steps first. Exact: the
-        inverse DCT is linear, and at ``num_kept_tokens == action_horizon`` it is
-        a rotation.
-
-        Mask and layout return together because they are only consistent with
-        each other, and a mask over unexpanded velocities lands on the wrong axis
-        and fails silently. Both ``l_old`` and ``l_new`` must come through here.
-
-        ``cfm_mask_unexecuted`` only gates the DCT-on path: with the DCT off the
-        velocities already are the action steps, so the mask is applied either
-        way and the flag reads as honoured when it is not.
+        Pass-through now. It used to expand DCT coefficients back onto the step
+        grid, because a mask over unexpanded coefficients would index the wrong
+        axis and fail silently. With the DCT gone the velocities already are the
+        action steps, so the mask applies directly and both ``l_old`` and
+        ``l_new`` still have to come through here.
         """
-        if cfg.use_dct_transform and cfg.cfm_mask_unexecuted:
-            steps = self.get_token_count_for_cfm_loss(cfg)
-            return action_is_pad, tuple(
-                velocity_to_action_steps(v, steps) for v in velocities
-            )
-        # DCT off, the velocities already are the action steps. DCT on with the
-        # mask off, the mask would index the frequency axis, so drop it.
-        mask = None if cfg.use_dct_transform else action_is_pad
-        return mask, velocities
+        return action_is_pad, velocities
 
     def compute_behavior_cfm_losses(
         self,
@@ -837,10 +810,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         """
         cfg = self.config
         token_count = eps.shape[2]
-        if cfg.use_dct_transform:
-            spectral_action = extract_dct_coeffs(actions, num_modes=token_count)
-        else:
-            spectral_action = actions
+        spectral_action = actions
         flatten_timestep, flatten_mc_noise, flatten_mc_action, flow_shape, num_mc = (
             run_monte_carlo_sampling(spectral_action, eps, tau)
         )
@@ -981,7 +951,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         else:
             active = buffer.active()
         n_chunks = buffer.n_chunks
-        num_spectral_tokens_kept = cfg.num_flow_tokens
+        num_spectral_tokens_kept = cfg.action_horizon
 
         lengths = active["chunk_lengths"]
         chunk_starts = active["chunk_starts"]
@@ -1118,15 +1088,6 @@ class SJFPOPolicy(PreTrainedPolicy):
 
         chunk_clip_counts = active["chunk_clip_counts"][:n_chunks]
 
-        # 1.0 at num_kept_tokens == action_horizon (the transform is then a
-        # rotation and this is a no-op), falling as the spectrum truncates.
-        # None when the DCT is off, so the tracker can skip the key.
-        spectral_energy = None
-        if cfg.use_dct_transform:
-            spectral_energy = float(
-                compute_spectral_energy_retained(actions, cfg.num_flow_tokens)
-            )
-
         behavior_cfm_loss, behavior_cfm_loss_token = self.compute_behavior_cfm_losses(
             normalised_states, actions, tau, eps, action_is_pad
         )
@@ -1149,7 +1110,6 @@ class SJFPOPolicy(PreTrainedPolicy):
             "mc_eps": eps,
             "chunk_clip_counts": chunk_clip_counts,
             "gae_diagnostics": gae_diagnostics,
-            "compute_spectral_energy_retained": spectral_energy,
             "behavior_cfm_loss": behavior_cfm_loss,
             "behavior_cfm_loss_token": behavior_cfm_loss_token,
         }
@@ -1209,17 +1169,13 @@ class SJFPOPolicy(PreTrainedPolicy):
 
         states = self.preprocessor({OBS_STATE: states})[OBS_STATE]
 
-        num_spectral_tokens_kept = cfg.num_flow_tokens
+        num_spectral_tokens_kept = cfg.action_horizon
         n = states.shape[0]
         action_dim = actions.shape[-1]
 
         loss_mask: torch.Tensor = action_is_pad
 
-        dct_action_tokens = (
-            extract_dct_coeffs(actions, num_modes=num_spectral_tokens_kept)
-            if cfg.use_dct_transform
-            else actions
-        )
+        dct_action_tokens = actions
 
         has_mc_tau = "mc_tau" in batch
         has_mc_eps = "mc_eps" in batch
@@ -1294,9 +1250,9 @@ class SJFPOPolicy(PreTrainedPolicy):
         if compute_info:
             with torch.inference_mode(), autocast_context(device):
                 # Keep the rank probe's matrix square-ish: chunk rows x
-                # num_flow_tokens rows against a hidden_dim-wide layer, so the
+                # action_horizon rows against a hidden_dim-wide layer, so the
                 # sample count tracks the token width instead of assuming it.
-                probe = max(1, cfg.hidden_dim // cfg.num_flow_tokens)
+                probe = max(1, cfg.hidden_dim // cfg.action_horizon)
                 _, cond_stats = self.actor(
                     x_t_flat[:probe],
                     actor_tau[:probe],

@@ -90,27 +90,6 @@ class TestFPOCoreRemaining:
         assert torch.isclose(ratio_same, torch.ones_like(ratio_same), atol=1e-5).all()
 
 
-class TestSpectralNetworkMath:
-    def test_spectral_dct_energy_shape(self):
-        """Spectral energy retained is in [0, 1] and equals 1 at full modes."""
-        from spectral_joint_policy.dct_utils import compute_spectral_energy_retained
-        import torch
-
-        v = torch.randn(4, 8, 2)
-        energy_full = compute_spectral_energy_retained(v, num_modes=8)
-        assert energy_full.numel() == 1  # scalar total-share over all batches/rows
-        assert (energy_full <= 1.0 + 1e-5).all() and (energy_full >= 0.0 - 1e-5).all()
-
-    def test_spectral_dct_norm_scale(self):
-        """DCT norm: first element scaled by 1/sqrt(2), rest uniform."""
-        from spectral_joint_policy.dct_utils import compute_dct_norm
-        import torch
-
-        norm = compute_dct_norm(count=8, sequence_length=16, device=torch.device("cpu"))
-        assert norm[0] < norm[1]
-        assert torch.isclose(norm[0] * math.sqrt(2.0), norm[1], atol=1e-5)
-
-
 class TestValueDiagnostics:
     def test_value_huber_monotonic(self):
         """Huber loss: non-negative and symmetric in (pred - target)."""

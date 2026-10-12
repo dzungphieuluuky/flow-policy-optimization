@@ -27,7 +27,6 @@ def _cfg(**kw) -> SJFPOConfig:
         action_horizon=8,
         n_action_steps=4,
         n_obs_steps=4,
-        use_dct_transform=False,
     )
     base.update(kw)
     cfg = SJFPOConfig(**base)
