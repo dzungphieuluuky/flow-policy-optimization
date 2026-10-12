@@ -73,9 +73,9 @@ def test_action_clip_rate_is_absent_when_no_clip_counts_were_collected():
     ) == {}
 
 
-# --- B. action_magnitude excludes unexecuted rows ----------------------
+# --- B. action_abs_mean excludes unexecuted rows ----------------------
 def test_rollout_diagnostics_reports_executed_rows_only():
-    """action_magnitude must not be diluted by rows the robot never ran."""
+    """action_abs_mean must not be diluted by rows the robot never ran."""
     from spectral_joint_policy.train_sjfpo import compute_rollout_diagnostics
 
     a = torch.zeros(2, 8, 3)
@@ -86,8 +86,8 @@ def test_rollout_diagnostics_reports_executed_rows_only():
     out = compute_rollout_diagnostics({"action": a, "action_is_pad": pad})
     # The legacy key keeps its all-rows meaning; the executed-only figure,
     # which is what the robot actually did, is the new one.
-    assert out["action_magnitude"] == pytest.approx(0.6875)
-    assert out["action_magnitude_executed"] == pytest.approx(1.0)
+    assert out["action_abs_mean"] == pytest.approx(0.6875)
+    assert out["action_abs_mean_executed"] == pytest.approx(1.0)
     assert out["action_abs_max"] == pytest.approx(1.0)
     assert out["action_abs_max_executed"] == pytest.approx(1.0)
     assert out["step_delta"] == 11.0
@@ -101,8 +101,8 @@ def test_executed_only_metrics_differ_when_padding_carries_real_values():
     pad = torch.zeros(2, 8, dtype=torch.bool)
     pad[0, 3:] = True
     out = compute_rollout_diagnostics({"action": a, "action_is_pad": pad})
-    assert out["action_magnitude_executed"] == pytest.approx(1.0)
-    assert out["action_magnitude"] < 1.0
+    assert out["action_abs_mean_executed"] == pytest.approx(1.0)
+    assert out["action_abs_mean"] < 1.0
 
 
 # --- C. action_jerk is not scale-free -----------------------------------

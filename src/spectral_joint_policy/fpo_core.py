@@ -63,15 +63,11 @@ def compute_freq_weighted_std(
 ) -> torch.Tensor:
     """Per-mode std of a 1/f^beta spectral profile. beta=0 white, beta=1 pink.
 
-    Exponent is -beta/2 because a 1/f^beta *variance* has std 1/f^(beta/2),
-    which keeps both endpoints exact.
+    Exponent is -beta/2 because a 1/f^beta *variance* has std 1/f^(beta/2).
 
-    ``halve_endpoints`` divides bin 0 by sqrt(2), and exists only to make the
-    orthonormal DCT-II basis consistent: its k=0 vector has norm sqrt(H) against
-    sqrt(H/2) elsewhere, so the scale has to come out. A spectral *filter* has no
-    such artifact -- rfft bins are uniform -- so attenuating DC there would be a
-    design choice, not a correction. Pass False for the filter path. See
-    :func:`spectral_filter_1d`.
+    ``halve_endpoints`` divides bin 0 by sqrt(2) to make the orthonormal DCT-II
+    basis consistent. A filter has no such artefact, so
+    :func:`spectral_filter_1d` passes False.
     """
     k = torch.arange(num_modes, dtype=torch.float32, device=device)
     std = (1.0 + (k * (math.pi / horizon)) ** 2) ** (-0.5 * beta)
@@ -84,18 +80,13 @@ def compute_freq_weighted_std(
 def spectral_filter_1d(
     eps: torch.Tensor, horizon: int, beta: float, device
 ) -> torch.Tensor:
-    """Colour ``eps`` along its second-to-last axis with a 1/f^beta profile.
+    """Colour ``eps`` along dim=-2 with a 1/f^beta profile.
 
-    Returns white noise unchanged when ``beta == 0``, so the ablation baseline
-    costs nothing and is exactly the current behaviour.
-
-    Shape-preserving; filters along ``dim=-2`` (the token axis, which is the
-    action-step grid), broadcast over every other axis.
-
-    The output's rfft magnitude is exactly ``mag`` times the input's, so the
-    realised per-bin variance is ``mag**2`` up to torch's unnormalised rfft
-    (divide by ``horizon`` to compare). Linear, so a zero start stays zero --
-    which is what keeps ``zero_sampling`` unaffected at inference.
+    Returns white noise unchanged at ``beta == 0``, so the ablation baseline is
+    exactly the current behaviour. The output's rfft magnitude is ``mag`` times
+    the input's, so realised per-bin variance is ``mag**2`` up to torch's
+    unnormalised rfft (divide by ``horizon``). Linear, so a zero start stays
+    zero and ``zero_sampling`` is unaffected.
     """
     if beta == 0.0:
         return eps
@@ -119,12 +110,11 @@ def sample_noise(
     """MC noise. Marginal from ``noise_sampling_mode``, spectral structure from
     ``noise_scaling_mode``.
 
-    Whatever comes out of here is the single definition of the base sample. The
-    CFM path reads it in exactly two places -- ``compute_mc_xt`` builds
-    ``lerp(noise, action, t)`` and ``compute_target_velocity`` returns
-    ``a - eps`` -- so colouring it here makes the interpolant and its velocity
-    target consistent with a base measure of ``N(0, L L^T)`` for free, with no
-    change at either call site.
+    This is the only definition of the base sample. The CFM path reads it twice
+    -- ``compute_mc_xt`` builds ``lerp(noise, action, t)`` and
+    ``compute_target_velocity`` returns ``a - eps`` -- so colouring it here makes
+    the interpolant and its target consistent with a base of ``N(0, L L^T)``
+    with no change at either site.
     """
     mode = cfg.noise_sampling_mode
     if mode == "normal":
@@ -390,10 +380,9 @@ def sample_action(
 ):
     """Euler-sample the flow t=0 (noise) -> t=1 (data). Caller draws ``eps``.
 
-    ``return_velocities`` also hands back the ``v_hat`` sequence so
-    :func:`trajectory_straightness` can score curvature. Off by default: it keeps
-    every velocity alive for the whole solve, which the inference path does not
-    otherwise need.
+    ``return_velocities`` also hands back the ``v_hat`` sequence for
+    :func:`trajectory_straightness`. Off by default: it keeps every velocity
+    alive for the whole solve, which the inference path does not need.
     """
     if device is None:
         raise ValueError("device must be provided explicitly")

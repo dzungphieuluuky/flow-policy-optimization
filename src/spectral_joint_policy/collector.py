@@ -260,10 +260,16 @@ class RolloutBuffer:
         )
 
     def mark_incomplete(self, chunk_index: int) -> None:
-        """Flag a chunk cut short by the rollout budget."""
+        """No-op, and deliberately so.
+
+        Called when the step budget cuts a chunk short. The episode continues, so
+        this must NOT set ``chunk_truncated``: that flag is the env's own time
+        limit and drives the GAE bootstrap. Budget cuts therefore stay invisible
+        -- there is no flag for them -- which is why
+        ``budget_truncated_chunk_frac`` reports NaN rather than 0.0.
+        """
         if not 0 <= chunk_index < self.n_chunks:
             raise IndexError(f"chunk index {chunk_index} out of range")
-        # Note: chunk_truncated stays False; the episode continues, GAE must chain.
 
     def active(self) -> dict[str, torch.Tensor]:
         """Contiguous views of the populated prefix.

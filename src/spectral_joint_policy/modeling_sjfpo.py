@@ -95,20 +95,29 @@ def compute_gae_diagnostics(
     raw_returns: torch.Tensor,
     budget_truncated: torch.Tensor | None = None,
 ) -> dict[str, float]:
-    """Trace-liveness and scale probes for the chunk backup. ``linked_frac`` is
-    the one that matters: share of chunk pairs the recursion joined. Chunks
-    arrive in wavefront order, so raw adjacency joins nothing and the env_id
-    sort is what makes the chain live."""
+    """Trace-liveness and scale probes for the chunk backup.
+
+    ``linked_frac`` is what the env_id sort would join: the share of adjacent
+    same-env chunk pairs not separated by an episode end. It describes the
+    *potential* GAE trace, so read it only when gae_lambda > 0; at the default
+    0.0 there is no recursion for it to be live or dead.
+
+    ``budget_truncated`` is NaN when the collector cannot supply it, which is
+    the normal case -- mark_incomplete is a no-op, so no budget-cut flag exists.
+    NaN rather than 0.0, because a hard zero reads as "no chunk was cut short by
+    the budget", which is a claim about the data rather than about us.
+    """
     n = env_id.numel()
     if n == 0:
-        return dict.fromkeys(_GAE_DIAGNOSTIC_KEYS, 0.0)
+        # NaN, not 0.0: nothing was measured, and a hard zero reads as a
+        # measurement that came back clean.
+        return dict.fromkeys(_GAE_DIAGNOSTIC_KEYS, float("nan"))
     order = torch.argsort(env_id.to(torch.long), stable=True)
     e = env_id.to(torch.long)[order]
     ends = terminated.to(torch.bool)[order][:-1] | truncated.to(torch.bool)[order][:-1]
     ret = raw_returns.float()
     # Widened only here, so each field keeps the fp32 arithmetic it had in Python.
     # The stack is float64; 5 numbers, so the wider transfer costs nothing.
-    zero = ret.double().new_zeros(())
     # Population std, matching the advantage normaliser. The unbiased default is NaN
     # at a single chunk and inflates by sqrt(n/(n-1)) elsewhere; correction=0 is
     # defined at n == 1, where clamp_min gives the same 0.0 a guard would.
@@ -122,9 +131,12 @@ def compute_gae_diagnostics(
         # critic is inert; it falls toward 1 - R^2 as the critic improves.
         adv_std / ret_std,
         # Budget cut. Not chunk_truncated, which is the flag GAE reads; not
-        # truncated_chunk_frac, which counts action rows the chunk left unexecuted.
+        # truncated_chunk_frac, which counts action rows the chunk left
+        # unexecuted. NaN when unsupplied: mark_incomplete is a no-op, so there
+        # is currently no budget-cut flag and 0.0 would be a false negative.
         budget_truncated.to(torch.bool).float().mean().double()
-        if budget_truncated is not None else zero,
+        if budget_truncated is not None
+        else ret.double().new_tensor(float("nan")),
     ]
     # One transfer, not one per field: float() on a device tensor is a blocking
     # sync, and this runs once per rollout.

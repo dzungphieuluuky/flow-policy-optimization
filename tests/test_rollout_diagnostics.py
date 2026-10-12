@@ -34,7 +34,7 @@ def test_matches_the_unbatched_reductions():
     action = batch["action"]
     assert out["step_delta"] == int((~batch["action_is_pad"]).sum())
     assert out["action_abs_max"] == float(action.abs().max())
-    assert out["action_magnitude"] == float(action.abs().mean())
+    assert out["action_abs_mean"] == float(action.abs().mean())
     assert out["chunk_clip_counts"] == float(
         batch["chunk_clip_counts"].float().mean()
     )
@@ -55,8 +55,8 @@ def test_clip_counts_is_optional():
     assert set(out) == {
         "step_delta",
         "action_abs_max",
-        "action_magnitude",
-        "action_magnitude_executed",
+        "action_abs_mean",
+        "action_abs_mean_executed",
         "action_abs_max_executed",
     }
 
@@ -67,9 +67,9 @@ def test_executed_only_keys_use_the_executed_rows():
     out = compute_rollout_diagnostics(batch)
     action = batch["action"]
     exec_action = action[~batch["action_is_pad"]]
-    assert out["action_magnitude"] == float(action.abs().mean())
-    assert out["action_magnitude_executed"] == float(exec_action.abs().mean())
+    assert out["action_abs_mean"] == float(action.abs().mean())
+    assert out["action_abs_mean_executed"] == float(exec_action.abs().mean())
     assert out["action_abs_max"] == float(action.abs().max())
     assert out["action_abs_max_executed"] == float(exec_action.abs().max())
     # With padding holding real values, the two means must genuinely differ.
-    assert out["action_magnitude"] != pytest.approx(out["action_magnitude_executed"])
+    assert out["action_abs_mean"] != pytest.approx(out["action_abs_mean_executed"])

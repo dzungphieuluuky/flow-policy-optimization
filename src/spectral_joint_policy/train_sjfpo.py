@@ -148,8 +148,7 @@ def sample_minibatch(
     """
     if out is None:
         out = {}
-    passthrough = ("normalizer_observations", "gae_diagnostics",
-                   "compute_spectral_energy_retained")
+    passthrough = ("normalizer_observations", "gae_diagnostics")
     for k, v in batch.items():
         if k in passthrough:
             out[k] = v
@@ -187,8 +186,9 @@ def compute_rollout_diagnostics(batch: dict[str, torch.Tensor]) -> dict[str, flo
     calls cost one CUDA sync each, and ``action_abs_max`` blocks on one.
 
     The collector stores the full scaled chunk, so unexecuted rows still carry
-    a real proposed action. Legacy keys keep their all-rows meaning; the
-    ``_executed`` ones mask first.
+    a real proposed action. The all-rows keys keep that meaning; the
+    ``_executed`` ones mask first. ``action_abs_mean`` is mean|a|, not an L2
+    norm -- it is named to pair with ``action_abs_max``, which is a max.
     """
     action = batch["action"].float()
     is_pad = batch["action_is_pad"]
@@ -204,8 +204,8 @@ def compute_rollout_diagnostics(batch: dict[str, torch.Tensor]) -> dict[str, flo
     keys = [
         "step_delta",
         "action_abs_max",
-        "action_magnitude",
-        "action_magnitude_executed",
+        "action_abs_mean",
+        "action_abs_mean_executed",
         "action_abs_max_executed",
     ]
     clip_counts = batch.get("chunk_clip_counts")
@@ -672,18 +672,14 @@ def train_sjfpo_run(
                     data["train/rollout_seam_jerk"] = rollout_seam_jerk
                 if "chunk_clip_counts" in rollout:
                     data["train/chunk_clip_counts"] = rollout["chunk_clip_counts"]
-                data["train/action_magnitude"] = rollout["action_magnitude"]
-                data["train/action_magnitude_executed"] = rollout[
-                    "action_magnitude_executed"
+                data["train/action_abs_mean"] = rollout["action_abs_mean"]
+                data["train/action_abs_mean_executed"] = rollout[
+                    "action_abs_mean_executed"
                 ]
                 data["train/action_abs_max_executed"] = rollout[
                     "action_abs_max_executed"
                 ]
                 data.update({f"train/{k}": v for k, v in clip_metrics.items()})
-                if batch.get("compute_spectral_energy_retained") is not None:
-                    data["train/compute_spectral_energy_retained"] = batch[
-                        "compute_spectral_energy_retained"
-                    ]
                 gae_diag = batch.get("gae_diagnostics")
                 if gae_diag:
                     data["train/gae_linked_frac"] = gae_diag["linked_frac"]
