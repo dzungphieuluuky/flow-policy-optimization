@@ -33,6 +33,34 @@ class ResumeError(RuntimeError):
     """Unresumable checkpoint: missing or corrupt files."""
 
 
+def _reject_legacy_critic_checkpoint(d: Path) -> None:
+    """Fail before construction if the checkpoint predates the critic's exec-length
+    input.
+
+    Turning ``critic_condition_on_exec_length`` on appends one input to every
+    critic member's first layer, so its weight is ``[out, in+1]``. A checkpoint
+    written before the flag existed stores ``[out, in]`` and ``from_pretrained``
+    would fail with an opaque size mismatch -- or worse, load non-strictly and
+    leave the new column at its init, which silently makes the critic ignore the
+    feature it was built for.
+
+    The migration is deliberately NOT automatic. Copying an existing input
+    column into the new slot would make a resumed critic assert "every chunk
+    executed half the horizon" for chunks that did not, so it is easier to
+    detect and re-run than to get quietly wrong.
+    """
+    raw = (d / CONFIG_NAME).read_text(encoding="utf-8")
+    cfg_keys = json.loads(raw).keys()
+    if "critic_condition_on_exec_length" in cfg_keys:
+        return
+    raise ResumeError(
+        f"checkpoint in {d} was written before critic_condition_on_exec_length "
+        "existed, so its critic lacks the exec-length input and cannot be "
+        "resumed into the current critic. Start a fresh run, or set "
+        "critic_condition_on_exec_length: false to rebuild the old critic shape."
+    )
+
+
 def write_bytes_atomically(path: Path, data: bytes) -> None:
     """Write bytes to a path atomically, durable across a crash."""
     with tempfile.NamedTemporaryFile(
@@ -218,6 +246,8 @@ def load_policy_checkpoint(
     ]
     if missing:
         raise ResumeError(f"incomplete policy checkpoint in {d}: missing {missing}")
+
+    _reject_legacy_critic_checkpoint(d)
 
     policy = SJFPOPolicy.from_pretrained(d)
     if device is not None:

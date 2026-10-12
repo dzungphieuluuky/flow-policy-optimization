@@ -252,7 +252,21 @@ def measure_value_drift(policy, batch, device) -> tuple[torch.Tensor, torch.Tens
     boot_obs = batch["boot_observations"].to(device=device, dtype=torch.float32)
     boot_actions = batch["boot_actions"].to(device=device, dtype=torch.float32)
     start = batch["boot_values_start"].to(device).reshape(-1)
-    delta = policy.critic(boot_obs, boot_actions).float().amin(dim=0) - start
+    # Must be the same fraction generate_rollout fed the bootstrap, or this
+    # compares Q(s',a',f1) against Q(s',a',f2) and reports the gap between two
+    # different functions as staleness.
+    boot_exec_frac = policy.exec_frac(
+        torch.full(
+            (boot_obs.shape[0],),
+            policy.config.n_action_steps,
+            device=boot_obs.device,
+            dtype=torch.long,
+        )
+    )
+    delta = (
+        policy.critic(boot_obs, boot_actions, boot_exec_frac).float().amin(dim=0)
+        - start
+    )
     drift_rms = rms(delta)
     return (
         drift_rms / (rms(start) + 1e-8),

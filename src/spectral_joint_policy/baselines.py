@@ -41,6 +41,9 @@ _NOTES: dict[str, dict[str, str]] = {
         "exponentiate, so all N_mc (tau, eps) pairs clip together.",
         "trust_region_mode": "ppo: FPO Eq. 5 is min(r*A, clip(r,1+/-e)*A) and "
         "nothing else. The SPO quadratic branch is the proposed method, not FPO.",
+        "cfm_loss_reduction": "sum: FPO Eq. 8 is the squared norm over the whole "
+        "chunk. SJFPO defaults to 'mean', whose length-invariant trust region is "
+        "the proposed change, not FPO.",
         "cfm_clamp": "inf: FPO Alg. 1 has no loss clamp. cfm_clamp exists in "
         "SJFPO to stop a runaway the FPO objective does not have.",
         "log_ratio_cap": "inf: FPO has no log-ratio cap and no straight-through "
@@ -55,9 +58,14 @@ _NOTES: dict[str, dict[str, str]] = {
         "num_mc_samples": "8: FPO's default N_mc (Alg. 1).",
     },
     "fpo++": {
-        "(none)": "FPO++ IS this file's default configuration. No override is "
-        "applied, so whatever the caller passed is what runs. Listed here only "
-        "so the name appears in run_metadata.json.",
+        "ratio_granularity": "per_action == FPO++ Eq. 10 (one ratio per (tau, eps) "
+        "pair). Pinned explicitly so the baseline cannot drift when the SJFPO "
+        "default changes.",
+        "trust_region_mode": "aspo: ASPO (PPO-clip on A>=0, SPO quadratic on A<0) "
+        "is FPO++'s trust region. Pinned explicitly, same reason.",
+        "cfm_loss_reduction": "sum: FPO++ inherits FPO's Eq. 8 chunk norm. Pinned "
+        "explicitly; SJFPO's 'mean' default is a proposed change, not the paper.",
+        "num_mc_samples": "8: FPO++ keeps FPO's N_mc. Pinned explicitly.",
     },
     "dppo": {
         "ratio_granularity": "unused: DPPO replaces the FPO surrogate entirely "
@@ -80,6 +88,7 @@ _OVERRIDES: dict[str, dict[str, Any]] = {
     "fpo": {
         "ratio_granularity": "per_chunk",
         "trust_region_mode": "ppo",
+        "cfm_loss_reduction": "sum",
         "cfm_clamp": _NO_CLAMP,
         "log_ratio_cap": _NO_CLAMP,
         "cfm_loss_clamp_negative_advantages": False,
@@ -90,8 +99,15 @@ _OVERRIDES: dict[str, dict[str, Any]] = {
         "num_mc_samples": 8,
     },
     # ---- FPO++: Yi et al., arXiv:2602.02481 ------------------------------
-    # Already the default. per_action == Eq. 10, trust_region_mode == aspo.
-    "fpo++": {},
+    # Pinned explicitly rather than left empty. These four fields are what makes
+    # the run FPO++; leaving them inherited made the baseline a moving target,
+    # because any default change silently redefined it.
+    "fpo++": {
+        "ratio_granularity": "per_action",
+        "trust_region_mode": "aspo",
+        "cfm_loss_reduction": "sum",
+        "num_mc_samples": 8,
+    },
     # ---- DPPO: Ren et al., arXiv:2409.00588 ------------------------------
     # Needs denoising_mdp.py; these are the rollout-side settings only.
     "dppo": {

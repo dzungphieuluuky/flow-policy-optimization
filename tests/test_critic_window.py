@@ -1,5 +1,5 @@
-"""The critic is Q(s, a_chunk), it reads the whole window in order, and the
-ensemble stays independent.
+"""The critic is Q(s, a_chunk, f), it reads the whole window in order, the
+chunk is a first-class input, and the ensemble stays independent.
 
 It used to read states[:, -1, :], discarding 15 of 16 frames, and later a
 flatten plus a position code. The window properties still have to hold:
@@ -11,16 +11,18 @@ A mean-pool satisfies neither in the way that matters: it ignores order entirely
 so the permutation would be a no-op. That is the failure mode this file exists to
 prevent.
 
-The critic is a per-member SiLU MLP over the flattened window, so the window
-properties are structural rather than incidental: a permuted window is a
-different input vector to the first Linear. The ensemble property is the
-load-bearing one here: members must not share a trunk, or min-over-members is
-meaningless.
+The critic is now a per-member concat MLP over ``[window, chunk, exec_frac]``
+(replacing the earlier FiLM modulation), so the window and chunk properties are
+structural rather than incidental: a permuted window or chunk is a different
+input vector to the first Linear, and an MLP is not permutation-invariant. The
+ensemble property is the load-bearing one here: members must not share a trunk,
+or min-over-members is meaningless.
 
-Since the chunked critic, each member is also *action* conditioned -- the chunk
-modulates the state feature through FiLM -- so the action properties get the
-same treatment: Q must separate two chunks that differ only in ordering, and a
-member perturbed in its chunk branch must move its own output only.
+``f`` is the executed fraction of the planned chunk. A chunk is planned at
+``action_horizon`` but only ``lengths`` steps run, so without it Q cannot tell
+two chunks apart that share an executed prefix and differ only in the tail that
+was planned and never executed -- yet both are regressed onto a return that
+covers only the executed prefix.
 """
 
 import pytest
@@ -31,9 +33,24 @@ from spectral_joint_policy.critic import Critic
 OBS, HIDDEN, STEPS, ACT, H = 11, 32, 8, 3, 6
 
 
-def _critic(seed: int = 0, num_critics: int = 1) -> Critic:
+def _critic(
+    seed: int = 0,
+    num_critics: int = 1,
+    *,
+    condition_on_exec_length: bool = True,
+    num_layers: int = 2,
+) -> Critic:
     torch.manual_seed(seed)
-    return Critic(OBS, HIDDEN, ACT, STEPS, H, num_critics)
+    return Critic(
+        OBS,
+        HIDDEN,
+        ACT,
+        STEPS,
+        H,
+        num_critics,
+        condition_on_exec_length=condition_on_exec_length,
+        num_layers=num_layers,
+    )
 
 
 def _window(seed: int = 1, batch: int = 4) -> torch.Tensor:
@@ -46,36 +63,43 @@ def _chunk(seed: int = 2, batch: int = 4) -> torch.Tensor:
     return torch.randn(batch, H, ACT)
 
 
+def _frac(batch: int = 4, value: float = 0.5) -> torch.Tensor:
+    return torch.full((batch,), value)
+
+
+def _q(critic: Critic, w: torch.Tensor, c: torch.Tensor, f=None) -> torch.Tensor:
+    """Forward with the length feature only when the critic wants it, so the
+    probe tests read the same way whichever flag they were built under."""
+    if critic.condition_on_exec_length and f is None:
+        f = _frac(w.shape[0])
+    return critic(w, c, f)
+
+
 @pytest.mark.parametrize("batch", [1, 3, 64])
 def test_output_is_one_value_per_sample(batch: int):
     """[num_critics, B]: the critic does not aggregate, the caller does."""
-    out = _critic()(_window(batch=batch), _chunk(batch=batch))
-    assert out.shape == (1, batch)
+    assert _q(_critic(), _window(batch=batch), _chunk(batch=batch)).shape == (1, batch)
 
 
 def test_window_length_must_match_the_declared_one():
-    """The collector builds windows to n_obs_steps, so a mismatch is a real error.
-
-    The old states[:, -1, :] path accepted any T, so this is a narrowing: the
-    critic is now tied to the window length the config declares.
-    """
-    with pytest.raises(ValueError, match="built for n_obs_steps=8"):
-        _critic()(torch.randn(2, 4, OBS), _chunk()[:, :H])
+    """The collector builds windows to n_obs_steps, so a mismatch is a real error."""
+    with pytest.raises(ValueError, match=f"built for n_obs_steps={STEPS}"):
+        _q(_critic(), torch.randn(2, 4, OBS), _chunk()[:, :H])
 
 
 def test_chunk_length_must_match_the_horizon():
-    with pytest.raises(ValueError, match="action_horizon=6"):
-        _critic()(_window(), torch.randn(4, H - 1, ACT))
+    with pytest.raises(ValueError, match=f"action_horizon={H}"):
+        _q(_critic(), _window(), torch.randn(4, H - 1, ACT))
 
 
 def test_action_dim_must_match():
-    with pytest.raises(ValueError, match="actions feature dimension must be 3"):
-        _critic()(_window(), torch.randn(4, H, ACT + 1))
+    with pytest.raises(ValueError, match=f"actions feature dimension must be {ACT}"):
+        _q(_critic(), _window(), torch.randn(4, H, ACT + 1))
 
 
 def test_batch_mismatch_is_rejected():
-    with pytest.raises(ValueError, match="actions batch 3 != states batch 4"):
-        _critic()(_window(), torch.randn(3, H, ACT))
+    with pytest.raises(ValueError, match=r"actions batch 3 != states batch 4"):
+        _q(_critic(), _window(), torch.randn(3, H, ACT))
 
 
 def test_every_frame_influences_the_output():
@@ -85,82 +109,137 @@ def test_every_frame_influences_the_output():
     for frame in range(STEPS):
         moved = base.clone()
         moved[:, frame, :] += 5.0
-        assert not torch.allclose(critic(base, chunk), critic(moved, chunk), atol=1e-6), (
-            f"frame {frame} does not affect the value"
-        )
+        assert not torch.allclose(
+            _q(critic, base, chunk), _q(critic, moved, chunk), atol=1e-6
+        ), f"frame {frame} does not affect the value"
 
 
 def test_frame_order_matters():
     """The property a mean-pool cannot have."""
     critic = _critic()
     w, c = _window(), _chunk()
-    assert not torch.allclose(critic(w, c), critic(w.flip(1), c), atol=1e-6)
+    assert not torch.allclose(_q(critic, w, c), _q(critic, w.flip(1), c), atol=1e-6)
 
 
 def test_temporal_frequency_content_is_visible():
     """Two windows with identical per-frame value multisets must separate.
 
-    The flatten makes this structural: a permutation is a different input to
-    the first Linear, and an MLP is not permutation-invariant.
+    The flatten makes this structural: a permutation is a different input to the
+    first Linear, and an MLP is not permutation-invariant.
     """
     critic = _critic()
     w, c = _window(), _chunk()
     shuffled = w[:, torch.randperm(STEPS, generator=torch.Generator().manual_seed(7))]
     torch.testing.assert_close(w.sum(1), shuffled.sum(1))
-    assert not torch.allclose(critic(w, c), critic(shuffled, c), atol=1e-6)
+    assert not torch.allclose(_q(critic, w, c), _q(critic, shuffled, c), atol=1e-6)
 
 
 # --- the chunk is a first-class input ---------------------------------------
 
 
-def test_film_starts_as_identity():
-    """Zero-init FiLM head: at step 0 the chunk must not modulate the state
-    feature, so Q is chunk-independent until a gradient step un-zeroes it."""
-    critic = _critic()
-    s = _window()
-    assert torch.allclose(critic(s, _chunk()), critic(s, _chunk(seed=9)), atol=1e-6)
-
-
-def _unzero_film(critic: Critic) -> Critic:
-    """Stand-in for 'after one training step': FiLM head is zero-init, so
-    un-perturb it to exercise the chunk dependence these probes check for."""
-    with torch.no_grad():
-        for net in critic.networks:
-            net.act_enc.fc2.weight.normal_(0, 0.05)
-    return critic
-
-
 def test_every_action_step_influences_the_output():
-    critic = _unzero_film(_critic())
+    critic = _critic()
     base, chunk = _window(), _chunk()
     for step in range(H):
         moved = chunk.clone()
         moved[:, step, :] += 5.0
-        assert not torch.allclose(critic(base, chunk), critic(base, moved), atol=1e-6), (
-            f"action step {step} does not affect Q"
-        )
+        assert not torch.allclose(
+            _q(critic, base, chunk), _q(critic, base, moved), atol=1e-6
+        ), f"action step {step} does not affect Q"
 
 
 def test_chunk_order_matters():
     """An order-insensitive chunk encoder could not tell a reversed chunk."""
-    critic = _unzero_film(_critic())
+    critic = _critic()
     w, c = _window(), _chunk()
-    assert not torch.allclose(critic(w, c), critic(w, c.flip(1)), atol=1e-6)
+    assert not torch.allclose(_q(critic, w, c), _q(critic, w, c.flip(1)), atol=1e-6)
 
 
 def test_q_is_not_additive_in_state_and_chunk():
-    """The FiLM branch must make Q non-additive, which is why it is not a concat.
+    """Q must not factor as f(s) + g(a), or the concat buys nothing.
 
-    If Q(s1,a1) + Q(s2,a2) == Q(s1,a2) + Q(s2,a1) held everywhere, the
-    interaction collapsed to a sum and the extra parameters bought nothing.
+    A per-member MLP is nonlinear over the joint input, so the interaction term
+    is structural rather than something an initialisation has to grow into.
     """
-    critic = _unzero_film(_critic(seed=5))
+    critic = _critic(seed=5)
     s1, s2 = _window(seed=11), _window(seed=12)
     a1, a2 = _chunk(seed=13), _chunk(seed=14)
-    cross = (critic(s1, a1) + critic(s2, a2)) - (critic(s1, a2) + critic(s2, a1))
-    assert not torch.allclose(cross, torch.zeros_like(cross), atol=1e-4), (
-        "Q is additive in (state, chunk); FiLM is doing nothing"
+    cross = (_q(critic, s1, a1) + _q(critic, s2, a2)) - (
+        _q(critic, s1, a2) + _q(critic, s2, a1)
     )
+    assert not torch.allclose(cross, torch.zeros_like(cross), atol=1e-4), (
+        "Q is additive in (state, chunk)"
+    )
+
+
+# --- the executed-length input ---------------------------------------------
+
+
+def test_input_dim_grows_by_exactly_one_with_the_length_feature():
+    """The +1 is what makes pre-existing checkpoints unloadable, so pin it."""
+    on = _critic(condition_on_exec_length=True)
+    off = _critic(condition_on_exec_length=False)
+    assert on.input_dim - off.input_dim == 1
+    assert off.input_dim == STEPS * OBS + H * ACT
+
+
+def test_flag_off_ignores_exec_frac_entirely():
+    """The ablation has to reproduce the old critic exactly, so a stray argument
+    must not leak in."""
+    critic = _critic(condition_on_exec_length=False)
+    w, c = _window(), _chunk()
+    torch.testing.assert_close(critic(w, c, None), critic(w, c, _frac(w.shape[0], 0.9)))
+
+
+def test_missing_exec_frac_is_rejected_rather_than_defaulted():
+    """Silently defaulting f would reintroduce exactly the bug this input fixes."""
+    critic = _critic(condition_on_exec_length=True)
+    with pytest.raises(ValueError, match="exec_frac is required"):
+        critic(_window(), _chunk(), None)
+
+
+def test_exec_frac_shape_must_match_the_batch():
+    critic = _critic(condition_on_exec_length=True)
+    with pytest.raises(ValueError, match=r"exec_frac must be \[B\]"):
+        critic(_window(), _chunk(), _frac(3))
+
+
+def test_q_separates_chunks_differing_only_in_the_unexecuted_tail():
+    """The regression this whole input exists for.
+
+    Same state, same executed prefix, different plan for the tail that will
+    never run. Before the feature these produced one Q, forcing the critic to
+    average over a distinction its return target does not even resolve.
+    """
+    critic = _critic()
+    w = _window(batch=1)
+    a = torch.zeros(1, H, ACT)
+    executed = 3
+    a[:, :executed, :] = 0.4
+    tail_a, tail_b = a.clone(), a.clone()
+    tail_a[:, executed:, :] = 0.1
+    tail_b[:, executed:, :] = -0.9
+    q_a = critic(w, tail_a, _frac(1, executed / H))
+    q_b = critic(w, tail_b, _frac(1, executed / H))
+    assert not torch.allclose(q_a, q_b, atol=1e-6)
+
+
+def test_exec_frac_itself_moves_q():
+    """Same state and chunk, different executed fraction."""
+    critic = _critic()
+    w, c = _window(batch=1), _chunk(batch=1)
+    assert not torch.allclose(
+        critic(w, c, _frac(1, 0.25)), critic(w, c, _frac(1, 1.0)), atol=1e-6
+    )
+
+
+def test_gradient_reaches_the_length_column():
+    """Guards a detached or accidentally non-differentiable feature."""
+    critic = _critic()
+    critic(_window(), _chunk(), _frac(4)).sum().backward()
+    first = critic.networks[0].mlp[0].weight
+    assert first.grad is not None
+    assert first.grad[:, -1].abs().sum() > 0, "exec_frac column got no gradient"
 
 
 # --- ensemble --------------------------------------------------------------
@@ -169,11 +248,10 @@ def test_q_is_not_additive_in_state_and_chunk():
 def test_num_critics_two_min_le_mean_contract():
     """The caller's aggregator contract holds for the 2-member ensemble:
     min (backup) is never above mean (value loss), members stay distinct."""
-    out = _critic(seed=3, num_critics=2)(_window(), _chunk())
+    out = _q(_critic(seed=3, num_critics=2), _window(), _chunk())
     assert out.shape == (2, 4)
     assert not torch.allclose(out[0], out[1])
     assert (out.amin(dim=0) <= out.mean(dim=0)).all()
-
 
 
 def test_members_are_independent_not_one_wide_mlp():
@@ -184,24 +262,12 @@ def test_members_are_independent_not_one_wide_mlp():
     """
     critic = _critic(seed=3, num_critics=2)
     w, c = _window(), _chunk()
-    before = critic(w, c).clone()
+    before = _q(critic, w, c).clone()
     with torch.no_grad():
-        critic.networks[1].head.fc2.weight.add_(1.0)
-    after = critic(w, c)
+        critic.networks[1].mlp[-1].weight.add_(1.0)
+    after = _q(critic, w, c)
     torch.testing.assert_close(after[0], before[0])
     assert not torch.allclose(after[1], before[1]), "member 1 did not move at all"
-
-
-def test_perturbing_the_chunk_branch_moves_only_that_member():
-    """The action path is per-member too, not shared behind a single encoder."""
-    critic = _critic(seed=3, num_critics=2)
-    w, c = _window(), _chunk()
-    before = critic(w, c).clone()
-    with torch.no_grad():
-        critic.networks[1].act_enc.fc2.weight.add_(1.0)
-    after = critic(w, c)
-    torch.testing.assert_close(after[0], before[0])
-    assert not torch.allclose(after[1], before[1])
 
 
 def test_per_member_network_has_no_shared_parameters():
@@ -216,50 +282,60 @@ def test_permuting_every_member_permutes_the_output():
     """The ensemble is equivariant to a relabelling of its members."""
     critic = _critic(seed=3, num_critics=2)
     w, c = _window(), _chunk()
-    before = critic(w, c).clone()
+    before = _q(critic, w, c).clone()
     with torch.no_grad():
         critic.networks[0], critic.networks[1] = (
             critic.networks[1],
             critic.networks[0],
         )
-    after = critic(w, c)
+    after = _q(critic, w, c)
     torch.testing.assert_close(after[0], before[1])
     torch.testing.assert_close(after[1], before[0])
 
 
 def test_members_differ_at_init():
     critic = _critic(seed=4, num_critics=2)
-    out = critic(_window(), _chunk())
+    out = _q(critic, _window(), _chunk())
     assert not torch.allclose(out[0], out[1])
 
 
-def test_gradient_reaches_every_member_and_both_branches():
+def test_gradient_reaches_every_member():
     critic = _critic(seed=4, num_critics=2)
-    critic(_window(), _chunk()).sum().backward()
+    _q(critic, _window(), _chunk()).sum().backward()
     for net in critic.networks:
-        for branch in (net.state_enc, net.act_enc, net.head):
-            grads = [p.grad for p in branch.parameters() if p.grad is not None]
-            assert grads, f"{type(branch).__name__} received no gradient"
-            assert sum(g.abs().sum() for g in grads) > 0
+        grads = [p.grad for p in net.parameters() if p.grad is not None]
+        assert grads
+        assert sum(g.abs().sum() for g in grads) > 0
 
 
 def test_critic_member_reads_the_whole_window_and_the_whole_chunk():
-    """Both inputs must be consumed in full, at the actor encoder's width.
-
-    If either narrows, the critic silently becomes a weaker approximator of the
-    policy it is critiquing, which is the failure this design exists to prevent.
-    """
+    """Both inputs must be consumed in full; if either narrows, the critic
+    silently becomes a weaker approximator of the policy it is critiquing."""
     member = _critic().networks[0]
-    assert member.state_enc.fc1.in_features == STEPS * OBS
-    assert member.state_enc.fc1.out_features == HIDDEN
-    assert member.act_enc.fc1.in_features == H * ACT
-    assert member.act_enc.fc2.out_features == 2 * HIDDEN
+    first = member.mlp[0]
+    assert first.in_features == STEPS * OBS + H * ACT + 1
+    assert first.out_features == HIDDEN
+
+
+def test_num_layers_controls_hidden_width():
+    """One shared hidden_dim serves Pendulum (obs 3) and Humanoid (obs 348); a
+    separate critic_num_layers is how that gets tuned without touching the actor."""
+    deep = _critic(num_layers=4).networks[0]
+    linears = [m for m in deep.mlp if isinstance(m, torch.nn.Linear)]
+    assert len(linears) == 5, [type(m).__name__ for m in deep.mlp]
+    assert all(m.out_features == HIDDEN for m in linears[:-1])
+    assert linears[-1].out_features == 1
 
 
 def test_parameter_count_is_proportionate():
-    """Three CondMLPs per member; guard against silently widening any of them."""
-    n = sum(p.numel() for p in Critic(11, 128, 17, 16, 16, 2).parameters())
-    assert n == pytest.approx(247_554, abs=5_000), f"critic is {n} params"
+    """Guard against silently widening or deepening a member."""
+    n = sum(
+        p.numel()
+        for p in Critic(11, 128, 17, 16, 16, 2).parameters()
+    )
+    # in_dim = 16*11 + 16*17 + 1 = 449; per member 449*128+128, 128*128+128,
+    # 128*1+1 = 74241; x2 members.
+    assert n == pytest.approx(148_482, abs=50), f"critic is {n} params"
 
 
 def test_n_obs_steps_must_be_positive():
@@ -270,3 +346,8 @@ def test_n_obs_steps_must_be_positive():
 def test_num_critics_must_be_positive():
     with pytest.raises(ValueError, match="num_critics must be >= 1"):
         Critic(OBS, HIDDEN, ACT, STEPS, H, 0)
+
+
+def test_num_layers_must_be_positive():
+    with pytest.raises(ValueError, match="num_layers must be >= 1"):
+        _critic(num_layers=0)

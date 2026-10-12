@@ -343,11 +343,15 @@ class SJFPOPolicy(PreTrainedPolicy):
         self.encoder = StateEncoder(obs_dim, config.hidden_dim, config.n_obs_steps)
         self.critic = Critic(
             obs_dim,
-            config.hidden_dim,
+            config.critic_hidden_dim
+            if config.critic_hidden_dim is not None
+            else config.hidden_dim,
             action_dim,
             config.n_obs_steps,
             config.action_horizon,
             config.num_critics,
+            condition_on_exec_length=config.critic_condition_on_exec_length,
+            num_layers=config.critic_num_layers,
         )
         self.obs_normalizer = RunningMeanStd(obs_dim)
 
@@ -753,6 +757,14 @@ class SJFPOPolicy(PreTrainedPolicy):
         return self._action_buffer.popleft()
 
 
+    def exec_frac(self, executed_steps: torch.Tensor) -> torch.Tensor:
+        """Normalise an executed-step count to ``[0, 1]`` for the critic input.
+
+        Always returns a value even when the critic does not consume it, so a
+        caller never has to branch on the flag to build the right tensor.
+        """
+        return executed_steps.to(torch.float32) / float(self.config.action_horizon)
+
     @staticmethod
     def get_token_count_for_cfm_loss(cfg: SJFPOConfig) -> int:
         """Tokens the CFM loss reduces over: action-step grid when the loss runs
@@ -997,14 +1009,26 @@ class SJFPOPolicy(PreTrainedPolicy):
             )[OBS_STATE]
             normalised_states = all_chunk_normalised_states[:n_chunks]
             normalised_next_states = all_chunk_normalised_states[n_chunks:]
+            # The critic needs to know how much of each planned chunk was
+            # actually run. Each chunk's own count is in `lengths`; the bootstrap
+            # chunk is a fresh full-horizon proposal that will only be executed
+            # for n_action_steps, so its fraction is n_action_steps/H, NOT H/H.
+            # Passing H/H here would reintroduce the mismatch the feature exists
+            # to remove, one level down.
+            exec_frac = self.exec_frac(lengths)
+            boot_exec_frac = self.exec_frac(
+                torch.full_like(lengths, cfg.n_action_steps)
+            )
             # amin across the num_critics=2 members: backup only, never inside
             # the loss. The value loss averages the same two members.
             with autocast_context(device):
-                chunk_q = self.critic(normalised_states, actions).float().amin(dim=0)
+                chunk_q = self.critic(
+                    normalised_states, actions, exec_frac
+                ).float().amin(dim=0)
             if cfg.use_target_critic:
                 with torch.inference_mode(), autocast_context(device):
                     boot_q = self.target_critic(
-                        normalised_next_states, boot_actions
+                        normalised_next_states, boot_actions, boot_exec_frac
                     ).float().amin(dim=0)
             else:
                 boot_q = chunk_q
@@ -1290,7 +1314,11 @@ class SJFPOPolicy(PreTrainedPolicy):
                 policy_per_chunk = -compute_aspo_surrogate(ratio, adv_mc, cfg).mean(dim=1)
 
         with autocast_context(device):
-            raw_value_pred = self.critic(states, actions).float()  # [num_critics, n]
+            # action_is_pad marks what was NOT executed, so the executed
+            # count is its complement over the horizon. Hoisted so the
+            # critic call and its fp32 promotion stay on one line.
+            chunk_exec_frac = self.exec_frac((~action_is_pad).sum(dim=-1))
+            raw_value_pred = self.critic(states, actions, chunk_exec_frac).float()  # [num_critics, n]
         raw_returns_flat = raw_returns.reshape(-1)
         if raw_value_pred.shape[-1] != raw_returns_flat.shape[0]:
             raise ValueError(

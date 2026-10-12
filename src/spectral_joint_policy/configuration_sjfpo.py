@@ -26,7 +26,11 @@ class SJFPOConfig(PreTrainedConfig):
     report_to: str = "all"
     n_obs_steps: int = 16
     action_horizon: int = 8
-    n_action_steps: int = 8
+    # Execute half the chunk, then replan. At action_horizon the chunk is
+    # planned and executed fully open-loop with no closed-loop correction for
+    # 8 env steps, which is the single largest default weakness here. Treated as
+    # a default, not a settled result -- confirm by sweeping {2, 4, 8}.
+    n_action_steps: int = 4
     action_perturb_std: float = 0.02
     hidden_dim: int = 128
 
@@ -44,13 +48,11 @@ class SJFPOConfig(PreTrainedConfig):
     timestep_sampling_mode: str = "fpo_beta"
     noise_sampling_mode: str = "normal"
     # --- Spectral / frequency-domain settings ---
-    # Noise scaling: white (uniform energy) or freq_weighted (pink noise, 1/f^beta).
+    # Noise scaling: white (uniform energy) or freq_weighted (1/f^beta, needs DCT).
     # DCT: orthonormal DCT-II analysis for spectral energy/collapse diagnostics.
-    # Trust region: per-band clipping profile matches spectral decay (see docs).
+    noise_sampling_mode: str = "normal"
     noise_scaling_mode: str = "white"
     noise_scaling_beta: float = 1.0
-    # Spectral decay profile for per-frequency trust-region clipping (matches noise decay).
-    trust_region_beta: float = 1.0
     timestep_inverse_cdf_beta: float = 1.0
     timestep_beta_alpha: float = 2.0
     timestep_beta_beta: float = 2.0
@@ -59,7 +61,11 @@ class SJFPOConfig(PreTrainedConfig):
     clip_param: float = 0.05
     trust_region_mode: str = "aspo"
     ratio_granularity: str = "per_action"  # per_chunk | per_action | per_sample
-    cfm_loss_reduction: str = "sum"
+    # "mean" by default, not FPO's Eq. 8 "sum". Under "sum" compute_cfm_loss
+    # deliberately does not renormalise for padding, so a short chunk's loss --
+    # and therefore its effective clip width -- scales with its executed length.
+    # Both baselines pin "sum"; see baselines.py.
+    cfm_loss_reduction: str = "mean"
     cfm_clamp: float = 200.0
     cfm_mask_unexecuted: bool = True
     cfm_loss_clamp_negative_advantages: bool = True
@@ -67,6 +73,18 @@ class SJFPOConfig(PreTrainedConfig):
     log_ratio_cap: float = 10.0
 
     num_critics: int = 2
+    # A chunk is planned at action_horizon but only `lengths` steps are executed
+    # (the loop breaks on terminate/truncate), so the tail of chunk_actions holds
+    # a counterfactual plan. The critic used to see that tail with no way to know
+    # it was unexecuted, while its regression target covered only the executed
+    # prefix. Set False to restore the old, tail-blind critic exactly.
+    critic_condition_on_exec_length: bool = True
+    # The critic was welded to the actor's width, which is wrong across the env
+    # ladder: obs_dim runs 3 (Pendulum) to 348 (Humanoid-v5), so the critic's
+    # first layer sees 56 or 5704 inputs and squeezes both into hidden_dim. None
+    # means "reuse hidden_dim", preserving the old construction exactly.
+    critic_hidden_dim: int | None = None
+    critic_num_layers: int = 2
     normalize_advantage: bool = True
     value_loss_coef: float = 1.0
     value_huber_delta: float = 1.0
@@ -87,7 +105,7 @@ class SJFPOConfig(PreTrainedConfig):
     critic_lr: float = 3e-4
     optimizer_weight_decay: float = 1e-4
     adam_betas: tuple[float, float] = (0.999, 0.999)
-    max_grad_norm: float = 48.0
+    max_grad_norm: float = 1.0
     critic_max_grad_norm: float | None = 1.0
     ema_decay: float = 0.95
     ema_warmup_steps: int = 500
@@ -125,6 +143,12 @@ class SJFPOConfig(PreTrainedConfig):
             )
         if self.num_critics < 1:
             raise ValueError(f"num_critics={self.num_critics} must be >= 1")
+        if self.critic_hidden_dim is not None and self.critic_hidden_dim < 1:
+            raise ValueError(
+                f"critic_hidden_dim={self.critic_hidden_dim} must be >= 1"
+            )
+        if self.critic_num_layers < 1:
+            raise ValueError(f"critic_num_layers={self.critic_num_layers} must be >= 1")
         if self.action_horizon < 1:
             raise ValueError(f"action_horizon={self.action_horizon} must be >= 1")
         if not 0 < self.n_action_steps <= self.action_horizon:

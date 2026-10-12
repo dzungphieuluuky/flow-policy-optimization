@@ -96,10 +96,18 @@ def test_drift_diagnostics_take_the_bf16_observations_they_stored():
     policy = _policy()
     obs = torch.randn(3, policy.config.n_obs_steps, 5)
     actions = torch.randn(3, policy.config.action_horizon, 2)
+    # Same fraction generate_rollout bootstrapped with: a full-horizon proposal
+    # that only runs for n_action_steps. Mismatching it would make the drift
+    # metric compare two different functions and report the gap as staleness.
+    boot_frac = policy.exec_frac(
+        torch.full((3,), policy.config.n_action_steps, dtype=torch.long)
+    )
     batch = {
         "boot_observations": obs.to(torch.bfloat16),
         "boot_actions": actions.to(torch.bfloat16),
-        "boot_values_start": policy.critic(obs, actions).amin(dim=0).unsqueeze(1),
+        "boot_values_start": policy.critic(obs, actions, boot_frac)
+        .amin(dim=0)
+        .unsqueeze(1),
         "raw_returns": torch.randn(3),
     }
     boot_delta, target_drift = measure_value_drift(
