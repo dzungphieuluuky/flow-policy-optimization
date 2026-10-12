@@ -97,10 +97,10 @@ def compute_gae_diagnostics(
 ) -> dict[str, float]:
     """Trace-liveness and scale probes for the chunk backup.
 
-    ``linked_frac`` is what the env_id sort would join: the share of adjacent
-    same-env chunk pairs not separated by an episode end. It describes the
-    *potential* GAE trace, so read it only when gae_lambda > 0; at the default
-    0.0 there is no recursion for it to be live or dead.
+    ``linked_frac`` is what the env_id sort joins: the share of adjacent same-env
+    chunk pairs not separated by an episode end. A value near 0 means the trace
+    is dead -- the recursion has nothing to propagate into. Only read it when
+    gae_lambda > 0, which is the default.
 
     ``budget_truncated`` is NaN when the collector cannot supply it, which is
     the normal case -- mark_incomplete is a no-op, so no budget-cut flag exists.

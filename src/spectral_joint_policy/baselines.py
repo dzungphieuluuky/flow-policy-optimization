@@ -66,6 +66,10 @@ _NOTES: dict[str, dict[str, str]] = {
         "cfm_loss_reduction": "sum: FPO++ inherits FPO's Eq. 8 chunk norm. Pinned "
         "explicitly; SJFPO's 'mean' default is a proposed change, not the paper.",
         "num_mc_samples": "8: FPO++ keeps FPO's N_mc. Pinned explicitly.",
+        "gae_lambda": "0.95: the chunk-level GAE lambda FPO++ reports. This "
+        "resolved the open question left by the 0.0 default -- with the default "
+        "at 0.95 the baseline inherits the paper's value, but it is pinned so a "
+        "future default change cannot silently move it again.",
     },
     "dppo": {
         "ratio_granularity": "unused: DPPO replaces the FPO surrogate entirely "
@@ -107,6 +111,7 @@ _OVERRIDES: dict[str, dict[str, Any]] = {
         "trust_region_mode": "aspo",
         "cfm_loss_reduction": "sum",
         "num_mc_samples": 8,
+        "gae_lambda": 0.95,
     },
     # ---- DPPO: Ren et al., arXiv:2409.00588 ------------------------------
     # Needs denoising_mdp.py; these are the rollout-side settings only.

@@ -9,18 +9,25 @@ Conditioning both sides on the chunk makes this an unbiased ``h``-step target
 (Li, Zhou, Levine 2025): the Q that produced the rewards is the Q being backed
 up from.
 
-``gae_lambda=0`` (the default) is exactly that, and is what the paper does: QC
-backs up exactly one chunk, an effective horizon of one. ``gae_lambda > 0``
-re-adds the chunk-level GAE trace, which trades that fidelity for a longer
-effective horizon of ``1 / (1 - gamma^h * lambda)`` chunks -- about 5 at
-gamma=0.99, h=16, lambda=0.95. It was removed in 7202519 to match QC and is
-back here as opt-in only, so the QC identity below stays the default and the
-sweeps that assume it stay valid.
+With ``gae_lambda=0.95`` (the default) the advantage follows the chunk-level
+trace
 
-Which convention is right depends on the paper being reproduced, and QC and
-FPO++ differ here: FPO++ reports a GAE lambda of 0.95 (0.99 on manipulation),
-while QC specifies a one-chunk backup. Deciding between them is a paper-level
-call, not a config default -- hence 0.0.
+    A_i = delta_i + gamma^{h_i} * lambda * (1 - term_i) * (1 - trunc_i) * A_j
+
+over ``j``, the next chunk of the *same env*. This is the GAE of the macro-MDP
+this module reasons in, with lambda applied once per chunk: an effective horizon
+of ``1 / (1 - gamma^h * lambda)`` chunks -- about 11 chunks / 46 env steps at
+gamma=0.99, h=4, lambda=0.95.
+
+``gae_lambda=0`` is the opt-out. It is exactly one backup per chunk, an
+effective horizon of one, which is what QC specifies. It is reachable by config
+rather than being the default, so the QC identity stays testable rather than
+being the only thing a run can do.
+
+The recursion was deleted in 7202519 to match QC and is back here. QC and FPO++
+disagree on this (QC specifies a one-chunk backup, FPO++ reports lambda 0.95);
+the default tracks the estimator actually being implemented rather than picking
+a side by omission.
 
 Two masks, and they are not the same mask:
 
@@ -28,8 +35,8 @@ Two masks, and they are not the same mask:
   termination zeroes it; a timeout keeps the bootstrap, and the collector always
   ends a chunk on a terminal, so ``~terminated`` matches QC's ``masks[..., -1]``.
 * the **trace** mask ``1 - truncated`` stops the advantage from flowing across
-  an episode reset. It is only read when ``gae_lambda > 0``, since with a
-  one-chunk backup no credit crosses a chunk boundary and the flag is inert.
+  an episode reset. Read whenever ``gae_lambda > 0``, which is the default, so
+  ``chunk_truncated`` is required rather than optional.
 
 ``gamma^h`` uses the executed length throughout, and the trace discount is
 ``gamma^h * lambda`` -- lambda once per chunk, matching the macro-MDP this
@@ -54,17 +61,21 @@ def compute_chunk_advantages(
     gamma: float = 0.99,
     chunk_truncated: torch.Tensor | None = None,
     chunk_env_id: torch.Tensor | None = None,
-    gae_lambda: float = 0.0,
+    gae_lambda: float = 0.95,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """``[n]`` advantages and regression target; the target is ``chunk_q +
-    advantages``, so it reduces exactly to QC's ``R_i + gamma^{h_i}
-    (1 - term_i) Q(s_{i+1}, a')``. ``chunk_q[i]`` is Q(s_i, a_i),
-    ``chunk_next_q[i]`` is Q(s_{i+1}, a' ~ pi(s_{i+1})).
+    advantages``. ``chunk_q[i]`` is Q(s_i, a_i), ``chunk_next_q[i]`` is
+    Q(s_{i+1}, a' ~ pi(s_{i+1})).
 
-    With ``gae_lambda > 0`` the advantage instead follows the chunk-level trace
-    ``A_i = delta_i + gamma^{h_i} * lambda * (1 - term_i) * (1 - trunc_i) *
-    A_j``, where ``j`` is the next chunk of the *same env*. Buffer order is time
-    order, so ``j > i`` always and one reverse sweep is exact.
+    At ``gae_lambda == 0`` the target reduces exactly to QC's ``R_i +
+    gamma^{h_i} (1 - term_i) Q(s_{i+1}, a')``. Above 0 the advantage follows the
+    chunk-level trace ``A_i = delta_i + gamma^{h_i} * lambda * (1 - term_i) *
+    (1 - trunc_i) * A_j``, where ``j`` is the next chunk of the *same env*. Buffer
+    order is time order, so ``j > i`` always and one reverse sweep is exact.
+
+    The default matches ``SJFPOConfig.gae_lambda`` and is deliberately > 0, so
+    ``chunk_truncated`` and ``chunk_env_id`` are required here rather than
+    optional. Callers wanting the QC backup pass ``gae_lambda=0.0`` explicitly.
     """
     if not 0.0 <= gamma <= 1.0:
         raise ValueError(f"gamma must be in [0, 1], got {gamma}")

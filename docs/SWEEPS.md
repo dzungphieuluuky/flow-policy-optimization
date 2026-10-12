@@ -174,8 +174,8 @@ Run this **first** if you intend to compare anything.
 ## T6 — Open decisions, cheap
 
 ```bash
-# gae_lambda: 0.0 is QC's one-chunk backup, which is the default.
-# 0.95 is what FPO++ reports. See the note below.
+# gae_lambda: 0.95 is the default -- the standard chunk-level GAE trace.
+# 0.0 is QC's one-chunk backup, now the explicit opt-out.
 --sjfpo.gae_lambda {0.0, 0.95}
 
 # critic capacity
@@ -187,10 +187,16 @@ Run this **first** if you intend to compare anything.
 
 ### On `gae_lambda`
 
-Your repo's reference is QC (one chunk). FPO++ reports λ=0.95. They are
-genuinely different papers and cannot both be the reference. `--baseline fpo++`
-currently inherits `gae_lambda=0.0`, so the FPO++ baseline runs **without** the
-λ that paper specifies. That is defensible only if you say so.
+Resolved: the default is now **0.95**, the standard chunk-level GAE trace, and
+`--baseline fpo++` pins 0.95 to match its paper. This repo reasons in the chunk
+macro-MDP, and λ applied once per chunk is the GAE of that macro-MDP.
+
+QC specifies a one-chunk backup, so if you are reproducing QC rather than
+extending it, pass `--sjfpo.gae_lambda 0.0`. That is a deliberate choice now,
+not the default by omission.
+
+**T5 re-baselining is required before T1.** The default change alters every
+regression target, so pre-change runs are not comparable to post-change ones.
 
 ---
 

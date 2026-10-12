@@ -58,12 +58,18 @@ class SJFPOConfig(PreTrainedConfig):
     timestep_beta_beta: float = 2.0
 
     gamma: float = 0.99
-    # 0.0 reproduces QC exactly: one backup per chunk, effective horizon one.
-    # >0 re-adds the chunk-level GAE trace, effective horizon 1/(1 - gamma^h*lambda).
-    # Removed in 7202519 to match QC; restored opt-in, so the default, and every
-    # sweep that assumes it, is unchanged. Whether the trace belongs here depends
-    # on which paper is reproduced -- QC says no, FPO++ reports lambda 0.95.
-    gae_lambda: float = 0.0
+    # 0.95 is the standard GAE trace. The chunk-level recursion runs when this is
+    # >0, giving an effective horizon of 1/(1 - gamma^h*lambda) chunks: ~11
+    # chunks / ~46 env steps here, against the 1 chunk / 4 env steps of a bare
+    # QC backup.
+    #
+    # 0.0 is the opt-out that reproduces QC exactly (one backup per chunk). It is
+    # not the default: this repo reasons in the chunk macro-MDP, and lambda once
+    # per chunk is the GAE of that macro-MDP, so 0.95 is what the formulation
+    # implies. QC specifies the one-chunk backup and FPO++ reports 0.95; where the
+    # two disagree, this tracks the paper whose estimator we are actually
+    # implementing, and 0.0 remains one flag away.
+    gae_lambda: float = 0.95
     clip_param: float = 0.05
     trust_region_mode: str = "aspo"
     ratio_granularity: str = "per_action"  # per_chunk | per_action | per_sample

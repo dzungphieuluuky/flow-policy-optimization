@@ -105,10 +105,9 @@ def test_the_action_abs_family_is_named_consistently():
     } <= set(out)
 
 
-def test_linked_frac_describes_a_trace_that_only_runs_when_lambda_is_on():
-    """The default is a one-chunk backup, so the metric has no live consumer."""
-    assert SJFPOConfig().gae_lambda == 0.0, "linked_frac is only meaningful above 0"
-    # It is still the fraction of same-env adjacent pairs the sort would join.
+def test_linked_frac_is_live_under_the_default_trace():
+    """The default lambda is 0.95, so the trace runs and this has a consumer."""
+    assert SJFPOConfig().gae_lambda == 0.95
     assert 0.0 <= _gae()["linked_frac"] <= 1.0
 
 

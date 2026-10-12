@@ -33,6 +33,7 @@ class TestGAEChunkAdvantageInvariant:
             chunk_terminated=chunk_terminated,
             chunk_size=3,
             gamma=1.0,
+            gae_lambda=0.0,
         )
         # With gamma=1 and no termination, target = R (3) + next_q (2) = 5
         # advantage = target - chunk_q (1) = 4

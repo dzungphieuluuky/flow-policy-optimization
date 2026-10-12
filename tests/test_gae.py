@@ -34,7 +34,11 @@ def expected_chunk_reward(lengths, reward=1.0):
 
 def run(lengths, terminated=None, chunk_q=0.0, chunk_next_q=2.0, reward=1.0,
         total_steps=None, chunk_size=H):
-    """One rollout as the caller builds it: rewards per step, Q per chunk."""
+    """One rollout as the caller builds it: rewards per step, Q per chunk.
+
+    The QC backup, so gae_lambda=0 is passed explicitly -- the function default
+    is 0.95, and a test that inherits the default is testing the trace.
+    """
     lengths_t = torch.tensor(lengths, dtype=torch.long)
     n = lengths_t.numel()
     starts = torch.cat([torch.zeros(1, dtype=torch.long), lengths_t.cumsum(0)[:-1]])
@@ -50,6 +54,7 @@ def run(lengths, terminated=None, chunk_q=0.0, chunk_next_q=2.0, reward=1.0,
             else torch.tensor(terminated, dtype=torch.bool)
         ),
         chunk_size=chunk_size, gamma=GAMMA,
+        gae_lambda=0.0,
     )
 
 
@@ -83,7 +88,7 @@ def test_returns_are_qcs_target_expression():
     term = torch.tensor([False, True, False])
     _, returns = compute_chunk_advantages(
         rewards, q, q_next, starts, torch.tensor(lengths),
-        chunk_terminated=term, chunk_size=H, gamma=GAMMA,
+        chunk_terminated=term, chunk_size=H, gamma=GAMMA, gae_lambda=0.0,
     )
     want = []
     for i, h in enumerate(lengths):
@@ -131,17 +136,24 @@ def test_a_neighbouring_termination_changes_nothing_upstream():
 def test_trace_inputs_are_absent_from_the_qc_backup():
     """The QC path must not consult the trace mask, only (1 - term).
 
-    QC masks the last step of the trajectory, which is the terminal. The trace
-    inputs are in the signature for the opt-in GAE, but at the default lambda=0
-    they are unused -- and are permitted to be, so a caller reproducing QC does
-    not have to supply them.
+    QC masks the last step of the trajectory, which is the terminal. At
+    lambda=0 the trace inputs are unused -- and are permitted to be, so a caller
+    reproducing QC does not have to supply them.
+
+    The function default is now 0.95, so this reaches the QC path by passing
+    gae_lambda=0.0 rather than by inheriting the default. That is the point: a
+    test asserting QC behaviour has to say so.
     """
     import inspect
 
     params = inspect.signature(compute_chunk_advantages).parameters
-    assert params["gae_lambda"].default == 0.0
     assert params["chunk_truncated"].default is None
     assert params["chunk_env_id"].default is None
+
+    # Default is the standard trace, and both defaults agree with the config.
+    from spectral_joint_policy.configuration_sjfpo import SJFPOConfig
+
+    assert params["gae_lambda"].default == SJFPOConfig().gae_lambda == 0.95
 
     # Supplying a truncated chunk must not change a QC backup, even mid-trace.
     lengths = [H] * 3
@@ -155,6 +167,7 @@ def test_trace_inputs_are_absent_from_the_qc_backup():
         chunk_size=H, gamma=GAMMA,
         chunk_truncated=truncated,
         chunk_env_id=torch.zeros(3, dtype=torch.long),
+        gae_lambda=0.0,
     )
     assert without.tolist() == pytest.approx(with_trunc.tolist(), abs=1e-6)
 
@@ -217,7 +230,7 @@ def test_no_fp32_precision_loss_at_large_offsets():
     adv, _ = compute_chunk_advantages(
         rewards, torch.zeros(n), torch.zeros(n), starts, lengths,
         chunk_terminated=torch.zeros(n, dtype=torch.bool),
-        chunk_size=H, gamma=GAMMA,
+        chunk_size=H, gamma=GAMMA, gae_lambda=0.0,
     )
     assert adv[-1].item() == pytest.approx(sum(GAMMA**k for k in range(H)), rel=1e-5)
     # Every earlier chunk has no reward and no bootstrap, so it is exactly zero.
@@ -236,7 +249,7 @@ def test_values_are_per_chunk_not_per_step():
         torch.tensor([-1.0, -2.0, -3.0]),
         starts, torch.tensor(lengths),
         chunk_terminated=torch.zeros(3, dtype=torch.bool),
-        chunk_size=H, gamma=GAMMA,
+        chunk_size=H, gamma=GAMMA, gae_lambda=0.0,
     )
     want = [
         sum(GAMMA**k for k in range(h)) + GAMMA**h * nv - q
@@ -499,11 +512,16 @@ def test_trace_handles_an_empty_rollout():
     assert adv.numel() == 0 and ret.numel() == 0
 
 
-def test_config_default_keeps_the_qc_path():
-    """The opt-in must not have become the default."""
+def test_config_default_runs_the_standard_trace():
+    """The default is the GAE trace, and the QC backup is the explicit opt-out.
+
+    Both the config and the function default are 0.95; a divergence between them
+    is the silent kind of drift this file exists to catch.
+    """
     from spectral_joint_policy.configuration_sjfpo import SJFPOConfig
 
-    assert SJFPOConfig().gae_lambda == 0.0
+    assert SJFPOConfig().gae_lambda == 0.95
+    assert SJFPOConfig(gae_lambda=0.0).gae_lambda == 0.0
 
 
 def test_config_rejects_an_out_of_range_lambda():
@@ -521,7 +539,7 @@ def test_empty_rollout():
         torch.zeros(0), torch.zeros(0), torch.zeros(0),
         torch.zeros(0, dtype=torch.long), torch.zeros(0, dtype=torch.long),
         chunk_terminated=torch.zeros(0, dtype=torch.bool),
-        chunk_size=H, gamma=GAMMA,
+        chunk_size=H, gamma=GAMMA, gae_lambda=0.0,
     )
     assert adv.numel() == 0 and ret.numel() == 0
 
