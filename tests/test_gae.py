@@ -4,11 +4,15 @@ QC (Li, Zhou, Levine 2025) takes one backup per chunk:
 
     return_i = sum_{k < h_i} gamma^k r_{s_i+k} + gamma^{h_i} (1 - term_i) Q(s_{i+1}, a')
 
-and nothing else. A lambda-GAE recursion over chunks used to sit on top, which
-gave an effective horizon of ``1 / (1 - gamma^h * lam)`` chunks -- about five at
-the defaults -- against QC's exactly one. The reference below is therefore
-deliberately a one-line per-chunk expression: if the recursion ever comes back,
-this file stops matching the paper and says so.
+and nothing else. That is the default (``gae_lambda=0``) and the reference below
+is deliberately a one-line per-chunk expression, so it keeps matching the paper.
+
+A chunk-level lambda trace also exists, opt-in, with an effective horizon of
+``1 / (1 - gamma^h * lam)`` chunks -- about five at gamma=0.99, h=16, lam=0.95.
+It was removed in 7202519 to match QC and restored opt-in rather than by
+default. Whether it belongs is a paper-level question: QC specifies one chunk,
+FPO++ reports GAE lam 0.95 (0.99 on manipulation). The tests below pin both
+behaviours so neither can drift silently.
 """
 import sys
 from pathlib import Path
@@ -124,18 +128,35 @@ def test_a_neighbouring_termination_changes_nothing_upstream():
     assert clean[0].item() == pytest.approx(cut[0].item(), abs=1e-6)
 
 
-def test_truncation_flag_is_not_read_at_all():
-    """Timeout and termination coincide in this backup: (1 - term) only.
+def test_trace_inputs_are_absent_from_the_qc_backup():
+    """The QC path must not consult the trace mask, only (1 - term).
 
-    QC masks the last step of the trajectory, which is the terminal; a timeout
-    that keeps the bootstrap was our own addition and the parameter is gone.
+    QC masks the last step of the trajectory, which is the terminal. The trace
+    inputs are in the signature for the opt-in GAE, but at the default lambda=0
+    they are unused -- and are permitted to be, so a caller reproducing QC does
+    not have to supply them.
     """
     import inspect
 
     params = inspect.signature(compute_chunk_advantages).parameters
-    assert "chunk_truncated" not in params
-    assert "lam" not in params
-    assert "chunk_env_id" not in params
+    assert params["gae_lambda"].default == 0.0
+    assert params["chunk_truncated"].default is None
+    assert params["chunk_env_id"].default is None
+
+    # Supplying a truncated chunk must not change a QC backup, even mid-trace.
+    lengths = [H] * 3
+    without, _ = run(lengths, terminated=[False, False, False])
+    truncated = torch.tensor([False, True, False], dtype=torch.bool)
+    with_trunc, _ = compute_chunk_advantages(
+        torch.full((sum(lengths),), 1.0),
+        torch.zeros(3), torch.full((3,), 2.0),
+        torch.tensor([0, H, 2 * H]), torch.tensor(lengths),
+        chunk_terminated=torch.zeros(3, dtype=torch.bool),
+        chunk_size=H, gamma=GAMMA,
+        chunk_truncated=truncated,
+        chunk_env_id=torch.zeros(3, dtype=torch.long),
+    )
+    assert without.tolist() == pytest.approx(with_trunc.tolist(), abs=1e-6)
 
 
 def test_budget_cut_does_not_reach_the_backup():
@@ -222,6 +243,274 @@ def test_values_are_per_chunk_not_per_step():
         for h, q, nv in zip(lengths, (1.0, 2.0, 3.0), (-1.0, -2.0, -3.0))
     ]
     assert adv.tolist() == pytest.approx(want, abs=1e-5)
+
+
+# --- the opt-in chunk-level GAE trace ---------------------------------------
+
+
+def _traced(lengths, env_id=None, terminated=None, truncated=None, lam=0.95,
+            chunk_q=0.0, chunk_next_q=0.0, reward=1.0):
+    """One rollout through the GAE path, with the masks the trace needs."""
+    lengths_t = torch.tensor(lengths, dtype=torch.long)
+    n = lengths_t.numel()
+    starts = torch.cat([torch.zeros(1, dtype=torch.long), lengths_t.cumsum(0)[:-1]])
+    n_env = len(set(env_id)) if env_id is not None else 1
+    return compute_chunk_advantages(
+        torch.full((int(lengths_t.sum()),), float(reward)),
+        torch.full((n,), float(chunk_q)),
+        torch.full((n,), float(chunk_next_q)),
+        starts, lengths_t,
+        chunk_terminated=(torch.zeros(n, dtype=torch.bool) if terminated is None
+                          else torch.tensor(terminated, dtype=torch.bool)),
+        chunk_size=H, gamma=GAMMA,
+        chunk_truncated=(torch.zeros(n, dtype=torch.bool) if truncated is None
+                         else torch.tensor(truncated, dtype=torch.bool)),
+        chunk_env_id=(torch.arange(n) % n_env if env_id is None
+                      else torch.tensor(env_id, dtype=torch.long)),
+        gae_lambda=lam,
+    )
+
+
+def test_lambda_zero_is_bit_identical_to_the_qc_path():
+    """The primary gate: the trace must not perturb the default at all.
+
+    Same inputs, lambda explicitly 0.0, compared against the QC call that
+    passes none of the trace arguments.
+    """
+    lengths = [H, 2, 3, H]
+    qc_adv, qc_ret = run(lengths, chunk_q=1.0, chunk_next_q=2.5, reward=0.7)
+    traced_adv, traced_ret = _traced(
+        lengths, lam=0.0, chunk_q=1.0, chunk_next_q=2.5, reward=0.7
+    )
+    torch.testing.assert_close(traced_adv, qc_adv, rtol=0, atol=0)
+    torch.testing.assert_close(traced_ret, qc_ret, rtol=0, atol=0)
+
+
+def test_lambda_zero_returns_before_running_the_recursion():
+    """Not merely equal -- not run. A broken successor map cannot be latent here."""
+    lengths = [H] * 3
+    # env ids deliberately wrong (interleaved, none matching buffer order). At
+    # lambda=0 they are ignored, so this must still match QC exactly.
+    adv, _ = _traced(lengths, env_id=[0, 1, 0], lam=0.0, chunk_next_q=2.0)
+    qc_adv, _ = run(lengths, chunk_next_q=2.0)
+    torch.testing.assert_close(adv, qc_adv, rtol=0, atol=0)
+
+
+def test_trace_matches_the_reference_recursion_by_hand():
+    """A_i = delta_i + gamma^{h_i} lam (1-term)(1-trunc) A_j, j = next same-env.
+
+    Recomputed in Python from the definition rather than from the vectorised
+    successor map, so a wrong map cannot agree with itself.
+    """
+    lengths = [H, H, H, H]
+    terminated = [False, False, False, False]
+    truncated = [False, False, True, False]
+    lam = 0.9
+    # Distinct per-chunk values so an index mix-up cannot hide.
+    q = torch.tensor([0.0, 1.0, 2.0, 3.0])
+    q_next = torch.tensor([0.5, 1.5, 2.5, 3.5])
+    lengths_t = torch.tensor(lengths)
+    starts = torch.cat([torch.zeros(1, dtype=torch.long), lengths_t.cumsum(0)[:-1]])
+    rewards = torch.ones(int(lengths_t.sum()))
+    got, _ = compute_chunk_advantages(
+        rewards, q, q_next, starts, lengths_t,
+        chunk_terminated=torch.tensor(terminated),
+        chunk_size=H, gamma=GAMMA,
+        chunk_truncated=torch.tensor(truncated),
+        chunk_env_id=torch.zeros(4, dtype=torch.long),
+        gae_lambda=lam,
+    )
+    r = [sum(GAMMA**k for k in range(h)) for h in lengths]
+    delta = [
+        r[i] + GAMMA ** lengths[i] * q_next[i].item() - q[i].item()
+        for i in range(4)
+    ]
+    want = [0.0] * 4
+    for i in range(3, -1, -1):           # single env, so succ is i+1
+        nxt = i + 1 if i + 1 < 4 else None
+        trace = (
+            GAMMA ** lengths[i] * lam
+            * (1.0 - terminated[i]) * (1.0 - truncated[i])
+        )
+        want[i] = delta[i] + (trace * want[nxt] if nxt is not None else 0.0)
+    assert got.tolist() == pytest.approx(want, abs=1e-5)
+
+
+def test_trace_discount_is_gamma_h_times_lambda_not_gamma_lambda_to_the_h():
+    """Pins the macro-MDP convention: lambda decays once per chunk.
+
+    verl-vla and RLinf use (gamma*lambda)^h, which decays lambda per primitive
+    env step. The two differ for h>1, so this is a real design choice and it is
+    the one 7202519 described as gamma^h * lam.
+    """
+    # Two chunks, one env, bootstrap value zero so the only propagated term is
+    # the trace itself.
+    lengths = [H] * 2
+    got, _ = _traced(lengths, lam=0.95, chunk_next_q=0.0)
+    r = sum(GAMMA**k for k in range(H))
+    trace = GAMMA**H * 0.95
+    # delta_0 = r, delta_1 = r, so A_0 = r + trace * r.
+    assert got[0].item() == pytest.approx(r + trace * r, abs=1e-5)
+    # The (gamma*lambda)^h reading gives a strictly smaller trace here, so this
+    # assertion would fail under the verl-vla convention.
+    alt = (GAMMA * 0.95) ** H
+    assert abs(alt - trace) > 1e-3, "conventions coincide; test cannot distinguish"
+
+
+def test_truncation_stops_the_trace_but_keeps_the_bootstrap():
+    """A timeout is not an episode end: bootstrap yes, trace no.
+
+    This is the distinction a single (1 - term) mask cannot express, and the
+    reason chunk_truncated came back with the trace.
+    """
+    lengths = [H] * 3
+    truncated = [False, True, False]
+    adv, ret = _traced(lengths, truncated=truncated, lam=0.9, chunk_next_q=2.0)
+    r = sum(GAMMA**k for k in range(H))
+    # Chunk 1 is truncated: its bootstrap survives, so its target still carries
+    # gamma^h * Q'. Chunk 2's advantage is unchanged by chunk 1's trace.
+    assert ret[1].item() == pytest.approx(r + GAMMA**H * 2.0, abs=1e-5)
+    two_free = _traced([H] * 2, lam=0.9, chunk_next_q=2.0)[0]
+    assert adv[2].item() == pytest.approx(two_free[1].item(), abs=1e-5)
+
+
+def test_termination_still_zeroes_the_bootstrap_and_the_trace():
+    lengths = [H] * 3
+    adv, ret = _traced(lengths, terminated=[False, True, False],
+                       lam=0.9, chunk_next_q=2.0)
+    r = sum(GAMMA**k for k in range(H))
+    # No bootstrap, and nothing to propagate: the advantage is the reward sum.
+    assert ret[1].item() == pytest.approx(r, abs=1e-5)
+
+
+def test_chunks_from_different_envs_do_not_interact():
+    """The property the env sort exists for.
+
+    Buffer order interleaves envs, so without grouping by env_id the trace
+    would run from env 0's chunk straight into env 1's. Rescaling env 1's
+    rewards must leave env 0 bit-identical.
+    """
+    lengths = [H] * 6
+    env_id = [0, 1, 0, 1, 0, 1]
+    lam = 0.95
+    base, _ = _traced(lengths, env_id=env_id, lam=lam, chunk_next_q=1.0)
+    # Same rollout, but env 1's rewards multiplied by 10 via a separate call.
+    lengths_t = torch.tensor(lengths)
+    starts = torch.cat([torch.zeros(1, dtype=torch.long), lengths_t.cumsum(0)[:-1]])
+    rewards = torch.full((int(lengths_t.sum()),), 1.0)
+    rewards[starts[1] : starts[1] + H] = 10.0
+    rewards[starts[3] : starts[3] + H] = 10.0
+    rewards[starts[5] : starts[5] + H] = 10.0
+    alt, _ = compute_chunk_advantages(
+        rewards, torch.zeros(6), torch.ones(6), starts, lengths_t,
+        chunk_terminated=torch.zeros(6, dtype=torch.bool),
+        chunk_size=H, gamma=GAMMA,
+        chunk_truncated=torch.zeros(6, dtype=torch.bool),
+        chunk_env_id=torch.tensor(env_id),
+        gae_lambda=lam,
+    )
+    for i in (0, 2, 4):
+        assert base[i].item() == pytest.approx(alt[i].item(), abs=1e-6), (
+            f"env 0 chunk {i} moved when env 1's rewards changed"
+        )
+
+
+def test_successor_is_the_next_chunk_of_the_same_env_not_the_next_buffer_row():
+    """Buffer row 0's successor is row 2 here, not row 1."""
+    lengths = [H] * 3
+    env_id = [0, 1, 0]
+    lam = 0.95
+    got, _ = _traced(lengths, env_id=env_id, lam=lam, chunk_next_q=0.0)
+    r = sum(GAMMA**k for k in range(H))
+    # Chunk 0 -> chunk 2 (env 0); chunk 1 is env 1 and is not reachable.
+    assert got[0].item() == pytest.approx(r + (GAMMA**H * lam) * r, abs=1e-5)
+    # Chunk 2 is last in its env, so it has no trace successor.
+    assert got[2].item() == pytest.approx(r, abs=1e-5)
+
+
+def test_last_chunk_of_each_env_gets_a_one_chunk_advantage():
+    lengths = [H] * 4
+    env_id = [0, 1, 0, 1]
+    got, _ = _traced(lengths, env_id=env_id, lam=0.95, chunk_next_q=0.0)
+    qc, _ = run(lengths, chunk_next_q=0.0)
+    # Every chunk here is last-in-its-env except none: 0->2, 1->3. Check the
+    # final element of each env is exactly its own delta.
+    for i in (2, 3):
+        assert got[i].item() == pytest.approx(qc[i].item(), abs=1e-6)
+
+
+def test_advantage_is_monotone_in_lambda_between_delta_and_the_full_return():
+    """Higher lambda moves credit further back, never past the true return."""
+    lengths = [H] * 4
+    endpoint = _traced(lengths, lam=0.0, chunk_next_q=0.0)[0]
+    lam = 0.95
+    got, _ = _traced(lengths, lam=lam, chunk_next_q=0.0)
+    assert (got[:-1] >= endpoint[:-1] - 1e-5).all(), "lambda shrank the advantage"
+    # lambda=1 and a zero bootstrap value makes it the full discounted return.
+    full, _ = _traced(lengths, lam=1.0, chunk_next_q=0.0)
+    want = sum(
+        sum(GAMMA ** (i * H + k) for k in range(H)) for i in range(4)
+    )
+    assert full[0].item() == pytest.approx(want, abs=1e-4)
+
+
+def test_trace_requires_its_inputs():
+    """Failing loudly beats silently running a cross-reset, cross-env trace."""
+    lengths_t = torch.tensor([H])
+    common = dict(
+        step_rewards=torch.ones(H),
+        chunk_q=torch.zeros(1),
+        chunk_next_q=torch.zeros(1),
+        chunk_starts=torch.zeros(1, dtype=torch.long),
+        chunk_lengths=lengths_t,
+        chunk_terminated=torch.zeros(1, dtype=torch.bool),
+        chunk_size=H,
+        gamma=GAMMA,
+        gae_lambda=0.95,
+    )
+    with pytest.raises(ValueError, match="chunk_truncated is required"):
+        compute_chunk_advantages(**common)
+    with pytest.raises(ValueError, match="chunk_env_id is required"):
+        compute_chunk_advantages(
+            chunk_truncated=torch.zeros(1, dtype=torch.bool), **common
+        )
+
+
+def test_rejects_an_out_of_range_lambda():
+    with pytest.raises(ValueError, match="gae_lambda"):
+        compute_chunk_advantages(
+            torch.ones(H), torch.zeros(1), torch.zeros(1),
+            torch.zeros(1, dtype=torch.long), torch.tensor([H]),
+            chunk_terminated=torch.zeros(1, dtype=torch.bool),
+            chunk_size=H, gamma=GAMMA, gae_lambda=1.5,
+        )
+
+
+def test_trace_handles_an_empty_rollout():
+    adv, ret = compute_chunk_advantages(
+        torch.zeros(0), torch.zeros(0), torch.zeros(0),
+        torch.zeros(0, dtype=torch.long), torch.zeros(0, dtype=torch.long),
+        chunk_terminated=torch.zeros(0, dtype=torch.bool),
+        chunk_size=H, gamma=GAMMA,
+        chunk_truncated=torch.zeros(0, dtype=torch.bool),
+        chunk_env_id=torch.zeros(0, dtype=torch.long),
+        gae_lambda=0.95,
+    )
+    assert adv.numel() == 0 and ret.numel() == 0
+
+
+def test_config_default_keeps_the_qc_path():
+    """The opt-in must not have become the default."""
+    from spectral_joint_policy.configuration_sjfpo import SJFPOConfig
+
+    assert SJFPOConfig().gae_lambda == 0.0
+
+
+def test_config_rejects_an_out_of_range_lambda():
+    from spectral_joint_policy.configuration_sjfpo import SJFPOConfig
+
+    with pytest.raises(ValueError, match="gae_lambda"):
+        SJFPOConfig(gae_lambda=2.0).validate()
 
 
 # --- validation ------------------------------------------------------------

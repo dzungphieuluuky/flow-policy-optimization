@@ -1046,6 +1046,13 @@ class SJFPOPolicy(PreTrainedPolicy):
             chunk_terminated=active["chunk_terminated"],
             chunk_size=cfg.action_horizon,
             gamma=cfg.gamma,
+            # Only read when gae_lambda > 0; the QC path ignores both.
+            # chunk_truncated is the ENV's time limit, not the rollout's step
+            # budget -- the collector keeps them separate so a live episode is
+            # never read as finished.
+            chunk_truncated=active["chunk_truncated"],
+            chunk_env_id=active["chunk_env_id"],
+            gae_lambda=cfg.gae_lambda,
         )
         normalised_advantages = raw_advantages
         # Population std, matching returns_var. The unbiased default is NaN at a

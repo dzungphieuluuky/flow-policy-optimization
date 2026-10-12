@@ -58,6 +58,12 @@ class SJFPOConfig(PreTrainedConfig):
     timestep_beta_beta: float = 2.0
 
     gamma: float = 0.99
+    # 0.0 reproduces QC exactly: one backup per chunk, effective horizon one.
+    # >0 re-adds the chunk-level GAE trace, effective horizon 1/(1 - gamma^h*lambda).
+    # Removed in 7202519 to match QC; restored opt-in, so the default, and every
+    # sweep that assumes it, is unchanged. Whether the trace belongs here depends
+    # on which paper is reproduced -- QC says no, FPO++ reports lambda 0.95.
+    gae_lambda: float = 0.0
     clip_param: float = 0.05
     trust_region_mode: str = "aspo"
     ratio_granularity: str = "per_action"  # per_chunk | per_action | per_sample
@@ -196,6 +202,8 @@ class SJFPOConfig(PreTrainedConfig):
         # Loss params
         if not 0.0 < self.gamma <= 1.0:
             raise ValueError(f"gamma={self.gamma} must satisfy 0 < gamma <= 1")
+        if not 0.0 <= self.gae_lambda <= 1.0:
+            raise ValueError(f"gae_lambda={self.gae_lambda} must be in [0, 1]")
         if not 0.0 < self.clip_param < 1.0:
             raise ValueError(
                 f"clip_param={self.clip_param} must satisfy 0 < eps < 1"

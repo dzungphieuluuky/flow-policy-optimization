@@ -64,6 +64,7 @@ SECTIONS: list[tuple[str, list[str]]] = [
         "Trust region and CFM loss",
         [
             "gamma",
+            "gae_lambda",
             "clip_param",
             "trust_region_mode",
             "ratio_granularity",
