@@ -128,7 +128,6 @@ def test_trainer_emits_no_key_it_cannot_compute():
     """A guarded assignment that never fires looks configured but logs nothing."""
     import ast
     import inspect
-    import pathlib
 
     import spectral_joint_policy.train_sjfpo as T
 
@@ -142,7 +141,6 @@ def test_trainer_emits_no_key_it_cannot_compute():
                 continue
             if t.value.id != "data":
                 continue
-            key = t.slice.value if isinstance(t.slice, ast.Constant) else None
             val = ast.unparse(node.value)
             # A key read straight out of the batch and never produced upstream.
             if isinstance(node.value, ast.Subscript) and "batch" in val:

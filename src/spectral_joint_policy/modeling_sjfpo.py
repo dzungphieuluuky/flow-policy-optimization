@@ -812,7 +812,6 @@ class SJFPOPolicy(PreTrainedPolicy):
         against, so the ratio never mixes means over different positions.
         """
         cfg = self.config
-        token_count = eps.shape[2]
         spectral_action = actions
         flatten_timestep, flatten_mc_noise, flatten_mc_action, flow_shape, num_mc = (
             run_monte_carlo_sampling(spectral_action, eps, tau)

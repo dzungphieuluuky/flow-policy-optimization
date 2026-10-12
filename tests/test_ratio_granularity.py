@@ -13,14 +13,12 @@ from pathlib import Path
 import numpy as np
 import pytest
 import torch
-import yaml
 
 from lerobot.configs.types import FeatureType
 from lerobot.configs.policies import PolicyFeature
 
 import spectral_joint_policy.modeling_sjfpo as M
 from spectral_joint_policy.configuration_sjfpo import SJFPOConfig
-from spectral_joint_policy.modeling_sjfpo import SJFPOPolicy
 from spectral_joint_policy.train_sjfpo import build_policy
 
 OBS, ACT, N, MC, HORIZON = 11, 2, 6, 4, 16

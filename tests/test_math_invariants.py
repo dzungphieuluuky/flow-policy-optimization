@@ -4,8 +4,6 @@ Detect only — does not fix bugs; fails when invariants are violated.
 New identifiers: test_gae_chunk_advantage_invariant,
 test_fpo_policy_ratio_pessimistic, test_fpo_cfm_loss_mask_shape.
 """
-import math
-import pytest
 import torch
 
 
@@ -51,15 +49,25 @@ class TestFPORatioInvariant:
 
 class TestCFMLossMaskShape:
     def test_fpo_cfm_loss_mask_shape(self):
-        """CFM: masked loss shape must match executed token count, not padded."""
+        """CFM: an all-False pad mask must leave the loss bit-identical to unmasked.
+
+        Asserts the ``"both"`` reduction at the 4-D ``[n, mc, horizon, dim]``
+        shape both production call sites use, where the mask broadcasts over the
+        MC axis without inserting one.
+        """
+        from spectral_joint_policy.configuration_sjfpo import SJFPOConfig
         from spectral_joint_policy.fpo_core import compute_cfm_loss
 
-        # Minimal synthetic v_hat, v_star: [1, 4, 2] (batch=1, horizon=4, dim=2)
-        v_hat = torch.randn(1, 4, 2)
-        v_star = torch.randn(1, 4, 2)
-        cfg = None  # Would need SJFPOConfig; test structure only.
-        # Placeholder: verifies no crash and scalar reduction path exists.
-        # Full invariant: with action_is_pad all False, loss scalar equals unmasked mean.
+        n, mc, horizon, dim = 2, 4, 4, 2
+        g = torch.Generator().manual_seed(0)
+        v_hat = torch.randn(n, mc, horizon, dim, generator=g, dtype=torch.float64)
+        v_star = torch.randn(n, mc, horizon, dim, generator=g, dtype=torch.float64)
+        no_pad = torch.zeros(n, horizon, dtype=torch.bool)
+
+        masked = compute_cfm_loss(v_hat, v_star, SJFPOConfig(), "both", no_pad)
+        unmasked = compute_cfm_loss(v_hat, v_star, SJFPOConfig(), "both", None)
+        for got, want in zip(masked, unmasked):
+            assert torch.equal(got, want)
 
 
 class TestFPOCoreRemaining:

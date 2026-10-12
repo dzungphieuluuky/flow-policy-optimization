@@ -353,8 +353,6 @@ def trajectory_straightness(velocities) -> float:
     ``velocities`` is the sequence of ``v_hat`` the sampler used, in order.
     Returns NaN for fewer than two steps, which is what a 1-step sampler gets.
     """
-    import math as _math
-
     if len(velocities) < 2:
         return float("nan")
     cosines = []

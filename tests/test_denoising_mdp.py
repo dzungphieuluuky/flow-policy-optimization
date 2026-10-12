@@ -64,6 +64,10 @@ def test_store_false_returns_no_path_but_the_same_action():
     x2, p2 = sample_denoising_path(
         _net, cond, SHAPE, num_steps=K, noise_std=0.1, generator=g2, store=True
     )
+    assert p2 is not None
+    # actions is [n, K, *flow]; SHAPE is the per-sample flow shape.
+    assert p2.actions.shape == (B, K, *SHAPE)
+    assert p2.mus.shape == p2.actions.shape
     assert torch.allclose(x1, x2, atol=1e-6)
 
 
