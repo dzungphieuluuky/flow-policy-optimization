@@ -54,16 +54,60 @@ def sample_timesteps(
 
 
 def compute_freq_weighted_std(
-    num_modes: int, horizon: int, device, beta: float = 1.0
+    num_modes: int,
+    horizon: int,
+    device,
+    beta: float = 1.0,
+    *,
+    halve_endpoints: bool = True,
 ) -> torch.Tensor:
-    """Per-mode std of 1/f^beta noise. beta=0 white, beta=1 NEED's pink.
+    """Per-mode std of a 1/f^beta spectral profile. beta=0 white, beta=1 pink.
 
-    Colored-noise PPO puts the on-policy optimum at beta=0.5. Exponent is
-    -beta/2 because std of a 1/f^beta variance is 1/f^(beta/2), which keeps
-    both endpoints exact.
+    Exponent is -beta/2 because a 1/f^beta *variance* has std 1/f^(beta/2),
+    which keeps both endpoints exact.
+
+    ``halve_endpoints`` divides bin 0 by sqrt(2), and exists only to make the
+    orthonormal DCT-II basis consistent: its k=0 vector has norm sqrt(H) against
+    sqrt(H/2) elsewhere, so the scale has to come out. A spectral *filter* has no
+    such artifact -- rfft bins are uniform -- so attenuating DC there would be a
+    design choice, not a correction. Pass False for the filter path. See
+    :func:`spectral_filter_1d`.
     """
     k = torch.arange(num_modes, dtype=torch.float32, device=device)
-    return (1.0 + (k * (math.pi / horizon)) ** 2) ** (-0.5 * beta)
+    std = (1.0 + (k * (math.pi / horizon)) ** 2) ** (-0.5 * beta)
+    if halve_endpoints:
+        std = std.clone()
+        std[0] = std[0] / math.sqrt(2.0)
+    return std
+
+
+def spectral_filter_1d(
+    eps: torch.Tensor, horizon: int, beta: float, device
+) -> torch.Tensor:
+    """Colour ``eps`` along its second-to-last axis with a 1/f^beta profile.
+
+    Returns white noise unchanged when ``beta == 0``, so the ablation baseline
+    costs nothing and is exactly the current behaviour.
+
+    Shape-preserving; filters along ``dim=-2`` (the token axis, which is the
+    action-step grid), broadcast over every other axis.
+
+    The output's rfft magnitude is exactly ``mag`` times the input's, so the
+    realised per-bin variance is ``mag**2`` up to torch's unnormalised rfft
+    (divide by ``horizon`` to compare). Linear, so a zero start stays zero --
+    which is what keeps ``zero_sampling`` unaffected at inference.
+    """
+    if beta == 0.0:
+        return eps
+    spec = torch.fft.rfft(eps.float(), dim=-2)
+    mag = compute_freq_weighted_std(
+        spec.shape[-2], horizon, device, beta, halve_endpoints=False
+    )
+    # mag is [H//2+1] but spec is [..., H//2+1, d], so it needs an explicit
+    # trailing singleton or it broadcasts against the action dim instead.
+    mag = mag.view(*(1,) * (spec.dim() - 2), -1, 1)
+    filtered = torch.fft.irfft(spec * mag, n=horizon, dim=-2)
+    return filtered.to(eps.dtype)
 
 
 def sample_noise(
@@ -72,8 +116,16 @@ def sample_noise(
     device: torch.device | str,
     generator: torch.Generator | None,
 ):
-    """MC noise. Marginal from ``noise_sampling_mode``, per-mode scale from
-    ``noise_scaling_mode``."""
+    """MC noise. Marginal from ``noise_sampling_mode``, spectral structure from
+    ``noise_scaling_mode``.
+
+    Whatever comes out of here is the single definition of the base sample. The
+    CFM path reads it in exactly two places -- ``compute_mc_xt`` builds
+    ``lerp(noise, action, t)`` and ``compute_target_velocity`` returns
+    ``a - eps`` -- so colouring it here makes the interpolant and its velocity
+    target consistent with a base measure of ``N(0, L L^T)`` for free, with no
+    change at either call site.
+    """
     mode = cfg.noise_sampling_mode
     if mode == "normal":
         eps = torch.randn(*shape, device=device, generator=generator)
@@ -84,6 +136,15 @@ def sample_noise(
 
     if cfg.noise_scaling_mode == "white":
         return eps
+    if cfg.noise_scaling_mode == "freq_weighted_time":
+        # Tokens are action steps here, so the profile shapes the noise's
+        # temporal correlation rather than its spectral coefficients. The base
+        # log-det is constant in theta, so it cancels in l_old - l_new and the
+        # FPO ratio is unchanged; what it does change is the ELBO gap the ratio
+        # is contaminated by, which is the point of measuring it.
+        return spectral_filter_1d(
+            eps, cfg.action_horizon, cfg.noise_scaling_beta, device
+        )
     if cfg.noise_scaling_mode == "freq_weighted":
         # Axis -2 holds the DCT coeffs. Broadcast the per-mode std over the
         # leading batch/MC axes and the trailing action dim.
@@ -92,7 +153,8 @@ def sample_noise(
         )
         return eps * std.view(*(1,) * (eps.dim() - 2), -1, 1)
     raise ValueError(
-        f"mode={cfg.noise_scaling_mode!r} unknown; expected 'white' or 'freq_weighted'"
+        f"noise_scaling_mode={cfg.noise_scaling_mode!r} unknown; expected "
+        "'white', 'freq_weighted_time', or 'freq_weighted'"
     )
 
 
@@ -271,6 +333,51 @@ def compute_policy_ratio(
     return torch.exp(delta_st)
 
 
+def compute_noise_band_energy(eps: torch.Tensor) -> torch.Tensor:
+    """Per-bin rfft energy of the MC noise, averaged over every other axis.
+
+    Dividing by ``horizon`` makes it comparable to a profile-squared because
+    ``torch.fft.rfft`` is unnormalised. Diagnostic only -- it is how you confirm
+    the prior that actually ran is the one you asked for, rather than trusting
+    the config.
+
+    ``eps`` is ``[..., H, d]``; the returned vector is ``[H // 2 + 1]``.
+    """
+    horizon = eps.shape[-2]
+    spec = torch.fft.rfft(eps.float(), dim=-2)
+    energy = spec.abs().square()
+    # Collapse every axis except the frequency one. mean(dim=-1) reduces the
+    # action dim correctly on a 4-D rollout tensor but silently reduces the
+    # frequency axis on a 2-D one, so move the band axis last and reshape.
+    flat = energy.movedim(-2, -1).reshape(-1, horizon // 2 + 1)
+    return flat.mean(dim=0) / horizon
+
+
+def trajectory_straightness(velocities) -> float:
+    """Mean cosine between consecutive velocities of an Euler trajectory.
+
+    The S3 hypothesis is that a spectral base lowers flow curvature, so this is
+    the quantity that has to move. Return is not a substitute: a prior can leave
+    the average unchanged while making the path cheaper, or the reverse.
+
+    ``velocities`` is the sequence of ``v_hat`` the sampler used, in order.
+    Returns NaN for fewer than two steps, which is what a 1-step sampler gets.
+    """
+    import math as _math
+
+    if len(velocities) < 2:
+        return float("nan")
+    cosines = []
+    for a, b in zip(velocities[:-1], velocities[1:]):
+        num = (a * b).sum()
+        den = a.norm() * b.norm()
+        if float(den) > 0:
+            cosines.append(float(num / den))
+    if not cosines:
+        return float("nan")
+    return sum(cosines) / len(cosines)
+
+
 def sample_action(
     predict_velocity: Callable[[torch.Tensor, torch.Tensor, Any], torch.Tensor],
     shape,
@@ -278,8 +385,16 @@ def sample_action(
     num_inference_steps: int,
     eps: torch.Tensor,
     device: torch.device | str,
-) -> torch.Tensor:
-    """Euler-sample the flow t=0 (noise) -> t=1 (data). Caller draws ``eps``."""
+    *,
+    return_velocities: bool = False,
+):
+    """Euler-sample the flow t=0 (noise) -> t=1 (data). Caller draws ``eps``.
+
+    ``return_velocities`` also hands back the ``v_hat`` sequence so
+    :func:`trajectory_straightness` can score curvature. Off by default: it keeps
+    every velocity alive for the whole solve, which the inference path does not
+    otherwise need.
+    """
     if device is None:
         raise ValueError("device must be provided explicitly")
 
@@ -295,12 +410,15 @@ def sample_action(
         eps = eps.to(device)
 
     x = eps
+    seen = [] if return_velocities else None
     with torch.inference_mode():
         dts = grid[1:] - grid[:-1]
         for i in range(num_inference_steps):
             t_current = grid[i].reshape(1)
             v_hat = predict_velocity(x, t_current, condition)
+            if seen is not None:
+                seen.append(v_hat.detach().float())
             # addcmul, not x + dt*v: same value, one kernel instead of two, and
             # this loop runs num_euler_steps times per policy call.
             x = torch.addcmul(x, v_hat, dts[i])
-    return x
+    return (x, seen) if return_velocities else x

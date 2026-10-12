@@ -45,6 +45,7 @@ from spectral_joint_policy.dct_utils import (
 from spectral_joint_policy.fpo_core import (
     compute_aspo_surrogate,
     compute_cfm_loss,
+    compute_noise_band_energy,
     compute_policy_ratio,
     run_monte_carlo_sampling,
     sample_action,
@@ -297,16 +298,21 @@ def compute_cfm_metrics(
     l_new: torch.Tensor,
     v_star_f: torch.Tensor,
     cfg: SJFPOConfig,
+    eps: torch.Tensor | None = None,
 ) -> dict[str, torch.Tensor]:
     """Flow-matching loss diagnostics.
 
     ``cfm_above_clamp_frac`` matters because samples above ``cfm_clamp``
     contribute no gradient, so a run that stays high trains the critic only.
+
+    With ``eps`` supplied and a spectral prior configured, also reports the
+    realised per-bin noise energy. That is how you confirm the prior that
+    actually ran is the one the config asked for, instead of trusting the flag.
     """
     l_old_std = l_old.std(correction=0)
     l_new_std = l_new.std(correction=0)
     corr_denom = l_old_std * l_new_std + 1e-8
-    return {
+    out = {
         "flow_v_star_rms": rms(v_star_f),
         "l_old_mean": l_old.mean(),
         "l_new_mean": l_new.mean(),
@@ -316,6 +322,18 @@ def compute_cfm_metrics(
         "l_old_new_corr": ((l_old - l_old.mean()) * (l_new - l_new.mean())).mean()
         / corr_denom,
     }
+    if eps is not None:
+        bands = compute_noise_band_energy(eps)
+        # Scalars only: compute_info packs every metric as a 0-d tensor before
+        # one device transfer, so a per-bin vector here would fail the pack.
+        # Call compute_noise_band_energy directly to inspect the whole profile.
+        half = max(1, bands.numel() // 2)
+        low = bands[:half].mean()
+        high = bands[-half:].mean()
+        out["noise_band_energy_low"] = low
+        out["noise_band_energy_high"] = high
+        out["noise_band_energy_hf_lf_ratio"] = high / low.clamp_min(1e-12)
+    return out
 
 
 class SJFPOPolicy(PreTrainedPolicy):
@@ -1375,6 +1393,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             value_loss_per_chunk=value_loss_per_chunk,
             cond_stats=cond_stats,
             cfg=cfg,
+            eps=batch.get("mc_eps"),
         )
         return loss, info
 
@@ -1396,6 +1415,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         value_loss_per_chunk,
         cond_stats,
         cfg,
+        eps: torch.Tensor | None = None,
     ) -> dict[str, float]:
         """Merge the three metric groups and pack them into one device transfer.
 
@@ -1418,7 +1438,11 @@ class SJFPOPolicy(PreTrainedPolicy):
                 value_loss_per_chunk=value_loss_per_chunk,
             ),
             **compute_cfm_metrics(
-                l_old=l_old, l_new=l_new, v_star_f=v_star_f, cfg=cfg
+                l_old=l_old,
+                l_new=l_new,
+                v_star_f=v_star_f,
+                cfg=cfg,
+                eps=eps,
             ),
         }
         if cond_stats:

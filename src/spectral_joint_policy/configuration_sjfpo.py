@@ -233,11 +233,23 @@ class SJFPOConfig(PreTrainedConfig):
             )
         if self.noise_sampling_mode not in {"normal", "uniform"}:
             raise ValueError("noise_sampling_mode must be 'normal' or 'uniform'")
-        if self.noise_scaling_mode not in {"white", "freq_weighted"}:
-            raise ValueError("noise_scaling_mode must be 'white' or 'freq_weighted'")
-        if self.noise_scaling_mode == "freq_weighted" and not self.use_dct_transform:
+        if self.noise_scaling_mode not in {
+            "white",
+            "freq_weighted",
+            "freq_weighted_time",
+        }:
             raise ValueError(
-                "noise_scaling_mode='freq_weighted' requires use_dct_transform=True"
+                "noise_scaling_mode must be 'white', 'freq_weighted', or "
+                "'freq_weighted_time'"
+            )
+        if self.noise_scaling_mode == "freq_weighted" and not self.use_dct_transform:
+            # This one multiplies DCT coefficients, so it has no meaning on the
+            # action-step grid. 'freq_weighted_time' is the time-domain filter
+            # and is deliberately NOT gated: it is the mode that works with the
+            # DCT off.
+            raise ValueError(
+                "noise_scaling_mode='freq_weighted' requires use_dct_transform=True; "
+                "use 'freq_weighted_time' for the action-step grid"
             )
         if self.noise_scaling_beta < 0:
             raise ValueError(f"noise_scaling_beta must be >= 0, got {self.noise_scaling_beta}")
