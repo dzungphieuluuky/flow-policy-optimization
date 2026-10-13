@@ -102,7 +102,7 @@ def _per_env_chunks(buf):
     env_id = a["chunk_env_id"].to(torch.long)
     order = torch.argsort(env_id, stable=True)
     groups: dict[int, list[int]] = {}
-    for pos, idx in enumerate(order.tolist()):
+    for idx in order.tolist():
         groups.setdefault(int(env_id[idx]), []).append(idx)
     return a, groups
 

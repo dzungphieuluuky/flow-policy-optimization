@@ -82,11 +82,12 @@ _NOTES: dict[str, dict[str, str]] = {
         "num_inference_steps": "4: same rationale, on the eval path.",
     },
     "dppo": {
-        "ratio_granularity": "unused: DPPO replaces the FPO surrogate entirely "
-        "with a per-denoising-step Gaussian PPO ratio.",
-        "num_euler_steps": "10: DPPO is stochastic-only by construction "
-        "(Alg. 2 samples noise at every step), so training must start from "
-        "sampled noise, never eps=0.",
+        "ratio_granularity": "unused here. This arm is config-only: it runs "
+        "the FPO++ surrogate, not DPPO's per-denoising-step Gaussian ratio. "
+        "See the module comment.",
+        "num_euler_steps": "10: matched to the papers' NFE. DPPO itself is "
+        "stochastic-only by construction (Alg. 2 samples noise at every step), "
+        "so training must start from sampled noise, never eps=0.",
     },
 }
 
@@ -127,8 +128,12 @@ _OVERRIDES: dict[str, dict[str, Any]] = {
         "num_euler_steps": 4,
         "num_inference_steps": 4,
     },
-    # ---- DPPO: Ren et al., arXiv:2409.00588 ------------------------------
-    # Needs denoising_mdp.py; these are the rollout-side settings only.
+    # ---- "dppo": Ren et al., arXiv:2409.00588 ---------------------------
+    # NOT an implementation of DPPO. This arm only flips rollout settings and
+    # runs the same FPO++ code path, so it is FPO++ at the papers' 10 NFE.
+    # denoising_mdp.py holds the per-step sampler but nothing in the training
+    # path reaches it; it is exercised only by tests. Implementing DPPO for
+    # real means wiring that in, or dropping the name.
     "dppo": {
         "num_euler_steps": 10,
     },

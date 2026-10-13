@@ -1,7 +1,6 @@
 import json
+import sys
 from pathlib import Path
-
-import pytest
 
 SNAPSHOT = Path(__file__).with_name("guard_messages.json")
 
@@ -27,8 +26,6 @@ def pytest_sessionfinish(session, exitstatus):
     """
     if not session.config.getoption("--snapshot-regen"):
         return
-    mod = session.config.pluginmanager.get_plugin("imported-modules")
-    import sys
     mod = sys.modules.get("test_guard_messages")
     if mod is None:
         return
