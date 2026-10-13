@@ -41,7 +41,6 @@ class SJFPOFlowModel(nn.Module):
         dit_heads: int,
         dit_mlp_ratio: float,
         time_embed_dim: int,
-        timestep_scale: float,
     ):
         super().__init__()
         if action_dim < 1 or hidden_dim < 2:
@@ -52,15 +51,11 @@ class SJFPOFlowModel(nn.Module):
             raise ValueError("dit_depth, dit_heads, and time_embed_dim must be positive")
         if not math.isfinite(dit_mlp_ratio) or dit_mlp_ratio <= 0 or int(hidden_dim * dit_mlp_ratio) < 1:
             raise ValueError("dit_mlp_ratio must produce a positive hidden width")
-        if not math.isfinite(timestep_scale) or timestep_scale <= 0:
-            raise ValueError("timestep_scale must be finite and positive")
         self.action_dim = action_dim
         self.hidden_dim = hidden_dim
         self.action_horizon = action_horizon
         self.time_embed_dim = time_embed_dim
-        self.timestep_embedder = SinusoidalEncoding(
-            self.time_embed_dim, scale=timestep_scale
-        )
+        self.timestep_embedder = SinusoidalEncoding(self.time_embed_dim)
         self.in_proj = nn.Linear(action_dim, hidden_dim)
         self.token_pos = nn.Parameter(torch.zeros(1, action_horizon, hidden_dim))
         nn.init.normal_(self.token_pos, std=0.02)

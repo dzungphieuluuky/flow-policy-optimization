@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 from collections import OrderedDict
 
 import torch
@@ -70,12 +69,11 @@ class CondMLP(nn.Module):
 class SinusoidalEncoding(nn.Module):
     """Fixed sinusoidal codes. Freq tables cached per device."""
 
-    def __init__(self, dim: int, scale: float = 1.0):
+    def __init__(self, dim: int):
         super().__init__()
         if dim < 2:
             raise ValueError(f"SinusoidalEncoding dim must be >= 2, got {dim}")
         self.dim = dim
-        self.scale = 1.0 if scale is None else float(scale)
         self.half = dim // 2
         self._freq_cache: OrderedDict[torch.device, torch.Tensor] = OrderedDict()
 
@@ -90,17 +88,25 @@ class SinusoidalEncoding(nn.Module):
             self._freq_cache.move_to_end(device)
             return cached
         i = torch.arange(self.half, device=device, dtype=torch.float32)
-        cached = torch.exp(-math.log(10000.0) * i / max(self.half, 1))
+        # FPO++ (actor_critic.py:_embed_timestep): doubling powers, not the
+        # usual 1/10000^i sweep. Coarser at the bottom, far coarser at the top:
+        # at time_embed_dim=64 the highest channel is 2**31, whose cos/sin in
+        # fp32 is argument-limited rather than resolved.
+        cached = torch.pow(torch.tensor(2.0, device=device), i)
         self._freq_cache[device] = cached
         if len(self._freq_cache) > 4:
             self._freq_cache.popitem(last=False)
         return cached
 
     def encode_times(self, t: torch.Tensor) -> torch.Tensor:
-        """Sinusoidal embed of continuous times. ``[N]`` -> ``[N, 2 * half]``."""
-        t = t.to(dtype=torch.float32) * self.scale
+        """Sinusoidal embed of continuous times. ``[N]`` -> ``[N, 2 * half]``.
+
+        cos before sin, matching FPO++'s ``_embed_timestep``. The frequencies
+        already span the range, so ``t`` is not scaled separately.
+        """
+        t = t.to(dtype=torch.float32)
         ang = t.unsqueeze(-1) * self.compute_freqs(t.device).clone()
-        emb = torch.cat([ang.sin(), ang.cos()], dim=-1)
+        emb = torch.cat([ang.cos(), ang.sin()], dim=-1)
         if self.dim % 2:
             emb = F.pad(emb, (0, 1))
         return emb

@@ -85,8 +85,15 @@ SECTIONS: list[tuple[str, list[str]]] = [
             "critic_num_layers",
             "value_loss_coef",
             "value_huber_delta",
-            "use_target_critic",
-            "critic_ema_decay",
+            "advantage_clamp",
+        ],
+    ),
+    (
+        "CFM loss",
+        [
+            "cfm_loss_use_huber",
+            "cfm_loss_huber_delta",
+            "transported_clip_value",
         ],
     ),
     (
@@ -96,7 +103,6 @@ SECTIONS: list[tuple[str, list[str]]] = [
             "dit_heads",
             "dit_mlp_ratio",
             "time_embed_dim",
-            "timestep_scale",
         ],
     ),
     (
@@ -104,10 +110,11 @@ SECTIONS: list[tuple[str, list[str]]] = [
         [
             "policy_lr",
             "critic_lr",
+            "actor_lr_warmup_steps",
+            "critic_lr_warmup_steps",
             "optimizer_weight_decay",
             "adam_betas",
             "max_grad_norm",
-            "critic_max_grad_norm",
             "ema_decay",
             "ema_warmup_steps",
         ],
