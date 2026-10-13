@@ -22,8 +22,8 @@ batch_size: 128
 grad_accum_steps: 1
 
 # -- Flow sampling ---------------------------------------------
-num_euler_steps: 10
-num_inference_steps: 10
+num_euler_steps: 4
+num_inference_steps: 4
 min_timestep: 0.005
 max_timestep: 0.995
 timestep_sampling_mode: 'fpo_beta'

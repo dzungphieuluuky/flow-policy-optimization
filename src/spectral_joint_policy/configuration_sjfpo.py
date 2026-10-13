@@ -41,8 +41,8 @@ class SJFPOConfig(PreTrainedConfig):
     batch_size: int = 128
     grad_accum_steps: int = 1
 
-    num_euler_steps: int = 10
-    num_inference_steps: int = 10
+    num_euler_steps: int = 4
+    num_inference_steps: int = 4
     min_timestep: float = 0.005
     max_timestep: float = 0.995
     timestep_sampling_mode: str = "fpo_beta"
