@@ -153,9 +153,11 @@ def run_monte_carlo_sampling(
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, tuple[int, ...], int]:
     """Broadcast action, noise, per-token timestep over MC -> ``[B*M, ...]``.
 
-    ``tau`` ``[B, M, K, 1]`` keeps one time per token; scalar, ``[M]``,
-    ``[B, M]`` are legacy and collapse to ``[B*M]``. Cast onto ``eps``'s
-    device/dtype so a scalar cannot hop to CPU mid-graph.
+    ``tau`` is ``[B, M, K, 1]``: one time per action step, which is what keeps
+    a token's velocity and its target on the same ``tau``. The scalar and
+    per-chunk shapes this used to accept were never reachable from any caller
+    and are gone. Cast onto ``eps``'s device/dtype so a scalar cannot hop to CPU
+    mid-graph.
     """
     b, num_mc = eps.shape[0], eps.shape[1]
     flow_shape = tuple(a.shape[1:])
@@ -168,37 +170,15 @@ def run_monte_carlo_sampling(
     else:
         t = torch.as_tensor(tau, dtype=storage_dtype, device=eps.device)
 
-    tokenwise_tau = t.dim() == 4 and tuple(t.shape) == (
-        b,
-        num_mc,
-        flow_shape[0],
-        1,
-    )
-    if tokenwise_tau:
-        pass
-    elif t.dim() == 0:
-        t = t.expand(b, num_mc)
-    elif t.dim() == 3 and tuple(t.shape) == (b, num_mc, 1):
-        t = t.squeeze(-1)
-    elif t.dim() == 1:
-        if t.numel() != num_mc:
-            raise ValueError(
-                f"tau vector must have num_mc_samples={num_mc} entries, got {t.numel()}"
-            )
-        t = t.expand(b, num_mc)
-    elif tuple(t.shape) != (b, num_mc):
+    if t.dim() != 4 or tuple(t.shape) != (b, num_mc, flow_shape[0], 1):
         raise ValueError(
-            f"tau shape {tuple(t.shape)} must be scalar, [num_mc_samples], "
-            f"[B, num_mc_samples], [B, num_mc_samples, 1], or "
-            f"[B, num_mc_samples, K, 1]"
+            f"tau shape {tuple(t.shape)} must be [B, num_mc_samples, K, 1] "
+            f"with B={b}, num_mc_samples={num_mc}, K={flow_shape[0]}"
         )
 
     d = a.numel() // b
     a_flat = a.reshape(b, 1, d).expand(b, num_mc, d).reshape(b * num_mc, d)
-    if tokenwise_tau:
-        flatten_mc_timestep = t.reshape(b * num_mc, flow_shape[0], 1)
-    else:
-        flatten_mc_timestep = t.reshape(b * num_mc)
+    flatten_mc_timestep = t.reshape(b * num_mc, flow_shape[0], 1)
     return (
         flatten_mc_timestep,
         eps.reshape(b * num_mc, d),
@@ -384,6 +364,8 @@ def sample_action(
     """
     if device is None:
         raise ValueError("device must be provided explicitly")
+    if tuple(eps.shape) != tuple(shape):
+        raise ValueError(f"eps shape {tuple(eps.shape)} != requested {tuple(shape)}")
 
     grid = torch.linspace(
         0.0,

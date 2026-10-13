@@ -3,14 +3,9 @@
 Batch contract: ``[B, T, obs]`` states, ``[B, H, action_dim]`` chunks, frozen
 GAE advantages/returns from the rollout.
 
-Speed
------
-* ``forward`` diagnostics batch into one device-to-host transfer (one
-  ``.tolist()``) instead of ~20 ``float()`` syncs, and the whole pass is gated
-  on ``compute_info=True``.
-* ``ratio_token`` is computed once per forward, not once per branch.
-* ``snapshot_behavior_policy`` copies weights in place rather than
-  ``copy.deepcopy``-ing.
+Diagnostic passes are gated on ``compute_info`` and batch every metric into a
+single device-to-host transfer; ``float()`` on a device tensor is a blocking
+sync and there are otherwise ~20 of them per forward.
 """
 
 from __future__ import annotations
@@ -76,8 +71,8 @@ def compute_value_huber_loss(
     )
 
 
-# Pack order of ``compute_gae_diagnostics``'s return dict, and the pack order of its
-# one device-to-host transfer. The trainer reads these by key.
+# Pack order of ``compute_gae_diagnostics``' return dict. The trainer reads
+# these by key.
 _GAE_DIAGNOSTIC_KEYS = (
     "linked_frac",
     "advantage_std",
@@ -98,26 +93,22 @@ def compute_gae_diagnostics(
     """Trace-liveness and scale probes for the chunk backup.
 
     ``linked_frac`` is what the env_id sort joins: the share of adjacent same-env
-    chunk pairs not separated by an episode end. A value near 0 means the trace
-    is dead -- the recursion has nothing to propagate into. Only read it when
-    gae_lambda > 0, which is the default.
+    chunk pairs not separated by an episode end. Near 0 means the trace is dead --
+    the recursion has nothing to propagate into. Only read it when gae_lambda > 0,
+    the default.
 
-    ``budget_truncated`` is NaN when the collector cannot supply it, which is
-    the normal case -- mark_incomplete is a no-op, so no budget-cut flag exists.
-    NaN rather than 0.0, because a hard zero reads as "no chunk was cut short by
-    the budget", which is a claim about the data rather than about us.
+    ``budget_truncated`` is NaN when the collector cannot supply it (the normal
+    case: mark_incomplete is a no-op, so no budget-cut flag exists). NaN rather
+    than 0.0, because a hard zero reads as "nothing was cut short", a claim about
+    the data rather than about us.
     """
     n = env_id.numel()
     if n == 0:
-        # NaN, not 0.0: nothing was measured, and a hard zero reads as a
-        # measurement that came back clean.
         return dict.fromkeys(_GAE_DIAGNOSTIC_KEYS, float("nan"))
     order = torch.argsort(env_id.to(torch.long), stable=True)
     e = env_id.to(torch.long)[order]
     ends = terminated.to(torch.bool)[order][:-1] | truncated.to(torch.bool)[order][:-1]
     ret = raw_returns.float()
-    # Widened only here, so each field keeps the fp32 arithmetic it had in Python.
-    # The stack is float64; 5 numbers, so the wider transfer costs nothing.
     # Population std, matching the advantage normaliser. The unbiased default is NaN
     # at a single chunk and inflates by sqrt(n/(n-1)) elsewhere; correction=0 is
     # defined at n == 1, where clamp_min gives the same 0.0 a guard would.
@@ -132,14 +123,11 @@ def compute_gae_diagnostics(
         adv_std / ret_std,
         # Budget cut. Not chunk_truncated, which is the flag GAE reads; not
         # truncated_chunk_frac, which counts action rows the chunk left
-        # unexecuted. NaN when unsupplied: mark_incomplete is a no-op, so there
-        # is currently no budget-cut flag and 0.0 would be a false negative.
+        # unexecuted.
         budget_truncated.to(torch.bool).float().mean().double()
         if budget_truncated is not None
         else ret.double().new_tensor(float("nan")),
     ]
-    # One transfer, not one per field: float() on a device tensor is a blocking
-    # sync, and this runs once per rollout.
     return dict(zip(_GAE_DIAGNOSTIC_KEYS, torch.stack(fields).tolist()))
 
 
@@ -204,10 +192,8 @@ def compute_ratio_metrics(
     ``log_ratio_*`` reads the raw delta, not the clamped one, so it is never a
     clamp artefact. ``clipfrac`` near zero means the trust region never binds.
 
-    The token axis is the chunk's action steps, split early/late. Those keys say
-    ``pos`` because that is what the split is: the DCT that would have made the
-    axis frequency-ordered is gone, so a name reading ``lowfreq`` would promise a
-    spectral cut the split does not perform.
+    The token axis is the chunk's action steps, split early/late. The keys say
+    ``pos`` because that is what the split is; it is not a frequency cut.
     """
     log_ratio_abs = delta.abs()
     log_ratio_clip_frac = (log_ratio_abs > cfg.log_ratio_cap).float().mean()
@@ -215,9 +201,7 @@ def compute_ratio_metrics(
     ratio_token_mean = ratio_token.mean(dim=(0, 1))
     num_tokens = ratio_token_mean.numel()
     split = max(1, num_tokens // 2)
-    # One epsilon for the whole token axis, the same bound the surrogate uses. A
-    # per-band epsilon had nothing to bind to: the "sample" reduction
-    # averages every token into one number per chunk, so such ratios exist only here.
+    # One epsilon for the whole token axis, the same bound the surrogate uses.
     def outside(t: torch.Tensor) -> torch.Tensor:
         return ((t < 1.0 - cfg.clip_param) | (t > 1.0 + cfg.clip_param)).float().mean()
 
@@ -330,6 +314,16 @@ def compute_cfm_metrics(
         out["noise_band_energy_high"] = high
         out["noise_band_energy_hf_lf_ratio"] = high / low.clamp_min(1e-12)
     return out
+
+
+def unwrapped_state_dict(module: torch.nn.Module) -> dict:
+    """``state_dict`` that sees through a ``torch.compile`` wrapper.
+
+    Compiled modules nest the real one under ``_orig_mod``.
+    """
+    if hasattr(module, "_orig_mod"):
+        return module._orig_mod.state_dict()
+    return module.state_dict()
 
 
 class SJFPOPolicy(PreTrainedPolicy):
@@ -466,11 +460,8 @@ class SJFPOPolicy(PreTrainedPolicy):
         Copies weights into the existing modules instead of
         ``copy.deepcopy``-ing the live ones over them.
         """
-        def _state_dict(module):
-            # Compiled modules (torch.compile) wrap with _orig_mod prefix.
-            return module._orig_mod.state_dict() if hasattr(module, "_orig_mod") else module.state_dict()
-        self.old_actor.load_state_dict(_state_dict(self.actor))
-        self.old_encoder.load_state_dict(_state_dict(self.encoder))
+        self.old_actor.load_state_dict(unwrapped_state_dict(self.actor))
+        self.old_encoder.load_state_dict(unwrapped_state_dict(self.encoder))
 
         self.old_actor.requires_grad_(False)
         self.old_actor.eval()
@@ -508,7 +499,6 @@ class SJFPOPolicy(PreTrainedPolicy):
             self._ema_initialised = True
             return
         if global_step > self.config.ema_warmup_steps:
-            # One multi-tensor pass over the shadow rather than one per tensor.
             names = list(self._ema_shadow)
             torch._foreach_mul_([self._ema_shadow[name] for name in names], decay)
             torch._foreach_add_(
@@ -522,19 +512,13 @@ class SJFPOPolicy(PreTrainedPolicy):
         """Polyak the target critic toward the live one. First call hard-copies.
 
         ``critic_ema_decay`` is the copy *rate*, so the teacher keeps
-        ``1 - decay`` of itself per optimizer step: 0.05 lags a few updates and
-        tracks the rollout closely, which is what the config's ~2.5-rollout time
-        constant means. qc and TD-JEPA instead use 0.005.
+        ``1 - decay`` of itself per optimizer step; qc and TD-JEPA use 0.005.
         """
-        def _state_dict(module):
-            return module._orig_mod.state_dict() if hasattr(module, "_orig_mod") else module.state_dict()
         if not self._target_critic_initialised:
-            self.target_critic.load_state_dict(_state_dict(self.critic))
+            self.target_critic.load_state_dict(unwrapped_state_dict(self.critic))
             self._target_critic_initialised = True
             return
         decay = self.config.critic_ema_decay
-        # One foreach pass over the shadow and its source instead of two launches
-        # per tensor.
         target_params = list(self.target_critic.parameters())
         torch._foreach_mul_(target_params, 1.0 - decay)
         torch._foreach_add_(
@@ -707,16 +691,13 @@ class SJFPOPolicy(PreTrainedPolicy):
         states = to_device_async(states, device)
         states = self.preprocessor({OBS_STATE: states})[OBS_STATE]
 
-        num_spectral_tokens_kept = cfg.action_horizon
+        horizon = cfg.action_horizon
         action_dim = int(self.config.action_feature.shape[0])
         actor = self.actor
 
         with torch.inference_mode(), autocast_context(device):
             condition = self.encoder(states)
-            shape = (states.shape[0], num_spectral_tokens_kept, action_dim)
-            # zero_sampling starts the flow at eps=0, which is what FPO++ uses for eval
-            # and for the reported metrics. Otherwise start from sampled noise, drawn
-            # through sample_noise so noise_scaling_mode applies.
+            shape = (states.shape[0], horizon, action_dim)
             if zero_sampling:
                 eps = torch.zeros(*shape, device=device)
                 num_steps = cfg.num_inference_steps
@@ -775,27 +756,18 @@ class SJFPOPolicy(PreTrainedPolicy):
 
     @staticmethod
     def get_token_count_for_cfm_loss(cfg: SJFPOConfig) -> int:
-        """Tokens the CFM loss reduces over.
-
-        The token axis is the chunk's action steps, so this is always the
-        horizon. It survived the DCT because the ratio compares vectors of this
-        width against the stored per-token losses, and the two have to agree.
-        """
+        """Tokens the CFM loss reduces over: the chunk's action steps, so the
+        width the ratio compares must match the stored per-token losses."""
         return cfg.action_horizon
 
     def prepare_cfm_loss_inputs(
         self,
-        cfg: SJFPOConfig,
         action_is_pad: torch.Tensor,
         *velocities: torch.Tensor,
     ) -> tuple[torch.Tensor | None, tuple[torch.Tensor, ...]]:
-        """Execution mask plus the velocities that mask indexes.
-
-        Pass-through now. It used to expand DCT coefficients back onto the step
-        grid, because a mask over unexpanded coefficients would index the wrong
-        axis and fail silently. With the DCT gone the velocities already are the
-        action steps, so the mask applies directly and both ``l_old`` and
-        ``l_new`` still have to come through here.
+        """Execution mask plus the velocities that mask indexes. Pass-through:
+        the velocities are already action steps, so the mask applies directly.
+        Both ``l_old`` and ``l_new`` must route through it to stay masked alike.
         """
         return action_is_pad, velocities
 
@@ -812,9 +784,8 @@ class SJFPOPolicy(PreTrainedPolicy):
         against, so the ratio never mixes means over different positions.
         """
         cfg = self.config
-        spectral_action = actions
         flatten_timestep, flatten_mc_noise, flatten_mc_action, flow_shape, num_mc = (
-            run_monte_carlo_sampling(spectral_action, eps, tau)
+            run_monte_carlo_sampling(actions, eps, tau)
         )
         x_t = compute_mc_xt(flatten_timestep, flatten_mc_noise, flatten_mc_action, flow_shape)
         actor_tau = flatten_timestep.squeeze(-1)
@@ -827,10 +798,10 @@ class SJFPOPolicy(PreTrainedPolicy):
                 x_t, actor_tau, condition_flat, old=True
             ).float()
         with torch.autocast(device_type=actions.device.type, enabled=False):
-            v_star = (spectral_action[:, None] - eps).float()
+            v_star = (actions[:, None] - eps).float()
             v_old = v_old.reshape(eps.shape[0], num_mc, *flow_shape)
             loss_mask, (v_old, v_star) = self.prepare_cfm_loss_inputs(
-                cfg, action_is_pad, v_old, v_star
+                action_is_pad, v_old, v_star
             )
             return compute_cfm_loss(v_old, v_star, cfg, "both", loss_mask)
 
@@ -847,9 +818,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         :mod:`spectral_joint_policy.gae`.
 
         A chunk can execute one step before terminating, so the count can hit one
-        per requested step. Each chunk is one macro-transition: the backup sums
-        its executed rewards, discounts by ``gamma ** h``, and the recursion runs
-        between consecutive chunks of the same env.
+        per requested step.
 
         The batch carries one raw post-step frame per executed step, separate
         from the overlapping obs windows so the normalizer does not double count,
@@ -953,7 +922,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         else:
             active = buffer.active()
         n_chunks = buffer.n_chunks
-        num_spectral_tokens_kept = cfg.action_horizon
+        horizon = cfg.action_horizon
 
         lengths = active["chunk_lengths"]
         chunk_starts = active["chunk_starts"]
@@ -961,16 +930,11 @@ class SJFPOPolicy(PreTrainedPolicy):
         actions = active["chunk_actions"]
         states = active["chunk_state"]
 
-        # The backup reads two obs windows per chunk, the one it started from and
-        # the one it ended at, so the preprocessor sees 2 * n_chunks windows and
-        # not 2 * n_steps. The normalizer updates separately from raw frames via
-        # normalizer_observations.
-        #
-        # The bootstrap chunk a' is drawn fresh from the policy at each chunk's
-        # end state, which is QC's target. Rows whose bootstrap is zeroed (the
-        # chunk terminated) keep the chunk itself as a filler: the proposal is
-        # batched over the surviving rows only, which is what keeps it cheap when
-        # most chunks terminate.
+        # The backup reads two obs windows per chunk (start and end state), so the
+        # preprocessor sees 2 * n_chunks windows, not 2 * n_steps. The normalizer
+        # updates separately from raw frames via normalizer_observations.
+        # The bootstrap a' is drawn fresh at each chunk's end state, which is QC's
+        # target; terminated rows keep the chunk itself as a filler.
         with torch.inference_mode():
             next_states = active["chunk_next_state"]
             # Seeded from the chunk itself so every row is a real action tensor: an
@@ -999,18 +963,15 @@ class SJFPOPolicy(PreTrainedPolicy):
             )[OBS_STATE]
             normalised_states = all_chunk_normalised_states[:n_chunks]
             normalised_next_states = all_chunk_normalised_states[n_chunks:]
-            # The critic needs to know how much of each planned chunk was
-            # actually run. Each chunk's own count is in `lengths`; the bootstrap
-            # chunk is a fresh full-horizon proposal that will only be executed
-            # for n_action_steps, so its fraction is n_action_steps/H, NOT H/H.
-            # Passing H/H here would reintroduce the mismatch the feature exists
-            # to remove, one level down.
+            # The bootstrap chunk is a full-horizon proposal that will only ever execute
+            # for n_action_steps, so its fraction is n_action_steps/H, NOT H/H --
+            # passing H/H reintroduces the mismatch the feature exists to remove.
             exec_frac = self.exec_frac(lengths)
             boot_exec_frac = self.exec_frac(
                 torch.full_like(lengths, cfg.n_action_steps)
             )
-            # amin across the num_critics=2 members: backup only, never inside
-            # the loss. The value loss averages the same two members.
+            # amin across the num_critics members: backup only, never inside the
+            # loss. The value loss averages the same members.
             with autocast_context(device):
                 chunk_q = self.critic(
                     normalised_states, actions, exec_frac
@@ -1023,10 +984,9 @@ class SJFPOPolicy(PreTrainedPolicy):
             else:
                 boot_q = chunk_q
 
-        # One chunk is one macro-transition: sum the chunk's rewards, discount
-        # gamma ** h. One space throughout, as rsl-rl: Q predicts raw returns and
-        # the target is the raw return, so Q is the true expected return. No
-        # return normalizer; the only normalisation is the advantage whitening.
+        # One chunk is one macro-transition: sum its rewards, discount gamma ** h.
+        # One space throughout, as rsl-rl: Q predicts raw returns and the target is
+        # the raw return, so Q is the true expected return. No return normalizer.
         raw_advantages, raw_returns = compute_chunk_advantages(
             all_rewards,
             chunk_q,
@@ -1045,9 +1005,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             gae_lambda=cfg.gae_lambda,
         )
         normalised_advantages = raw_advantages
-        # Population std, matching returns_var. The unbiased default is NaN at a
-        # single chunk, which a short final rollout produces, and inflates by
-        # sqrt(n/(n-1)) elsewhere.
+        # correction=0 rationale: see compute_gae_diagnostics.
         if cfg.normalize_advantage and raw_advantages.numel() > 0:
             normalised_advantages = (raw_advantages - raw_advantages.mean()) / (
                 raw_advantages.std(correction=0).clamp_min(1e-8)
@@ -1064,24 +1022,24 @@ class SJFPOPolicy(PreTrainedPolicy):
         )
         raw_advantages = raw_advantages.to(storage_dtype)
         normalised_advantages = normalised_advantages.to(storage_dtype)
-        # raw_returns stays fp32: the critic's regression target and the only
-        # stored tensor that is not O(1) (returns_rms runs to 35). bf16 has 8
-        # mantissa bits, so 1234.5 round-trips to 1232.0, and chunk_state and
-        # chunk_actions are already fp32 anyway.
+        # raw_returns stays fp32: the critic's regression target and the only stored
+        # tensor that is not O(1) (returns_rms runs to 35), so bf16's 8 mantissa
+        # bits would lose real precision. chunk_state and chunk_actions are already
+        # fp32 anyway.
 
         action_is_pad = torch.arange(cfg.action_horizon, device=device).unsqueeze(
             0
         ) >= lengths.unsqueeze(1)
 
         tau = sample_timesteps(
-            (n_chunks, cfg.num_mc_samples, num_spectral_tokens_kept),
+            (n_chunks, cfg.num_mc_samples, horizon),
             cfg,
             device,
             None,
         ).unsqueeze(-1)
         eps = sample_spectral_eps(cfg, n_chunks, action_dim, device)
 
-        expected_eps_shape = (n_chunks, cfg.num_mc_samples, num_spectral_tokens_kept, action_dim)
+        expected_eps_shape = (n_chunks, cfg.num_mc_samples, horizon, action_dim)
         if tuple(eps.shape) != expected_eps_shape:
             raise ValueError(
                 f"MC noise shape {tuple(eps.shape)} != expected "
@@ -1171,13 +1129,9 @@ class SJFPOPolicy(PreTrainedPolicy):
 
         states = self.preprocessor({OBS_STATE: states})[OBS_STATE]
 
-        num_spectral_tokens_kept = cfg.action_horizon
+        horizon = cfg.action_horizon
         n = states.shape[0]
         action_dim = actions.shape[-1]
-
-        loss_mask: torch.Tensor = action_is_pad
-
-        dct_action_tokens = actions
 
         has_mc_tau = "mc_tau" in batch
         has_mc_eps = "mc_eps" in batch
@@ -1185,20 +1139,20 @@ class SJFPOPolicy(PreTrainedPolicy):
             raise ValueError("mc_tau and mc_eps must be provided together")
         if has_mc_tau:
             tau = to_tensor(batch["mc_tau"], dtype=storage_dtype, device=device)
-            expected_tau = (n, cfg.num_mc_samples, num_spectral_tokens_kept, 1)
+            expected_tau = (n, cfg.num_mc_samples, horizon, 1)
             if tuple(tau.shape) != expected_tau:
                 raise ValueError(
                     f"mc_tau shape {tuple(tau.shape)} != {expected_tau}"
                 )
             eps = to_tensor(batch["mc_eps"], dtype=storage_dtype, device=device)
-            expected_eps = (n, cfg.num_mc_samples, num_spectral_tokens_kept, action_dim)
+            expected_eps = (n, cfg.num_mc_samples, horizon, action_dim)
             if tuple(eps.shape) != expected_eps:
                 raise ValueError(
                     f"stored MC noise shape {tuple(eps.shape)} != {expected_eps}"
                 )
         else:
             tau = sample_timesteps(
-                (n, cfg.num_mc_samples, num_spectral_tokens_kept),
+                (n, cfg.num_mc_samples, horizon),
                 cfg,
                 device,
                 None,
@@ -1206,7 +1160,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             eps = sample_spectral_eps(cfg, n, action_dim, device)
 
         flatten_timestep, flatten_mc_noise, flatten_mc_action, flow_shape, num_mc = (
-            run_monte_carlo_sampling(dct_action_tokens, eps, tau)
+            run_monte_carlo_sampling(actions, eps, tau)
         )
         x_t_flat = compute_mc_xt(
             flatten_timestep, flatten_mc_noise, flatten_mc_action, flow_shape
@@ -1234,8 +1188,6 @@ class SJFPOPolicy(PreTrainedPolicy):
             raise ValueError(
                 f"behavior_cfm_loss shape {tuple(l_old.shape)} != {(n, num_mc)}"
             )
-        # The token axis is the action-step grid when the mask moved the loss
-        # onto rows, and the frequencies otherwise. Not always flow_shape[0].
         expected_tokens = self.get_token_count_for_cfm_loss(cfg)
         if tuple(l_old_token.shape) != (n, num_mc, expected_tokens):
             raise ValueError(
@@ -1263,10 +1215,10 @@ class SJFPOPolicy(PreTrainedPolicy):
                 )
 
         with torch.autocast(device_type=device.type, enabled=False):
-            v_star_f = self.compute_target_velocity(dct_action_tokens, eps).float()
+            v_star_f = self.compute_target_velocity(actions, eps).float()
             v_new_r_f = v_new.reshape(n, num_mc, *flow_shape)
             loss_mask, (v_new_r_f, v_star_f) = self.prepare_cfm_loss_inputs(
-                cfg, action_is_pad, v_new_r_f, v_star_f
+                action_is_pad, v_new_r_f, v_star_f
             )
 
             adv = normalised_advantages.float()
@@ -1297,9 +1249,8 @@ class SJFPOPolicy(PreTrainedPolicy):
                 policy_per_chunk = -compute_aspo_surrogate(ratio, adv_mc, cfg).mean(dim=1)
 
         with autocast_context(device):
-            # action_is_pad marks what was NOT executed, so the executed
-            # count is its complement over the horizon. Hoisted so the
-            # critic call and its fp32 promotion stay on one line.
+            # action_is_pad marks what was NOT executed; the executed count is its
+            # complement over the horizon.
             chunk_exec_frac = self.exec_frac((~action_is_pad).sum(dim=-1))
             raw_value_pred = self.critic(states, actions, chunk_exec_frac).float()  # [num_critics, n]
         raw_returns_flat = raw_returns.reshape(-1)
