@@ -102,10 +102,22 @@ def compute_chunk_advantages(
         if tensor.numel() != n_chunks:
             raise ValueError(f"{name} must have {n_chunks} entries, got {tensor.numel()}")
 
+    if chunk_truncated is None:
+        # Absent means "no timeouts in this rollout", which is exactly the QC
+        # backup: nothing to inject, and `done` collapses to `terminated`.
+        truncated = torch.zeros(n_chunks, device=device, dtype=torch.bool)
+    else:
+        truncated = chunk_truncated.to(device=device, dtype=torch.bool).reshape(-1)
+        if truncated.numel() != n_chunks:
+            raise ValueError(
+                f"chunk_truncated must have {n_chunks} entries, got {truncated.numel()}"
+            )
+
     if gae_lambda > 0.0:
-        # Without these the trace would run across an episode reset, and across
-        # environments -- the buffer interleaves envs, so buffer adjacency is not
-        # trajectory adjacency.
+        # Without the truncation mask the trace would run across an episode
+        # reset; without the ids it would run across environments too, since the
+        # buffer interleaves envs and buffer adjacency is not trajectory
+        # adjacency.
         if chunk_truncated is None:
             raise ValueError(
                 "chunk_truncated is required when gae_lambda > 0: without it the "
@@ -131,7 +143,17 @@ def compute_chunk_advantages(
     chunk_rewards = (gathered * valid * (gamma**offsets)).sum(dim=1)
 
     gamma_h = gamma ** lengths.to(dtype)
-    bootstrap = gamma_h * (~terminated)
+    # rsl-rl / FPO++ encoding (fpo.py:process_env_step): the value of the state
+    # a timeout cut us off in enters through the *reward*, and the bootstrap is
+    # masked by `done` so that correction is counted exactly once. Arithmetically
+    # identical to masking the bootstrap by (1 - terminated) alone -- equal in all
+    # four combinations of the two masks.
+    done = terminated | truncated
+    # A chunk that both terminated and truncated keeps the terminal reading:
+    # injecting there would resurrect a value for an episode that really ended.
+    injected = truncated & ~terminated
+    chunk_rewards = chunk_rewards + gamma_h * injected * chunk_next_q
+    bootstrap = gamma_h * (~done)
     delta = chunk_rewards + bootstrap * chunk_next_q - chunk_q
 
     if gae_lambda == 0.0:
@@ -139,12 +161,7 @@ def compute_chunk_advantages(
         # below -- not merely equal to it, but not running it at all.
         return delta, delta + chunk_q
 
-    truncated = chunk_truncated.to(device=device, dtype=torch.bool).reshape(-1)
     env_id = chunk_env_id.to(device=device, dtype=torch.long).reshape(-1)
-    if truncated.numel() != n_chunks:
-        raise ValueError(
-            f"chunk_truncated must have {n_chunks} entries, got {truncated.numel()}"
-        )
     if env_id.numel() != n_chunks:
         raise ValueError(f"chunk_env_id must have {n_chunks} entries, got {env_id.numel()}")
 
@@ -158,7 +175,7 @@ def compute_chunk_advantages(
     succ = torch.full_like(order, -1)
     succ[order[:-1][same_env]] = order[1:][same_env]
 
-    trace = bootstrap * (~truncated) * gae_lambda
+    trace = gamma_h * (~done) * gae_lambda
     # One device->host transfer for the whole successor map; the loop then does
     # no further syncs, so this is n_chunks cheap kernels rather than n_chunks
     # synchronisations.
