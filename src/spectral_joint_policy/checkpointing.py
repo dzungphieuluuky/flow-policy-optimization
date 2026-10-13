@@ -18,6 +18,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import warnings
 import tempfile
 from pathlib import Path
 
@@ -260,9 +261,17 @@ def load_policy_checkpoint(
 
     ema_path = d / "ema.pt"
     if ema_path.is_file():
-        policy.load_ema_state_dict(
+        restored = policy.load_ema_state_dict(
             torch.load(ema_path, map_location="cpu", weights_only=True)
         )
+        if not restored:
+            # Pre-encoder-coverage shadow. Re-seeding beats half-applying it.
+            warnings.warn(
+                f"{ema_path.name} does not match the current EMA coverage; "
+                "reseeding the shadow from live weights instead of restoring it",
+                RuntimeWarning,
+                stacklevel=2,
+            )
 
     try:
         counters_raw = json.loads((d / COUNTERS_FILE).read_text(encoding="utf-8"))

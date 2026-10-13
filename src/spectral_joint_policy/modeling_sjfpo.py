@@ -370,6 +370,12 @@ class SJFPOPolicy(PreTrainedPolicy):
             copy.deepcopy(self.encoder).requires_grad_(False).eval()
         )
         self._ema_shadow: dict[str, torch.Tensor] = {}
+        # Non-persistent: a resumed run re-seeds from its first batch, which is
+        # the same path a fresh run takes, so there is no half-restored state.
+        self.register_buffer(
+            "_huber_resid_rms", torch.zeros((), dtype=torch.float32), persistent=False
+        )
+        self._huber_resid_uninitialised = True
         self._ema_initialised = False
         self._rollout_buffer: RolloutBuffer | None = None
         self._device_rollout_buffer: RolloutBuffer | None = None
@@ -457,6 +463,38 @@ class SJFPOPolicy(PreTrainedPolicy):
         self.old_encoder.requires_grad_(False)
         self.old_encoder.eval()
 
+    def _ema_named_params(self) -> dict[str, torch.nn.Parameter]:
+        """Every parameter the EMA shadow covers, namespaced by module.
+
+        Actor and encoder together, because they co-drift: they are
+        trained on the same objective and the DiT cross-attends to the
+        encoder's output. Swapping in one without the other evaluates a
+        pairing that never existed during training.
+        """
+        out: dict[str, torch.nn.Parameter] = {}
+        for prefix, module in (("actor", self.actor), ("encoder", self.encoder)):
+            for name, param in module.named_parameters():
+                if param.requires_grad:
+                    out[f"{prefix}.{name}"] = param
+        return out
+
+    @torch.no_grad()
+    def update_huber_resid_rms(self, residual: torch.Tensor, decay: float = 0.99) -> None:
+        """Track the critic's residual scale for the Huber knee.
+
+        The knee has to follow the *error*, not the return scale. Scaling
+        delta by returns_rms puts it at ~2x the residual spread, so 97% of
+        residuals land in the quadratic branch and the Huber is MSE wearing a
+        disguise. Smoothed because the per-batch value moves too fast and a
+        knee that breathes with the data is a second feedback loop.
+        """
+        batch = residual.detach().float().square().mean().sqrt()
+        if self._huber_resid_uninitialised:
+            self._huber_resid_rms.fill_(float(batch))
+            self._huber_resid_uninitialised = False
+            return
+        self._huber_resid_rms.mul_(decay).add_((1.0 - decay) * float(batch))
+
     @torch.inference_mode()
     def update_ema(self, global_step: int) -> None:
         """Update the actor EMA after an optimizer step.
@@ -467,12 +505,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         decay = self.config.ema_decay
         if decay <= 0:
             return
-        actor = self.actor
-        current = {
-            name: param
-            for name, param in actor.named_parameters()
-            if param.requires_grad
-        }
+        current = self._ema_named_params()
         if not self._ema_shadow:
             self._ema_shadow = {
                 name: param.detach().clone() for name, param in current.items()
@@ -515,7 +548,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         """
         if not self.ema_ready(global_step):
             return {}
-        params = dict(self.actor.named_parameters())
+        params = self._ema_named_params()
         names = list(self._ema_shadow)
         displaced = {name: params[name].detach().clone() for name in names}
         torch._foreach_copy_(
@@ -529,7 +562,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         """Put back the weights :meth:`swap_in_ema` displaced."""
         if not displaced:
             return
-        params = dict(self.actor.named_parameters())
+        params = self._ema_named_params()
         names = list(displaced)
         torch._foreach_copy_(
             [params[name] for name in names], [displaced[name] for name in names]
@@ -543,13 +576,25 @@ class SJFPOPolicy(PreTrainedPolicy):
             "shadow_params": self._ema_shadow,
         }
 
-    def load_ema_state_dict(self, state: dict) -> None:
+    def load_ema_state_dict(self, state: dict) -> bool:
+        """Restore the shadow. Returns False if it was re-seeded instead.
+
+        A shadow written before the encoder was covered names only actor
+        parameters. Applying half of it would restore exactly the
+        actor/encoder mismatch this closed, so a mismatched shadow is
+        dropped and the caller reseeds from live weights instead.
+        """
         """Restore a shadow from :meth:`ema_state_dict`."""
+        stored = state.get("shadow_params", {})
+        if set(stored) != set(self._ema_named_params()):
+            self._ema_shadow = {}
+            self._ema_initialised = False
+            return False
         self._ema_shadow = {
-            name: value.detach().clone()
-            for name, value in state["shadow_params"].items()
+            name: value.detach().clone() for name, value in stored.items()
         }
         self._ema_initialised = bool(state.get("initialised", True))
+        return True
 
     def get_actor_optim_params(self) -> dict:
         """Actor optimizer param groups.
@@ -1258,9 +1303,11 @@ class SJFPOPolicy(PreTrainedPolicy):
             )
         # rsl-rl's value loss, Huber: quadratic inside delta, linear
         # outside, so one large chunk cannot dominate the gradient.
-        # The delta tracks the batch's own return RMS.
-        returns_rms = rms(raw_returns_flat)
-        huber_delta = cfg.value_huber_delta * returns_rms.clamp_min(1e-6)
+        # The delta tracks the residual scale, not the return scale -- see
+        # update_huber_resid_rms.
+        residual = raw_value_pred - raw_returns_flat.unsqueeze(0)
+        self.update_huber_resid_rms(residual)
+        huber_delta = cfg.value_huber_delta * self._huber_resid_rms.clamp_min(1e-6)
         value_loss_per_chunk = compute_value_huber_loss(
             raw_value_pred, raw_returns_flat, huber_delta
         ).mean(dim=0)

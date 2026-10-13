@@ -133,7 +133,7 @@ def test_swap_in_ema_puts_the_average_in_the_actor():
     shadow = {n: s.clone() for n, s in policy._ema_shadow.items()}
 
     displaced = policy.swap_in_ema(8192)
-    live = dict(policy.actor.named_parameters())
+    live = policy._ema_named_params()
     assert set(displaced) == set(shadow)
     for name, value in shadow.items():
         assert torch.equal(live[name], value)
@@ -147,10 +147,10 @@ def test_swap_out_ema_restores_the_live_weights_exactly():
         for p in policy.actor.parameters():
             p.add_(1.0)
     policy.update_ema(8192)
-    before = {n: p.detach().clone() for n, p in policy.actor.named_parameters()}
+    before = {n: p.detach().clone() for n, p in policy._ema_named_params().items()}
 
     policy.swap_out_ema(policy.swap_in_ema(8192))
-    after = dict(policy.actor.named_parameters())
+    after = policy._ema_named_params()
     for name, value in before.items():
         assert torch.equal(after[name], value)
 
