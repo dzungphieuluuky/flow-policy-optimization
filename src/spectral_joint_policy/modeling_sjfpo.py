@@ -1,11 +1,10 @@
 """SJFPO policy: flow head + state conditioner + critic.
 
-Batch contract: ``[B, T, obs]`` states, ``[B, H, action_dim]`` chunks, frozen
-GAE advantages/returns from the rollout.
+Batch contract: ``[B, T, obs]`` states, ``[B, H, action_dim]``
+chunks, frozen GAE advantages/returns from the rollout.
 
-Diagnostic passes are gated on ``compute_info`` and batch every metric into a
-single device-to-host transfer; ``float()`` on a device tensor is a blocking
-sync and there are otherwise ~20 of them per forward.
+Diagnostics batch into one device-to-host transfer.
+``float()`` on a device tensor is a blocking sync.
 """
 
 from __future__ import annotations
@@ -62,17 +61,16 @@ class SJFPOAborted(RuntimeError):
 def compute_value_huber_loss(
     pred: torch.Tensor, target: torch.Tensor, delta: torch.Tensor
 ) -> torch.Tensor:
-    """Elementwise Huber penalty, broadcasting ``target`` over the member axis.
+    """Elementwise Huber, broadcasting ``target`` over members.
 
-    ``delta`` is a 0-dim tensor so the threshold can track the batch return RMS.
+    ``delta`` is 0-dim so it can track return RMS.
     """
     return torch.nn.functional.huber_loss(
         pred, target.expand_as(pred), delta=delta, reduction="none"
     )
 
 
-# Pack order of ``compute_gae_diagnostics``' return dict. The trainer reads
-# these by key.
+# Diagnostics dict pack order. Trainer reads by key.
 _GAE_DIAGNOSTIC_KEYS = (
     "linked_frac",
     "advantage_std",
@@ -92,15 +90,12 @@ def compute_gae_diagnostics(
 ) -> dict[str, float]:
     """Trace-liveness and scale probes for the chunk backup.
 
-    ``linked_frac`` is what the env_id sort joins: the share of adjacent same-env
-    chunk pairs not separated by an episode end. Near 0 means the trace is dead --
-    the recursion has nothing to propagate into. Only read it when gae_lambda > 0,
-    the default.
+    Adjacent same-env chunk pairs, not split by episode
+    end. Near 0 means a dead trace.
+    Read it only when gae_lambda > 0, the default.
 
-    ``budget_truncated`` is NaN when the collector cannot supply it (the normal
-    case: mark_incomplete is a no-op, so no budget-cut flag exists). NaN rather
-    than 0.0, because a hard zero reads as "nothing was cut short", a claim about
-    the data rather than about us.
+    ``budget_truncated`` is NaN when unsupplied, which is
+    normal. NaN, not 0.0: zero claims nothing was cut.
     """
     n = env_id.numel()
     if n == 0:
@@ -109,21 +104,17 @@ def compute_gae_diagnostics(
     e = env_id.to(torch.long)[order]
     ends = terminated.to(torch.bool)[order][:-1] | truncated.to(torch.bool)[order][:-1]
     ret = raw_returns.float()
-    # Population std, matching the advantage normaliser. The unbiased default is NaN
-    # at a single chunk and inflates by sqrt(n/(n-1)) elsewhere; correction=0 is
-    # defined at n == 1, where clamp_min gives the same 0.0 a guard would.
+    # Population std: unbiased is NaN at n == 1.
     adv_std = advantages.float().std(correction=0)
     ret_std = ret.std(correction=0).clamp_min(1e-8)
     fields = [
         ((e[1:] == e[:-1]) & ~ends).sum().double() / max(n - 1, 1),
         adv_std,
         rms(ret).double(),
-        # A = R - V, so Var(A) <= Var(R), equal only when V is 0. 1.0 means the
-        # critic is inert; it falls toward 1 - R^2 as the critic improves.
+        # A = R - V, so Var(A) <= Var(R).
+        # 1.0 means an inert critic.
         adv_std / ret_std,
-        # Budget cut. Not chunk_truncated, which is the flag GAE reads; not
-        # truncated_chunk_frac, which counts action rows the chunk left
-        # unexecuted.
+        # Budget cut. Not chunk_truncated, not truncated_chunk_frac.
         budget_truncated.to(torch.bool).float().mean().double()
         if budget_truncated is not None
         else ret.double().new_tensor(float("nan")),
@@ -137,21 +128,20 @@ def sample_spectral_eps(
     action_dim: int,
     device: torch.device,
 ) -> torch.Tensor:
-    """MC noise matching the configured token layout.
-
-    ``[n, num_mc_samples, tokens, action_dim]``.
-    """
+    """MC noise: ``[n, M, tokens, action_dim]``."""
     shape = (n, cfg.num_mc_samples, cfg.action_horizon, action_dim)
     return sample_noise(shape, cfg, device, None)
 
 
 def build_optimizer(policy: SJFPOPolicy) -> torch.optim.Optimizer:
-    """One AdamW over actor and critic, in separate param groups (rsl-rl's
-    layout). Groups split per role so clipping does too: the critic's gradient
-    is orders of magnitude larger and one shared clip would let it own the
-    actor's step."""
+    """One AdamW, actor and critic in separate groups (rsl-rl).
+
+    Groups split per role, so clipping does too: the
+    critic's gradient is far larger, and one shared clip
+    would let it own the actor's step.
+    """
     kwargs = dataclasses.asdict(policy.config.get_optimizer_preset())
-    kwargs.pop("grad_clip_norm", None)  # AdamW preset field; clipping is per role
+    kwargs.pop("grad_clip_norm", None)  # clipping is per role
     kwargs["betas"] = policy.config.adam_betas
     if next(policy.parameters()).is_cuda:
         kwargs["fused"] = True
@@ -168,14 +158,11 @@ def compute_mc_xt(
     flatten_mc_action: torch.Tensor,
     flow_shape: tuple[int, ...],
 ) -> torch.Tensor:
-    """Interpolate noise to action to form the flow point.
-
-    Returns ``[B * M, *flow_shape]``.
-    """
+    """Interpolate noise to action. Returns ``[B * M, *flow_shape]``."""
     t = flatten_mc_timestep.expand(-1, -1, flow_shape[-1])
     noise = flatten_mc_noise.reshape(-1, *flow_shape)
     action = flatten_mc_action.reshape(-1, *flow_shape)
-    # lerp, not (1-t)*noise + t*action: same value, one kernel instead of four.
+    # lerp: same value, one kernel instead of four.
     return torch.lerp(noise, action, t)
 
 
@@ -187,13 +174,13 @@ def compute_ratio_metrics(
     action_is_pad: torch.Tensor,
     cfg: SJFPOConfig,
 ) -> dict[str, torch.Tensor]:
-    """Trust-region diagnostics, including the per-token axis split.
+    """Trust-region diagnostics, with a per-token axis split.
 
-    ``log_ratio_*`` reads the raw delta, not the clamped one, so it is never a
-    clamp artefact. ``clipfrac`` near zero means the trust region never binds.
+    ``log_ratio_*`` reads raw delta, never the clamped one.
+    ``clipfrac`` near zero means the trust region never binds.
 
-    The token axis is the chunk's action steps, split early/late. The keys say
-    ``pos`` because that is what the split is; it is not a frequency cut.
+    The token axis is action steps, split early/late.
+    ``pos`` keys: this is not a frequency cut.
     """
     log_ratio_abs = delta.abs()
     log_ratio_clip_frac = (log_ratio_abs > cfg.log_ratio_cap).float().mean()
@@ -201,7 +188,7 @@ def compute_ratio_metrics(
     ratio_token_mean = ratio_token.mean(dim=(0, 1))
     num_tokens = ratio_token_mean.numel()
     split = max(1, num_tokens // 2)
-    # One epsilon for the whole token axis, the same bound the surrogate uses.
+    # One epsilon across the token axis, as the surrogate.
     def outside(t: torch.Tensor) -> torch.Tensor:
         return ((t < 1.0 - cfg.clip_param) | (t > 1.0 + cfg.clip_param)).float().mean()
 
@@ -226,11 +213,9 @@ def compute_ratio_metrics(
         "flow_ratio_token_pos_low_outside_frac": low_outside,
         "flow_ratio_token_pos_high_outside_frac": high_outside,
         "flow_ratio_token_outside_frac": outside(ratio_token),
-        # Chunks with any never-executed action row. The mask drops those rows from
-        # the CFM target, so this bounds what it is dropping.
+        # Chunks with an unexecuted row; the mask drops it.
         "truncated_chunk_frac": action_is_pad.any(dim=1).float().mean(),
-        # Share of action rows the chunk ran: the fraction of CFM loss that
-        # survives the mask.
+        # Executed rows: CFM loss surviving the mask.
         "executed_action_step_frac": (~action_is_pad).float().mean(),
     }
 
@@ -244,9 +229,9 @@ def compute_value_metrics(
 ) -> dict[str, torch.Tensor]:
     """Critic diagnostics.
 
-    ``explained_var`` scores the member mean, which is what the value loss
-    trains; the TD backup uses ``amin``. ``explained_var_min`` is that
-    pessimistic reading, and is never higher.
+    ``explained_var`` scores the member mean, which the loss trains.
+    The backup uses ``amin``. ``explained_var_min`` is that reading,
+    and is never higher.
     """
     mean_value_pred = raw_value_pred.mean(dim=0)
     min_value_pred = raw_value_pred.amin(dim=0)
@@ -262,8 +247,7 @@ def compute_value_metrics(
         "value_huber_max": mean_value_pred.sub(raw_returns_flat).abs().max(),
         "value_pred_max": mean_value_pred.abs().max(),
         "value_target_std": raw_returns_flat.std(correction=0),
-        # Pooled over [num_critics, n], so it mixes within-member spread with
-        # between-member disagreement.
+        # Pooled over [num_critics, n]: within- and between-member spread.
         "value_pred_std": raw_value_pred.std(correction=0),
         "value_pred_std_member_mean": raw_value_pred.std(dim=1, correction=0).mean(),
         "value_pred_member_gap": (
@@ -282,12 +266,11 @@ def compute_cfm_metrics(
 ) -> dict[str, torch.Tensor]:
     """Flow-matching loss diagnostics.
 
-    ``cfm_above_clamp_frac`` matters because samples above ``cfm_clamp``
-    contribute no gradient, so a run that stays high trains the critic only.
+    ``cfm_above_clamp_frac``: clamped samples give no
+    gradient, so a stuck run trains the critic only.
 
-    With ``eps`` supplied and a spectral prior configured, also reports the
-    realised per-bin noise energy. That is how you confirm the prior that
-    actually ran is the one the config asked for, instead of trusting the flag.
+    With ``eps``, also reports realised per-bin noise energy.
+    That confirms the prior that ran, not the flag.
     """
     l_old_std = l_old.std(correction=0)
     l_new_std = l_new.std(correction=0)
@@ -304,9 +287,7 @@ def compute_cfm_metrics(
     }
     if eps is not None:
         bands = compute_noise_band_energy(eps)
-        # Scalars only: compute_info packs every metric as a 0-d tensor before
-        # one device transfer, so a per-bin vector here would fail the pack.
-        # Call compute_noise_band_energy directly to inspect the whole profile.
+        # Scalars only: compute_info packs 0-d tensors before one transfer.
         half = max(1, bands.numel() // 2)
         low = bands[:half].mean()
         high = bands[-half:].mean()
@@ -317,7 +298,7 @@ def compute_cfm_metrics(
 
 
 def unwrapped_state_dict(module: torch.nn.Module) -> dict:
-    """``state_dict`` that sees through a ``torch.compile`` wrapper.
+    """``state_dict`` seeing through ``torch.compile``.
 
     Compiled modules nest the real one under ``_orig_mod``.
     """
@@ -375,9 +356,9 @@ class SJFPOPolicy(PreTrainedPolicy):
         self.old_encoder = (
             copy.deepcopy(self.encoder).requires_grad_(False).eval()
         )
-        # Polyak target for the GAE bootstrap, following qc and TD-JEPA. Kept even
-        # when use_target_critic is False so the flag does not change the module's
-        # weight set.
+        # Polyak target for the GAE bootstrap (qc, TD-JEPA).
+        # Kept even when use_target_critic is False, so the
+        # flag does not change the module's weight set.
         self.target_critic = copy.deepcopy(self.critic).requires_grad_(False).eval()
         self._target_critic_initialised = False
         self._ema_shadow: dict[str, torch.Tensor] = {}
@@ -396,22 +377,22 @@ class SJFPOPolicy(PreTrainedPolicy):
 
 
     def train(self, mode: bool = True):
-        """Set the module mode, frozen snapshot stays in eval. Chains."""
+        """Set the module mode; frozen snapshot stays in eval."""
         super().train(mode)
         self.old_actor.eval()
         self.old_encoder.eval()
         return self
 
     def reset(self):
-        """Drop the cached obs and action buffers between episodes."""
+        """Drop the cached obs and action buffers."""
         self._frame_buffer.clear()
         self._action_buffer.clear()
 
     @torch.inference_mode()
     def update_observation_stats(self, observations: torch.Tensor) -> None:
-        """Update live running stats from raw post-step obs.
+        """Update live stats from raw post-step observations.
 
-        ``ValueError`` if the shape is not ``[N, obs_dim]``.
+        ``ValueError`` unless shape is ``[N, obs_dim]``.
         """
         if (
             observations.ndim != 2
@@ -430,7 +411,7 @@ class SJFPOPolicy(PreTrainedPolicy):
     ) -> None:
         """Set the env action bounds the postprocessor uses.
 
-        ``ValueError`` if shapes disagree or ``high > low`` fails.
+        ``ValueError`` on shape mismatch or ``high < low``.
         """
         storage_dtype = resolve_storage_dtype(self.action_low.device)
         low_t = to_tensor_1d(
@@ -455,10 +436,10 @@ class SJFPOPolicy(PreTrainedPolicy):
         self.postprocessor.set_action_bounds(self.action_low, self.action_high)
 
     def snapshot_behavior_policy(self) -> None:
-        """Refresh the frozen pi_old snapshot in place.
+        """Refresh the frozen pi_old snapshot, copying in place.
 
-        Copies weights into the existing modules instead of
-        ``copy.deepcopy``-ing the live ones over them.
+        Copies into the existing modules rather than ``copy.deepcopy``-ing
+        the live ones over them.
         """
         self.old_actor.load_state_dict(unwrapped_state_dict(self.actor))
         self.old_encoder.load_state_dict(unwrapped_state_dict(self.encoder))
@@ -470,10 +451,10 @@ class SJFPOPolicy(PreTrainedPolicy):
 
     @torch.inference_mode()
     def update_ema(self, global_step: int) -> None:
-        """Update the FPO++ actor EMA after an optimizer step.
+        """Update the actor EMA after an optimizer step.
 
-        Seeded on the first call, hard-copied at warmup end. Only warmed weights
-        enter the average.
+        Seeded on first call, hard-copied at warmup end.
+        Only warmed weights enter the average.
         """
         decay = self.config.ema_decay
         if decay <= 0:
@@ -489,8 +470,9 @@ class SJFPOPolicy(PreTrainedPolicy):
                 name: param.detach().clone() for name, param in current.items()
             }
         if not self._ema_initialised and global_step >= self.config.ema_warmup_steps:
-            # The _ema_initialised gate makes the hard copy one-shot. global_step
-            # moves by a whole rollout, so an == ema_warmup_steps test never fires.
+            # The gate makes the hard copy one-shot.
+            # global_step moves by a whole rollout, so an ==
+            # ema_warmup_steps test never fires.
             names = list(self._ema_shadow)
             torch._foreach_copy_(
                 [self._ema_shadow[name] for name in names],
@@ -509,10 +491,10 @@ class SJFPOPolicy(PreTrainedPolicy):
 
     @torch.no_grad()
     def update_target_critic(self) -> None:
-        """Polyak the target critic toward the live one. First call hard-copies.
+        """Polyak the target critic. First call hard-copies.
 
-        ``critic_ema_decay`` is the copy *rate*, so the teacher keeps
-        ``1 - decay`` of itself per optimizer step; qc and TD-JEPA use 0.005.
+        ``critic_ema_decay`` is the copy *rate*: the teacher
+        keeps ``1 - decay`` per step; qc uses 0.005.
         """
         if not self._target_critic_initialised:
             self.target_critic.load_state_dict(unwrapped_state_dict(self.critic))
@@ -524,8 +506,9 @@ class SJFPOPolicy(PreTrainedPolicy):
         torch._foreach_add_(
             target_params, [p.detach() for p in self.critic.parameters()], alpha=decay
         )
-        # The critic registers no buffers today, so this is usually empty, and foreach
-        # rejects an empty list. Kept so a future buffer follows the teacher.
+        # No buffers today, so this is usually empty, and
+        # foreach rejects an empty list. Kept so a future
+        # buffer follows the teacher.
         target_buffers = list(self.target_critic.buffers())
         if target_buffers:
             torch._foreach_copy_(target_buffers, list(self.critic.buffers()))
@@ -540,12 +523,11 @@ class SJFPOPolicy(PreTrainedPolicy):
 
     @torch.no_grad()
     def swap_in_ema(self, global_step: int) -> dict[str, torch.Tensor]:
-        """Copy the EMA shadow into the actor, returning the live weights for the
-        caller to hand back to :meth:`swap_out_ema`. No-op returning ``{}``
-        until the shadow is warm.
+        """Copy the EMA shadow in, returning displaced live weights.
 
-        Takes ``global_step``, not ``step_count``: the shadow warms on the
-        env-step clock.
+        The caller hands them back to :meth:`swap_out_ema`. No-op
+        returning ``{}`` until the shadow is warm. Takes ``global_step``,
+        not ``step_count``: the shadow warms on the env-step clock.
         """
         if not self.ema_ready(global_step):
             return {}
@@ -560,7 +542,7 @@ class SJFPOPolicy(PreTrainedPolicy):
 
     @torch.no_grad()
     def swap_out_ema(self, displaced: dict[str, torch.Tensor]) -> None:
-        """Put the weights :meth:`swap_in_ema` displaced back into the actor."""
+        """Put back the weights :meth:`swap_in_ema` displaced."""
         if not displaced:
             return
         params = dict(self.actor.named_parameters())
@@ -570,7 +552,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         )
 
     def ema_state_dict(self) -> dict:
-        """Export the EMA shadow. Returns decay, init flag, shadow params."""
+        """Export the EMA shadow: decay, init flag, params."""
         return {
             "decay": self.config.ema_decay,
             "initialised": self._ema_initialised,
@@ -578,7 +560,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         }
 
     def load_ema_state_dict(self, state: dict) -> None:
-        """Restore an EMA shadow from :meth:`ema_state_dict`."""
+        """Restore a shadow from :meth:`ema_state_dict`."""
         self._ema_shadow = {
             name: value.detach().clone()
             for name, value in state["shadow_params"].items()
@@ -588,8 +570,8 @@ class SJFPOPolicy(PreTrainedPolicy):
     def get_actor_optim_params(self) -> dict:
         """Actor optimizer param groups.
 
-        adaLN modulation and the output layer skip weight decay. The conditioner
-        shares the policy lr. Returns an optimizer param-group dict.
+        adaLN modulation and the output layer skip weight decay.
+        The conditioner shares the policy lr.
         """
         decay, no_decay = [], []
         for name, p in self.actor.named_parameters():
@@ -607,8 +589,11 @@ class SJFPOPolicy(PreTrainedPolicy):
         }
 
     def get_critic_optim_params(self) -> dict:
-        """Critic param groups at the critic lr, no weight decay. Decay pulls
-        the value head toward zero, which reads as a drifting value scale."""
+        """Critic groups at critic lr, no weight decay.
+
+        Decay pulls the value head toward zero, which reads
+        as a drifting value scale.
+        """
         return {
             "params": [
                 {
@@ -620,8 +605,11 @@ class SJFPOPolicy(PreTrainedPolicy):
         }
 
     def get_optim_params(self) -> dict:
-        """One group over all trainable weights. Base-class requirement only;
-        training uses :func:`build_optimizer` so clipping stays per-role."""
+        """One group over all trainable weights.
+
+        Base-class requirement only; training uses :func:`build_optimizer`
+        so clipping stays per-role.
+        """
         params = [p for p in self.parameters() if p.requires_grad]
         return {
             "params": [
@@ -638,8 +626,8 @@ class SJFPOPolicy(PreTrainedPolicy):
     def compute_target_velocity(a: torch.Tensor, eps: torch.Tensor) -> torch.Tensor:
         """Flow-matching target velocity.
 
-        ``v* = a - eps``, broadcast over the MC draws: ``[B, *flow]`` against
-        ``[B, m, *flow]`` -> ``[B, m, *flow]``.
+        ``v* = a - eps``, broadcast over MC draws:
+        ``[B, *flow]`` against ``[B, m, *flow]``.
         """
         return a.unsqueeze(1) - eps
 
@@ -651,16 +639,19 @@ class SJFPOPolicy(PreTrainedPolicy):
         *,
         old: bool = False,
     ) -> torch.Tensor:
-        """Actor on a flow point. ``condition`` arrives already broadcast over
-        the MC draws, so frozen and live share one conditioning pass."""
+        """Actor on a flow point.
+
+        ``condition`` arrives already broadcast over the MC draws,
+        so frozen and live share one conditioning pass.
+        """
         net = self.old_actor if old else self.actor
         return net(x_t, tau, condition)
 
 
     def standardize_obs_tensor(self, states: torch.Tensor) -> torch.Tensor:
-        """Coerce obs to the ``[B, T, obs]`` layout the policy wants.
+        """Coerce obs to ``[B, T, obs]``, in storage dtype.
 
-        Returns a storage-dtype tensor. ``ValueError`` if rank is not 1, 2, or 3.
+        ``ValueError`` if rank is not 1, 2, or 3.
         """
         states = to_tensor(states)
         states = states.to(dtype=resolve_storage_dtype(states.device))
@@ -679,10 +670,13 @@ class SJFPOPolicy(PreTrainedPolicy):
     def predict_action_chunk(
         self, batch: dict[str, torch.Tensor], **kwargs
     ) -> torch.Tensor:
-        """Predict ``[B, H, action_dim]``. ``zero_sampling`` integrates from
-        ``eps=0`` over ``num_inference_steps``; else from sampled noise over
-        ``num_euler_steps``. Perturbation runs before postprocessing, matching
-        FPO++, so the noise lands in normalised action space."""
+        """Predict ``[B, H, action_dim]``.
+
+        ``zero_sampling`` starts at ``eps=0`` over ``num_inference_steps``;
+        else sampled noise over ``num_euler_steps``. Perturbation runs
+        before postprocessing, matching FPO++, so the noise lands in
+        normalised action space.
+        """
         zero_sampling = kwargs.get("zero_sampling", True)
         cfg = self.config
         device = next(self.actor.parameters()).device
@@ -720,9 +714,12 @@ class SJFPOPolicy(PreTrainedPolicy):
         return self.postprocessor({ACTION: scaled})[ACTION]
 
     def select_action(self, batch: dict[str, torch.Tensor], **kwargs) -> torch.Tensor:
-        """Next action, receding through a cached chunk. ``batch`` holds
-        ``observation.state``: ``[obs]`` one frame or ``[T, obs]`` a full
-        window. Extra kwargs go to :meth:`predict_action_chunk`."""
+        """Next action, receding through a cached chunk.
+
+        ``batch`` holds ``observation.state``: ``[obs]`` one
+        frame or ``[T, obs]`` a window. Kwargs pass to
+        :meth:`predict_action_chunk`.
+        """
         obs = to_tensor(batch[OBS_STATE])
         obs = obs.to(dtype=resolve_storage_dtype(obs.device))
         if obs.dim() == 1:
@@ -747,17 +744,19 @@ class SJFPOPolicy(PreTrainedPolicy):
 
 
     def exec_frac(self, executed_steps: torch.Tensor) -> torch.Tensor:
-        """Normalise an executed-step count to ``[0, 1]`` for the critic input.
+        """Normalise an executed-step count to ``[0, 1]``.
 
-        Always returns a value even when the critic does not consume it, so a
-        caller never has to branch on the flag to build the right tensor.
+        Always returns even when unused, so a caller never
+        branches on the flag.
         """
         return executed_steps.to(torch.float32) / float(self.config.action_horizon)
 
     @staticmethod
     def get_token_count_for_cfm_loss(cfg: SJFPOConfig) -> int:
-        """Tokens the CFM loss reduces over: the chunk's action steps, so the
-        width the ratio compares must match the stored per-token losses."""
+        """Tokens the CFM loss reduces over: the action steps.
+
+        The width must match the stored per-token losses.
+        """
         return cfg.action_horizon
 
     def prepare_cfm_loss_inputs(
@@ -765,9 +764,11 @@ class SJFPOPolicy(PreTrainedPolicy):
         action_is_pad: torch.Tensor,
         *velocities: torch.Tensor,
     ) -> tuple[torch.Tensor | None, tuple[torch.Tensor, ...]]:
-        """Execution mask plus the velocities that mask indexes. Pass-through:
-        the velocities are already action steps, so the mask applies directly.
-        Both ``l_old`` and ``l_new`` must route through it to stay masked alike.
+        """Execution mask plus the velocities it indexes.
+
+        Pass-through: the velocities are already action steps, so
+        the mask applies directly. Both ``l_old`` and ``l_new``
+        must route through it to stay masked alike.
         """
         return action_is_pad, velocities
 
@@ -779,9 +780,10 @@ class SJFPOPolicy(PreTrainedPolicy):
         eps: torch.Tensor,
         action_is_pad: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Frozen behavior policy's CFM loss: the ratio's ``l_old``. Both
-        reductions masked exactly like the live losses they are compared
-        against, so the ratio never mixes means over different positions.
+        """Frozen policy's CFM loss: the ratio's ``l_old``.
+
+        Both reductions masked exactly like the live losses, so
+        the ratio never mixes means over different positions.
         """
         cfg = self.config
         flatten_timestep, flatten_mc_noise, flatten_mc_action, flow_shape, num_mc = (
@@ -814,15 +816,15 @@ class SJFPOPolicy(PreTrainedPolicy):
         action_high: float = 1.0,
         noisy: bool = True,
     ) -> dict[str, torch.Tensor]:
-        """Roll out open-loop chunks, build a training batch. See
-        :mod:`spectral_joint_policy.gae`.
+        """Roll out open-loop chunks, build a training batch.
 
-        A chunk can execute one step before terminating, so the count can hit one
-        per requested step.
+        See :mod:`spectral_joint_policy.gae`. A chunk can run
+        one step then terminate, so counts can hit one
 
-        The batch carries one raw post-step frame per executed step, separate
-        from the overlapping obs windows so the normalizer does not double count,
-        plus per-chunk/MC CFM draws the policy loss reuses for old and new.
+        The batch carries one raw post-step frame per executed
+        step, separate from the overlapping obs windows so the
+        normalizer does not double count, plus per-chunk/MC CFM
+        draws the policy loss reuses for old and new.
         """
         if total_steps <= 0:
             raise ValueError(f"total_steps={total_steps} must be positive")
@@ -860,8 +862,8 @@ class SJFPOPolicy(PreTrainedPolicy):
         )
         if (
             self._rollout_buffer is None
-            # [:6] drops pin_memory, a device property not part of this key; the
-            # full tuple would never match.
+            # [:6] drops pin_memory, a device property. The full
+            # tuple would never match.
             or self._rollout_buffer.capacity_key()[:6] != buffer_key
         ):
             self._rollout_buffer = RolloutBuffer(
@@ -930,25 +932,23 @@ class SJFPOPolicy(PreTrainedPolicy):
         actions = active["chunk_actions"]
         states = active["chunk_state"]
 
-        # The backup reads two obs windows per chunk (start and end state), so the
-        # preprocessor sees 2 * n_chunks windows, not 2 * n_steps. The normalizer
-        # updates separately from raw frames via normalizer_observations.
-        # The bootstrap a' is drawn fresh at each chunk's end state, which is QC's
-        # target; terminated rows keep the chunk itself as a filler.
+        # Two obs windows per chunk, start and end: the
+        # preprocessor sees 2 * n_chunks, not 2 * n_steps.
+        # The normalizer updates from normalizer_observations.
+        # Bootstrap a' is drawn fresh at each chunk's end
+        # state, QC's target; terminated rows keep the chunk.
         with torch.inference_mode():
             next_states = active["chunk_next_state"]
-            # Seeded from the chunk itself so every row is a real action tensor: an
-            # uninitialised row would be garbage, and the backup multiplies it
-            # by ~terminated, and 0 * NaN is NaN.
+            # Seeded from the chunk, so no row is garbage.
+            # Backup scales by ~terminated: 0 * NaN is NaN.
             boot_actions = actions.clone()
-            # Only a live chunk needs a real proposal: a terminated chunk's
-            # bootstrap is zeroed, so its action never reaches the backup.
+            # Only a live chunk needs a proposal: a terminated
+            # chunk's bootstrap is zeroed and never reaches the backup.
             needs_proposal = ~active["chunk_terminated"]
             if bool(needs_proposal.any()):
-                # predict_action_chunk returns actions in env bounds, while
-                # chunk_actions holds them scaled to [-1, 1]. The critic is fed
-                # the scaled form, so the proposal has to go through the same
-                # affine the collector applies.
+                # predict_action_chunk returns env bounds; chunk_actions are
+                # scaled to [-1, 1]. The critic reads the scaled
+                # form, so the proposal takes the same affine.
                 proposed = self.predict_action_chunk(
                     {OBS_STATE: to_device_async(next_states[needs_proposal], device)},
                     zero_sampling=False,
@@ -963,15 +963,15 @@ class SJFPOPolicy(PreTrainedPolicy):
             )[OBS_STATE]
             normalised_states = all_chunk_normalised_states[:n_chunks]
             normalised_next_states = all_chunk_normalised_states[n_chunks:]
-            # The bootstrap chunk is a full-horizon proposal that will only ever execute
-            # for n_action_steps, so its fraction is n_action_steps/H, NOT H/H --
-            # passing H/H reintroduces the mismatch the feature exists to remove.
+            # The bootstrap chunk only ever executes n_action_steps, so its
+            # fraction is n_action_steps/H, NOT H/H. Passing H/H
+            # reintroduces the mismatch this feature removes.
             exec_frac = self.exec_frac(lengths)
             boot_exec_frac = self.exec_frac(
                 torch.full_like(lengths, cfg.n_action_steps)
             )
-            # amin across the num_critics members: backup only, never inside the
-            # loss. The value loss averages the same members.
+            # amin across members: backup only, never in the loss.
+            # The value loss averages the same members.
             with autocast_context(device):
                 chunk_q = self.critic(
                     normalised_states, actions, exec_frac
@@ -984,9 +984,9 @@ class SJFPOPolicy(PreTrainedPolicy):
             else:
                 boot_q = chunk_q
 
-        # One chunk is one macro-transition: sum its rewards, discount gamma ** h.
-        # One space throughout, as rsl-rl: Q predicts raw returns and the target is
-        # the raw return, so Q is the true expected return. No return normalizer.
+        # One chunk is one macro-transition: sum rewards, discount gamma**h.
+        # rsl-rl space: Q predicts raw returns, target is the
+        # raw return, so Q is the true expected return.
         raw_advantages, raw_returns = compute_chunk_advantages(
             all_rewards,
             chunk_q,
@@ -996,10 +996,10 @@ class SJFPOPolicy(PreTrainedPolicy):
             chunk_terminated=active["chunk_terminated"],
             chunk_size=cfg.action_horizon,
             gamma=cfg.gamma,
-            # Only read when gae_lambda > 0; the QC path ignores both.
-            # chunk_truncated is the ENV's time limit, not the rollout's step
-            # budget -- the collector keeps them separate so a live episode is
-            # never read as finished.
+            # Read only when gae_lambda > 0; QC ignores both.
+            # chunk_truncated is the ENV limit, not the step
+            # budget: separate, so a live episode is never read
+            # as finished.
             chunk_truncated=active["chunk_truncated"],
             chunk_env_id=active["chunk_env_id"],
             gae_lambda=cfg.gae_lambda,
@@ -1022,10 +1022,9 @@ class SJFPOPolicy(PreTrainedPolicy):
         )
         raw_advantages = raw_advantages.to(storage_dtype)
         normalised_advantages = normalised_advantages.to(storage_dtype)
-        # raw_returns stays fp32: the critic's regression target and the only stored
-        # tensor that is not O(1) (returns_rms runs to 35), so bf16's 8 mantissa
-        # bits would lose real precision. chunk_state and chunk_actions are already
-        # fp32 anyway.
+        # raw_returns stays fp32: critic target, and the only
+        # stored tensor not O(1) (returns_rms runs to 35), where
+        # bf16's 8 mantissa bits lose real precision.
 
         action_is_pad = torch.arange(cfg.action_horizon, device=device).unsqueeze(
             0
@@ -1060,9 +1059,9 @@ class SJFPOPolicy(PreTrainedPolicy):
             "normalised_advantages": normalised_advantages,
             "raw_returns": raw_returns,
             "normalizer_observations": active["step_frames"].detach(),
-            # Diagnostics: how far the live critic moved from the bootstrap value
-            # the targets were built with. With a target critic that gap is the
-            # price of the slow teacher; without one it is the target's drift.
+            # Critic drift from the bootstrap value the targets used.
+            # Target critic: the price of the slow teacher.
+            # Without one: the target's own drift.
             "boot_observations": all_chunk_normalised_states[n_chunks:].to(storage_dtype),
             "boot_actions": boot_actions.to(storage_dtype),
             "boot_values_start": boot_q.unsqueeze(1),
@@ -1082,15 +1081,15 @@ class SJFPOPolicy(PreTrainedPolicy):
         compute_info: bool = True,
         check_finite: bool = True,
     ) -> tuple[torch.Tensor, dict | None]:
-        """ASPO policy and Huber value losses for one minibatch -> ``(loss, info)``.
+        """ASPO policy and Huber value losses -> ``(loss, info)``.
 
-        One chunk is one macro-action. ``action_is_pad`` masks unrun steps out
-        of the CFM loss, so a short chunk is never fitted on them. CFM losses run
-        under target velocities in fp32; ``ratio_granularity`` picks the trust
-        region: ``per_chunk`` is FPO Eq 9, ``per_action`` FPO++ Eq 10, and
-        ``per_sample`` clips per token.
+        One chunk is one macro-action. ``action_is_pad`` masks
+        unrun steps. CFM losses run fp32 under target velocity.
+        ``ratio_granularity`` picks the trust region: ``per_chunk``
+        is FPO Eq 9, ``per_action`` FPO++ Eq 10, ``per_sample``
+        clips per token.
 
-        ``compute_info=False`` skips the reductions and returns ``info=None``.
+        ``compute_info=False`` skips the reductions, returns ``info=None``.
         """
         cfg = self.config
         device = next(self.parameters()).device
@@ -1203,9 +1202,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         cond_stats = None
         if compute_info:
             with torch.inference_mode(), autocast_context(device):
-                # Keep the rank probe's matrix square-ish: chunk rows x
-                # action_horizon rows against a hidden_dim-wide layer, so the
-                # sample count tracks the token width instead of assuming it.
+                # Rank probe rows scale with token width.
                 probe = max(1, cfg.hidden_dim // cfg.action_horizon)
                 _, cond_stats = self.actor(
                     x_t_flat[:probe],
@@ -1231,14 +1228,14 @@ class SJFPOPolicy(PreTrainedPolicy):
             self.cfm_above_clamp_frac = (l_new > cfg.cfm_clamp).float().mean().detach()
 
             if cfg.ratio_granularity == "per_chunk":
-                # FPO Eq 9: mean the MC losses, THEN exponentiate. One ratio per
-                # chunk, so all its (tau, eps) pairs clip together or not at all.
+                # FPO Eq 9: mean MC losses, THEN exponentiate.
+                # One ratio per chunk, so all pairs clip together.
                 l_old_c, l_new_c = l_old.mean(dim=1), l_new.mean(dim=1)
                 delta = l_old_c - l_new_c
                 ratio = compute_policy_ratio(l_old_c, l_new_c, cfg, advantage=adv)
                 policy_per_chunk = -compute_aspo_surrogate(ratio, adv, cfg)
             elif cfg.ratio_granularity == "per_sample":
-                # One ratio per token: finer than either paper's trust region.
+                # One ratio per token: finer than either paper.
                 delta = l_old - l_new
                 policy_per_chunk = -compute_aspo_surrogate(
                     ratio_token, adv_mc.unsqueeze(-1), cfg
@@ -1249,8 +1246,7 @@ class SJFPOPolicy(PreTrainedPolicy):
                 policy_per_chunk = -compute_aspo_surrogate(ratio, adv_mc, cfg).mean(dim=1)
 
         with autocast_context(device):
-            # action_is_pad marks what was NOT executed; the executed count is its
-            # complement over the horizon.
+            # action_is_pad marks unexecuted steps; count the complement.
             chunk_exec_frac = self.exec_frac((~action_is_pad).sum(dim=-1))
             raw_value_pred = self.critic(states, actions, chunk_exec_frac).float()  # [num_critics, n]
         raw_returns_flat = raw_returns.reshape(-1)
@@ -1260,9 +1256,9 @@ class SJFPOPolicy(PreTrainedPolicy):
                 f"{tuple(raw_value_pred.shape)}, raw_returns="
                 f"{tuple(raw_returns_flat.shape)}"
             )
-        # rsl-rl's value loss, with squared error replaced by Huber: quadratic inside
-        # delta, linear outside, so one large-residual chunk cannot dominate the
-        # gradient. The delta tracks the batch's own return RMS.
+        # rsl-rl's value loss, Huber: quadratic inside delta, linear
+        # outside, so one large chunk cannot dominate the gradient.
+        # The delta tracks the batch's own return RMS.
         returns_rms = rms(raw_returns_flat)
         huber_delta = cfg.value_huber_delta * returns_rms.clamp_min(1e-6)
         value_loss_per_chunk = compute_value_huber_loss(
@@ -1326,11 +1322,10 @@ class SJFPOPolicy(PreTrainedPolicy):
         cfg,
         eps: torch.Tensor | None = None,
     ) -> dict[str, float]:
-        """Merge the three metric groups and pack them into one device transfer.
+        """Merge the metric groups into one device transfer.
 
-        ``float()`` on a device tensor is a blocking sync, so the whole
-        diagnostic pass costs one. Plain floats are accepted alongside tensors:
-        NaN marks a metric that does not apply on this run.
+        One sync, not ~20. Plain floats accepted alongside
+        tensors; NaN marks a metric that does not apply.
         """
         scalars = {
             **compute_ratio_metrics(
