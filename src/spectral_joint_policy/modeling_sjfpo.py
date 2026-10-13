@@ -1016,9 +1016,6 @@ class SJFPOPolicy(PreTrainedPolicy):
             active["chunk_truncated"][:n_chunks],
             raw_advantages,
             raw_returns,
-            active.get("chunk_budget_truncated")[:n_chunks]
-            if "chunk_budget_truncated" in active
-            else None,
         )
         raw_advantages = raw_advantages.to(storage_dtype)
         normalised_advantages = normalised_advantages.to(storage_dtype)

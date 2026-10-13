@@ -56,6 +56,11 @@ _NOTES: dict[str, dict[str, str]] = {
         "action_perturb_std": "0.0: FPO perturbs the CFM inputs, not the "
         "executed action. SJFPO's default 0.02 is a exploration aid, not FPO.",
         "num_mc_samples": "8: FPO's default N_mc (Alg. 1).",
+        "num_euler_steps": "4: matches the live default, pinned so the arms are "
+        "matched on NFE by construction rather than by coincidence. The papers "
+        "used 10, so this is a deliberate departure from their inference budget, "
+        "not a reproduction of it.",
+        "num_inference_steps": "4: same rationale, on the eval path.",
     },
     "fpo++": {
         "ratio_granularity": "per_action == FPO++ Eq. 10 (one ratio per (tau, eps) "
@@ -70,6 +75,11 @@ _NOTES: dict[str, dict[str, str]] = {
         "resolved the open question left by the 0.0 default -- with the default "
         "at 0.95 the baseline inherits the paper's value, but it is pinned so a "
         "future default change cannot silently move it again.",
+        "num_euler_steps": "4: matches the live default, pinned so the arms are "
+        "matched on NFE by construction rather than by coincidence. The papers "
+        "used 10, so this is a deliberate departure from their inference budget, "
+        "not a reproduction of it.",
+        "num_inference_steps": "4: same rationale, on the eval path.",
     },
     "dppo": {
         "ratio_granularity": "unused: DPPO replaces the FPO surrogate entirely "
@@ -101,6 +111,8 @@ _OVERRIDES: dict[str, dict[str, Any]] = {
         "timestep_sampling_mode": "uniform",
         "action_perturb_std": 0.0,
         "num_mc_samples": 8,
+        "num_euler_steps": 4,
+        "num_inference_steps": 4,
     },
     # ---- FPO++: Yi et al., arXiv:2602.02481 ------------------------------
     # Pinned explicitly rather than left empty. These four fields are what makes
@@ -112,6 +124,8 @@ _OVERRIDES: dict[str, dict[str, Any]] = {
         "cfm_loss_reduction": "sum",
         "num_mc_samples": 8,
         "gae_lambda": 0.95,
+        "num_euler_steps": 4,
+        "num_inference_steps": 4,
     },
     # ---- DPPO: Ren et al., arXiv:2409.00588 ------------------------------
     # Needs denoising_mdp.py; these are the rollout-side settings only.
