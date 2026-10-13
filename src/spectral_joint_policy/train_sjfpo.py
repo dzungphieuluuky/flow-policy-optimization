@@ -39,6 +39,23 @@ from spectral_joint_policy.tracking import build_tracker, compute_eval_summary_m
 # above its max, so the policy stops learning while the critic keeps training.
 ABOVE_CLAMP_ABORT_UPDATES = 5
 
+# GAE diagnostic name -> logged name. Deliberately not a uniform prefix:
+# return_rms is logged as returns_rms.
+_GAE_DIAG_LOG_KEYS = {
+    "linked_frac": "gae_linked_frac",
+    "advantage_std": "gae_advantage_std",
+    "return_rms": "returns_rms",
+    "advantage_std_fraction": "advantage_std_fraction",
+    "budget_truncated_chunk_frac": "budget_truncated_chunk_frac",
+}
+
+# Always present in compute_rollout_diagnostics' output.
+_ROLLOUT_ABS_KEYS = (
+    "action_abs_mean",
+    "action_abs_mean_executed",
+    "action_abs_max_executed",
+)
+
 
 def generate_mini_batch_indices(
     n: int,
@@ -672,25 +689,17 @@ def train_sjfpo_run(
                     data["train/rollout_seam_jerk"] = rollout_seam_jerk
                 if "chunk_clip_counts" in rollout:
                     data["train/chunk_clip_counts"] = rollout["chunk_clip_counts"]
-                data["train/action_abs_mean"] = rollout["action_abs_mean"]
-                data["train/action_abs_mean_executed"] = rollout[
-                    "action_abs_mean_executed"
-                ]
-                data["train/action_abs_max_executed"] = rollout[
-                    "action_abs_max_executed"
-                ]
+                for key in _ROLLOUT_ABS_KEYS:
+                    data[f"train/{key}"] = rollout[key]
                 data.update({f"train/{k}": v for k, v in clip_metrics.items()})
                 gae_diag = batch.get("gae_diagnostics")
                 if gae_diag:
-                    data["train/gae_linked_frac"] = gae_diag["linked_frac"]
-                    data["train/gae_advantage_std"] = gae_diag["advantage_std"]
-                    data["train/returns_rms"] = gae_diag["return_rms"]
-                    data["train/advantage_std_fraction"] = gae_diag[
-                        "advantage_std_fraction"
-                    ]
-                    data["train/budget_truncated_chunk_frac"] = gae_diag[
-                        "budget_truncated_chunk_frac"
-                    ]
+                    data.update(
+                        {
+                            f"train/{log}": gae_diag[src]
+                            for src, log in _GAE_DIAG_LOG_KEYS.items()
+                        }
+                    )
                 data["train/total_loss"] = (
                     info["policy_loss"] + cfg.value_loss_coef * info["value_loss"]
                 )
