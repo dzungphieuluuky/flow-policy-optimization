@@ -1,8 +1,10 @@
 """Single home for every SJFPO hyperparameter (LeRobot ``PreTrainedConfig``)."""
 
 from __future__ import annotations
-# Spectral profile: noise and proposed per-band trust region use the same 1/f^beta decay
-# (pink-noise / JPEG-quantization / wavelet-threshold principle).
+# The spectral idea: give the flow's base sample a 1/f^beta profile instead of
+# white noise (pink-noise / JPEG-quantization / wavelet-threshold principle).
+# Shipped as noise_scaling_mode=freq_weighted_time. The companion idea -- a
+# per-band trust region sharing that profile -- is NOT implemented.
 
 
 from dataclasses import dataclass
@@ -46,11 +48,13 @@ class SJFPOConfig(PreTrainedConfig):
     min_timestep: float = 0.005
     max_timestep: float = 0.995
     timestep_sampling_mode: str = "fpo_beta"
+    # Marginal of the base sample only. Its spectral structure is a separate
+    # axis (noise_scaling_mode), so the two are independent knobs.
     noise_sampling_mode: str = "normal"
-    # --- Spectral / frequency-domain settings ---
-    # Noise scaling: white (uniform energy) or freq_weighted (1/f^beta, needs DCT).
-    # DCT: orthonormal DCT-II analysis for spectral energy/collapse diagnostics.
-    noise_sampling_mode: str = "normal"
+    # Spectral structure of the base sample, applied on the action-step grid:
+    # white (flat), or freq_weighted_time (1/f^beta). No DCT is involved --
+    # the colouring is an rfft gain on the step axis, so there is no
+    # coefficient basis to weight.
     noise_scaling_mode: str = "white"
     noise_scaling_beta: float = 1.0
     timestep_inverse_cdf_beta: float = 1.0
