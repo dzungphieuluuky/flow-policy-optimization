@@ -41,9 +41,9 @@ clip_param: 0.05
 trust_region_mode: 'aspo'
 ratio_granularity: 'per_action'
 cfm_loss_reduction: 'mean'
-cfm_clamp: 200.0
+cfm_clamp: 20.0
 cfm_loss_clamp_negative_advantages: True
-cfm_loss_clamp_negative_advantages_max: 200.0
+cfm_loss_clamp_negative_advantages_max: 20.0
 log_ratio_cap: 10.0
 normalize_advantage: True
 

@@ -407,6 +407,38 @@ def test_removed_config_fields_are_gone():
 # --- the ratio path is untouched --------------------------------------------
 
 
+def test_loss_clamps_match_fpops_values():
+    """Both are 20 in rl_cfg.py. Moving one alone would strand the other."""
+    cfg = SJFPOConfig()
+    assert cfg.cfm_clamp == 20.0
+    assert cfg.cfm_loss_clamp_negative_advantages_max == 20.0
+
+
+def test_the_negative_advantage_clamp_is_not_dead_at_the_default():
+    """The two must stay equal, or the tighter one silently owns both signs."""
+    cfg = SJFPOConfig()
+    assert cfg.cfm_loss_clamp_negative_advantages_max == cfg.cfm_clamp
+
+
+def test_clamp_binds_only_far_outside_the_observed_loss_scale():
+    """Guard against tightening past what the trust region actually sees.
+
+    Measured on Pendulum over 8 updates, l_new peaks near 1.9 and averages
+    ~0.63, so 20 is ~10x headroom. If the reduction changes and the scale
+    moves an order of magnitude, this should be re-examined rather than
+    inherited.
+    """
+    torch.manual_seed(0)
+    cfg = SJFPOConfig()
+    # v_star ~ a - eps with a in [-1,1], eps ~ N(0,1); v_hat ~ 0 at init.
+    v_star = torch.randn(512, 8, cfg.action_horizon, 1) * 1.4
+    v_hat = torch.zeros_like(v_star)
+    l = compute_cfm_loss(v_hat, v_star, cfg, "sample")
+    assert float(l.max()) < cfg.cfm_clamp, "clamp would bind on init-scale losses"
+    # A genuine runaway still has to hit it, or the guard is decorative.
+    assert float((l * 5000).max()) > cfg.cfm_clamp
+
+
 def test_ratio_still_sees_both_losses_when_clipped():
     l_old = torch.tensor([[5.0, 7.0]])
     l_new = torch.tensor([[3.0, 4.0]])

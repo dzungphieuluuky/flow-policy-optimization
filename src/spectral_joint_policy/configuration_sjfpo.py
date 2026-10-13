@@ -78,9 +78,9 @@ class SJFPOConfig(PreTrainedConfig):
     # and therefore its effective clip width -- scales with its executed length.
     # Both baselines pin "sum"; see baselines.py.
     cfm_loss_reduction: str = "mean"
-    cfm_clamp: float = 200.0
+    cfm_clamp: float = 20.0
     cfm_loss_clamp_negative_advantages: bool = True
-    cfm_loss_clamp_negative_advantages_max: float = 200.0
+    cfm_loss_clamp_negative_advantages_max: float = 20.0
     log_ratio_cap: float = 10.0
 
     num_critics: int = 2
