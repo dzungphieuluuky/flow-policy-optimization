@@ -34,6 +34,7 @@ from spectral_joint_policy.collector import (
 from spectral_joint_policy.fpo_core import (
     compute_aspo_surrogate,
     compute_cfm_loss,
+    clip_transported,
     compute_noise_band_energy,
     compute_policy_ratio,
     run_monte_carlo_sampling,
@@ -136,12 +137,14 @@ def sample_spectral_eps(
 def build_optimizer(policy: SJFPOPolicy) -> torch.optim.Optimizer:
     """One AdamW, actor and critic in separate groups (rsl-rl).
 
-    Groups split per role, so clipping does too: the
-    critic's gradient is far larger, and one shared clip
-    would let it own the actor's step.
+    Groups split per role so each keeps its own learning rate and warmup,
+    but there is a single optimizer and the clip is joint over both:
+    ``clip_grad_norm_(optimizer.param_groups)``. FPO++ (fpo.py) does the
+    same -- one optimizer, one ``max_grad_norm`` over every parameter.
     """
+    cfg = policy.config
     kwargs = dataclasses.asdict(policy.config.get_optimizer_preset())
-    kwargs.pop("grad_clip_norm", None)  # clipping is per role
+    kwargs.pop("grad_clip_norm", None)  # clipping is joint, applied by the caller
     kwargs["betas"] = policy.config.adam_betas
     if next(policy.parameters()).is_cuda:
         kwargs["fused"] = True
@@ -149,7 +152,18 @@ def build_optimizer(policy: SJFPOPolicy) -> torch.optim.Optimizer:
         *policy.get_actor_optim_params()["params"],
         *policy.get_critic_optim_params()["params"],
     ]
-    return torch.optim.AdamW(groups, **kwargs)
+    optimizer = torch.optim.AdamW(groups, **kwargs)
+    # Record each group's own warmup and its pre-warmup lr, so the schedule is
+    # recomputed from the bases rather than compounded in place.
+    warmups = [cfg.actor_lr_warmup_steps] * len(
+        policy.get_actor_optim_params()["params"]
+    ) + [cfg.critic_lr_warmup_steps] * len(
+        policy.get_critic_optim_params()["params"]
+    )
+    for group, warmup in zip(optimizer.param_groups, warmups):
+        group["lr_warmup_steps"] = int(warmup)
+        group["base_lr"] = float(group["lr"])
+    return optimizer
 
 
 def compute_mc_xt(
@@ -327,7 +341,6 @@ class SJFPOPolicy(PreTrainedPolicy):
             config.dit_heads,
             config.dit_mlp_ratio,
             config.time_embed_dim,
-            config.timestep_scale,
         )
         self.encoder = StateEncoder(obs_dim, config.hidden_dim, config.n_obs_steps)
         self.critic = Critic(
@@ -356,11 +369,6 @@ class SJFPOPolicy(PreTrainedPolicy):
         self.old_encoder = (
             copy.deepcopy(self.encoder).requires_grad_(False).eval()
         )
-        # Polyak target for the GAE bootstrap (qc, TD-JEPA).
-        # Kept even when use_target_critic is False, so the
-        # flag does not change the module's weight set.
-        self.target_critic = copy.deepcopy(self.critic).requires_grad_(False).eval()
-        self._target_critic_initialised = False
         self._ema_shadow: dict[str, torch.Tensor] = {}
         self._ema_initialised = False
         self._rollout_buffer: RolloutBuffer | None = None
@@ -488,30 +496,6 @@ class SJFPOPolicy(PreTrainedPolicy):
                 [current[name].detach() for name in names],
                 alpha=1.0 - decay,
             )
-
-    @torch.no_grad()
-    def update_target_critic(self) -> None:
-        """Polyak the target critic. First call hard-copies.
-
-        ``critic_ema_decay`` is the copy *rate*: the teacher
-        keeps ``1 - decay`` per step; qc uses 0.005.
-        """
-        if not self._target_critic_initialised:
-            self.target_critic.load_state_dict(unwrapped_state_dict(self.critic))
-            self._target_critic_initialised = True
-            return
-        decay = self.config.critic_ema_decay
-        target_params = list(self.target_critic.parameters())
-        torch._foreach_mul_(target_params, 1.0 - decay)
-        torch._foreach_add_(
-            target_params, [p.detach() for p in self.critic.parameters()], alpha=decay
-        )
-        # No buffers today, so this is usually empty, and
-        # foreach rejects an empty list. Kept so a future
-        # buffer follows the teacher.
-        target_buffers = list(self.target_critic.buffers())
-        if target_buffers:
-            torch._foreach_copy_(target_buffers, list(self.critic.buffers()))
 
     def ema_ready(self, global_step: int) -> bool:
         """Can the EMA shadow be used for evaluation yet?"""
@@ -644,8 +628,9 @@ class SJFPOPolicy(PreTrainedPolicy):
         ``condition`` arrives already broadcast over the MC draws,
         so frozen and live share one conditioning pass.
         """
+        cfg = self.config
         net = self.old_actor if old else self.actor
-        return net(x_t, tau, condition)
+        return clip_transported(net(x_t, tau, condition), cfg.transported_clip_value)
 
 
     def standardize_obs_tensor(self, states: torch.Tensor) -> torch.Tensor:
@@ -699,7 +684,9 @@ class SJFPOPolicy(PreTrainedPolicy):
                 eps = sample_noise(shape, cfg, device, None)
                 num_steps = cfg.num_euler_steps
             x0 = sample_action(
-                lambda x, t, c: actor(x, t, c),
+                lambda x, t, c: clip_transported(
+                    actor(x, t, c), cfg.transported_clip_value
+                ),
                 shape,
                 condition,
                 num_inference_steps=num_steps,
@@ -976,13 +963,10 @@ class SJFPOPolicy(PreTrainedPolicy):
                 chunk_q = self.critic(
                     normalised_states, actions, exec_frac
                 ).float().amin(dim=0)
-            if cfg.use_target_critic:
-                with torch.inference_mode(), autocast_context(device):
-                    boot_q = self.target_critic(
-                        normalised_next_states, boot_actions, boot_exec_frac
-                    ).float().amin(dim=0)
-            else:
-                boot_q = chunk_q
+            with torch.inference_mode(), autocast_context(device):
+                boot_q = self.critic(
+                    normalised_next_states, boot_actions, boot_exec_frac
+                ).float().amin(dim=0)
 
         # One chunk is one macro-transition: sum rewards, discount gamma**h.
         # rsl-rl space: Q predicts raw returns, target is the
@@ -1010,6 +994,12 @@ class SJFPOPolicy(PreTrainedPolicy):
             normalised_advantages = (raw_advantages - raw_advantages.mean()) / (
                 raw_advantages.std(correction=0).clamp_min(1e-8)
             )
+        # FPO++ clamps inside the minibatch loop, right before the surrogate.
+        # Applied here instead: the clamp is a fixed elementwise bound, so
+        # clamping once per rollout is the same numbers and one fewer pass.
+        # Ordered after normalisation, as theirs is.
+        neg_clamp, pos_clamp = cfg.advantage_clamp
+        normalised_advantages = normalised_advantages.clamp(-neg_clamp, pos_clamp)
         gae_diagnostics = compute_gae_diagnostics(
             active["chunk_env_id"][:n_chunks],
             active["chunk_terminated"][:n_chunks],

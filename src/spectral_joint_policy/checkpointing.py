@@ -126,9 +126,7 @@ def save_policy_checkpoint(
     state_dict = {
         name: tensor
         for name, tensor in policy.state_dict().items()
-        if not name.startswith(
-            ("old_actor.", "old_encoder.", "target_critic.")
-        )
+        if not name.startswith(("old_actor.", "old_encoder."))
     }
     policy.save_pretrained(d, state_dict=state_dict)
     # EMA shadow is saved separately in ema.pt, NOT overlaid onto actor.* here:
@@ -253,9 +251,6 @@ def load_policy_checkpoint(
     if device is not None:
         policy.to(device)
     policy.snapshot_behavior_policy()
-    # The target critic is a Polyak shadow, not a checkpointed artifact: it is
-    # rebuilt from the restored critic on the next update_target_critic call.
-    policy._target_critic_initialised = False
     if (action_low is None) != (action_high is None):
         raise ValueError("action_low and action_high must be provided together")
     if action_low is not None:

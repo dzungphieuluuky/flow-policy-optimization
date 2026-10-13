@@ -97,10 +97,19 @@ class SJFPOConfig(PreTrainedConfig):
     critic_hidden_dim: int | None = None
     critic_num_layers: int = 2
     normalize_advantage: bool = True
+    # (negative_clamp, positive_clamp), FPO++ rl_cfg.advantage_clamp.
+    advantage_clamp: tuple[float, float] = (100.0, 100.0)
     value_loss_coef: float = 1.0
     value_huber_delta: float = 1.0
-    use_target_critic: bool = True
-    critic_ema_decay: float = 0.05
+
+    # FPO++ FlowMatchingConfig.cfm_loss_use_huber. Elementwise, before the
+    # reduction: the quadratic branch has no 0.5 factor, so it equals MSE for
+    # |err| <= delta and only the tail becomes linear.
+    cfm_loss_use_huber: bool = True
+    cfm_loss_huber_delta: float = 0.5
+    # Clip the actor's transported output (velocity here) to +/- this. None
+    # disables. Applied on the training path and in the Euler sampler alike.
+    transported_clip_value: float | None = None
 
     compile: bool = True
 
@@ -108,14 +117,17 @@ class SJFPOConfig(PreTrainedConfig):
     dit_heads: int = 2
     dit_mlp_ratio: float = 2.0
     time_embed_dim: int = 64
-    timestep_scale: float = 10000.0
 
     policy_lr: float = 3e-4
     critic_lr: float = 3e-4
+    # Linear warmup on each param group, in optimizer steps. FPO++ defaults
+    # are 5 and 1 (finetune_online_rl.py).
+    actor_lr_warmup_steps: int = 5
+    critic_lr_warmup_steps: int = 1
     optimizer_weight_decay: float = 1e-4
     adam_betas: tuple[float, float] = (0.999, 0.999)
+    # One clip over every parameter, actor and critic together.
     max_grad_norm: float = 1.0
-    critic_max_grad_norm: float | None = 1.0
     ema_decay: float = 0.95
     ema_warmup_steps: int = 500
 
@@ -186,8 +198,26 @@ class SJFPOConfig(PreTrainedConfig):
             raise ValueError(f"dit_mlp_ratio={self.dit_mlp_ratio} must be > 0")
         if self.time_embed_dim < 1:
             raise ValueError(f"time_embed_dim={self.time_embed_dim} must be >= 1")
-        if self.timestep_scale <= 0:
-            raise ValueError(f"timestep_scale={self.timestep_scale} must be > 0")
+        if self.cfm_loss_huber_delta <= 0:
+            raise ValueError(
+                f"cfm_loss_huber_delta={self.cfm_loss_huber_delta} must be > 0"
+            )
+        if (
+            self.transported_clip_value is not None
+            and self.transported_clip_value <= 0
+        ):
+            raise ValueError(
+                f"transported_clip_value={self.transported_clip_value} must be > 0"
+            )
+        if len(self.advantage_clamp) != 2:
+            raise ValueError(
+                f"advantage_clamp={self.advantage_clamp} must be "
+                "(negative_clamp, positive_clamp)"
+            )
+        if any(c <= 0 for c in self.advantage_clamp):
+            raise ValueError(
+                f"advantage_clamp={self.advantage_clamp} entries must be > 0"
+            )
         # Eval schedule
         if self.eval_max_episodes < 1:
             raise ValueError(f"eval_max_episodes={self.eval_max_episodes} must be >= 1")
@@ -272,13 +302,13 @@ class SJFPOConfig(PreTrainedConfig):
             raise ValueError(f"adam_betas={self.adam_betas} must each be in (0, 1)")
         if self.max_grad_norm <= 0:
             raise ValueError(f"max_grad_norm={self.max_grad_norm} must be > 0")
-        if self.critic_max_grad_norm is not None and self.critic_max_grad_norm <= 0:
+        if self.actor_lr_warmup_steps < 0:
             raise ValueError(
-                f"critic_max_grad_norm={self.critic_max_grad_norm} must be > 0"
+                f"actor_lr_warmup_steps={self.actor_lr_warmup_steps} must be >= 0"
             )
-        if not 0.0 < self.critic_ema_decay <= 1.0:
+        if self.critic_lr_warmup_steps < 0:
             raise ValueError(
-                f"critic_ema_decay={self.critic_ema_decay} must be in (0, 1]"
+                f"critic_lr_warmup_steps={self.critic_lr_warmup_steps} must be >= 0"
             )
         if self.grad_accum_steps < 1:
             raise ValueError(f"grad_accum_steps={self.grad_accum_steps} must be >= 1")
