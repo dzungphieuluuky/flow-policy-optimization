@@ -177,13 +177,14 @@ Run this **first** if you intend to compare anything.
 # gae_lambda: 0.95 is the default -- the standard chunk-level GAE trace.
 # 0.0 is QC's one-chunk backup, now the explicit opt-out.
 --sjfpo.gae_lambda {0.0, 0.95}
-
-# critic capacity
---sjfpo.critic_max_grad_norm {1.0, 48.0, null}
 ```
 
-**Read `pre_clip_actor` / `pre_clip_critic` from T5 before touching
-`critic_max_grad_norm`.** Both are already logged; the answer may be "leave it."
+**Critic capacity is no longer separately clippable.** `critic_max_grad_norm`
+was removed: there is now one optimizer and one joint `max_grad_norm` over actor
+and critic together, matching FPO++. `train/grad_norm_preclip` replaces the
+former `train/actor_grad_norm_preclip` and `train/critic_grad_norm_preclip`,
+which necessarily carried the same number. Any T5 analysis that split the two is
+void.
 
 ### On `gae_lambda`
 

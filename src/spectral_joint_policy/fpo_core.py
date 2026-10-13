@@ -7,7 +7,6 @@ from collections.abc import Callable
 from typing import Any
 
 import torch
-import torch.nn.functional as F
 
 from spectral_joint_policy.configuration_sjfpo import SJFPOConfig
 from spectral_joint_policy.utils import resolve_storage_dtype
@@ -188,6 +187,18 @@ def run_monte_carlo_sampling(
     )
 
 
+def clip_transported(x: torch.Tensor, clip: float | None) -> torch.Tensor:
+    """Bound the actor's transported output. FPO++ ``transported_clip_value``.
+
+    Applied at every site the raw velocity is produced -- the training loss,
+    the frozen ``l_old`` pass, and the Euler sampler -- so all three see the
+    same map and the ratio stays consistent. ``None`` is a no-op.
+    """
+    if clip is None:
+        return x
+    return x.clamp(-clip, clip)
+
+
 def compute_cfm_loss(
     v_hat: torch.Tensor,
     v_star: torch.Tensor,
@@ -213,7 +224,20 @@ def compute_cfm_loss(
         )
     # F.mse_loss with reduction="none" is exactly square(v_hat - v_star); the
     # default reduction would divide, which the masking below already does.
-    sq = F.mse_loss(v_hat, v_star, reduction="none")
+    diff = v_hat - v_star
+    if cfg.cfm_loss_use_huber:
+        # FPO++ flow_model.py:_compute_squared_error. The quadratic branch
+        # carries no 0.5 factor, so this equals MSE for |diff| <= delta and
+        # only the tail turns linear.
+        delta = cfg.cfm_loss_huber_delta
+        abs_diff = diff.abs()
+        sq = torch.where(
+            abs_diff <= delta,
+            diff.square(),
+            2.0 * delta * abs_diff - delta * delta,
+        )
+    else:
+        sq = diff.square()
     n_valid = None
     if action_is_pad is not None:
         # action_is_pad marks what to drop, so flip it: keep is 1 on executed

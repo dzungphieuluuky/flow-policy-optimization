@@ -177,6 +177,23 @@ def sample_minibatch(
 _OBS_WARMUP_STEPS = 128
 
 
+def apply_lr_schedule(optimizer, step_count: int, lr_decays: int, cfg) -> None:
+    """Linear warmup composed with the plateau decay, from the bases.
+
+    ``lr = base_lr * lr_decay**lr_decays * min(1, step / warmup)``
+
+    Recomputed rather than compounded: warmup-then-decay and decay-then-warmup
+    give the same number, so a decay that lands mid-warmup cannot leave the
+    group permanently scaled. FPO++ reaches the warmup half via a scheduler
+    (finetune_online_rl.py); this is the same ramp without the object.
+    """
+    for group in optimizer.param_groups:
+        base = group["base_lr"]
+        warmup = group.get("lr_warmup_steps", 0)
+        ramp = 1.0 if warmup <= 0 else min(1.0, step_count / warmup)
+        group["lr"] = base * (cfg.lr_decay**lr_decays) * ramp
+
+
 def warm_observation_stats(policy, env, *, obs_dim: int, seed: int) -> int:
     """Fold random-policy frames into the running obs stats. The normalizer is
     identity until its first update and updates only after a rollout, so without
@@ -517,16 +534,7 @@ def train_sjfpo_run(
     fps = 0.0
     t_start = time.time()
 
-    actor_params = [
-        p
-        for group in policy.get_actor_optim_params()["params"]
-        for p in group["params"]
-    ]
-    critic_params = [
-        p
-        for group in policy.get_critic_optim_params()["params"]
-        for p in group["params"]
-    ]
+    clip_params = [p for group in optimizer.param_groups for p in group["params"]]
 
     try:
         while global_step < total_steps:
@@ -569,8 +577,7 @@ def train_sjfpo_run(
             policy.train()
 
             infos: list[dict[str, float]] = []
-            actor_pre_norms: list[torch.Tensor] = []
-            critic_pre_norms: list[torch.Tensor] = []
+            grad_norms_pre: list[torch.Tensor] = []
             above_clamp_fracs: list[torch.Tensor] = []
             n_chunks = batch["raw_advantages"].shape[0]
             microbatches = list(
@@ -607,34 +614,19 @@ def train_sjfpo_run(
                     or micro_step + 1 == len(microbatches)
                 )
                 if is_boundary:
-                    pre_clip_actor = torch.nn.utils.clip_grad_norm_(
-                        actor_params, cfg.max_grad_norm
+                    # One clip over actor and critic together, as FPO++ does.
+                    # A flat parameter list, not optimizer.param_groups:
+                    # clip_grad_norm_ iterates its argument as tensors and
+                    # raises AttributeError on a param-group dict.
+                    pre_clip_total = torch.nn.utils.clip_grad_norm_(
+                        clip_params, cfg.max_grad_norm
                     )
-                    actor_pre_norms.append(pre_clip_actor.detach())
-                    if cfg.critic_max_grad_norm is None:
-                        # Same total norm clip_grad_norm_ computes, without the
-                        # per-param Python loop and its stack.
-                        pre_clip_critic = torch.linalg.vector_norm(
-                            torch.stack(
-                                torch._foreach_norm(
-                                    [
-                                        p.grad
-                                        for p in critic_params
-                                        if p.grad is not None
-                                    ]
-                                )
-                            )
-                        )
-                    else:
-                        pre_clip_critic = torch.nn.utils.clip_grad_norm_(
-                            critic_params, cfg.critic_max_grad_norm
-                        )
-                    critic_pre_norms.append(pre_clip_critic.detach())
+                    grad_norms_pre.append(pre_clip_total.detach())
                     above_clamp_fracs.append(policy.cfm_above_clamp_frac)
                     optimizer.step()
                     optimizer.zero_grad(set_to_none=True)
                     policy.step_count += 1
-                    policy.update_target_critic()
+                    apply_lr_schedule(optimizer, policy.step_count, lr_decays, cfg)
                 if epoch_info is not None:
                     infos.append(epoch_info)
 
@@ -661,23 +653,20 @@ def train_sjfpo_run(
             else:
                 info = None
             scalars = [
-                torch.stack(actor_pre_norms).mean(),
-                torch.stack(critic_pre_norms).mean(),
+                torch.stack(grad_norms_pre).mean(),
                 torch.stack(above_clamp_fracs).mean(),
             ]
             if drift is not None:
                 scalars.extend(drift)
             (
-                actor_grad_norm_mean_pre,
-                critic_grad_norm_mean_pre,
+                grad_norm_mean_pre,
                 above_clamp_frac,
                 *drift_means,
             ) = torch.stack(scalars).tolist()
 
             if tracker.enabled and info is not None:
                 data = {f"train/{k}": v for k, v in info.items()}
-                data["train/actor_grad_norm_preclip"] = actor_grad_norm_mean_pre
-                data["train/critic_grad_norm_preclip"] = critic_grad_norm_mean_pre
+                data["train/grad_norm_preclip"] = grad_norm_mean_pre
                 if cfg.log_drift_diagnostics and drift_means:
                     data["train/boot_value_delta"] = drift_means[0]
                     data["train/value_target_drift"] = drift_means[1]
@@ -818,8 +807,7 @@ def train_sjfpo_run(
                 if plateaued:
                     if lr_decays < cfg.max_lr_decays:
                         lr_decays += 1
-                        for group in optimizer.param_groups:
-                            group["lr"] *= cfg.lr_decay
+                        apply_lr_schedule(optimizer, policy.step_count, lr_decays, cfg)
                         plateau_msg = (
                             f"plateau at step {global_step}: mean_return="
                             f"{mean_return:.2f} < {cfg.stop_return_frac:g}*best="

@@ -24,7 +24,6 @@ def _flow_model(device: torch.device) -> SJFPOFlowModel:
         dit_heads=4,
         dit_mlp_ratio=4.0,
         time_embed_dim=128,
-        timestep_scale=10000.0,
     ).to(device)
 
 

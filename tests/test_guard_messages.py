@@ -29,7 +29,7 @@ SNAPSHOT = Path(__file__).with_name("guard_messages.json")
 
 #: Guard count the table below is expected to cover. Bump deliberately when a
 #: guard is added; a silent drop here means that guard is no longer checked.
-EXPECTED_CASES = 76
+EXPECTED_CASES = 78
 
 _CASES: list[tuple[str, object]] = []
 
@@ -56,16 +56,18 @@ from spectral_joint_policy.configuration_sjfpo import SJFPOConfig
 
 _BAD_CONFIG = {
     "action_perturb_std": -1.0,
+    "actor_lr_warmup_steps": -1,
+    "advantage_clamp": (0.0, 1.0),
     "batch_size": 0,
     "cfm_clamp": 0.0,
     "cfm_loss_clamp_negative_advantages_max": 0.0,
     "cfm_loss_reduction": "median",
     "chunks_per_update": 0,
     "clip_param": 1.0,
-    "critic_ema_decay": 0.0,
+    "cfm_loss_huber_delta": 0.0,
     "critic_hidden_dim": 0,
     "critic_lr": 0.0,
-    "critic_max_grad_norm": 0.0,
+    "critic_lr_warmup_steps": -1,
     "critic_num_layers": 0,
     "eval_max_episodes": 0,
     "gae_lambda": 1.5,
@@ -93,6 +95,7 @@ _BAD_CONFIG = {
     "stop_return_frac": 0.0,
     "timestep_inverse_cdf_beta": 0.0,
     "timestep_sampling_mode": "cosine",
+    "transported_clip_value": 0.0,
     "trust_region_mode": "grpo",
     "value_huber_delta": 0.0,
     "value_loss_coef": -1.0,
@@ -124,11 +127,10 @@ case("attention:SelfAttention:heads")(lambda: SelfAttention(8, 0))
 case("attention:SelfAttention:split")(lambda: SelfAttention(8, 3))
 case("attention:DiTBlock:hidden")(lambda: DiTBlock(1, 2, 2.0))
 case("attention:DiTBlock:ratio")(lambda: DiTBlock(8, 2, 0.0))
-case("flow:actor:action_dim")(lambda: SJFPOFlowModel(0, 8, 128, 3, 2, 2.0, 64, 1e4))
-case("flow:actor:horizon")(lambda: SJFPOFlowModel(3, 0, 128, 3, 2, 2.0, 64, 1e4))
-case("flow:actor:depth")(lambda: SJFPOFlowModel(3, 8, 128, 0, 2, 2.0, 64, 1e4))
-case("flow:actor:mlp_ratio")(lambda: SJFPOFlowModel(3, 8, 128, 3, 2, 0.0, 64, 1e4))
-case("flow:actor:timestep_scale")(lambda: SJFPOFlowModel(3, 8, 128, 3, 2, 2.0, 64, 0.0))
+case("flow:actor:action_dim")(lambda: SJFPOFlowModel(0, 8, 128, 3, 2, 2.0, 64))
+case("flow:actor:horizon")(lambda: SJFPOFlowModel(3, 0, 128, 3, 2, 2.0, 64))
+case("flow:actor:depth")(lambda: SJFPOFlowModel(3, 8, 128, 0, 2, 2.0, 64))
+case("flow:actor:mlp_ratio")(lambda: SJFPOFlowModel(3, 8, 128, 3, 2, 0.0, 64))
 case("critic:member:action_dim")(lambda: CriticMember(3, 0, 8, 4, 8, num_layers=2))
 case("critic:member:horizon")(lambda: CriticMember(3, 2, 8, 4, 0, num_layers=2))
 case("critic:member:hidden")(lambda: CriticMember(3, 2, 0, 4, 8, num_layers=2))
