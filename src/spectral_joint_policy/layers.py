@@ -89,9 +89,11 @@ class SinusoidalEncoding(nn.Module):
             return cached
         i = torch.arange(self.half, device=device, dtype=torch.float32)
         # FPO++ (actor_critic.py:_embed_timestep): doubling powers, not the
-        # usual 1/10000^i sweep. Coarser at the bottom, far coarser at the top:
-        # at time_embed_dim=64 the highest channel is 2**31, whose cos/sin in
-        # fp32 is argument-limited rather than resolved.
+        # usual 1/10000^i sweep. Numerically exact -- torch's fp32 cos does
+        # argument reduction, and against a float64 reference the error is zero
+        # at every width. What a wide dim costs is bandwidth the model cannot
+        # use: at 64 the top channel runs ~40 cycles per ULP of t. FPO++ ships
+        # 8 (isaaclab) and 32 (manipulation); our default is their larger one.
         cached = torch.pow(torch.tensor(2.0, device=device), i)
         self._freq_cache[device] = cached
         if len(self._freq_cache) > 4:

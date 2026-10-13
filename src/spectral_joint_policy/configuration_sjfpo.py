@@ -116,7 +116,7 @@ class SJFPOConfig(PreTrainedConfig):
     dit_depth: int = 3
     dit_heads: int = 2
     dit_mlp_ratio: float = 2.0
-    time_embed_dim: int = 64
+    time_embed_dim: int = 32
 
     policy_lr: float = 3e-4
     critic_lr: float = 3e-4

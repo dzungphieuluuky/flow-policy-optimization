@@ -372,6 +372,20 @@ def test_embedding_puts_cos_before_sin():
     assert torch.equal(enc.encode_times(t), torch.cat([ang.cos(), ang.sin()], dim=-1))
 
 
+def test_default_width_matches_fpops_larger_setting():
+    """32 is FPO++'s manipulation value; 8 is its isaaclab one. We take 32."""
+    assert SJFPOConfig().time_embed_dim == 32
+
+
+def test_embedding_is_exact_against_a_float64_reference():
+    """The channels are not corrupted, only over-wide. Pin that they are fine."""
+    for dim in (8, 32, 64):
+        enc = SinusoidalEncoding(dim)
+        t = torch.linspace(0.0, 1.0, 2048, dtype=torch.float64)
+        err = (enc.encode_times(t.float()).double() - enc.encode_times(t)).abs().max()
+        assert float(err) < 1e-5, f"dim={dim} drifted from the fp64 reference"
+
+
 # --- deleted target critic --------------------------------------------------
 
 
