@@ -236,22 +236,18 @@ class SJFPOConfig(PreTrainedConfig):
             )
         if self.noise_sampling_mode not in {"normal", "uniform"}:
             raise ValueError("noise_sampling_mode must be 'normal' or 'uniform'")
-        if self.noise_scaling_mode not in {
-            "white",
-            "freq_weighted",
-            "freq_weighted_time",
-        }:
-            raise ValueError(
-                "noise_scaling_mode must be 'white', 'freq_weighted', or "
-                "'freq_weighted_time'"
-            )
         if self.noise_scaling_mode == "freq_weighted":
-            # Multiplies DCT coefficients, and the DCT is gone. Caught here
-            # rather than silently falling through to white.
+            # Multiplies DCT coefficients, and the DCT is gone. Checked before
+            # the allowlist so the migration hint survives: the generic message
+            # would just list the legal values.
             raise ValueError(
                 "noise_scaling_mode='freq_weighted' was the DCT-coefficient mode "
                 "and no longer exists; use 'freq_weighted_time' for the "
                 "action-step grid, or 'white'"
+            )
+        if self.noise_scaling_mode not in {"white", "freq_weighted_time"}:
+            raise ValueError(
+                "noise_scaling_mode must be 'white' or 'freq_weighted_time'"
             )
         if self.noise_scaling_beta < 0:
             raise ValueError(f"noise_scaling_beta must be >= 0, got {self.noise_scaling_beta}")
