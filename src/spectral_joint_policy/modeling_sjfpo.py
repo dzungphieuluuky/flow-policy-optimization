@@ -1071,6 +1071,23 @@ class SJFPOPolicy(PreTrainedPolicy):
         }
 
 
+    @staticmethod
+    def _load(
+        batch: dict[str, torch.Tensor],
+        key: str,
+        device,
+        dtype: torch.dtype,
+        *,
+        async_: bool = False,
+    ) -> torch.Tensor:
+        """One spelling of 'coerce to device and dtype'.
+
+        ``async_`` pins the transfer, which only pays for the two big
+        tensors; on a small one it is pure overhead.
+        """
+        tensor = to_tensor(batch[key], dtype=dtype, device=device)
+        return to_device_async(tensor, device) if async_ else tensor
+
     def forward(
         self,
         batch: dict[str, torch.Tensor],
@@ -1092,20 +1109,16 @@ class SJFPOPolicy(PreTrainedPolicy):
         device = next(self.parameters()).device
         storage_dtype = resolve_storage_dtype(device)
 
-        states = to_device_async(
-            to_tensor(batch[OBS_STATE]), device
-        ).to(dtype=storage_dtype)
-        actions = to_device_async(to_tensor(batch[ACTION]), device).to(
-            dtype=storage_dtype
+        # states and actions go async: they are the two large tensors here.
+        # The rest are small enough that the pinned transfer costs more.
+        states = self._load(batch, OBS_STATE, device, storage_dtype, async_=True)
+        actions = self._load(batch, ACTION, device, storage_dtype, async_=True)
+        normalised_advantages = self._load(
+            batch, "normalised_advantages", device, storage_dtype
         )
-        normalised_advantages = to_tensor(batch["normalised_advantages"]).to(
-            device=device, dtype=storage_dtype
-        )
-        raw_returns = to_tensor(batch["raw_returns"]).to(
-            device=device, dtype=torch.float32
-        )
-        action_is_pad = to_tensor(
-            batch["action_is_pad"], dtype=torch.bool, device=device
+        raw_returns = self._load(batch, "raw_returns", device, torch.float32)
+        action_is_pad = self._load(
+            batch, "action_is_pad", device, torch.bool
         )
 
         if states.shape[-2] != cfg.n_obs_steps:
