@@ -1,7 +1,7 @@
 [project]
 name = "spectral-joint-policy"
 version = "0.1.0"
-description = "Flow-matching policy optimization (FPO++) with open-loop action chunking and optional DCT spectral chunk encoding, on LeRobot and PyTorch"
+description = "Flow-matching policy optimization (FPO++) with open-loop action chunking and an optional 1/f^beta spectral base measure, on LeRobot and PyTorch"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
