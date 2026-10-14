@@ -1299,7 +1299,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         # update_huber_resid_rms.
         residual = raw_value_pred - raw_returns_flat.unsqueeze(0)
         self.update_huber_resid_rms(residual)
-        huber_delta = cfg.value_huber_delta * self._huber_resid_rms.clamp_min(1e-6)
+        huber_delta = cfg.value_huber_delta_scale * self._huber_resid_rms.clamp_min(1e-6)
         value_loss_per_chunk = compute_value_huber_loss(
             raw_value_pred, raw_returns_flat, huber_delta
         ).mean(dim=0)

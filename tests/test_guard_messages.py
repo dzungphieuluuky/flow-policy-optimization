@@ -97,7 +97,7 @@ _BAD_CONFIG = {
     "timestep_sampling_mode": "cosine",
     "transported_clip_value": 0.0,
     "trust_region_mode": "grpo",
-    "value_huber_delta": 0.0,
+    "value_huber_delta_scale": 0.0,
     "value_loss_coef": -1.0,
 }
 for _field, _bad in sorted(_BAD_CONFIG.items()):

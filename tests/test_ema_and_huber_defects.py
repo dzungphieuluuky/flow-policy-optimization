@@ -107,7 +107,7 @@ def test_a_matching_shadow_is_restored():
 def test_huber_knee_is_not_built_from_the_return_scale():
     """delta must not scale with returns_rms; that was the whole defect."""
     torch.manual_seed(0)
-    p = _policy(value_huber_delta=1.0)
+    p = _policy(value_huber_delta_scale=1.0)
     # A batch whose returns are 100x the residual spread.
     resid = torch.randn(4096) * 1.0
     p.update_huber_resid_rms(resid)

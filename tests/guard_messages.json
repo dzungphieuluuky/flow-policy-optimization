@@ -47,7 +47,7 @@
   "config:timestep_sampling_mode": "timestep_sampling_mode must be 'uniform', 'normal', 'beta', or 'fpo_beta'",
   "config:transported_clip_value": "transported_clip_value=0.0 must be > 0",
   "config:trust_region_mode": "trust_region_mode must be 'ppo', 'spo', or 'aspo'",
-  "config:value_huber_delta": "value_huber_delta=0.0 must be > 0",
+  "config:value_huber_delta_scale": "value_huber_delta_scale=0.0 must be > 0",
   "config:value_loss_coef": "value_loss_coef=-1.0 must be >= 0",
   "critic:ensemble:critics": "num_critics must be >= 1, got 0",
   "critic:ensemble:obs_dim": "obs_dim must be positive",

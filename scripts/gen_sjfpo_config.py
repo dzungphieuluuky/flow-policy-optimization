@@ -84,7 +84,7 @@ SECTIONS: list[tuple[str, list[str]]] = [
             "critic_hidden_dim",
             "critic_num_layers",
             "value_loss_coef",
-            "value_huber_delta",
+            "value_huber_delta_scale",
             "advantage_clamp",
         ],
     ),
