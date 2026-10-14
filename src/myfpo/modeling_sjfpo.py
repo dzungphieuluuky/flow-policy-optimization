@@ -63,7 +63,8 @@ def compute_value_huber_loss(
 ) -> torch.Tensor:
     """Elementwise Huber, broadcasting ``target`` over members.
 
-    ``delta`` is 0-dim so it can track return RMS.
+    ``delta`` is 0-dim. Caller tracks the critic's *residual* RMS, not the
+    return scale -- see :meth:`update_huber_resid_rms`.
     """
     return torch.nn.functional.huber_loss(
         pred, target.expand_as(pred), delta=delta, reduction="none"
@@ -455,10 +456,11 @@ class SJFPOPolicy(PreTrainedPolicy):
     def _ema_named_params(self) -> dict[str, torch.nn.Parameter]:
         """Every parameter the EMA shadow covers, namespaced by module.
 
-        Actor and encoder together, because they co-drift: they are
-        trained on the same objective and the DiT cross-attends to the
-        encoder's output. Swapping in one without the other evaluates a
-        pairing that never existed during training.
+        Actor and encoder together, because they co-drift: the encoder has
+        no loss of its own, gets gradient only from the actor's CFM loss,
+        and its output reaches the actor through adaLN -- not attention.
+        Swapping in one without the other evaluates a pairing that never
+        existed during training.
         """
         out: dict[str, torch.nn.Parameter] = {}
         for prefix, module in (("actor", self.actor), ("encoder", self.encoder)):
@@ -573,7 +575,6 @@ class SJFPOPolicy(PreTrainedPolicy):
         actor/encoder mismatch this closed, so a mismatched shadow is
         dropped and the caller reseeds from live weights instead.
         """
-        """Restore a shadow from :meth:`ema_state_dict`."""
         stored = state.get("shadow_params", {})
         if set(stored) != set(self._ema_named_params()):
             self._ema_shadow = {}
@@ -670,7 +671,8 @@ class SJFPOPolicy(PreTrainedPolicy):
     def standardize_obs_tensor(self, states: torch.Tensor) -> torch.Tensor:
         """Coerce obs to ``[B, T, obs]``, in storage dtype.
 
-        ``ValueError`` if rank is not 1, 2, or 3.
+        Takes rank 3 as-is and rank 2 as a window. Rank 1 raises -- a bare
+        ``[obs]`` frame is :meth:`select_action`'s job, not this one's.
         """
         states = to_tensor(states)
         states = states.to(dtype=resolve_storage_dtype(states.device))
@@ -681,8 +683,9 @@ class SJFPOPolicy(PreTrainedPolicy):
                 return einx.id("t d -> 1 t d", states)
             return einx.id("d -> 1 t d", states, t=self.config.n_obs_steps)
         raise ValueError(
-            f"observation.state must be [B, T, obs], [T, obs] or [B, obs]; "
-            f"got {tuple(states.shape)}"
+            f"observation.state must be [B, T, obs] or [T, obs]; "
+            f"got {tuple(states.shape)}. A bare [obs] frame goes through "
+            "select_action, which buffers it into a window."
         )
 
 
@@ -955,8 +958,9 @@ class SJFPOPolicy(PreTrainedPolicy):
             # Seeded from the chunk, so no row is garbage.
             # Backup scales by ~terminated: 0 * NaN is NaN.
             boot_actions = actions.clone()
-            # Only a live chunk needs a proposal: a terminated
-            # chunk's bootstrap is zeroed and never reaches the backup.
+            # Only a live chunk needs a proposal: a terminated chunk keeps
+            # the cloned chunk actions, which are never read -- the backup
+            # masks them with (1 - terminated).
             needs_proposal = ~active["chunk_terminated"]
             if bool(needs_proposal.any()):
                 # predict_action_chunk returns env bounds; chunk_actions are

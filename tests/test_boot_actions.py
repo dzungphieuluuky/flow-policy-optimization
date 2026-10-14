@@ -68,10 +68,11 @@ def test_every_row_carries_a_chunk(batch):
 
 
 def test_terminated_rows_keep_their_own_chunk_not_a_proposal(batch):
-    """A terminated chunk's bootstrap is zeroed, so its action is a filler.
+    """A terminated chunk's bootstrap keeps its own chunk actions. Not zeroed.
 
-    If the proposal leaked onto those rows, the cost would be the unfiltered
-    one that the filter exists to avoid.
+    The backup masks those rows with ``(1 - terminated)``, so their values never
+    reach the target. If the proposal leaked onto those rows, the cost would be
+    the unfiltered one that the filter exists to avoid.
     """
     # a rollout of live chunks only is the case where the filter matters most
     policy = _policy()

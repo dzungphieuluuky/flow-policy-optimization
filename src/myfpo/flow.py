@@ -13,8 +13,11 @@ from myfpo.utils import rms
 
 def effective_rank(features: torch.Tensor) -> torch.Tensor:
     """``exp`` spectral entropy of ``[n, hidden]``. Dohare et al. (2306.13812)
-    collapse probe: falls as backprop settles on a low-rank solution. In
-    ``[1, min(n, hidden)]``."""
+    collapse probe: falls as backprop settles on a low-rank solution.
+
+    0-dim. Input reshapes to ``[n, hidden]``, singular values number
+    ``min(n, hidden)``, return is one scalar.
+    """
     matrix = features.reshape(-1, features.shape[-1]).float()
     sigma = torch.linalg.svdvals(matrix)
     p = sigma / sigma.sum().clamp_min(1e-12)
@@ -27,9 +30,15 @@ class SJFPOFlowModel(nn.Module):
 
     ``return_stats=True`` gives ``(velocity, stats)`` plus per-block gate and
     scale RMS reductions. Default path returns velocity only, nothing
-    reduced. The stats path also runs an SVD (``effective_rank``) and a
-    full parameter sweep (``weight_magnitude``); call it at eval cadence,
-    not per optimizer step.
+    reduced.
+
+    The stats path is expensive: it runs an SVD (``effective_rank``) and a full
+    parameter sweep (``weight_magnitude``). ``SJFPOPolicy.forward`` calls it on
+    every minibatch forward whenever ``compute_info=True``, and the trainer
+    passes ``compute_info=tracker.enabled``. So with ``report_to`` set to
+    wandb or tensorboard it runs once per microbatch per optimizer step. For
+    throughput runs use ``--sjfpo.report_to none``, which turns the stats path
+    off along with every other metric.
     """
 
     def __init__(

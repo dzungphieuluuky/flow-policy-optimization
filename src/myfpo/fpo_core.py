@@ -292,7 +292,9 @@ def sample_action(
 
     ``return_velocities`` also hands back the ``v_hat`` sequence for
     :func:`trajectory_straightness`. Off by default: it keeps every velocity
-    alive for the whole solve, which the inference path does not need.
+    alive for the whole solve, which the inference path does not need. Nothing
+    in the training or rollout path sets it -- the straightness metric has no
+    caller outside tests.
     """
     if device is None:
         raise ValueError("device must be provided explicitly")

@@ -1,7 +1,9 @@
 """SJFPO online training entry (LeRobot-native, MuJoCo-only).
 
 ``generate_rollout`` gathers a batch, ``forward`` computes the loss. This loop
-only steps the optimizer, evaluates, and checkpoints.
+steps the optimizer, evaluates, and checkpoints. It also warms the obs stats,
+sets the LR, updates the EMA, folds frames into the normalizer, and reads the
+rollout diagnostics. Not loss math -- that lives in the policy.
 """
 
 from __future__ import annotations
@@ -432,8 +434,11 @@ def train_sjfpo_run(
     workers do not inherit the parent's CUDA context (cleanrl / SB3 ordering).
 
     Accumulation contract: backward every microbatch, step only at the group
-    boundary, always flush a final partial group. Gradients clip per optimizer,
-    not jointly, since the critic's norm owns a shared budget.
+    boundary, always flush a final partial group.
+
+    One clip, both roles. ``clip_grad_norm_`` gets a flat list of every
+    parameter -- actor and critic together -- so a big critic norm eats the
+    actor's budget. Not per-optimizer, not per-group.
     """
     cfg = cfg or SJFPOConfig()
     out_dir = Path(out_dir)

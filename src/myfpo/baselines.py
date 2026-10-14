@@ -1,4 +1,8 @@
-"""Faithful baselines: FPO, FPO++, DPPO.
+"""Baseline configs: FPO, FPO++, and a ``dppo`` arm that is not DPPO.
+
+FPO and FPO++ are faithful -- config-only, every divergence pinned and noted.
+``dppo`` is a rollout-only arm: it flips the step count and runs the FPO++
+surrogate. See ``_OVERRIDES``.
 
 Each entry is a ``dataclasses.replace`` of the live ``SJFPOConfig``, so a
 baseline is a config, not a branch. What is *not* overridden stays whatever the

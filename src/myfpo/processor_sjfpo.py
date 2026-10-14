@@ -1,7 +1,8 @@
 """SJFPO pre/post processors (LeRobot style): norm obs, unscale action.
 
-``ProcessorStep`` is not an ``nn.Module``, so bounds stay plain attributes with
-a per-``(device, dtype)`` cache and ``unnormalize`` needs no per-call ``.to()``.
+``ProcessorStep`` is not an ``nn.Module``, so bounds stay plain CPU tensors.
+``unnormalize`` casts them to the caller's device and dtype on every call.
+Small cost: two tiny tensors, once per chunk.
 """
 
 from __future__ import annotations
@@ -42,7 +43,10 @@ class SJFPOObservationProcessorStep(ProcessorStep):
 
 class SJFPOActionPostprocessorStep(ProcessorStep):
     """Unscale action chunks from ``[-1, 1]`` to env bounds.
-    ``set_action_bounds`` clears both caches."""
+
+    ``set_action_bounds`` recomputes the scale and bias. No caches to clear --
+    there are only the two CPU coefficient tensors.
+    """
 
     def __init__(self, action_low: torch.Tensor, action_high: torch.Tensor):
         self.set_action_bounds(action_low, action_high)
@@ -71,7 +75,7 @@ class SJFPOActionPostprocessorStep(ProcessorStep):
 
     @torch.inference_mode()
     def unnormalize(self, scaled: torch.Tensor) -> torch.Tensor:
-        """Unscale a chunk into real env bounds. Direct, no cache."""
+        """Unscale a chunk into real env bounds. Casts coefficients per call."""
         scale = self._scale_cpu.to(device=scaled.device, dtype=scaled.dtype)
         bias = self._bias_cpu.to(device=scaled.device, dtype=scaled.dtype)
         return torch.addcmul(bias, scale, scaled)

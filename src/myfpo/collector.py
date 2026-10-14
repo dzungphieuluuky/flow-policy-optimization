@@ -51,9 +51,10 @@ _INDEX_DTYPE = torch.int64
 class RolloutBuffer:
     """Fixed-capacity CPU storage for chunk and executed-step rollout data.
 
-    Two axes: the chunk axis holds one obs window per chunk, so it wants
-    ``total_steps // action_horizon`` rows; the step axis holds one frame per
-    executed step, so ``total_steps`` rows is right.
+    Two axes. The chunk axis holds one obs window per chunk, so
+    ``total_steps // action_horizon`` rows would do; callers pass
+    ``total_steps`` anyway, for headroom when chunks end early. The step axis
+    holds one frame per executed step, so ``total_steps`` rows is right.
     """
 
     def __init__(
@@ -209,7 +210,9 @@ class RolloutBuffer:
     def copy_to(self, other: "RolloutBuffer", *, non_blocking: bool = False) -> None:
         """Copy the active prefix into a compatible buffer, e.g. onto a GPU.
 
-        ``ValueError`` if capacities or dims differ.
+        No capacity or dim check here. A mismatch surfaces as a shape error
+        from ``_foreach_copy_``; callers key their own buffer off
+        :meth:`capacity_key` and get this pair matched by construction.
         """
         # Pre-allocated exact capacity; no dynamic growth.
         other.n_chunks = self.n_chunks

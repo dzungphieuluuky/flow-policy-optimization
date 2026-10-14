@@ -19,8 +19,8 @@ import nbformat as nbf
 
 ROOT = Path(__file__).resolve().parents[1]
 
-REPO_SLUG = "dzungphieuluuky/spectral-joint-policy"
-REPO_DIR = "spectral-joint-policy"
+REPO_SLUG = "dzungphieuluuky/myfpo"
+REPO_DIR = "myfpo"
 
 TITLE_SPECTRAL = """\
 # Spectral Joint Flow (SJFPO) on Colab

@@ -73,17 +73,17 @@ OUTPUT = OUTPUT_DIR[ENV_NAME]
 ```python
 # Clone the repo using the GitHub token from the environment/store.
 %cd $OUTPUT
-!rm -rf spectral-joint-policy
+!rm -rf myfpo
 GITHUB_TOKEN = load_secret("GITHUB_TOKEN")
-repo_slug = os.getenv("GITHUB_REPO", "dzungphieuluuky/spectral-joint-policy")
+repo_slug = os.getenv("GITHUB_REPO", "dzungphieuluuky/myfpo")
 repo_url = f"https://github.com/{repo_slug}.git"
 if GITHUB_TOKEN:
     repo_url = repo_url.replace("github.com", f"{GITHUB_TOKEN}@github.com")
 print(f"Cloning from: {repo_url.replace(GITHUB_TOKEN or '', '<TOKEN>') if GITHUB_TOKEN else repo_url}")
-!git clone $repo_url spectral-joint-policy
+!git clone $repo_url myfpo
 !git status
 # Move into the cloned repo and run directly (no embedded source).
-%cd spectral-joint-policy
+%cd myfpo
 !pwd
 ```
 
@@ -191,9 +191,13 @@ conditional flow-matching loss:
 r = exp(L_CFM_old - L_CFM_new)
 ```
 
-with `L_CFM` evaluated over `num_mc_samples` Monte-Carlo `(tau, eps)` draws from
-the same noise the behaviour policy saw. `ratio_granularity=per_action` is
-FPO++ Eq. 10: one ratio per `(tau, eps)` pair, so each pair clips independently.
+with `L_CFM` evaluated over `num_mc_samples` Monte-Carlo `(tau, eps)` draws,
+frozen once per rollout and reused for both the old and the new pass. Those
+draws are **not** the noise the behaviour rollout saw: the sampler draws its
+own `eps` inside `predict_action_chunk` and discards it, and the rollout buffer
+never stores it. Only old-vs-new share draws. `ratio_granularity=per_action`
+is FPO++ Eq. 10: one ratio per `(tau, eps)` pair, so each pair clips
+independently.
 
 **ASPO, the trust region.** Asymmetric. `A > 0` takes PPO clipping,
 `min(r*A, clip(r)*A)`. `A < 0` takes the SPO quadratic, which keeps a gradient
@@ -201,8 +205,9 @@ when PPO's clip would have saturated to zero — the point being that negative
 advantages are where a plain PPO clip stops learning.
 
 **Sampling.** Euler integration, `num_euler_steps` steps. Eval starts from
-`eps=0` (`--sjfpo.report_to tensorboard` runs the deterministic path); training
-rollouts start from sampled noise.
+`eps=0`, which `_EvalPolicy` gets from its `zero_sampling=True` default, not
+from `--sjfpo.report_to` — that flag only picks the tracker. Training rollouts
+start from sampled noise.
 
 ```python
 # Run training directly from the cloned repo.

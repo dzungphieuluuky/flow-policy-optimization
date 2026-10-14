@@ -16,9 +16,11 @@ __all__ = ["SJFPOConfig"]
 class SJFPOConfig(PreTrainedConfig):
     """SJFPO hyperparameters.
 
-    ``n_action_steps`` is the executed prefix at eval and defaults to
-    ``action_horizon``. ``num_inference_steps`` is for zero-sampling,
-    ``num_euler_steps`` for a sampled-noise start.
+    ``n_action_steps`` is the executed prefix, default 4, half of
+    ``action_horizon``. Set it to ``None`` and ``__post_init__`` fills in
+    ``action_horizon`` -- that is the open-loop no-correction case.
+    ``num_inference_steps`` is for zero-sampling, ``num_euler_steps`` for a
+    sampled-noise start.
     """
 
     report_to: str = "all"

@@ -24,12 +24,13 @@ def test_huber_is_quadratic_inside_delta_and_linear_outside():
     )
 
 
-def test_delta_scales_with_the_return_rms():
-    """delta is a multiple of the batch return RMS, so it follows the target scale.
+def test_delta_scales_with_a_residual_scale():
+    """delta is a scalar scale, so a wider one keeps a residual quadratic.
 
-    Same residual, targets 10x apart. The wider batch keeps the residual inside
-    the quadratic branch, so it pays 0.5*3^2 = 4.5 where the narrow batch pays
-    the linear 1*(3 - 0.5) = 2.5. One delta constant cannot do both.
+    Deltas come in as literals here, 1.0 and 10.0. Same residual 3.0: the
+    wide delta pays 0.5*3^2 = 4.5, the narrow one falls outside its knee and
+    pays the linear 1*(3 - 0.5) = 2.5. One delta constant cannot do both.
+    Training sets delta from the tracked residual RMS, not the return RMS.
     """
     pred = torch.tensor([[3.0]])
     target = torch.tensor([0.0])
