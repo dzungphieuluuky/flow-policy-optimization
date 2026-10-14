@@ -783,14 +783,6 @@ class SJFPOPolicy(PreTrainedPolicy):
         """
         return executed_steps.to(torch.float32) / float(self.config.action_horizon)
 
-    @staticmethod
-    def get_token_count_for_cfm_loss(cfg: SJFPOConfig) -> int:
-        """Tokens the CFM loss reduces over: the action steps.
-
-        The width must match the stored per-token losses.
-        """
-        return cfg.action_horizon
-
     def prepare_cfm_loss_inputs(
         self,
         action_is_pad: torch.Tensor,
@@ -1232,7 +1224,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             raise ValueError(
                 f"behavior_cfm_loss shape {tuple(cfm_loss_old.shape)} != {(n, num_mc)}"
             )
-        expected_tokens = self.get_token_count_for_cfm_loss(cfg)
+        expected_tokens = cfg.action_horizon
         if tuple(cfm_loss_old_token.shape) != (n, num_mc, expected_tokens):
             raise ValueError(
                 f"behavior_cfm_loss_token shape {tuple(cfm_loss_old_token.shape)} != "
