@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from collections import OrderedDict
-
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -67,7 +65,17 @@ class CondMLP(nn.Module):
 
 
 class SinusoidalEncoding(nn.Module):
-    """Fixed sinusoidal codes. Freq tables cached per device."""
+    """Fixed sinusoidal codes. One freq table, held as a buffer.
+
+    Built in ``__init__``, never in ``forward``. A table made inside a
+    ``torch.compile`` region belongs to inductor's cudagraph pool, and the next
+    run overwrites it, so reading that same copy back on a later call dies with
+    "accessing tensor output of CUDAGraphs that has been overwritten". Under
+    ``mode="reduce-overhead"`` -- what :func:`train_sjfpo.build_policy` picks for
+    sm_70 and up -- that is every forward after the first, because the Euler
+    solver reuses one graph across its steps and hands it a fresh ``t`` each
+    time.
+    """
 
     def __init__(self, dim: int):
         super().__init__()
@@ -75,40 +83,45 @@ class SinusoidalEncoding(nn.Module):
             raise ValueError(f"SinusoidalEncoding dim must be >= 2, got {dim}")
         self.dim = dim
         self.half = dim // 2
-        self._freq_cache: OrderedDict[torch.device, torch.Tensor] = OrderedDict()
-
-    def compute_freqs(self, device: torch.device) -> torch.Tensor:
-        """Cached ``[half]`` freq table for a device.
-
-        Holds 4 devices max, drops the LRU past that.
-        """
-        device = torch.device(device)
-        cached = self._freq_cache.get(device)
-        if cached is not None:
-            self._freq_cache.move_to_end(device)
-            return cached
-        i = torch.arange(self.half, device=device, dtype=torch.float32)
         # FPO++ (actor_critic.py:_embed_timestep): doubling powers, not the
         # usual 1/10000^i sweep. Numerically exact -- torch's fp32 cos does
         # argument reduction, and against a float64 reference the error is zero
         # at every width. What a wide dim costs is bandwidth the model cannot
         # use: at 64 the top channel runs ~40 cycles per ULP of t. FPO++ ships
         # 8 (isaaclab) and 32 (manipulation); our default is their larger one.
-        cached = torch.pow(torch.tensor(2.0, device=device), i)
-        self._freq_cache[device] = cached
-        if len(self._freq_cache) > 4:
-            self._freq_cache.popitem(last=False)
-        return cached
+        #
+        # Non-persistent: derived from ``dim``, so it stays out of every
+        # state_dict and an older checkpoint still loads. ``half`` matches the
+        # ``[half]`` table the old per-device cache used to build.
+        self.register_buffer(
+            "freqs",
+            torch.pow(
+                torch.tensor(2.0), torch.arange(self.half, dtype=torch.float32)
+            ),
+            persistent=False,
+        )
+
+    def compute_freqs(self, device: torch.device | None = None) -> torch.Tensor:
+        """``[half]`` freq table, fp32, on ``device``.
+
+        Same tensor every call, so no caller can hold a copy that a later run
+        overwrites. A foreign ``device`` copies, and that copy is not kept.
+        """
+        if device is None or torch.device(device) == self.freqs.device:
+            return self.freqs
+        return self.freqs.to(torch.device(device))
 
     def encode_times(self, t: torch.Tensor) -> torch.Tensor:
         """Sinusoidal embed of continuous times. ``[N]`` -> ``[N, 2 * half]``.
 
         cos before sin, matching FPO++'s ``_embed_timestep``. The frequencies
-        already span the range, so ``t`` is not scaled separately. The cached
-        freq table is read, never written, so it is not cloned.
+        already span the range, so ``t`` is not scaled separately. The freq
+        table is a buffer: read, never written, so it needs no clone. The cast
+        to fp32 is a no-op unless someone downcast the whole module.
         """
         t = t.to(dtype=torch.float32)
-        ang = t.unsqueeze(-1) * self.compute_freqs(t.device)
+        freqs = self.compute_freqs(t.device).to(torch.float32)
+        ang = t.unsqueeze(-1) * freqs
         emb = torch.cat([ang.cos(), ang.sin()], dim=-1)
         if self.dim % 2:
             emb = F.pad(emb, (0, 1))

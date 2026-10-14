@@ -386,6 +386,50 @@ def test_embedding_is_exact_against_a_float64_reference():
         assert float(err) < 1e-5, f"dim={dim} drifted from the fp64 reference"
 
 
+def test_freq_table_is_a_buffer_not_a_forward_time_cache():
+    """Built in ``__init__``, so ``torch.compile`` cannot hand cudagraphs a tensor.
+
+    A table made inside the compiled region is an inductor output, and the next
+    replay overwrites it. Reading it back then raises "accessing tensor output
+    of CUDAGraphs that has been overwritten" -- the crash that ended the Kaggle
+    run under ``mode="reduce-overhead"``.
+    """
+    enc = SinusoidalEncoding(32)
+    assert "freqs" in dict(enc.named_buffers())
+    # Derived from ``dim``, not learned: never in a checkpoint, so older
+    # checkpoints still load and no state_dict grows a field.
+    assert "freqs" not in enc.state_dict()
+    # One tensor for the module's life. A fresh one per call would be a fresh
+    # graph output, which is the bug.
+    assert enc.compute_freqs(torch.device("cpu")) is enc.compute_freqs(
+        torch.device("cpu")
+    )
+    # Follows the module across devices, so no per-device cache is needed.
+    assert enc.compute_freqs() is enc.freqs
+    assert enc.compute_freqs(torch.device("cpu")).device == torch.device("cpu")
+
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available(), reason="cudagraphs need CUDA to reproduce"
+)
+def test_encode_times_survives_a_replayed_cudagraph():
+    """The Euler solver reuses one compiled graph across steps and hands it a
+    fresh ``t`` each time. That reuse is what killed the cached table.
+    """
+    enc = SinusoidalEncoding(32).to("cuda")
+
+    @torch.compile(mode="reduce-overhead", fullgraph=False)
+    def embed(t):
+        return enc.encode_times(t)
+
+    outs = [
+        embed(torch.full((1,), v, device="cuda"))
+        for v in (0.0, 0.25, 0.5, 0.75, 1.0)
+    ]
+    ref = enc.encode_times(torch.tensor([1.0], device="cuda"))
+    assert torch.equal(outs[-1], ref)
+
+
 # --- deleted target critic --------------------------------------------------
 
 
