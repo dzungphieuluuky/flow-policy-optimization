@@ -15,19 +15,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from lerobot.configs.types import FeatureType, PolicyFeature
 
-from spectral_joint_policy.collector import resolve_action_bounds, scale_and_clip_chunk
-from spectral_joint_policy.configuration_sjfpo import SJFPOConfig
-from spectral_joint_policy.evaluator import (
+from myfpo.collector import resolve_action_bounds, scale_and_clip_chunk
+from myfpo.configuration_sjfpo import SJFPOConfig
+from myfpo.evaluator import (
     compute_action_jerk,
     compute_mean_chunk_jerk,
     compute_seam_jerk,
 )
-from spectral_joint_policy.modeling_sjfpo import (
+from myfpo.modeling_sjfpo import (
     compute_ratio_metrics,
     compute_value_metrics,
 )
-from spectral_joint_policy.tracking.base import compute_eval_summary_metrics
-from spectral_joint_policy.train_sjfpo import compute_rollout_diagnostics
+from myfpo.tracking.base import compute_eval_summary_metrics
+from myfpo.train_sjfpo import compute_rollout_diagnostics
 
 
 def _cfg(**kw):
@@ -52,7 +52,7 @@ def test_stored_actions_never_exceed_unit_abs_so_a_magnitude_guard_is_useless():
 
 
 def test_action_clip_rate_reports_real_saturation():
-    from spectral_joint_policy.train_sjfpo import compute_action_clip_rate
+    from myfpo.train_sjfpo import compute_action_clip_rate
 
     batch = {
         "action": torch.zeros(4, 8, 3),
@@ -66,7 +66,7 @@ def test_action_clip_rate_reports_real_saturation():
 
 
 def test_action_clip_rate_is_absent_when_no_clip_counts_were_collected():
-    from spectral_joint_policy.train_sjfpo import compute_action_clip_rate
+    from myfpo.train_sjfpo import compute_action_clip_rate
 
     assert compute_action_clip_rate(
         {"action": torch.zeros(1, 2, 2), "action_is_pad": torch.zeros(1, 2, dtype=torch.bool)}
@@ -76,7 +76,7 @@ def test_action_clip_rate_is_absent_when_no_clip_counts_were_collected():
 # --- B. action_abs_mean excludes unexecuted rows ----------------------
 def test_rollout_diagnostics_reports_executed_rows_only():
     """action_abs_mean must not be diluted by rows the robot never ran."""
-    from spectral_joint_policy.train_sjfpo import compute_rollout_diagnostics
+    from myfpo.train_sjfpo import compute_rollout_diagnostics
 
     a = torch.zeros(2, 8, 3)
     a[0, :3] = 1.0
@@ -346,7 +346,7 @@ def test_the_diverge_step_is_not_reported_as_zero_when_nothing_fired():
     import inspect
     import re
 
-    import spectral_joint_policy.train_sjfpo as T
+    import myfpo.train_sjfpo as T
 
     src = inspect.getsource(T)
     # No "global_step if diverged_now else 0" style fallback anywhere.

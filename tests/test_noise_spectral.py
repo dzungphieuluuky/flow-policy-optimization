@@ -27,15 +27,15 @@ import math
 import pytest
 import torch
 
-from spectral_joint_policy.configuration_sjfpo import SJFPOConfig
-from spectral_joint_policy.fpo_core import (
+from myfpo.configuration_sjfpo import SJFPOConfig
+from myfpo.fpo_core import (
     compute_freq_weighted_std,
     compute_noise_band_energy,
     sample_noise,
     spectral_filter_1d,
     trajectory_straightness,
 )
-from spectral_joint_policy.modeling_sjfpo import compute_mc_xt
+from myfpo.modeling_sjfpo import compute_mc_xt
 
 H, ACT, B, M = 8, 3, 2, 2
 SHAPE = (B, M, H, ACT)
@@ -222,7 +222,7 @@ def test_the_interpolant_still_starts_at_the_coloured_noise():
 
 def test_velocity_target_is_action_minus_coloured_noise():
     """v* = a - L(z), the CFM target for base measure N(0, L L^T)."""
-    from spectral_joint_policy.modeling_sjfpo import SJFPOPolicy
+    from myfpo.modeling_sjfpo import SJFPOPolicy
 
     eps = torch.randn(*SHAPE)
     actions = torch.randn(B, H, ACT)
@@ -281,7 +281,7 @@ def test_white_remains_the_default():
 
 
 def _cfm_metrics(**kw):
-    from spectral_joint_policy.modeling_sjfpo import compute_cfm_metrics
+    from myfpo.modeling_sjfpo import compute_cfm_metrics
 
     n = 4
     return compute_cfm_metrics(

@@ -7,9 +7,9 @@ import math
 import torch
 from torch import nn
 
-from spectral_joint_policy.attention import DiTBlock
-from spectral_joint_policy.layers import CondMLP, SinusoidalEncoding, build_rms_norm, modulate
-from spectral_joint_policy.utils import rms
+from myfpo.attention import DiTBlock
+from myfpo.layers import CondMLP, SinusoidalEncoding, build_rms_norm, modulate
+from myfpo.utils import rms
 
 def effective_rank(features: torch.Tensor) -> torch.Tensor:
     """``exp`` spectral entropy of ``[n, hidden]``. Dohare et al. (2306.13812)

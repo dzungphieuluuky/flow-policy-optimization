@@ -158,7 +158,7 @@ def _yaml_value(value):
 
 def render() -> str:
     sys.path.insert(0, str(ROOT / "src"))
-    from spectral_joint_policy.configuration_sjfpo import SJFPOConfig
+    from myfpo.configuration_sjfpo import SJFPOConfig
 
     cfg = dataclasses.replace(SJFPOConfig())
     lines = [HEADER]

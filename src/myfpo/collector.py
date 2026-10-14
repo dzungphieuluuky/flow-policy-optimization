@@ -21,7 +21,7 @@ import torch
 
 from lerobot.utils.constants import DONE, OBS_STATE, REWARD, TRUNCATED
 
-from spectral_joint_policy.configuration_sjfpo import SJFPOConfig
+from myfpo.configuration_sjfpo import SJFPOConfig
 
 __all__ = ["Transition", "collect_chunks", "collect_chunks_vec"]
 

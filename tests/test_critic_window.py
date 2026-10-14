@@ -28,7 +28,7 @@ covers only the executed prefix.
 import pytest
 import torch
 
-from spectral_joint_policy.critic import Critic
+from myfpo.critic import Critic
 
 OBS, HIDDEN, STEPS, ACT, H = 11, 32, 8, 3, 6
 

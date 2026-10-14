@@ -8,8 +8,8 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from spectral_joint_policy.layers import CondMLP, SwiGLU, build_rms_norm, modulate
-from spectral_joint_policy.utils import rms
+from myfpo.layers import CondMLP, SwiGLU, build_rms_norm, modulate
+from myfpo.utils import rms
 
 class SelfAttention(nn.Module):
     """SDPA self-attention. Maskless: the action tokens are the only sequence."""

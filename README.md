@@ -1,4 +1,4 @@
-# spectral-joint-policy
+# myfpo
 
 Online reinforcement learning for **action chunks** with a flow-matching actor,
 built on [LeRobot](https://github.com/huggingface/lerobot) and PyTorch.
@@ -169,7 +169,7 @@ added or dropped without the snapshot being regenerated.
 ## Repo layout
 
 ```
-src/spectral_joint_policy/
+src/myfpo/
   configuration_sjfpo.py   every hyperparameter, all validation inline
   modeling_sjfpo.py        SJFPOPolicy: rollout, forward, the loss
   fpo_core.py              CFM loss, ratio, ASPO, Euler sampler, the 1/f prior

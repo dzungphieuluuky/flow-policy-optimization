@@ -10,7 +10,7 @@ import torch
 class TestGAEChunkAdvantageInvariant:
     def test_gae_chunk_advantage_invariant(self):
         """GAE: advantages + chunk_q == target; gamma^h scales bootstrap."""
-        from spectral_joint_policy.gae import compute_chunk_advantages
+        from myfpo.gae import compute_chunk_advantages
 
         # Minimal synthetic chunk: 2 chunks, length 3 each, gamma=1.0 (no discount)
         # Then target = R + 1*(1-0)*next_q = R + next_q; advantage = target - q
@@ -55,8 +55,8 @@ class TestCFMLossMaskShape:
         shape both production call sites use, where the mask broadcasts over the
         MC axis without inserting one.
         """
-        from spectral_joint_policy.configuration_sjfpo import SJFPOConfig
-        from spectral_joint_policy.fpo_core import compute_cfm_loss
+        from myfpo.configuration_sjfpo import SJFPOConfig
+        from myfpo.fpo_core import compute_cfm_loss
 
         n, mc, horizon, dim = 2, 4, 4, 2
         g = torch.Generator().manual_seed(0)
@@ -73,8 +73,8 @@ class TestCFMLossMaskShape:
 class TestFPOCoreRemaining:
     def test_fpo_aspo_surrogate_shape(self):
         """ASPO: for A>0 returns PPO; A<0 returns SPO; elementwise."""
-        from spectral_joint_policy.fpo_core import compute_aspo_surrogate
-        from spectral_joint_policy.configuration_sjfpo import SJFPOConfig
+        from myfpo.fpo_core import compute_aspo_surrogate
+        from myfpo.configuration_sjfpo import SJFPOConfig
         import torch
 
         cfg = SJFPOConfig()
@@ -85,8 +85,8 @@ class TestFPOCoreRemaining:
 
     def test_fpo_policy_ratio_clip_invariant(self):
         """Policy ratio: exp(delta_st) with clamped delta; backward through delta."""
-        from spectral_joint_policy.fpo_core import compute_policy_ratio
-        from spectral_joint_policy.configuration_sjfpo import SJFPOConfig
+        from myfpo.fpo_core import compute_policy_ratio
+        from myfpo.configuration_sjfpo import SJFPOConfig
         import torch
 
         cfg = SJFPOConfig()
@@ -102,7 +102,7 @@ class TestFPOCoreRemaining:
 class TestValueDiagnostics:
     def test_value_huber_monotonic(self):
         """Huber loss: non-negative and symmetric in (pred - target)."""
-        from spectral_joint_policy.modeling_sjfpo import compute_value_huber_loss
+        from myfpo.modeling_sjfpo import compute_value_huber_loss
         import torch
 
         pred = torch.randn(3)
@@ -114,7 +114,7 @@ class TestValueDiagnostics:
 
     def test_gae_diagnostics_shape(self):
         """Diagnostics dict keys match expected tuple."""
-        from spectral_joint_policy.modeling_sjfpo import _GAE_DIAGNOSTIC_KEYS
+        from myfpo.modeling_sjfpo import _GAE_DIAGNOSTIC_KEYS
         assert isinstance(_GAE_DIAGNOSTIC_KEYS, tuple)
         assert len(_GAE_DIAGNOSTIC_KEYS) == 5
 
@@ -122,8 +122,8 @@ class TestValueDiagnostics:
 class TestSamplingFunctions:
     def test_sample_timesteps_bounds(self):
         """Sampled timesteps within [min, max]."""
-        from spectral_joint_policy.fpo_core import sample_timesteps
-        from spectral_joint_policy.configuration_sjfpo import SJFPOConfig
+        from myfpo.fpo_core import sample_timesteps
+        from myfpo.configuration_sjfpo import SJFPOConfig
         import torch
 
         cfg = SJFPOConfig()
@@ -133,8 +133,8 @@ class TestSamplingFunctions:
 
     def test_sample_noise_shape(self):
         """Noise shape matches request; white mode returns unscaled noise."""
-        from spectral_joint_policy.fpo_core import sample_noise
-        from spectral_joint_policy.configuration_sjfpo import SJFPOConfig
+        from myfpo.fpo_core import sample_noise
+        from myfpo.configuration_sjfpo import SJFPOConfig
         import torch
 
         cfg = SJFPOConfig()

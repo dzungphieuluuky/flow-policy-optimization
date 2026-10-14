@@ -18,8 +18,8 @@ Getting the second one wrong puts the mismatch straight back, one level down.
 import pytest
 import torch
 
-from spectral_joint_policy.configuration_sjfpo import SJFPOConfig
-from spectral_joint_policy.critic import Critic
+from myfpo.configuration_sjfpo import SJFPOConfig
+from myfpo.critic import Critic
 
 
 def _cfg(**kw) -> SJFPOConfig:
@@ -35,7 +35,7 @@ def _cfg(**kw) -> SJFPOConfig:
 
 
 def _policy_with_critic(cfg: SJFPOConfig):
-    from spectral_joint_policy.modeling_sjfpo import SJFPOPolicy
+    from myfpo.modeling_sjfpo import SJFPOPolicy
 
     policy = SJFPOPolicy.__new__(SJFPOPolicy)
     # nn.Module.__setattr__ refuses submodule assignment before __init__ ran.

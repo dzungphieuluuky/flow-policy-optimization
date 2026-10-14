@@ -26,7 +26,7 @@ from __future__ import annotations
 import dataclasses
 from typing import Any
 
-from spectral_joint_policy.configuration_sjfpo import SJFPOConfig
+from myfpo.configuration_sjfpo import SJFPOConfig
 
 __all__ = ["BASELINES", "apply_baseline", "baseline_report"]
 

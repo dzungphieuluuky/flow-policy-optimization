@@ -12,12 +12,12 @@ import torch
 from lerobot.configs.policies import PolicyFeature
 from lerobot.configs.types import FeatureType
 
-from spectral_joint_policy.configuration_sjfpo import SJFPOConfig
-from spectral_joint_policy.modeling_sjfpo import SJFPOPolicy
-from spectral_joint_policy.train_sjfpo import (
+from myfpo.configuration_sjfpo import SJFPOConfig
+from myfpo.modeling_sjfpo import SJFPOPolicy
+from myfpo.train_sjfpo import (
     measure_value_drift,
 )
-from spectral_joint_policy.utils import resolve_storage_dtype
+from myfpo.utils import resolve_storage_dtype
 
 
 def _policy(**kw) -> SJFPOPolicy:

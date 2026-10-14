@@ -23,15 +23,15 @@ from lerobot.policies import PreTrainedPolicy
 from lerobot.processor.converters import to_tensor
 from lerobot.utils.constants import ACTION, OBS_STATE
 
-from spectral_joint_policy.configuration_sjfpo import SJFPOConfig
-from spectral_joint_policy.collector import (
+from myfpo.configuration_sjfpo import SJFPOConfig
+from myfpo.collector import (
     RolloutBuffer,
     collect_chunks,
     collect_chunks_vec,
     resolve_action_bounds,
     scale_and_clip_chunk,
 )
-from spectral_joint_policy.fpo_core import (
+from myfpo.fpo_core import (
     compute_aspo_surrogate,
     compute_cfm_loss,
     clip_transported,
@@ -42,12 +42,12 @@ from spectral_joint_policy.fpo_core import (
     sample_noise,
     sample_timesteps,
 )
-from spectral_joint_policy.gae import compute_chunk_advantages
-from spectral_joint_policy.critic import Critic
-from spectral_joint_policy.encoder import RunningMeanStd, StateEncoder
-from spectral_joint_policy.flow import SJFPOFlowModel
-from spectral_joint_policy.processor_sjfpo import make_sjfpo_pre_post_processors
-from spectral_joint_policy.utils import (
+from myfpo.gae import compute_chunk_advantages
+from myfpo.critic import Critic
+from myfpo.encoder import RunningMeanStd, StateEncoder
+from myfpo.flow import SJFPOFlowModel
+from myfpo.processor_sjfpo import make_sjfpo_pre_post_processors
+from myfpo.utils import (
     autocast_context,
     resolve_storage_dtype,
     rms,
@@ -842,7 +842,7 @@ class SJFPOPolicy(PreTrainedPolicy):
     ) -> dict[str, torch.Tensor]:
         """Roll out open-loop chunks, build a training batch.
 
-        See :mod:`spectral_joint_policy.gae`. A chunk can run
+        See :mod:`myfpo.gae`. A chunk can run
         one step then terminate, so counts can hit one
 
         The batch carries one raw post-step frame per executed

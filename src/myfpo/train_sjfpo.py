@@ -20,19 +20,19 @@ import torch
 from lerobot.configs.types import FeatureType, PolicyFeature
 from lerobot.utils.random_utils import set_seed
 
-from spectral_joint_policy.checkpointing import load_policy_checkpoint, save_policy_checkpoint
-from spectral_joint_policy.configuration_sjfpo import SJFPOConfig
-from spectral_joint_policy.evaluator import (
+from myfpo.checkpointing import load_policy_checkpoint, save_policy_checkpoint
+from myfpo.configuration_sjfpo import SJFPOConfig
+from myfpo.evaluator import (
     Evaluator,
     check_divergence,
     check_regression,
     compute_mean_chunk_jerk,
     compute_seam_jerk,
 )
-from spectral_joint_policy.modeling_sjfpo import SJFPOAborted, SJFPOPolicy, build_optimizer
+from myfpo.modeling_sjfpo import SJFPOAborted, SJFPOPolicy, build_optimizer
 from lerobot.utils.constants import CHECKPOINTS_DIR
-from spectral_joint_policy.utils import resolve_device, rms, to_numpy_1d
-from spectral_joint_policy.tracking import build_tracker, compute_eval_summary_metrics
+from myfpo.utils import resolve_device, rms, to_numpy_1d
+from myfpo.tracking import build_tracker, compute_eval_summary_metrics
 
 
 # Consecutive above-clamp updates before aborting. clamp() has zero gradient

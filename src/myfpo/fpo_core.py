@@ -8,8 +8,8 @@ from typing import Any
 
 import torch
 
-from spectral_joint_policy.configuration_sjfpo import SJFPOConfig
-from spectral_joint_policy.utils import resolve_storage_dtype
+from myfpo.configuration_sjfpo import SJFPOConfig
+from myfpo.utils import resolve_storage_dtype
 
 
 def sample_timesteps(

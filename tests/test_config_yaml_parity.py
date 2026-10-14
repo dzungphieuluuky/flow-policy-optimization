@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from spectral_joint_policy.configuration_sjfpo import SJFPOConfig
+from myfpo.configuration_sjfpo import SJFPOConfig
 
 ROOT = Path(__file__).resolve().parents[1]
 YAML_PATH = ROOT / "configs" / "sjfpo.yaml"

@@ -110,7 +110,7 @@ def save_policy_checkpoint(
     per role.
     """
     # Deferred import: circular dependency checkpointing <-> modeling_sjfpo.
-    from spectral_joint_policy.modeling_sjfpo import SJFPOPolicy
+    from myfpo.modeling_sjfpo import SJFPOPolicy
 
     if not isinstance(policy, SJFPOPolicy):
         raise ValueError(
@@ -159,13 +159,13 @@ def save_policy_checkpoint(
 def load_optimizer(policy, d: Path) -> torch.optim.Optimizer:
     """Rebuild the optimizer from the policy, then load its state.
 
-    Builds through :func:`spectral_joint_policy.modeling_sjfpo.build_optimizer`,
+    Builds through :func:`myfpo.modeling_sjfpo.build_optimizer`,
     the call the training loop makes, so saved and rebuilt param groups cannot
     drift. Fails loudly on a structural mismatch instead of relying on
     ``load_state_dict``'s opaque errors.
     """
     # Deferred import (circular: checkpointing uses modeling_sjfpo optimizer).
-    from spectral_joint_policy.modeling_sjfpo import build_optimizer
+    from myfpo.modeling_sjfpo import build_optimizer
 
     optimizer = build_optimizer(policy)
 
@@ -235,7 +235,7 @@ def load_policy_checkpoint(
     Action bounds are runtime state: pass both ``action_low`` and ``action_high``
     to restore the postprocessor mapping.
     """
-    from spectral_joint_policy.modeling_sjfpo import SJFPOPolicy  # lazy: import-light module
+    from myfpo.modeling_sjfpo import SJFPOPolicy  # lazy: import-light module
 
     d = Path(dir_path)
     missing = [

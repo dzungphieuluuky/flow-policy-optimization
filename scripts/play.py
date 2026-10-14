@@ -26,8 +26,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import numpy as np
 
-from spectral_joint_policy.checkpointing import load_policy_checkpoint  # noqa: E402
-from spectral_joint_policy.evaluator import Evaluator, render_episode_frames  # noqa: E402
+from myfpo.checkpointing import load_policy_checkpoint  # noqa: E402
+from myfpo.evaluator import Evaluator, render_episode_frames  # noqa: E402
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -4,10 +4,10 @@ import pytest
 from lerobot.configs.policies import PolicyFeature
 from lerobot.configs.types import FeatureType
 
-from spectral_joint_policy.configuration_sjfpo import SJFPOConfig
-from spectral_joint_policy.evaluator import check_regression
-from spectral_joint_policy.tracking import build_tracker
-from spectral_joint_policy.tracking.base import (
+from myfpo.configuration_sjfpo import SJFPOConfig
+from myfpo.evaluator import check_regression
+from myfpo.tracking import build_tracker
+from myfpo.tracking.base import (
     ExperimentTracker,
     build_run_name,
     config_hash,

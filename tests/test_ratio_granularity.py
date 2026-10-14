@@ -17,9 +17,9 @@ import torch
 from lerobot.configs.types import FeatureType
 from lerobot.configs.policies import PolicyFeature
 
-import spectral_joint_policy.modeling_sjfpo as M
-from spectral_joint_policy.configuration_sjfpo import SJFPOConfig
-from spectral_joint_policy.train_sjfpo import build_policy
+import myfpo.modeling_sjfpo as M
+from myfpo.configuration_sjfpo import SJFPOConfig
+from myfpo.train_sjfpo import build_policy
 
 OBS, ACT, N, MC, HORIZON = 11, 2, 6, 4, 16
 ROOT = Path(__file__).resolve().parents[1]
@@ -161,7 +161,7 @@ def test_the_baselines_select_the_trust_regions_they_name():
     with this registry (max_grad_norm 48.0 vs 1.0), so keeping them would have
     left two ways to run "the same" baseline with different gradient clipping.
     """
-    from spectral_joint_policy.baselines import apply_baseline
+    from myfpo.baselines import apply_baseline
 
     expected = {
         "fpo": ("ppo", "per_chunk"),
@@ -181,7 +181,7 @@ def test_a_baseline_cannot_inherit_the_default_it_is_been_compared_against():
     Every baseline pins its identifying fields, so moving a default cannot
     silently redefine what the baseline is.
     """
-    from spectral_joint_policy.baselines import BASELINES, _OVERRIDES
+    from myfpo.baselines import BASELINES, _OVERRIDES
 
     for name in BASELINES:
         assert _OVERRIDES[name], f"{name} inherits the default config verbatim"

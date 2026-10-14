@@ -23,12 +23,12 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from spectral_joint_policy.config import (  # noqa: E402
+from myfpo.config import (  # noqa: E402
     ENV_REGISTRY_PATH,
     KNOWN_ENVS,
     get_observation_action_dim,
 )
-from spectral_joint_policy.configuration_sjfpo import SJFPOConfig  # noqa: E402
+from myfpo.configuration_sjfpo import SJFPOConfig  # noqa: E402
 
 # Tier "smoke": pure gymnasium, no mujoco, so these run anywhere. All have
 # continuous (Box) action spaces -- see the note in configs/envs.yaml on why
@@ -82,7 +82,7 @@ def test_registry_dims_match_the_live_env_space(env_id):
 @pytest.mark.parametrize("env_id", SMOKE_ENVS)
 def test_build_policy_attaches_features_from_dims_alone(env_id):
     """The runner's only inputs: an env name and its resolved dims."""
-    from spectral_joint_policy.train_sjfpo import build_policy
+    from myfpo.train_sjfpo import build_policy
 
     obs_dim, action_dim = get_observation_action_dim(env_id)
     cfg = SJFPOConfig()

@@ -16,7 +16,7 @@ import numpy as np
 import pytest
 import torch
 
-from spectral_joint_policy.collector import RolloutBuffer, collect_chunks_vec
+from myfpo.collector import RolloutBuffer, collect_chunks_vec
 
 OBS_STEPS, OBS_DIM, HORIZON, ACT_DIM = 4, 3, 4, 1
 NUM_ENVS = 3

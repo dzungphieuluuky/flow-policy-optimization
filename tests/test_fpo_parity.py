@@ -17,17 +17,17 @@ from lerobot.configs.policies import PolicyFeature
 from lerobot.configs.types import FeatureType
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "spectral_joint_policy"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "myfpo"))
 
-from spectral_joint_policy.configuration_sjfpo import SJFPOConfig
-from spectral_joint_policy.fpo_core import (
+from myfpo.configuration_sjfpo import SJFPOConfig
+from myfpo.fpo_core import (
     clip_transported,
     compute_cfm_loss,
     compute_policy_ratio,
 )
-from spectral_joint_policy.gae import compute_chunk_advantages
-from spectral_joint_policy.layers import SinusoidalEncoding
-from spectral_joint_policy.modeling_sjfpo import build_optimizer, SJFPOPolicy
+from myfpo.gae import compute_chunk_advantages
+from myfpo.layers import SinusoidalEncoding
+from myfpo.modeling_sjfpo import build_optimizer, SJFPOPolicy
 
 from train_sjfpo import apply_lr_schedule
 

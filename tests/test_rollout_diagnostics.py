@@ -7,7 +7,7 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from spectral_joint_policy.train_sjfpo import compute_rollout_diagnostics
+from myfpo.train_sjfpo import compute_rollout_diagnostics
 
 N, H, D = 8, 4, 3
 

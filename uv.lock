@@ -3136,7 +3136,7 @@ wheels = [
 ]
 
 [[package]]
-name = "spectral-joint-policy"
+name = "myfpo"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

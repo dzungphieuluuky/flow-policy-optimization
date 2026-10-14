@@ -22,7 +22,7 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from spectral_joint_policy.gae import compute_chunk_advantages
+from myfpo.gae import compute_chunk_advantages
 
 GAMMA, H = 0.99, 4
 
@@ -151,7 +151,7 @@ def test_trace_inputs_are_absent_from_the_qc_backup():
     assert params["chunk_env_id"].default is None
 
     # Default is the standard trace, and both defaults agree with the config.
-    from spectral_joint_policy.configuration_sjfpo import SJFPOConfig
+    from myfpo.configuration_sjfpo import SJFPOConfig
 
     assert params["gae_lambda"].default == SJFPOConfig().gae_lambda == 0.95
 
@@ -518,14 +518,14 @@ def test_config_default_runs_the_standard_trace():
     Both the config and the function default are 0.95; a divergence between them
     is the silent kind of drift this file exists to catch.
     """
-    from spectral_joint_policy.configuration_sjfpo import SJFPOConfig
+    from myfpo.configuration_sjfpo import SJFPOConfig
 
     assert SJFPOConfig().gae_lambda == 0.95
     assert SJFPOConfig(gae_lambda=0.0).gae_lambda == 0.0
 
 
 def test_config_rejects_an_out_of_range_lambda():
-    from spectral_joint_policy.configuration_sjfpo import SJFPOConfig
+    from myfpo.configuration_sjfpo import SJFPOConfig
 
     with pytest.raises(ValueError, match="gae_lambda"):
         SJFPOConfig(gae_lambda=2.0).validate()

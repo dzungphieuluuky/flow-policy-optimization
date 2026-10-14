@@ -7,7 +7,7 @@ import warnings
 import torch
 from torch import nn
 
-from spectral_joint_policy.layers import CondMLP
+from myfpo.layers import CondMLP
 
 class RunningMeanStd(nn.Module):
     """Per-dim running mean/var over raw obs frames. fp32 stats, fp64 ``count``

@@ -12,7 +12,7 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from spectral_joint_policy.denoising_mdp import (
+from myfpo.denoising_mdp import (
     denoising_chain_gae,
     gaussian_log_prob,
     gaussian_step_ratio,

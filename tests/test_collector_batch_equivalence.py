@@ -20,7 +20,7 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from spectral_joint_policy.collector import (
+from myfpo.collector import (
     RolloutBuffer,
     collect_chunks_vec,
 )

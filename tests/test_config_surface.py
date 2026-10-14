@@ -12,12 +12,12 @@ import collections
 import dataclasses
 from pathlib import Path
 
-from spectral_joint_policy.configuration_sjfpo import SJFPOConfig
+from myfpo.configuration_sjfpo import SJFPOConfig
 
 CONFIG_PATH = (
     Path(__file__).resolve().parents[1]
     / "src"
-    / "spectral_joint_policy"
+    / "myfpo"
     / "configuration_sjfpo.py"
 )
 

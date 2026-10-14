@@ -15,8 +15,8 @@ import pytest
 
 from lerobot.configs.types import FeatureType, PolicyFeature
 
-from spectral_joint_policy.configuration_sjfpo import SJFPOConfig
-from spectral_joint_policy.modeling_sjfpo import SJFPOPolicy, build_optimizer
+from myfpo.configuration_sjfpo import SJFPOConfig
+from myfpo.modeling_sjfpo import SJFPOPolicy, build_optimizer
 
 OBS, ACT = 11, 2
 

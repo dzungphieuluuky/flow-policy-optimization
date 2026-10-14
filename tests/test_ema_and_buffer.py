@@ -12,9 +12,9 @@ import torch
 from lerobot.configs.policies import PolicyFeature
 from lerobot.configs.types import FeatureType
 
-from spectral_joint_policy.collector import RolloutBuffer
-from spectral_joint_policy.configuration_sjfpo import SJFPOConfig
-from spectral_joint_policy.modeling_sjfpo import SJFPOPolicy
+from myfpo.collector import RolloutBuffer
+from myfpo.configuration_sjfpo import SJFPOConfig
+from myfpo.modeling_sjfpo import SJFPOPolicy
 
 
 def _policy(**kw) -> SJFPOPolicy:

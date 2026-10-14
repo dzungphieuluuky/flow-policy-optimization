@@ -18,9 +18,9 @@ import warnings
 import pytest
 import torch
 
-from spectral_joint_policy.configuration_sjfpo import SJFPOConfig
-from spectral_joint_policy.modeling_sjfpo import compute_gae_diagnostics
-from spectral_joint_policy.train_sjfpo import compute_rollout_diagnostics
+from myfpo.configuration_sjfpo import SJFPOConfig
+from myfpo.modeling_sjfpo import compute_gae_diagnostics
+from myfpo.train_sjfpo import compute_rollout_diagnostics
 
 
 def _gae(n=8, **kw):
@@ -118,7 +118,7 @@ def test_the_spectral_energy_key_is_gone_from_the_batch():
     """d0f97c2 removed its source; a passthrough slot for it is dead weight."""
     import inspect
 
-    import spectral_joint_policy.train_sjfpo as T
+    import myfpo.train_sjfpo as T
 
     src = inspect.getsource(T)
     assert "compute_spectral_energy_retained" not in src
@@ -129,7 +129,7 @@ def test_trainer_emits_no_key_it_cannot_compute():
     import ast
     import inspect
 
-    import spectral_joint_policy.train_sjfpo as T
+    import myfpo.train_sjfpo as T
 
     tree = ast.parse(inspect.getsource(T))
     dead = []
@@ -180,8 +180,8 @@ def test_metrics_survive_the_wandb_scalar_pack():
 
     A non-scalar that reaches the tracker fails the whole update.
     """
-    from spectral_joint_policy.modeling_sjfpo import compute_cfm_metrics
-    from spectral_joint_policy.fpo_core import sample_noise
+    from myfpo.modeling_sjfpo import compute_cfm_metrics
+    from myfpo.fpo_core import sample_noise
 
     eps = sample_noise((2, 2, 8, 3), SJFPOConfig(), torch.device("cpu"), None)
     out = compute_cfm_metrics(

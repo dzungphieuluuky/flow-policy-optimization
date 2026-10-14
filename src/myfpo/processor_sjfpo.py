@@ -12,7 +12,7 @@ from lerobot.configs import PipelineFeatureType, PolicyFeature
 from lerobot.processor.pipeline import ProcessorStep
 from lerobot.utils.constants import ACTION, OBS_STATE
 
-from spectral_joint_policy.encoder import RunningMeanStd
+from myfpo.encoder import RunningMeanStd
 
 
 class SJFPOObservationProcessorStep(ProcessorStep):

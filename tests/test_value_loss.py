@@ -7,7 +7,7 @@ contributes a bounded gradient instead of owning critic_grad_norm_preclip.
 
 import torch
 
-from spectral_joint_policy.modeling_sjfpo import compute_value_huber_loss
+from myfpo.modeling_sjfpo import compute_value_huber_loss
 
 
 def test_huber_is_quadratic_inside_delta_and_linear_outside():

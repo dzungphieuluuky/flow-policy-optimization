@@ -37,16 +37,16 @@ import draccus
 # Make src/ importable before any sjfpo.* import.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from spectral_joint_policy.baselines import (  # noqa: E402
+from myfpo.baselines import (  # noqa: E402
     BASELINES,
     apply_baseline,
     baseline_report,
 )
-from spectral_joint_policy.config import (  # noqa: E402
+from myfpo.config import (  # noqa: E402
     KNOWN_ENVS,
     get_observation_action_dim,
 )
-from spectral_joint_policy.configuration_sjfpo import SJFPOConfig  # noqa: E402
+from myfpo.configuration_sjfpo import SJFPOConfig  # noqa: E402
 
 
 def configure_torch_cuda() -> bool:
@@ -84,7 +84,7 @@ def apply_runtime_settings() -> dict:
     """
     import torch
 
-    from spectral_joint_policy.utils import (
+    from myfpo.utils import (
         detect_gpu,
         resolve_compute_dtype,
         resolve_storage_dtype,
@@ -311,7 +311,7 @@ def run_single(
                 f"{(live_obs, live_act)}"
             )
 
-        from spectral_joint_policy.train_sjfpo import train_sjfpo_run
+        from myfpo.train_sjfpo import train_sjfpo_run
 
         if resume_from_checkpoint is not None and method != "sjfpo":
             raise ValueError(f"--resume is sjfpo-only, got method={method!r}")
