@@ -24,6 +24,7 @@ DPPO   Ren et al., "Diffusion Policy Policy Optimization", NeurIPS 2024,
 from __future__ import annotations
 
 import dataclasses
+import warnings
 from typing import Any
 
 from myfpo.configuration_sjfpo import SJFPOConfig
@@ -49,7 +50,7 @@ _NOTES: dict[str, dict[str, str]] = {
         "log_ratio_cap": "inf: FPO has no log-ratio cap and no straight-through "
         "estimator. The STE in compute_policy_ratio is a SJFPO stabilisation.",
         "cfm_loss_clamp_negative_advantages": "False: same reason.",
-        "min_timestep/max_timestep": "[0, 1]: FPO samples tau ~ U(0,1) "
+        "min_timestep": "0.0 and max_timestep 1.0: FPO samples tau ~ U(0,1) "
         "(Eq. 1-2, no schedule). SJFPO defaults to [0.005, 0.995].",
         "timestep_sampling_mode": "uniform: FPO Eq. 7 draws tau uniformly. "
         "The 'fpo_beta' default only coincides with uniform at beta=1.",
@@ -82,9 +83,9 @@ _NOTES: dict[str, dict[str, str]] = {
         "num_inference_steps": "4: same rationale, on the eval path.",
     },
     "dppo": {
-        "ratio_granularity": "unused here. This arm is config-only: it runs "
-        "the FPO++ surrogate, not DPPO's per-denoising-step Gaussian ratio. "
-        "See the module comment.",
+        # No ratio_granularity note: the arm does not override it, so
+        # baseline_report could never print one. apply_baseline's warning and
+        # _assert_dppo_unwired say the same thing where it is acted on.
         "num_euler_steps": "10: matched to the papers' NFE. DPPO itself is "
         "stochastic-only by construction (Alg. 2 samples noise at every step), "
         "so training must start from sampled noise, never eps=0.",
@@ -142,6 +143,30 @@ _OVERRIDES: dict[str, dict[str, Any]] = {
 BASELINES: tuple[str, ...] = ("fpo", "fpo++", "dppo")
 
 
+#: Fields the ``dppo`` arm may flip without being wired to
+#: :mod:`denoising_mdp`. All rollout-side: a trust-region or ratio override here
+#: would relabel whichever code path the caller happened to configure.
+_DPPO_ROLLOUT_ONLY = frozenset({"num_euler_steps", "num_inference_steps"})
+
+
+def _assert_dppo_unwired(overrides: dict[str, Any]) -> None:
+    """Keep the ``dppo`` label honest while it is a config-only arm.
+
+    Two failure modes, one guard. An override outside :data:`_DPPO_ROLLOUT_ONLY`
+    means someone edited the table below without wiring the sampler the name
+    promises, so the arm would claim DPPO while running something else. Failing
+    here beats a baseline that is quietly FPO++ at 10 NFE.
+    """
+    extra = sorted(set(overrides) - _DPPO_ROLLOUT_ONLY)
+    if extra:
+        raise ValueError(
+            f"baseline 'dppo' may only override {sorted(_DPPO_ROLLOUT_ONLY)} "
+            f"until denoising_mdp is wired into the training path; got {extra}. "
+            "Either wire it in or drop the name: an override here does not "
+            "change which surrogate runs."
+        )
+
+
 def apply_baseline(cfg: SJFPOConfig, name: str) -> tuple[SJFPOConfig, dict[str, Any]]:
     """Return ``cfg`` with ``name``'s overrides applied, plus provenance.
 
@@ -155,6 +180,16 @@ def apply_baseline(cfg: SJFPOConfig, name: str) -> tuple[SJFPOConfig, dict[str, 
             f"unknown baseline {name!r}; choices: {', '.join(BASELINES)}"
         )
     overrides = _OVERRIDES[key]
+    if key == "dppo":
+        _assert_dppo_unwired(overrides)
+        warnings.warn(
+            "baseline 'dppo' runs the FPO++ surrogate, not DPPO's "
+            "per-denoising-step Gaussian ratio, and inherits ratio_granularity "
+            "and trust_region_mode from the passed config. denoising_mdp.py "
+            "holds the sampler but nothing in the training path calls it.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
     out = dataclasses.replace(cfg, **overrides) if overrides else cfg
     out.validate()
     provenance = {

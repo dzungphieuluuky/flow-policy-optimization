@@ -308,6 +308,25 @@ def measure_value_drift(policy, batch, device) -> tuple[torch.Tensor, torch.Tens
     )
 
 
+def _accumulation_group_sizes(
+    n_microbatches: int, accumulation_steps: int
+) -> list[int]:
+    """Microbatch count per gradient-accumulation group.
+
+    Every group but the last is ``accumulation_steps`` wide; the last is short
+    when the total does not divide, and is flushed on its own rather than
+    dropped. Each microbatch is scaled by its own group's size, so a short last
+    group still contributes a full gradient instead of a fraction of one.
+    """
+    if n_microbatches < 1 or accumulation_steps < 1:
+        raise ValueError(
+            f"n_microbatches={n_microbatches} and accumulation_steps="
+            f"{accumulation_steps} must both be >= 1"
+        )
+    full, remainder = divmod(n_microbatches, accumulation_steps)
+    return [accumulation_steps] * full + ([remainder] if remainder else [])
+
+
 def sample_random_baseline(
     evaluator: Evaluator, env: Any, max_episodes: int = 30
 ) -> float:
@@ -433,6 +452,22 @@ def train_sjfpo_run(
     train_env = env
     if cfg.num_envs > 1 and env_name != "unknown":
         train_env = make_vec_env(env_name, cfg.num_envs, record=runtime)
+    else:
+        # Recorded even when num_envs == 1, so the artifact says which path ran.
+        if runtime is not None:
+            runtime["vector_env"] = "single"
+        if cfg.num_envs > 1:
+            # num_envs is a throughput knob, not a correctness one, so this falls
+            # back rather than failing. Silently, it used to be a run that claimed
+            # 64 envs and used one.
+            warnings.warn(
+                f"num_envs={cfg.num_envs} requested but env_name={env_name!r} "
+                "(no spec.id on the passed env), so vectorisation was skipped "
+                "and the run uses a single env. Expect a large throughput drop; "
+                "the run is otherwise correct.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
     if runtime is not None:
         # Audits every auto-applied decision, so a run is self-describing after
         # the fact. Written before the first rollout, not at the end.
@@ -589,14 +624,19 @@ def train_sjfpo_run(
                 )
             )
             accumulation_steps = cfg.grad_accum_steps
+            group_sizes = _accumulation_group_sizes(
+                len(microbatches), accumulation_steps
+            )
             optimizer.zero_grad(set_to_none=True)
             minibatch: dict[str, torch.Tensor] = {}
             finite_error = torch.zeros(
                 (), device=batch["raw_advantages"].device, dtype=torch.bool
             )
             for micro_step, mb_idx in enumerate(microbatches):
-                group_start = micro_step - (micro_step % accumulation_steps)
-                group_size = min(accumulation_steps, len(microbatches) - group_start)
+                # Every group but the last is exactly accumulation_steps wide, so
+                # the group index is the microbatch index divided down. The last
+                # group may be short, and it still indexes within the list.
+                group_size = group_sizes[micro_step // accumulation_steps]
                 minibatch = sample_minibatch(batch, mb_idx, minibatch)
                 loss, epoch_info = policy(
                     minibatch,

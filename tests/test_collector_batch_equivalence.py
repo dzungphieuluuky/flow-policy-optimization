@@ -16,6 +16,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import pytest
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -66,7 +67,12 @@ class FakeVecEnv:
         return self._obs(), rew, done, np.zeros_like(done), {}
 
 
-def collect(episode: int, n_envs: int = N_ENVS, total_steps: int = TOTAL_STEPS):
+def collect(
+    episode: int,
+    n_envs: int = N_ENVS,
+    total_steps: int = TOTAL_STEPS,
+    n_obs_steps: int = N_OBS,
+):
     """Run the real collector on a deterministic env; return the buffer + env."""
     env = FakeVecEnv(n=n_envs, episode=episode)
     # Fixed projection so the proposal depends on every frame of the window in
@@ -80,13 +86,13 @@ def collect(episode: int, n_envs: int = N_ENVS, total_steps: int = TOTAL_STEPS):
         return torch.addmm(flat.new_zeros(n, ACT_DIM), flat, w).unsqueeze(1) * ramp
 
     buf = RolloutBuffer(
-        max_chunks=total_steps, max_steps=total_steps, obs_steps=N_OBS,
+        max_chunks=total_steps, max_steps=total_steps, obs_steps=n_obs_steps,
         obs_dim=OBS_DIM, action_horizon=HORIZON, action_dim=ACT_DIM,
     )
     collect_chunks_vec(
         env, policy, total_steps,
         -torch.ones(ACT_DIM), torch.ones(ACT_DIM),
-        n_obs_steps=N_OBS, n_action_steps=HORIZON, chunk_size=HORIZON,
+        n_obs_steps=n_obs_steps, n_action_steps=HORIZON, chunk_size=HORIZON,
         buffer=buf, seed=0,
     )
     return buf, env
@@ -225,3 +231,71 @@ def test_actions_sent_to_the_env_match_the_stored_chunks():
         assert torch.allclose(got[nonzero], expected, atol=1e-6), e
         n_terminals = sum(bool(a["chunk_terminated"][i]) for i in idxs)
         assert int((~nonzero).sum()) == n_terminals, (e, int((~nonzero).sum()))
+
+
+def test_a_buffer_is_required_and_returns_itself():
+    """There is one write path, so ``buffer`` is not optional.
+
+    The list-returning API had two implementations of this loop, and they
+    drifted: a ninth argument to an eight-parameter function, a step cursor that
+    never rewound, and a plan table the envs never read from. Deleting the second
+    path is what keeps them from drifting again, and this pins the deletion --
+    omitting the buffer is a TypeError at the call, not a silent list.
+    """
+    env = FakeVecEnv(n=N_ENVS, episode=50)
+
+    def policy(states):
+        return torch.zeros(states.shape[0], HORIZON, ACT_DIM)
+
+    kwargs = {
+        "n_obs_steps": N_OBS, "n_action_steps": HORIZON,
+        "chunk_size": HORIZON, "seed": 0,
+    }
+    with pytest.raises(TypeError):
+        collect_chunks_vec(
+            env, policy, 32,
+            -torch.ones(ACT_DIM), torch.ones(ACT_DIM), **kwargs
+        )
+    buf = RolloutBuffer(
+        max_chunks=32, max_steps=32, obs_steps=N_OBS, obs_dim=OBS_DIM,
+        action_horizon=HORIZON, action_dim=ACT_DIM,
+    )
+    got = collect_chunks_vec(
+        env, policy, 32,
+        -torch.ones(ACT_DIM), torch.ones(ACT_DIM), buffer=buf, **kwargs
+    )
+    assert got is buf and buf.n_steps == 32
+
+
+def test_a_chunk_as_deep_as_the_window_still_lands_chronologically():
+    """n_action_steps == n_obs_steps: the cursor reaches n_obs_steps.
+
+    The ring's write slot and its step counter are the same number, so on the
+    chunk's last step the cursor is n_obs_steps -- exactly one past the last row.
+    The roll-back that restores chronological order has to wrap that case, and
+    a chunk this deep replaces the whole window, so the surviving rows are all
+    frames this chunk recorded.
+    """
+    assert HORIZON == N_OBS, "this test is the boundary case"
+    buf, _ = collect(1000)  # no terminal: every chunk runs the full horizon
+    a = buf.active()
+    full = [i for i in range(buf.n_chunks) if int(a["chunk_lengths"][i]) == N_OBS]
+    assert len(full) >= N_ENVS, f"no full-width chunks: {buf.n_chunks}"
+    for i in full:
+        n = int(a["chunk_lengths"][i])
+        s = int(a["chunk_starts"][i])
+        assert torch.equal(
+            a["chunk_next_state"][i], a["step_frames"][s : s + n]
+        ), i
+
+
+def test_a_chunk_longer_than_the_obs_window_is_rejected():
+    """The ring buffer cannot hold a chunk deeper than itself.
+
+    The write slot advances one row per step and rewinds only when a chunk
+    closes, so a chunk running more steps than n_obs_steps scattered past the
+    end of the window. n_action_steps == n_obs_steps is the boundary and must
+    still pass.
+    """
+    with pytest.raises(ValueError, match="exceeds n_obs_steps"):
+        collect(50, n_obs_steps=N_OBS // 4)

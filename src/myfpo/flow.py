@@ -76,9 +76,13 @@ class SJFPOFlowModel(nn.Module):
         """Mean absolute weight. Dohare's correlate: magnitudes grow under
         continual training, before the rank drop. Per-param sums, not one
         accumulator: a float scalar would land on CPU."""
-        magnitudes = [param.detach().abs().sum(dtype=torch.float32) for param in self.parameters()]
-        count = sum(param.numel() for param in self.parameters())
-        return torch.stack(magnitudes).sum() / max(count, 1)
+        total = None
+        count = 0
+        for param in self.parameters():
+            s = param.detach().abs().sum(dtype=torch.float32)
+            total = s if total is None else total + s
+            count += param.numel()
+        return total / max(count, 1)
 
     def forward(
         self,

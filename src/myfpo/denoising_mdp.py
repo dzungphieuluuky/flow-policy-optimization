@@ -196,9 +196,13 @@ def denoising_chain_gae(
 ) -> torch.Tensor:
     """GAE over the inner chain, DPPO Eq. 4.
 
-    ``step_rewards`` ``[n, K]``, ``values`` ``[n, K]`` = V(s_k), ``dones``
+    ``step_rewards`` ``[n, K]``, ``values`` ``[n, K+1]`` = V(s_k), ``dones``
     ``[n, K]`` bool, True when the chain ended (env terminated) at step k.
     Returns ``[n, K]`` advantages.
+
+    ``values`` carries one column more than the chain, because the step at
+    ``j = K-1`` bootstraps from ``V(s_K)``; column K is that terminal value,
+    not a value of a further step.
 
     The env's reward lands on the *last* inner step (that is the only step
     where an environment transition happened), so a caller passing chunk rewards

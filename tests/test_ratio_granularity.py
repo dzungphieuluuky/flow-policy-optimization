@@ -185,3 +185,18 @@ def test_a_baseline_cannot_inherit_the_default_it_is_been_compared_against():
 
     for name in BASELINES:
         assert _OVERRIDES[name], f"{name} inherits the default config verbatim"
+
+
+def test_every_baseline_note_belongs_to_an_override_it_can_be_printed_for():
+    """A provenance note keyed to nothing is documentation no reader sees.
+
+    ``baseline_report`` looks each note up by the override field it explains, so
+    a key that is not an override is silently dropped -- which is how two notes
+    ended up written and never printed, including the one stating that the
+    ``dppo`` arm does not run DPPO.
+    """
+    from myfpo.baselines import _NOTES, _OVERRIDES
+
+    for name, notes in _NOTES.items():
+        orphans = sorted(set(notes) - set(_OVERRIDES[name]))
+        assert not orphans, f"{name}: notes no report will print: {orphans}"

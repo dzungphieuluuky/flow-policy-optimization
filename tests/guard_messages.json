@@ -1,4 +1,6 @@
 {
+  "attention:DiTBlock:forward:cond-batch": "c has batch 3 but x has 2",
+  "attention:DiTBlock:forward:token-batch": "c has batch 3 but x has 2",
   "attention:DiTBlock:hidden": "hidden_dim must be at least 2",
   "attention:DiTBlock:ratio": "mlp_ratio must produce a positive hidden width",
   "attention:SelfAttention:heads": "n_heads must be positive, got 0",
@@ -29,8 +31,6 @@
   "config:min_timestep": "require 0 <= min_timestep < max_timestep <= 1, got (-1.0, 0.995)",
   "config:missing-input-features": "SJFPO requires 'observation.state' in input_features.",
   "config:noise_sampling_mode": "noise_sampling_mode must be 'normal' or 'uniform'",
-  "config:noise_scaling_beta": "noise_scaling_beta must be >= 0, got -1.0",
-  "config:noise_scaling_mode": "noise_scaling_mode='freq_weighted' was the DCT-coefficient mode and no longer exists; use 'freq_weighted_time' for the action-step grid, or 'white'",
   "config:num_critics": "num_critics=0 must be >= 1",
   "config:num_envs": "num_envs=0 must be >= 1",
   "config:num_euler_steps": "num_euler_steps=0 must be >= 1",

@@ -104,10 +104,11 @@ class SinusoidalEncoding(nn.Module):
         """Sinusoidal embed of continuous times. ``[N]`` -> ``[N, 2 * half]``.
 
         cos before sin, matching FPO++'s ``_embed_timestep``. The frequencies
-        already span the range, so ``t`` is not scaled separately.
+        already span the range, so ``t`` is not scaled separately. The cached
+        freq table is read, never written, so it is not cloned.
         """
         t = t.to(dtype=torch.float32)
-        ang = t.unsqueeze(-1) * self.compute_freqs(t.device).clone()
+        ang = t.unsqueeze(-1) * self.compute_freqs(t.device)
         emb = torch.cat([ang.cos(), ang.sin()], dim=-1)
         if self.dim % 2:
             emb = F.pad(emb, (0, 1))

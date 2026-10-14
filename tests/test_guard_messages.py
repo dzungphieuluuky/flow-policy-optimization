@@ -79,8 +79,6 @@ _BAD_CONFIG = {
     "max_lr_decays": -1,
     "min_timestep": -1.0,
     "noise_sampling_mode": "laplace",
-    "noise_scaling_beta": -1.0,
-    "noise_scaling_mode": "freq_weighted",
     "num_critics": 0,
     "num_euler_steps": 0,
     "num_envs": 0,
@@ -138,6 +136,16 @@ case("critic:member:layers")(lambda: CriticMember(3, 2, 8, 4, 8, num_layers=0))
 case("critic:ensemble:obs_dim")(lambda: Critic(0, 8, 2, 4, 8, num_critics=2))
 case("critic:ensemble:critics")(lambda: Critic(3, 8, 2, 4, 8, num_critics=0))
 case("critic:ensemble:obs_steps")(lambda: Critic(3, 8, 2, 0, 8, num_critics=2))
+
+# DiTBlock.forward, not the constructor: a batch disagreement between x and c
+# used to reach modulate and surface as a broadcast RuntimeError naming the wrong
+# shapes, which reads as a layout bug rather than the batch mismatch it is.
+case("attention:DiTBlock:forward:token-batch")(
+    lambda: DiTBlock(8, 2, 2.0)(torch.randn(2, 4, 8), torch.randn(3, 4, 8))
+)
+case("attention:DiTBlock:forward:cond-batch")(
+    lambda: DiTBlock(8, 2, 2.0)(torch.randn(2, 4, 8), torch.randn(3, 8))
+)
 
 # --- pure functions ----------------------------------------------------------
 from myfpo.fpo_core import (

@@ -1260,7 +1260,15 @@ class SJFPOPolicy(PreTrainedPolicy):
             cfm_loss_new, cfm_loss_new_token = compute_cfm_loss(
                 v_new_r_f, v_star_f, cfg, "both", loss_mask
             )
-            ratio_token = compute_policy_ratio(cfm_loss_old_token, cfm_loss_new_token, cfg)
+            # Both ratios take the advantage: without it the A<0 clamp is skipped,
+            # and per_sample is driven by ratio_token, so passing it only to the
+            # per-pair ratio left that branch with the looser trust region. The
+            # token loss is [n, num_mc, H], so the advantage needs the extra
+            # axis: [n, 1] would not line up with it.
+            ratio_token = compute_policy_ratio(
+                cfm_loss_old_token, cfm_loss_new_token, cfg,
+                advantage=adv_mc.unsqueeze(-1),
+            )
             ratio = compute_policy_ratio(cfm_loss_old, cfm_loss_new, cfg, advantage=adv_mc)
             self.cfm_above_clamp_frac = (cfm_loss_new > cfg.cfm_clamp).float().mean().detach()
 

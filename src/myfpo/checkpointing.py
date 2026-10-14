@@ -77,12 +77,15 @@ def write_bytes_atomically(path: Path, data: bytes) -> None:
 def save_torch_atomically(path: Path, obj) -> None:
     """Pickle to a path atomically, cleaning up on failure.
 
+    ``mkstemp`` rather than a ``NamedTemporaryFile`` block used only to mint a
+    name: the latter leaves an empty file behind for the window in which
+    ``torch.save`` reopens the path. The fd is closed here; ``torch.save``
+    writes the path itself.
+
     Re-raises whatever ``torch.save`` raised, after removing the temp file.
     """
-    with tempfile.NamedTemporaryFile(
-        mode="wb", dir=path.parent, prefix=f".{path.name}.", delete=False
-    ) as tmp:
-        tmp_name = tmp.name
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+    os.close(fd)
     try:
         torch.save(obj, tmp_name)
         os.replace(tmp_name, path)

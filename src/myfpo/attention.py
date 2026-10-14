@@ -73,10 +73,14 @@ class DiTBlock(nn.Module):
         identity."""
         if x.dim() != 3:
             raise ValueError(f"x must have shape [B, K, H], got {tuple(x.shape)}")
+        b = x.shape[0]
+        if c.shape[0] != b:
+            # Checked here, not left to broadcast: a batch mismatch inside
+            # modulate reports the wrong shapes, which reads as a layout bug.
+            raise ValueError(f"c has batch {c.shape[0]} but x has {b}")
         token_axis = c.dim() == 3
-        b = c.shape[0]
         if token_axis:
-            _, k, _ = x.shape
+            k = x.shape[1]
             if c.shape[1] != k:
                 raise ValueError(f"c has {c.shape[1]} conditioning tokens but x has {k}")
             parts = self.adaLN(c).view(b, k, 6, -1)
@@ -94,7 +98,7 @@ class DiTBlock(nn.Module):
                 modulate(self.norm2(x), shift_mlp, scale_mlp)
             )
         else:
-            if c.dim() != 2 or c.shape[0] != b or c.shape[1] != self.adaLN.fc1.in_features:
+            if c.dim() != 2 or c.shape[1] != self.adaLN.fc1.in_features:
                 raise ValueError(f"c must have shape [{b}, {self.adaLN.fc1.in_features}], got {tuple(c.shape)}")
             parts = self.adaLN(c).view(b, 6, -1)
             shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = parts.unbind(

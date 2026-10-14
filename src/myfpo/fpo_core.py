@@ -376,11 +376,15 @@ def sample_action(
     condition,
     num_inference_steps: int,
     eps: torch.Tensor,
-    device: torch.device | str,
+    device: torch.device | str | None,
     *,
     return_velocities: bool = False,
 ):
     """Euler-sample the flow t=0 (noise) -> t=1 (data). Caller draws ``eps``.
+
+    ``device`` has no default on purpose, and ``None`` is rejected below rather
+    than silently meaning CPU: the sampler is on the rollout path, where the
+    device is the one the policy runs on, not something to infer.
 
     ``return_velocities`` also hands back the ``v_hat`` sequence for
     :func:`trajectory_straightness`. Off by default: it keeps every velocity
