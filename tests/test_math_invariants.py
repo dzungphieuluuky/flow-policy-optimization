@@ -132,12 +132,11 @@ class TestSamplingFunctions:
         assert (t <= cfg.max_timestep + 1e-5).all()
 
     def test_sample_noise_shape(self):
-        """Noise shape matches request; white mode returns unscaled noise."""
+        """Noise shape matches request."""
         from myfpo.fpo_core import sample_noise
         from myfpo.configuration_sjfpo import SJFPOConfig
         import torch
 
         cfg = SJFPOConfig()
-        cfg.noise_scaling_mode = "white"
         eps = sample_noise((4, 2), cfg, device=torch.device("cpu"), generator=None)
         assert eps.shape == (4, 2)

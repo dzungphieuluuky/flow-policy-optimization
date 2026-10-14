@@ -76,26 +76,16 @@ def test_every_declared_field_exists_on_the_dataclass():
     assert not unexplained, f"fields with no declaration and no base: {sorted(unexplained)}"
 
 
-def test_the_noise_knobs_are_two_distinct_axes():
-    """noise_sampling_mode is the marginal, noise_scaling_mode the spectrum.
-
-    They look redundant next to each other and are not: one picks the
-    distribution, the other its 1/f^beta profile.
-    """
+def test_the_noise_marginal_is_normal_and_uniform_only():
+    """One knob left: which distribution, not its spectrum."""
     cfg = SJFPOConfig()
     assert cfg.noise_sampling_mode == "normal"
-    assert cfg.noise_scaling_mode == "white"
-    # Setting one must not disturb the other.
-    other = dataclasses.replace(cfg, noise_scaling_mode="freq_weighted_time")
-    assert other.noise_sampling_mode == "normal"
     flipped = dataclasses.replace(cfg, noise_sampling_mode="uniform")
-    assert flipped.noise_scaling_mode == "white"
+    assert flipped.noise_sampling_mode == "uniform"
 
 
-def test_stale_dct_references_are_gone_from_the_field_block():
-    """The DCT was removed; a comment inviting its use back is a live trap."""
+def test_no_spectral_survives_in_the_config():
+    """The prior is gone: no field, no validator, no comment inviting it back."""
     text = CONFIG_PATH.read_text()
-    block = text.split("noise_sampling_mode: str", 1)[0]
-    assert "DCT" not in block, "field-block comment still describes a removed DCT"
-    # The one place that must still name it is the migration error itself.
-    assert "was the DCT-coefficient mode" in text
+    for gone in ("noise_scaling_mode", "noise_scaling_beta", "freq_weighted", "DCT"):
+        assert gone not in text, f"{gone} still in configuration_sjfpo.py"

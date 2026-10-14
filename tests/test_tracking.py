@@ -112,9 +112,9 @@ def test_run_name_is_stable_for_one_config():
 
 def test_untagged_config_still_gets_a_hash():
     """No tags must not mean no name: two such runs still need to differ."""
-    name = _name(noise_scaling_mode="freq_weighted_time")
+    name = _name(noise_sampling_mode="uniform")
     assert name.endswith(
-        config_hash(dataclasses.asdict(_cfg(noise_scaling_mode="freq_weighted_time")))
+        config_hash(dataclasses.asdict(_cfg(noise_sampling_mode="uniform")))
     )
 
 

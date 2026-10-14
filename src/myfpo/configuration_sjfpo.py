@@ -1,10 +1,6 @@
-"""Single home for every SJFPO hyperparameter (LeRobot ``PreTrainedConfig``)."""
+"""Single home for every hyperparameter (LeRobot ``PreTrainedConfig``)."""
 
 from __future__ import annotations
-# The spectral idea: give the flow's base sample a 1/f^beta profile instead of
-# white noise (pink-noise / JPEG-quantization / wavelet-threshold principle).
-# Shipped as noise_scaling_mode=freq_weighted_time. The companion idea -- a
-# per-band trust region sharing that profile -- is NOT implemented.
 
 
 from dataclasses import dataclass
@@ -48,15 +44,7 @@ class SJFPOConfig(PreTrainedConfig):
     min_timestep: float = 0.005
     max_timestep: float = 0.995
     timestep_sampling_mode: str = "fpo_beta"
-    # Marginal of the base sample only. Its spectral structure is a separate
-    # axis (noise_scaling_mode), so the two are independent knobs.
     noise_sampling_mode: str = "normal"
-    # Spectral structure of the base sample, applied on the action-step grid:
-    # white (flat), or freq_weighted_time (1/f^beta). No DCT is involved --
-    # the colouring is an rfft gain on the step axis, so there is no
-    # coefficient basis to weight.
-    noise_scaling_mode: str = "white"
-    noise_scaling_beta: float = 1.0
     timestep_inverse_cdf_beta: float = 1.0
     timestep_beta_alpha: float = 2.0
     timestep_beta_beta: float = 2.0
@@ -273,21 +261,6 @@ class SJFPOConfig(PreTrainedConfig):
             )
         if self.noise_sampling_mode not in {"normal", "uniform"}:
             raise ValueError("noise_sampling_mode must be 'normal' or 'uniform'")
-        if self.noise_scaling_mode == "freq_weighted":
-            # Multiplies DCT coefficients, and the DCT is gone. Checked before
-            # the allowlist so the migration hint survives: the generic message
-            # would just list the legal values.
-            raise ValueError(
-                "noise_scaling_mode='freq_weighted' was the DCT-coefficient mode "
-                "and no longer exists; use 'freq_weighted_time' for the "
-                "action-step grid, or 'white'"
-            )
-        if self.noise_scaling_mode not in {"white", "freq_weighted_time"}:
-            raise ValueError(
-                "noise_scaling_mode must be 'white' or 'freq_weighted_time'"
-            )
-        if self.noise_scaling_beta < 0:
-            raise ValueError(f"noise_scaling_beta must be >= 0, got {self.noise_scaling_beta}")
         if self.timestep_inverse_cdf_beta <= 0:
             raise ValueError("timestep_inverse_cdf_beta must be > 0")
         if self.timestep_beta_alpha <= 0 or self.timestep_beta_beta <= 0:

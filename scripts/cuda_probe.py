@@ -9,8 +9,7 @@ Environment:
   ENV     gymnasium id                      (default Hopper-v5)
   SEED    int                               (default 3407)
   STEPS   int                               (default 32768)
-  NOISE_MODE  white|freq_weighted_time     (default white)
-  BETA        1/f^beta for freq_weighted_time (default 1.0)
+  NOISE_MODE  normal|uniform                 (default normal)
   OUT_DIR path                              (default /tmp/cuda_probe)
   EXTRA   extra --sjfpo.* flags, space separated
 
@@ -112,8 +111,7 @@ def _preflight() -> None:
 def main() -> None:
     _preflight()
     env = os.environ.get("ENV", "Hopper-v5")
-    noise_mode = os.environ.get("NOISE_MODE", "white")
-    beta = os.environ.get("BETA", "1.0")
+    noise_mode = os.environ.get("NOISE_MODE", "normal")
     extra = os.environ.get("EXTRA", "").split()
     args = [
         "train.py",
@@ -129,8 +127,7 @@ def main() -> None:
         "--sjfpo.num_envs", "8",
         "--sjfpo.batch_size", "64",
         "--sjfpo.num_learning_epochs", "2",
-        "--sjfpo.noise_scaling_mode", noise_mode,
-        "--sjfpo.noise_scaling_beta", beta,
+        "--sjfpo.noise_sampling_mode", noise_mode,
     ]
     args += extra
     print(f"args: {' '.join(args)}\n", flush=True)

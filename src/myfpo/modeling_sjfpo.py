@@ -35,7 +35,6 @@ from myfpo.fpo_core import (
     compute_aspo_surrogate,
     compute_cfm_loss,
     clip_transported,
-    compute_noise_band_energy,
     compute_policy_ratio,
     run_monte_carlo_sampling,
     sample_action,
@@ -123,7 +122,7 @@ def compute_gae_diagnostics(
     return dict(zip(_GAE_DIAGNOSTIC_KEYS, torch.stack(fields).tolist()))
 
 
-def sample_spectral_eps(
+def sample_eps(
     cfg: SJFPOConfig,
     n: int,
     action_dim: int,
@@ -276,7 +275,6 @@ def compute_cfm_metrics(
     cfm_loss_new: torch.Tensor,
     v_star_f: torch.Tensor,
     cfg: SJFPOConfig,
-    eps: torch.Tensor | None = None,
 ) -> dict[str, torch.Tensor]:
     """Flow-matching loss diagnostics.
 
@@ -299,15 +297,6 @@ def compute_cfm_metrics(
         "l_old_new_corr": ((cfm_loss_old - cfm_loss_old.mean()) * (cfm_loss_new - cfm_loss_new.mean())).mean()
         / corr_denom,
     }
-    if eps is not None:
-        bands = compute_noise_band_energy(eps)
-        # Scalars only: compute_info packs 0-d tensors before one transfer.
-        half = max(1, bands.numel() // 2)
-        low = bands[:half].mean()
-        high = bands[-half:].mean()
-        out["noise_band_energy_low_bands"] = low
-        out["noise_band_energy_high_bands"] = high
-        out["noise_band_energy_high_over_low"] = high / low.clamp_min(1e-12)
     return out
 
 
@@ -1060,7 +1049,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             device,
             None,
         ).unsqueeze(-1)
-        eps = sample_spectral_eps(cfg, n_chunks, action_dim, device)
+        eps = sample_eps(cfg, n_chunks, action_dim, device)
 
         expected_eps_shape = (n_chunks, cfg.num_mc_samples, horizon, action_dim)
         if tuple(eps.shape) != expected_eps_shape:
@@ -1193,7 +1182,7 @@ class SJFPOPolicy(PreTrainedPolicy):
                 device,
                 None,
             ).unsqueeze(-1)
-            eps = sample_spectral_eps(cfg, n, action_dim, device)
+            eps = sample_eps(cfg, n, action_dim, device)
 
         flatten_timestep, flatten_mc_noise, flatten_mc_action, flow_shape, num_mc = (
             run_monte_carlo_sampling(actions, eps, tau)
@@ -1345,7 +1334,6 @@ class SJFPOPolicy(PreTrainedPolicy):
             value_loss_per_chunk=value_loss_per_chunk,
             cond_stats=cond_stats,
             cfg=cfg,
-            eps=batch.get("mc_eps"),
         )
         return loss, info
 
@@ -1367,7 +1355,6 @@ class SJFPOPolicy(PreTrainedPolicy):
         value_loss_per_chunk,
         cond_stats,
         cfg,
-        eps: torch.Tensor | None = None,
     ) -> dict[str, float]:
         """Merge the metric groups into one device transfer.
 
@@ -1393,7 +1380,6 @@ class SJFPOPolicy(PreTrainedPolicy):
                 cfm_loss_new=cfm_loss_new,
                 v_star_f=v_star_f,
                 cfg=cfg,
-                eps=eps,
             ),
         }
         if cond_stats:

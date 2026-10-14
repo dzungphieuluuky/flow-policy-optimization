@@ -53,8 +53,6 @@ SECTIONS: list[tuple[str, list[str]]] = [
             "max_timestep",
             "timestep_sampling_mode",
             "noise_sampling_mode",
-            "noise_scaling_mode",
-            "noise_scaling_beta",
             "timestep_inverse_cdf_beta",
             "timestep_beta_alpha",
             "timestep_beta_beta",

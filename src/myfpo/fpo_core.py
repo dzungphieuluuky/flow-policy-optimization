@@ -52,99 +52,24 @@ def sample_timesteps(
     )
 
 
-def compute_freq_weighted_std(
-    num_modes: int,
-    horizon: int,
-    device,
-    beta: float = 1.0,
-    *,
-    halve_endpoints: bool = True,
-) -> torch.Tensor:
-    """Per-mode std of a 1/f^beta spectral profile. beta=0 white, beta=1 pink.
-
-    Exponent is -beta/2 because a 1/f^beta *variance* has std 1/f^(beta/2).
-
-    ``halve_endpoints`` divides bin 0 by sqrt(2) to make the orthonormal DCT-II
-    basis consistent. A filter has no such artefact, so
-    :func:`spectral_filter_1d` passes False.
-    """
-    k = torch.arange(num_modes, dtype=torch.float32, device=device)
-    std = (1.0 + (k * (math.pi / horizon)) ** 2) ** (-0.5 * beta)
-    if halve_endpoints:
-        std = std.clone()
-        std[0] = std[0] / math.sqrt(2.0)
-    return std
-
-
-def spectral_filter_1d(
-    eps: torch.Tensor, horizon: int, beta: float, device
-) -> torch.Tensor:
-    """Colour ``eps`` along dim=-2 with a 1/f^beta profile.
-
-    Returns white noise unchanged at ``beta == 0``, so the ablation baseline is
-    exactly the current behaviour. The output's rfft magnitude is ``mag`` times
-    the input's, so realised per-bin variance is ``mag**2`` up to torch's
-    unnormalised rfft (divide by ``horizon``). Linear, so a zero start stays
-    zero and ``zero_sampling`` is unaffected.
-    """
-    if beta == 0.0:
-        return eps
-    spec = torch.fft.rfft(eps.float(), dim=-2)
-    mag = compute_freq_weighted_std(
-        spec.shape[-2], horizon, device, beta, halve_endpoints=False
-    )
-    # mag is [H//2+1] but spec is [..., H//2+1, d], so it needs an explicit
-    # trailing singleton or it broadcasts against the action dim instead.
-    mag = mag.view(*(1,) * (spec.dim() - 2), -1, 1)
-    filtered = torch.fft.irfft(spec * mag, n=horizon, dim=-2)
-    return filtered.to(eps.dtype)
-
-
 def sample_noise(
     shape,
     cfg: SJFPOConfig,
     device: torch.device | str,
     generator: torch.Generator | None,
 ):
-    """MC noise. Marginal from ``noise_sampling_mode``, spectral structure from
-    ``noise_scaling_mode``.
+    """MC noise. Marginal from ``noise_sampling_mode``.
 
-    This is the only definition of the base sample. The CFM path reads it twice
-    -- ``compute_mc_xt`` builds ``lerp(noise, action, t)`` and
-    ``compute_target_velocity`` returns ``a - eps`` -- so colouring it here makes
-    the interpolant and its target consistent with a base of ``N(0, L L^T)``
-    with no change at either site.
+    Only definition of the base sample. The CFM path reads it twice --
+    ``compute_mc_xt`` builds ``lerp(noise, action, t)`` and
+    ``compute_target_velocity`` returns ``a - eps``.
     """
     mode = cfg.noise_sampling_mode
     if mode == "normal":
-        eps = torch.randn(*shape, device=device, generator=generator)
-    elif mode == "uniform":
-        eps = (torch.rand(*shape, device=device, generator=generator) * 2.0 - 1.0) * math.sqrt(3.0)
-    else:
-        raise ValueError(f"mode={mode!r} unknown; expected 'normal' or 'uniform'")
-
-    if cfg.noise_scaling_mode == "white":
-        return eps
-    if cfg.noise_scaling_mode == "freq_weighted_time":
-        # Tokens are action steps here, so the profile shapes the noise's
-        # temporal correlation rather than its spectral coefficients. The base
-        # log-det is constant in theta, so it cancels in cfm_loss_old - cfm_loss_new and the
-        # FPO ratio is unchanged; what it does change is the ELBO gap the ratio
-        # is contaminated by, which is the point of measuring it.
-        return spectral_filter_1d(
-            eps, cfg.action_horizon, cfg.noise_scaling_beta, device
-        )
-    if cfg.noise_scaling_mode == "freq_weighted":
-        # Axis -2 holds the DCT coeffs. Broadcast the per-mode std over the
-        # leading batch/MC axes and the trailing action dim.
-        std = compute_freq_weighted_std(
-            shape[-2], cfg.action_horizon, device, cfg.noise_scaling_beta
-        )
-        return eps * std.view(*(1,) * (eps.dim() - 2), -1, 1)
-    raise ValueError(
-        f"noise_scaling_mode={cfg.noise_scaling_mode!r} unknown; expected "
-        "'white', 'freq_weighted_time', or 'freq_weighted'"
-    )
+        return torch.randn(*shape, device=device, generator=generator)
+    if mode == "uniform":
+        return (torch.rand(*shape, device=device, generator=generator) * 2.0 - 1.0) * math.sqrt(3.0)
+    raise ValueError(f"mode={mode!r} unknown; expected 'normal' or 'uniform'")
 
 
 def run_monte_carlo_sampling(
@@ -327,32 +252,11 @@ def compute_policy_ratio(
     return torch.exp(delta_st)
 
 
-def compute_noise_band_energy(eps: torch.Tensor) -> torch.Tensor:
-    """Per-bin rfft energy of the MC noise, averaged over every other axis.
-
-    Dividing by ``horizon`` makes it comparable to a profile-squared because
-    ``torch.fft.rfft`` is unnormalised. Diagnostic only -- it is how you confirm
-    the prior that actually ran is the one you asked for, rather than trusting
-    the config.
-
-    ``eps`` is ``[..., H, d]``; the returned vector is ``[H // 2 + 1]``.
-    """
-    horizon = eps.shape[-2]
-    spec = torch.fft.rfft(eps.float(), dim=-2)
-    energy = spec.abs().square()
-    # Collapse every axis except the frequency one. mean(dim=-1) reduces the
-    # action dim correctly on a 4-D rollout tensor but silently reduces the
-    # frequency axis on a 2-D one, so move the band axis last and reshape.
-    flat = energy.movedim(-2, -1).reshape(-1, horizon // 2 + 1)
-    return flat.mean(dim=0) / horizon
-
-
 def trajectory_straightness(velocities) -> float:
     """Mean cosine between consecutive velocities of an Euler trajectory.
 
-    The S3 hypothesis is that a spectral base lowers flow curvature, so this is
-    the quantity that has to move. Return is not a substitute: a prior can leave
-    the average unchanged while making the path cheaper, or the reverse.
+    Lower means a curvier path. Return is not a substitute: it can hold while
+    the sampling cost moves, or the reverse.
 
     ``velocities`` is the sequence of ``v_hat`` the sampler used, in order.
     Returns NaN for fewer than two steps, which is what a 1-step sampler gets.

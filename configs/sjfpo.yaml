@@ -28,8 +28,6 @@ min_timestep: 0.005
 max_timestep: 0.995
 timestep_sampling_mode: 'fpo_beta'
 noise_sampling_mode: 'normal'
-noise_scaling_mode: 'white'
-noise_scaling_beta: 1.0
 timestep_inverse_cdf_beta: 1.0
 timestep_beta_alpha: 2.0
 timestep_beta_beta: 2.0

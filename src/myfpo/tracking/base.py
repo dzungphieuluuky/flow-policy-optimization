@@ -57,10 +57,6 @@ def build_run_name(method: str, env_name: str, seed: int, cfg_dict: dict) -> str
     # chunk's action steps, so it is always the horizon.
     if (v := get("action_horizon")) is not None:
         tags.append(f"h{v}")
-    # b separates the spectral-prior arms, which are otherwise identical names.
-    if get("noise_scaling_mode") == "freq_weighted_time":
-        if (v := get("noise_scaling_beta")) is not None:
-            tags.append(f"b{v}")
     if (v := get("hidden_dim")) is not None and (d := get("dit_depth")) is not None:
         tags.append(f"d{v}x{d}")
     if (v := get("num_learning_epochs", get("num_epochs"))) is not None:
