@@ -14,7 +14,7 @@ jupyter:
     name: python3
 ---
 
-# Spectral Joint Flow (SJFPO) — Online Colab / Kaggle (with internet)
+# myfpo — Online Colab / Kaggle (with internet)
 
 Clone the repo with a GitHub token, install requirements, then run training
 via `!python scripts/train.py`. No source is embedded in the notebook.
@@ -130,7 +130,7 @@ scikit-image
 opencv-python-headless
 pillow
 imageio
-imageio-ffmpeg
+imagepy-ffmpeg
 av
 moviepy
 
@@ -173,6 +173,37 @@ else:
     print("WANDB_API_KEY not found; training will run without wandb sync.")
 ```
 
+## 1. The algorithm
+
+FPO++ ([arXiv:2602.02481](https://arxiv.org/abs/2602.02481)). A flow-matching actor
+trained online from rewards, with no likelihood computation and no reference
+model.
+
+The policy plans `action_horizon` steps and executes the first `n_action_steps`
+open-loop, then replans from the observation it lands on. That chunk is the
+macro-action, so the environment is treated as a macro-MDP.
+
+**The ratio.** For a Gaussian policy the PPO ratio needs `π(a|o)`. For a flow it
+would need a divergence integral, which is expensive. FPO substitutes the
+conditional flow-matching loss:
+
+```
+r = exp(L_CFM_old - L_CFM_new)
+```
+
+with `L_CFM` evaluated over `num_mc_samples` Monte-Carlo `(tau, eps)` draws from
+the same noise the behaviour policy saw. `ratio_granularity=per_action` is
+FPO++ Eq. 10: one ratio per `(tau, eps)` pair, so each pair clips independently.
+
+**ASPO, the trust region.** Asymmetric. `A > 0` takes PPO clipping,
+`min(r*A, clip(r)*A)`. `A < 0` takes the SPO quadratic, which keeps a gradient
+when PPO's clip would have saturated to zero — the point being that negative
+advantages are where a plain PPO clip stops learning.
+
+**Sampling.** Euler integration, `num_euler_steps` steps. Eval starts from
+`eps=0` (`--sjfpo.report_to tensorboard` runs the deterministic path); training
+rollouts start from sampled noise.
+
 ```python
 # Run training directly from the cloned repo.
 !MPLBACKEND=Agg MUJOCO_GL=egl python scripts/train.py \
@@ -182,34 +213,42 @@ else:
     --total_steps 1000000 \
     --eval_steps 100 \
     --save_steps 100000 \
-    --baseline fpo
+    --baseline fpo++
 ```
 
-Note: the original cell passed `--config configs/baselines/fpo.yaml`. That file
-was deleted in `d0f97c2`, so the run died with a missing-file or missing-feature
-error. `--baseline fpo` is the live equivalent and prints the full diff it
-applies to stderr.
+`--baseline fpo++` pins that paper's values (`per_action` ratio, ASPO, `sum`
+CFM reduction) and prints the diff it applies to stderr, so the arm cannot drift
+when a default changes. `--baseline fpo` selects the original FPO Eq. 9
+per-chunk ratio and PPO clip instead.
 
-## 1. Sweeps
+## 2. Reading the metrics
+
+| Key | Meaning |
+|---|---|
+| `train/policy_loss` | the ASPO surrogate; near zero means the ratio has collapsed to 1 |
+| `train/log_ratio_max` | largest log-ratio seen. Against the cap of 10, anything under ~0.2 means the trust region never binds |
+| `train/log_ratio_clip_frac` | fraction of ratios outside the clip band. 0 means neither PPO clip nor SPO quadratic is constraining anything |
+| `train/explained_var` | critic fit. Flat below ~0.3 means advantages are critic error, and the policy loss is training on noise |
+| `train/grad_norm_preclip` | against `max_grad_norm`. Saturated means the clip, not the loss, is setting the step size |
+| `eval/mean_return` vs `eval/steps_to_best` | peak location and how late it came |
+
+`train/grad_norm_preclip` is one key over actor and critic together. If it
+saturates, the split between the two is not visible, and which one owns the
+budget is the first thing worth instrumenting.
+
+## 3. Sweeps
 
 Sequential by design. `num_envs=64` forks a vector-env pool, so run **one arm at
 a time** even on a big GPU.
-
-Before running anything: restore diagnostics first (`docs/DIAGNOSE_DEGRADATION.md` Step 0):
-- Restore `actor_grad_norm_preclip` / `critic_grad_norm_preclip` (collapsed in `fc8724b`).
-- Fix Huber delta scaling (`tests/test_ema_and_huber_defects.py`): must track `resid_rms`, not `returns_rms`.
-Only after Step 0 should any sweep arm be interpreted.
-
-The last logged Humanoid run peaked at 131,072 steps and decayed 46% by 614,400 (`367.94` -> `198.67`). Its `train/grad_norm_preclip` read **2291.5** against a clip budget of **1**. The actor/critic split is unknown — `train/actor_grad_norm_preclip` and `train/critic_grad_norm_preclip` were collapsed into one key in `fc8724b`. **Restore them before trusting any arm below**; see `docs/DIAGNOSE_DEGRADATION.md` step 0 for the exact patch.
 
 ```python
 # Shared settings. ENV and TOTAL_STEPS are the only two things to change.
 ENV = "Humanoid-v5"          # "Reacher-v5" is far cheaper if you just want a smoke
 SEED = 3407
-TOTAL_STEPS = 200_000        # the peak was at 131k, so this brackets peak + onset
+TOTAL_STEPS = 200_000
 EVAL_STEPS = 16_384          # 12 evals; the original cadence of 8192 gave only 4
 SAVE_STEPS = 50_000
-COMPILE = "false"            # the logged run used false
+COMPILE = "false"
 
 import os, subprocess
 
@@ -235,22 +274,25 @@ def run_arm(tag, extra=()):
     return rc
 ```
 
-### Sweep 1 — dropped
+### Execution length
 
-The spectral prior (`noise_scaling_mode`) is gone. The logged run used
-`freq_weighted_time` with no white control, so it cannot be answered from this
-data anyway.
+`n_action_steps` is the one knob specific to chunking rather than to FPO++. It
+trades closed-loop correction against how stale the plan gets.
 
-### Sweep 2 — dropped
+```python
+for n in ("2", "4", "8"):
+    run_arm(f"exec{n}", ["--sjfpo.n_action_steps", n])
+```
 
-Beta swept the same removed prior.
+`8` is `action_horizon`, i.e. the chunk is planned and executed fully open-loop
+with no correction at all.
 
-### Sweep 3 — the trust region was inert
+### Trust region
 
 The logged run showed `log_ratio_max=0.0717` against a cap of 10 and
 `log_ratio_clip_frac=0`, with `flow_ratio_std=0.0098` against `clip_param=0.05`.
-Measured on that data, **0.00%** of ratios fell outside the clip band, so neither
-the PPO clip nor the SPO quadratic was constraining anything.
+**0.00%** of ratios fell outside the clip band, so neither the PPO clip nor the
+SPO quadratic was constraining anything.
 
 ```python
 # Wider trust region, so the mechanism can actually bind.
@@ -303,7 +345,7 @@ def arm_summary(tag):
         "decay_pct": 100 * (means[-1] - means[best_i]) / max(abs(means[best_i]), 1e-9),
     }
 
-tags = ["a", "b"]
+tags = ["exec2", "exec4", "exec8"]
 print(f"{'arm':>12} {'evals':>6} {'best':>10} {'@eval':>6} {'final':>10} {'decay%':>8}")
 for tag in tags:
     s = arm_summary(tag)
@@ -318,8 +360,9 @@ What to conclude:
 
 | Observation | Meaning |
 |---|---|
-| `decay_pct` near 0 in both arms | the decay is not arm-specific; look at the critic |
-| `best_at_eval` small in both | both peak early; degradation is post-peak (46% decay) |
+| `decay_pct` near 0 in every arm | the decay is not arm-specific; look at the critic |
+| `best_at_eval` small in every arm | early peak; degradation is post-peak |
+| one arm clearly ahead on return | replicate with a second seed before believing it |
 
 One arm is not a result. Two seeds minimum before claiming anything, and note
 that `seed` is a top-level flag, not `--sjfpo.seed`.

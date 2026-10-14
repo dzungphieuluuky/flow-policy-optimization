@@ -2,7 +2,6 @@
 name = "myfpo"
 version = "0.1.0"
 description = "Flow-matching policy optimization (FPO++) with open-loop action chunking, on LeRobot and PyTorch"
-readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "accelerate>=1.15.0",
