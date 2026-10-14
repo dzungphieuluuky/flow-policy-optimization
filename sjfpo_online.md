@@ -195,12 +195,12 @@ applies to stderr.
 Sequential by design. `num_envs=64` forks a vector-env pool, so run **one arm at
 a time** even on a big GPU.
 
-Before running anything: the last logged Humanoid run peaked at 131,072 steps
-and decayed 46% by 614,400. Its `train/grad_norm_preclip` read 2291 against a
-clip of 1, so the actor/critic split is unknown — `train/actor_grad_norm_preclip`
-and `train/critic_grad_norm_preclip` were collapsed into one key in `fc8724b`.
-**Restore them before trusting any arm below**; see `docs/DIAGNOSE_DEGRADATION.md`
-step 0 for the exact patch. Without it the leading hypothesis is untestable.
+Before running anything: restore diagnostics first (`docs/DIAGNOSE_DEGRADATION.md` Step 0):
+- Restore `actor_grad_norm_preclip` / `critic_grad_norm_preclip` (collapsed in `fc8724b`).
+- Fix Huber delta scaling (`tests/test_ema_and_huber_defects.py`): must track `resid_rms`, not `returns_rms`.
+Only after Step 0 should any sweep arm be interpreted.
+
+The last logged Humanoid run peaked at 131,072 steps and decayed 46% by 614,400 (`367.94` -> `198.67`). Its `train/grad_norm_preclip` read **2291.5** against a clip budget of **1**. The actor/critic split is unknown — `train/actor_grad_norm_preclip` and `train/critic_grad_norm_preclip` were collapsed into one key in `fc8724b`. **Restore them before trusting any arm below**; see `docs/DIAGNOSE_DEGRADATION.md` step 0 for the exact patch.
 
 ```python
 # Shared settings. ENV and TOTAL_STEPS are the only two things to change.
@@ -264,7 +264,7 @@ for beta in ("0.5", "1.0", "2.0"):
 ```
 
 `noise_scaling_beta=0` is white, so sweep 2 subsumes sweep 1's white arm. If you
-only have budget for one sweep, run sweep 2 with `beta` in `0.0, 0.5, 1.0`.
+only have budget for one sweep, run sweep 2 with `beta` in `0.0, 0.5, 1.0`, **plus replication seeds** (e.g., `1234`, `5678`) for any arm that wins — the relationship is non-monotonic (`beta=2.0` best at 508.99, `beta=1.0` worst at 341.69 on seed 3407). See `docs/DIAGNOSE_DEGRADATION.md` for the full sweep summary.
 
 ### Sweep 3 — the trust region was inert
 
@@ -340,9 +340,8 @@ What to conclude:
 | Observation | Meaning |
 |---|---|
 | `decay_pct` near 0 in both arms | the decay is not clip- or prior-specific; look at the critic |
-| spectral best but decaying | the prior helps and something later undoes it |
-| white better than spectral | the 1/f prior does not pay on this env — stop spending runs on it |
-| `best_at_eval` small in both | both peak early, which is the original symptom |
+| spectral best (beta=2.0=508.99) but worst (beta=1.0=341.69) | non-monotonic; no simple "spectral improves" claim possible | 
+| `best_at_eval` small in both | both peak early; degradation is post-peak (46% decay) |
 
 One arm is not a result. Two seeds minimum before claiming anything, and note
 that `seed` is a top-level flag, not `--sjfpo.seed`.
