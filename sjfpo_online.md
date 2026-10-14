@@ -248,9 +248,10 @@ run_arm("white", ["--sjfpo.noise_scaling_mode", "white"])
 run_arm("spectral", ["--sjfpo.noise_scaling_mode", "freq_weighted_time"])
 ```
 
-Read `train/noise_band_energy_hf_lf_ratio`. The logged run read **0.378** at
-`beta=1.0`, which is the check that the colouring actually ran. If it reads ~1.0
-the prior is not being applied and the arm is meaningless.
+Read `train/noise_band_energy_high_over_low` (renamed from `..._hf_lf_ratio` in
+`a001fa8`; the logged run predates it). That run read **0.378** at `beta=1.0`,
+which is the check that the colouring actually ran. If it reads ~1.0 the prior
+is not being applied and the arm is meaningless.
 
 ### Sweep 2 — beta, only if sweep 1 shows the prior helps
 

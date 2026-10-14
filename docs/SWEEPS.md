@@ -64,7 +64,7 @@ ablation baseline and it short-circuits before the filter.
 
 | Metric | Where | Why |
 |---|---|---|
-| `noise_band_energy_hf_lf_ratio` | train | **Check this first.** ~1.0 = prior didn't run. Must fall as β rises. |
+| `noise_band_energy_high_over_low` | train | **Check this first.** ~1.0 = prior didn't run. Must fall as β rises. |
 | episodic return | eval | The outcome |
 | `clipfrac`, `mean_log_ratio` | train | Trust-region behaviour |
 | `cfm_above_clamp_frac` | train | Should stay near 0 |
@@ -214,7 +214,7 @@ just the outcome.
 ## Order
 
 1. **T5** — re-baseline. Everything is relative to it.
-2. **T1** — the headline. Check `noise_band_energy_hf_lf_ratio` before reading returns.
+2. **T1** — the headline. Check `noise_band_energy_high_over_low` before reading returns.
 3. **T2** — only if T1 is not flat.
 4. **T3**, **T4**, **T6** — independent, can run in parallel.
 

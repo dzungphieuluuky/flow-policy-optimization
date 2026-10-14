@@ -54,7 +54,7 @@ DIAGNOSE_DEGRADATION.md: 46% decay at 614,400 steps; grad_norm_preclip 2291x bud
 ### Action (Step 0 from doc — Required Before Any Interpretation)
 1. Restore per-role gradient norms in `train_sjfpo.py` (rebuild `actor_params` / `critic_params` from `get_actor_optim_params()` / `get_critic_optim_params()`; log `actor_grad_norm_preclip` and `critic_grad_norm_preclip`).
 2. Assert `atol=0` against concatenated norm in a test.
-3. Log `value_huber_delta` as `float(policy._huber_resid_rms * cfg.value_huber_delta)`.
+3. Log `value_huber_knee` as `float(policy._huber_resid_rms * cfg.value_huber_delta_scale)`.
 
 Then run with white vs. spectral control to isolate cause:
 - Is it spectral-related? (Compare with white control)

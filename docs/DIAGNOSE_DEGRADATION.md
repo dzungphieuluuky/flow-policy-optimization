@@ -76,9 +76,10 @@ Rebuild `actor_params` / `critic_params` from
 both as `train/actor_grad_norm_preclip` and `train/critic_grad_norm_preclip`,
 and assert `atol=0` against a norm over the concatenation in a test.
 
-Also log `train/value_huber_delta = float(policy._huber_resid_rms *
-cfg.value_huber_delta)`. It is now meaningful (the knee tracks the residual),
-and watching it move tells you whether the critic is drifting in scale.
+Also log `train/value_huber_knee = float(policy._huber_resid_rms *
+cfg.value_huber_delta_scale)`. It is now meaningful (the knee tracks the
+residual), and watching it move tells you whether the critic is drifting in
+scale.
 
 ---
 
@@ -109,7 +110,7 @@ Everything else stays at defaults so the arms differ in one variable.
 - `train/explained_var` per eval — if it never climbs, the critic is the ceiling
 - `train/actor_grad_norm_preclip` / `train/critic_grad_norm_preclip` — the ratio
   is the question
-- `train/value_huber_delta` — should be flat if the fix is holding
+- `train/value_huber_knee` — should be flat if the fix is holding
 - `train/rollout_seam_jerk` vs `train/rollout_jerk`
 
 ### Decision table

@@ -150,7 +150,7 @@ sweep_s6_misc() {
 
 # S7. The spectral base prior: does a 1/f^beta base measure help? beta=0 is
 # bit-identical to white and is the ablation baseline.
-# READ noise_band_energy_hf_lf_ratio first: ~1.0 means the prior did not run.
+# READ noise_band_energy_high_over_low first: ~1.0 means the prior did not run.
 # Kill criterion, set in advance: if beta=1.0 does not beat beta=0.0 on mean
 # return across the seeds, that is the result. Do not extend to larger beta.
 # Expected effect is small: at action_horizon=8 the lag-1 autocorrelation of a
