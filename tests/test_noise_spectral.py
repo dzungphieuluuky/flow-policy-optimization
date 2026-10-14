@@ -11,7 +11,7 @@ Two things make this cheap rather than invasive:
   builds ``lerp(noise, action, t)`` and ``compute_target_velocity`` returns
   ``a - eps``, so a coloured ``eps`` makes the interpolant and its velocity
   target consistent with the new base measure with no change at either site.
-* The base log-det is constant in theta, so it cancels in ``l_old - l_new`` and
+* The base log-det is constant in theta, so it cancels in ``cfm_loss_old - cfm_loss_new`` and
   the FPO ratio is untouched. What the prior *does* change is the ELBO gap the
   ratio is contaminated by, which is the reason to measure it at all.
 
@@ -285,8 +285,8 @@ def _cfm_metrics(**kw):
 
     n = 4
     return compute_cfm_metrics(
-        l_old=torch.zeros(n),
-        l_new=torch.ones(n),
+        cfm_loss_old=torch.zeros(n),
+        cfm_loss_new=torch.ones(n),
         v_star_f=torch.ones(n, H, ACT),
         cfg=_cfg(),
         **kw,
@@ -296,13 +296,13 @@ def _cfm_metrics(**kw):
 def test_noise_metrics_appear_when_eps_is_supplied():
     eps = sample_noise(SHAPE, _cfg(noise_scaling_beta=1.0), torch.device("cpu"), None)
     out = _cfm_metrics(eps=eps)
-    assert {"noise_band_energy_low", "noise_band_energy_high",
-            "noise_band_energy_hf_lf_ratio"} <= set(out)
+    assert {"noise_band_energy_low_bands", "noise_band_energy_high_bands",
+            "noise_band_energy_high_over_low"} <= set(out)
 
 
 def test_noise_metrics_are_absent_without_eps():
     """Old callers pass no eps; they must keep working unchanged."""
-    assert "noise_band_energy_low" not in _cfm_metrics()
+    assert "noise_band_energy_low_bands" not in _cfm_metrics()
 
 
 def test_every_metric_is_a_scalar():
@@ -315,7 +315,7 @@ def test_every_metric_is_a_scalar():
 def test_the_ratio_reports_a_low_pass_prior_as_less_than_one():
     """Higher bands must carry less energy than lower ones under a 1/f profile."""
     eps = sample_noise(SHAPE, _cfg(noise_scaling_beta=1.0), torch.device("cpu"), None)
-    assert _cfm_metrics(eps=eps)["noise_band_energy_hf_lf_ratio"] < 1.0
+    assert _cfm_metrics(eps=eps)["noise_band_energy_high_over_low"] < 1.0
 
 
 def test_the_ratio_is_flat_under_white_noise():
@@ -324,7 +324,7 @@ def test_the_ratio_is_flat_under_white_noise():
     # draw should land on 1 to within sampling error.
     big = (64, 8, H, ACT)
     eps = sample_noise(big, _cfg(noise_scaling_mode="white"), torch.device("cpu"), None)
-    assert _cfm_metrics(eps=eps)["noise_band_energy_hf_lf_ratio"] == pytest.approx(
+    assert _cfm_metrics(eps=eps)["noise_band_energy_high_over_low"] == pytest.approx(
         1.0, abs=0.05
     )
 
@@ -334,5 +334,5 @@ def test_the_ratio_separates_white_from_a_low_pass_prior():
     big = (64, 8, H, ACT)
     def ratio(mode):
         eps = sample_noise(big, _cfg(noise_scaling_mode=mode), torch.device("cpu"), None)
-        return float(_cfm_metrics(eps=eps)["noise_band_energy_hf_lf_ratio"])
+        return float(_cfm_metrics(eps=eps)["noise_band_energy_high_over_low"])
     assert ratio("freq_weighted_time") < ratio("white") - 0.1

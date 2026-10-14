@@ -78,12 +78,12 @@ def _policy_and_batch(cfg, seed=0):
         ),
     }
     normalised = policy.preprocessor({M.OBS_STATE: batch[M.OBS_STATE]})[M.OBS_STATE]
-    l_old, l_old_token = policy.compute_behavior_cfm_losses(
+    cfm_loss_old, cfm_loss_old_token = policy.compute_behavior_cfm_losses(
         normalised, batch[M.ACTION], batch["mc_tau"], batch["mc_eps"],
         batch["action_is_pad"],
     )
-    batch["behavior_cfm_loss"] = l_old
-    batch["behavior_cfm_loss_token"] = l_old_token
+    batch["behavior_cfm_loss"] = cfm_loss_old
+    batch["behavior_cfm_loss_token"] = cfm_loss_old_token
     return policy, batch
 
 
@@ -93,9 +93,9 @@ def _recorded(cfg):
     ratios, surrogate_inputs = [], []
     real_ratio, real_surrogate = M.compute_policy_ratio, M.compute_aspo_surrogate
 
-    def ratio_spy(l_old, l_new, *args, **kwargs):
-        ratios.append(l_old.detach().clone())
-        return real_ratio(l_old, l_new, *args, **kwargs)
+    def ratio_spy(cfm_loss_old, cfm_loss_new, *args, **kwargs):
+        ratios.append(cfm_loss_old.detach().clone())
+        return real_ratio(cfm_loss_old, cfm_loss_new, *args, **kwargs)
 
     def surrogate_spy(ratio, advantage, *args, **kwargs):
         surrogate_inputs.append(tuple(ratio.shape))
@@ -137,7 +137,7 @@ def test_per_sample_clips_per_token():
 
 
 def test_per_chunk_and_per_action_disagree_once_the_actor_moves():
-    """The regression: identical on-policy, different the moment l_old != l_new."""
+    """The regression: identical on-policy, different the moment cfm_loss_old != cfm_loss_new."""
     losses = []
     for granularity in ("per_chunk", "per_action"):
         policy, batch = _policy_and_batch(_cfg(ratio_granularity=granularity))

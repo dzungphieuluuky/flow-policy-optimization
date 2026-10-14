@@ -128,7 +128,7 @@ def sample_noise(
     if cfg.noise_scaling_mode == "freq_weighted_time":
         # Tokens are action steps here, so the profile shapes the noise's
         # temporal correlation rather than its spectral coefficients. The base
-        # log-det is constant in theta, so it cancels in l_old - l_new and the
+        # log-det is constant in theta, so it cancels in cfm_loss_old - cfm_loss_new and the
         # FPO ratio is unchanged; what it does change is the ELBO gap the ratio
         # is contaminated by, which is the point of measuring it.
         return spectral_filter_1d(
@@ -191,7 +191,7 @@ def clip_transported(x: torch.Tensor, clip: float | None) -> torch.Tensor:
     """Bound the actor's transported output. FPO++ ``transported_clip_value``.
 
     Applied at every site the raw velocity is produced -- the training loss,
-    the frozen ``l_old`` pass, and the Euler sampler -- so all three see the
+    the frozen ``cfm_loss_old`` pass, and the Euler sampler -- so all three see the
     same map and the ratio stays consistent. ``None`` is a no-op.
     """
     if clip is None:
@@ -299,22 +299,22 @@ def compute_aspo_surrogate(
 
 
 def compute_policy_ratio(
-    l_old: torch.Tensor,
-    l_new: torch.Tensor,
+    cfm_loss_old: torch.Tensor,
+    cfm_loss_new: torch.Tensor,
     cfg: SJFPOConfig,
     advantage: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Ratio exp(l_old - l_new), standing in for a log-prob ratio.
+    """Ratio exp(cfm_loss_old - cfm_loss_new), standing in for a log-prob ratio.
 
     Elementwise, so the caller's reduction fixes the granularity: ``per_chunk``
     passes the MC means (one ratio per chunk), ``per_action`` the per-pair
     losses, ``per_sample`` the per-token losses.
 
-    Clamp both losses, optionally clamp l_new harder on A<0, then cap the
+    Clamp both losses, optionally clamp cfm_loss_new harder on A<0, then cap the
     log-ratio one-sided with an STE: capped forward, original backward.
     """
-    old = torch.clamp(l_old, max=cfg.cfm_clamp)
-    new = torch.clamp(l_new, max=cfg.cfm_clamp)
+    old = torch.clamp(cfm_loss_old, max=cfg.cfm_clamp)
+    new = torch.clamp(cfm_loss_new, max=cfg.cfm_clamp)
     if cfg.cfm_loss_clamp_negative_advantages and advantage is not None:
         new = torch.where(
             advantage < 0,
@@ -403,15 +403,15 @@ def sample_action(
         eps = eps.to(device)
 
     x = eps
-    seen = [] if return_velocities else None
+    velocities = [] if return_velocities else None
     with torch.inference_mode():
         dts = grid[1:] - grid[:-1]
         for i in range(num_inference_steps):
             t_current = grid[i].reshape(1)
             v_hat = predict_velocity(x, t_current, condition)
-            if seen is not None:
-                seen.append(v_hat.detach().float())
+            if velocities is not None:
+                velocities.append(v_hat.detach().float())
             # addcmul, not x + dt*v: same value, one kernel instead of two, and
             # this loop runs num_euler_steps times per policy call.
             x = torch.addcmul(x, v_hat, dts[i])
-    return (x, seen) if return_velocities else x
+    return (x, velocities) if return_velocities else x

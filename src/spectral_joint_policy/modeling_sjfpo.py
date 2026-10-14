@@ -272,8 +272,8 @@ def compute_value_metrics(
 
 def compute_cfm_metrics(
     *,
-    l_old: torch.Tensor,
-    l_new: torch.Tensor,
+    cfm_loss_old: torch.Tensor,
+    cfm_loss_new: torch.Tensor,
     v_star_f: torch.Tensor,
     cfg: SJFPOConfig,
     eps: torch.Tensor | None = None,
@@ -286,17 +286,17 @@ def compute_cfm_metrics(
     With ``eps``, also reports realised per-bin noise energy.
     That confirms the prior that ran, not the flag.
     """
-    l_old_std = l_old.std(correction=0)
-    l_new_std = l_new.std(correction=0)
-    corr_denom = l_old_std * l_new_std + 1e-8
+    cfm_loss_old_std = cfm_loss_old.std(correction=0)
+    cfm_loss_new_std = cfm_loss_new.std(correction=0)
+    corr_denom = cfm_loss_old_std * cfm_loss_new_std + 1e-8
     out = {
         "flow_v_star_rms": rms(v_star_f),
-        "l_old_mean": l_old.mean(),
-        "l_new_mean": l_new.mean(),
-        "l_old_std": l_old_std,
-        "l_new_std": l_new_std,
-        "cfm_above_clamp_frac": (l_new > cfg.cfm_clamp).float().mean(),
-        "l_old_new_corr": ((l_old - l_old.mean()) * (l_new - l_new.mean())).mean()
+        "l_old_mean": cfm_loss_old.mean(),
+        "l_new_mean": cfm_loss_new.mean(),
+        "cfm_loss_old_std": cfm_loss_old_std,
+        "cfm_loss_new_std": cfm_loss_new_std,
+        "cfm_above_clamp_frac": (cfm_loss_new > cfg.cfm_clamp).float().mean(),
+        "l_old_new_corr": ((cfm_loss_old - cfm_loss_old.mean()) * (cfm_loss_new - cfm_loss_new.mean())).mean()
         / corr_denom,
     }
     if eps is not None:
@@ -305,9 +305,9 @@ def compute_cfm_metrics(
         half = max(1, bands.numel() // 2)
         low = bands[:half].mean()
         high = bands[-half:].mean()
-        out["noise_band_energy_low"] = low
-        out["noise_band_energy_high"] = high
-        out["noise_band_energy_hf_lf_ratio"] = high / low.clamp_min(1e-12)
+        out["noise_band_energy_low_bands"] = low
+        out["noise_band_energy_high_bands"] = high
+        out["noise_band_energy_high_over_low"] = high / low.clamp_min(1e-12)
     return out
 
 
@@ -775,7 +775,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         return self._action_buffer.popleft()
 
 
-    def exec_frac(self, executed_steps: torch.Tensor) -> torch.Tensor:
+    def exec_length_frac(self, executed_steps: torch.Tensor) -> torch.Tensor:
         """Normalise an executed-step count to ``[0, 1]``.
 
         Always returns even when unused, so a caller never
@@ -799,7 +799,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         """Execution mask plus the velocities it indexes.
 
         Pass-through: the velocities are already action steps, so
-        the mask applies directly. Both ``l_old`` and ``l_new``
+        the mask applies directly. Both ``cfm_loss_old`` and ``cfm_loss_new``
         must route through it to stay masked alike.
         """
         return action_is_pad, velocities
@@ -812,7 +812,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         eps: torch.Tensor,
         action_is_pad: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Frozen policy's CFM loss: the ratio's ``l_old``.
+        """Frozen policy's CFM loss: the ratio's ``cfm_loss_old``.
 
         Both reductions masked exactly like the live losses, so
         the ratio never mixes means over different positions.
@@ -998,15 +998,15 @@ class SJFPOPolicy(PreTrainedPolicy):
             # The bootstrap chunk only ever executes n_action_steps, so its
             # fraction is n_action_steps/H, NOT H/H. Passing H/H
             # reintroduces the mismatch this feature removes.
-            exec_frac = self.exec_frac(lengths)
-            boot_exec_frac = self.exec_frac(
+            exec_length_frac = self.exec_length_frac(lengths)
+            boot_exec_frac = self.exec_length_frac(
                 torch.full_like(lengths, cfg.n_action_steps)
             )
             # amin across members: backup only, never in the loss.
             # The value loss averages the same members.
             with autocast_context(device):
                 chunk_q = self.critic(
-                    normalised_states, actions, exec_frac
+                    normalised_states, actions, exec_length_frac
                 ).float().amin(dim=0)
             with torch.inference_mode(), autocast_context(device):
                 boot_q = self.critic(
@@ -1222,20 +1222,20 @@ class SJFPOPolicy(PreTrainedPolicy):
                 "from generate_rollout. They are computed once per rollout against "
                 "the frozen snapshot and must not be recomputed here."
             )
-        l_old = to_tensor(
+        cfm_loss_old = to_tensor(
             batch["behavior_cfm_loss"], dtype=torch.float32, device=device
         )
-        l_old_token = to_tensor(
+        cfm_loss_old_token = to_tensor(
             batch["behavior_cfm_loss_token"], dtype=torch.float32, device=device
         )
-        if tuple(l_old.shape) != (n, num_mc):
+        if tuple(cfm_loss_old.shape) != (n, num_mc):
             raise ValueError(
-                f"behavior_cfm_loss shape {tuple(l_old.shape)} != {(n, num_mc)}"
+                f"behavior_cfm_loss shape {tuple(cfm_loss_old.shape)} != {(n, num_mc)}"
             )
         expected_tokens = self.get_token_count_for_cfm_loss(cfg)
-        if tuple(l_old_token.shape) != (n, num_mc, expected_tokens):
+        if tuple(cfm_loss_old_token.shape) != (n, num_mc, expected_tokens):
             raise ValueError(
-                f"behavior_cfm_loss_token shape {tuple(l_old_token.shape)} != "
+                f"behavior_cfm_loss_token shape {tuple(cfm_loss_old_token.shape)} != "
                 f"{(n, num_mc, expected_tokens)}"
             )
 
@@ -1265,34 +1265,34 @@ class SJFPOPolicy(PreTrainedPolicy):
 
             adv = normalised_advantages.float()
             adv_mc = adv.unsqueeze(1)
-            l_new, l_new_token = compute_cfm_loss(
+            cfm_loss_new, cfm_loss_new_token = compute_cfm_loss(
                 v_new_r_f, v_star_f, cfg, "both", loss_mask
             )
-            ratio_token = compute_policy_ratio(l_old_token, l_new_token, cfg)
-            ratio = compute_policy_ratio(l_old, l_new, cfg, advantage=adv_mc)
-            self.cfm_above_clamp_frac = (l_new > cfg.cfm_clamp).float().mean().detach()
+            ratio_token = compute_policy_ratio(cfm_loss_old_token, cfm_loss_new_token, cfg)
+            ratio = compute_policy_ratio(cfm_loss_old, cfm_loss_new, cfg, advantage=adv_mc)
+            self.cfm_above_clamp_frac = (cfm_loss_new > cfg.cfm_clamp).float().mean().detach()
 
             if cfg.ratio_granularity == "per_chunk":
                 # FPO Eq 9: mean MC losses, THEN exponentiate.
                 # One ratio per chunk, so all pairs clip together.
-                l_old_c, l_new_c = l_old.mean(dim=1), l_new.mean(dim=1)
-                delta = l_old_c - l_new_c
-                ratio = compute_policy_ratio(l_old_c, l_new_c, cfg, advantage=adv)
+                cfm_loss_old_chunk, cfm_loss_new_chunk = cfm_loss_old.mean(dim=1), cfm_loss_new.mean(dim=1)
+                delta = cfm_loss_old_chunk - cfm_loss_new_chunk
+                ratio = compute_policy_ratio(cfm_loss_old_chunk, cfm_loss_new_chunk, cfg, advantage=adv)
                 policy_per_chunk = -compute_aspo_surrogate(ratio, adv, cfg)
             elif cfg.ratio_granularity == "per_sample":
                 # One ratio per token: finer than either paper.
-                delta = l_old - l_new
+                delta = cfm_loss_old - cfm_loss_new
                 policy_per_chunk = -compute_aspo_surrogate(
                     ratio_token, adv_mc.unsqueeze(-1), cfg
                 ).mean(dim=(1, 2))
             else:
                 # FPO++ Eq 10: one ratio per (tau, eps) pair.
-                delta = l_old - l_new
+                delta = cfm_loss_old - cfm_loss_new
                 policy_per_chunk = -compute_aspo_surrogate(ratio, adv_mc, cfg).mean(dim=1)
 
         with autocast_context(device):
             # action_is_pad marks unexecuted steps; count the complement.
-            chunk_exec_frac = self.exec_frac((~action_is_pad).sum(dim=-1))
+            chunk_exec_frac = self.exec_length_frac((~action_is_pad).sum(dim=-1))
             raw_value_pred = self.critic(states, actions, chunk_exec_frac).float()  # [num_critics, n]
         raw_returns_flat = raw_returns.reshape(-1)
         if raw_value_pred.shape[-1] != raw_returns_flat.shape[0]:
@@ -1332,8 +1332,8 @@ class SJFPOPolicy(PreTrainedPolicy):
             return loss, None
 
         info = self.compute_info(
-            l_old=l_old,
-            l_new=l_new,
+            cfm_loss_old=cfm_loss_old,
+            cfm_loss_new=cfm_loss_new,
             ratio=ratio,
             ratio_token=ratio_token,
             delta=delta,
@@ -1354,8 +1354,8 @@ class SJFPOPolicy(PreTrainedPolicy):
     def compute_info(
         self,
         *,
-        l_old,
-        l_new,
+        cfm_loss_old,
+        cfm_loss_new,
         ratio,
         ratio_token,
         delta,
@@ -1389,8 +1389,8 @@ class SJFPOPolicy(PreTrainedPolicy):
                 value_loss_per_chunk=value_loss_per_chunk,
             ),
             **compute_cfm_metrics(
-                l_old=l_old,
-                l_new=l_new,
+                cfm_loss_old=cfm_loss_old,
+                cfm_loss_new=cfm_loss_new,
                 v_star_f=v_star_f,
                 cfg=cfg,
                 eps=eps,

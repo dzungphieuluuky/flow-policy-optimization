@@ -99,7 +99,7 @@ def test_drift_diagnostics_take_the_bf16_observations_they_stored():
     # Same fraction generate_rollout bootstrapped with: a full-horizon proposal
     # that only runs for n_action_steps. Mismatching it would make the drift
     # metric compare two different functions and report the gap as staleness.
-    boot_frac = policy.exec_frac(
+    boot_frac = policy.exec_length_frac(
         torch.full((3,), policy.config.n_action_steps, dtype=torch.long)
     )
     batch = {

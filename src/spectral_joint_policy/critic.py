@@ -56,21 +56,21 @@ class CriticMember(nn.Module):
         self,
         states: torch.Tensor,
         actions: torch.Tensor,
-        exec_frac: torch.Tensor | None = None,
+        exec_length_frac: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """``[B, T, obs]`` and ``[B, H, action_dim]`` -> ``[B]``."""
         parts = [states.flatten(1), actions.flatten(1)]
         if self.condition_on_exec_length:
-            if exec_frac is None:
+            if exec_length_frac is None:
                 raise ValueError(
-                    "exec_frac is required when condition_on_exec_length=True; it "
+                    "exec_length_frac is required when condition_on_exec_length=True; it "
                     "tells the critic how much of the planned chunk was executed"
                 )
-            if exec_frac.dim() != 1 or exec_frac.shape[0] != states.shape[0]:
+            if exec_length_frac.dim() != 1 or exec_length_frac.shape[0] != states.shape[0]:
                 raise ValueError(
-                    f"exec_frac must be [B] matching states, got {tuple(exec_frac.shape)}"
+                    f"exec_length_frac must be [B] matching states, got {tuple(exec_length_frac.shape)}"
                 )
-            parts.append(exec_frac.to(dtype=parts[0].dtype).unsqueeze(-1))
+            parts.append(exec_length_frac.to(dtype=parts[0].dtype).unsqueeze(-1))
         x = torch.cat(parts, dim=-1)
         return self.mlp(x).squeeze(-1)
 
@@ -137,7 +137,7 @@ class Critic(nn.Module):
         self,
         states: torch.Tensor,
         actions: torch.Tensor,
-        exec_frac: torch.Tensor | None = None,
+        exec_length_frac: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """``[B, T, obs]``, ``[B, H, action_dim]`` -> ``[num_critics, B]``."""
         if states.dim() != 3 or states.shape[2] != self.obs_dim:
@@ -153,5 +153,5 @@ class Critic(nn.Module):
         if actions.shape[1] != self.action_horizon:
             raise ValueError(f"actions has {actions.shape[1]} steps but the critic was built for action_horizon={self.action_horizon}")
         return torch.stack(
-            [net(states, actions, exec_frac) for net in self.networks]
+            [net(states, actions, exec_length_frac) for net in self.networks]
         )

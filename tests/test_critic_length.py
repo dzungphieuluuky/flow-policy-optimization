@@ -56,21 +56,21 @@ def _policy_with_critic(cfg: SJFPOConfig):
 
 def test_exec_frac_normalises_by_the_horizon():
     policy = _policy_with_critic(_cfg())
-    got = policy.exec_frac(torch.tensor([0, 4, 8]))
+    got = policy.exec_length_frac(torch.tensor([0, 4, 8]))
     torch.testing.assert_close(got, torch.tensor([0.0, 0.5, 1.0]))
 
 
 def test_exec_frac_is_fp32_even_from_a_long_tensor():
     """The critic runs under autocast; an int64 column would not concatenate."""
     policy = _policy_with_critic(_cfg())
-    got = policy.exec_frac(torch.tensor([2, 4], dtype=torch.long))
+    got = policy.exec_length_frac(torch.tensor([2, 4], dtype=torch.long))
     assert got.dtype == torch.float32
 
 
 def test_bootstrap_uses_n_action_steps_not_the_whole_horizon():
     """The regression guard for the row that is easiest to get wrong."""
     policy = _policy_with_critic(_cfg(action_horizon=8, n_action_steps=4))
-    boot = policy.exec_frac(torch.full((3,), 4))
+    boot = policy.exec_length_frac(torch.full((3,), 4))
     torch.testing.assert_close(boot, torch.full((3,), 0.5))
     assert not torch.allclose(boot, torch.ones(3))
 

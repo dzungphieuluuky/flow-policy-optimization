@@ -90,12 +90,12 @@ class TestFPOCoreRemaining:
         import torch
 
         cfg = SJFPOConfig()
-        l_old = torch.ones(2, 2)
-        l_new = torch.ones(2, 2) * 0.9
-        ratio = compute_policy_ratio(l_old, l_new, cfg)
-        assert ratio.shape == l_old.shape
+        cfm_loss_old = torch.ones(2, 2)
+        cfm_loss_new = torch.ones(2, 2) * 0.9
+        ratio = compute_policy_ratio(cfm_loss_old, cfm_loss_new, cfg)
+        assert ratio.shape == cfm_loss_old.shape
         # With identical old/new and no clamp, ratio should be 1 (exp(0) = 1)
-        ratio_same = compute_policy_ratio(l_old, l_old, cfg)
+        ratio_same = compute_policy_ratio(cfm_loss_old, cfm_loss_old, cfg)
         assert torch.isclose(ratio_same, torch.ones_like(ratio_same), atol=1e-5).all()
 
 

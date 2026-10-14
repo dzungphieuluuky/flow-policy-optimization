@@ -289,7 +289,7 @@ def measure_value_drift(policy, batch, device) -> tuple[torch.Tensor, torch.Tens
     # Must be the same fraction generate_rollout fed the bootstrap, or this
     # compares Q(s',a',f1) against Q(s',a',f2) and reports the gap between two
     # different functions as staleness.
-    boot_exec_frac = policy.exec_frac(
+    boot_exec_frac = policy.exec_length_frac(
         torch.full(
             (boot_obs.shape[0],),
             policy.config.n_action_steps,
@@ -564,7 +564,7 @@ def train_sjfpo_run(
                 jerk_pad = batch["action_is_pad"].detach().cpu().numpy()
                 rollout_jerk = compute_mean_chunk_jerk(jerk_action, jerk_pad)
                 rollout_seam_jerk = compute_seam_jerk(jerk_action, jerk_pad)
-            clip_metrics = compute_action_clip_rate(batch)
+            action_clip_rates = compute_action_clip_rate(batch)
             if action_abs_max > 1.0 + 1e-3:
                 # Only reachable if the scaling affine itself is wrong.
                 raise ValueError(
@@ -576,7 +576,7 @@ def train_sjfpo_run(
 
             policy.train()
 
-            infos: list[dict[str, float]] = []
+            epoch_infos: list[dict[str, float]] = []
             grad_norms_pre: list[torch.Tensor] = []
             above_clamp_fracs: list[torch.Tensor] = []
             n_chunks = batch["raw_advantages"].shape[0]
@@ -628,7 +628,7 @@ def train_sjfpo_run(
                     policy.step_count += 1
                     apply_lr_schedule(optimizer, policy.step_count, lr_decays, cfg)
                 if epoch_info is not None:
-                    infos.append(epoch_info)
+                    epoch_infos.append(epoch_info)
 
             # Checked once per update, not per boundary: bool() on a device
             # tensor is a sync, and NaN gradients make the clip a no-op anyway,
@@ -648,8 +648,11 @@ def train_sjfpo_run(
 
             policy.update_observation_stats(batch["normalizer_observations"])
 
-            if infos:
-                info = {k: sum(d[k] for d in infos) / len(infos) for k in infos[0]}
+            if epoch_infos:
+                info = {
+                    k: sum(d[k] for d in epoch_infos) / len(epoch_infos)
+                    for k in epoch_infos[0]
+                }
             else:
                 info = None
             scalars = [
@@ -680,7 +683,7 @@ def train_sjfpo_run(
                     data["train/chunk_clip_counts"] = rollout["chunk_clip_counts"]
                 for key in _ROLLOUT_ABS_KEYS:
                     data[f"train/{key}"] = rollout[key]
-                data.update({f"train/{k}": v for k, v in clip_metrics.items()})
+                data.update({f"train/{k}": v for k, v in action_clip_rates.items()})
                 gae_diag = batch.get("gae_diagnostics")
                 if gae_diag:
                     data.update(

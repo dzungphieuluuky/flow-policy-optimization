@@ -172,17 +172,17 @@ def compute_chunk_advantages(
     order = torch.argsort(env_id, stable=True)
     sorted_env = env_id[order]
     same_env = sorted_env[:-1] == sorted_env[1:]
-    succ = torch.full_like(order, -1)
-    succ[order[:-1][same_env]] = order[1:][same_env]
+    successor = torch.full_like(order, -1)
+    successor[order[:-1][same_env]] = order[1:][same_env]
 
     trace = gamma_h * (~done) * gae_lambda
     # One device->host transfer for the whole successor map; the loop then does
     # no further syncs, so this is n_chunks cheap kernels rather than n_chunks
     # synchronisations.
-    succ_host = succ.tolist()
+    successor_host = successor.tolist()
     adv = delta.clone()
     for i in range(n_chunks - 1, -1, -1):
-        j = succ_host[i]
+        j = successor_host[i]
         if j >= 0:
             adv[i] = delta[i] + trace[i] * adv[j]
     return adv, adv + chunk_q

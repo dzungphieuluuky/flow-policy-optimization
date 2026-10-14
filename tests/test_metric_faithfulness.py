@@ -185,8 +185,8 @@ def test_metrics_survive_the_wandb_scalar_pack():
 
     eps = sample_noise((2, 2, 8, 3), SJFPOConfig(), torch.device("cpu"), None)
     out = compute_cfm_metrics(
-        l_old=torch.zeros(2),
-        l_new=torch.ones(2),
+        cfm_loss_old=torch.zeros(2),
+        cfm_loss_new=torch.ones(2),
         v_star_f=torch.ones(2, 8, 3),
         cfg=SJFPOConfig(),
         eps=eps,

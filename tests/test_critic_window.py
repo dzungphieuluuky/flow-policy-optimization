@@ -11,7 +11,7 @@ A mean-pool satisfies neither in the way that matters: it ignores order entirely
 so the permutation would be a no-op. That is the failure mode this file exists to
 prevent.
 
-The critic is now a per-member concat MLP over ``[window, chunk, exec_frac]``
+The critic is now a per-member concat MLP over ``[window, chunk, exec_length_frac]``
 (replacing the earlier FiLM modulation), so the window and chunk properties are
 structural rather than incidental: a permuted window or chunk is a different
 input vector to the first Linear, and an MLP is not permutation-invariant. The
@@ -194,13 +194,13 @@ def test_flag_off_ignores_exec_frac_entirely():
 def test_missing_exec_frac_is_rejected_rather_than_defaulted():
     """Silently defaulting f would reintroduce exactly the bug this input fixes."""
     critic = _critic(condition_on_exec_length=True)
-    with pytest.raises(ValueError, match="exec_frac is required"):
+    with pytest.raises(ValueError, match="exec_length_frac is required"):
         critic(_window(), _chunk(), None)
 
 
 def test_exec_frac_shape_must_match_the_batch():
     critic = _critic(condition_on_exec_length=True)
-    with pytest.raises(ValueError, match=r"exec_frac must be \[B\]"):
+    with pytest.raises(ValueError, match=r"exec_length_frac must be \[B\]"):
         critic(_window(), _chunk(), _frac(3))
 
 
@@ -239,7 +239,7 @@ def test_gradient_reaches_the_length_column():
     critic(_window(), _chunk(), _frac(4)).sum().backward()
     first = critic.networks[0].mlp[0].weight
     assert first.grad is not None
-    assert first.grad[:, -1].abs().sum() > 0, "exec_frac column got no gradient"
+    assert first.grad[:, -1].abs().sum() > 0, "exec_length_frac column got no gradient"
 
 
 # --- ensemble --------------------------------------------------------------

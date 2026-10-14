@@ -423,7 +423,7 @@ def test_the_negative_advantage_clamp_is_not_dead_at_the_default():
 def test_clamp_binds_only_far_outside_the_observed_loss_scale():
     """Guard against tightening past what the trust region actually sees.
 
-    Measured on Pendulum over 8 updates, l_new peaks near 1.9 and averages
+    Measured on Pendulum over 8 updates, cfm_loss_new peaks near 1.9 and averages
     ~0.63, so 20 is ~10x headroom. If the reduction changes and the scale
     moves an order of magnitude, this should be re-examined rather than
     inherited.
@@ -440,8 +440,8 @@ def test_clamp_binds_only_far_outside_the_observed_loss_scale():
 
 
 def test_ratio_still_sees_both_losses_when_clipped():
-    l_old = torch.tensor([[5.0, 7.0]])
-    l_new = torch.tensor([[3.0, 4.0]])
+    cfm_loss_old = torch.tensor([[5.0, 7.0]])
+    cfm_loss_new = torch.tensor([[3.0, 4.0]])
     cfg = SJFPOConfig(transported_clip_value=0.5, cfm_loss_use_huber=True)
-    ratio = compute_policy_ratio(l_old, l_new, cfg)
+    ratio = compute_policy_ratio(cfm_loss_old, cfm_loss_new, cfg)
     assert torch.allclose(ratio, torch.exp(torch.tensor([[2.0, 3.0]])), atol=1e-6)
