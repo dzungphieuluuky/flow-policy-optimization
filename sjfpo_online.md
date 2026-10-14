@@ -235,36 +235,15 @@ def run_arm(tag, extra=()):
     return rc
 ```
 
-### Sweep 1 — is the spectral prior doing anything?
+### Sweep 1 — dropped
 
-The logged run used `freq_weighted_time` with **no white control**, so the prior
-and the clip change are confounded. This is the first question.
+The spectral prior (`noise_scaling_mode`) is gone. The logged run used
+`freq_weighted_time` with no white control, so it cannot be answered from this
+data anyway.
 
-```python
-# Control first. Everything else identical.
-run_arm("white", ["--sjfpo.noise_scaling_mode", "white"])
+### Sweep 2 — dropped
 
-# The spectral arm, matched seed and step budget.
-run_arm("spectral", ["--sjfpo.noise_scaling_mode", "freq_weighted_time"])
-```
-
-Read `train/noise_band_energy_high_over_low` (renamed from `..._hf_lf_ratio` in
-`a001fa8`; the logged run predates it). That run read **0.378** at `beta=1.0`,
-which is the check that the colouring actually ran. If it reads ~1.0 the prior
-is not being applied and the arm is meaningless.
-
-### Sweep 2 — beta, only if sweep 1 shows the prior helps
-
-```python
-for beta in ("0.5", "1.0", "2.0"):
-    run_arm(f"beta{beta}", [
-        "--sjfpo.noise_scaling_mode", "freq_weighted_time",
-        "--sjfpo.noise_scaling_beta", beta,
-    ])
-```
-
-`noise_scaling_beta=0` is white, so sweep 2 subsumes sweep 1's white arm. If you
-only have budget for one sweep, run sweep 2 with `beta` in `0.0, 0.5, 1.0`, **plus replication seeds** (e.g., `1234`, `5678`) for any arm that wins — the relationship is non-monotonic (`beta=2.0` best at 508.99, `beta=1.0` worst at 341.69 on seed 3407). See `docs/DIAGNOSE_DEGRADATION.md` for the full sweep summary.
+Beta swept the same removed prior.
 
 ### Sweep 3 — the trust region was inert
 
@@ -324,7 +303,7 @@ def arm_summary(tag):
         "decay_pct": 100 * (means[-1] - means[best_i]) / max(abs(means[best_i]), 1e-9),
     }
 
-tags = ["white", "spectral"]
+tags = ["a", "b"]
 print(f"{'arm':>12} {'evals':>6} {'best':>10} {'@eval':>6} {'final':>10} {'decay%':>8}")
 for tag in tags:
     s = arm_summary(tag)
@@ -339,8 +318,7 @@ What to conclude:
 
 | Observation | Meaning |
 |---|---|
-| `decay_pct` near 0 in both arms | the decay is not clip- or prior-specific; look at the critic |
-| spectral best (beta=2.0=508.99) but worst (beta=1.0=341.69) | non-monotonic; no simple "spectral improves" claim possible | 
+| `decay_pct` near 0 in both arms | the decay is not arm-specific; look at the critic |
 | `best_at_eval` small in both | both peak early; degradation is post-peak (46% decay) |
 
 One arm is not a result. Two seeds minimum before claiming anything, and note

@@ -148,24 +148,7 @@ sweep_s6_misc() {
   run s6_epochs5  --sjfpo.num_learning_epochs 5
 }
 
-# S7. The spectral base prior: does a 1/f^beta base measure help? beta=0 is
-# bit-identical to white and is the ablation baseline.
-# READ noise_band_energy_high_over_low first: ~1.0 means the prior did not run.
-# Kill criterion, set in advance: if beta=1.0 does not beat beta=0.0 on mean
-# return across the seeds, that is the result. Do not extend to larger beta.
-# Expected effect is small: at action_horizon=8 the lag-1 autocorrelation of a
-# 1/f prior is ~0.26, so anything under ~1-2% return is seed noise at n=5.
-sweep_s7_noise_prior() {
-  local beta
-  for beta in 0.0 0.5 1.0; do
-    run "s7_beta${beta}" \
-      --sjfpo.noise_scaling_mode freq_weighted_time \
-      --sjfpo.noise_scaling_beta "$beta"
-  done
-  run s7_white_control --sjfpo.noise_scaling_mode white
-}
-
-ALL_SWEEPS="s0_baselines s1_exec_length s2_loss_reduction s3_horizon s4_critic_capacity s5_grad_clip s6_misc s7_noise_prior"
+ALL_SWEEPS="s0_baselines s1_exec_length s2_loss_reduction s3_horizon s4_critic_capacity s5_grad_clip s6_misc"
 
 dispatch() {
   case "$1" in
@@ -176,10 +159,9 @@ dispatch() {
     s4|s4_critic_capacity)    sweep_s4_critic_capacity ;;
     s5|s5_grad_clip)          sweep_s5_grad_clip ;;
     s6|s6_misc)               sweep_s6_misc ;;
-    s7|s7_noise_prior)        sweep_s7_noise_prior ;;
     list) echo "$ALL_SWEEPS" | tr ' ' '\n' | nl ;;
     all) for s in $ALL_SWEEPS; do "sweep_$s"; done ;;
-    *) die "unknown sweep '$1'. Try: list | all | s0 s1 s2 s3 s4 s5 s6 s7" ;;
+    *) die "unknown sweep '$1'. Try: list | all | s0 s1 s2 s3 s4 s5 s6" ;;
   esac
 }
 

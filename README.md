@@ -4,14 +4,9 @@ Online reinforcement learning for **action chunks** with a flow-matching actor,
 built on [LeRobot](https://github.com/huggingface/lerobot) and PyTorch.
 
 The estimator is FPO++ ([arXiv:2602.02481](https://arxiv.org/abs/2602.02481),
-Eq. 10 — one ASPO ratio per Monte-Carlo `(tau, eps)` pair). The project's own
-contribution is the **base measure**: the flow's noise is given a `1/f^beta`
-spectral profile instead of being white, so the interpolant and its target
-velocity are consistent with a base of `N(0, L L^T)`.
-
-That prior is **off by default** (`noise_scaling_mode='white'`). A default run is
-plain FPO++ and will reproduce FPO++ numbers, not a spectral result. Any spectral
-claim needs the flag set explicitly.
+Eq. 10 — one ASPO ratio per Monte-Carlo `(tau, eps)` pair), run over action
+chunks: the policy plans `action_horizon` steps and executes the first
+`n_action_steps` open-loop, then replans from the observation it lands on.
 
 ---
 
@@ -33,8 +28,7 @@ mislabeled.
 **Open performance issue.** A `Humanoid-v5` run peaked at 131,072 steps and
 decayed 46% by 614,400. The leading suspect is the joint gradient clip, which
 saturated at 2291x against a budget of 1 — and the actor/critic split is not
-recorded, so it cannot yet be attributed. See
-[`docs/DIAGNOSE_DEGRADATION.md`](docs/DIAGNOSE_DEGRADATION.md).
+recorded, so it cannot yet be attributed.
 
 ---
 
@@ -56,14 +50,6 @@ uv run python scripts/train.py \
   --method sjfpo --env Pendulum-v1 --seed 3407 \
   --total_steps 20000 --eval_steps 2000 --save_steps 10000 \
   --sjfpo.report_to tensorboard
-
-# the spectral arm — the only difference from the above is one flag
-uv run python scripts/train.py \
-  --method sjfpo --env Pendulum-v1 --seed 3407 \
-  --total_steps 20000 --eval_steps 2000 --save_steps 10000 \
-  --sjfpo.report_to tensorboard \
-  --sjfpo.noise_scaling_mode freq_weighted_time \
-  --sjfpo.noise_scaling_beta 1.0
 ```
 
 Runs land in `outputs/sjfpo_<env>_seed<seed>/`, with `eval_history.csv`,
@@ -116,11 +102,6 @@ One chunk is one macro-action, and one macro-action is one macro-transition.
   the default and `0.0` is QC's one-backup opt-out. Timeouts enter through the
   reward the way rsl-rl does it, with `done` masking the bootstrap so the
   correction lands once.
-- **Spectral prior.** `noise_scaling_mode=freq_weighted_time` colours the noise
-  with a `1/f^beta` rfft gain along the action-step axis. The base log-determinant
-  is constant in theta, so it cancels in `l_old - l_new` and the FPO ratio is
-  unchanged; what it changes is the ELBO gap the ratio is contaminated by, which
-  is the thing worth measuring.
 
 Full metric list in `train_sjfpo.py`; the mapping from GAE diagnostics to log keys
 is the `_GAE_DIAG_LOG_KEYS` table there.
@@ -172,7 +153,7 @@ added or dropped without the snapshot being regenerated.
 src/myfpo/
   configuration_sjfpo.py   every hyperparameter, all validation inline
   modeling_sjfpo.py        SJFPOPolicy: rollout, forward, the loss
-  fpo_core.py              CFM loss, ratio, ASPO, Euler sampler, the 1/f prior
+  fpo_core.py              CFM loss, ratio, ASPO, Euler sampler
   gae.py                   chunk-level advantages
   collector.py             open-loop chunk collection, RolloutBuffer
   critic.py                the ensemble
@@ -188,10 +169,7 @@ configs/
   sjfpo.yaml               generated
   envs.yaml                env registry with dims and tiers
   ablations/
-docs/
-  DIAGNOSE_DEGRADATION.md  the open performance issue, with a run plan
-  SWEEPS.md                unrun sweep plan
-tests/                     376 tests
+tests/                     380 tests
 sjfpo_online.ipynb / .md   Colab + Kaggle notebook, paired via jupytext
 ```
 
@@ -217,10 +195,8 @@ uv run --no-project --with jupytext jupytext --sync sjfpo_online.md
   a `requirements-local.txt` that does not exist. It fails at that install step
   before reaching the version checks. See `scripts/AGENTS.md`.
 - `--baseline dppo` is mislabeled, and `denoising_mdp.py` is dead weight.
-- `docs/SWEEPS.md` and `scripts/run_sweeps.sh` describe a spectral plan that has
-  not been run.
 - No CI, and `trajectory_straightness` in `fpo_core.py` is never called from
-  training, so the S3 hypothesis has no in-loop measurement.
+  training.
 
 ## License
 

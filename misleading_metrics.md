@@ -1,11 +1,11 @@
 # Misleading Metric Implementations (Detected from Code Audit)
-Source: src/, tests/test_metric_faithfulness.py, docs/DIAGNOSE_DEGRADATION.md, tests/test_ema_and_huber_defects.py
+Source: src/, tests/test_metric_faithfulness.py, tests/test_ema_and_huber_defects.py
 
 ---
 
 ## 1. `budget_truncated_chunk_frac` Reports NaN as "Unmeasured" (Not Zero)
 
-**Location**: `src/spectral_joint_policy/modeling_sjfpo.py` line 119; `collector.py` line 269; `tests/test_metric_faithfulness.py` line 14.
+**Location**: `src/myfpo/modeling_sjfpo.py` line 119; `collector.py` line 269; `tests/test_metric_faithfulness.py` line 14.
 
 **What it claims**: A fraction of chunks truncated by the step budget (`chunk_frac`).
 
@@ -22,7 +22,7 @@ The name (`chunk_frac`) implies a measurable fraction. A reader sees NaN and int
 
 ## 2. `_GAE_DIAG_LOG_KEYS`: Name Mapping Mismatch (`return_rms` → `returns_rms`)
 
-**Location**: `src/spectral_joint_policy/train_sjfpo.py` lines 42-50.
+**Location**: `src/myfpo/train_sjfpo.py` lines 42-50.
 
 **Code**:
 ```python
@@ -72,7 +72,7 @@ _GAE_DIAG_LOG_KEYS = {
 
 ## 5. Huber Knee Scaled by `returns_rms` (Not Residual RMS) — Defect in Metric Usage
 
-**Location**: `tests/test_ema_and_huber_defects.py` lines 1-3, 108; `src/spectral_joint_policy/configuration_sjfpo.py` line 109.
+**Location**: `tests/test_ema_and_huber_defects.py` lines 1-3, 108; `src/myfpo/configuration_sjfpo.py` line 109.
 
 **Defect description** (from test file):
 > "The Huber knee was scaled by returns_rms, putting it at ~2x the residual spread, so 97% of residuals took the quadratic branch and the loss was MSE in disguise."
@@ -86,7 +86,7 @@ The metric `returns_rms` (return root-mean-square) was being used to scale the H
 
 ## 6. Gradient Norm Collapse (Single Metric, Not Split)
 
-**Location**: `docs/DIAGNOSE_DEGRADATION.md`; `src/spectral_joint_policy/train_sjfpo.py` lines 617-624.
+**Location**: `src/myfpo/train_sjfpo.py` lines 617-624.
 
 **What the doc says**:
 > "`train/actor_grad_norm_preclip` and `train/critic_grad_norm_preclip` were collapsed into `train/grad_norm_preclip` in commit `fc8724b`, which is the one metric that could answer it."
@@ -97,7 +97,7 @@ The metric `returns_rms` (return root-mean-square) was being used to scale the H
 
 ## 7. `eval/reward_improvement_pct`: Only Computed When Last Mean Matches Previous
 
-**Location**: `src/spectral_joint_policy/tracking/base.py` lines 75-82.
+**Location**: `src/myfpo/tracking/base.py` lines 75-82.
 
 **Code**:
 ```python
@@ -125,4 +125,4 @@ if len(all_eval_returns) >= 2 and all_eval_returns[-1] == mean_return:
 
 ---
 
-*Sources: `tests/test_metric_faithfulness.py`, `tests/test_metric_audit.py`, `tests/test_ema_and_huber_defects.py`, `docs/DIAGNOSE_DEGRADATION.md`, `src/`, `README.md`.*
+*Sources: `tests/test_metric_faithfulness.py`, `tests/test_metric_audit.py`, `tests/test_ema_and_huber_defects.py`, `src/`, `README.md`.*

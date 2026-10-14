@@ -3,7 +3,7 @@
 ## Overview
 - `train.py` — unified CLI, the real entry point
 - `play.py` — load a checkpoint, render to video
-- `build_notebook.py` — writes `spectral_joint_flow.ipynb`
+- `build_notebook.py` — writes `myfpo_flow.ipynb`
 - `cuda_probe.py` — GPU probe
 - `verify_deps.sh` — dep-pin gate, **stale**, see Notes
 
@@ -33,7 +33,7 @@
   1. Line 22 installs `-r requirements-local.txt`. That file does not exist and is not tracked. This is the failure you actually get: exit 1, before any version check runs.
   2. Further down, the same script asserts `torch>=2.2,<2.6` and `numpy<2.1`. The repo runs **torch 2.11.0+cu130, numpy 2.2.6**, so both asserts would fail even if (1) were fixed.
   3. `pyproject.toml` sets no upper bound (`torch>=2.2.2`, `numpy>=1.26.4`), so the script, not the project, is what drifted.
-- `build_notebook.py` writes `spectral_joint_flow.ipynb`, which is not in the tree. The only tracked notebook is `sjfpo_online.ipynb`.
+- `build_notebook.py` writes `myfpo_flow.ipynb`, which is not in the tree. The only tracked notebook is `sjfpo_online.ipynb`.
 - No CI. `pytest -q tests` is the only gate.
 
 ## Verified non-issues — do not "fix" these

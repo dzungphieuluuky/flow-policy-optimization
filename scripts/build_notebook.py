@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the minimal Colab notebook: spectral_joint_flow.ipynb.
+"""Build the minimal Colab notebook: myfpo_flow.ipynb.
 
 The notebook carries NO source code. It clones this repo (private: GitHub
 token in the URL), installs deps, then shells out to scripts/train.py with `!`
@@ -7,7 +7,7 @@ token in the URL), installs deps, then shells out to scripts/train.py with `!`
 Single source of truth stays in src/.
 
 Usage:
-    python scripts/build_notebook.py [--output spectral_joint_flow.ipynb]
+    python scripts/build_notebook.py [--output myfpo_flow.ipynb]
 """
 
 from __future__ import annotations
@@ -160,7 +160,7 @@ def parse_build_args() -> argparse.Namespace:
         "--output",
         "-o",
         default=None,
-        help="Output notebook path (default: spectral_joint_flow.ipynb)",
+        help="Output notebook path (default: myfpo_flow.ipynb)",
     )
     return parser.parse_args()
 
@@ -178,7 +178,7 @@ def write_notebook(out: Path) -> None:
 
 def main():
     args = parse_build_args()
-    write_notebook(ROOT / (args.output or "spectral_joint_flow.ipynb"))
+    write_notebook(ROOT / (args.output or "myfpo_flow.ipynb"))
 
 
 if __name__ == "__main__":
