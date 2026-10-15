@@ -48,7 +48,7 @@ def test_delta_is_one_chunked_backup():
     r = expected_chunk_reward(lengths)
     want = [r[i] + GAMMA ** lengths[i] * 2.0 for i in range(4)]
     assert adv.tolist() == pytest.approx(want, abs=1e-5)
-    # returns - advantages is exactly the critic's own output, so returns reduces.
+    # returns - advantages is the critic's own output, so it must vanish.
     torch.testing.assert_close(ret - adv, torch.full((4,), 0.0))
 
 
@@ -291,14 +291,14 @@ def test_trace_matches_the_reference_recursion_by_hand():
 
 def test_trace_discount_is_gamma_h_times_lambda_not_gamma_lambda_to_the_h():
     """Pins the macro-MDP convention: lambda decays once per chunk, not per env step."""
-    # Two chunks, one env, bootstrap value zero so the only propagated term is.
+    # Two chunks, one env, bootstrap value zero, so only the trace propagates.
     lengths = [H] * 2
     got, _ = _traced(lengths, lam=0.95, chunk_next_q=0.0)
     r = sum(GAMMA**k for k in range(H))
     trace = GAMMA**H * 0.95
     # delta_0 = r, delta_1 = r, so A_0 = r + trace * r.
     assert got[0].item() == pytest.approx(r + trace * r, abs=1e-5)
-    # The (gamma*lambda)^h reading gives a strictly smaller trace here, so this.
+    # The (gamma*lambda)^h reading gives a strictly smaller trace here.
     alt = (GAMMA * 0.95) ** H
     assert abs(alt - trace) > 1e-3, "conventions coincide; test cannot distinguish"
 
@@ -369,7 +369,7 @@ def test_last_chunk_of_each_env_gets_a_one_chunk_advantage():
     env_id = [0, 1, 0, 1]
     got, _ = _traced(lengths, env_id=env_id, lam=0.95, chunk_next_q=0.0)
     qc, _ = run(lengths, chunk_next_q=0.0)
-    # Every chunk here is last-in-its-env except none: 0->2, 1->3.
+    # Chunks 2 and 3 end their env, so their traces stop: 0->2, 1->3.
     for i in (2, 3):
         assert got[i].item() == pytest.approx(qc[i].item(), abs=1e-6)
 

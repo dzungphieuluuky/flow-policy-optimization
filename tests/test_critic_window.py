@@ -290,7 +290,7 @@ def test_parameter_count_is_proportionate():
         p.numel()
         for p in Critic(11, 128, 17, 16, 16, 2).parameters()
     )
-    # in_dim = 16*11 + 16*17 + 1 = 449. Per member 449*128+128, 128*128+128,.
+    # in_dim = 16*11 + 16*17 + 1 = 449, then 449*128+128, 128*128+128.
     assert n == pytest.approx(148_482, abs=50), f"critic is {n} params"
 
 

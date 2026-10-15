@@ -80,7 +80,7 @@ def test_rollout_diagnostics_reports_executed_rows_only():
     pad = torch.zeros(2, 8, dtype=torch.bool)
     pad[0, 3:] = True
     out = compute_rollout_diagnostics({"action": a, "action_is_pad": pad})
-    # The legacy key keeps its all-rows meaning. The executed-only figure,.
+    # The legacy key keeps its all-rows meaning. The executed-only figure differs.
     assert out["action_abs_mean"] == pytest.approx(0.6875)
     assert out["action_abs_mean_executed"] == pytest.approx(1.0)
     assert out["action_abs_max"] == pytest.approx(1.0)
@@ -341,7 +341,7 @@ def test_the_diverge_step_is_not_reported_as_zero_when_nothing_fired():
     # No "global_step if diverged_now else 0" style fallback anywhere.
     assert not re.search(r"diverge_step.*else 0", src)
     assert not re.search(r"regression_step.*else 0", src)
-    # And the flags themselves are logged on the ordinary eval path too, so a.
+    # The flags themselves are logged on the ordinary eval path too.
     assert '"eval/diverged": 0.0' in src
     assert '"eval/regressed": 0.0' in src
 

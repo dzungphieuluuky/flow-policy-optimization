@@ -379,7 +379,7 @@ def test_freq_table_is_a_buffer_not_a_forward_time_cache():
     """Built in ``__init__``, so ``torch.compile`` cannot hand cudagraphs a tensor."""
     enc = SinusoidalEncoding(32)
     assert "freqs" in dict(enc.named_buffers())
-    # Derived from ``dim``, not learned: never in a checkpoint, so older.
+    # Derived from ``dim``, not learned, so never in a checkpoint.
     assert "freqs" not in enc.state_dict()
     # One tensor for the module's life.
     assert enc.compute_freqs(torch.device("cpu")) is enc.compute_freqs(

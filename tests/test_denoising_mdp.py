@@ -93,7 +93,7 @@ def test_ratio_is_one_when_the_policy_has_not_moved():
 
 
 def test_ratio_respects_the_trust_region():
-    # Ratio is exp(lp_new - lp_old). A policy that got 10 nats MORE likely.
+    # Ratio is exp(lp_new - lp_old). The policy got 10 nats more likely.
     lp_new = torch.zeros(50)
     lp_old = torch.full((50,), -10.0)
     r = gaussian_step_ratio(lp_new, lp_old, 0.05)

@@ -42,7 +42,7 @@ def test_source_does_not_cast_the_value_target_to_storage_dtype():
     assert "storage_dtype" not in value_block, (
         "the critic's value path must stay fp32; it regresses on raw returns"
     )
-    # The promotion to fp32 has to sit on the critic's own output, which is the.
+    # The promotion to fp32 must sit on the critic's own output line.
     critic_line = next(
         line for line in value_block.splitlines() if "raw_value_pred = " in line
     )
@@ -63,7 +63,7 @@ def test_generate_rollout_does_not_cast_the_value_target():
             f"{name} is the critic's regression target in raw reward units and "
             "must not be quantised by the storage dtype"
         )
-    # The tensors that legitimately ride storage_dtype must still do so, or this.
+    # The tensors that ride storage_dtype legitimately must still do so.
     assert "raw_advantages = raw_advantages.to(storage_dtype)" in src
     assert "normalised_advantages = normalised_advantages.to(storage_dtype)" in src
 

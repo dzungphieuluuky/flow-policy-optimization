@@ -54,7 +54,7 @@ def test_every_declared_field_exists_on_the_dataclass():
     assert declared <= actual, (
         f"annotated here but not a field: {sorted(declared - actual)}"
     )
-    # Anything that is a field but not annotated here must be inherited, or.
+    # Anything that is a field but not annotated here must be inherited.
     unexplained = actual - declared - inherited
     assert not unexplained, f"fields with no declaration and no base: {sorted(unexplained)}"
 

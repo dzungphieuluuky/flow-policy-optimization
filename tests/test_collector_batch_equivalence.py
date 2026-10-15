@@ -60,7 +60,7 @@ def collect(
 ):
     """Run the real collector on a deterministic env. Return the buffer + env."""
     env = FakeVecEnv(n=n_envs, episode=episode)
-    # Fixed projection so the proposal depends on every frame of the window in.
+    # Fixed projection so the proposal depends on every frame of the window.
     w = torch.randn(N_OBS * OBS_DIM, ACT_DIM, generator=torch.Generator().manual_seed(3))
     ramp = torch.arange(1, HORIZON + 1, dtype=torch.float32).reshape(1, HORIZON, 1)
 

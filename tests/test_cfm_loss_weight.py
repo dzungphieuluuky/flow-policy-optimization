@@ -61,7 +61,7 @@ def test_the_weight_scales_the_loss_in_proportion():
     loss = compute_cfm_loss(
         pred, target.expand(2, 1, 1, 2), cfg, "scalar", weight=cfm_loss_weight(t, cfg)
     )
-    # weights are 1.0 and 0.01, so the mean of 1.0 and 0.01*1.0.
+    # Weights are 1.0 and 0.01, so the mean of 1.0 and 0.01.
     assert float(loss) == pytest.approx((1.0 + 0.01) / 2)
 
 
