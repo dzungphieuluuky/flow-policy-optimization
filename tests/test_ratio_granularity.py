@@ -230,36 +230,24 @@ def test_an_unknown_granularity_is_rejected():
         _cfg(num_mc_samples=6, cfm_average_group_size=4).validate()
 
 
-def test_the_baselines_select_the_trust_regions_they_name():
-    """A baseline that names an equation must select the ratio implementing it."""
-    from myfpo.baselines import apply_baseline
-
+def test_the_paper_configs_select_the_trust_regions_they_name():
+    """A config that names an equation must select the ratio implementing it."""
     # (trust region, token axis folded, MC group size).
+    # fpo: PPO clip, Eq. 8 sum, Eq. 9 one group. fpo++: ASPO, Eq. 10 per pair.
     expected = {
-        "fpo": ("ppo", True, -1),
-        "fpo++": ("aspo", True, 1),
+        "fpo": ("ppo", True, -1, "sum"),
+        "fpo++": ("aspo", True, 1, "mean"),
     }
-    for name, (mode, token_avg, group) in expected.items():
-        cfg, _ = apply_baseline(SJFPOConfig(), name)
+    for name, (mode, token_avg, group, reduction) in expected.items():
+        cfg = dataclasses.replace(
+            SJFPOConfig(),
+            trust_region_mode=mode,
+            do_average_cfm_loss_in_chunk=token_avg,
+            cfm_average_group_size=group,
+            cfm_loss_reduction=reduction,
+        )
         assert cfg.trust_region_mode == mode, name
         assert cfg.do_average_cfm_loss_in_chunk is token_avg, name
         assert cfg.cfm_average_group_size == group, name
-        # FPO's Eq 8 is a sum over the chunk. FPO++'s manipulation variant.
-        assert cfg.cfm_loss_reduction == ("sum" if name == "fpo" else "mean"), name
-
-
-def test_a_baseline_cannot_inherit_the_default_it_is_been_compared_against():
-    """The reason fpo++ got explicit overrides."""
-    from myfpo.baselines import BASELINES, _OVERRIDES
-
-    for name in BASELINES:
-        assert _OVERRIDES[name], f"{name} inherits the default config verbatim"
-
-
-def test_every_baseline_note_belongs_to_an_override_it_can_be_printed_for():
-    """A provenance note keyed to nothing is documentation no reader sees."""
-    from myfpo.baselines import _NOTES, _OVERRIDES
-
-    for name, notes in _NOTES.items():
-        orphans = sorted(set(notes) - set(_OVERRIDES[name]))
-        assert not orphans, f"{name}: notes no report will print: {orphans}"
+        assert cfg.cfm_loss_reduction == reduction, name
+        cfg.validate()

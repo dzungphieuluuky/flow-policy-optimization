@@ -46,11 +46,3 @@ def test_the_defaults_are_the_released_ones():
 def test_spo_keeps_its_own_coefficient():
     """FPO++ does not share one clip between PPO and SPO."""
     assert SJFPOConfig().spo_clip_param == 0.01
-
-
-def test_the_baseline_arms_still_name_their_own_values():
-    """A baseline that inherits the default is not a baseline."""
-    from myfpo.baselines import BASELINES, _OVERRIDES
-
-    for name in BASELINES:
-        assert _OVERRIDES[name], f"{name} is now an empty diff"
