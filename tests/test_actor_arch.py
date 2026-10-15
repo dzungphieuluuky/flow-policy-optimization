@@ -31,6 +31,10 @@ def _cfg(**kw):
     )
 
 
+def _config(**overrides):
+    return _cfg(**overrides)
+
+
 def _mlp(hidden_dims=(512, 512, 512)):
     return SJFPOFlowMLP(ACT, HORIZON, HIDDEN, TIME_EMBED, hidden_dims)
 
@@ -130,6 +134,19 @@ def test_a_tracked_run_works_for_either_arch():
         assert "mean_log_ratio" in info, arch
         # The DiT reports per-block conditioning stats. The MLP has none.
         assert any(k.startswith("cond_") for k in info) == (arch == "dit"), arch
+
+
+def test_the_actor_output_layer_skips_weight_decay_when_compiled():
+    """``torch.compile`` renames params, so the ``out.`` test must still match."""
+    policy = build_policy(
+        OBS, ACT, _config(compile=True), device="cpu",
+        action_low=[-1.0] * ACT, action_high=[1.0] * ACT,
+    )
+    assert hasattr(policy.actor, "_orig_mod"), "the actor must be compiled"
+    no_decay = {id(p) for p in policy.get_actor_optim_params()["params"][1]["params"]}
+    out = policy.actor._orig_mod.out
+    assert id(out.weight) in no_decay
+    assert id(out.bias) in no_decay
 
 
 def test_an_unknown_arch_is_rejected():
