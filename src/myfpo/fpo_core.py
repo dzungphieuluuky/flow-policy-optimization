@@ -1,4 +1,7 @@
-"""FPO++ core math: CFM losses, per-sample ratios, ASPO trust region, Euler sampler (arXiv 2602.02481 Eq.3-13)."""
+"""FPO++ core maths: CFM loss, ratio, ASPO trust region, Euler sampler.
+
+Source: arXiv 2602.02481, equations 3 to 13.
+"""
 
 from __future__ import annotations
 
@@ -58,10 +61,10 @@ def sample_noise(
     device: torch.device | str,
     generator: torch.Generator | None,
 ):
-    """MC noise. Marginal from ``noise_sampling_mode``.
+    """MC noise. The marginal comes from ``noise_sampling_mode``.
 
-    Only definition of the base sample. The CFM path reads it twice --
-    ``compute_mc_xt`` builds ``lerp(noise, action, t)`` and
+    This is the only definition of the base sample. The CFM path reads it
+    twice. ``compute_mc_xt`` builds ``lerp(noise, action, t)``.
     ``compute_target_velocity`` returns ``a - eps``.
     """
     mode = cfg.noise_sampling_mode
@@ -75,13 +78,17 @@ def sample_noise(
 def run_monte_carlo_sampling(
     a: torch.Tensor, eps: torch.Tensor, tau
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, tuple[int, ...], int]:
-    """Broadcast action, noise, per-token timestep over MC -> ``[B*M, ...]``.
+    """Broadcast action, noise, and the per-token timestep over the MC axis.
+    Returns ``[B*M, ...]``.
 
-    ``tau`` is ``[B, M, K, 1]``: one time per action step, which is what keeps
-    a token's velocity and its target on the same ``tau``. The scalar and
-    per-chunk shapes this used to accept were never reachable from any caller
-    and are gone. Cast onto ``eps``'s device/dtype so a scalar cannot hop to CPU
-    mid-graph.
+    ``tau`` has the shape ``[B, M, K, 1]``. Each action step gets its own time.
+    That keeps a token's velocity and its target on the same ``tau``.
+
+    This function no longer accepts a scalar or a per-chunk shape. No caller
+    could reach either one.
+
+    The cast onto ``eps``'s device and dtype stops a scalar from moving to the
+    CPU in the middle of the graph.
     """
     b, num_mc = eps.shape[0], eps.shape[1]
     flow_shape = tuple(a.shape[1:])
@@ -115,9 +122,11 @@ def run_monte_carlo_sampling(
 def clip_transported(x: torch.Tensor, clip: float | None) -> torch.Tensor:
     """Bound the actor's transported output. FPO++ ``transported_clip_value``.
 
-    Applied at every site the raw velocity is produced -- the training loss,
-    the frozen ``cfm_loss_old`` pass, and the Euler sampler -- so all three see the
-    same map and the ratio stays consistent. ``None`` is a no-op.
+    The bound applies at every site that produces a raw velocity. Those sites
+    are the training loss, the frozen ``cfm_loss_old`` pass, and the Euler
+    sampler. All three see the same map, so the ratio stays consistent.
+
+    ``None`` does nothing.
     """
     if clip is None:
         return x
@@ -132,33 +141,37 @@ def compute_cfm_loss(
     action_is_pad: torch.Tensor | None = None,
     weight: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """CFM squared-velocity loss, FPO++ Eq. 7-8.
+    """CFM squared-velocity loss. FPO++ Eq. 7-8.
 
-    ``weight`` multiplies the squared error before any reduction, which is where
-    FPO++ applies its t-dependent schedule (``flow_model.py:631-634``). Applied
-    after the padding mask, so padded rows stay zero.
+    ``weight`` multiplies the squared error before the reduction. This is where
+    FPO++ applies its schedule over t (``flow_model.py:631-634``). The weight
+    applies after the padding mask, so padded rows stay zero.
 
-    ``sample``: flatten tokens, reduce per ``cfg.cfm_loss_reduction``.
-    ``token_mean``: divide by action_dim only, so masking cannot move it.
-    ``both``: pair off one masked square. ``scalar``: one number.
+    ``sample``: flatten the tokens, then reduce with ``cfg.cfm_loss_reduction``.
+    ``token_mean``: divide by action_dim only. Masking cannot move this value.
+    ``both``: return the masked sample and one masked square.
+    ``scalar``: return one number.
 
-    ``action_is_pad`` ``[n, horizon]`` True where padded: zero those rows and,
-    for every reduction but ``sum``, renormalise by the executed count, so a
-    short chunk keeps a full chunk's magnitude. ``sum`` deliberately does not
-    renormalise -- it is Eq. 8's squared norm over the whole chunk -- so a short
-    chunk's loss, and the trust region it carries, scale with its length.
+    ``action_is_pad`` has the shape ``[n, horizon]`` and is True where padded.
+    The function zeroes those rows. For every reduction except ``sum``, it then
+    divides by the executed count, so a short chunk keeps the magnitude of a
+    full chunk.
+
+    ``sum`` does not divide. Equation 8 takes the squared norm over the whole
+    chunk. So the loss of a short chunk, and the trust region it carries, both
+    scale with the chunk length.
     """
     if v_hat.shape != v_star.shape:
         raise ValueError(
             f"v_hat shape {tuple(v_hat.shape)} != v_star shape {tuple(v_star.shape)}"
         )
-    # F.mse_loss with reduction="none" is exactly square(v_hat - v_star); the
-    # default reduction would divide, which the masking below already does.
+    # F.mse_loss with reduction="none" is square(v_hat - v_star). The default
+    # reduction would divide, and the masking below already divides.
     diff = v_hat - v_star
     if cfg.cfm_loss_use_huber:
-        # FPO++ flow_model.py:_compute_squared_error. The quadratic branch
-        # carries no 0.5 factor, so this equals MSE for |diff| <= delta and
-        # only the tail turns linear.
+        # FPO++ flow_model.py:_compute_squared_error. The quadratic branch has no
+        # 0.5 factor. So this equals MSE for |diff| <= delta. Only the tail is
+        # linear.
         delta = cfg.cfm_loss_huber_delta
         abs_diff = diff.abs()
         sq = torch.where(
@@ -170,10 +183,11 @@ def compute_cfm_loss(
         sq = diff.square()
     n_valid = None
     if action_is_pad is not None:
-        # action_is_pad marks what to drop, so flip it: keep is 1 on executed
-        # positions, 0 on padded ones.
+        # action_is_pad marks the rows to drop, so the function flips it. Keep is 1 on
+        # an executed position and 0 on a padded position.
         keep = (~action_is_pad).to(sq.dtype)[:, None, :, None]
-        # Scaled by action_dim so the divisor counts scalar elements, not tokens.
+        # The scale factor is action_dim, so the divisor counts scalar elements
+        # and not tokens.
         n_valid = (
             (~action_is_pad).sum(dim=-1, keepdim=True).to(sq.dtype) * sq.shape[-1]
         )
@@ -203,9 +217,8 @@ def compute_cfm_loss(
             return sample
         return sample, sq.mean(dim=-1)
     if reduce_mode == "token_mean":
-        # Per-token (or per-frequency-coefficient when DCT is on) diagnostic.
-        # A token aggregates only action_dim, so dividing by that keeps the
-        # value independent of token count. mask_sq already zeroed padded rows.
+        # Per-token diagnostic. Dividing by action_dim keeps the value independent of
+        # the token count. The mask above already zeroed the padded rows.
         return sq.mean(dim=-1)
     raise ValueError(
         f"reduce_mode={reduce_mode!r} must be 'scalar', 'sample', 'token_mean', "
@@ -214,15 +227,17 @@ def compute_cfm_loss(
 
 
 def group_cfm_loss(loss: torch.Tensor, group_size: int) -> torch.Tensor:
-    """Average a CFM loss over groups of MC samples, ``[n, num_mc, ...]``.
+    """Average a CFM loss over groups of MC samples. Input ``[n, num_mc, ...]``.
 
-    FPO++ groups the Monte-Carlo axis before exponentiating
-    (``finetune_online_rl.py:803-806``): ``-1`` puts every sample in one group,
-    which is FPO Eq. 9's "mean the MC losses, then exponentiate". Grouping is
-    on the loss, not on ``old - new``; the two agree because
-    ``exp(mean(old) - mean(new)) == exp(mean(old - new))``.
+    FPO++ groups the Monte-Carlo axis before it exponentiates
+    (``finetune_online_rl.py:803-806``). The value ``-1`` puts every sample in
+    one group. This is FPO Eq. 9: mean the MC losses, then exponentiate.
 
-    ``1`` returns the input unchanged, so per-sample ratios cost nothing.
+    The function groups the loss. It does not group ``old - new``. The two
+    agree because ``exp(mean(old) - mean(new)) == exp(mean(old - new))``.
+
+    The value ``1`` returns the input unchanged. So per-sample ratios cost
+    nothing.
     """
     if group_size == 1:
         return loss
@@ -236,16 +251,22 @@ def group_cfm_loss(loss: torch.Tensor, group_size: int) -> torch.Tensor:
 
 
 def cfm_loss_weight(t: torch.Tensor, cfg: SJFPOConfig) -> torch.Tensor:
-    """Per-token CFM loss weight, broadcast over the action dimension.
+    """Return the per-token CFM loss weight. The value broadcasts over the action
+    dimension.
 
-    FPO++'s two ramps are ``1 - 0.9t`` and ``1 - 0.99t`` on *its* time
-    (``flow_model.py:648-661``), where ``t=0`` is the action and ``t=1`` the
-    noise. This repo runs time the other way, so those same two schedules are
-    ``0.1 + 0.9t`` and ``0.01 + 0.99t`` here: full weight at the action end,
-    least at noise. Copying the formula verbatim would weight noise hardest,
-    which is the opposite of the intent.
+    FPO++ has two ramps. They are ``1 - 0.9t`` and ``1 - 0.99t`` on the time of
+    the reference (``flow_model.py:648-661``). In the reference, ``t=0`` is the
+    action and ``t=1`` is the noise.
 
-    ``t`` is ``[..., 1]``, so the weight broadcasts over action dims untouched.
+    This repo runs time in the other direction. So the same two schedules read
+    ``0.1 + 0.9t`` and ``0.01 + 0.99t`` here. The weight is full at the action
+    end and least at the noise end.
+
+    A verbatim copy of the formula gives the noise end the largest weight. That
+    is the opposite of the intent.
+
+    ``t`` has the shape ``[..., 1]``. The weight therefore broadcasts over the
+    action dimensions without a change.
     """
     mode = cfg.cfm_loss_weight_from_t
     if mode == "constant":
@@ -258,17 +279,20 @@ def cfm_loss_weight(t: torch.Tensor, cfg: SJFPOConfig) -> torch.Tensor:
 def cfm_prediction(
     v: torch.Tensor, x_t: torch.Tensor, t: torch.Tensor, cfg: SJFPOConfig
 ) -> torch.Tensor:
-    """Map a velocity prediction to whatever ``cfg.cfm_loss_target`` compares.
+    """Map a velocity prediction to the quantity that ``cfg.cfm_loss_target``
+    compares.
 
-    The network always predicts the velocity, so only the loss moves. On the
-    straight path ``x_t = (1 - t) * eps + t * a`` and ``v = a - eps``, so at the
-    true velocity every mode below returns its target exactly:
-    ``x_t + (1 - t) * v == a`` and ``x_t - t * v == eps``. That identity is the
-    test.
+    The network always predicts the velocity. Only the loss changes.
 
-    FPO++ reaches the same three endpoints by also varying what the network
-    predicts (``flow_network_output_param``); holding that at ``u`` here is the
-    smaller change and leaves ``transported_clip_value`` clipping one thing.
+    On the straight path ``x_t = (1 - t) * eps + t * a`` and ``v = a - eps``.
+    At the true velocity, every mode below returns its own target exactly.
+    ``x_t + (1 - t) * v == a`` and ``x_t - t * v == eps``. That identity is
+    what the test checks.
+
+    FPO++ reaches the same three endpoints by also changing what the network
+    predicts (``flow_network_output_param``). Holding that at ``u`` here is the
+    smaller change. It also leaves ``transported_clip_value`` clipping one
+    thing.
     """
     mode = cfg.cfm_loss_target
     if mode == "velocity":
@@ -295,11 +319,12 @@ def compute_aspo_surrogate(
     advantage: torch.Tensor,
     cfg: SJFPOConfig,
 ) -> torch.Tensor:
-    """FPO++ trust region. ASPO = PPO on A>0, SPO on A<0. Elementwise.
+    """FPO++ trust region. ASPO is PPO for A>0 and SPO for A<0. It runs on each
+    element.
 
-    PPO clips at ``clip_param``, the SPO quadratic at ``spo_clip_param``. Two
-    widths, not one: FPO++'s manipulation loop carries them as separate
-    coefficients (``finetune_online_rl.py:117-118``).
+    PPO clips at ``clip_param``. The SPO quadratic uses ``spo_clip_param``.
+    These are two widths, not one. The manipulation loop of FPO++ carries them
+    as two coefficients (``finetune_online_rl.py:117-118``).
     """
     ratio_adv = ratio * advantage
     ratio_clipped = torch.clamp(ratio, 1.0 - cfg.clip_param, 1.0 + cfg.clip_param)
@@ -321,14 +346,18 @@ def compute_policy_ratio(
     cfg: SJFPOConfig,
     advantage: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Ratio exp(cfm_loss_old - cfm_loss_new), standing in for a log-prob ratio.
+    """Return exp(cfm_loss_old - cfm_loss_new). This ratio takes the place of a
+    log-probability ratio.
 
-    Elementwise, so the caller's reduction fixes the granularity: ``per_chunk``
-    passes the MC means (one ratio per chunk), ``per_action`` the per-pair
-    losses, ``per_sample`` the per-token losses.
+    The function runs on each element. So the caller sets the granularity
+    through the shape it passes in. Per-chunk granularity passes the MC means,
+    so one ratio covers a whole chunk. Per-pair granularity passes one loss per
+    pair. Per-token granularity passes one loss per token.
 
-    Clamp both losses, optionally clamp cfm_loss_new harder on A<0, then cap the
-    log-ratio one-sided with an STE: capped forward, original backward.
+    The function clamps both losses. It then clamps ``cfm_loss_new`` harder on
+    A<0, if the configuration asks for it. Then it caps the log-ratio on one
+    side with a straight-through estimator. The forward pass sees the cap. The
+    backward pass sees the original value.
     """
     old = torch.clamp(cfm_loss_old, max=cfg.cfm_clamp)
     new = torch.clamp(cfm_loss_new, max=cfg.cfm_clamp)
@@ -345,13 +374,16 @@ def compute_policy_ratio(
 
 
 def trajectory_straightness(velocities) -> float:
-    """Mean cosine between consecutive velocities of an Euler trajectory.
+    """Return the mean cosine between two consecutive velocities of an Euler
+    trajectory.
 
-    Lower means a curvier path. Return is not a substitute: it can hold while
-    the sampling cost moves, or the reverse.
+    A lower value means a curvier path. The value does not replace measurement.
+    It can stay flat while the sampling cost moves. It can also move while the
+    cost stays flat.
 
-    ``velocities`` is the sequence of ``v_hat`` the sampler used, in order.
-    Returns NaN for fewer than two steps, which is what a 1-step sampler gets.
+    ``velocities`` holds the ``v_hat`` sequence that the sampler used, in order.
+    The function returns NaN for fewer than two steps. A 1-step sampler gives
+    exactly that.
     """
     if len(velocities) < 2:
         return float("nan")
@@ -376,17 +408,19 @@ def sample_action(
     *,
     return_velocities: bool = False,
 ):
-    """Euler-sample the flow t=0 (noise) -> t=1 (data). Caller draws ``eps``.
+    """Euler-sample the flow from t=0 (noise) to t=1 (data). The caller draws
+    ``eps``.
 
-    ``device`` has no default on purpose, and ``None`` is rejected below rather
-    than silently meaning CPU: the sampler is on the rollout path, where the
-    device is the one the policy runs on, not something to infer.
+    ``device`` has no default, on purpose. The function rejects ``None`` below.
+    It does not treat ``None`` as a request for the CPU. The sampler runs on the
+    rollout path. There, the device is the device the policy runs on. It is not
+    something to infer.
 
-    ``return_velocities`` also hands back the ``v_hat`` sequence for
-    :func:`trajectory_straightness`. Off by default: it keeps every velocity
-    alive for the whole solve, which the inference path does not need. Nothing
-    in the training or rollout path sets it -- the straightness metric has no
-    caller outside tests.
+    ``return_velocities`` also returns the ``v_hat`` sequence that
+    :func:`trajectory_straightness` needs. The default is off, because the flag
+    keeps every velocity alive for the whole solve. The inference path does not
+    need that. Nothing in the training or rollout path sets it, so the
+    straightness metric has no caller outside the tests.
     """
     if device is None:
         raise ValueError("device must be provided explicitly")
