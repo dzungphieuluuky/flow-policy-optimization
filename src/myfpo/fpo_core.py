@@ -130,8 +130,13 @@ def compute_cfm_loss(
     cfg: SJFPOConfig,
     reduce_mode: str,
     action_is_pad: torch.Tensor | None = None,
+    weight: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """CFM squared-velocity loss, FPO++ Eq. 7-8.
+
+    ``weight`` multiplies the squared error before any reduction, which is where
+    FPO++ applies its t-dependent schedule (``flow_model.py:631-634``). Applied
+    after the padding mask, so padded rows stay zero.
 
     ``sample``: flatten tokens, reduce per ``cfg.cfm_loss_reduction``.
     ``token_mean``: divide by action_dim only, so masking cannot move it.
@@ -175,6 +180,9 @@ def compute_cfm_loss(
         n_valid = n_valid.clamp(min=1.0)
         sq = sq * keep
 
+    if weight is not None:
+        sq = sq * weight
+
     if reduce_mode == "scalar":
         return sq.mean() if n_valid is None else sq.sum() / n_valid.sum()
 
@@ -203,6 +211,26 @@ def compute_cfm_loss(
         f"reduce_mode={reduce_mode!r} must be 'scalar', 'sample', 'token_mean', "
         "or 'both'"
     )
+
+
+def cfm_loss_weight(t: torch.Tensor, cfg: SJFPOConfig) -> torch.Tensor:
+    """Per-token CFM loss weight, broadcast over the action dimension.
+
+    FPO++'s two ramps are ``1 - 0.9t`` and ``1 - 0.99t`` on *its* time
+    (``flow_model.py:648-661``), where ``t=0`` is the action and ``t=1`` the
+    noise. This repo runs time the other way, so those same two schedules are
+    ``0.1 + 0.9t`` and ``0.01 + 0.99t`` here: full weight at the action end,
+    least at noise. Copying the formula verbatim would weight noise hardest,
+    which is the opposite of the intent.
+
+    ``t`` is ``[..., 1]``, so the weight broadcasts over action dims untouched.
+    """
+    mode = cfg.cfm_loss_weight_from_t
+    if mode == "constant":
+        return torch.ones_like(t)
+    if mode == "linear_1_to_0.1":
+        return 0.1 + 0.9 * t
+    return 0.01 + 0.99 * t
 
 
 def cfm_prediction(

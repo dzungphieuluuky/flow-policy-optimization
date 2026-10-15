@@ -69,6 +69,7 @@ SECTIONS: list[tuple[str, list[str]]] = [
             "ratio_granularity",
             "cfm_loss_reduction",
             "cfm_loss_target",
+            "cfm_loss_weight_from_t",
             "cfm_clamp",
             "cfm_loss_clamp_negative_advantages",
             "cfm_loss_clamp_negative_advantages_max",

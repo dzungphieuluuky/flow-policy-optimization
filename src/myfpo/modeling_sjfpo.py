@@ -32,6 +32,7 @@ from myfpo.collector import (
     scale_and_clip_chunk,
 )
 from myfpo.fpo_core import (
+    cfm_loss_weight,
     cfm_prediction,
     cfm_target,
     compute_aspo_surrogate,
@@ -840,7 +841,9 @@ class SJFPOPolicy(PreTrainedPolicy):
             loss_mask, (v_old, v_star) = self.prepare_cfm_loss_inputs(
                 action_is_pad, v_old, v_star
             )
-            return compute_cfm_loss(v_old, v_star, cfg, "both", loss_mask)
+            return compute_cfm_loss(
+                v_old, v_star, cfg, "both", loss_mask, cfm_loss_weight(tau, cfg)
+            )
 
     def generate_rollout(
         self,
@@ -1275,7 +1278,8 @@ class SJFPOPolicy(PreTrainedPolicy):
             adv = normalised_advantages.float()
             adv_mc = adv.unsqueeze(1)
             cfm_loss_new, cfm_loss_new_token = compute_cfm_loss(
-                v_new_r_f, v_star_f, cfg, "both", loss_mask
+                v_new_r_f, v_star_f, cfg, "both", loss_mask,
+                cfm_loss_weight(tau, cfg),
             )
             # Both ratios take the advantage: without it the A<0 clamp is skipped,
             # and per_sample is driven by ratio_token, so passing it only to the

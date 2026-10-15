@@ -83,6 +83,12 @@ class SJFPOConfig(PreTrainedConfig):
     # the noise endpoint; this repo's time runs the other way, so t=1 is the
     # action. The names here say which endpoint, not which index.
     cfm_loss_target: str = "velocity"  # velocity | action | noise
+    # Per-token CFM loss weight. FPO++ ships "constant" plus two linear ramps
+    # (flow_model.py:648-661), named for their endpoints: 1.0 at its t=0 (the
+    # action end) down to 0.1 or 0.01 at t=1 (noise). This repo's t=1 is the
+    # action end, so the same schedules are read with the endpoints named
+    # accordingly -- see :func:`myfpo.fpo_core.cfm_loss_weight`.
+    cfm_loss_weight_from_t: str = "constant"
     cfm_clamp: float = 20.0
     cfm_loss_clamp_negative_advantages: bool = True
     cfm_loss_clamp_negative_advantages_max: float = 20.0
@@ -265,6 +271,15 @@ class SJFPOConfig(PreTrainedConfig):
             raise ValueError(
                 "cfm_loss_target must be 'velocity' (FPO++'s cfm_loss_mode='u'), "
                 "'action' (='x0'), or 'noise' (='eps')"
+            )
+        if self.cfm_loss_weight_from_t not in {
+            "constant",
+            "linear_1_to_0.1",
+            "linear_1_to_0.01",
+        }:
+            raise ValueError(
+                "cfm_loss_weight_from_t must be 'constant', 'linear_1_to_0.1', "
+                "or 'linear_1_to_0.01'"
             )
         if self.cfm_clamp <= 0:
             raise ValueError(f"cfm_clamp={self.cfm_clamp} must be > 0")
