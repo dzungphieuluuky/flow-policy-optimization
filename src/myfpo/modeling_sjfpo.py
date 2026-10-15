@@ -435,7 +435,7 @@ class SJFPOPolicy(PreTrainedPolicy):
     ) -> None:
         """Set the env action bounds the postprocessor uses.
 
-        ``ValueError`` on shape mismatch or ``high < low``.
+        ``ValueError`` on shape mismatch or when ``high <= low``.
         """
         storage_dtype = resolve_storage_dtype(self.action_low.device)
         low_t = to_tensor_1d(
@@ -453,7 +453,7 @@ class SJFPOPolicy(PreTrainedPolicy):
                 f"low={tuple(low_t.shape)}, high={tuple(high_t.shape)}"
             )
         if not bool((high_t > low_t).all()):
-            raise ValueError("action_high must be elementwise >= action_low")
+            raise ValueError("action_high must be strictly greater than action_low")
 
         self.action_low.copy_(low_t)
         self.action_high.copy_(high_t)
