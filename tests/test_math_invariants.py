@@ -1,4 +1,5 @@
 """Algorithmic invariant tests for heavy-math compute functions."""
+import pytest
 import torch
 
 
@@ -36,8 +37,22 @@ class TestGAEChunkAdvantageInvariant:
 class TestFPORatioInvariant:
     def test_fpo_policy_ratio_pessimistic(self):
         """PPO ratio: min(ratio*A, clip(ratio)*A) must be <= ratio*A for A>0."""
-        # This is an algorithmic invariant from the PPO pessimistic bound.
-        pass  # Placeholder: requires full forward path setup.
+        from myfpo.configuration_sjfpo import SJFPOConfig
+        from myfpo.fpo_core import compute_aspo_surrogate
+
+        cfg = SJFPOConfig(trust_region_mode="ppo")
+        ratio = torch.tensor([[0.5, 1.0, 1.5, 2.0, 4.0]], dtype=torch.float32)
+        adv = torch.tensor([[1.0]], dtype=torch.float32)
+        surrogate = compute_aspo_surrogate(ratio, adv, cfg)
+        # Pessimistic on the up side: the clip only lowers the value for A>0.
+        assert bool((surrogate <= ratio * adv).all())
+        # The min bites exactly when the clip is the smaller term.
+        clipped = ratio.clamp(1.0 - cfg.clip_param, 1.0 + cfg.clip_param)
+        below_band = ((ratio < 1.0 - cfg.clip_param) | (ratio > 1.0 + cfg.clip_param))
+        for i in range(ratio.shape[1]):
+            want = torch.minimum(ratio[0, i], clipped[0, i])
+            assert float(surrogate[0, i]) == pytest.approx(float(want)), i
+        assert bool(below_band.any()), "no ratio left the band; the test is vacuous"
 
 
 class TestCFMLossMaskShape:
