@@ -213,6 +213,28 @@ def compute_cfm_loss(
     )
 
 
+def group_cfm_loss(loss: torch.Tensor, group_size: int) -> torch.Tensor:
+    """Average a CFM loss over groups of MC samples, ``[n, num_mc, ...]``.
+
+    FPO++ groups the Monte-Carlo axis before exponentiating
+    (``finetune_online_rl.py:803-806``): ``-1`` puts every sample in one group,
+    which is FPO Eq. 9's "mean the MC losses, then exponentiate". Grouping is
+    on the loss, not on ``old - new``; the two agree because
+    ``exp(mean(old) - mean(new)) == exp(mean(old - new))``.
+
+    ``1`` returns the input unchanged, so per-sample ratios cost nothing.
+    """
+    if group_size == 1:
+        return loss
+    n, num_mc = loss.shape[0], loss.shape[1]
+    size = num_mc if group_size == -1 else group_size
+    if num_mc % size != 0:
+        raise ValueError(
+            f"num_mc_samples={num_mc} must divide evenly by group size {size}"
+        )
+    return loss.reshape(n, num_mc // size, size, *loss.shape[2:]).mean(dim=2)
+
+
 def cfm_loss_weight(t: torch.Tensor, cfg: SJFPOConfig) -> torch.Tensor:
     """Per-token CFM loss weight, broadcast over the action dimension.
 

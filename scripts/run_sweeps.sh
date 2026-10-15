@@ -100,12 +100,12 @@ sweep_s1_exec_length() {
 # PREDICTION under "sum": high clipfrac, and both granularities coincide.
 # If clipfrac comes back near zero under "sum", that explanation is WRONG.
 sweep_s2_loss_reduction() {
-  run s2_reduction_mean --sjfpo.ratio_granularity per_action --sjfpo.cfm_loss_reduction mean
-  run s2_reduction_sum  --sjfpo.ratio_granularity per_action --sjfpo.cfm_loss_reduction sum
+  run s2_reduction_mean --sjfpo.do_average_cfm_loss_in_chunk true --sjfpo.cfm_loss_reduction mean
+  run s2_reduction_sum  --sjfpo.do_average_cfm_loss_in_chunk true --sjfpo.cfm_loss_reduction sum
   # Does the granularity still matter at all? Only meaningful under a
   # non-saturating ratio.
-  run s2_gran_chunk_mean --sjfpo.ratio_granularity per_chunk --sjfpo.cfm_loss_reduction mean
-  run s2_gran_sample_mean --sjfpo.ratio_granularity per_sample --sjfpo.cfm_loss_reduction mean
+  run s2_gran_chunk_mean --sjfpo.do_average_cfm_loss_in_chunk true --sjfpo.cfm_average_group_size -1 --sjfpo.cfm_loss_reduction mean
+  run s2_gran_sample_mean --sjfpo.do_average_cfm_loss_in_chunk false --sjfpo.cfm_loss_reduction mean
 }
 
 # S3. A0, receding horizon. n_action_steps=8 meant the chunk was planned AND

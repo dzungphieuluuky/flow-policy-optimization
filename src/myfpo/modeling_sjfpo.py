@@ -33,6 +33,7 @@ from myfpo.collector import (
 )
 from myfpo.fpo_core import (
     cfm_loss_weight,
+    group_cfm_loss,
     cfm_prediction,
     cfm_target,
     compute_aspo_surrogate,
@@ -1141,9 +1142,9 @@ class SJFPOPolicy(PreTrainedPolicy):
 
         One chunk is one macro-action. ``action_is_pad`` masks
         unrun steps. CFM losses run fp32 under target velocity.
-        ``ratio_granularity`` picks the trust region: ``per_chunk``
-        is FPO Eq 9, ``per_action`` FPO++ Eq 10, ``per_sample``
-        clips per token.
+        ``do_average_cfm_loss_in_chunk`` and ``cfm_average_group_size`` pick
+        the trust region's granularity, as FPO++ does: token axis first, then
+        MC-sample axis. ``True/-1`` is FPO Eq 9, one ratio per chunk.
 
         ``compute_info=False`` skips the reductions, returns ``info=None``.
         """
@@ -1281,48 +1282,46 @@ class SJFPOPolicy(PreTrainedPolicy):
                 v_new_r_f, v_star_f, cfg, "both", loss_mask,
                 cfm_loss_weight(tau, cfg),
             )
-            # Both ratios take the advantage: without it the A<0 clamp is skipped,
-            # and per_sample is driven by ratio_token, so passing it only to the
-            # per-pair ratio left that branch with the looser trust region. The
-            # token loss is [n, num_mc, H], so the advantage needs the extra
+            # Both ratios take the advantage: without it the A<0 clamp is skipped.
+            # The token loss is [n, num_mc, H], so the advantage needs the extra
             # axis: [n, 1] would not line up with it.
             ratio_token = compute_policy_ratio(
                 cfm_loss_old_token, cfm_loss_new_token, cfg,
                 advantage=adv_mc.unsqueeze(-1),
             )
-            ratio = compute_policy_ratio(cfm_loss_old, cfm_loss_new, cfg, advantage=adv_mc)
             self.cfm_above_clamp_frac = (cfm_loss_new > cfg.cfm_clamp).float().mean().detach()
 
-            if cfg.ratio_granularity == "per_chunk":
-                # FPO Eq 9: mean MC losses, THEN exponentiate.
-                # One ratio per chunk, so all pairs clip together.
-                cfm_loss_old_chunk, cfm_loss_new_chunk = cfm_loss_old.mean(dim=1), cfm_loss_new.mean(dim=1)
-                delta = cfm_loss_old_chunk - cfm_loss_new_chunk
-                ratio = compute_policy_ratio(cfm_loss_old_chunk, cfm_loss_new_chunk, cfg, advantage=adv)
-                policy_per_chunk = -compute_aspo_surrogate(ratio, adv, cfg)
-            elif cfg.ratio_granularity == "per_sample":
-                # One ratio per token: finer than either paper.
-                delta = cfm_loss_old - cfm_loss_new
-                # A padded token has cfm_loss 0, so delta 0, so ratio 1.0: its
-                # gradient is zero but the surrogate still evaluates to A. Mask
-                # the value too, or the mean carries a (H - length) * A offset
-                # that differs per chunk. Divide by the executed token count
-                # rather than num_mc * H, or a chunk that ends early is
-                # down-weighted by length/H for no reason.
-                token_surrogate = compute_aspo_surrogate(
-                    ratio_token, adv_mc.unsqueeze(-1), cfg
-                )
-                keep = (~action_is_pad).to(token_surrogate.dtype)
-                # [n, 1, H] against the surrogate's [n, num_mc, H].
-                token_surrogate = token_surrogate * keep[:, None, :]
+            # Token axis, then MC-sample axis. ``ratio_token`` doubles as the loss
+            # ratio when the token axis is kept, so the expensive per-token pass
+            # is not recomputed.
+            if cfg.do_average_cfm_loss_in_chunk:
+                loss_old, loss_new = cfm_loss_old, cfm_loss_new
+            else:
+                loss_old, loss_new = cfm_loss_old_token, cfm_loss_new_token
+            loss_old = group_cfm_loss(loss_old, cfg.cfm_average_group_size)
+            loss_new = group_cfm_loss(loss_new, cfg.cfm_average_group_size)
+            delta = loss_old - loss_new
+            adv_ratio = adv.reshape(-1, *([1] * (delta.dim() - 1)))
+            ratio = (
+                ratio_token
+                if loss_old is cfm_loss_old_token
+                else compute_policy_ratio(loss_old, loss_new, cfg, advantage=adv_ratio)
+            )
+            surrogate = compute_aspo_surrogate(ratio, adv_ratio, cfg)
+            if surrogate.dim() == 3:
+                # The token axis survived, so padded tokens are still in the
+                # average. A padded token has cfm_loss 0, so ratio 1.0: zero
+                # gradient but the surrogate still evaluates to A, so mask the
+                # value and divide by the executed token count rather than the
+                # full horizon.
+                keep = (~action_is_pad).to(surrogate.dtype)
+                surrogate = surrogate * keep[:, None, :]
                 n_executed = keep.sum(dim=-1).clamp_min(1.0)
                 policy_per_chunk = -(
-                    token_surrogate.sum(dim=(1, 2)) / (n_executed * num_mc)
+                    surrogate.sum(dim=(1, 2)) / (n_executed * surrogate.shape[1])
                 )
             else:
-                # FPO++ Eq 10: one ratio per (tau, eps) pair.
-                delta = cfm_loss_old - cfm_loss_new
-                policy_per_chunk = -compute_aspo_surrogate(ratio, adv_mc, cfg).mean(dim=1)
+                policy_per_chunk = -surrogate.flatten(1).mean(dim=1)
 
         with autocast_context(device):
             # action_is_pad marks unexecuted steps; count the complement.

@@ -38,7 +38,8 @@ gae_lambda: 0.95
 clip_param: 0.05
 spo_clip_param: 0.01
 trust_region_mode: 'aspo'
-ratio_granularity: 'per_action'
+do_average_cfm_loss_in_chunk: false
+cfm_average_group_size: 1
 cfm_loss_reduction: 'mean'
 cfm_loss_target: 'velocity'
 cfm_loss_weight_from_t: 'constant'

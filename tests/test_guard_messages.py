@@ -88,7 +88,7 @@ _BAD_CONFIG = {
     "optimizer_weight_decay": -1.0,
     "policy_lr": 0.0,
     "report_to": "mlflow",
-    "ratio_granularity": "per_step",
+    "cfm_average_group_size": 0,
     "stop_patience": 0,
     "stop_return_frac": 0.0,
     "timestep_inverse_cdf_beta": 0.0,

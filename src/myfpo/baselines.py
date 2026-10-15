@@ -42,8 +42,10 @@ _NO_CLAMP = float("inf")
 
 _NOTES: dict[str, dict[str, str]] = {
     "fpo": {
-        "ratio_granularity": "per_chunk: FPO Eq. 9. Mean the MC losses, THEN "
-        "exponentiate, so all N_mc (tau, eps) pairs clip together.",
+        "cfm_average_group_size": "-1: FPO Eq. 9. One group over every N_mc "
+        "(tau, eps) pair, so they all clip together. Paired with "
+        "do_average_cfm_loss_in_chunk=True so Eq. 8's chunk norm is averaged "
+        "before the exponent.",
         "trust_region_mode": "ppo: FPO Eq. 5 is min(r*A, clip(r,1+/-e)*A) and "
         "nothing else. The SPO quadratic branch is the proposed method, not FPO.",
         "cfm_loss_reduction": "sum: FPO Eq. 8 is the squared norm over the whole "
@@ -68,9 +70,11 @@ _NOTES: dict[str, dict[str, str]] = {
         "num_inference_steps": "4: same rationale, on the eval path.",
     },
     "fpo++": {
-        "ratio_granularity": "per_action == FPO++ Eq. 10 (one ratio per (tau, eps) "
-        "pair). Pinned explicitly so the baseline cannot drift when the SJFPO "
-        "default changes.",
+        "do_average_cfm_loss_in_chunk": "True: one ratio per (tau, eps) pair "
+        "(FPO++ Eq. 10), tokens averaged valid-masked first. The released "
+        "manipulation default is False, which gives one ratio per token; pinned "
+        "here so this arm stays per-pair instead of drifting with the config "
+        "default.",
         "trust_region_mode": "aspo: ASPO (PPO-clip on A>=0, SPO quadratic on A<0) "
         "is FPO++'s trust region. Pinned explicitly, same reason.",
         "cfm_loss_reduction": "sum: FPO++ inherits FPO's Eq. 8 chunk norm. Pinned "
@@ -87,7 +91,7 @@ _NOTES: dict[str, dict[str, str]] = {
         "num_inference_steps": "4: same rationale, on the eval path.",
     },
     "dppo": {
-        # No ratio_granularity note: the arm does not override it, so
+        # No granularity note: the arm does not override either knob, so
         # baseline_report could never print one. apply_baseline's warning and
         # _assert_dppo_unwired say the same thing where it is acted on.
         "num_euler_steps": "10: matched to the papers' NFE. DPPO itself is "
@@ -106,7 +110,8 @@ _OVERRIDES: dict[str, dict[str, Any]] = {
     # paper's eps-vs-u ablation is about which scale clip_param should be
     # calibrated against, not about the loss value.
     "fpo": {
-        "ratio_granularity": "per_chunk",
+        "cfm_average_group_size": -1,
+        "do_average_cfm_loss_in_chunk": True,
         "trust_region_mode": "ppo",
         "cfm_loss_reduction": "sum",
         "cfm_clamp": _NO_CLAMP,
@@ -125,7 +130,7 @@ _OVERRIDES: dict[str, dict[str, Any]] = {
     # the run FPO++; leaving them inherited made the baseline a moving target,
     # because any default change silently redefined it.
     "fpo++": {
-        "ratio_granularity": "per_action",
+        "do_average_cfm_loss_in_chunk": True,
         "trust_region_mode": "aspo",
         "cfm_loss_reduction": "sum",
         "num_mc_samples": 8,
@@ -188,8 +193,8 @@ def apply_baseline(cfg: SJFPOConfig, name: str) -> tuple[SJFPOConfig, dict[str, 
         _assert_dppo_unwired(overrides)
         warnings.warn(
             "baseline 'dppo' runs the FPO++ surrogate, not DPPO's "
-            "per-denoising-step Gaussian ratio, and inherits ratio_granularity "
-            "and trust_region_mode from the passed config. denoising_mdp.py "
+            "per-denoising-step Gaussian ratio, and inherits the CFM "
+            "grouping and trust_region_mode from the passed config. denoising_mdp.py "
             "holds the sampler but nothing in the training path calls it.",
             RuntimeWarning,
             stacklevel=2,

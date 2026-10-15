@@ -112,18 +112,35 @@ def _recorded(cfg):
     return ratios, surrogate_inputs, batch
 
 
+def per_chunk(**kw):
+    """FPO Eq 9: tokens averaged, then all MC pairs in one group."""
+    return _cfg(do_average_cfm_loss_in_chunk=True, cfm_average_group_size=-1, **kw)
+
+
+def per_action(**kw):
+    """FPO++ Eq 10: tokens averaged, one ratio per (tau, eps) pair."""
+    return _cfg(do_average_cfm_loss_in_chunk=True, cfm_average_group_size=1, **kw)
+
+
+def per_sample(**kw):
+    """Finer than either paper: one ratio per (chunk, pair, token)."""
+    return _cfg(do_average_cfm_loss_in_chunk=False, cfm_average_group_size=1, **kw)
+
+
 def test_per_chunk_averages_the_mc_losses_before_exponentiating():
     """FPO Eq 9: exp(mean_i l_i - mean_i l'_i), so one ratio per chunk."""
-    ratios, surrogate_inputs, batch = _recorded(_cfg(ratio_granularity="per_chunk"))
-    assert surrogate_inputs == [(N,)]
-    averaged = [call for call in ratios if call.dim() == 1]
+    ratios, surrogate_inputs, batch = _recorded(per_chunk())
+    assert surrogate_inputs == [(N, 1)]
+    averaged = [call for call in ratios if call.dim() == 2 and call.shape[1] == 1]
     assert len(averaged) == 1
-    assert torch.allclose(averaged[0], batch["behavior_cfm_loss"].mean(dim=1))
+    assert torch.allclose(
+        averaged[0][:, 0], batch["behavior_cfm_loss"].mean(dim=1), atol=1e-6
+    )
 
 
 def test_per_action_keeps_one_ratio_per_mc_pair():
     """FPO++ Eq 10: each (tau, eps) pair clips on its own."""
-    ratios, surrogate_inputs, batch = _recorded(_cfg(ratio_granularity="per_action"))
+    ratios, surrogate_inputs, batch = _recorded(per_action())
     assert surrogate_inputs == [(N, MC)]
     per_pair = [call for call in ratios if call.dim() == 2]
     assert len(per_pair) == 1
@@ -132,7 +149,7 @@ def test_per_action_keeps_one_ratio_per_mc_pair():
 
 def test_per_sample_clips_per_token():
     """Finer than either paper: one ratio per (chunk, pair, token)."""
-    _, surrogate_inputs, _ = _recorded(_cfg(ratio_granularity="per_sample"))
+    _, surrogate_inputs, _ = _recorded(per_sample())
     assert surrogate_inputs == [(N, MC, HORIZON)]
 
 
@@ -142,7 +159,7 @@ def _padded_per_sample_batch(pad_from=HORIZON // 2):
     The behaviour losses are recomputed against the same mask, so the padded
     tokens really do have zero loss the way they do in a live rollout.
     """
-    cfg = _cfg(ratio_granularity="per_sample")
+    cfg = per_sample()
     policy, batch = _policy_and_batch(cfg)
     batch["action_is_pad"][1, pad_from:] = True
     normalised = policy.preprocessor({M.OBS_STATE: batch[M.OBS_STATE]})[M.OBS_STATE]
@@ -224,8 +241,8 @@ def test_padded_tokens_evaluate_to_the_advantage_not_to_zero():
 def test_per_chunk_and_per_action_disagree_once_the_actor_moves():
     """The regression: identical on-policy, different the moment cfm_loss_old != cfm_loss_new."""
     losses = []
-    for granularity in ("per_chunk", "per_action"):
-        policy, batch = _policy_and_batch(_cfg(ratio_granularity=granularity))
+    for make_cfg in (per_chunk, per_action):
+        policy, batch = _policy_and_batch(make_cfg())
         per_chunk_loss, _ = policy(
             batch, reduction="none", compute_info=False, check_finite=False
         )
@@ -234,8 +251,10 @@ def test_per_chunk_and_per_action_disagree_once_the_actor_moves():
 
 
 def test_an_unknown_granularity_is_rejected():
-    with pytest.raises(ValueError, match="ratio_granularity"):
-        _cfg(ratio_granularity="per_action_chunk").validate_loss_params()
+    with pytest.raises(ValueError, match="cfm_average_group_size"):
+        _cfg(cfm_average_group_size=0).validate()
+    with pytest.raises(ValueError, match="divide evenly"):
+        _cfg(num_mc_samples=6, cfm_average_group_size=4).validate()
 
 
 def test_the_baselines_select_the_trust_regions_they_name():
@@ -248,13 +267,16 @@ def test_the_baselines_select_the_trust_regions_they_name():
     """
     from myfpo.baselines import apply_baseline
 
+    # (trust region, token axis folded, MC group size)
     expected = {
-        "fpo": ("ppo", "per_chunk"),
-        "fpo++": ("aspo", "per_action"),
+        "fpo": ("ppo", True, -1),
+        "fpo++": ("aspo", True, 1),
     }
-    for name, (mode, granularity) in expected.items():
+    for name, (mode, token_avg, group) in expected.items():
         cfg, _ = apply_baseline(SJFPOConfig(), name)
-        assert (cfg.trust_region_mode, cfg.ratio_granularity) == (mode, granularity), name
+        assert cfg.trust_region_mode == mode, name
+        assert cfg.do_average_cfm_loss_in_chunk is token_avg, name
+        assert cfg.cfm_average_group_size == group, name
         # Eq 8's loss is a sum over the chunk, so the paper's eps_clip only means
         # what it says with a sum reduction.
         assert cfg.cfm_loss_reduction == "sum", name

@@ -64,6 +64,17 @@ class SJFPOConfig(PreTrainedConfig):
     # two disagree, this tracks the paper whose estimator we are actually
     # implementing, and 0.0 remains one flag away.
     gae_lambda: float = 0.95
+    # Which axes get folded into the ratio before exp, as two knobs rather than
+    # an enum, because that is how FPO++ exposes them
+    # (finetune_online_rl.py:92-95). Token axis first, then MC-sample axis:
+    #   False, 1  -> ratio per (chunk, MC pair, token)
+    #   True,  1  -> ratio per (chunk, MC pair), tokens averaged valid-masked
+    #   True, -1  -> ratio per chunk: FPO Eq 9, all MC pairs in one group
+    # FPO++'s released default is False/1.
+    do_average_cfm_loss_in_chunk: bool = False
+    # -1 means "one group holding every MC sample". Otherwise the sample count
+    # must divide evenly by it.
+    cfm_average_group_size: int = 1
     clip_param: float = 0.05
     # The SPO quadratic has its own width in FPO++'s manipulation loop:
     # spo_clip_coef and clip_coef are separate fields, both 0.01
@@ -71,7 +82,6 @@ class SJFPOConfig(PreTrainedConfig):
     # for both; keeping them separate here is the manipulation behaviour.
     spo_clip_param: float = 0.01
     trust_region_mode: str = "aspo"
-    ratio_granularity: str = "per_action"  # per_chunk | per_action | per_sample
     # "mean" by default, not FPO's Eq. 8 "sum". Under "sum" compute_cfm_loss
     # deliberately does not renormalise for padding, so a short chunk's loss --
     # and therefore its effective clip width -- scales with its executed length.
@@ -261,9 +271,19 @@ class SJFPOConfig(PreTrainedConfig):
             )
         if self.trust_region_mode not in {"ppo", "spo", "aspo"}:
             raise ValueError("trust_region_mode must be 'ppo', 'spo', or 'aspo'")
-        if self.ratio_granularity not in {"per_chunk", "per_action", "per_sample"}:
+        if self.cfm_average_group_size == 0 or self.cfm_average_group_size < -1:
             raise ValueError(
-                "ratio_granularity must be 'per_chunk' (FPO Eq 9), 'per_action' (FPO++ Eq 10), or 'per_sample'"
+                f"cfm_average_group_size={self.cfm_average_group_size} must be -1 "
+                "(one group over every MC sample) or a positive divisor of "
+                f"num_mc_samples={self.num_mc_samples}"
+            )
+        if (
+            self.cfm_average_group_size != -1
+            and self.num_mc_samples % self.cfm_average_group_size != 0
+        ):
+            raise ValueError(
+                f"num_mc_samples={self.num_mc_samples} must divide evenly by "
+                f"cfm_average_group_size={self.cfm_average_group_size}"
             )
         if self.cfm_loss_reduction not in {"mean", "sum", "sqrt"}:
             raise ValueError("cfm_loss_reduction must be 'mean', 'sum', or 'sqrt'")
