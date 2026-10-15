@@ -252,8 +252,9 @@ def compute_value_metrics(
     """Critic diagnostics.
 
     ``explained_var`` scores the member mean, which the loss trains.
-    The backup uses ``amin``. ``explained_var_min`` is that reading,
-    and is never higher.
+    The backup uses ``amin``. ``explained_var_min`` is that same reading for
+    the pessimistic member. The two are not ordered: a pointwise-smaller
+    predictor need not lower the residual variance.
     """
     mean_value_pred = raw_value_pred.mean(dim=0)
     min_value_pred = raw_value_pred.amin(dim=0)

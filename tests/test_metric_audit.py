@@ -183,7 +183,7 @@ def test_seam_jerk_skips_seams_whose_earlier_chunk_is_truncated():
 
 
 # --- E.
-def test_explained_var_min_is_logged_and_is_never_optimistic():
+def test_explained_var_min_is_logged_for_the_pessimistic_predictor():
     torch.manual_seed(0)
     C, n = 2, 64
     v = torch.randn(C, n) * 3.0 + 1.5
@@ -200,7 +200,6 @@ def test_explained_var_min_is_logged_and_is_never_optimistic():
     assert ev_min == pytest.approx(
         1.0 - (R - v.amin(0)).var(correction=0) / R.var(correction=0)
     )
-    assert ev_min <= ev_mean, "the backup's min must never look better"
 
 
 def test_explained_var_min_coincides_with_mean_for_a_single_member():
