@@ -32,6 +32,8 @@ from myfpo.collector import (
     scale_and_clip_chunk,
 )
 from myfpo.fpo_core import (
+    cfm_prediction,
+    cfm_target,
     compute_aspo_surrogate,
     compute_cfm_loss,
     clip_transported,
@@ -642,13 +644,16 @@ class SJFPOPolicy(PreTrainedPolicy):
 
 
     @staticmethod
-    def compute_target_velocity(a: torch.Tensor, eps: torch.Tensor) -> torch.Tensor:
-        """Flow-matching target velocity.
+    def compute_target_velocity(
+        a: torch.Tensor, eps: torch.Tensor, cfg: SJFPOConfig
+    ) -> torch.Tensor:
+        """Flow-matching regression target, per ``cfg.cfm_loss_target``.
 
-        ``v* = a - eps``, broadcast over MC draws:
-        ``[B, *flow]`` against ``[B, m, *flow]``.
+        ``velocity`` is ``v* = a - eps``, broadcast over MC draws:
+        ``[B, *flow]`` against ``[B, m, *flow]``. The endpoint modes compare an
+        action or a noise vector instead; see :func:`myfpo.fpo_core.cfm_target`.
         """
-        return a.unsqueeze(1) - eps
+        return cfm_target(a, eps, cfg)
 
     def compute_predicted_velocity(
         self,
@@ -823,8 +828,15 @@ class SJFPOPolicy(PreTrainedPolicy):
                 x_t, actor_tau, condition_flat, old=True
             ).float()
         with torch.autocast(device_type=actions.device.type, enabled=False):
-            v_star = (actions[:, None] - eps).float()
+            v_star = self.compute_target_velocity(actions, eps, cfg).float()
             v_old = v_old.reshape(eps.shape[0], num_mc, *flow_shape)
+            # Same target as the live pass, so the ratio compares like with like.
+            v_old = cfm_prediction(
+                v_old,
+                x_t.reshape(eps.shape[0], num_mc, *flow_shape),
+                tau,
+                cfg,
+            )
             loss_mask, (v_old, v_star) = self.prepare_cfm_loss_inputs(
                 action_is_pad, v_old, v_star
             )
@@ -1249,8 +1261,13 @@ class SJFPOPolicy(PreTrainedPolicy):
                 )
 
         with torch.autocast(device_type=device.type, enabled=False):
-            v_star_f = self.compute_target_velocity(actions, eps).float()
-            v_new_r_f = v_new.reshape(n, num_mc, *flow_shape)
+            v_new_r_f = cfm_prediction(
+                v_new.reshape(n, num_mc, *flow_shape),
+                x_t_flat.reshape(n, num_mc, *flow_shape),
+                tau,
+                cfg,
+            )
+            v_star_f = self.compute_target_velocity(actions, eps, cfg).float()
             loss_mask, (v_new_r_f, v_star_f) = self.prepare_cfm_loss_inputs(
                 action_is_pad, v_new_r_f, v_star_f
             )

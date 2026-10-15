@@ -205,6 +205,41 @@ def compute_cfm_loss(
     )
 
 
+def cfm_prediction(
+    v: torch.Tensor, x_t: torch.Tensor, t: torch.Tensor, cfg: SJFPOConfig
+) -> torch.Tensor:
+    """Map a velocity prediction to whatever ``cfg.cfm_loss_target`` compares.
+
+    The network always predicts the velocity, so only the loss moves. On the
+    straight path ``x_t = (1 - t) * eps + t * a`` and ``v = a - eps``, so at the
+    true velocity every mode below returns its target exactly:
+    ``x_t + (1 - t) * v == a`` and ``x_t - t * v == eps``. That identity is the
+    test.
+
+    FPO++ reaches the same three endpoints by also varying what the network
+    predicts (``flow_network_output_param``); holding that at ``u`` here is the
+    smaller change and leaves ``transported_clip_value`` clipping one thing.
+    """
+    mode = cfg.cfm_loss_target
+    if mode == "velocity":
+        return v
+    if mode == "action":
+        return x_t + (1.0 - t) * v
+    return x_t - t * v
+
+
+def cfm_target(
+    a: torch.Tensor, eps: torch.Tensor, cfg: SJFPOConfig
+) -> torch.Tensor:
+    """The regression target for ``cfg.cfm_loss_target``. ``[B, *flow]``."""
+    mode = cfg.cfm_loss_target
+    if mode == "velocity":
+        return a.unsqueeze(1) - eps
+    if mode == "action":
+        return a.unsqueeze(1).expand_as(eps)
+    return eps
+
+
 def compute_aspo_surrogate(
     ratio: torch.Tensor,
     advantage: torch.Tensor,

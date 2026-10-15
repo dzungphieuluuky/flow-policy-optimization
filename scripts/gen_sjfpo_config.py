@@ -68,6 +68,7 @@ SECTIONS: list[tuple[str, list[str]]] = [
             "trust_region_mode",
             "ratio_granularity",
             "cfm_loss_reduction",
+            "cfm_loss_target",
             "cfm_clamp",
             "cfm_loss_clamp_negative_advantages",
             "cfm_loss_clamp_negative_advantages_max",

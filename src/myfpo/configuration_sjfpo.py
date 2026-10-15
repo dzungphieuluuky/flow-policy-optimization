@@ -77,6 +77,12 @@ class SJFPOConfig(PreTrainedConfig):
     # and therefore its effective clip width -- scales with its executed length.
     # Both baselines pin "sum"; see baselines.py.
     cfm_loss_reduction: str = "mean"
+    # What the CFM loss compares against. FPO++'s ``cfm_loss_mode``
+    # (flow_model.py:592-631): ``u`` is its "u", ``action`` is its "x0" and
+    # ``noise`` is its "eps". The reference names x0 the action endpoint and x1
+    # the noise endpoint; this repo's time runs the other way, so t=1 is the
+    # action. The names here say which endpoint, not which index.
+    cfm_loss_target: str = "velocity"  # velocity | action | noise
     cfm_clamp: float = 20.0
     cfm_loss_clamp_negative_advantages: bool = True
     cfm_loss_clamp_negative_advantages_max: float = 20.0
@@ -255,6 +261,11 @@ class SJFPOConfig(PreTrainedConfig):
             )
         if self.cfm_loss_reduction not in {"mean", "sum", "sqrt"}:
             raise ValueError("cfm_loss_reduction must be 'mean', 'sum', or 'sqrt'")
+        if self.cfm_loss_target not in {"velocity", "action", "noise"}:
+            raise ValueError(
+                "cfm_loss_target must be 'velocity' (FPO++'s cfm_loss_mode='u'), "
+                "'action' (='x0'), or 'noise' (='eps')"
+            )
         if self.cfm_clamp <= 0:
             raise ValueError(f"cfm_clamp={self.cfm_clamp} must be > 0")
         if self.cfm_loss_clamp_negative_advantages_max <= 0:
