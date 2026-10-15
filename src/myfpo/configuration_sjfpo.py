@@ -141,6 +141,13 @@ class SJFPOConfig(PreTrainedConfig):
     # (negative_clamp, positive_clamp), FPO++ rl_cfg.advantage_clamp.
     advantage_clamp: tuple[float, float] = (100.0, 100.0)
     value_loss_coef: float = 1.0
+    # Sketched Isotropic Gaussian Regularization on the encoder conditioning
+    # vector (LeWorldModel). "none" skips all new math. "weak" matches the
+    # covariance to identity. "decorr" standardizes first, so only the
+    # off-diagonal pays. The default off preserves every current run exactly.
+    sigreg_mode: str = "none"
+    sigreg_coef: float = 0.0
+    sigreg_sketch_dim: int = 64
 
     # FPO++ FlowMatchingConfig.cfm_loss_use_huber. Elementwise, before the
     # reduction: the quadratic branch has no 0.5 factor, so it equals MSE for
@@ -358,6 +365,15 @@ class SJFPOConfig(PreTrainedConfig):
             raise ValueError("timestep beta alpha/beta must be > 0")
         if self.value_loss_coef < 0:
             raise ValueError(f"value_loss_coef={self.value_loss_coef} must be >= 0")
+        if self.sigreg_mode not in {"none", "weak", "decorr"}:
+            raise ValueError("sigreg_mode must be 'none', 'weak', or 'decorr'")
+        if self.sigreg_coef < 0:
+            raise ValueError(f"sigreg_coef={self.sigreg_coef} must be >= 0")
+        if self.sigreg_sketch_dim < 2:
+            raise ValueError(
+                f"sigreg_sketch_dim={self.sigreg_sketch_dim} must be >= 2: "
+                "a covariance from one row is undefined"
+            )
         # Optimizer
         if self.policy_lr <= 0:
             raise ValueError(f"policy_lr={self.policy_lr} must be > 0")
