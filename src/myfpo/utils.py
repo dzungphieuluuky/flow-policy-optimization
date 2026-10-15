@@ -36,15 +36,18 @@ def is_rtx_1000_pro_blackwell() -> bool:
 
 @lru_cache(maxsize=1)
 def detect_gpu() -> dict | None:
-    """Device name, compute capability, and what that architecture supports.
+    """Return the device name, the compute capability, and what that
+    architecture supports.
 
-    ``None`` when CUDA is unusable. Capability-derived rather than
-    name-matched, so it stays correct for a GPU released tomorrow and for any
-    SKU spelled differently by the host (Kaggle's ``machine_shape``, a cloud
-    provider, a vGPU profile).
+    The function returns ``None`` when CUDA is unusable.
 
-    Thresholds: FP16 tensor cores from Volta (sm_70); bf16 and TF32 from
-    Ampere (sm_80). See the NVIDIA architecture whitepapers.
+    The result comes from the capability. It does not come from matching a
+    name. So it stays correct for a GPU that ships tomorrow, and for any SKU
+    that the host spells differently. That includes the ``machine_shape`` of
+    Kaggle, a cloud provider, and a vGPU profile.
+
+    The thresholds are these. FP16 tensor cores start at Volta, sm_70. Both bf16
+    and TF32 start at Ampere, sm_80. See the NVIDIA architecture whitepapers.
     """
     if not cuda_available():
         return None

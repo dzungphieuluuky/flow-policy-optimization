@@ -35,20 +35,24 @@ class ResumeError(RuntimeError):
 
 
 def _reject_legacy_critic_checkpoint(d: Path) -> None:
-    """Fail before construction if the checkpoint predates the critic's exec-length
-    input.
+    """Fail before construction if the checkpoint predates the exec-length input
+    of the critic.
 
-    Turning ``critic_condition_on_exec_length`` on appends one input to every
-    critic member's first layer, so its weight is ``[out, in+1]``. A checkpoint
-    written before the flag existed stores ``[out, in]`` and ``from_pretrained``
-    would fail with an opaque size mismatch -- or worse, load non-strictly and
-    leave the new column at its init, which silently makes the critic ignore the
-    feature it was built for.
+    Setting ``critic_condition_on_exec_length`` to True appends one input to the
+    first layer of every critic member. The weight of that layer then has the
+    shape ``[out, in+1]``.
 
-    The migration is deliberately NOT automatic. Copying an existing input
-    column into the new slot would make a resumed critic assert "every chunk
-    executed half the horizon" for chunks that did not, so it is easier to
-    detect and re-run than to get quietly wrong.
+    A checkpoint that predates the flag stores ``[out, in]``. Then
+    ``from_pretrained`` fails with an opaque size mismatch. The worse case is
+    that it loads non-strictly. The new column keeps its init value. The critic
+    then ignores the feature that it was built for, and does so silently.
+
+    The migration is deliberately NOT automatic.
+
+    Copying an existing input column into the new slot would break the critic.
+    A resumed critic would then assert "every chunk executed half the horizon"
+    for the chunks that did not. The failure is easier to detect and to re-run
+    than to get quietly wrong.
     """
     raw = (d / CONFIG_NAME).read_text(encoding="utf-8")
     cfg_keys = json.loads(raw).keys()
@@ -77,10 +81,12 @@ def write_bytes_atomically(path: Path, data: bytes) -> None:
 def save_torch_atomically(path: Path, obj) -> None:
     """Pickle to a path atomically, cleaning up on failure.
 
-    ``mkstemp`` rather than a ``NamedTemporaryFile`` block used only to mint a
-    name: the latter leaves an empty file behind for the window in which
-    ``torch.save`` reopens the path. The fd is closed here; ``torch.save``
-    writes the path itself.
+    The function calls ``mkstemp``. It does not call a ``NamedTemporaryFile``
+    block that exists only to mint a name. That block leaves an empty file
+    behind for as long as ``torch.save`` takes to reopen the path.
+
+    The function closes the file descriptor. ``torch.save`` writes to the path
+    itself.
 
     Re-raises whatever ``torch.save`` raised, after removing the temp file.
     """
@@ -104,12 +110,17 @@ def save_policy_checkpoint(
     ema_state: dict | None = None,
     save_rng: bool = True,
 ) -> None:
-    """Save through LeRobot ``HubMixin``, plus optimizer.pt and counters.json.
+    """Save through the LeRobot ``HubMixin``. Then save ``optimizer.pt`` and
+    ``counters.json``.
 
-    ``model.safetensors`` holds eager keys so a fresh ``SJFPOFlowModel`` finds
-    every key it expects; frozen behavior snapshots are runtime-only and their
-    duplicate params are dropped. ``optimizer`` keeps actor and critic in
-    separate param groups, so one ``step`` drives both while clipping stays
+    The file ``model.safetensors`` holds the eager keys. So a fresh
+    ``SJFPOFlowModel`` finds every key that it expects.
+
+    Frozen behavior snapshots exist at run time only. The function drops their
+    duplicate parameters.
+
+    The argument ``optimizer`` keeps the actor and the critic in separate
+    parameter groups. So one call to ``step`` drives both. The clipping stays
     per role.
     """
     # Deferred import: circular dependency checkpointing <-> modeling_sjfpo.
