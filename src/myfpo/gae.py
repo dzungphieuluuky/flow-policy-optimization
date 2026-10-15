@@ -1,47 +1,50 @@
-"""Chunked Q-learning: one chunk is one macro-transition.
+"""Chunked Q-learning. One chunk is one macro-transition.
 
-A chunk is ``h`` open-loop steps, so backup at chunk granularity:
+A chunk is ``h`` open-loop steps. The backup therefore runs at chunk
+granularity:
 
     R_i      = sum_{k < h_i} gamma^k * r_{s_i + k}
     return_i = R_i + gamma^{h_i} * (1 - terminated_i) * Q(s_{s_i + h_i}, a')
 
 Conditioning both sides on the chunk makes this an unbiased ``h``-step target
-(Li, Zhou, Levine 2025): the Q that produced the rewards is the Q being backed
-up from.
+(Li, Zhou, Levine 2025). The Q that produced the rewards is the Q that the
+backup reads.
 
-With ``gae_lambda=0.95`` (the default) the advantage follows the chunk-level
-trace
+With ``gae_lambda=0.95``, which is the default, the advantage follows the
+chunk-level trace:
 
     A_i = delta_i + gamma^{h_i} * lambda * (1 - term_i) * (1 - trunc_i) * A_j
 
-over ``j``, the next chunk of the *same env*. This is the GAE of the macro-MDP
-this module reasons in, with lambda applied once per chunk: an effective horizon
-of ``1 / (1 - gamma^h * lambda)`` chunks -- about 11 chunks / 46 env steps at
-gamma=0.99, h=4, lambda=0.95.
+The index ``j`` is the next chunk of the *same env*. This is the GAE of the
+macro-MDP that this module describes. Lambda applies once per chunk. The
+effective horizon is ``1 / (1 - gamma^h * lambda)`` chunks. At gamma=0.99,
+h=4 and lambda=0.95, that is about 11 chunks, or 46 env steps.
 
-``gae_lambda=0`` is the opt-out. It is exactly one backup per chunk, an
-effective horizon of one, which is what QC specifies. It is reachable by config
-rather than being the default, so the QC identity stays testable rather than
-being the only thing a run can do.
+The value ``gae_lambda=0`` is the opt-out. It gives exactly one backup per
+chunk and an effective horizon of one. This is what QC specifies. A config value
+reaches it, so the QC identity stays testable. The default is not this case, so
+a run is not limited to it.
 
-The recursion was deleted in 7202519 to match QC and is back here. QC and FPO++
-disagree on this (QC specifies a one-chunk backup, FPO++ reports lambda 0.95);
-the default tracks the estimator actually being implemented rather than picking
-a side by omission.
+Commit 7202519 deleted the recursion to match QC. The recursion is back. QC and
+FPO++ disagree here. QC specifies a one-chunk backup. FPO++ reports lambda 0.95.
+The default follows the estimator that this code implements. It does not pick a
+side by omission.
 
-Two masks, and they are not the same mask:
+The module uses two masks. They are not the same mask.
 
-* the **bootstrap** mask ``1 - terminated`` zeroes ``Q(s', a')``. Only a real
-  termination zeroes it; a timeout keeps the bootstrap, and the collector always
-  ends a chunk on a terminal, so ``~terminated`` matches QC's ``masks[..., -1]``.
-* the **trace** mask ``1 - truncated`` stops the advantage from flowing across
-  an episode reset. Read whenever ``gae_lambda > 0``, which is the default, so
-  ``chunk_truncated`` is required rather than optional.
+* The **bootstrap** mask is ``1 - terminated``. It zeroes ``Q(s', a')``. Only a
+  real termination zeroes it. A timeout keeps the bootstrap. The collector
+  always ends a chunk on a terminal. So ``~terminated`` matches the
+  ``masks[..., -1]`` of QC.
+* The **trace** mask is ``1 - truncated``. It stops the advantage from crossing
+  an episode reset. The function reads it whenever ``gae_lambda > 0``. That is
+  the default. So ``chunk_truncated`` is required and not optional.
 
-``gamma^h`` uses the executed length throughout, and the trace discount is
-``gamma^h * lambda`` -- lambda once per chunk, matching the macro-MDP this
-module reasons in. (verl-vla and RLinf instead use ``(gamma * lambda)^h``, which
-decays lambda per primitive env step; the two differ for ``h > 1``.)
+The term ``gamma^h`` uses the executed length everywhere. The trace discount is
+``gamma^h * lambda``, so lambda applies once per chunk. This matches the
+macro-MDP that this module describes. Note that verl-vla and RLinf use
+``(gamma * lambda)^h`` instead. Their form decays lambda per primitive env
+step. The two forms differ for ``h > 1``.
 """
 from __future__ import annotations
 
@@ -63,19 +66,23 @@ def compute_chunk_advantages(
     chunk_env_id: torch.Tensor | None = None,
     gae_lambda: float = 0.95,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """``[n]`` advantages and regression target; the target is ``chunk_q +
-    advantages``. ``chunk_q[i]`` is Q(s_i, a_i), ``chunk_next_q[i]`` is
-    Q(s_{i+1}, a' ~ pi(s_{i+1})).
+    """Return the ``[n]`` advantages and the regression target. The target is
+    ``chunk_q + advantages``. The value ``chunk_q[i]`` is Q(s_i, a_i). The
+    value ``chunk_next_q[i]`` is Q(s_{i+1}, a' ~ pi(s_{i+1})).
 
-    At ``gae_lambda == 0`` the target reduces exactly to QC's ``R_i +
-    gamma^{h_i} (1 - term_i) Q(s_{i+1}, a')``. Above 0 the advantage follows the
-    chunk-level trace ``A_i = delta_i + gamma^{h_i} * lambda * (1 - term_i) *
-    (1 - trunc_i) * A_j``, where ``j`` is the next chunk of the *same env*. Buffer
-    order is time order, so ``j > i`` always and one reverse sweep is exact.
+    At ``gae_lambda == 0`` the target reduces exactly to the QC target
+    ``R_i + gamma^{h_i} (1 - term_i) Q(s_{i+1}, a')``.
 
-    The default matches ``SJFPOConfig.gae_lambda`` and is deliberately > 0, so
-    ``chunk_truncated`` and ``chunk_env_id`` are required here rather than
-    optional. Callers wanting the QC backup pass ``gae_lambda=0.0`` explicitly.
+    Above 0 the advantage follows the chunk-level trace:
+
+        A_i = delta_i + gamma^{h_i} * lambda * (1 - term_i) * (1 - trunc_i) * A_j
+
+    The index ``j`` is the next chunk of the *same env*. Buffer order is time
+    order, so ``j > i`` always holds. One reverse sweep is therefore exact.
+
+    The default matches ``SJFPOConfig.gae_lambda`` and is above 0. So
+    ``chunk_truncated`` and ``chunk_env_id`` are required here. A caller that
+    wants the QC backup passes ``gae_lambda=0.0``.
     """
     if not 0.0 <= gamma <= 1.0:
         raise ValueError(f"gamma must be in [0, 1], got {gamma}")
@@ -114,10 +121,10 @@ def compute_chunk_advantages(
             )
 
     if gae_lambda > 0.0:
-        # Without the truncation mask the trace would run across an episode
-        # reset; without the ids it would run across environments too, since the
-        # buffer interleaves envs and buffer adjacency is not trajectory
-        # adjacency.
+        # Without the truncation mask the trace runs across an episode reset.
+        # Without the ids the trace runs across environments too. The buffer
+        # interleaves the envs, so adjacency in the buffer is not adjacency in
+        # a trajectory.
         if chunk_truncated is None:
             raise ValueError(
                 "chunk_truncated is required when gae_lambda > 0: without it the "
@@ -176,9 +183,9 @@ def compute_chunk_advantages(
     successor[order[:-1][same_env]] = order[1:][same_env]
 
     trace = gamma_h * (~done) * gae_lambda
-    # One device->host transfer for the whole successor map; the loop then does
-    # no further syncs, so this is n_chunks cheap kernels rather than n_chunks
-    # synchronisations.
+    # One device-to-host transfer covers the whole successor map. The loop then
+    # makes no further sync. The cost is n_chunks cheap kernels instead of
+    # n_chunks synchronisations.
     successor_host = successor.tolist()
     adv = delta.clone()
     for i in range(n_chunks - 1, -1, -1):
