@@ -25,6 +25,98 @@ def effective_rank(features: torch.Tensor) -> torch.Tensor:
     return torch.exp(torch.special.entr(p).sum())
 
 
+class SJFPOFlowMLP(nn.Module):
+    """Chunk-flattened MLP actor, FPO++'s ``flow_net_mlp.py``.
+
+    The reference concatenates ``[flattened chunk, time embedding, observation
+    conditioning]`` into one MLP and reshapes the output back to ``[B, K, D]``
+    (``flow_net_mlp.py:95-115``, ``242-264``), Mish activations, ``[512, 512,
+    512]`` by default. Same signature as :class:`SJFPOFlowModel`, so
+    ``actor_arch`` swaps the network and nothing else.
+
+    One deliberate difference: the reference draws one time per chunk, while
+    this repo's MC sampling gives every token its own ``tau``
+    (:func:`myfpo.fpo_core.run_monte_carlo_sampling`). The embedding is
+    therefore flattened alongside the chunk instead of concatenated as a single
+    vector, so each token's velocity stays consistent with the ``x_t`` it was
+    built from. A single per-chunk time would contradict that ``x_t``.
+    """
+
+    def __init__(
+        self,
+        action_dim: int,
+        action_horizon: int,
+        condition_dim: int,
+        time_embed_dim: int,
+        hidden_dims: tuple[int, ...],
+    ):
+        super().__init__()
+        self.action_dim = action_dim
+        self.action_horizon = action_horizon
+        self.time_embedder = SinusoidalEncoding(time_embed_dim)
+        width = (
+            action_horizon * action_dim
+            + action_horizon * time_embed_dim
+            + condition_dim
+        )
+        layers: list[nn.Module] = []
+        prev = width
+        for hidden in hidden_dims:
+            layers += [nn.Linear(prev, hidden), nn.Mish()]
+            prev = hidden
+        layers.append(nn.Linear(prev, action_horizon * action_dim))
+        self.mlp = nn.Sequential(*layers)
+        # Same contract as the DiT: an untrained actor predicts zero velocity.
+        nn.init.zeros_(self.mlp[-1].weight)
+        nn.init.zeros_(self.mlp[-1].bias)
+
+    def forward(
+        self,
+        x_t: torch.Tensor,
+        t: torch.Tensor | float,
+        condition: torch.Tensor,
+        return_stats: bool = False,
+    ) -> torch.Tensor:
+        """``[B, K, D]`` in, ``[B, K, D]`` velocity out. ``return_stats`` is
+        ignored: this actor has no per-block diagnostics to report."""
+        if x_t.dim() != 3 or x_t.shape[2] != self.action_dim:
+            raise ValueError(
+                f"x_t must have shape [B, K, {self.action_dim}], got {tuple(x_t.shape)}"
+            )
+        b, k, _ = x_t.shape
+        if k > self.action_horizon:
+            raise ValueError(
+                f"action token count {k} exceeds action_horizon {self.action_horizon}"
+            )
+        if condition.dim() != 2 or condition.shape[0] != b:
+            raise ValueError(
+                f"condition must have shape [{b}, hidden], got {tuple(condition.shape)}"
+            )
+
+        t = torch.as_tensor(t, dtype=torch.float32, device=x_t.device)
+        if t.dim() <= 1:
+            t = t.reshape(-1)
+            if t.numel() == 1:
+                t = t.expand(b)
+            elif t.numel() != b:
+                raise ValueError(f"t must contain 1 or {b} values, got {t.numel()}")
+            # One time per chunk: broadcast it over the tokens.
+            temb = self.time_embedder.encode_times(t).unsqueeze(1).expand(b, k, -1)
+        else:
+            if t.dim() == 3 and t.shape[-1] == 1:
+                t = t.squeeze(-1)
+            if tuple(t.shape[:2]) != (b, k):
+                raise ValueError(
+                    f"t must be scalar, [{b}], or [{b}, {k}], got {tuple(t.shape)}"
+                )
+            temb = self.time_embedder.encode_times(t.reshape(-1)).reshape(b, k, -1)
+
+        out = self.mlp(
+            torch.cat([x_t.reshape(b, -1), temb.reshape(b, -1), condition], dim=-1)
+        )
+        return out.reshape(b, k, self.action_dim)
+
+
 class SJFPOFlowModel(nn.Module):
     """DiT velocity model over noisy action tokens, adaLN conditioned.
 

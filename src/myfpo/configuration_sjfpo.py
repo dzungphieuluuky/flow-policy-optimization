@@ -137,6 +137,10 @@ class SJFPOConfig(PreTrainedConfig):
 
     compile: bool = True
 
+    # ``dit`` is this repo's actor; ``mlp`` is FPO++'s chunk-flattened MLP
+    # (flow_net_mlp.py). Same forward signature, so the rest is untouched.
+    actor_arch: str = "dit"
+    mlp_hidden_dims: tuple[int, ...] = (512, 512, 512)
     dit_depth: int = 3
     dit_heads: int = 2
     dit_mlp_ratio: float = 2.0
@@ -214,6 +218,10 @@ class SJFPOConfig(PreTrainedConfig):
                 f"hidden_dim={self.hidden_dim} must be divisible by "
                 f"dit_heads={self.dit_heads}"
             )
+        if self.actor_arch not in {"dit", "mlp"}:
+            raise ValueError("actor_arch must be 'dit' or 'mlp'")
+        if not self.mlp_hidden_dims or any(d < 1 for d in self.mlp_hidden_dims):
+            raise ValueError("mlp_hidden_dims must be a non-empty tuple of >= 1")
         if self.dit_depth < 1:
             raise ValueError(f"dit_depth={self.dit_depth} must be >= 1")
         if self.dit_heads < 1:
