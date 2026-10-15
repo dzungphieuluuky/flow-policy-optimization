@@ -28,18 +28,21 @@ def effective_rank(features: torch.Tensor) -> torch.Tensor:
 class SJFPOFlowMLP(nn.Module):
     """Chunk-flattened MLP actor, FPO++'s ``flow_net_mlp.py``.
 
-    The reference concatenates ``[flattened chunk, time embedding, observation
-    conditioning]`` into one MLP and reshapes the output back to ``[B, K, D]``
-    (``flow_net_mlp.py:95-115``, ``242-264``), Mish activations, ``[512, 512,
-    512]`` by default. Same signature as :class:`SJFPOFlowModel`, so
-    ``actor_arch`` swaps the network and nothing else.
+    The reference concatenates three tensors. They are the flattened chunk, the
+    time embedding, and the observation conditioning. The result passes through
+    one MLP. The output is reshaped back to ``[B, K, D]``
+    (``flow_net_mlp.py:95-115``, ``242-264``). The activations are Mish. The
+    default width is ``[512, 512, 512]``.
 
-    One deliberate difference: the reference draws one time per chunk, while
-    this repo's MC sampling gives every token its own ``tau``
-    (:func:`myfpo.fpo_core.run_monte_carlo_sampling`). The embedding is
-    therefore flattened alongside the chunk instead of concatenated as a single
-    vector, so each token's velocity stays consistent with the ``x_t`` it was
-    built from. A single per-chunk time would contradict that ``x_t``.
+    The signature matches :class:`SJFPOFlowModel`. So ``actor_arch`` swaps the
+    network and nothing else changes.
+
+    One difference is deliberate. The reference draws one time per chunk. The
+    MC sampling of this repo gives every token its own ``tau``
+    (:func:`myfpo.fpo_core.run_monte_carlo_sampling`). So the embedding is
+    flattened next to the chunk instead of concatenated as one vector. Each
+    token's velocity then matches the ``x_t`` that the token was built from. A
+    single time per chunk would contradict that ``x_t``.
     """
 
     def __init__(
@@ -267,8 +270,8 @@ class SJFPOFlowModel(nn.Module):
     ) -> dict[str, torch.Tensor]:
         """Diagnostics, deliberately outside any compiled graph.
 
-        ``torch.compiler.disable`` is load-bearing here, not an optimisation.
-        Under ``torch.compile`` this block used to die with::
+        The decorator ``torch.compiler.disable`` holds this code up. It does not
+        make the code faster. Under ``torch.compile``, this block died with::
 
             BackendCompilerFailed: backend='inductor' raised:
             RuntimeError: <weakref ... to 'torch.storage.UntypedStorage'>
@@ -276,16 +279,20 @@ class SJFPOFlowModel(nn.Module):
 
         Two independent problems compound:
 
-        1. ``torch.inference_mode()`` inside a traced region mints inference
-           tensors, whose version counter inductor cannot reason about; the
-           storage is released while the lowering still holds a weakref to it.
-        2. ``svdvals`` lowers to a LAPACK call inductor does not own the
-           lifetime of, so the same premature release hits it too.
+        1. A call to ``torch.inference_mode()`` inside a traced region mints inference
+           tensors. The version counter of those tensors confuses inductor. The
+           storage is released while the lowering still holds a weak reference
+           to it.
+        2. A call to ``svdvals`` lowers to a LAPACK call. Inductor does not own
+           the lifetime of that call. So the same early release reaches it.
 
-        Graph-breaking once per stats pass sidesteps both: dynamo stops tracing
-        at the decorator, so nothing downstream is captured. The default path
-        (``return_stats=False``) never enters here and stays fully compiled,
-        which is the path that matters for throughput.
+        Breaking the graph once per statistics pass avoids both problems.
+        Dynamo stops tracing at the decorator. So nothing downstream of it is
+        captured.
+
+        The default path sets ``return_stats=False``. That path never enters
+        this function. So it stays fully compiled. That is the path that matters
+        for throughput.
         """
         with torch.inference_mode():
             return {
