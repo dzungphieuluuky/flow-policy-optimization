@@ -250,6 +250,51 @@ def group_cfm_loss(loss: torch.Tensor, group_size: int) -> torch.Tensor:
     return loss.reshape(n, num_mc // size, size, *loss.shape[2:]).mean(dim=2)
 
 
+def _sigreg_sketch(z: torch.Tensor, sketch_dim: int) -> torch.Tensor:
+    """Project rows to at most ``sketch_dim`` columns with a random map."""
+    n, c = z.shape
+    s = min(sketch_dim, n, c)
+    if c <= s:
+        return z
+    mat = torch.randn(s, c, device=z.device, dtype=z.dtype) / (c**0.5)
+    return z @ mat.T
+
+
+def sigreg_weak_loss(z: torch.Tensor, sketch_dim: int = 64) -> torch.Tensor:
+    """Weak SIGReg: match the row covariance to identity (LeWorldModel).
+
+    The penalty is ``||Cov - I||_F`` over sketched, centered rows. One row
+    returns zero: no covariance exists. Input casts to float32, so bf16
+    callers stay valid.
+    """
+    z = z.float()
+    if z.shape[0] < 2:
+        return torch.zeros((), device=z.device)
+    z = _sigreg_sketch(z, sketch_dim)
+    z = z - z.mean(dim=0, keepdim=True)
+    cov = (z.T @ z) / (z.shape[0] - 1)
+    eye = torch.eye(z.shape[1], device=z.device, dtype=z.dtype)
+    return torch.norm(cov - eye, p="fro")
+
+
+def sigreg_decorr_loss(z: torch.Tensor, sketch_dim: int = 64) -> torch.Tensor:
+    """Decorrelation-only SIGReg: standardize columns, then kill the
+    off-diagonal.
+
+    Column scales survive. Only redundancy pays. Same row-count guard and
+    float32 cast as :func:`sigreg_weak_loss`.
+    """
+    z = z.float()
+    if z.shape[0] < 2:
+        return torch.zeros((), device=z.device)
+    z = _sigreg_sketch(z, sketch_dim)
+    z = z - z.mean(dim=0, keepdim=True)
+    std = z.std(dim=0, keepdim=True).clamp_min(1e-6)
+    corr = ((z / std).T @ (z / std)) / (z.shape[0] - 1)
+    off = corr - torch.diag(torch.diag(corr))
+    return torch.norm(off, p="fro")
+
+
 def cfm_loss_weight(t: torch.Tensor, cfg: SJFPOConfig) -> torch.Tensor:
     """Return the per-token CFM loss weight. The value broadcasts over the action
     dimension.
