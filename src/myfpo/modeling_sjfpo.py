@@ -202,7 +202,9 @@ def compute_ratio_metrics(
     ``log_ratio_*`` reads raw delta, never the clamped one.
     ``log_ratio_clip_frac`` counts the upper side only. That is the side
     ``compute_policy_ratio`` clamps.
-    ``clipfrac`` near zero means the trust region never binds.
+    ``clipfrac`` compares against ``clip_param``, the PPO width. Under ASPO
+    the negative-advantage branch uses ``spo_clip_param``, so ``clipfrac`` is
+    not the whole trust-region binding fraction.
 
     ``mean_log_ratio``, ``log_ratio_max``, ``log_ratio_clip_frac``,
     ``clipfrac``, and ``flow_ratio_*`` average over every element of ``delta``
