@@ -1,25 +1,30 @@
 """DPPO: the denoising MDP (Ren et al., NeurIPS 2024, arXiv:2409.00588).
 
-Not a config flag. DPPO treats the *sampling chain* as an MDP:
+Not a config flag. DPPO treats the *sampling chain* as an MDP with two levels.
 
-    level 1 (inner)  x_0 = eps, x_{k+1} = x_k + dt_k v(x_k, t_k, o) + noise
-                     action_k = the increment; observation = (x_k, t_k, o)
-    level 2 (outer)  the environment; one macro-action = one full denoise
+* Level 1 is the inner level. It starts at ``x_0 = eps`` and runs
+  ``x_{k+1} = x_k + dt_k v(x_k, t_k, o) + noise``. The action is the increment.
+  The observation is ``(x_k, t_k, o)``.
+* Level 2 is the outer level. It is the environment. One macro-action is one
+  complete denoise.
 
-So the policy ratio is an ordinary Gaussian PPO ratio on ``x_{k+1}`` given
-``(x_k, t_k, o)`` -- exact log-probs, no ELBO surrogate -- and the horizon is
-``K`` times longer than the environment horizon. Two consequences that make it
-*not* FPO:
+So the policy ratio is an ordinary Gaussian PPO ratio. It compares ``x_{k+1}``
+    given ``(x_k, t_k, o)``. The log-probabilities are exact. There is no ELBO
+    surrogate. The horizon is ``K`` times longer than the environment horizon.
 
-  * the initial noise eps is part of the state, so the policy must see it;
-  * only stochastic sampling works, so training can never start from eps=0.
+    Two consequences make this *not* FPO:
 
-This module owns the inner MDP. The outer loop (rollout, chunk GAE over
-environment rewards, critic) is shared with SJFPO; only the inner step is
-new. ``DenoisingPath`` is what the buffer must carry for this to be trainable
-on-policy: SJFPO's RolloutBuffer stores the *result* of a chunk, not the path
-that produced it, which is exactly the field FPO says it needs and DPPO needs
-much more of.
+  * The initial noise eps is part of the state. So the policy must see it.
+  * Only stochastic sampling works. So training can never start from eps=0.
+
+This module owns the inner MDP. The outer loop is shared with SJFPO. That
+    outer loop covers the rollout, the chunk GAE over environment rewards, and
+    the critic. Only the inner step is new.
+
+``DenoisingPath`` is the field that the buffer must carry to make this
+    trainable on-policy. The RolloutBuffer of SJFPO stores the *result* of a
+    chunk. It does not store the path that produced the result. This is exactly
+    the field that FPO says it needs, and that DPPO needs much more of.
 """
 
 from __future__ import annotations
@@ -38,18 +43,25 @@ __all__ = [
 
 
 class DenoisingPath:
-    """The full sampling chain for one chunk, kept for the inner PPO backup.
+    """Hold the full sampling chain for one chunk. The inner PPO backup uses it.
 
-    ``states``  ``[n, K, *flow]``   x_k, the point *before* step k
-    ``actions`` ``[n, K, *flow]``   the increment actually applied at step k
-    ``mus``     ``[n, K, *flow]``   its mean, so log-prob needs no re-forward
-    ``logstd``  ``[n]``             one scalar per path, shared over the chunk
-    ``final``   ``[n, *flow]``      x_K, the action handed to the environment
+* ``states`` has the shape ``[n, K, *flow]``. It holds x_k, the point *before*
+  step k.
+* ``actions`` has the shape ``[n, K, *flow]``. It holds the increment that step
+  k applied.
+* ``mus`` has the shape ``[n, K, *flow]``. It holds the mean of the increment.
+  So the log-prob needs no second forward pass.
+* ``logstd`` has the shape ``[n]``. It holds one scalar per path. The scalar is
+  shared over the whole chunk.
+* ``final`` has the shape ``[n, *flow]``. It holds x_K, the action that the
+  environment receives.
 
-    ``logstd`` is per-path rather than per-(state, action) because a
-    state-dependent log-std would need the old policy's log-std evaluated at
-    every step to form the ratio; DPPO Alg. 2 carries it as one scalar. That is
-    a real modelling simplification inherited from the paper, not a shortcut.
+    ``logstd`` is per path and not per (state, action). A state-dependent
+    log-std would need the old policy to run at every step. The ratio needs that
+    value. DPPO Alg. 2 carries ``logstd`` as one scalar instead.
+
+    This is a real modelling simplification. The paper states it. So it is not
+    a shortcut.
     """
 
     __slots__ = ("actions", "final", "logstd", "mus", "obs", "states")
@@ -100,21 +112,26 @@ def sample_denoising_path(
 ) -> tuple[torch.Tensor, DenoisingPath | None]:
     """Euler-integrate a stochastic denoising chain, optionally recording it.
 
-    ``predict_velocity(x, t, c) -> v`` must match the actor's signature.
-    ``condition`` is ``[B, hidden]``. Returns ``(x_final, path)``; ``path`` is
-    ``None`` when ``store=False`` (rollouts under :func:`torch.inference_mode`
-    that only need the action can skip the memory).
+    The argument ``predict_velocity(x, t, c) -> v`` must match the signature
+    of the actor. The argument ``condition`` has the shape ``[B, hidden]``.
 
-    The chain is ``x_{k+1} = x_k + dt_k v + sigma_k z``, with ``z ~ N(0, I)``.
-    DPPO Alg. 2 injects noise at every step; ``noise_std=0`` recovers
-    deterministic Euler and exists only for tests, since a deterministic
-    sampler has zero-variance Gaussians and therefore no meaningful ratio.
+    The return is ``(x_final, path)``. The value ``path`` is ``None`` when
+    ``store=False``. A rollout that runs under :func:`torch.inference_mode` and
+    needs only the action can skip the memory.
 
-    Note the sign convention. ``mus`` stores the *pre-noise* increment, so the
-    stored action is ``mu + sigma z`` and the log-prob is
-    ``-||a - mu||^2 / (2 sigma^2) - log sigma - d/2 log 2pi``. Storing the
-    increment (rather than the point) is what makes the ratio computable
-    without re-running the old policy over the whole chain.
+    The chain runs ``x_{k+1} = x_k + dt_k v + sigma_k z``. The value ``z`` has
+    the distribution ``N(0, I)``. DPPO Alg. 2 injects noise at every step.
+
+    The value ``noise_std=0`` recovers the deterministic Euler sampler. That
+    case exists only for the tests. A deterministic sampler has Gaussians with
+    zero variance. So it has no meaningful ratio.
+
+    Note the sign convention. The value ``mus`` stores the increment *before*
+    the noise. So the stored action is ``mu + sigma z``. The log-prob is
+    ``-||a - mu||^2 / (2 sigma^2) - log sigma - d/2 log 2pi``.
+
+    Storing the increment, and not the point, is what makes the ratio
+    computable. The caller does not run the old policy over the whole chain.
     """
     device = condition.device
     b = condition.shape[0]
@@ -164,12 +181,14 @@ def sample_denoising_path(
 def gaussian_step_ratio(
     logp_new: torch.Tensor, logp_old: torch.Tensor, clip_param: float
 ) -> torch.Tensor:
-    """PPO ratio for one denoising step. Exact Gaussian log-probs.
+    """Return the PPO ratio for one denoising step. The log-probs are the exact
+    Gaussian values.
 
-    DPPO uses the identical clipped surrogate as PPO; only the *action*
-    differs (a noise increment rather than an environment action). Kept
-    separate from ``compute_aspo_surrogate`` because that one consumes the
-    FPO CFM-loss surrogate and has no log-prob to clip.
+    DPPO uses the same clipped surrogate as PPO. Only the *action* differs. It
+    is a noise increment, not an environment action.
+
+    This function stays separate from ``compute_aspo_surrogate``. That function
+    consumes the FPO CFM-loss surrogate. It has no log-prob to clip.
     """
     ratio = torch.exp(logp_new - logp_old)
     return torch.clamp(ratio, 1.0 - clip_param, 1.0 + clip_param)
@@ -194,21 +213,25 @@ def denoising_chain_gae(
     dones: torch.Tensor,
     gamma: float = 0.99,
 ) -> torch.Tensor:
-    """GAE over the inner chain, DPPO Eq. 4.
+    """Compute the GAE over the inner chain. This is DPPO Eq. 4.
 
-    ``step_rewards`` ``[n, K]``, ``values`` ``[n, K+1]`` = V(s_k), ``dones``
-    ``[n, K]`` bool, True when the chain ended (env terminated) at step k.
-    Returns ``[n, K]`` advantages.
+    The argument ``step_rewards`` has the shape ``[n, K]``. The argument
+    ``values`` has the shape ``[n, K+1]`` and holds V(s_k). The argument
+    ``dones`` has the shape ``[n, K]`` and holds bool values. It is True when
+    the chain ended at step k because the env terminated. The return holds
+    ``[n, K]`` advantages.
 
-    ``values`` carries one column more than the chain, because the step at
-    ``j = K-1`` bootstraps from ``V(s_K)``; column K is that terminal value,
-    not a value of a further step.
+    The argument ``values`` carries one column more than the chain. The step at
+    ``j = K-1`` bootstraps from ``V(s_K)``. So column K holds that terminal
+    value. It does not hold a value of a further step.
 
-    The env's reward lands on the *last* inner step (that is the only step
-    where an environment transition happened), so a caller passing chunk rewards
-    should scatter them onto the final column rather than the first. That
-    asymmetry is DPPO's own accounting and is the single easiest thing to get
-    wrong when porting it.
+    The reward of the env lands on the *last* inner step. That is the only step
+    where an environment transition happened. So a caller that passes chunk
+    rewards should scatter them onto the final column. It should not scatter
+    them onto the first column.
+
+    That asymmetry is the accounting of DPPO itself. It is the easiest thing to
+    get wrong when someone ports this code.
     """
     n, k = step_rewards.shape
     adv = torch.zeros_like(step_rewards)
