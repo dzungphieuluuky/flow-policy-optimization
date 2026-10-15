@@ -44,6 +44,8 @@ from myfpo.fpo_core import (
     sample_action,
     sample_noise,
     sample_timesteps,
+    sigreg_decorr_loss,
+    sigreg_weak_loss,
 )
 from myfpo.gae import compute_chunk_advantages
 from myfpo.critic import Critic
@@ -1266,6 +1268,13 @@ class SJFPOPolicy(PreTrainedPolicy):
             # critic gets the unbroadcast one when it shares this encoder.
             cond = self.encoder(states)
             cond_flat = einx.id("n m d -> (n m) d", einx.id("n d -> n m d", cond, m=num_mc))
+        # Representation health, not the trust region. "none" skips all new
+        # math. The raw value logs even at coef 0.0, for calibration.
+        sigreg_raw = torch.zeros((), device=device)
+        if cfg.sigreg_mode == "weak":
+            sigreg_raw = sigreg_weak_loss(cond.float(), cfg.sigreg_sketch_dim)
+        elif cfg.sigreg_mode == "decorr":
+            sigreg_raw = sigreg_decorr_loss(cond.float(), cfg.sigreg_sketch_dim)
         if "behavior_cfm_loss" not in batch or "behavior_cfm_loss_token" not in batch:
             raise KeyError(
                 "forward requires 'behavior_cfm_loss' and 'behavior_cfm_loss_token' "
@@ -1386,9 +1395,17 @@ class SJFPOPolicy(PreTrainedPolicy):
         if reduction == "mean":
             policy_loss = policy_per_chunk.mean()
             value_loss = value_loss_per_chunk.mean()
-            loss = policy_loss + cfg.value_loss_coef * value_loss
+            loss = (
+                policy_loss
+                + cfg.value_loss_coef * value_loss
+                + cfg.sigreg_coef * sigreg_raw
+            )
         elif reduction == "none":
-            loss = policy_per_chunk + cfg.value_loss_coef * value_loss_per_chunk
+            loss = (
+                policy_per_chunk
+                + cfg.value_loss_coef * value_loss_per_chunk
+                + cfg.sigreg_coef * sigreg_raw
+            )
         else:
             raise ValueError(f"reduction={reduction!r} must be 'mean' or 'none'")
 
@@ -1417,6 +1434,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             cond_stats=cond_stats,
             cfg=cfg,
         )
+        info["sigreg_raw"] = float(sigreg_raw.detach())
         return loss, info
 
 
