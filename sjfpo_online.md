@@ -259,8 +259,8 @@ a time** even on a big GPU.
 # Shared settings. ENV and TOTAL_STEPS are the only two things to change.
 ENV = "Humanoid-v5"          # "Reacher-v5" is far cheaper if you just want a smoke
 SEED = 3407
-TOTAL_STEPS = 200_000
-EVAL_STEPS = 16_384          # 12 evals; the original cadence of 8192 gave only 4
+TOTAL_STEPS = 1_000_000
+EVAL_STEPS = 16_384          # 61 evals; the original cadence of 8192 gave only 4
 SAVE_STEPS = 50_000
 COMPILE = "false"
 
@@ -275,7 +275,7 @@ BASE = [
     "--total_steps", str(TOTAL_STEPS),
     "--eval_steps", str(EVAL_STEPS),
     "--save_steps", str(SAVE_STEPS),
-    "--sjfpo.report_to", "tensorboard",   # no WANDB_API_KEY needed
+    "--sjfpo.report_to", "all",   # no WANDB_API_KEY needed
     "--sjfpo.compile", COMPILE,
 ]
 
