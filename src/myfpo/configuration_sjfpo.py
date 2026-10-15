@@ -26,11 +26,6 @@ class SJFPOConfig(PreTrainedConfig):
     report_to: str = "all"
     n_obs_steps: int = 16
     action_horizon: int = 8
-    # Execute half the chunk. Then replan. At action_horizon the chunk is
-    # planned and executed fully open-loop. No closed-loop correction runs for 8
-    # env steps. That is the single largest default weakness here.
-    # The value is a default, not a settled result. Confirm it by sweeping
-    # {2, 4, 8}.
     n_action_steps: int = 4
     action_perturb_std: float = 0.02
     hidden_dim: int = 128
@@ -53,64 +48,14 @@ class SJFPOConfig(PreTrainedConfig):
     timestep_beta_beta: float = 2.0
 
     gamma: float = 0.99
-    # 0.95 is the standard GAE trace. The chunk-level recursion runs above 0.
-    # It gives an effective horizon of 1/(1 - gamma^h*lambda) chunks. Here that
-    # is about 11 chunks, or 46 env steps. A bare QC backup gives 1 chunk, or 4
-    # env steps.
-    #
-    # 0.0 is the opt-out. It reproduces QC exactly, with one backup per chunk.
-    # It is not the default. This repo describes the chunk macro-MDP. Lambda
-    # applies once per chunk, and that is the GAE of this macro-MDP. So the
-    # formulation implies 0.95.
     gae_lambda: float = 0.95
-    # These two knobs say which axes get folded into the ratio before exp.
-    # FPO++ exposes them as two settings and not as an enum
-    # (finetune_online_rl.py:92-95). The token axis comes first. Then the
-    # MC-sample axis.
-    #
-    #   False, 1  gives one ratio per (chunk, MC pair, token).
-    #   True,  1  gives one ratio per (chunk, MC pair). The tokens are averaged
-    #             with a valid mask.
-    #   True, -1  gives one ratio per chunk. That is FPO Eq 9. All the MC pairs
-    #             sit in one group.
-    #
-    # FPO++'s released default is False/1.
     do_average_cfm_loss_in_chunk: bool = False
-    # -1 means "one group holding every MC sample". Otherwise the sample count
-    # must divide evenly by it.
     cfm_average_group_size: int = 1
     clip_param: float = 0.01
-    # The SPO quadratic has its own width in the manipulation loop of FPO++.
-    # The fields spo_clip_coef and clip_coef are separate. Both are 0.01
-    # (finetune_online_rl.py:117-118). The Isaac Lab variant uses clip_param for
-    # both. The behaviour here is the behaviour of manipulation.
     spo_clip_param: float = 0.01
     trust_region_mode: str = "aspo"
-    # The sample-level reduction: "mean" (default), "sum", or "sqrt". The
-    # default "mean" is not the "sum" of Eq. 8 in FPO. Under "sum" the function
-    # compute_cfm_loss deliberately does not renormalise for padding, so a short
-    # chunk's loss scales with its executed length.
-    #
-    # It reaches the policy gradient only when do_average_cfm_loss_in_chunk is
-    # True. The default per-token path always averages over the action
-    # dimension, so this flag does not change the loss there. It still feeds the
-    # sample-level diagnostics and the above-clamp gate.
-    # Both baselines pin "sum". See baselines.py.
     cfm_loss_reduction: str = "mean"
-    # What the CFM loss compares against. This is the ``cfm_loss_mode`` of FPO++
-    # (flow_model.py:592-631). Its "u" is "velocity" here. Its "x0" is "action".
-    # Its "eps" is "noise".
-    #
-    # The reference names x0 the action endpoint and x1 the noise endpoint. The
-    # time of this repo runs the other way, so t=1 is the action. The names below
-    # name the endpoint and not the index.
-    cfm_loss_target: str = "velocity"  # velocity | action | noise
-    # The per-token weight of the CFM loss. FPO++ ships "constant" plus two
-    # linear ramps (flow_model.py:648-661). It names them for their endpoints.
-    # The weight is 1.0 at its t=0, the action end. The weight falls to 0.1 or
-    # 0.01 at t=1, the noise end. The t=1 of this repo is the action end. So the
-    # same schedules read here with the endpoints named
-    # accordingly -- see :func:`myfpo.fpo_core.cfm_loss_weight`.
+    cfm_loss_target: str = "velocity"
     cfm_loss_weight_from_t: str = "constant"
     cfm_clamp: float = 20.0
     cfm_loss_clamp_negative_advantages: bool = True
@@ -118,51 +63,23 @@ class SJFPOConfig(PreTrainedConfig):
     log_ratio_cap: float = 10.0
 
     num_critics: int = 2
-    # A chunk is planned at action_horizon. Only `lengths` steps of it run. The
-    # loop breaks on terminate or on truncate. So the tail of chunk_actions holds
-    # a counterfactual plan. The critic used to see that tail. The critic had no
-    # way to know that the tail never ran. Its regression target covered only
-    # the executed
-    # prefix. Set False to restore the old, tail-blind critic exactly.
     critic_condition_on_exec_length: bool = True
-    # The chunk-level critic of FPO++ consumes the output of the observation
-    # encoder of the actor itself (finetune_online_rl.py:1177). With this flag
-    # on, the critic takes hidden_dim instead of the raw obs window. The encoder
-    # then serves both networks.
     critic_share_encoder: bool = False
-    # The critic was welded to the width of the actor. That choice is wrong
-    # across the env ladder. The value obs_dim runs from 3 on Pendulum to 348 on
-    # Humanoid-v5. So the first layer of the critic sees 56 or 5704 inputs. It
-    # squeezes both counts into hidden_dim. The value None means "reuse
-    # hidden_dim". It preserves the old construction exactly.
     critic_hidden_dim: int | None = None
     critic_num_layers: int = 2
     normalize_advantage: bool = True
-    # (negative_clamp, positive_clamp), FPO++ rl_cfg.advantage_clamp.
     advantage_clamp: tuple[float, float] = (100.0, 100.0)
     value_loss_coef: float = 1.0
-    # Sketched Isotropic Gaussian Regularization on the encoder conditioning
-    # vector (LeWorldModel). "none" skips all new math. "weak" matches the
-    # covariance to identity. "decorr" standardizes first, so only the
-    # off-diagonal pays. The default off preserves every current run exactly.
     sigreg_mode: str = "none"
     sigreg_coef: float = 0.0
     sigreg_sketch_dim: int = 64
 
-    # FPO++ FlowMatchingConfig.cfm_loss_use_huber. Elementwise, before the
-    # reduction: the quadratic branch has no 0.5 factor, so it equals MSE for
-    # |err| <= delta and only the tail becomes linear.
     cfm_loss_use_huber: bool = True
     cfm_loss_huber_delta: float = 0.5
-    # Clip the actor's transported output (velocity here) to +/- this. None
-    # disables. Applied on the training path and in the Euler sampler alike.
     transported_clip_value: float | None = None
 
     compile: bool = True
 
-    # "dit" is the actor of this repo. "mlp" is the chunk-flattened MLP of FPO++
-    # (flow_net_mlp.py). Both have the same forward signature. So the rest of the
-    # code does not change.
     actor_arch: str = "dit"
     mlp_hidden_dims: tuple[int, ...] = (512, 512, 512)
     dit_depth: int = 3
@@ -170,21 +87,12 @@ class SJFPOConfig(PreTrainedConfig):
     dit_mlp_ratio: float = 2.0
     time_embed_dim: int = 32
 
-    # FPO++'s manipulation rates, tuned for fine-tuning a pretrained flow-BC
-    # policy (finetune_online_rl.py:124-125). From scratch on MuJoCo they are
-    # small. The sweep in the notebook is the way out.
     policy_lr: float = 1e-5
     critic_lr: float = 1e-4
-    # Linear warmup on each param group, in optimizer steps. FPO++ defaults
-    # are 5 and 1 (finetune_online_rl.py).
     actor_lr_warmup_steps: int = 5
     critic_lr_warmup_steps: int = 1
     optimizer_weight_decay: float = 1e-4
-    # These are the betas of the manipulation actor (finetune_online_rl.py:128).
-    # Isaac Lab ships (0.9, 0.999). The old value here, (0.999, 0.999), matched
-    # neither release.
     adam_betas: tuple[float, float] = (0.9, 0.99)
-    # One clip over every parameter, actor and critic together.
     max_grad_norm: float = 1.0
     ema_decay: float = 0.95
     ema_warmup_steps: int = 500
@@ -216,7 +124,6 @@ class SJFPOConfig(PreTrainedConfig):
         function runs from ``SJFPOPolicy.__init__``, after the features are
         attached.
         """
-        # Geometry / shape
         if self.n_obs_steps < 1:
             raise ValueError(f"n_obs_steps={self.n_obs_steps} must be >= 1")
         if self.report_to not in ("wandb", "tensorboard", "all", "none"):
@@ -283,7 +190,6 @@ class SJFPOConfig(PreTrainedConfig):
             raise ValueError(
                 f"advantage_clamp={self.advantage_clamp} entries must be > 0"
             )
-        # Eval schedule
         if self.eval_max_episodes < 1:
             raise ValueError(f"eval_max_episodes={self.eval_max_episodes} must be >= 1")
         if not 0.0 < self.stop_return_frac <= 1.0:
@@ -297,7 +203,6 @@ class SJFPOConfig(PreTrainedConfig):
             raise ValueError(f"lr_decay={self.lr_decay} must satisfy 0 < factor <= 1")
         if self.max_lr_decays < 0:
             raise ValueError(f"max_lr_decays={self.max_lr_decays} must be >= 0")
-        # Loss params
         if not 0.0 < self.gamma <= 1.0:
             raise ValueError(f"gamma={self.gamma} must satisfy 0 < gamma <= 1")
         if not 0.0 <= self.gae_lambda <= 1.0:
@@ -374,7 +279,6 @@ class SJFPOConfig(PreTrainedConfig):
                 f"sigreg_sketch_dim={self.sigreg_sketch_dim} must be >= 2: "
                 "a covariance from one row is undefined"
             )
-        # Optimizer
         if self.policy_lr <= 0:
             raise ValueError(f"policy_lr={self.policy_lr} must be > 0")
         if self.critic_lr <= 0:
@@ -414,7 +318,6 @@ class SJFPOConfig(PreTrainedConfig):
             raise ValueError(f"num_envs={self.num_envs} must be >= 1")
         if self.num_mc_samples < 1:
             raise ValueError(f"num_mc_samples={self.num_mc_samples} must be >= 1")
-        # Flags
         if self.num_euler_steps < 1:
             raise ValueError(f"num_euler_steps={self.num_euler_steps} must be >= 1")
         if self.num_inference_steps < 1:
