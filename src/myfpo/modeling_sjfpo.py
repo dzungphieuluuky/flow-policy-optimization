@@ -692,10 +692,8 @@ class SJFPOPolicy(PreTrainedPolicy):
         states = states.to(dtype=resolve_storage_dtype(states.device))
         if states.dim() == 3:
             return states
-        if states.dim() == 2:
-            if states.shape[0] == self.config.n_obs_steps:
-                return einx.id("t d -> 1 t d", states)
-            return einx.id("d -> 1 t d", states, t=self.config.n_obs_steps)
+        if states.dim() == 2 and states.shape[0] == self.config.n_obs_steps:
+            return einx.id("t d -> 1 t d", states)
         raise ValueError(
             f"observation.state must be [B, T, obs] or [T, obs]; "
             f"got {tuple(states.shape)}. A bare [obs] frame goes through "
