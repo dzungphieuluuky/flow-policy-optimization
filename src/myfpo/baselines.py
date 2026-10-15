@@ -4,11 +4,11 @@ FPO and FPO++ are faithful -- config-only, every divergence pinned and noted.
 ``dppo`` is a rollout-only arm: it flips the step count and runs the FPO++
 surrogate. See ``_OVERRIDES``.
 
-Each entry is a ``dataclasses.replace`` of the live ``SJFPOConfig``, so a
-baseline is a config, not a branch. What is *not* overridden stays whatever the
-caller set, which is why :func:`apply_baseline` returns the config and the
-caller should print the diff -- a baseline that silently inherits the proposed
-method's settings is not a baseline.
+Each entry is a ``dataclasses.replace`` of the live ``SJFPOConfig``. So a
+baseline is a config and not a branch. Anything the entry does *not* override
+stays as the caller set it. That is why :func:`apply_baseline` returns the
+config, and why the caller should print the diff. A baseline that silently
+inherits the settings of the proposed method is not a baseline.
 
 Provenance for every non-default value is in ``_NOTES``, keyed by baseline, and
 the note is written into ``run_metadata.json`` by ``scripts/train.py``.
@@ -130,9 +130,9 @@ _OVERRIDES: dict[str, dict[str, Any]] = {
         "num_inference_steps": 4,
     },
     # ---- FPO++: Yi et al., arXiv:2602.02481 ------------------------------
-    # Pinned explicitly rather than left empty. These four fields are what makes
-    # the run FPO++; leaving them inherited made the baseline a moving target,
-    # because any default change silently redefined it.
+    # These fields are pinned explicitly rather than left empty. They are what
+    # make the run FPO++. Leaving them inherited made the baseline a moving
+    # target, because any default change then redefined it.
     "fpo++": {
         "do_average_cfm_loss_in_chunk": True,
         "trust_region_mode": "aspo",
@@ -143,11 +143,14 @@ _OVERRIDES: dict[str, dict[str, Any]] = {
         "num_inference_steps": 10,
     },
     # ---- "dppo": Ren et al., arXiv:2409.00588 ---------------------------
-    # NOT an implementation of DPPO. This arm only flips rollout settings and
-    # runs the same FPO++ code path, so it is FPO++ at the papers' 10 NFE.
-    # denoising_mdp.py holds the per-step sampler but nothing in the training
-    # path reaches it; it is exercised only by tests. Implementing DPPO for
-    # real means wiring that in, or dropping the name.
+    # This is NOT an implementation of DPPO. This arm only flips the rollout
+    # settings and runs the same FPO++ code path. So it is FPO++ at the 10 NFE
+    # of the papers.
+    #
+    # The file denoising_mdp.py holds the per-step sampler. Nothing in the
+    # training path reaches it. Only the tests exercise it. A real
+    # implementation of DPPO means wiring that sampler in, or dropping the
+    # name.
     "dppo": {
         "num_euler_steps": 10,
     },
@@ -165,10 +168,11 @@ _DPPO_ROLLOUT_ONLY = frozenset({"num_euler_steps", "num_inference_steps"})
 def _assert_dppo_unwired(overrides: dict[str, Any]) -> None:
     """Keep the ``dppo`` label honest while it is a config-only arm.
 
-    Two failure modes, one guard. An override outside :data:`_DPPO_ROLLOUT_ONLY`
-    means someone edited the table below without wiring the sampler the name
-    promises, so the arm would claim DPPO while running something else. Failing
-    here beats a baseline that is quietly FPO++ at 10 NFE.
+    This one guard covers two failure modes. An override outside
+    :data:`_DPPO_ROLLOUT_ONLY` means that someone edited the table below. That
+    person did not wire the sampler which the name promises. So the arm would
+    claim DPPO while it runs something else. Failing here beats a baseline that
+    is quietly FPO++ at 10 NFE.
     """
     extra = sorted(set(overrides) - _DPPO_ROLLOUT_ONLY)
     if extra:

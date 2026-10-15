@@ -96,11 +96,15 @@ def extract_success(info: dict) -> float | None:
 
 
 def compute_mean_chunk_jerk(actions: np.ndarray, action_is_pad: np.ndarray) -> float | None:
-    """Mean :func:`compute_action_jerk` over chunks' executed prefixes.
+    """Average :func:`compute_action_jerk` over the executed prefixes of the
+    chunks.
 
-    ``actions`` ``[N, H, D]``, ``action_is_pad`` ``[N, H]``. Chunks under 3
-    executed steps skipped. None if none qualify. Chunk-internal only; pair
-    with :func:`compute_seam_jerk` for the boundaries between them.
+    The argument ``actions`` has the shape ``[N, H, D]``. The argument
+    ``action_is_pad`` has the shape ``[N, H]``. The function skips every chunk
+    with fewer than 3 executed steps. It returns None if no chunk qualifies.
+
+    The function covers the inside of a chunk only. Use
+    :func:`compute_seam_jerk` for the boundaries between chunks.
     """
     a = np.asarray(actions)
     pad = np.asarray(action_is_pad, dtype=bool)
@@ -127,10 +131,12 @@ def check_divergence(
     threshold_frac: float = 0.10,
     patience: int = 3,
 ) -> tuple[int, bool]:
-    """Bump a sub-threshold streak; flag divergence after ``patience`` in a row.
+    """Increase a sub-threshold streak. Flag divergence after ``patience`` rows
+    in a row.
 
-    The baseline must be strictly positive or the check is off and the counter
-    resets. Returns the new streak and whether divergence is flagged.
+    The baseline must be strictly positive. If it is not, the check is off and
+    the counter resets. The function returns the new streak and whether it
+    flagged divergence.
     """
     if baseline > 0 and mean_return < threshold_frac * baseline:
         consecutive += 1
@@ -147,12 +153,15 @@ def check_regression(
     return_frac: float,
     patience: int,
 ) -> tuple[int, bool]:
-    """Bump a below-peak streak; flag it once one ``patience`` window completes.
+    """Increase a below-peak streak. Flag it once one ``patience`` window
+    completes.
 
-    Any eval matching the peak resets the streak. Catches forgetting, not
-    collapse: :func:`check_divergence` does that, and a run that peaked then
-    drifted to a third of its peak never trips a floor set at a fraction of the
-    random return.
+    Any eval that matches the peak resets the streak.
+
+    This function catches forgetting. It does not catch collapse.
+    The function :func:`check_divergence` catches collapse. A run that peaked
+    and then drifted to a third of its peak never reaches a floor. That floor is
+    set at a fraction of the random return.
     """
     if best_return is None or best_return <= 0:
         return 0, False

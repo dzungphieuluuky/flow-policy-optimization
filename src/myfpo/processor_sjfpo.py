@@ -17,8 +17,11 @@ from myfpo.encoder import RunningMeanStd
 
 
 class SJFPOObservationProcessorStep(ProcessorStep):
-    """Holds a reference to the policy's ``RunningMeanStd``, not a copy, so stat
-    updates fold into the buffers the policy reads at forward time."""
+    """Hold a reference to the ``RunningMeanStd`` of the policy, not a copy.
+
+    So a stat update folds into the buffers that the policy reads at forward
+    time.
+    """
 
     def __init__(self, normalizer: RunningMeanStd):
         self.normalizer = normalizer
@@ -37,7 +40,9 @@ class SJFPOObservationProcessorStep(ProcessorStep):
     def transform_features(
         self, features: dict[PipelineFeatureType, dict[str, PolicyFeature]]
     ) -> dict[PipelineFeatureType, dict[str, PolicyFeature]]:
-        """Pass the pipeline features through unchanged; the schema is untouched."""
+        """Pass the pipeline features through. The function does not change the
+        schema.
+        """
         return features
 
 
@@ -89,7 +94,7 @@ class SJFPOActionPostprocessorStep(ProcessorStep):
     def transform_features(
         self, features: dict[PipelineFeatureType, dict[str, PolicyFeature]]
     ) -> dict[PipelineFeatureType, dict[str, PolicyFeature]]:
-        """Pass the pipeline features through unchanged; the schema is untouched."""
+        """Pass the pipeline features through. The function does not change the schema."""
         return features
 
 

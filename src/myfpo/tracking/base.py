@@ -45,11 +45,12 @@ def config_hash(cfg_dict: dict) -> str:
 
 
 def build_run_name(method: str, env_name: str, seed: int, cfg_dict: dict) -> str:
-    """wandb run name from method, env, seed, key settings, and a config hash.
+    """Build the wandb run name from the method, the env, the seed, the key
+    settings, and a config hash.
 
-    Form: ``method_env_sseed_tag_tag_hash``. The tags stay readable; the hash
-    makes the name unique per config, which is what tells two same-seed runs
-    apart in the UI.
+    The form is ``method_env_sseed_tag_tag_hash``. The tags stay readable. The
+    hash makes the name unique per config. That is what tells two runs with the
+    same seed apart in the user interface.
     """
     tags: list[str] = []
     get = cfg_dict.get
@@ -82,11 +83,12 @@ def compute_eval_summary_metrics(
     best_return: float | None = None,
     steps_to_best: int | None = None,
 ) -> dict:
-    """Eval scalars for one eval window, plus peak/streak figures when given.
+    """Return the eval scalars for one eval window. Add the peak and streak
+    figures when the caller supplies them.
 
-    Statistics over an empty window are NaN, not 0.0. ``std_length = 0.0``
-    reads as "every episode had the same length", which is a claim about the
-    data; with no episodes there is no such claim to make.
+    A statistic over an empty window is NaN, not 0.0. The value
+    ``std_length = 0.0`` reads as "every episode had the same length". That is a
+    claim about the data. With no episodes, there is no such claim to make.
     """
     returns = [r["return"] for r in eval_results]
     lengths = [r["length"] for r in eval_results]
@@ -108,9 +110,9 @@ def compute_eval_summary_metrics(
         data["eval/steps_to_best"] = int(steps_to_best)
     if r_rand is not None:
         data["eval/sample_random_baseline"] = float(r_rand)
-    # Only when the last recorded mean is this window's, i.e. the series has no
-    # gap between them; otherwise prev is a different eval and the delta is not
-    # a delta.
+    # The function compares only when the last recorded mean belongs to this
+    # window. So the series has no gap between the two values. Otherwise prev
+    # belongs to a different eval, and the delta is not a delta.
     if len(all_eval_returns) >= 2 and all_eval_returns[-1] == mean_return:
         prev = all_eval_returns[-2]
         data["eval/reward_improvement"] = float(mean_return - prev)
