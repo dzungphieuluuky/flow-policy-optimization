@@ -100,6 +100,14 @@ SECTIONS: list[tuple[str, list[str]]] = [
         ],
     ),
     (
+        "Representation regularization",
+        [
+            "sigreg_mode",
+            "sigreg_coef",
+            "sigreg_sketch_dim",
+        ],
+    ),
+    (
         "DiT backbone",
         [
             "actor_arch",

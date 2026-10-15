@@ -63,6 +63,11 @@ cfm_loss_use_huber: True
 cfm_loss_huber_delta: 0.5
 transported_clip_value: null
 
+# -- Representation regularization -----------------------------
+sigreg_mode: 'none'
+sigreg_coef: 0.0
+sigreg_sketch_dim: 64
+
 # -- DiT backbone ----------------------------------------------
 actor_arch: 'dit'
 mlp_hidden_dims: [512, 512, 512]
