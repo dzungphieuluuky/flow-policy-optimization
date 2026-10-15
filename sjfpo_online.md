@@ -129,7 +129,6 @@ scikit-learn
 scikit-image
 opencv-python-headless
 pillow
-imageio
 imageio-ffmpeg
 av
 moviepy
@@ -325,6 +324,7 @@ Do **not** sweep `cfm_clamp` or `log_ratio_cap`. The logged run had
 `cfm_above_clamp_frac=0` and `log_ratio_clip_frac=0`; neither bound, so neither
 is a lever.
 
+
 ### Representation regularization (SIGReg)
 
 Weak SIGReg matches the encoder conditioning covariance to identity. It guards
@@ -349,6 +349,7 @@ run_arm("sigreg_w1e3", ["--sjfpo.sigreg_mode", "weak", "--sjfpo.sigreg_coef", "1
 scales survive. Prefer it if the `weak` arms move `train/sigreg_raw` but not
 returns. `--sjfpo.sigreg_sketch_dim` defaults to 64 and clamps to the batch
 count automatically, so leave it alone unless the row count drops under it.
+
 
 ### Reading the results
 
