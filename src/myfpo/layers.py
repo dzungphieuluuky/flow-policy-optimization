@@ -7,15 +7,21 @@ import torch.nn.functional as F
 from torch import nn
 
 class _RMSNorm(nn.RMSNorm):
-    """RMSNorm whose *compute* runs in fp32; the stored weight follows the model
-    dtype. A ``.to(bfloat16)`` on the owner intentionally downcasts the weight;
-    the forward-time fp32 cast is a numerical guard, not a precision policy."""
+    """RMSNorm. The *compute* runs in fp32. The stored weight follows the model
+    dtype.
+
+    A ``.to(bfloat16)`` call on the owner downcasts the weight on purpose. The
+    fp32 cast in the forward pass is a numerical guard. It is not a precision
+    policy.
+    """
 
     def __init__(self, hidden_dim: int, eps: float = 1e-6):
         super().__init__(hidden_dim, eps=eps)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Norm trailing dims with the learned scale, reduce in fp32, cast back."""
+        """Normalise the trailing dimensions with the learned scale. Reduce in
+        fp32. Cast the result back.
+        """
         input_dtype = x.dtype
         with torch.autocast(device_type=x.device.type, enabled=False):
             y = F.rms_norm(
@@ -32,8 +38,12 @@ def build_rms_norm(hidden_dim: int, eps: float = 1e-6) -> nn.RMSNorm:
 
 
 class SwiGLU(nn.Module):
-    """down(silu(gate(x)) * up(x)). Gate+up fused into one GEMM; torch weight is
-    ``[out, in]`` so fused = ``cat([gate.weight, up.weight], dim=0)``."""
+    """Compute down(silu(gate(x)) * up(x)).
+
+    The gate and the up projection share one GEMM. The torch weight has the
+    shape ``[out, in]``, so the fused weight is
+    ``cat([gate.weight, up.weight], dim=0)``.
+    """
 
     def __init__(self, in_dim: int, hidden_dim: int, out_dim: int):
         super().__init__()
@@ -44,9 +54,10 @@ class SwiGLU(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         g, u = self.gate_up(x).chunk(2, dim=-1)
-        # mul_ into silu's output rather than a second tensor: silu's backward
-        # reads its input, not its output, so this is autograd-safe and drops
-        # one activation the size of gate_up's output.
+        # The multiply writes into the output of silu instead of a second
+        # tensor. The backward pass of silu reads its input, not its output, so
+        # this is safe for autograd. It also drops one activation that has the
+        # size of the output of gate_up.
         return self.down(F.silu(g).mul_(u))
 
 
@@ -65,16 +76,19 @@ class CondMLP(nn.Module):
 
 
 class SinusoidalEncoding(nn.Module):
-    """Fixed sinusoidal codes. One freq table, held as a buffer.
+    """Fixed sinusoidal codes. The module holds one freq table as a buffer.
 
-    Built in ``__init__``, never in ``forward``. A table made inside a
-    ``torch.compile`` region belongs to inductor's cudagraph pool, and the next
-    run overwrites it, so reading that same copy back on a later call dies with
-    "accessing tensor output of CUDAGraphs that has been overwritten". Under
-    ``mode="reduce-overhead"`` -- what :func:`train_sjfpo.build_policy` picks for
-    sm_70 and up -- that is every forward after the first, because the Euler
-    solver reuses one graph across its steps and hands it a fresh ``t`` each
-    time.
+    The table is built in ``__init__``. It is never built in ``forward``.
+
+    A table built inside a ``torch.compile`` region belongs to the cudagraph
+    pool of inductor. The next run overwrites it. Reading that same copy on a
+    later call then dies with the message "accessing tensor output of
+    CUDAGraphs that has been overwritten".
+
+    The failure arrives under ``mode="reduce-overhead"``. That is the mode that
+    :func:`train_sjfpo.build_policy` picks for sm_70 and above. The failure
+    covers every forward pass after the first one. The Euler solver reuses one
+    graph across its steps and hands that graph a fresh ``t`` each time.
     """
 
     def __init__(self, dim: int):
@@ -83,16 +97,19 @@ class SinusoidalEncoding(nn.Module):
             raise ValueError(f"SinusoidalEncoding dim must be >= 2, got {dim}")
         self.dim = dim
         self.half = dim // 2
-        # FPO++ (actor_critic.py:_embed_timestep): doubling powers, not the
-        # usual 1/10000^i sweep. Numerically exact -- torch's fp32 cos does
-        # argument reduction, and against a float64 reference the error is zero
-        # at every width. What a wide dim costs is bandwidth the model cannot
-        # use: at 64 the top channel runs ~40 cycles per ULP of t. FPO++ ships
-        # 8 (isaaclab) and 32 (manipulation); our default is their larger one.
+        # FPO++ uses doubling powers (actor_critic.py:_embed_timestep). It does
+        # not use the usual 1/10000^i sweep. The result is numerically exact.
+        # The fp32 cos of torch does argument reduction. Against a float64
+        # reference the error is zero at every width.
         #
-        # Non-persistent: derived from ``dim``, so it stays out of every
-        # state_dict and an older checkpoint still loads. ``half`` matches the
-        # ``[half]`` table the old per-device cache used to build.
+        # A wide dim has a cost. The cost is bandwidth that the model cannot
+        # use. At dim 64 the top channel runs about 40 cycles per ULP of t. FPO++
+        # ships 8 for isaaclab and 32 for manipulation. The default here is
+        # their larger value.
+        #
+        # The buffer is not persistent. The value comes from ``dim``. So it stays
+        # out of every state_dict and an older checkpoint still loads. The width
+        # ``half`` matches the ``[half]`` table of the old per-device cache.
         self.register_buffer(
             "freqs",
             torch.pow(
@@ -102,22 +119,29 @@ class SinusoidalEncoding(nn.Module):
         )
 
     def compute_freqs(self, device: torch.device | None = None) -> torch.Tensor:
-        """``[half]`` freq table, fp32, on ``device``.
+        """Return the ``[half]`` freq table in fp32 on ``device``.
 
-        Same tensor every call, so no caller can hold a copy that a later run
-        overwrites. A foreign ``device`` copies, and that copy is not kept.
+        Every call returns the same tensor. So no caller can keep a copy that a
+        later run overwrites. A foreign ``device`` makes a copy. The function
+        does not keep that copy.
         """
         if device is None or torch.device(device) == self.freqs.device:
             return self.freqs
         return self.freqs.to(torch.device(device))
 
     def encode_times(self, t: torch.Tensor) -> torch.Tensor:
-        """Sinusoidal embed of continuous times. ``[N]`` -> ``[N, 2 * half]``.
+        """Embed continuous times with a sinusoid. Accept ``[N]``, return
+        ``[N, 2 * half]``.
 
-        cos before sin, matching FPO++'s ``_embed_timestep``. The frequencies
-        already span the range, so ``t`` is not scaled separately. The freq
-        table is a buffer: read, never written, so it needs no clone. The cast
-        to fp32 is a no-op unless someone downcast the whole module.
+        The function places cos before sin. This matches the ``_embed_timestep``
+        of FPO++.
+
+        The freq table already spans the range. So the function does not scale
+        ``t`` separately.
+
+        The table is a buffer. The function reads it and never writes it. So the
+        function needs no clone. The cast to fp32 does nothing unless a caller
+        downcast the whole module.
         """
         t = t.to(dtype=torch.float32)
         freqs = self.compute_freqs(t.device).to(torch.float32)
@@ -128,9 +152,14 @@ class SinusoidalEncoding(nn.Module):
         return emb
 
 def modulate(x: torch.Tensor, shift: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
-    """adaLN: ``x * (1 + scale) + shift``. ``torch.addcmul(shift, x, 1 + scale)``
-    is the same value in one kernel instead of three, on the widest tensor in
-    the DiT, once per block. Reads the raw ``scale``, so callers that bound the
-    gain must clamp before calling."""
+    """adaLN. Compute ``x * (1 + scale) + shift``.
+
+    The call ``torch.addcmul(shift, x, 1 + scale)`` gives the same value in one
+    kernel instead of three. The tensor is the widest in the DiT. The call runs
+    once per block.
+
+    The function reads the raw ``scale``. So a caller that bounds the gain must
+    clamp before it calls.
+    """
     return torch.addcmul(shift, x, 1.0 + scale)
 
