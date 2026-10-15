@@ -8,6 +8,7 @@ from lerobot.configs.types import FeatureType, PolicyFeature
 
 from myfpo.configuration_sjfpo import SJFPOConfig
 from myfpo.modeling_sjfpo import SJFPOPolicy, build_optimizer
+from myfpo.train_sjfpo import build_policy
 
 OBS, ACT = 11, 2
 
@@ -39,6 +40,19 @@ def test_any_pair_reaches_every_param_group():
     groups = build_optimizer(SJFPOPolicy(cfg)).param_groups
     assert len(groups) == 4
     assert all(group["betas"] == (0.95, 0.95) for group in groups)
+
+
+def test_the_actor_output_layer_skips_weight_decay_when_compiled():
+    """``torch.compile`` renames params, so the ``out.`` test must still match."""
+    policy = build_policy(
+        OBS, ACT, _config(compile=True), device="cpu",
+        action_low=[-1.0] * ACT, action_high=[1.0] * ACT,
+    )
+    assert hasattr(policy.actor, "_orig_mod"), "the actor must be compiled"
+    no_decay = {id(p) for p in policy.get_actor_optim_params()["params"][1]["params"]}
+    out = policy.actor._orig_mod.out
+    assert id(out.weight) in no_decay
+    assert id(out.bias) in no_decay
 
 
 @pytest.mark.parametrize("betas", [(0.0, 0.999), (0.999, 1.0), (1.5, 0.9)])

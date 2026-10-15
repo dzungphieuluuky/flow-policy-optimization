@@ -594,7 +594,9 @@ class SJFPOPolicy(PreTrainedPolicy):
         """
         decay, no_decay = [], []
         for name, p in self.actor.named_parameters():
-            if "adaLN" in name or name.startswith("out."):
+            # torch.compile prefixes every name with "_orig_mod.".
+            bare = name.removeprefix("_orig_mod.")
+            if "adaLN" in bare or bare.startswith("out."):
                 no_decay.append(p)
             else:
                 decay.append(p)
