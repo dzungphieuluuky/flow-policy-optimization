@@ -10,3 +10,4 @@ uv.log
 tmp/
 wandb/
 tensorboard/
+MUJOCO_LOG.TXT
