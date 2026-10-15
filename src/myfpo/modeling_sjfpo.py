@@ -76,6 +76,8 @@ def compute_value_loss(
 
 
 # Diagnostics dict pack order. Trainer reads by key.
+# budget_truncated_chunk_frac is always NaN in training: no rollout path
+# supplies budget_truncated.
 _GAE_DIAGNOSTIC_KEYS = (
     "linked_frac",
     "advantage_std",

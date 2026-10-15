@@ -48,6 +48,7 @@ _GAE_DIAG_LOG_KEYS = {
     "advantage_std": "gae_advantage_std",
     "return_rms": "returns_rms",
     "advantage_std_fraction": "advantage_std_fraction",
+    # Always NaN in training. No rollout path supplies budget_truncated.
     "budget_truncated_chunk_frac": "budget_truncated_chunk_frac",
 }
 
