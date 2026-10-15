@@ -52,17 +52,15 @@ class SJFPOConfig(PreTrainedConfig):
     timestep_beta_beta: float = 2.0
 
     gamma: float = 0.99
-    # 0.95 is the standard GAE trace. The chunk-level recursion runs when this is
-    # >0, giving an effective horizon of 1/(1 - gamma^h*lambda) chunks: ~11
-    # chunks / ~46 env steps here, against the 1 chunk / 4 env steps of a bare
-    # QC backup.
+    # 0.95 is the standard GAE trace. The chunk-level recursion runs above 0.
+    # It gives an effective horizon of 1/(1 - gamma^h*lambda) chunks. Here that
+    # is about 11 chunks, or 46 env steps. A bare QC backup gives 1 chunk, or 4
+    # env steps.
     #
-    # 0.0 is the opt-out that reproduces QC exactly (one backup per chunk). It is
-    # not the default: this repo reasons in the chunk macro-MDP, and lambda once
-    # per chunk is the GAE of that macro-MDP, so 0.95 is what the formulation
-    # implies. QC specifies the one-chunk backup and FPO++ reports 0.95; where the
-    # two disagree, this tracks the paper whose estimator we are actually
-    # implementing, and 0.0 remains one flag away.
+    # 0.0 is the opt-out. It reproduces QC exactly, with one backup per chunk.
+    # It is not the default. This repo describes the chunk macro-MDP. Lambda
+    # applies once per chunk, and that is the GAE of this macro-MDP. So the
+    # formulation implies 0.95.
     gae_lambda: float = 0.95
     # Which axes get folded into the ratio before exp, as two knobs rather than
     # an enum, because that is how FPO++ exposes them
@@ -76,22 +74,24 @@ class SJFPOConfig(PreTrainedConfig):
     # must divide evenly by it.
     cfm_average_group_size: int = 1
     clip_param: float = 0.01
-    # The SPO quadratic has its own width in FPO++'s manipulation loop:
-    # spo_clip_coef and clip_coef are separate fields, both 0.01
-    # (finetune_online_rl.py:117-118). The Isaac Lab variant reuses clip_param
-    # for both; keeping them separate here is the manipulation behaviour.
+    # The SPO quadratic has its own width in the manipulation loop of FPO++.
+    # The fields spo_clip_coef and clip_coef are separate. Both are 0.01
+    # (finetune_online_rl.py:117-118). The Isaac Lab variant uses clip_param for
+    # both. The behaviour here is the behaviour of manipulation.
     spo_clip_param: float = 0.01
     trust_region_mode: str = "aspo"
     # "mean" by default, not FPO's Eq. 8 "sum". Under "sum" compute_cfm_loss
     # deliberately does not renormalise for padding, so a short chunk's loss --
     # and therefore its effective clip width -- scales with its executed length.
-    # Both baselines pin "sum"; see baselines.py.
+    # Both baselines pin "sum". See baselines.py.
     cfm_loss_reduction: str = "mean"
-    # What the CFM loss compares against. FPO++'s ``cfm_loss_mode``
-    # (flow_model.py:592-631): ``u`` is its "u", ``action`` is its "x0" and
-    # ``noise`` is its "eps". The reference names x0 the action endpoint and x1
-    # the noise endpoint; this repo's time runs the other way, so t=1 is the
-    # action. The names here say which endpoint, not which index.
+    # What the CFM loss compares against. This is the ``cfm_loss_mode`` of FPO++
+    # (flow_model.py:592-631). Its "u" is "velocity" here. Its "x0" is "action".
+    # Its "eps" is "noise".
+    #
+    # The reference names x0 the action endpoint and x1 the noise endpoint. The
+    # time of this repo runs the other way, so t=1 is the action. The names below
+    # name the endpoint and not the index.
     cfm_loss_target: str = "velocity"  # velocity | action | noise
     # Per-token CFM loss weight. FPO++ ships "constant" plus two linear ramps
     # (flow_model.py:648-661), named for their endpoints: 1.0 at its t=0 (the
@@ -111,9 +111,10 @@ class SJFPOConfig(PreTrainedConfig):
     # it was unexecuted, while its regression target covered only the executed
     # prefix. Set False to restore the old, tail-blind critic exactly.
     critic_condition_on_exec_length: bool = True
-    # FPO++'s chunk-level critic consumes the actor's own observation encoder
-    # output (finetune_online_rl.py:1177). On, the critic takes hidden_dim
-    # instead of the raw obs window; the encoder then serves both networks.
+    # The chunk-level critic of FPO++ consumes the output of the observation
+    # encoder of the actor itself (finetune_online_rl.py:1177). With this flag
+    # on, the critic takes hidden_dim instead of the raw obs window. The encoder
+    # then serves both networks.
     critic_share_encoder: bool = False
     # The critic was welded to the actor's width, which is wrong across the env
     # ladder: obs_dim runs 3 (Pendulum) to 348 (Humanoid-v5), so the critic's
@@ -137,8 +138,9 @@ class SJFPOConfig(PreTrainedConfig):
 
     compile: bool = True
 
-    # ``dit`` is this repo's actor; ``mlp`` is FPO++'s chunk-flattened MLP
-    # (flow_net_mlp.py). Same forward signature, so the rest is untouched.
+    # "dit" is the actor of this repo. "mlp" is the chunk-flattened MLP of FPO++
+    # (flow_net_mlp.py). Both have the same forward signature. So the rest of the
+    # code does not change.
     actor_arch: str = "dit"
     mlp_hidden_dims: tuple[int, ...] = (512, 512, 512)
     dit_depth: int = 3
@@ -148,7 +150,7 @@ class SJFPOConfig(PreTrainedConfig):
 
     # FPO++'s manipulation rates, tuned for fine-tuning a pretrained flow-BC
     # policy (finetune_online_rl.py:124-125). From scratch on MuJoCo they are
-    # small; the notebook's lr sweep is the escape hatch.
+    # small. The sweep in the notebook is the way out.
     policy_lr: float = 1e-5
     critic_lr: float = 1e-4
     # Linear warmup on each param group, in optimizer steps. FPO++ defaults
@@ -156,8 +158,9 @@ class SJFPOConfig(PreTrainedConfig):
     actor_lr_warmup_steps: int = 5
     critic_lr_warmup_steps: int = 1
     optimizer_weight_decay: float = 1e-4
-    # The manipulation actor's betas (finetune_online_rl.py:128). Isaac Lab
-    # ships (0.9, 0.999); this repo's (0.999, 0.999) matched neither.
+    # These are the betas of the manipulation actor (finetune_online_rl.py:128).
+    # Isaac Lab ships (0.9, 0.999). The old value here, (0.999, 0.999), matched
+    # neither release.
     adam_betas: tuple[float, float] = (0.9, 0.99)
     # One clip over every parameter, actor and critic together.
     max_grad_norm: float = 1.0
@@ -179,14 +182,17 @@ class SJFPOConfig(PreTrainedConfig):
         self.validate()
 
     def validate(self) -> None:
-        """All checks inline; no extra method names.
+        """Run every check inline. The function calls no other check method.
 
-        Feature shapes are NOT checked here: ``input_features`` /
-        ``output_features`` are empty on a bare config and are filled in at
-        runtime by ``build_policy`` from the env registry dims, which
-        ``train.py`` cross-checks against the live observation/action spaces.
-        The requirement is enforced by ``validate_features`` instead, from
-        ``SJFPOPolicy.__init__``, i.e. after the features are attached.
+        This function does not check the feature shapes. The fields
+        ``input_features`` and ``output_features`` are empty on a bare config.
+        ``build_policy`` fills them in at run time. It takes the dimensions from
+        the env registry. Then ``train.py`` compares those dimensions with the
+        live observation and action spaces.
+
+        The requirement is enforced by ``validate_features`` instead. That
+        function runs from ``SJFPOPolicy.__init__``, after the features are
+        attached.
         """
         # Geometry / shape
         if self.n_obs_steps < 1:
@@ -386,7 +392,7 @@ class SJFPOConfig(PreTrainedConfig):
             )
 
     def validate_features(self) -> None:
-        """Require the runtime features; called from SJFPOPolicy.__init__."""
+        """Require the run-time features. Called from SJFPOPolicy.__init__."""
         if self.robot_state_feature is None:
             raise ValueError("SJFPO requires 'observation.state' in input_features.")
         if self.action_feature is None:
