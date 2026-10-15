@@ -290,9 +290,6 @@ def compute_cfm_metrics(
 
     ``cfm_above_clamp_frac``: clamped samples give no
     gradient, so a stuck run trains the critic only.
-
-    With ``eps``, also reports realised per-bin noise energy.
-    That confirms the prior that ran, not the flag.
     """
     cfm_loss_old_std = cfm_loss_old.std(correction=0)
     cfm_loss_new_std = cfm_loss_new.std(correction=0)
