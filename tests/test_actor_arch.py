@@ -106,6 +106,32 @@ def test_the_policy_builds_either_actor():
         assert isinstance(policy.actor, cls), arch
 
 
+def test_a_tracked_run_works_for_either_arch():
+    """``compute_info=True`` unpacks actor stats, so both actors must honor it."""
+    for arch in ("dit", "mlp"):
+        policy = build_policy(
+            OBS, ACT, _cfg(actor_arch=arch, compile=False), device="cpu",
+            action_low=[-1.0] * ACT, action_high=[1.0] * ACT,
+        )
+        n, mc = 2, policy.config.num_mc_samples
+        batch = {
+            "observation.state": torch.zeros(n, policy.config.n_obs_steps, OBS),
+            "action": torch.zeros(n, HORIZON, ACT),
+            "action_is_pad": torch.zeros(n, HORIZON, dtype=torch.bool),
+            "normalised_advantages": torch.ones(n),
+            "raw_returns": torch.ones(n),
+            "mc_tau": torch.ones(n, mc, HORIZON, 1),
+            "mc_eps": torch.randn(n, mc, HORIZON, ACT),
+            "behavior_cfm_loss": torch.ones(n, mc),
+            "behavior_cfm_loss_token": torch.ones(n, mc, HORIZON),
+        }
+        loss, info = policy(batch, compute_info=True)
+        assert torch.isfinite(loss).all(), arch
+        assert "mean_log_ratio" in info, arch
+        # The DiT reports per-block conditioning stats. The MLP has none.
+        assert any(k.startswith("cond_") for k in info) == (arch == "dit"), arch
+
+
 def test_an_unknown_arch_is_rejected():
     with pytest.raises(ValueError, match="actor_arch"):
         _cfg(actor_arch="unet").validate()

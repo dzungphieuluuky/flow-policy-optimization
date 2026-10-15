@@ -35,7 +35,8 @@ class SJFPOFlowMLP(nn.Module):
     default width is ``[512, 512, 512]``.
 
     The signature matches :class:`SJFPOFlowModel`. So ``actor_arch`` swaps the
-    network and nothing else changes.
+    network and nothing else changes. ``return_stats=True`` returns an empty
+    stats dict, so a tracked run unpacks it like the DiT.
 
     One difference is deliberate. The reference draws one time per chunk. The
     MC sampling of this repo gives every token its own ``tau``
@@ -79,9 +80,9 @@ class SJFPOFlowMLP(nn.Module):
         t: torch.Tensor | float,
         condition: torch.Tensor,
         return_stats: bool = False,
-    ) -> torch.Tensor:
-        """``[B, K, D]`` in, ``[B, K, D]`` velocity out. ``return_stats`` is
-        ignored: this actor has no per-block diagnostics to report."""
+    ) -> torch.Tensor | tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        """``[B, K, D]`` in, ``[B, K, D]`` velocity out. ``return_stats=True``
+        gives ``(velocity, {})``: this actor has no per-block diagnostics."""
         if x_t.dim() != 3 or x_t.shape[2] != self.action_dim:
             raise ValueError(
                 f"x_t must have shape [B, K, {self.action_dim}], got {tuple(x_t.shape)}"
@@ -117,7 +118,10 @@ class SJFPOFlowMLP(nn.Module):
         out = self.mlp(
             torch.cat([x_t.reshape(b, -1), temb.reshape(b, -1), condition], dim=-1)
         )
-        return out.reshape(b, k, self.action_dim)
+        velocity = out.reshape(b, k, self.action_dim)
+        if return_stats:
+            return velocity, {}
+        return velocity
 
 
 class SJFPOFlowModel(nn.Module):
