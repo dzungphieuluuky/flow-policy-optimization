@@ -202,6 +202,11 @@ def compute_ratio_metrics(
     ``log_ratio_*`` reads raw delta, never the clamped one.
     ``clipfrac`` near zero means the trust region never binds.
 
+    ``mean_log_ratio``, ``log_ratio_max``, ``log_ratio_clip_frac``,
+    ``clipfrac``, and ``flow_ratio_*`` average over every element of ``delta``
+    and ``ratio``. Their axis follows the ratio granularity: the token axis
+    under the default flags. ``flow_ratio_token_*`` is always per token.
+
     The token axis is action steps, split early/late.
     ``pos`` keys: this is not a frequency cut.
     """
