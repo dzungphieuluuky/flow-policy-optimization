@@ -277,9 +277,9 @@ def test_the_baselines_select_the_trust_regions_they_name():
         assert cfg.trust_region_mode == mode, name
         assert cfg.do_average_cfm_loss_in_chunk is token_avg, name
         assert cfg.cfm_average_group_size == group, name
-        # Eq 8's loss is a sum over the chunk, so the paper's eps_clip only means
-        # what it says with a sum reduction.
-        assert cfg.cfm_loss_reduction == "sum", name
+        # FPO's Eq 8 is a sum over the chunk; FPO++'s manipulation variant
+        # reduces over the chunk's valid tokens instead, so "mean".
+        assert cfg.cfm_loss_reduction == ("sum" if name == "fpo" else "mean"), name
 
 
 def test_a_baseline_cannot_inherit_the_default_it_is_been_compared_against():

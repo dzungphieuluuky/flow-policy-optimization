@@ -35,14 +35,14 @@ class SJFPOConfig(PreTrainedConfig):
     hidden_dim: int = 128
 
     num_envs: int = 64
-    num_mc_samples: int = 8
-    num_learning_epochs: int = 2
+    num_mc_samples: int = 16
+    num_learning_epochs: int = 10
     chunks_per_update: int = 1024
     batch_size: int = 128
     grad_accum_steps: int = 1
 
-    num_euler_steps: int = 4
-    num_inference_steps: int = 4
+    num_euler_steps: int = 10
+    num_inference_steps: int = 10
     min_timestep: float = 0.005
     max_timestep: float = 0.995
     timestep_sampling_mode: str = "fpo_beta"
@@ -75,7 +75,7 @@ class SJFPOConfig(PreTrainedConfig):
     # -1 means "one group holding every MC sample". Otherwise the sample count
     # must divide evenly by it.
     cfm_average_group_size: int = 1
-    clip_param: float = 0.05
+    clip_param: float = 0.01
     # The SPO quadratic has its own width in FPO++'s manipulation loop:
     # spo_clip_coef and clip_coef are separate fields, both 0.01
     # (finetune_online_rl.py:117-118). The Isaac Lab variant reuses clip_param
@@ -146,14 +146,19 @@ class SJFPOConfig(PreTrainedConfig):
     dit_mlp_ratio: float = 2.0
     time_embed_dim: int = 32
 
-    policy_lr: float = 3e-4
-    critic_lr: float = 3e-4
+    # FPO++'s manipulation rates, tuned for fine-tuning a pretrained flow-BC
+    # policy (finetune_online_rl.py:124-125). From scratch on MuJoCo they are
+    # small; the notebook's lr sweep is the escape hatch.
+    policy_lr: float = 1e-5
+    critic_lr: float = 1e-4
     # Linear warmup on each param group, in optimizer steps. FPO++ defaults
     # are 5 and 1 (finetune_online_rl.py).
     actor_lr_warmup_steps: int = 5
     critic_lr_warmup_steps: int = 1
     optimizer_weight_decay: float = 1e-4
-    adam_betas: tuple[float, float] = (0.999, 0.999)
+    # The manipulation actor's betas (finetune_online_rl.py:128). Isaac Lab
+    # ships (0.9, 0.999); this repo's (0.999, 0.999) matched neither.
+    adam_betas: tuple[float, float] = (0.9, 0.99)
     # One clip over every parameter, actor and critic together.
     max_grad_norm: float = 1.0
     ema_decay: float = 0.95

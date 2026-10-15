@@ -15,15 +15,15 @@ hidden_dim: 128
 
 # -- Rollout and batching --------------------------------------
 num_envs: 64
-num_mc_samples: 8
-num_learning_epochs: 2
+num_mc_samples: 16
+num_learning_epochs: 10
 chunks_per_update: 1024
 batch_size: 128
 grad_accum_steps: 1
 
 # -- Flow sampling ---------------------------------------------
-num_euler_steps: 4
-num_inference_steps: 4
+num_euler_steps: 10
+num_inference_steps: 10
 min_timestep: 0.005
 max_timestep: 0.995
 timestep_sampling_mode: 'fpo_beta'
@@ -35,10 +35,10 @@ timestep_beta_beta: 2.0
 # -- Trust region and CFM loss ---------------------------------
 gamma: 0.99
 gae_lambda: 0.95
-clip_param: 0.05
+clip_param: 0.01
 spo_clip_param: 0.01
 trust_region_mode: 'aspo'
-do_average_cfm_loss_in_chunk: false
+do_average_cfm_loss_in_chunk: False
 cfm_average_group_size: 1
 cfm_loss_reduction: 'mean'
 cfm_loss_target: 'velocity'
@@ -51,7 +51,7 @@ normalize_advantage: True
 
 # -- Critic and value targets ----------------------------------
 num_critics: 2
-critic_share_encoder: false
+critic_share_encoder: False
 critic_condition_on_exec_length: True
 critic_hidden_dim: null
 critic_num_layers: 2
@@ -72,12 +72,12 @@ dit_mlp_ratio: 2.0
 time_embed_dim: 32
 
 # -- Optimizer -------------------------------------------------
-policy_lr: 0.0003
-critic_lr: 0.0003
+policy_lr: 1.0e-05
+critic_lr: 0.0001
 actor_lr_warmup_steps: 5
 critic_lr_warmup_steps: 1
 optimizer_weight_decay: 0.0001
-adam_betas: [0.999, 0.999]
+adam_betas: [0.9, 0.99]
 max_grad_norm: 1.0
 ema_decay: 0.95
 ema_warmup_steps: 500

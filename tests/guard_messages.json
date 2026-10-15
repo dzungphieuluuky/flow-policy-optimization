@@ -10,7 +10,7 @@
   "config:actor_lr_warmup_steps": "actor_lr_warmup_steps=-1 must be >= 0",
   "config:advantage_clamp": "advantage_clamp=(0.0, 1.0) entries must be > 0",
   "config:batch_size": "batch_size=0 must be >= 1",
-  "config:cfm_average_group_size": "cfm_average_group_size=0 must be -1 (one group over every MC sample) or a positive divisor of num_mc_samples=8",
+  "config:cfm_average_group_size": "cfm_average_group_size=0 must be -1 (one group over every MC sample) or a positive divisor of num_mc_samples=16",
   "config:cfm_clamp": "cfm_clamp=0.0 must be > 0",
   "config:cfm_loss_clamp_negative_advantages_max": "cfm_loss_clamp_negative_advantages_max must be > 0",
   "config:cfm_loss_huber_delta": "cfm_loss_huber_delta=0.0 must be > 0",

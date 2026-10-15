@@ -195,9 +195,11 @@ with `L_CFM` evaluated over `num_mc_samples` Monte-Carlo `(tau, eps)` draws,
 frozen once per rollout and reused for both the old and the new pass. Those
 draws are **not** the noise the behaviour rollout saw: the sampler draws its
 own `eps` inside `predict_action_chunk` and discards it, and the rollout buffer
-never stores it. Only old-vs-new share draws. `ratio_granularity=per_action`
-is FPO++ Eq. 10: one ratio per `(tau, eps)` pair, so each pair clips
-independently.
+never stores it. Only old-vs-new share draws. The ratio's granularity is two
+knobs, as in FPO++: `--sjfpo.do_average_cfm_loss_in_chunk` folds the chunk's
+tokens and `--sjfpo.cfm_average_group_size` folds the Monte-Carlo pairs. With
+the token axis folded you get one ratio per `(tau, eps)` pair, which is FPO++
+Eq. 10.
 
 **ASPO, the trust region.** Asymmetric. `A > 0` takes PPO clipping,
 `min(r*A, clip(r)*A)`. `A < 0` takes the SPO quadratic, which keeps a gradient
@@ -221,10 +223,16 @@ start from sampled noise.
     --baseline fpo++
 ```
 
-`--baseline fpo++` pins that paper's values (`per_action` ratio, ASPO, `sum`
-CFM reduction) and prints the diff it applies to stderr, so the arm cannot drift
-when a default changes. `--baseline fpo` selects the original FPO Eq. 9
-per-chunk ratio and PPO clip instead.
+`--baseline fpo++` pins that paper's released values (16 MC samples, ASPO,
+valid-masked token averaging, 10 sampling steps) and prints the diff it applies
+to stderr, so the arm cannot drift when a default changes. `--baseline fpo`
+selects the original FPO Eq. 8 chunk norm, Eq. 9 per-chunk ratio and PPO clip
+instead.
+
+The config defaults are now FPO++'s released ones, which includes
+`policy_lr=1e-5`. That rate is tuned for fine-tuning a pretrained flow-BC policy,
+not for training one from scratch, so on Reacher or Humanoid from scratch expect
+a flat curve and read the `lr1e3` arm before blaming the algorithm.
 
 ## 2. Reading the metrics
 

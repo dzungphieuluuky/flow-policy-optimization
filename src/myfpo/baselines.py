@@ -63,9 +63,10 @@ _NOTES: dict[str, dict[str, str]] = {
         "action_perturb_std": "0.0: FPO perturbs the CFM inputs, not the "
         "executed action. SJFPO's default 0.02 is a exploration aid, not FPO.",
         "num_mc_samples": "8: FPO's default N_mc (Alg. 1).",
-        "num_euler_steps": "4: matches the live default, pinned so the arms are "
-        "matched on NFE by construction rather than by coincidence. The papers "
-        "used 10, so this is a deliberate departure from their inference budget, "
+        "num_euler_steps": "4: pinned so the arms are matched on NFE by "
+        "construction rather than by coincidence. FPO++'s manipulation config "
+        "ships 10 (flow_model_config.py:68) and Isaac Lab ships 64 "
+        "(rl_cfg.py), so this arm is a deliberate departure on inference budget, "
         "not a reproduction of it.",
         "num_inference_steps": "4: same rationale, on the eval path.",
     },
@@ -77,18 +78,21 @@ _NOTES: dict[str, dict[str, str]] = {
         "default.",
         "trust_region_mode": "aspo: ASPO (PPO-clip on A>=0, SPO quadratic on A<0) "
         "is FPO++'s trust region. Pinned explicitly, same reason.",
-        "cfm_loss_reduction": "sum: FPO++ inherits FPO's Eq. 8 chunk norm. Pinned "
-        "explicitly; SJFPO's 'mean' default is a proposed change, not the paper.",
-        "num_mc_samples": "8: FPO++ keeps FPO's N_mc. Pinned explicitly.",
+        "cfm_loss_reduction": "'mean': the manipulation variant reduces over "
+        "the chunk's valid tokens and has no sum/sqrt switch at all. The Isaac "
+        "Lab variant defaults to 'sqrt' (rl_cfg.py). Pinned so this arm does not "
+        "inherit whatever the repo's own reduction is.",
+        "num_mc_samples": "16: FPO++'s released default (rl_cfg.py:217); 32 for "
+        "Spot and H1, 256 in one task config. Not 8, which is FPO's Alg. 1 "
+        "number.",
         "gae_lambda": "0.95: the chunk-level GAE lambda FPO++ reports. This "
         "resolved the open question left by the 0.0 default -- with the default "
         "at 0.95 the baseline inherits the paper's value, but it is pinned so a "
         "future default change cannot silently move it again.",
-        "num_euler_steps": "4: matches the live default, pinned so the arms are "
-        "matched on NFE by construction rather than by coincidence. The papers "
-        "used 10, so this is a deliberate departure from their inference budget, "
-        "not a reproduction of it.",
-        "num_inference_steps": "4: same rationale, on the eval path.",
+        "num_euler_steps": "10: the manipulation config's sampling_steps "
+        "(flow_model_config.py:68). Pinned because the live default has to be "
+        "able to move without silently redefining this arm.",
+        "num_inference_steps": "10: same value, on the eval path.",
     },
     "dppo": {
         # No granularity note: the arm does not override either knob, so
@@ -132,11 +136,11 @@ _OVERRIDES: dict[str, dict[str, Any]] = {
     "fpo++": {
         "do_average_cfm_loss_in_chunk": True,
         "trust_region_mode": "aspo",
-        "cfm_loss_reduction": "sum",
-        "num_mc_samples": 8,
+        "cfm_loss_reduction": "mean",
+        "num_mc_samples": 16,
         "gae_lambda": 0.95,
-        "num_euler_steps": 4,
-        "num_inference_steps": 4,
+        "num_euler_steps": 10,
+        "num_inference_steps": 10,
     },
     # ---- "dppo": Ren et al., arXiv:2409.00588 ---------------------------
     # NOT an implementation of DPPO. This arm only flips rollout settings and

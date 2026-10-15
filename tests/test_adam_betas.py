@@ -41,9 +41,9 @@ def test_the_default_overrides_the_preset():
     """
     preset = _config().get_optimizer_preset()
     assert preset.betas == (0.9, 0.999)
-    assert _config().adam_betas == (0.999, 0.999)
+    assert _config().adam_betas == (0.9, 0.99)
     assert all(
-        group["betas"] == (0.999, 0.999)
+        group["betas"] == (0.9, 0.99)
         for group in build_optimizer(SJFPOPolicy(_config())).param_groups
     )
 

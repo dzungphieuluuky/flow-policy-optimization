@@ -152,11 +152,18 @@ def _yaml_value(value):
     as the four-character *string*, and ``(0.999, 0.999)`` into a tuple repr it
     reads as a string too. Both would silently pass the loader and then differ
     from the dataclass.
+
+    Floats need the same care from the other side: ``repr(1e-05)`` is ``1e-05``,
+    and YAML 1.1 reads that as a *string*, not a float. The loader then hands
+    the config a str where it expects a float. An explicit decimal point fixes
+    it, and only the ones that need it are touched.
     """
     if value is None:
         return "null"
     if isinstance(value, tuple):
         return "[" + ", ".join(_yaml_value(v) for v in value) + "]"
+    if isinstance(value, float) and "e" in repr(value) and "." not in repr(value):
+        return repr(value).replace("e", ".0e", 1)
     return repr(value)
 
 
