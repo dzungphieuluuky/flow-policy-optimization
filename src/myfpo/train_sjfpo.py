@@ -65,9 +65,12 @@ def generate_mini_batch_indices(
     device: torch.device | str,
     num_learning_epochs: int = 1,
 ):
-    """Shuffled minibatch indices, one tensor per epoch. Every epoch reshuffles;
-    splits are proportional ``(i * n) // n_mb`` so a remainder spreads over the
-    frequencies instead of being dropped."""
+    """Yield shuffled minibatch indices, one tensor per epoch.
+
+    Every epoch reshuffles. The splits use the proportional form
+    ``(i * n) // n_mb``. So a remainder spreads over the frequencies instead of
+    being dropped.
+    """
     if n < 1:
         raise ValueError(f"n={n} must be >= 1")
     n_mb = max(1, min(int(num_mini_batches), n))
@@ -80,12 +83,15 @@ def generate_mini_batch_indices(
             yield perm[start:stop]
 
 class _EvalPolicy:
-    """Single-action eval adapter over :meth:`SJFPOPolicy.select_action`.
+    """A single-action eval adapter over :meth:`SJFPOPolicy.select_action`.
 
-    ``zero_sampling`` picks the flow's start point: ``True`` from ``eps=0``, what
-    eval and the reported metrics use; ``False`` from sampled noise, what the
-    training rollouts use. Running both over the same seeds is the only way to
-    see the two distributions diverge.
+    The value ``zero_sampling`` picks the start point of the flow. The value
+    ``True`` starts from ``eps=0``. The eval pass and the reported metrics use
+    that value. The value ``False`` starts from sampled noise, and the training
+    rollouts use it.
+
+    Running both adapters over the same seeds is the only way to see the two
+    distributions diverge.
     """
 
     def __init__(self, policy: SJFPOPolicy, zero_sampling: bool = True):
@@ -133,8 +139,10 @@ def build_policy(
     if action_low is not None and action_high is not None:
         policy.set_action_bounds(action_low, action_high)
     if getattr(cfg, "compile", False):
-        # Capability-based mode (PyTorch docs): sm_89+ -> max-autotune;
-        # lower -> default/reduce-overhead. fullgraph=True requires static graphs.
+        # The mode comes from the capability, as the PyTorch docs state.
+        # sm_89 and above give max-autotune. A lower capability gives
+        # default or reduce-overhead. The value fullgraph=True needs static
+        # graphs.
         mode = "default"
         try:
             if device.type == "cuda":
@@ -159,11 +167,13 @@ def sample_minibatch(
     indices: torch.Tensor,
     out: dict[str, torch.Tensor] | None = None,
 ) -> dict[str, torch.Tensor]:
-    """Slice the leading dim of every per-chunk batch value; they are all
-    ``[B, ...]``, so one index tensor keeps them consistent.
+    """Slice the leading dimension of every per-chunk batch value.
 
-    ``normalizer_observations`` and ``gae_diagnostics`` pass through: one row
-    per executed env step, not per chunk.
+    They all have the shape ``[B, ...]``. So one index tensor keeps them
+    consistent.
+
+    The values ``normalizer_observations`` and ``gae_diagnostics`` pass through.
+    They have one row per executed env step, not one row per chunk.
     """
     if out is None:
         out = {}
@@ -180,14 +190,17 @@ _OBS_WARMUP_STEPS = 128
 
 
 def apply_lr_schedule(optimizer, step_count: int, lr_decays: int, cfg) -> None:
-    """Linear warmup composed with the plateau decay, from the bases.
+    """Apply a linear warmup and the plateau decay, starting from the bases.
 
-    ``lr = base_lr * lr_decay**lr_decays * min(1, step / warmup)``
+    The rule is ``lr = base_lr * lr_decay**lr_decays * min(1, step / warmup)``.
 
-    Recomputed rather than compounded: warmup-then-decay and decay-then-warmup
-    give the same number, so a decay that lands mid-warmup cannot leave the
-    group permanently scaled. FPO++ reaches the warmup half via a scheduler
-    (finetune_online_rl.py); this is the same ramp without the object.
+    The function recomputes the value instead of compounding it. A warmup that
+    runs before a decay and a decay that runs before a warmup both give the
+    same number. So a decay that lands in the middle of a warmup cannot leave a
+    group permanently scaled.
+
+    FPO++ reaches the warmup half through a scheduler
+    (finetune_online_rl.py). This is the same ramp without the object.
     """
     for group in optimizer.param_groups:
         base = group["base_lr"]
@@ -218,13 +231,17 @@ def warm_observation_stats(policy, env, *, obs_dim: int, seed: int) -> int:
 
 @torch.no_grad()
 def compute_rollout_diagnostics(batch: dict[str, torch.Tensor]) -> dict[str, float]:
-    """Post-rollout scalars in one device->host transfer. Separate ``float()``
-    calls cost one CUDA sync each, and ``action_abs_max`` blocks on one.
+    """Read the post-rollout scalars with one device-to-host transfer.
 
-    The collector stores the full scaled chunk, so unexecuted rows still carry
-    a real proposed action. The all-rows keys keep that meaning; the
-    ``_executed`` ones mask first. ``action_abs_mean`` is mean|a|, not an L2
-    norm -- it is named to pair with ``action_abs_max``, which is a max.
+    A separate ``float()`` call costs one CUDA sync each. The key
+    ``action_abs_max`` blocks on one of those syncs.
+
+    The collector stores the full scaled chunk. So the unexecuted rows still
+    carry a real proposed action. The all-rows keys keep that meaning. The
+    ``_executed`` keys apply the mask first.
+
+    The key ``action_abs_mean`` holds mean|a|. It does not hold an L2 norm. The
+    name pairs it with ``action_abs_max``, and that key is a max.
     """
     action = batch["action"].float()
     is_pad = batch["action_is_pad"]
@@ -253,14 +270,15 @@ def compute_rollout_diagnostics(batch: dict[str, torch.Tensor]) -> dict[str, flo
 
 @torch.no_grad()
 def compute_action_clip_rate(batch: dict[str, torch.Tensor]) -> dict[str, float]:
-    """How much of the proposal the action bounds had to truncate.
+    """Return how much of the proposal the action bounds had to truncate.
 
-    Replaces the ``action_abs_max > 1.05`` guard, which could never fire:
-    ``scale_and_clip_chunk`` clamps into [-1, 1] before the value reaches the
-    buffer, so the observable magnitude is capped at 1.0 whatever the policy
-    proposed. Saturation has to be read off the clip count instead.
-    ``action_clip_frac`` is over all proposed coordinates, so it compares
-    across envs and action dims.
+    This function replaces the ``action_abs_max > 1.05`` guard. That guard could
+    never fire. ``scale_and_clip_chunk`` clamps into [-1, 1] before the value
+    reaches the buffer. So the observable magnitude is capped at 1.0 whatever
+    the policy proposed. The clip count is the only place saturation shows.
+
+    The key ``action_clip_frac`` covers all proposed coordinates. So it compares
+    across envs and across action dims.
     """
     clip_counts = batch.get("chunk_clip_counts")
     if clip_counts is None:
@@ -283,8 +301,9 @@ def measure_value_drift(policy, batch, device) -> tuple[torch.Tensor, torch.Tens
     ``value_target_drift``: the same move in value-loss units, a fraction of
     target RMS. Large against V can still be negligible against the return.
     """
-    # boot_observations and boot_actions are stored in the buffer's storage dtype;
-    # the critic's weights are fp32 and this runs outside autocast, so cast up.
+    # The buffer stores boot_observations and boot_actions in the storage
+    # dtype. The critic weights are fp32. This code runs outside autocast. So
+    # the cast goes up to fp32.
     boot_obs = batch["boot_observations"].to(device=device, dtype=torch.float32)
     boot_actions = batch["boot_actions"].to(device=device, dtype=torch.float32)
     start = batch["boot_values_start"].to(device).reshape(-1)
@@ -313,12 +332,14 @@ def measure_value_drift(policy, batch, device) -> tuple[torch.Tensor, torch.Tens
 def _accumulation_group_sizes(
     n_microbatches: int, accumulation_steps: int
 ) -> list[int]:
-    """Microbatch count per gradient-accumulation group.
+    """Return the microbatch count for each gradient-accumulation group.
 
-    Every group but the last is ``accumulation_steps`` wide; the last is short
-    when the total does not divide, and is flushed on its own rather than
-    dropped. Each microbatch is scaled by its own group's size, so a short last
-    group still contributes a full gradient instead of a fraction of one.
+    Every group but the last is ``accumulation_steps`` wide. The last group is
+    short when the total does not divide. The loop flushes that group on its
+    own. It does not drop it.
+
+    Each microbatch is scaled by the size of its own group. So a short last
+    group still contributes one full gradient instead of a fraction of one.
     """
     if n_microbatches < 1 or accumulation_steps < 1:
         raise ValueError(
@@ -351,37 +372,41 @@ def sample_random_baseline(
     return float(np.mean([r["return"] for r in results]))
 
 def make_vec_env(env_name: str, num_envs: int, record: dict | None = None):
-    """Vectorised env with ``forkserver`` workers.
+    """Build a vectorised env with ``forkserver`` workers.
 
-    ``context="forkserver"``, not the platform default. Linux defaults to
-    ``fork``, and ``resolve_device()`` has already called ``cuda_available()``
-    by the time this runs; forking a process with a CUDA runtime is
-    unsupported and can deadlock or corrupt the context in the child.
-    ``forkserver`` forks from a clean single-threaded server instead, and is
-    cheaper than ``spawn`` because workers do not re-import the world.
+    The value ``context="forkserver"`` is not the platform default. Linux
+    defaults to ``fork``. By the time this function runs, ``resolve_device()``
+    has already called ``cuda_available()``.
 
-    Falls back to ``SyncVectorEnv`` with a warning, not silently: the sync path
-    is one to two orders of magnitude slower and the ``fps`` field is the only
-    other tell.
+    Forking a process that holds a CUDA runtime is unsupported. It can deadlock
+    or can corrupt the context in the child. ``forkserver`` forks from a clean
+    single-threaded server instead. It costs less than ``spawn``, because the
+    workers do not import the world again.
+
+    The function falls back to ``SyncVectorEnv`` with a warning. It does not
+    fall back silently. The sync path is one to two orders of magnitude
+    slower. The ``fps`` field is the only other sign of it.
     """
     import gymnasium as gym
 
     def make_one():
         """Build one worker env, registering third-party namespaces locally.
 
-        ``gymnasium_robotics`` registers the ``AdroitHand*`` ids as a side
-        effect of ``import``, and ``scripts/train.py`` does that import in the
-        *parent* process only. Under ``forkserver`` the workers are forked from
-        a clean interpreter that never ran it, so the lambda's
-        ``gym.make("AdroitHandDoor-v1")`` raised
-        ``NameNotFound: Environment 'AdroitHandDoor' doesn't exist``, the
-        worker died, and the parent surfaced a misleading
+        The import of ``gymnasium_robotics`` registers the ``AdroitHand*`` ids
+        as a side effect. The script ``scripts/train.py`` runs that import in
+        the *parent* process only.
+
+        Under ``forkserver``, the workers fork from a clean interpreter that
+        never ran the import. So the lambda failed at
+        ``gym.make("AdroitHandDoor-v1")``. It raised
+        ``NameNotFound: Environment 'AdroitHandDoor' doesn't exist``. The worker
+        died. Then the parent surfaced a misleading
         ``ConnectionResetError: [Errno 104]``.
 
-        Importing inside the closure fixes it at the source: each worker
-        performs the registration itself, so parent and children agree on the
-        registry regardless of start method. Harmless for MuJoCo ids, which
-        gymnasium registers at core import.
+        The import inside the closure fixes the cause. Each worker performs the
+        registration itself. So the parent and the children agree on the
+        registry, whatever the start method is. The change is harmless for the
+        MuJoCo ids, because gymnasium registers those at core import.
         """
         if env_name.startswith("AdroitHand"):
             try:
@@ -393,8 +418,8 @@ def make_vec_env(env_name: str, num_envs: int, record: dict | None = None):
         return gym.make(env_name)
 
     env_fns = [make_one for _ in range(num_envs)]
-    # autoreset_mode must survive vectorisation in either branch; the collector
-    # validates NEXT_STEP, see validate_autoreset_mode.
+    # The autoreset_mode must survive vectorisation in either branch. The
+    # collector validates NEXT_STEP. See validate_autoreset_mode.
     try:
         env = gym.vector.AsyncVectorEnv(env_fns, context="forkserver")
         if record is not None:
@@ -878,9 +903,10 @@ def train_sjfpo_run(
                 diverged = diverged_now
                 regressed = regressed_now
                 if tracker.enabled:
-                    # The only eval where these fire; the loop breaks here, so
-                    # this is their last observation. The step keys are emitted
-                    # only now because 0 would read as "diverged at step 0".
+                    # This is the only eval where these flags fire. The loop
+                    # breaks here. So this is the last observation of them.
+                    # The step keys appear only now, because 0 would read as
+                    # "diverged at step 0".
                     tracker.log(
                         {
                             "eval/diverged": float(diverged_now),
