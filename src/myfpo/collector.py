@@ -456,10 +456,10 @@ def collect_chunks_vec(
             f"n_action_steps={n_action_steps} must satisfy "
             f"1 <= n <= chunk_size={chunk_size}"
         )
-    # The obs window is a ring of n_obs_steps rows and a chunk writes one row per
-    # step, so a chunk deeper than the window has nowhere to put its frames.
-    # Single-env collection slides the window instead and has no such limit,
-    # which is why the check is not in the config.
+    # The obs window is a ring of n_obs_steps rows. A chunk writes one row per
+    # step. So a chunk deeper than the window has nowhere to put its frames.
+    # Single-env collection slides the window instead. It has no such limit.
+    # That is why the check is not in the config.
     if n_action_steps > n_obs_steps:
         raise ValueError(
             f"n_action_steps={n_action_steps} exceeds n_obs_steps={n_obs_steps}: "
@@ -491,9 +491,9 @@ def collect_chunks_vec(
         plan = torch.zeros(n + 1, chunk_size, act_dim, dtype=torch.float32)
         env_rows = torch.arange(n)
         idle_row = torch.full_like(env_rows, n)
-        # roll_table[w][j] == (w + j) % n_obs_steps, so restoring a window's
-        # chronological order is one row lookup, and the wrapping rows dominate when
-        # chunks are short.
+        # The table satisfies roll_table[w][j] == (w + j) % n_obs_steps. So
+        # restoring the chronological order of a window costs one row lookup.
+        # The wrapping rows dominate when the chunks are short.
         roll_table = (
             torch.arange(n_obs_steps)[:, None]
             + torch.arange(n_obs_steps)[None, :]
@@ -535,9 +535,10 @@ def collect_chunks_vec(
                         min(n_action_steps, targets[i] - executed_total[i]),
                     )
 
-            # An env is stepping exactly when it holds a chunk, so that is read off
-            # ``cur`` rather than tracked by a second flag that has to be kept in
-            # step with it. Idle and awaiting envs read the zero row n.
+            # An env is stepping exactly when it holds a chunk. So the code
+            # reads that off ``cur``. It does not track it with a second flag.
+            # Such a flag would have to stay in step with ``cur``. An idle env
+            # and an awaiting env read the zero row n.
             stepping = torch.tensor([c is not None for c in cur], dtype=torch.bool)
             live_idx = env_rows[stepping]
             actions_t.copy_(
@@ -683,10 +684,12 @@ def collect_chunks(
                 clip_count=int(clip_count),
             )
             if done_kind == "continue" and n_exec < n_action_steps:
-                # Cut short by the step budget. The env is still alive, so this is
-                # not a truncation: that would make GAE treat every live chunk as an
-                # episode end and drop the chain to the next chunk. done_kind is
-                # required, since an early termination also produces a short chunk.
+                # The step budget cut the chunk short. The env is still alive.
+                # So this is not a truncation. A truncation would make GAE treat
+                # every live chunk as the end of an episode. GAE would then
+                # drop the chain to the next chunk.
+                # The caller must pass done_kind. An early termination also
+                # produces a short chunk.
                 buffer.mark_incomplete(chunk_index)
             executed_total += n_exec
             if done_kind != "continue":

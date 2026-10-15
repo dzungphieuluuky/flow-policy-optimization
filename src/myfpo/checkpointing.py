@@ -144,11 +144,13 @@ def save_policy_checkpoint(
         if not name.startswith(("old_actor.", "old_encoder."))
     }
     policy.save_pretrained(d, state_dict=state_dict)
-    # EMA shadow is saved separately in ema.pt, NOT overlaid onto actor.* here:
-    # the logical weights in model.safetensors stay the live policy, matching
-    # FPO++ (finetune_online_rl.py) which resumes live and EMA independently.
-    # Overwriting actor.* with the shadow made the restored live policy equal
-    # the old EMA policy, silently changing the resumed training trajectory.
+    # The file ema.pt holds the EMA shadow. The function does NOT overlay the
+    # shadow onto actor.* here. The logical weights in model.safetensors stay
+    # the live policy. FPO++ resumes the live weights and the EMA weights
+    # independently (finetune_online_rl.py), and this matches that.
+    # An earlier version overwrote actor.* with the shadow. Then the restored
+    # live policy equalled the old EMA policy. That silently changed the
+    # resumed training trajectory.
     if ema_state is not None:
         save_torch_atomically(d / "ema.pt", ema_state)
 

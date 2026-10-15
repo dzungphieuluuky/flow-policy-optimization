@@ -99,9 +99,9 @@ def apply_runtime_settings() -> dict:
 
     gpu = detect_gpu()
     tf32 = bool(gpu and gpu["supports"]["tf32"])
-    # TF32 is an sm_80+ instruction set. Asking for it on Turing is accepted and
-    # ignored, so the "highest" branch exists to make that no-op visible in the
-    # metadata rather than to change behaviour.
+    # TF32 is an instruction set of sm_80 and above. A request for TF32 on
+    # Turing is accepted and ignored. So the "highest" branch exists to make that
+    # no-op visible in the metadata. It does not change the behaviour.
     torch.set_float32_matmul_precision("high" if tf32 else "highest")
     # Past 8 shape variants dynamo silently falls back to eager: you keep paying
     # compile cost and get none of the benefit. The rollout's chunk count varies

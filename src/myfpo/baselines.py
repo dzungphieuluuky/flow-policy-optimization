@@ -35,9 +35,9 @@ from myfpo.configuration_sjfpo import SJFPOConfig
 
 __all__ = ["BASELINES", "apply_baseline", "baseline_report"]
 
-#: Nothing clamps: ``torch.clamp(x, max=inf)`` is the identity, and
-#: ``clamp(x, max=inf) >= 0`` passes both validators, so FPO's unclamped
-#: objective is reachable without a new code path.
+#: Nothing clamps here. A call to ``torch.clamp(x, max=inf)`` is the identity.
+#: The test ``clamp(x, max=inf) >= 0`` passes both validators. So the unclamped
+#: objective of FPO is reachable without a new code path.
 _NO_CLAMP = float("inf")
 
 _NOTES: dict[str, dict[str, str]] = {
@@ -106,9 +106,9 @@ _NOTES: dict[str, dict[str, str]] = {
 
 _OVERRIDES: dict[str, dict[str, Any]] = {
     # ---- FPO: McAllister et al., arXiv:2507.21053 -----------------------
-    # Note what is NOT overridden. FPO's eps-MSE needs no code change: on the
-    # linear-Gaussian path x_tau = tau*a + (1-tau)*eps the velocity->epsilon
-    # conversion is eps_hat = a - v_hat, so
+    # Note what is NOT overridden. FPO needs no code change for its eps-MSE.
+    # On the linear-Gaussian path x_tau = tau*a + (1-tau)*eps the conversion
+    # from a velocity to an epsilon reads eps_hat = a - v_hat. So
     #     ||eps_hat - eps||^2 == ||v_hat - (a - eps)||^2
     # algebraically. Verified to fp32 rounding (max relative diff 3e-5). The
     # paper's eps-vs-u ablation is about which scale clip_param should be

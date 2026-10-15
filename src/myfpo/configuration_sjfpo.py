@@ -26,10 +26,11 @@ class SJFPOConfig(PreTrainedConfig):
     report_to: str = "all"
     n_obs_steps: int = 16
     action_horizon: int = 8
-    # Execute half the chunk, then replan. At action_horizon the chunk is
-    # planned and executed fully open-loop with no closed-loop correction for
-    # 8 env steps, which is the single largest default weakness here. Treated as
-    # a default, not a settled result -- confirm by sweeping {2, 4, 8}.
+    # Execute half the chunk. Then replan. At action_horizon the chunk is
+    # planned and executed fully open-loop. No closed-loop correction runs for 8
+    # env steps. That is the single largest default weakness here.
+    # The value is a default, not a settled result. Confirm it by sweeping
+    # {2, 4, 8}.
     n_action_steps: int = 4
     action_perturb_std: float = 0.02
     hidden_dim: int = 128
@@ -62,12 +63,17 @@ class SJFPOConfig(PreTrainedConfig):
     # applies once per chunk, and that is the GAE of this macro-MDP. So the
     # formulation implies 0.95.
     gae_lambda: float = 0.95
-    # Which axes get folded into the ratio before exp, as two knobs rather than
-    # an enum, because that is how FPO++ exposes them
-    # (finetune_online_rl.py:92-95). Token axis first, then MC-sample axis:
-    #   False, 1  -> ratio per (chunk, MC pair, token)
-    #   True,  1  -> ratio per (chunk, MC pair), tokens averaged valid-masked
-    #   True, -1  -> ratio per chunk: FPO Eq 9, all MC pairs in one group
+    # These two knobs say which axes get folded into the ratio before exp.
+    # FPO++ exposes them as two settings and not as an enum
+    # (finetune_online_rl.py:92-95). The token axis comes first. Then the
+    # MC-sample axis.
+    #
+    #   False, 1  gives one ratio per (chunk, MC pair, token).
+    #   True,  1  gives one ratio per (chunk, MC pair). The tokens are averaged
+    #             with a valid mask.
+    #   True, -1  gives one ratio per chunk. That is FPO Eq 9. All the MC pairs
+    #             sit in one group.
+    #
     # FPO++'s released default is False/1.
     do_average_cfm_loss_in_chunk: bool = False
     # -1 means "one group holding every MC sample". Otherwise the sample count
@@ -80,9 +86,10 @@ class SJFPOConfig(PreTrainedConfig):
     # both. The behaviour here is the behaviour of manipulation.
     spo_clip_param: float = 0.01
     trust_region_mode: str = "aspo"
-    # "mean" by default, not FPO's Eq. 8 "sum". Under "sum" compute_cfm_loss
-    # deliberately does not renormalise for padding, so a short chunk's loss --
-    # and therefore its effective clip width -- scales with its executed length.
+    # The default is "mean", not the "sum" of Eq. 8 in FPO. Under "sum" the
+    # function compute_cfm_loss deliberately does not renormalise for padding.
+    # The loss of a short chunk then scales with its executed length. Its
+    # effective clip width scales with that length too.
     # Both baselines pin "sum". See baselines.py.
     cfm_loss_reduction: str = "mean"
     # What the CFM loss compares against. This is the ``cfm_loss_mode`` of FPO++
@@ -93,10 +100,11 @@ class SJFPOConfig(PreTrainedConfig):
     # time of this repo runs the other way, so t=1 is the action. The names below
     # name the endpoint and not the index.
     cfm_loss_target: str = "velocity"  # velocity | action | noise
-    # Per-token CFM loss weight. FPO++ ships "constant" plus two linear ramps
-    # (flow_model.py:648-661), named for their endpoints: 1.0 at its t=0 (the
-    # action end) down to 0.1 or 0.01 at t=1 (noise). This repo's t=1 is the
-    # action end, so the same schedules are read with the endpoints named
+    # The per-token weight of the CFM loss. FPO++ ships "constant" plus two
+    # linear ramps (flow_model.py:648-661). It names them for their endpoints.
+    # The weight is 1.0 at its t=0, the action end. The weight falls to 0.1 or
+    # 0.01 at t=1, the noise end. The t=1 of this repo is the action end. So the
+    # same schedules read here with the endpoints named
     # accordingly -- see :func:`myfpo.fpo_core.cfm_loss_weight`.
     cfm_loss_weight_from_t: str = "constant"
     cfm_clamp: float = 20.0
@@ -105,10 +113,11 @@ class SJFPOConfig(PreTrainedConfig):
     log_ratio_cap: float = 10.0
 
     num_critics: int = 2
-    # A chunk is planned at action_horizon but only `lengths` steps are executed
-    # (the loop breaks on terminate/truncate), so the tail of chunk_actions holds
-    # a counterfactual plan. The critic used to see that tail with no way to know
-    # it was unexecuted, while its regression target covered only the executed
+    # A chunk is planned at action_horizon. Only `lengths` steps of it run. The
+    # loop breaks on terminate or on truncate. So the tail of chunk_actions holds
+    # a counterfactual plan. The critic used to see that tail. The critic had no
+    # way to know that the tail never ran. Its regression target covered only
+    # the executed
     # prefix. Set False to restore the old, tail-blind critic exactly.
     critic_condition_on_exec_length: bool = True
     # The chunk-level critic of FPO++ consumes the output of the observation
@@ -116,10 +125,11 @@ class SJFPOConfig(PreTrainedConfig):
     # on, the critic takes hidden_dim instead of the raw obs window. The encoder
     # then serves both networks.
     critic_share_encoder: bool = False
-    # The critic was welded to the actor's width, which is wrong across the env
-    # ladder: obs_dim runs 3 (Pendulum) to 348 (Humanoid-v5), so the critic's
-    # first layer sees 56 or 5704 inputs and squeezes both into hidden_dim. None
-    # means "reuse hidden_dim", preserving the old construction exactly.
+    # The critic was welded to the width of the actor. That choice is wrong
+    # across the env ladder. The value obs_dim runs from 3 on Pendulum to 348 on
+    # Humanoid-v5. So the first layer of the critic sees 56 or 5704 inputs. It
+    # squeezes both counts into hidden_dim. The value None means "reuse
+    # hidden_dim". It preserves the old construction exactly.
     critic_hidden_dim: int | None = None
     critic_num_layers: int = 2
     normalize_advantage: bool = True

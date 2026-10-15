@@ -150,11 +150,12 @@ def compute_chunk_advantages(
     chunk_rewards = (gathered * valid * (gamma**offsets)).sum(dim=1)
 
     gamma_h = gamma ** lengths.to(dtype)
-    # rsl-rl / FPO++ encoding (fpo.py:process_env_step): the value of the state
-    # a timeout cut us off in enters through the *reward*, and the bootstrap is
-    # masked by `done` so that correction is counted exactly once. Arithmetically
-    # identical to masking the bootstrap by (1 - terminated) alone -- equal in all
-    # four combinations of the two masks.
+    # This is the encoding of rsl-rl and FPO++ (fpo.py:process_env_step).
+    # The value of the state where a timeout cut the episode enters through the
+    # *reward*. The mask `done` covers the bootstrap. So the correction counts
+    # exactly once.
+    # The arithmetic matches a bootstrap masked by (1 - terminated) alone. The
+    # two agree in all four combinations of the two masks.
     done = terminated | truncated
     # A chunk that both terminated and truncated keeps the terminal reading:
     # injecting there would resurrect a value for an episode that really ended.
@@ -172,10 +173,11 @@ def compute_chunk_advantages(
     if env_id.numel() != n_chunks:
         raise ValueError(f"chunk_env_id must have {n_chunks} entries, got {env_id.numel()}")
 
-    # Stable, so ties keep buffer order, which is already time order. The next
-    # same-env chunk in this order is therefore always the next one in time, and
-    # so always at a strictly larger buffer index -- which is what makes the
-    # single reverse sweep below correct rather than merely plausible.
+    # The sort is stable. So a tie keeps the buffer order. The buffer order is
+    # already the time order. The next same-env chunk in this order is therefore
+    # always the next chunk in time. Its buffer index is therefore strictly
+    # larger. That fact is what makes the single reverse sweep below correct
+    # rather than merely plausible.
     order = torch.argsort(env_id, stable=True)
     sorted_env = env_id[order]
     same_env = sorted_env[:-1] == sorted_env[1:]

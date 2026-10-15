@@ -565,9 +565,10 @@ def train_sjfpo_run(
         env, eval_seed=10000 + seed, max_episodes=cfg.eval_max_episodes
     )
     eval_policy = _EvalPolicy(policy)
-    # Same adapter, opposite start point. The rollouts that build the critic's
-    # targets and the advantages come from sampled noise, so the eps=0 return
-    # above is measuring a different distribution than the one being trained.
+    # The adapter is the same. The start point is the opposite. The rollouts
+    # that build the critic targets and the advantages come from sampled noise.
+    # So the eps=0 return above measures a different distribution from the one
+    # that training uses.
     stochastic_eval_policy = _EvalPolicy(policy, zero_sampling=False)
     r_rand = sample_random_baseline(evaluator, env)
     tracker = build_tracker(
@@ -700,9 +701,10 @@ def train_sjfpo_run(
                 if epoch_info is not None:
                     epoch_infos.append(epoch_info)
 
-            # Checked once per update, not per boundary: bool() on a device
-            # tensor is a sync, and NaN gradients make the clip a no-op anyway,
-            # so the run is already lost by the time this raises.
+            # The code checks once per update and not once per boundary. A call
+            # to bool() on a device tensor causes a sync. NaN gradients make the
+            # clip a no-op anyway. The run is already lost by the time this
+            # raises.
             if bool(finite_error):
                 raise SJFPOAborted(
                     "Non-finite loss detected during gradient accumulation"
@@ -813,9 +815,10 @@ def train_sjfpo_run(
                 if improved:
                     best_return = mean_return
                     steps_to_best = global_step
-                    # The peak has to be on disk when it happens: with a
-                    # save_steps cadence the nearest periodic checkpoint can be
-                    # 100k steps away, and the run always ends on the last one.
+                    # The peak has to reach the disk when it happens. With a
+                    # save_steps cadence, the nearest periodic checkpoint can
+                    # sit 100k steps away. The run always ends on the last
+                    # checkpoint. So the peak needs its own file.
                     best_ckpt_dir = out_dir / CHECKPOINTS_DIR / "best"
                     save_policy_checkpoint(
                         best_ckpt_dir,

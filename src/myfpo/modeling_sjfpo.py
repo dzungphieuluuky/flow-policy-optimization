@@ -993,9 +993,9 @@ class SJFPOPolicy(PreTrainedPolicy):
             # Seeded from the chunk, so no row is garbage.
             # Backup scales by ~terminated: 0 * NaN is NaN.
             boot_actions = actions.clone()
-            # Only a live chunk needs a proposal: a terminated chunk keeps
-            # the cloned chunk actions, which are never read -- the backup
-            # masks them with (1 - terminated).
+            # Only a live chunk needs a proposal. A terminated chunk keeps the
+            # cloned chunk actions. Nothing reads those values. The backup masks
+            # them with (1 - terminated).
             needs_proposal = ~active["chunk_terminated"]
             if bool(needs_proposal.any()):
                 # The call predict_action_chunk returns the env bounds. The
@@ -1342,11 +1342,12 @@ class SJFPOPolicy(PreTrainedPolicy):
             )
             surrogate = compute_aspo_surrogate(ratio, adv_ratio, cfg)
             if surrogate.dim() == 3:
-                # The token axis survived, so padded tokens are still in the
-                # average. A padded token has cfm_loss 0, so ratio 1.0: zero
-                # gradient but the surrogate still evaluates to A, so mask the
-                # value and divide by the executed token count rather than the
-                # full horizon.
+                # The token axis survived. So the padded tokens are still in
+                # the average. A padded token has cfm_loss 0. So its ratio is
+                # 1.0. That gives a zero gradient. The surrogate still
+                # evaluates to A though. So the code masks the value. It then
+                # divides by the executed token count and not by the full
+                # horizon.
                 keep = (~action_is_pad).to(surrogate.dtype)
                 surrogate = surrogate * keep[:, None, :]
                 n_executed = keep.sum(dim=-1).clamp_min(1.0)
