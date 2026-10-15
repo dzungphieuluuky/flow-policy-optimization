@@ -56,7 +56,6 @@ critic_condition_on_exec_length: True
 critic_hidden_dim: null
 critic_num_layers: 2
 value_loss_coef: 1.0
-value_huber_delta_scale: 1.0
 advantage_clamp: [100.0, 100.0]
 
 # -- CFM loss --------------------------------------------------

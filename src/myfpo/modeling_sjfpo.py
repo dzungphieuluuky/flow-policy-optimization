@@ -62,17 +62,17 @@ class SJFPOAborted(RuntimeError):
     """Non-finite training loss. The message names the offending term."""
 
 
-def compute_value_huber_loss(
-    pred: torch.Tensor, target: torch.Tensor, delta: torch.Tensor
+def compute_value_loss(
+    pred: torch.Tensor, target: torch.Tensor
 ) -> torch.Tensor:
-    """Elementwise Huber, broadcasting ``target`` over members.
+    """Squared error against the return, ``target`` broadcast over members.
 
-    ``delta`` is 0-dim. Caller tracks the critic's *residual* RMS, not the
-    return scale -- see :meth:`update_huber_resid_rms`.
+    Plain MSE, which is what both FPO++ variants use
+    (``fpo.py:497``, and ``clip_vloss`` off in the manipulation config). No
+    clipped variant: the release reports that value clipping adds instability
+    with FPO's tighter policy band (``rl_cfg.py:181-185``).
     """
-    return torch.nn.functional.huber_loss(
-        pred, target.expand_as(pred), delta=delta, reduction="none"
-    )
+    return torch.square(pred - target.expand_as(pred))
 
 
 # Diagnostics dict pack order. Trainer reads by key.
@@ -377,12 +377,6 @@ class SJFPOPolicy(PreTrainedPolicy):
             copy.deepcopy(self.encoder).requires_grad_(False).eval()
         )
         self._ema_shadow: dict[str, torch.Tensor] = {}
-        # Non-persistent: a resumed run re-seeds from its first batch, which is
-        # the same path a fresh run takes, so there is no half-restored state.
-        self.register_buffer(
-            "_huber_resid_rms", torch.zeros((), dtype=torch.float32), persistent=False
-        )
-        self._huber_resid_uninitialised = True
         self._ema_initialised = False
         self._rollout_buffer: RolloutBuffer | None = None
         self._device_rollout_buffer: RolloutBuffer | None = None
@@ -485,23 +479,6 @@ class SJFPOPolicy(PreTrainedPolicy):
                 if param.requires_grad:
                     out[f"{prefix}.{name}"] = param
         return out
-
-    @torch.no_grad()
-    def update_huber_resid_rms(self, residual: torch.Tensor, decay: float = 0.99) -> None:
-        """Track the critic's residual scale for the Huber knee.
-
-        The knee has to follow the *error*, not the return scale. Scaling
-        delta by returns_rms puts it at ~2x the residual spread, so 97% of
-        residuals land in the quadratic branch and the Huber is MSE wearing a
-        disguise. Smoothed because the per-batch value moves too fast and a
-        knee that breathes with the data is a second feedback loop.
-        """
-        batch = residual.detach().float().square().mean().sqrt()
-        if self._huber_resid_uninitialised:
-            self._huber_resid_rms.fill_(float(batch))
-            self._huber_resid_uninitialised = False
-            return
-        self._huber_resid_rms.mul_(decay).add_((1.0 - decay) * float(batch))
 
     @torch.inference_mode()
     def update_ema(self, global_step: int) -> None:
@@ -1373,15 +1350,8 @@ class SJFPOPolicy(PreTrainedPolicy):
                 f"{tuple(raw_value_pred.shape)}, raw_returns="
                 f"{tuple(raw_returns_flat.shape)}"
             )
-        # rsl-rl's value loss, Huber: quadratic inside delta, linear
-        # outside, so one large chunk cannot dominate the gradient.
-        # The delta tracks the residual scale, not the return scale -- see
-        # update_huber_resid_rms.
-        residual = raw_value_pred - raw_returns_flat.unsqueeze(0)
-        self.update_huber_resid_rms(residual)
-        huber_delta = cfg.value_huber_delta_scale * self._huber_resid_rms.clamp_min(1e-6)
-        value_loss_per_chunk = compute_value_huber_loss(
-            raw_value_pred, raw_returns_flat, huber_delta
+        value_loss_per_chunk = compute_value_loss(
+            raw_value_pred, raw_returns_flat
         ).mean(dim=0)
 
         if reduction == "mean":

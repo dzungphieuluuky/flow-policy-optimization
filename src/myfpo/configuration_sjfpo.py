@@ -125,10 +125,6 @@ class SJFPOConfig(PreTrainedConfig):
     # (negative_clamp, positive_clamp), FPO++ rl_cfg.advantage_clamp.
     advantage_clamp: tuple[float, float] = (100.0, 100.0)
     value_loss_coef: float = 1.0
-    # A scale, not a delta: the knee is this times the residual RMS, tracked at
-    # runtime. Named 'delta' until 451899f, which is why the loss sat 97%
-    # quadratic -- scaling by returns_rms put the knee at 2x the residual spread.
-    value_huber_delta_scale: float = 1.0
 
     # FPO++ FlowMatchingConfig.cfm_loss_use_huber. Elementwise, before the
     # reduction: the quadratic branch has no 0.5 factor, so it equals MSE for
@@ -336,8 +332,6 @@ class SJFPOConfig(PreTrainedConfig):
             raise ValueError("timestep beta alpha/beta must be > 0")
         if self.value_loss_coef < 0:
             raise ValueError(f"value_loss_coef={self.value_loss_coef} must be >= 0")
-        if self.value_huber_delta_scale <= 0:
-            raise ValueError(f"value_huber_delta_scale={self.value_huber_delta_scale} must be > 0")
         # Optimizer
         if self.policy_lr <= 0:
             raise ValueError(f"policy_lr={self.policy_lr} must be > 0")

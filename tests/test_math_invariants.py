@@ -126,18 +126,6 @@ class TestFPOCoreRemaining:
 
 
 class TestValueDiagnostics:
-    def test_value_huber_monotonic(self):
-        """Huber loss: non-negative and symmetric in (pred - target)."""
-        from myfpo.modeling_sjfpo import compute_value_huber_loss
-        import torch
-
-        pred = torch.randn(3)
-        target = torch.randn(3)
-        delta = torch.tensor(1.0)
-        loss = compute_value_huber_loss(pred, target, delta)
-        assert loss.dim() == 1  # broadcasts members; output is [batch]
-        assert (loss >= -1e-6).all()
-
     def test_gae_diagnostics_shape(self):
         """Diagnostics dict keys match expected tuple."""
         from myfpo.modeling_sjfpo import _GAE_DIAGNOSTIC_KEYS

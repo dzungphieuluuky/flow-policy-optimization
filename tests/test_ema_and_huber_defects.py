@@ -1,9 +1,11 @@
-"""Two defects found from a Humanoid run that peaked at 131k and decayed 46%.
+"""Defect found from a Humanoid run that peaked at 131k and decayed 46%.
 
 The EMA shadow covered the flow model but not the conditioning encoder, so every
-eval measured EMA_actor(live_encoder(obs)) -- a pairing that never trained. The
-Huber knee was scaled by returns_rms, putting it at ~2x the residual spread, so
-97% of residuals took the quadratic branch and the loss was MSE in disguise.
+eval measured EMA_actor(live_encoder(obs)) -- a pairing that never trained.
+
+The file used to hold a second case, a Huber knee scaled by ``returns_rms``.
+That value loss is gone: FPO++ trains plain MSE, so the knee had nothing to be
+faithful to. See ``tests/test_value_loss.py``.
 """
 
 import dataclasses
@@ -101,76 +103,7 @@ def test_a_matching_shadow_is_restored():
     assert set(fresh._ema_shadow) == set(p._ema_shadow)
 
 
-# --- Huber knee follows the residual, not the return ------------------------
-
-
-def test_huber_knee_is_not_built_from_the_return_scale():
-    """delta must not scale with returns_rms; that was the whole defect."""
-    torch.manual_seed(0)
-    p = _policy(value_huber_delta_scale=1.0)
-    # A batch whose returns are 100x the residual spread.
-    resid = torch.randn(4096) * 1.0
-    p.update_huber_resid_rms(resid)
-    assert float(p._huber_resid_rms) == pytest.approx(float(resid.square().mean().sqrt()), rel=1e-5)
-
-
-def test_huber_knee_moves_with_the_residual_not_the_return():
-    p = _policy()
-    torch.manual_seed(0)
-    tight = torch.randn(4096) * 2.0
-    p.update_huber_resid_rms(tight)
-    a = float(p._huber_resid_rms)
-    for _ in range(200):                       # converge the EMA
-        p.update_huber_resid_rms(tight)
-    wide = torch.randn(4096) * 40.0
-    for _ in range(200):
-        p.update_huber_resid_rms(wide)
-    b = float(p._huber_resid_rms)
-    assert b > a * 10, f"knee did not track the residual spread: {a} -> {b}"
-
-
-def test_huber_knee_is_smoothed_not_per_batch():
-    """A knee that breathes with every batch is a second feedback loop.
-
-    Real batch-to-batch RMS variation is sampling noise, ~1.2x here. The
-    tracked value must move far less than the per-batch value does.
-    """
-    p = _policy()
-    torch.manual_seed(0)
-    raw = []
-    for _ in range(500):
-        batch = torch.randn(4096) * 5.0
-        raw.append(float(batch.square().mean().sqrt()))
-        p.update_huber_resid_rms(batch)
-    tracked = float(p._huber_resid_rms)
-    spread_raw = max(raw) / min(raw)
-    for _ in range(20):
-        p.update_huber_resid_rms(torch.randn(4096) * 5.0)
-    moved = float(p._huber_resid_rms) / tracked
-    # The per-batch RMS swung by spread_raw; the knee barely moved.
-    assert moved < 1.01, f"knee tracked the batch too closely: {moved:.4f}x"
-    assert spread_raw > 1.05, "fixture did not actually vary"
-
-
-def test_the_knee_survives_a_single_large_outlier_batch():
-    """Not to zero -- an EMA is not a median -- but bounded, unlike per-batch."""
-    p = _policy()
-    torch.manual_seed(0)
-    for _ in range(500):
-        p.update_huber_resid_rms(torch.randn(4096) * 5.0)
-    before = float(p._huber_resid_rms)
-    p.update_huber_resid_rms(torch.randn(4096) * 5000.0)
-    # One step at decay 0.99 moves it at most 0.01 * (5000 - before).
-    assert float(p._huber_resid_rms) < before + 0.01 * 5000.0 * 1.05
-
-
-def test_a_1x_knee_puts_a_third_of_residuals_in_the_linear_branch():
-    """The reason the basis change matters: at 1x it now bites."""
-    torch.manual_seed(0)
-    r = torch.randn(200000)
-    r = r - r.mean()
-    r = r / r.square().mean().sqrt()          # unit RMS
-    assert (r.abs() > 1.0).float().mean() == pytest.approx(0.317, abs=0.01)
+# --- state dict -----------------------------------------------------------
 
 
 def test_the_ema_state_dict_carries_the_encoder():

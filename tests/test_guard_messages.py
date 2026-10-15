@@ -29,7 +29,7 @@ SNAPSHOT = Path(__file__).with_name("guard_messages.json")
 
 #: Guard count the table below is expected to cover. Bump deliberately when a
 #: guard is added; a silent drop here means that guard is no longer checked.
-EXPECTED_CASES = 78
+EXPECTED_CASES = 77
 
 _CASES: list[tuple[str, object]] = []
 
@@ -95,7 +95,6 @@ _BAD_CONFIG = {
     "timestep_sampling_mode": "cosine",
     "transported_clip_value": 0.0,
     "trust_region_mode": "grpo",
-    "value_huber_delta_scale": 0.0,
     "value_loss_coef": -1.0,
 }
 for _field, _bad in sorted(_BAD_CONFIG.items()):
