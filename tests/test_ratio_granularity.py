@@ -136,6 +136,91 @@ def test_per_sample_clips_per_token():
     assert surrogate_inputs == [(N, MC, HORIZON)]
 
 
+def _padded_per_sample_batch(pad_from=HORIZON // 2):
+    """A ``per_sample`` batch whose second row is padded from ``pad_from`` on.
+
+    The behaviour losses are recomputed against the same mask, so the padded
+    tokens really do have zero loss the way they do in a live rollout.
+    """
+    cfg = _cfg(ratio_granularity="per_sample")
+    policy, batch = _policy_and_batch(cfg)
+    batch["action_is_pad"][1, pad_from:] = True
+    normalised = policy.preprocessor({M.OBS_STATE: batch[M.OBS_STATE]})[M.OBS_STATE]
+    old, old_token = policy.compute_behavior_cfm_losses(
+        normalised, batch[M.ACTION], batch["mc_tau"], batch["mc_eps"],
+        batch["action_is_pad"],
+    )
+    batch["behavior_cfm_loss"] = old
+    batch["behavior_cfm_loss_token"] = old_token
+    return policy, batch
+
+
+def _per_sample_surrogate(policy, batch):
+    """The per-token surrogate ``forward`` built, captured at the call."""
+    captured = []
+    real = M.compute_aspo_surrogate
+
+    def spy(ratio, advantage, *args, **kwargs):
+        out = real(ratio, advantage, *args, **kwargs)
+        captured.append(out.detach().clone())
+        return out
+
+    M.compute_aspo_surrogate = spy
+    try:
+        losses, _ = policy(batch, reduction="none", compute_info=False, check_finite=False)
+    finally:
+        M.compute_aspo_surrogate = real
+    return losses, captured[-1]
+
+
+def test_per_sample_is_unchanged_when_every_token_ran():
+    """No padding means no mask and no rescale: the old mean was already right."""
+    policy, batch = _padded_per_sample_batch(pad_from=HORIZON)
+    losses, surrogate = _per_sample_surrogate(policy, batch)
+    want = -surrogate.mean(dim=(1, 2))[0]
+    assert torch.allclose(losses[0], want, atol=0.0, rtol=1e-6), (
+        f"{losses[0].item()} != {want.item()}: a full chunk must reduce over every token"
+    )
+
+
+def test_per_sample_masks_padded_tokens_before_the_mean():
+    """A short chunk reduces over its executed tokens only.
+
+    Dividing by ``num_mc * action_horizon`` instead down-weights every chunk that
+    ended early, by ``length / action_horizon``, for no reason the chunk is
+    responsible for. ``atol=0``: only the summation order may differ.
+    """
+    pad_from = HORIZON // 2
+    policy, batch = _padded_per_sample_batch(pad_from=pad_from)
+    losses, surrogate = _per_sample_surrogate(policy, batch)
+
+    want = -surrogate[1, :, :pad_from].mean()
+    assert torch.allclose(losses[1], want, atol=0.0, rtol=1e-6), (
+        f"{losses[1].item()} != {want.item()}"
+    )
+    unmasked = -surrogate[1].mean()
+    assert not torch.allclose(losses[1], unmasked), "padded tokens are still in the mean"
+
+
+def test_padded_tokens_evaluate_to_the_advantage_not_to_zero():
+    """Why the value needs masking and not just the divisor.
+
+    A padded token has zero CFM loss, so ``delta = 0``, so ``ratio = 1.0``, and
+    the ASPO surrogate at ratio 1 is exactly the advantage: zero gradient, but
+    not zero value. Pin that, because it is why the old mean shifted
+    ``policy_loss`` by about ``(H - length) / H`` of the advantage per pair.
+    """
+    pad_from = HORIZON // 2
+    policy, batch = _padded_per_sample_batch(pad_from=pad_from)
+    _, surrogate = _per_sample_surrogate(policy, batch)
+    adv = batch["normalised_advantages"].float()[1]
+    padded = surrogate[1, :, pad_from:]
+    assert torch.equal(padded, adv.expand_as(padded)), (
+        "padded tokens are no longer exactly the advantage; if this changed, "
+        "re-check whether they need masking at all"
+    )
+
+
 def test_per_chunk_and_per_action_disagree_once_the_actor_moves():
     """The regression: identical on-policy, different the moment cfm_loss_old != cfm_loss_new."""
     losses = []

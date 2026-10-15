@@ -743,6 +743,13 @@ class SJFPOPolicy(PreTrainedPolicy):
         ``batch`` holds ``observation.state``: ``[obs]`` one
         frame or ``[T, obs]`` a window. Kwargs pass to
         :meth:`predict_action_chunk`.
+
+        FIFO: the left of ``_action_buffer`` is the next action out. The chunk
+        is appended in plan order, so the caller receives ``chunk[0, 0]`` first
+        and ``chunk[0, n_execute - 1]`` last. Appending in reverse while
+        popping from the left runs the plan backwards -- which trains fine,
+        because the collector never comes through here, and then plays
+        backwards at eval.
         """
         obs = to_tensor(batch[OBS_STATE])
         obs = obs.to(dtype=resolve_storage_dtype(obs.device))
@@ -762,7 +769,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         if not self._action_buffer:
             chunk = self.predict_action_chunk({OBS_STATE: window}, **kwargs)
             n_execute = max(1, min(self.config.n_action_steps, chunk.shape[1]))
-            for i in range(n_execute - 1, -1, -1):
+            for i in range(n_execute):
                 self._action_buffer.append(chunk[0, i])
         return self._action_buffer.popleft()
 
@@ -1275,9 +1282,22 @@ class SJFPOPolicy(PreTrainedPolicy):
             elif cfg.ratio_granularity == "per_sample":
                 # One ratio per token: finer than either paper.
                 delta = cfm_loss_old - cfm_loss_new
-                policy_per_chunk = -compute_aspo_surrogate(
+                # A padded token has cfm_loss 0, so delta 0, so ratio 1.0: its
+                # gradient is zero but the surrogate still evaluates to A. Mask
+                # the value too, or the mean carries a (H - length) * A offset
+                # that differs per chunk. Divide by the executed token count
+                # rather than num_mc * H, or a chunk that ends early is
+                # down-weighted by length/H for no reason.
+                token_surrogate = compute_aspo_surrogate(
                     ratio_token, adv_mc.unsqueeze(-1), cfg
-                ).mean(dim=(1, 2))
+                )
+                keep = (~action_is_pad).to(token_surrogate.dtype)
+                # [n, 1, H] against the surrogate's [n, num_mc, H].
+                token_surrogate = token_surrogate * keep[:, None, :]
+                n_executed = keep.sum(dim=-1).clamp_min(1.0)
+                policy_per_chunk = -(
+                    token_surrogate.sum(dim=(1, 2)) / (n_executed * num_mc)
+                )
             else:
                 # FPO++ Eq 10: one ratio per (tau, eps) pair.
                 delta = cfm_loss_old - cfm_loss_new
