@@ -1,4 +1,4 @@
-"""Tests for the batched rollout diagnostics (``sjfpo.train_sjfpo``)."""
+"""Tests for the batched rollout diagnostics (``myfpo.train_sjfpo``)."""
 import sys
 from pathlib import Path
 

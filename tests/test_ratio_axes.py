@@ -1,4 +1,4 @@
-"""``ratio_granularity`` must select the trust region the papers name."""
+"""The two ratio axes must select the trust region the papers name."""
 
 import dataclasses
 from pathlib import Path

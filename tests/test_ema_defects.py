@@ -1,4 +1,6 @@
-"""Defect found from a Humanoid run that peaked at 131k and decayed 46%."""
+"""The EMA shadow must cover actor and encoder as one unit.
+
+Found from a Humanoid run that peaked at 131k and decayed 46%."""
 
 import dataclasses
 import warnings

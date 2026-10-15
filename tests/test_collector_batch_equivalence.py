@@ -1,4 +1,4 @@
-"""Batched obs-window writes must be bitwise identical to row-at-a-time."""
+"""The batched collector must fill, window, chain, and store every chunk."""
 
 from __future__ import annotations
 

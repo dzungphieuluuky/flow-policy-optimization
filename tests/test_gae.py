@@ -1,4 +1,4 @@
-"""Pins the chunked Q backup: ``sjfpo.gae.compute_chunk_advantages``."""
+"""Pins the chunked Q backup: ``myfpo.gae.compute_chunk_advantages``."""
 import sys
 from pathlib import Path
 
