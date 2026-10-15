@@ -83,6 +83,32 @@ class TestFPOCoreRemaining:
         result = compute_aspo_surrogate(ratio, adv, cfg)
         assert result.shape == ratio.shape
 
+    def test_spo_uses_its_own_width_not_the_ppo_one(self):
+        """FPO++ gives SPO a separate coefficient (``spo_clip_coef``).
+
+        Sharing ``clip_param`` would silently rescale the negative-advantage
+        branch whenever the PPO band moves.
+        """
+        import dataclasses
+
+        import torch
+
+        from myfpo.configuration_sjfpo import SJFPOConfig
+        from myfpo.fpo_core import compute_aspo_surrogate
+
+        cfg = dataclasses.replace(
+            SJFPOConfig(), clip_param=0.05, spo_clip_param=0.01
+        )
+        ratio = torch.tensor([1.5, 1.5])
+        adv = torch.tensor([-2.0, 2.0])
+
+        got = compute_aspo_surrogate(ratio, adv, cfg)
+        spo_width = ratio[0] * adv[0] - (abs(adv[0]) / (2.0 * 0.01)) * (ratio[0] - 1.0) ** 2
+        # A>0 clips at clip_param, so the band [0.95, 1.05] binds: 1.05 * 2.
+        ppo_clipped = min(ratio[1].item(), 1.0 + cfg.clip_param) * adv[1].item()
+        assert torch.allclose(got[0], spo_width), "A<0 took SPO with the wrong width"
+        assert torch.allclose(got[1], torch.tensor(ppo_clipped)), "A>0 must stay PPO"
+
     def test_fpo_policy_ratio_clip_invariant(self):
         """Policy ratio: exp(delta_st) with clamped delta; backward through delta."""
         from myfpo.fpo_core import compute_policy_ratio

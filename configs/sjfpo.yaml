@@ -36,6 +36,7 @@ timestep_beta_beta: 2.0
 gamma: 0.99
 gae_lambda: 0.95
 clip_param: 0.05
+spo_clip_param: 0.01
 trust_region_mode: 'aspo'
 ratio_granularity: 'per_action'
 cfm_loss_reduction: 'mean'

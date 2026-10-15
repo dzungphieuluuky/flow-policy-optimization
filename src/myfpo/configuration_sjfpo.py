@@ -65,6 +65,11 @@ class SJFPOConfig(PreTrainedConfig):
     # implementing, and 0.0 remains one flag away.
     gae_lambda: float = 0.95
     clip_param: float = 0.05
+    # The SPO quadratic has its own width in FPO++'s manipulation loop:
+    # spo_clip_coef and clip_coef are separate fields, both 0.01
+    # (finetune_online_rl.py:117-118). The Isaac Lab variant reuses clip_param
+    # for both; keeping them separate here is the manipulation behaviour.
+    spo_clip_param: float = 0.01
     trust_region_mode: str = "aspo"
     ratio_granularity: str = "per_action"  # per_chunk | per_action | per_sample
     # "mean" by default, not FPO's Eq. 8 "sum". Under "sum" compute_cfm_loss
@@ -234,6 +239,10 @@ class SJFPOConfig(PreTrainedConfig):
             raise ValueError(f"gamma={self.gamma} must satisfy 0 < gamma <= 1")
         if not 0.0 <= self.gae_lambda <= 1.0:
             raise ValueError(f"gae_lambda={self.gae_lambda} must be in [0, 1]")
+        if not 0.0 < self.spo_clip_param < 1.0:
+            raise ValueError(
+                f"spo_clip_param={self.spo_clip_param} must satisfy 0 < eps < 1"
+            )
         if not 0.0 < self.clip_param < 1.0:
             raise ValueError(
                 f"clip_param={self.clip_param} must satisfy 0 < eps < 1"

@@ -64,6 +64,7 @@ SECTIONS: list[tuple[str, list[str]]] = [
             "gamma",
             "gae_lambda",
             "clip_param",
+            "spo_clip_param",
             "trust_region_mode",
             "ratio_granularity",
             "cfm_loss_reduction",

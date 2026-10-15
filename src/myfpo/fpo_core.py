@@ -210,11 +210,18 @@ def compute_aspo_surrogate(
     advantage: torch.Tensor,
     cfg: SJFPOConfig,
 ) -> torch.Tensor:
-    """FPO++ trust region. ASPO = PPO on A>0, SPO on A<0. Elementwise."""
+    """FPO++ trust region. ASPO = PPO on A>0, SPO on A<0. Elementwise.
+
+    PPO clips at ``clip_param``, the SPO quadratic at ``spo_clip_param``. Two
+    widths, not one: FPO++'s manipulation loop carries them as separate
+    coefficients (``finetune_online_rl.py:117-118``).
+    """
     ratio_adv = ratio * advantage
     ratio_clipped = torch.clamp(ratio, 1.0 - cfg.clip_param, 1.0 + cfg.clip_param)
     ppo = torch.min(ratio_adv, ratio_clipped * advantage)
-    spo = ratio_adv - (advantage.abs() / (2.0 * cfg.clip_param)) * torch.square(ratio - 1.0)
+    spo = ratio_adv - (advantage.abs() / (2.0 * cfg.spo_clip_param)) * torch.square(
+        ratio - 1.0
+    )
 
     if cfg.trust_region_mode == "ppo":
         return ppo
