@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Build the minimal Colab notebook: myfpo_flow.ipynb.
 
-The notebook carries NO source code. It clones this repo (private: GitHub
-token in the URL), installs deps, then shells out to scripts/train.py with `!`
-(train + eval happen inside train.py via periodic eval → eval_history.csv).
-Single source of truth stays in src/.
+The notebook carries NO source code. It clones this repo, which is private. The
+GitHub token sits in the URL. Then the notebook installs the dependencies. Then
+it calls ``scripts/train.py`` with `!`. Training and evaluation both run inside
+train.py. The evaluation runs on a period and lands in ``eval_history.csv``.
+
+The single source of truth stays in ``src/``.
 
 Usage:
     python scripts/build_notebook.py [--output myfpo_flow.ipynb]

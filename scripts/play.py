@@ -120,7 +120,8 @@ def main(argv: list[str] | None = None) -> int:
                 seed=args.seed,
                 max_steps=args.max_steps,
             )
-            # Note: frames returned as numpy arrays; caller can save with imageio/ffmpeg
+            # The frames arrive as numpy arrays. The caller can save them
+            # with imageio or ffmpeg.
             print(f"  First episode frames: {len(frames)} frames, return={ret:.2f}")
             print(
                 f"  (Save frames manually to video if needed; frame count: {len(frames)})"

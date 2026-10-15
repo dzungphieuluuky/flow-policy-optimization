@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Print the metrics that only exist on a CUDA device, per update.
 
-scripts/train.py's summary JSON carries only the final reward, and the diagnostics
-live in the W&B info dict, so a CUDA run needs wandb offline mode plus a wrapper
-on wandb.log to read them out. Nothing in the repo is modified.
+The summary JSON of scripts/train.py carries only the final reward. The
+diagnostics live in the W&B info dict. So a CUDA run needs wandb offline mode.
+It also needs a wrapper on wandb.log to read the values out. The script does not
+modify the repo.
 
 Environment:
   ENV     gymnasium id                      (default Hopper-v5)

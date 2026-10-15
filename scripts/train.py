@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """Single-run training CLI for SJFPO (PyTorch).
 
-One run per invocation; draccus builds the run config (singular values only).
-One call per run; run each env/seed combination you want.
+One run per invocation. Draccus builds the run config. The config takes
+singular values only.
+
+One call runs one run. So call the script once per env and seed combination that
+you want.
 
     python scripts/train.py --env Hopper-v5 --seed 0 --total_steps 2000
     python scripts/train.py --method sjfpo --env Hopper-v5 --sjfpo.policy_lr 3e-4
@@ -12,12 +15,16 @@ One call per run; run each env/seed combination you want.
 
 Flags use underscores (draccus convention, same as lerobot-train).
 
-Precedence: CLI flags > --config YAML (flat, legacy) > dataclass defaults.
-The flat YAML only fills method fields the CLI left at defaults. Tuple/dict
-fields (hidden, ...) are YAML-only (draccus takes one token each).
+The precedence is this. CLI flags come first. Then the flat, legacy ``--config``
+YAML. Then the dataclass defaults.
 
-Exit codes: 0 success, 1 usage error, 2 runtime/divergence abort,
-4 required artifact missing (draccus parse errors exit 2).
+The flat YAML only fills the method fields that the CLI left at their defaults.
+Tuple and dict fields, such as ``hidden``, come from the YAML only. Draccus
+takes one token for each of them.
+
+The exit codes are these. 0 means success. 1 means a usage error. 2 means a
+runtime or divergence abort. 4 means a required artifact is missing. A parse
+error from draccus exits with 2.
 """
 
 from __future__ import annotations
@@ -137,7 +144,9 @@ class TrainConfig:
 
 
 def load_yaml_dict(path: str | Path) -> dict:
-    """Load YAML via safe_load only; friendly error when pyyaml is missing."""
+    """Load the YAML through safe_load only. Raise a friendly error when pyyaml
+    is missing.
+    """
     try:
         import yaml
     except ImportError as exc:
@@ -154,7 +163,8 @@ def load_yaml_dict(path: str | Path) -> dict:
 
 
 def coerce_value(cfg_cls: type, raw: dict) -> dict:
-    """Keep only fields the target dataclass knows; coerce list->tuple.
+    """Keep only the fields that the target dataclass knows. Turn a list into a
+    tuple.
 
     Unknown keys are dropped with a warning. Silently dropping them made a
     typo'd baseline file run the defaults while looking configured.
@@ -250,7 +260,8 @@ def resumed_cfg_overrides(cfg) -> list[str]:
 def resolve_run_dir(
     out_base: str | Path, method: str, env: str, seed: int, resume: str | None
 ) -> Path:
-    """Run dir for one invocation; resumed runs get a fresh suffixed dir.
+    """Return the run directory for one invocation. A resumed run gets a fresh
+    directory with a suffix.
 
     ``<method>_<env>_seed<seed>`` normally, else the first free
     ``<base>_resume``, ``<base>_resume2``, ... so a resume never overwrites
@@ -294,7 +305,8 @@ def run_single(
 
     env = gym.make(env_id)
     try:
-        # Registry fills unset dims; the live space is ground truth on mismatch.
+        # The registry fills the dims that the config leaves unset. The live
+        # space is the ground truth on a mismatch.
         reg_obs, reg_act = get_observation_action_dim(env_id)
         live_obs = int(math.prod(env.observation_space.shape))
         live_act = int(math.prod(env.action_space.shape))
