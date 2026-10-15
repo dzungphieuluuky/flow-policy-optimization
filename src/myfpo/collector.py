@@ -2,12 +2,14 @@
 
 Autoreset
 ---------
-``collect_chunks_vec`` runs the vec-env reset as a state machine: an env that
-returns ``done=True`` is flagged ``awaiting``, and its reset observation is
-picked up on the *next* ``envs.step()``. Only correct under gymnasium's default
-``AutoresetMode.NEXT_STEP``. Under ``SAME_STEP`` the reset obs arrives with
-``done=True`` and the machine would step a fresh env with a zero action. The
-mode is validated up front.
+``collect_chunks_vec`` runs the vec-env reset as a state machine. An env that
+returns ``done=True`` is flagged ``awaiting``. The function picks up its reset
+observation on the *next* call to ``envs.step()``.
+
+This is correct only under the default of gymnasium,
+``AutoresetMode.NEXT_STEP``. Under ``SAME_STEP``, the reset observation arrives
+with ``done=True``. The state machine would then step a fresh env with a zero
+action. The function validates the mode before the run.
 """
 
 from __future__ import annotations
@@ -51,10 +53,12 @@ _INDEX_DTYPE = torch.int64
 class RolloutBuffer:
     """Fixed-capacity CPU storage for chunk and executed-step rollout data.
 
-    Two axes. The chunk axis holds one obs window per chunk, so
-    ``total_steps // action_horizon`` rows would do; callers pass
-    ``total_steps`` anyway, for headroom when chunks end early. The step axis
-    holds one frame per executed step, so ``total_steps`` rows is right.
+    The buffer has two axes. The chunk axis holds one obs window per chunk. So
+    ``total_steps // action_horizon`` rows would be enough. The callers pass
+    ``total_steps`` anyway. That gives headroom when chunks end early.
+
+    The step axis holds one frame per executed step. So ``total_steps`` rows is
+    the right count there.
     """
 
     def __init__(
@@ -88,10 +92,12 @@ class RolloutBuffer:
             raise ValueError("chunk_capacity must be positive")
         self.chunk_capacity = chunk_capacity
 
-        # One frame per executed step. The obs windows live on the chunk axis: envs
-        # interleave, so a chunk's obs_steps frames are not adjacent rows and cannot be
-        # gathered back out of a step timeline. Deliberately no step_terminated /
-        # step_truncated pair; the per-chunk flags are what the GAE backup consumes.
+        # One frame per executed step. The obs windows live on the chunk axis.
+        # The envs interleave. So the obs_steps frames of a chunk are not
+        # adjacent rows. They cannot be gathered back out of a step timeline.
+        #
+        # There is deliberately no step_terminated or step_truncated pair. The
+        # GAE backup consumes the per-chunk flags.
         self.step_frames = self.zeros_for((max_steps, obs_dim), _OBS_DTYPE)
         self.step_rewards = self.zeros_for((max_steps,), _REWARD_DTYPE)
 
@@ -113,9 +119,10 @@ class RolloutBuffer:
         self.n_chunks = 0
         self.n_steps = 0
 
-    # Pinning costs a cudaHostAlloc per tensor, so it is only worth it once the
-    # tensor is big enough to DMA. Three of the fourteen qualify; the rest are
-    # index and flag vectors under 300 KiB, where the pinning is pure overhead.
+    # Pinning costs one cudaHostAlloc for each tensor. So it pays only when the
+    # tensor is large enough for a DMA. Three of the fourteen tensors qualify.
+    # The rest are index and flag vectors under 300 KiB. Pinning those costs
+    # time and gains nothing.
     _PIN_MIN_BYTES = 1 << 20
 
     def zeros_for(self, shape: tuple[int, ...], dtype: torch.dtype) -> torch.Tensor:
@@ -162,12 +169,17 @@ class RolloutBuffer:
     ) -> int:
         """Append one executed chunk.
 
-        ``state`` is the obs window the policy saw, ``next_state`` the window the
-        chunk ran to, ``step_frames`` the raw observation after each executed step.
-        The window chains across the chunk, so the collector supplies only the two
-        ends plus one frame per step. ``env_id`` is the vec slot: appends are in
-        wavefront order, so consecutive entries usually belong to different envs,
-        and the chunk backup uses this to find trajectory boundaries.
+        The argument ``state`` is the obs window that the policy saw. The
+        argument ``next_state`` is the window that the chunk ran to. The
+        argument ``step_frames`` holds the raw observation after each executed
+        step.
+
+        The window chains across the chunk. So the collector supplies the two
+        ends and one frame per step.
+
+        The value ``env_id`` is the vec slot. Appends follow wavefront order. So
+        consecutive entries usually belong to different envs. The chunk backup
+        uses this to find the trajectory boundaries.
         """
         if self.n_chunks >= self.max_chunks:
             raise RuntimeError("RolloutBuffer chunk capacity exceeded")
@@ -190,7 +202,7 @@ class RolloutBuffer:
 
         chunk_index = self.n_chunks
         offset = self.n_steps
-        # Pre-allocated exact capacity; no dynamic growth needed.
+        # Pre-allocated with exact capacity. The buffer never grows.
         self.chunk_state[chunk_index].copy_(state)
         self.chunk_next_state[chunk_index].copy_(next_state)
         self.step_frames[offset : offset + n_exec].copy_(step_frames)
@@ -211,10 +223,10 @@ class RolloutBuffer:
         """Copy the active prefix into a compatible buffer, e.g. onto a GPU.
 
         No capacity or dim check here. A mismatch surfaces as a shape error
-        from ``_foreach_copy_``; callers key their own buffer off
-        :meth:`capacity_key` and get this pair matched by construction.
+        from ``_foreach_copy_``. A caller keys its own buffer off
+        :meth:`capacity_key`. That gives this pair a match by construction.
         """
-        # Pre-allocated exact capacity; no dynamic growth.
+        # Pre-allocated with exact capacity. The buffer never grows.
         other.n_chunks = self.n_chunks
         other.n_steps = self.n_steps
         names = (
@@ -413,14 +425,17 @@ def collect_chunks_vec(
 ) -> RolloutBuffer:
     """Collect executed action chunks from a vectorised env into ``buffer``.
 
-    The step budget splits evenly across envs, remainder to the first. All
-    still-active actions gather into one tensor per wavefront, so the loop costs
-    one device-to-host transfer per chunk, not per step.
+    The step budget divides evenly across the envs. The remainder goes to the
+    first envs. All actions that are still active gather into one tensor per
+    wavefront. So the loop costs one device-to-host transfer per chunk, not one
+    per step.
 
-    One cursor per env, ``pos_t``. It counts steps into the chunk being executed,
-    rewinds when that chunk is planned, and doubles as the obs window's write
-    slot because the two are the same number. The window is a ring, rolled back
-    into chronological order once per closing chunk.
+    Each env has one cursor, named ``pos_t``. It counts steps into the chunk that
+    the env executes now. It rewinds when a new chunk is planned. It also acts
+    as the write slot of the obs window, because both are the same number.
+
+    The window is a ring. The function rolls it back into chronological order
+    once per closing chunk.
 
     Needs ``AutoresetMode.NEXT_STEP``, see :func:`validate_autoreset_mode`.
     """
