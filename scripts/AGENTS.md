@@ -20,12 +20,13 @@
 - DO NOT add runner scalars to the dataclass. They bypass config by design.
 - DO NOT extend `verify_deps.sh` without syncing `pyproject.toml`. Already drifted.
 - DO NOT hand-edit `configs/sjfpo.yaml`. It is generated, and `tests/test_config_yaml_parity.py` fails on any drift.
-- DO NOT hand-edit `sjfpo_online.ipynb` expecting jupytext to follow. The tracked notebook carries Colab, Kaggle, and papermill metadata that `jupytext --sync` strips. Edit both files.
+- DO NOT hand-edit `sjfpo_online.ipynb`. It is generated from `sjfpo_online.md` by jupytext. Edit the md and run `jupytext --sync`. Editing the ipynb directly is lost on the next sync.
 
 ## Commands
 ```bash
 .venv/bin/python scripts/train.py --env Hopper-v5 --seed 0 --total_steps 2000
 .venv/bin/python scripts/gen_sjfpo_config.py
+.venv/bin/python -m jupytext --sync sjfpo_online.md
 ```
 
 ## Notes — verified 2026-10-15
@@ -35,6 +36,7 @@
   3. `pyproject.toml` sets no upper bound (`torch>=2.2.2`, `numpy>=1.26.4`), so the script, not the project, is what drifted.
 - Deleted in `4bd45db`: `run_sweeps.sh`, `cuda_probe.py`, `build_notebook.py`. All three were stale. `run_sweeps.sh` passed removed flags (`critic_max_grad_norm`, `critic_ema_decay`), `cuda_probe.py` read metric keys that are never emitted, and `build_notebook.py` installed the deleted `requirements-linux.txt`.
 - Deleted in `debd7e8`: `src/myfpo/baselines.py` and the `--baseline` flag. An FPO or FPO++ arm is now a hand-written `dataclasses.replace` in the caller. The Eq. 8 / Eq. 9 / Eq. 10 config mapping is pinned by `tests/test_ratio_axes.py::test_the_paper_configs_select_the_trust_regions_they_name`, so the paper configs stay auditable without the flag.
+- **The notebook pair is jupytext-generated.** Since `1e50aae`, `sjfpo_online.ipynb` is produced from `sjfpo_online.md` by `jupytext --sync`. The sync is idempotent, so a second run reports "Unchanged". Per-cell papermill timings and UUIDs are dropped by design (`cell_metadata_filter: -all`); notebook-level Colab, Kaggle, and papermill metadata survive.
 - No CI. `pytest -q tests` is the only gate.
 
 ## Verified non-issues — do not "fix" these
