@@ -114,7 +114,7 @@ mujoco-mjx
 mujoco-warp
 skrl
 lerobot
-jax[cuda12]
+jax[cuda13]
 flax
 jaxlib
 optax
@@ -130,7 +130,7 @@ scikit-image
 opencv-python-headless
 pillow
 imageio
-imagepy-ffmpeg
+imageio-ffmpeg
 av
 moviepy
 
@@ -201,10 +201,12 @@ tokens and `--sjfpo.cfm_average_group_size` folds the Monte-Carlo pairs. With
 the token axis folded you get one ratio per `(tau, eps)` pair, which is FPO++
 Eq. 10.
 
-**ASPO, the trust region.** Asymmetric. `A > 0` takes PPO clipping,
-`min(r*A, clip(r)*A)`. `A < 0` takes the SPO quadratic, which keeps a gradient
-when PPO's clip would have saturated to zero — the point being that negative
-advantages are where a plain PPO clip stops learning.
+**ASPO, the trust region.** Asymmetric, with two widths. `A > 0` takes PPO
+clipping at `--sjfpo.clip_param`, `min(r*A, clip(r)*A)`. `A < 0` takes the SPO
+quadratic at its own `--sjfpo.spo_clip_param`. Both default to 0.01, and the two
+are separate knobs, so widening one leaves the other alone. The SPO branch keeps
+a gradient where PPO's clip saturates to zero. Negative advantages are where a
+plain PPO clip stops learning.
 
 **Sampling.** Euler integration, `num_euler_steps` steps. Eval starts from
 `eps=0`, which `_EvalPolicy` gets from its `zero_sampling=True` default, not
@@ -219,18 +221,19 @@ start from sampled noise.
     --seed 3407 \
     --total_steps 1000000 \
     --eval_steps 100 \
-    --save_steps 100000 \
-    --baseline fpo++
+    --save_steps 100000
 ```
 
-`--baseline fpo++` pins that paper's released values (16 MC samples, ASPO,
-valid-masked token averaging, 10 sampling steps) and prints the diff it applies
-to stderr, so the arm cannot drift when a default changes. `--baseline fpo`
-selects the original FPO Eq. 8 chunk norm, Eq. 9 per-chunk ratio and PPO clip
-instead.
+The defaults are FPO++'s released values where the repo has a claim to them:
+16 MC samples, ASPO, 10 sampling steps, and `policy_lr=1e-5`. Several others are
+repo-specific, not FPO++ values: `cfm_clamp=20.0`, `log_ratio_cap=10.0`,
+`cfm_loss_reduction="mean"`, `do_average_cfm_loss_in_chunk=False`,
+`min_timestep`/`max_timestep` of 0.005/0.995 with `timestep_sampling_mode`
+`fpo_beta`, and `action_perturb_std=0.0`. An FPO or FPO++ arm is a
+`dataclasses.replace` of the live config, so write the overrides out and log the
+diff. Do not assume a future default change leaves a comparison intact.
 
-The config defaults are now FPO++'s released ones, which includes
-`policy_lr=1e-5`. That rate is tuned for fine-tuning a pretrained flow-BC policy,
+`policy_lr=1e-5` is tuned for fine-tuning a pretrained flow-BC policy,
 not for training one from scratch, so on Reacher or Humanoid from scratch expect
 a flat curve and read the `lr1e3` arm before blaming the algorithm.
 
@@ -240,10 +243,11 @@ a flat curve and read the `lr1e3` arm before blaming the algorithm.
 |---|---|
 | `train/policy_loss` | the ASPO surrogate; near zero means the ratio has collapsed to 1 |
 | `train/log_ratio_max` | largest log-ratio seen. Against the cap of 10, anything under ~0.2 means the trust region never binds |
-| `train/log_ratio_clip_frac` | fraction of ratios outside the clip band. 0 means neither PPO clip nor SPO quadratic is constraining anything |
+| `train/log_ratio_clip_frac` | fraction of log-ratios past `log_ratio_cap`. 0 means the cap never fired, nothing more |
+| `train/clipfrac` | fraction of ratios outside the `clip_param` band. 0 means the PPO clip never bound. Under ASPO it ignores `spo_clip_param`, so it is not the whole trust-region fraction |
 | `train/explained_var` | critic fit. Flat below ~0.3 means advantages are critic error, and the policy loss is training on noise |
 | `train/grad_norm_preclip` | against `max_grad_norm`. Saturated means the clip, not the loss, is setting the step size |
-| `train/sigreg_raw` | Weak SIGReg penalty on the encoder conditioning. 0 and unlogged unless `--sjfpo.sigreg_mode` is on |
+| `train/sigreg_raw` | SIGReg penalty on the encoder conditioning. Logged every update, 0.0 when `sigreg_mode` is `none` |
 | `eval/mean_return` vs `eval/steps_to_best` | peak location and how late it came |
 
 `train/grad_norm_preclip` is one key over actor and critic together. If it
@@ -260,7 +264,7 @@ a time** even on a big GPU.
 ENV = "Humanoid-v5"          # "Reacher-v5" is far cheaper if you just want a smoke
 SEED = 3407
 TOTAL_STEPS = 1_000_000
-EVAL_STEPS = 16_384          # 61 evals; the original cadence of 8192 gave only 4
+EVAL_STEPS = 16_384          # 61 evals over 1M steps
 SAVE_STEPS = 50_000
 COMPILE = "false"
 
@@ -303,14 +307,15 @@ with no correction at all.
 
 ### Trust region
 
-The logged run showed `log_ratio_max=0.0717` against a cap of 10 and
-`log_ratio_clip_frac=0`, with `flow_ratio_std=0.0098` against `clip_param=0.05`.
-**0.00%** of ratios fell outside the clip band, so neither the PPO clip nor the
-SPO quadratic was constraining anything.
+The logged run showed `log_ratio_max=0.0717` against a cap of 10, so
+`log_ratio_clip_frac=0`. It also showed `flow_ratio_std=0.0098`, well inside
+`clip_param`. `train/clipfrac` is the key that says whether the band bound, not
+`log_ratio_clip_frac`, which only watches the cap.
 
 ```python
-# Wider trust region, so the mechanism can actually bind.
+# Wider trust region, so the mechanism can actually bind. Two widths.
 run_arm("clip020", ["--sjfpo.clip_param", "0.2"])
+run_arm("spo020", ["--sjfpo.spo_clip_param", "0.2"])
 
 # Higher LR, to separate "the region is too tight" from "the steps are too small".
 run_arm("lr1e3", ["--sjfpo.policy_lr", "1e-3", "--sjfpo.critic_lr", "1e-3"])
@@ -323,7 +328,8 @@ is a lever.
 ### Representation regularization (SIGReg)
 
 Weak SIGReg matches the encoder conditioning covariance to identity. It guards
-the representation that feeds the actor and the critic. One knob starts it:
+the representation that feeds the actor. It reaches the critic only under
+`--sjfpo.critic_share_encoder`, which defaults False. One knob starts it:
 `--sjfpo.sigreg_mode weak` with `--sjfpo.sigreg_coef`.
 
 Calibrate before trusting a live value. The log-only arm records
@@ -341,8 +347,8 @@ run_arm("sigreg_w1e3", ["--sjfpo.sigreg_mode", "weak", "--sjfpo.sigreg_coef", "1
 
 `decorr` standardizes each feature first, so only redundancy pays and column
 scales survive. Prefer it if the `weak` arms move `train/sigreg_raw` but not
-returns. Sketch dim defaults to 64 and clamps to the batch automatically, so
-leave it alone unless the row count drops under it.
+returns. `--sjfpo.sigreg_sketch_dim` defaults to 64 and clamps to the batch
+count automatically, so leave it alone unless the row count drops under it.
 
 ### Reading the results
 
