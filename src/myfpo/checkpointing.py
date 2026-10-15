@@ -138,12 +138,7 @@ def save_policy_checkpoint(
     d = Path(dir_path)
     d.mkdir(parents=True, exist_ok=True)
 
-    state_dict = {
-        name: tensor
-        for name, tensor in policy.state_dict().items()
-        if not name.startswith(("old_actor.", "old_encoder."))
-    }
-    policy.save_pretrained(d, state_dict=state_dict)
+    policy.save_pretrained(d, state_dict=policy.state_dict())
     # The file ema.pt holds the EMA shadow. The function does NOT overlay the
     # shadow onto actor.* here. The logical weights in model.safetensors stay
     # the live policy. FPO++ resumes the live weights and the EMA weights
@@ -267,7 +262,6 @@ def load_policy_checkpoint(
     policy = SJFPOPolicy.from_pretrained(d)
     if device is not None:
         policy.to(device)
-    policy.snapshot_behavior_policy()
     if (action_low is None) != (action_high is None):
         raise ValueError("action_low and action_high must be provided together")
     if action_low is not None:

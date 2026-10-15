@@ -9,7 +9,6 @@ Diagnostics batch into one device-to-host transfer.
 
 from __future__ import annotations
 
-import copy
 from collections import deque
 from typing import Any
 
@@ -320,16 +319,6 @@ def compute_cfm_metrics(
     return out
 
 
-def unwrapped_state_dict(module: torch.nn.Module) -> dict:
-    """``state_dict`` seeing through ``torch.compile``.
-
-    Compiled modules nest the real one under ``_orig_mod``.
-    """
-    if hasattr(module, "_orig_mod"):
-        return module._orig_mod.state_dict()
-    return module.state_dict()
-
-
 class SJFPOPolicy(PreTrainedPolicy):
     config_class = SJFPOConfig
     name = "sjfpo"
@@ -386,11 +375,6 @@ class SJFPOPolicy(PreTrainedPolicy):
             "action_high", torch.full((action_dim,), 1.0), persistent=False
         )
 
-
-        self.old_actor = copy.deepcopy(self.actor).requires_grad_(False).eval()
-        self.old_encoder = (
-            copy.deepcopy(self.encoder).requires_grad_(False).eval()
-        )
         self._ema_shadow: dict[str, torch.Tensor] = {}
         self._ema_initialised = False
         self._rollout_buffer: RolloutBuffer | None = None
@@ -404,14 +388,6 @@ class SJFPOPolicy(PreTrainedPolicy):
         self.step_count = 0
         self.preprocessor, self.postprocessor = make_sjfpo_pre_post_processors(self)
         del dataset_stats
-
-
-    def train(self, mode: bool = True):
-        """Set the mode of the module. The frozen snapshot stays in eval."""
-        super().train(mode)
-        self.old_actor.eval()
-        self.old_encoder.eval()
-        return self
 
     def reset(self):
         """Drop the cached obs and action buffers."""
@@ -464,20 +440,6 @@ class SJFPOPolicy(PreTrainedPolicy):
         self.action_low.copy_(low_t)
         self.action_high.copy_(high_t)
         self.postprocessor.set_action_bounds(self.action_low, self.action_high)
-
-    def snapshot_behavior_policy(self) -> None:
-        """Refresh the frozen pi_old snapshot, copying in place.
-
-        Copies into the existing modules rather than ``copy.deepcopy``-ing
-        the live ones over them.
-        """
-        self.old_actor.load_state_dict(unwrapped_state_dict(self.actor))
-        self.old_encoder.load_state_dict(unwrapped_state_dict(self.encoder))
-
-        self.old_actor.requires_grad_(False)
-        self.old_actor.eval()
-        self.old_encoder.requires_grad_(False)
-        self.old_encoder.eval()
 
     def _ema_named_params(self) -> dict[str, torch.nn.Parameter]:
         """List every parameter that the EMA shadow covers. Namespace them by module.
@@ -673,17 +635,14 @@ class SJFPOPolicy(PreTrainedPolicy):
         x_t: torch.Tensor,
         tau: torch.Tensor,
         condition: torch.Tensor,
-        *,
-        old: bool = False,
     ) -> torch.Tensor:
         """Actor on a flow point.
 
         ``condition`` arrives already broadcast over the MC draws,
-        so frozen and live share one conditioning pass.
+        so one conditioning pass covers every draw.
         """
         cfg = self.config
-        net = self.old_actor if old else self.actor
-        return clip_transported(net(x_t, tau, condition), cfg.transported_clip_value)
+        return clip_transported(self.actor(x_t, tau, condition), cfg.transported_clip_value)
 
 
     def standardize_obs_tensor(self, states: torch.Tensor) -> torch.Tensor:
@@ -830,7 +789,12 @@ class SJFPOPolicy(PreTrainedPolicy):
         eps: torch.Tensor,
         action_is_pad: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Frozen policy's CFM loss: the ratio's ``cfm_loss_old``.
+        """The behavior policy's CFM loss: the ratio's ``cfm_loss_old``.
+
+        The behavior policy is the live one. This function runs inside
+        ``generate_rollout``, and no optimizer step runs until the rollout
+        returns. So the live weights are already frozen. A second copy of the
+        actor would hold the same numbers.
 
         Both reductions masked exactly like the live losses, so
         the ratio never mixes means over different positions.
@@ -842,12 +806,12 @@ class SJFPOPolicy(PreTrainedPolicy):
         x_t = compute_mc_xt(flatten_timestep, flatten_mc_noise, flatten_mc_action, flow_shape)
         actor_tau = flatten_timestep.squeeze(-1)
         with torch.inference_mode(), autocast_context(actions.device):
-            condition = self.old_encoder(normalised_states)
+            condition = self.encoder(normalised_states)
             condition_flat = einx.id(
                 "n d -> n m d", condition, m=num_mc
             ).reshape(num_mc * condition.shape[0], condition.shape[-1])
             v_old = self.compute_predicted_velocity(
-                x_t, actor_tau, condition_flat, old=True
+                x_t, actor_tau, condition_flat
             ).float()
         with torch.autocast(device_type=actions.device.type, enabled=False):
             v_star = self.compute_target_velocity(actions, eps, cfg).float()

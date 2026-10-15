@@ -607,7 +607,6 @@ def train_sjfpo_run(
         while global_step < total_steps:
             steps_to_go = total_steps - global_step
             collect_steps = min(cfg.chunks_per_update * cfg.action_horizon, steps_to_go)
-            policy.snapshot_behavior_policy()
             batch = policy.generate_rollout(
                 train_env,
                 collect_steps,

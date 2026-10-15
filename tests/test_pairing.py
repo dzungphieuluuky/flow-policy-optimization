@@ -33,12 +33,10 @@ def _cfg(**kw):
 
 
 def _policy():
-    policy = build_policy(
+    return build_policy(
         OBS, ACT, _cfg(), device="cpu",
         action_low=[-1.0] * ACT, action_high=[1.0] * ACT,
     )
-    policy.snapshot_behavior_policy()
-    return policy
 
 
 def _pairs(policy, n):

@@ -33,13 +33,17 @@ def _cfg(**overrides):
     )
 
 
-def _policy_and_batch(cfg, seed=0):
-    """A batch like ``generate_rollout``'s, with the behaviour losses filled in."""
+def _policy_and_batch(cfg, seed=0, pad_from=None):
+    """A batch like ``generate_rollout``'s, with the behaviour losses filled in.
+
+    The behaviour losses are recorded BEFORE the actor moves. That is the real
+    order: the rollout computes cfm_loss_old, the optimizer step moves the
+    weights, then the update computes cfm_loss_new. Recording them afterwards
+    would make cfm_loss_old equal cfm_loss_new and pin every ratio at one.
+    """
     rng = np.random.default_rng(seed)
     torch.manual_seed(seed)
     policy = build_policy(OBS, ACT, cfg, device="cpu", action_low=LOW, action_high=HIGH)
-    with torch.no_grad():
-        policy.actor.out.weight.add_(0.1 * torch.randn_like(policy.actor.out.weight))
 
     batch = {
         M.OBS_STATE: torch.from_numpy(
@@ -66,6 +70,8 @@ def _policy_and_batch(cfg, seed=0):
             )
         ),
     }
+    if pad_from is not None:
+        batch["action_is_pad"][1, pad_from:] = True
     normalised = policy.preprocessor({M.OBS_STATE: batch[M.OBS_STATE]})[M.OBS_STATE]
     cfm_loss_old, cfm_loss_old_token = policy.compute_behavior_cfm_losses(
         normalised, batch[M.ACTION], batch["mc_tau"], batch["mc_eps"],
@@ -73,6 +79,11 @@ def _policy_and_batch(cfg, seed=0):
     )
     batch["behavior_cfm_loss"] = cfm_loss_old
     batch["behavior_cfm_loss_token"] = cfm_loss_old_token
+
+    # Stands in for the optimizer step. The live actor now differs from the
+    # behaviour policy that collected the batch.
+    with torch.no_grad():
+        policy.actor.out.weight.add_(0.1 * torch.randn_like(policy.actor.out.weight))
     return policy, batch
 
 
@@ -143,17 +154,7 @@ def test_per_sample_clips_per_token():
 
 def _padded_per_sample_batch(pad_from=HORIZON // 2):
     """A ``per_sample`` batch whose second row is padded from ``pad_from`` on."""
-    cfg = per_sample()
-    policy, batch = _policy_and_batch(cfg)
-    batch["action_is_pad"][1, pad_from:] = True
-    normalised = policy.preprocessor({M.OBS_STATE: batch[M.OBS_STATE]})[M.OBS_STATE]
-    old, old_token = policy.compute_behavior_cfm_losses(
-        normalised, batch[M.ACTION], batch["mc_tau"], batch["mc_eps"],
-        batch["action_is_pad"],
-    )
-    batch["behavior_cfm_loss"] = old
-    batch["behavior_cfm_loss_token"] = old_token
-    return policy, batch
+    return _policy_and_batch(per_sample(), pad_from=pad_from)
 
 
 def _per_sample_surrogate(policy, batch):
