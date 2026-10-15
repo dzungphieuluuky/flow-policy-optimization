@@ -1,10 +1,4 @@
-"""The critic's regression target must survive the rollout buffer in fp32.
-
-resolve_storage_dtype returns bf16 on RTX PRO 1000 Blackwell, so anything cast
-to it loses mantissa bits. raw_returns and raw_values are the only stored
-tensors whose magnitude is large rather than O(1), and they are the critic's
-regression target and clip snapshot, so they must not be cast.
-"""
+"""The critic's regression target must survive the rollout buffer in fp32."""
 
 import dataclasses
 
@@ -39,12 +33,7 @@ def test_bf16_actually_destroys_a_large_target():
 
 
 def test_source_does_not_cast_the_value_target_to_storage_dtype():
-    """Guard the fix itself.
-
-    A read-side assert is weak, because both the cast and the test would have to
-    be wrong together. This pins the source: the value path must not mention
-    storage_dtype at all.
-    """
+    """Guard the fix itself."""
     import inspect
 
     src = inspect.getsource(SJFPOPolicy.forward)
@@ -53,8 +42,7 @@ def test_source_does_not_cast_the_value_target_to_storage_dtype():
     assert "storage_dtype" not in value_block, (
         "the critic's value path must stay fp32; it regresses on raw returns"
     )
-    # The promotion to fp32 has to sit on the critic's own output, which is the
-    # only tensor here that arrives in the storage dtype.
+    # The promotion to fp32 has to sit on the critic's own output, which is the.
     critic_line = next(
         line for line in value_block.splitlines() if "raw_value_pred = " in line
     )
@@ -66,12 +54,7 @@ def test_resolve_storage_dtype_is_fp32_on_cpu():
 
 
 def test_generate_rollout_does_not_cast_the_value_target():
-    """Write-side guard: the two fp32 tensors must not be cast on the way in.
-
-    The read-side guard below only covers forward. This one pins the other half,
-    because a cast on write is invisible to any test that reads the batch back
-    and re-derives the dtype itself.
-    """
+    """Write-side guard: the two fp32 tensors must not be cast on the way in."""
     import inspect
 
     src = inspect.getsource(SJFPOPolicy.generate_rollout)
@@ -80,25 +63,17 @@ def test_generate_rollout_does_not_cast_the_value_target():
             f"{name} is the critic's regression target in raw reward units and "
             "must not be quantised by the storage dtype"
         )
-    # The tensors that legitimately ride storage_dtype must still do so, or this
-    # test would pass on a file where the cast was removed wholesale.
+    # The tensors that legitimately ride storage_dtype must still do so, or this.
     assert "raw_advantages = raw_advantages.to(storage_dtype)" in src
     assert "normalised_advantages = normalised_advantages.to(storage_dtype)" in src
 
 
 def test_drift_diagnostics_take_the_bf16_observations_they_stored():
-    """generate_rollout stores boot_observations/boot_actions in storage_dtype.
-
-    The diagnostics call the fp32-weight critic outside autocast, so they have to
-    cast both up themselves. Both metrics come off one forward, and both run on
-    GPU only, so CPU never caught it.
-    """
+    """generate_rollout stores boot_observations/boot_actions in storage_dtype."""
     policy = _policy()
     obs = torch.randn(3, policy.config.n_obs_steps, 5)
     actions = torch.randn(3, policy.config.action_horizon, 2)
-    # Same fraction generate_rollout bootstrapped with: a full-horizon proposal
-    # that only runs for n_action_steps. Mismatching it would make the drift
-    # metric compare two different functions and report the gap as staleness.
+    # Same fraction generate_rollout bootstrapped with: a full-horizon proposal that only runs for n_action_steps.
     boot_frac = policy.exec_length_frac(
         torch.full((3,), policy.config.n_action_steps, dtype=torch.long)
     )

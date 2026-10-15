@@ -1,14 +1,4 @@
-"""Batched obs-window writes must be bitwise identical to row-at-a-time.
-
-The collector used to slide the obs window with a per-env, per-step
-``windows[i, :-1].copy_(windows[i, 1:].clone())``. It now keeps a ring cursor
-and writes the whole ``[n, obs]`` batch that ``envs.step`` already returns, so
-one vec step costs a handful of dispatches instead of twelve per env.
-
-These tests pin the properties the refactor could break. They assert
-invariants rather than a recorded golden buffer, so they keep protecting the
-collector after the shape of the implementation moves again.
-"""
+"""Batched obs-window writes must be bitwise identical to row-at-a-time."""
 
 from __future__ import annotations
 
@@ -32,12 +22,7 @@ TOTAL_STEPS = 512
 
 
 class FakeVecEnv:
-    """Deterministic stand-in for a gym NEXT_STEP vec env.
-
-    The counter resets on the step after a terminal, which is what makes
-    ``done`` a pulse rather than a level -- otherwise the collector's
-    ``awaiting`` handshake never clears.
-    """
+    """Deterministic stand-in for a gym NEXT_STEP vec env."""
 
     def __init__(self, n=N_ENVS, obs_dim=OBS_DIM, act_dim=ACT_DIM, episode=1000):
         self.num_envs = n
@@ -73,10 +58,9 @@ def collect(
     total_steps: int = TOTAL_STEPS,
     n_obs_steps: int = N_OBS,
 ):
-    """Run the real collector on a deterministic env; return the buffer + env."""
+    """Run the real collector on a deterministic env. Return the buffer + env."""
     env = FakeVecEnv(n=n_envs, episode=episode)
-    # Fixed projection so the proposal depends on every frame of the window in
-    # order: a rotated or torn window changes the actions the env receives.
+    # Fixed projection so the proposal depends on every frame of the window in.
     w = torch.randn(N_OBS * OBS_DIM, ACT_DIM, generator=torch.Generator().manual_seed(3))
     ramp = torch.arange(1, HORIZON + 1, dtype=torch.float32).reshape(1, HORIZON, 1)
 
@@ -99,11 +83,7 @@ def collect(
 
 
 def _per_env_chunks(buf):
-    """chunk indices grouped by env, in time order within each env.
-
-    Chunks are appended in wavefront order, so an env's chunks are num_envs
-    apart in the buffer; the env_id sort is what puts them back in sequence.
-    """
+    """chunk indices grouped by env, in time order within each env."""
     a = buf.active()
     env_id = a["chunk_env_id"].to(torch.long)
     order = torch.argsort(env_id, stable=True)
@@ -122,13 +102,7 @@ def test_collector_fills_the_budget_exactly():
 
 
 def test_obs_windows_slide_by_exactly_one_frame_per_step():
-    """chunk_next_state[i] is chunk_state[i] slid by n_exec frames.
-
-    This is the property a ring cursor has to preserve, and unlike a slice of
-    ``step_frames`` it does not depend on the buffer's layout: the step
-    timeline is wavefront-major, so env 0's second chunk starts at row 128,
-    not row 16, and any 16-row window of it spans eight different envs.
-    """
+    """chunk_next_state[i] is chunk_state[i] slid by n_exec frames."""
     checked = 0
     for episode in (1000, 50, 16, 1):
         buf, _ = collect(episode)
@@ -137,10 +111,10 @@ def test_obs_windows_slide_by_exactly_one_frame_per_step():
             n = int(a["chunk_lengths"][i])
             keep = N_OBS - n
             if keep <= 0:
-                continue  # the chunk replaced the whole window
+                continue  # the chunk replaced the whole window.
             assert torch.equal(a["chunk_next_state"][i, :keep],
                                a["chunk_state"][i, n:]), (episode, i)
-            # and the frames that entered are the ones the chunk recorded
+            # and the frames that entered are the ones the chunk recorded.
             s = int(a["chunk_starts"][i])
             assert torch.equal(a["chunk_next_state"][i, -1],
                                a["step_frames"][s + n - 1]), (episode, i)
@@ -149,12 +123,7 @@ def test_obs_windows_slide_by_exactly_one_frame_per_step():
 
 
 def test_ring_wraps_and_still_yields_the_right_window():
-    """episode=1 forces a terminal on (almost) every step.
-
-    Each chunk is then 1-2 steps, so the window wraps many times per chunk.
-    A shift-vs-ring mistake still returns 16 valid frames, just rotated, so
-    the assertion is against the step timeline rather than a shape check.
-    """
+    """episode=1 forces a terminal on (almost) every step."""
     buf, _ = collect(1)
     a, groups = _per_env_chunks(buf)
     for e, idxs in groups.items():
@@ -169,13 +138,7 @@ def test_ring_wraps_and_still_yields_the_right_window():
 
 
 def test_next_state_chains_only_across_continue_chunks():
-    """chunk_next_state[k] equals chunk_state[k+1] only if no terminal intervened.
-
-    After a terminal the collector refills the window from the reset
-    observation, so the two differ. This is the condition item C depends on,
-    and it is why C's saving is bounded by the terminal rate rather than
-    being the full 75%.
-    """
+    """chunk_next_state[k] equals chunk_state[k+1] only if no terminal intervened."""
     buf, _ = collect(50)
     a, groups = _per_env_chunks(buf)
     chained = severed = 0
@@ -196,7 +159,7 @@ def test_next_state_chains_only_across_continue_chunks():
 
 def test_autoreset_refills_the_window_with_the_reset_observation():
     """After a terminal the window is the reset obs repeated, not stale frames."""
-    buf, _ = collect(episode=4)  # falls every 4 steps, horizon 16
+    buf, _ = collect(episode=4)  # falls every 4 steps, horizon 16.
     a, groups = _per_env_chunks(buf)
     checked = 0
     for e, idxs in groups.items():
@@ -211,17 +174,12 @@ def test_autoreset_refills_the_window_with_the_reset_observation():
 
 
 def test_actions_sent_to_the_env_match_the_stored_chunks():
-    """Guards the batched actions_t gather.
-
-    Per env, the non-zero actions handed to the env must be exactly its stored
-    chunk actions in order. The zero rows are the ``awaiting`` handshake steps,
-    one per terminal, which the collector spends with a zero action.
-    """
+    """Guards the batched actions_t gather."""
     buf, env = collect(50)
     a, groups = _per_env_chunks(buf)
-    sent = torch.from_numpy(np.stack(env.actions_seen))  # [vec_steps, n_envs, A]
+    sent = torch.from_numpy(np.stack(env.actions_seen))  # [vec_steps, n_envs, A].
     for e, idxs in groups.items():
-        # only the executed prefix was sent; the tail of the chunk never ran
+        # only the executed prefix was sent. The tail of the chunk never ran.
         expected = torch.cat(
             [a["chunk_actions"][i, : int(a["chunk_lengths"][i])] for i in idxs],
             dim=0,
@@ -234,14 +192,7 @@ def test_actions_sent_to_the_env_match_the_stored_chunks():
 
 
 def test_a_buffer_is_required_and_returns_itself():
-    """There is one write path, so ``buffer`` is not optional.
-
-    The list-returning API had two implementations of this loop, and they
-    drifted: a ninth argument to an eight-parameter function, a step cursor that
-    never rewound, and a plan table the envs never read from. Deleting the second
-    path is what keeps them from drifting again, and this pins the deletion --
-    omitting the buffer is a TypeError at the call, not a silent list.
-    """
+    """There is one write path, so ``buffer`` is not optional."""
     env = FakeVecEnv(n=N_ENVS, episode=50)
 
     def policy(states):
@@ -268,16 +219,9 @@ def test_a_buffer_is_required_and_returns_itself():
 
 
 def test_a_chunk_as_deep_as_the_window_still_lands_chronologically():
-    """n_action_steps == n_obs_steps: the cursor reaches n_obs_steps.
-
-    The ring's write slot and its step counter are the same number, so on the
-    chunk's last step the cursor is n_obs_steps -- exactly one past the last row.
-    The roll-back that restores chronological order has to wrap that case, and
-    a chunk this deep replaces the whole window, so the surviving rows are all
-    frames this chunk recorded.
-    """
+    """n_action_steps == n_obs_steps: the cursor reaches n_obs_steps."""
     assert HORIZON == N_OBS, "this test is the boundary case"
-    buf, _ = collect(1000)  # no terminal: every chunk runs the full horizon
+    buf, _ = collect(1000)  # no terminal: every chunk runs the full horizon.
     a = buf.active()
     full = [i for i in range(buf.n_chunks) if int(a["chunk_lengths"][i]) == N_OBS]
     assert len(full) >= N_ENVS, f"no full-width chunks: {buf.n_chunks}"
@@ -290,12 +234,6 @@ def test_a_chunk_as_deep_as_the_window_still_lands_chronologically():
 
 
 def test_a_chunk_longer_than_the_obs_window_is_rejected():
-    """The ring buffer cannot hold a chunk deeper than itself.
-
-    The write slot advances one row per step and rewinds only when a chunk
-    closes, so a chunk running more steps than n_obs_steps scattered past the
-    end of the window. n_action_steps == n_obs_steps is the boundary and must
-    still pass.
-    """
+    """The ring buffer cannot hold a chunk deeper than itself."""
     with pytest.raises(ValueError, match="exceeds n_obs_steps"):
         collect(50, n_obs_steps=N_OBS // 4)

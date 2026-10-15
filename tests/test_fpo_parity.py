@@ -1,11 +1,4 @@
-"""The FPO++ parity changes, each pinned by the property it claims.
-
-The gae re-encoding is the one that could have been silently wrong: it moved the
-timeout bootstrap from the target term into the reward, which is the same
-arithmetic only if all four terminated/truncated combinations agree. That is
-checked against the previous formula, elementwise, at atol=0 -- a tolerance here
-would hide exactly the off-by-one-mask bug this is guarding.
-"""
+"""The FPO++ parity changes, each pinned by the property it claims."""
 
 import dataclasses
 import sys
@@ -41,7 +34,7 @@ def _policy(obs_dim: int = 5, action_dim: int = 2, **kw) -> SJFPOPolicy:
     return SJFPOPolicy(cfg)
 
 
-# --- gae: the timeout re-encoding -------------------------------------------
+# --- gae: the timeout re-encoding -------------------------------------------.
 
 
 def _gae_inputs(term, trunc, n=6, seed=0):
@@ -72,11 +65,7 @@ def _discounted_chunk_rewards(kw):
 
 
 def _previous_encoding(kw, term, trunc):
-    """The formula this replaced, reimplemented rather than recalled.
-
-    Bootstrap masked by (1 - terminated) only; trace additionally masked by
-    (1 - truncated); no reward injection.
-    """
+    """The formula this replaced, reimplemented rather than recalled."""
     gamma, lam = kw["gamma"], kw["gae_lambda"]
     gamma_h = gamma ** kw["chunk_lengths"]
     q, q_next = kw["chunk_q"], kw["chunk_next_q"]
@@ -147,7 +136,7 @@ def test_terminated_and_truncated_together_keeps_the_terminal_reading():
     assert delta[1] == pytest.approx(float(want))
 
 
-# --- huber CFM loss ---------------------------------------------------------
+# --- huber CFM loss ---------------------------------------------------------.
 
 
 def test_huber_cfm_loss_equals_mse_inside_the_delta():
@@ -176,7 +165,7 @@ def test_huber_cfm_loss_is_linear_beyond_the_delta():
 def test_huber_cfm_loss_keeps_the_mask_renormalisation():
     """A short chunk must keep a full chunk's magnitude."""
     torch.manual_seed(1)
-    # [n, mc, horizon, action_dim]; action_is_pad is [n, horizon].
+    # [n, mc, horizon, action_dim]. Action_is_pad is [n, horizon].
     v_hat, v_star = torch.randn(2, 2, 8, 3), torch.randn(2, 2, 8, 3)
     cfg = SJFPOConfig(cfm_loss_use_huber=True, cfm_loss_huber_delta=0.5)
     half_pad = torch.zeros(2, 8, dtype=torch.bool)
@@ -190,7 +179,7 @@ def test_huber_cfm_loss_keeps_the_mask_renormalisation():
     assert float(masked) == pytest.approx(float(trimmed), rel=1e-6)
 
 
-# --- transported clip -------------------------------------------------------
+# --- transported clip -------------------------------------------------------.
 
 
 def test_transported_clip_none_is_a_no_op():
@@ -229,7 +218,7 @@ def test_transported_clip_bounds_the_sampler_output_too():
     assert v.abs().max() <= 0.01 + 1e-6
 
 
-# --- advantage clamp --------------------------------------------------------
+# --- advantage clamp --------------------------------------------------------.
 
 
 def test_advantage_clamp_is_applied_after_normalisation():
@@ -259,7 +248,7 @@ def test_advantage_clamp_leaves_unclamped_values_alone():
     assert got.abs().max() > 0.01
 
 
-# --- lr warmup --------------------------------------------------------------
+# --- lr warmup --------------------------------------------------------------.
 
 
 def test_lr_warmup_ramps_then_holds():
@@ -273,10 +262,10 @@ def test_lr_warmup_ramps_then_holds():
         apply_lr_schedule(opt, step, 0, policy.config)
         seen.append([g["lr"] for g in opt.param_groups])
     assert seen[0][0] == pytest.approx(3e-4 / 4)
-    assert seen[0][-1] == pytest.approx(1e-4 / 2)  # critic warms twice as fast
-    assert seen[1][-1] == pytest.approx(1e-4)       # its ramp is done at step 2
-    assert seen[3][0] == pytest.approx(3e-4)        # actor ramp done at step 4
-    assert seen[5][0] == pytest.approx(3e-4)        # and held
+    assert seen[0][-1] == pytest.approx(1e-4 / 2)  # critic warms twice as fast.
+    assert seen[1][-1] == pytest.approx(1e-4)       # its ramp is done at step 2.
+    assert seen[3][0] == pytest.approx(3e-4)        # actor ramp done at step 4.
+    assert seen[5][0] == pytest.approx(3e-4)        # and held.
 
 
 def test_lr_warmup_and_plateau_decay_compose_without_order():
@@ -300,7 +289,7 @@ def test_zero_warmup_is_a_no_op():
     assert opt.param_groups[0]["lr"] == pytest.approx(3e-4)
 
 
-# --- optimizer shape and joint clip -----------------------------------------
+# --- optimizer shape and joint clip -----------------------------------------.
 
 
 def test_optimizer_is_one_object_with_two_lr_groups():
@@ -313,7 +302,7 @@ def test_optimizer_is_one_object_with_two_lr_groups():
 
 
 def _flat_params(opt):
-    """The form clip_grad_norm_ accepts. param_groups is a list of dicts."""
+    """The form clip_grad_norm_ accepts."""
     return [p for g in opt.param_groups for p in g["params"]]
 
 
@@ -353,7 +342,7 @@ def test_clip_grad_norm_rejects_param_group_dicts():
         torch.nn.utils.clip_grad_norm_(opt.param_groups, 1.0)
 
 
-# --- fourier frequencies ----------------------------------------------------
+# --- fourier frequencies ----------------------------------------------------.
 
 
 @pytest.mark.parametrize("dim", [32, 64])
@@ -373,12 +362,12 @@ def test_embedding_puts_cos_before_sin():
 
 
 def test_default_width_matches_fpops_larger_setting():
-    """32 is FPO++'s manipulation value; 8 is its isaaclab one. We take 32."""
+    """32 is FPO++'s manipulation value. 8 is its isaaclab one."""
     assert SJFPOConfig().time_embed_dim == 32
 
 
 def test_embedding_is_exact_against_a_float64_reference():
-    """The channels are not corrupted, only over-wide. Pin that they are fine."""
+    """The channels are not corrupted, only over-wide."""
     for dim in (8, 32, 64):
         enc = SinusoidalEncoding(dim)
         t = torch.linspace(0.0, 1.0, 2048, dtype=torch.float64)
@@ -387,20 +376,12 @@ def test_embedding_is_exact_against_a_float64_reference():
 
 
 def test_freq_table_is_a_buffer_not_a_forward_time_cache():
-    """Built in ``__init__``, so ``torch.compile`` cannot hand cudagraphs a tensor.
-
-    A table made inside the compiled region is an inductor output, and the next
-    replay overwrites it. Reading it back then raises "accessing tensor output
-    of CUDAGraphs that has been overwritten" -- the crash that ended the Kaggle
-    run under ``mode="reduce-overhead"``.
-    """
+    """Built in ``__init__``, so ``torch.compile`` cannot hand cudagraphs a tensor."""
     enc = SinusoidalEncoding(32)
     assert "freqs" in dict(enc.named_buffers())
-    # Derived from ``dim``, not learned: never in a checkpoint, so older
-    # checkpoints still load and no state_dict grows a field.
+    # Derived from ``dim``, not learned: never in a checkpoint, so older.
     assert "freqs" not in enc.state_dict()
-    # One tensor for the module's life. A fresh one per call would be a fresh
-    # graph output, which is the bug.
+    # One tensor for the module's life.
     assert enc.compute_freqs(torch.device("cpu")) is enc.compute_freqs(
         torch.device("cpu")
     )
@@ -414,8 +395,7 @@ def test_freq_table_is_a_buffer_not_a_forward_time_cache():
 )
 def test_encode_times_survives_a_replayed_cudagraph():
     """The Euler solver reuses one compiled graph across steps and hands it a
-    fresh ``t`` each time. That reuse is what killed the cached table.
-    """
+    fresh ``t`` each time."""
     enc = SinusoidalEncoding(32).to("cuda")
 
     @torch.compile(mode="reduce-overhead", fullgraph=False)
@@ -430,7 +410,7 @@ def test_encode_times_survives_a_replayed_cudagraph():
     assert torch.equal(outs[-1], ref)
 
 
-# --- deleted target critic --------------------------------------------------
+# --- deleted target critic --------------------------------------------------.
 
 
 def test_policy_has_no_target_critic_module():
@@ -448,11 +428,11 @@ def test_removed_config_fields_are_gone():
         assert field not in fields
 
 
-# --- the ratio path is untouched --------------------------------------------
+# --- the ratio path is untouched --------------------------------------------.
 
 
 def test_loss_clamps_match_fpops_values():
-    """Both are 20 in rl_cfg.py. Moving one alone would strand the other."""
+    """Both are 20 in rl_cfg.py."""
     cfg = SJFPOConfig()
     assert cfg.cfm_clamp == 20.0
     assert cfg.cfm_loss_clamp_negative_advantages_max == 20.0
@@ -465,16 +445,10 @@ def test_the_negative_advantage_clamp_is_not_dead_at_the_default():
 
 
 def test_clamp_binds_only_far_outside_the_observed_loss_scale():
-    """Guard against tightening past what the trust region actually sees.
-
-    Measured on Pendulum over 8 updates, cfm_loss_new peaks near 1.9 and averages
-    ~0.63, so 20 is ~10x headroom. If the reduction changes and the scale
-    moves an order of magnitude, this should be re-examined rather than
-    inherited.
-    """
+    """Guard against tightening past what the trust region actually sees."""
     torch.manual_seed(0)
     cfg = SJFPOConfig()
-    # v_star ~ a - eps with a in [-1,1], eps ~ N(0,1); v_hat ~ 0 at init.
+    # v_star ~ a - eps with a in [-1,1], eps ~ N(0,1). V_hat ~ 0 at init.
     v_star = torch.randn(512, 8, cfg.action_horizon, 1) * 1.4
     v_hat = torch.zeros_like(v_star)
     l = compute_cfm_loss(v_hat, v_star, cfg, "sample")

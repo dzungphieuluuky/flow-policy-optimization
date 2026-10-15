@@ -1,10 +1,4 @@
-"""Two reuse/initialisation defects that both failed silently.
-
-The rollout buffer compared a 6-tuple against capacity_key()'s 7-tuple, so it
-reallocated every rollout. The EMA warmup compared ==, against a step counter
-that only ever lands on rollout multiples, so the shadow was never initialised
-and ema_ready() was false forever. Neither raised; both just quietly did nothing.
-"""
+"""Two reuse/initialisation defects that both failed silently."""
 
 import dataclasses
 
@@ -26,15 +20,15 @@ def _policy(**kw) -> SJFPOPolicy:
     return SJFPOPolicy(cfg)
 
 
-# --- #1 buffer reuse -------------------------------------------------------
+# --- #1 buffer reuse -------------------------------------------------------.
 
 
 def test_capacity_key_shape_is_what_the_reuse_check_compares():
     buf = RolloutBuffer(
         max_chunks=8, max_steps=8, obs_steps=2, obs_dim=3, action_horizon=4, action_dim=2
     )
-    assert len(buf.capacity_key()) == 7  # includes pin_memory
-    assert len(buf.capacity_key()[:6]) == 6  # the shape generate_rollout builds
+    assert len(buf.capacity_key()) == 7  # includes pin_memory.
+    assert len(buf.capacity_key()[:6]) == 6  # the shape generate_rollout builds.
 
 
 def test_reuse_condition_is_false_for_an_identical_key():
@@ -43,11 +37,9 @@ def test_reuse_condition_is_false_for_an_identical_key():
         max_chunks=8, max_steps=8, obs_steps=2, obs_dim=3, action_horizon=4, action_dim=2
     )
     buffer_key = (8, 8, 2, 3, 4, 2)
-    # equal -> the reuse condition is false -> the existing buffer is kept
+    # equal -> the reuse condition is false -> the existing buffer is kept.
     assert buf.capacity_key()[:6] == buffer_key
-    # unequal -> the reuse condition is true -> reallocate. This is what the
-    # un-sliced comparison did on every rollout, because pin_memory made the
-    # full tuple permanently different.
+    # unequal -> the reuse condition is true -> reallocate.
     assert buf.capacity_key() != buffer_key
 
 
@@ -58,15 +50,11 @@ def test_reuse_condition_is_true_when_capacity_grows():
     assert buf.capacity_key()[:6] != (8, 8, 2, 3, 4, 2)
 
 
-# --- #2 EMA warmup ---------------------------------------------------------
+# --- #2 EMA warmup ---------------------------------------------------------.
 
 
 def test_ema_initialises_on_the_first_rollout_boundary():
-    """ema_warmup_steps=500 but global_step lands on 4096, 8192, ...
-
-    With == the initialisation never fired, so ema_ready() was false for the whole
-    run and no checkpoint ever contained the EMA.
-    """
+    """ema_warmup_steps=500 but global_step lands on 4096, 8192, ..."""
     policy = _policy()
     steps = [4096, 8192, 12288]
     assert policy.config.ema_warmup_steps == 500
@@ -80,11 +68,7 @@ def test_ema_initialises_on_the_first_rollout_boundary():
 
 
 def test_ema_warmup_is_a_one_shot():
-    """The gate must not re-hard-copy on every later call.
-
-    Without `not _ema_initialised`, every call past warmup would reset the shadow
-    and the running average would never form.
-    """
+    """The gate must not re-hard-copy on every later call."""
     policy = _policy()
     with torch.no_grad():
         for p in policy.actor.parameters():
@@ -119,7 +103,7 @@ def test_ema_is_inert_when_decay_is_zero():
     assert not policy._ema_shadow
 
 
-# --- EMA swap --------------------------------------------------------------
+# --- EMA swap --------------------------------------------------------------.
 
 
 def test_swap_in_ema_puts_the_average_in_the_actor():
@@ -164,11 +148,7 @@ def test_swap_is_inert_before_the_shadow_is_ready():
 
 
 def test_swap_reads_the_env_step_clock_not_the_optimizer_step_counter():
-    """The shadow warms on global_step; step_count runs far ahead of it.
-
-    Reading step_count would call the average ready before the hard copy, so the
-    first evals would score the seed weights.
-    """
+    """The shadow warms on global_step. Step_count runs far ahead of it."""
     policy = _policy(ema_warmup_steps=500)
     policy.update_ema(500)
     policy.step_count = 10_000

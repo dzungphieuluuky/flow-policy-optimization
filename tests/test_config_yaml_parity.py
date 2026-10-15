@@ -1,15 +1,4 @@
-"""``configs/sjfpo.yaml`` must equal the dataclass defaults.
-
-``--config`` layers the YAML *over* the dataclass, so a stale file does not fail
-loudly -- it silently reverts the run to settings the code no longer documents.
-The file already drifted once: it claimed "values mirror SJFPOConfig defaults"
-while differing on nine fields, and passing it would have re-enabled
-``hidden_dim: 256``, ``num_learning_epochs: 1`` and five
-others.
-
-The file is generated (scripts/gen_sjfpo_config.py); this is what stops it
-drifting again.
-"""
+"""``configs/sjfpo.yaml`` must equal the dataclass defaults."""
 
 from __future__ import annotations
 
@@ -43,7 +32,7 @@ def test_yaml_matches_the_dataclass_defaults(loaded: dict):
     drift = {}
     for key, value in loaded.items():
         default = getattr(fresh, key, None)
-        # YAML has no tuple type; adam_betas arrives as a list.
+        # YAML has no tuple type. Adam_betas arrives as a list.
         if isinstance(default, tuple) and isinstance(value, list):
             value = tuple(value)
         if default != value:

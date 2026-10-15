@@ -1,29 +1,4 @@
-"""The critic is Q(s, a_chunk, f), it reads the whole window in order, the
-chunk is a first-class input, and the ensemble stays independent.
-
-It used to read states[:, -1, :], discarding 15 of 16 frames, and later a
-flatten plus a position code. The window properties still have to hold:
-
-  * every frame influences the output, including index 0
-  * permuting the frames changes the output
-
-A mean-pool satisfies neither in the way that matters: it ignores order entirely,
-so the permutation would be a no-op. That is the failure mode this file exists to
-prevent.
-
-The critic is now a per-member concat MLP over ``[window, chunk, exec_length_frac]``
-(replacing the earlier FiLM modulation), so the window and chunk properties are
-structural rather than incidental: a permuted window or chunk is a different
-input vector to the first Linear, and an MLP is not permutation-invariant. The
-ensemble property is the load-bearing one here: members must not share a trunk,
-or min-over-members is meaningless.
-
-``f`` is the executed fraction of the planned chunk. A chunk is planned at
-``action_horizon`` but only ``lengths`` steps run, so without it Q cannot tell
-two chunks apart that share an executed prefix and differ only in the tail that
-was planned and never executed -- yet both are regressed onto a return that
-covers only the executed prefix.
-"""
+"""Critic Q(s, a_chunk, f): reads the whole window in order, chunk is an input, ensemble stays independent."""
 
 import pytest
 import torch
@@ -68,8 +43,7 @@ def _frac(batch: int = 4, value: float = 0.5) -> torch.Tensor:
 
 
 def _q(critic: Critic, w: torch.Tensor, c: torch.Tensor, f=None) -> torch.Tensor:
-    """Forward with the length feature only when the critic wants it, so the
-    probe tests read the same way whichever flag they were built under."""
+    """Forward with the length feature only when the critic wants it."""
     if critic.condition_on_exec_length and f is None:
         f = _frac(w.shape[0])
     return critic(w, c, f)
@@ -103,7 +77,7 @@ def test_batch_mismatch_is_rejected():
 
 
 def test_every_frame_influences_the_output():
-    """Frame 0 specifically. The old states[:, -1, :] provably ignored it."""
+    """Frame 0 specifically."""
     critic = _critic()
     base, chunk = _window(), _chunk()
     for frame in range(STEPS):
@@ -122,11 +96,7 @@ def test_frame_order_matters():
 
 
 def test_temporal_frequency_content_is_visible():
-    """Two windows with identical per-frame value multisets must separate.
-
-    The flatten makes this structural: a permutation is a different input to the
-    first Linear, and an MLP is not permutation-invariant.
-    """
+    """Two windows with identical per-frame value multisets must separate."""
     critic = _critic()
     w, c = _window(), _chunk()
     shuffled = w[:, torch.randperm(STEPS, generator=torch.Generator().manual_seed(7))]
@@ -134,7 +104,7 @@ def test_temporal_frequency_content_is_visible():
     assert not torch.allclose(_q(critic, w, c), _q(critic, shuffled, c), atol=1e-6)
 
 
-# --- the chunk is a first-class input ---------------------------------------
+# --- the chunk is a first-class input ---------------------------------------.
 
 
 def test_every_action_step_influences_the_output():
@@ -156,11 +126,7 @@ def test_chunk_order_matters():
 
 
 def test_q_is_not_additive_in_state_and_chunk():
-    """Q must not factor as f(s) + g(a), or the concat buys nothing.
-
-    A per-member MLP is nonlinear over the joint input, so the interaction term
-    is structural rather than something an initialisation has to grow into.
-    """
+    """Q must not factor as f(s) + g(a), or the concat buys nothing."""
     critic = _critic(seed=5)
     s1, s2 = _window(seed=11), _window(seed=12)
     a1, a2 = _chunk(seed=13), _chunk(seed=14)
@@ -172,7 +138,7 @@ def test_q_is_not_additive_in_state_and_chunk():
     )
 
 
-# --- the executed-length input ---------------------------------------------
+# --- the executed-length input ---------------------------------------------.
 
 
 def test_input_dim_grows_by_exactly_one_with_the_length_feature():
@@ -205,12 +171,7 @@ def test_exec_frac_shape_must_match_the_batch():
 
 
 def test_q_separates_chunks_differing_only_in_the_unexecuted_tail():
-    """The regression this whole input exists for.
-
-    Same state, same executed prefix, different plan for the tail that will
-    never run. Before the feature these produced one Q, forcing the critic to
-    average over a distinction its return target does not even resolve.
-    """
+    """The regression this whole input exists for."""
     critic = _critic()
     w = _window(batch=1)
     a = torch.zeros(1, H, ACT)
@@ -242,7 +203,7 @@ def test_gradient_reaches_the_length_column():
     assert first.grad[:, -1].abs().sum() > 0, "exec_length_frac column got no gradient"
 
 
-# --- ensemble --------------------------------------------------------------
+# --- ensemble --------------------------------------------------------------.
 
 
 def test_num_critics_two_min_le_mean_contract():
@@ -255,11 +216,7 @@ def test_num_critics_two_min_le_mean_contract():
 
 
 def test_members_are_independent_not_one_wide_mlp():
-    """Perturbing one member must not move the other member.
-
-    This is the test that separates a real ensemble from a shared trunk with n
-    heads, where member 0's output would move when member 1's weights move.
-    """
+    """Perturbing one member must not move the other member."""
     critic = _critic(seed=3, num_critics=2)
     w, c = _window(), _chunk()
     before = _q(critic, w, c).clone()
@@ -309,7 +266,7 @@ def test_gradient_reaches_every_member():
 
 
 def test_critic_member_reads_the_whole_window_and_the_whole_chunk():
-    """Both inputs must be consumed in full; if either narrows, the critic
+    """Both inputs must be consumed in full. If either narrows, the critic
     silently becomes a weaker approximator of the policy it is critiquing."""
     member = _critic().networks[0]
     first = member.mlp[0]
@@ -318,7 +275,7 @@ def test_critic_member_reads_the_whole_window_and_the_whole_chunk():
 
 
 def test_num_layers_controls_hidden_width():
-    """One shared hidden_dim serves Pendulum (obs 3) and Humanoid (obs 348); a
+    """One shared hidden_dim serves Pendulum (obs 3) and Humanoid (obs 348). A
     separate critic_num_layers is how that gets tuned without touching the actor."""
     deep = _critic(num_layers=4).networks[0]
     linears = [m for m in deep.mlp if isinstance(m, torch.nn.Linear)]
@@ -333,8 +290,7 @@ def test_parameter_count_is_proportionate():
         p.numel()
         for p in Critic(11, 128, 17, 16, 16, 2).parameters()
     )
-    # in_dim = 16*11 + 16*17 + 1 = 449; per member 449*128+128, 128*128+128,
-    # 128*1+1 = 74241; x2 members.
+    # in_dim = 16*11 + 16*17 + 1 = 449. Per member 449*128+128, 128*128+128,.
     assert n == pytest.approx(148_482, abs=50), f"critic is {n} params"
 
 

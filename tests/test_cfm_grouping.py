@@ -1,14 +1,4 @@
-"""``group_cfm_loss`` is the MC-sample half of FPO++'s granularity knobs.
-
-``cfm_average_group_size`` folds the Monte-Carlo axis before the exponent
-(``finetune_online_rl.py:803-806``): ``-1`` is one group over every sample, which
-is FPO Eq. 9's "mean the MC losses, then exponentiate". ``1`` is the identity, so
-per-sample ratios cost nothing.
-
-Averaging the loss is the same as averaging the difference, since
-``exp(mean(old) - mean(new)) == exp(mean(old - new))``. The test below pins that
-identity rather than assuming it.
-"""
+"""``group_cfm_loss`` is the MC-sample half of FPO++'s granularity knobs."""
 
 import pytest
 import torch
@@ -49,7 +39,7 @@ def test_grouping_the_loss_equals_grouping_the_difference():
 
 
 def test_a_group_size_that_does_not_divide_is_rejected():
-    """The reference asserts divisibility; so does this, with the numbers."""
+    """The reference asserts divisibility. So does this, with the numbers."""
     with pytest.raises(ValueError, match="divide evenly"):
         group_cfm_loss(torch.randn(2, 6), 4)
 

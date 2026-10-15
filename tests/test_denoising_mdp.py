@@ -1,8 +1,4 @@
-"""Correctness checks for the DPPO denoising-MDP primitives.
-
-These are the properties that must hold for the inner PPO to be a valid
-surrogate. A bug in any of them silently produces a plausible-looking number.
-"""
+"""Correctness checks for the DPPO denoising-MDP primitives."""
 import math
 import sys
 from pathlib import Path
@@ -37,8 +33,7 @@ def test_path_records_a_full_chain_and_lands_on_the_returned_action():
     assert path.states.shape == (B, K, D)
     assert path.actions.shape == (B, K, D)
     assert path.final.shape == (B, D)
-    # The chain must reconstruct the returned action, or the env executed
-    # something the PPO backup never saw.
+    # The chain must reconstruct the returned action, or the env executed.
     rebuilt = path.states[:, 0] + path.actions.sum(dim=1)
     assert torch.allclose(rebuilt, x_final, atol=1e-5), (
         rebuilt - x_final
@@ -65,7 +60,7 @@ def test_store_false_returns_no_path_but_the_same_action():
         _net, cond, SHAPE, num_steps=K, noise_std=0.1, generator=g2, store=True
     )
     assert p2 is not None
-    # actions is [n, K, *flow]; SHAPE is the per-sample flow shape.
+    # actions is [n, K, *flow]. SHAPE is the per-sample flow shape.
     assert p2.actions.shape == (B, K, *SHAPE)
     assert p2.mus.shape == p2.actions.shape
     assert torch.allclose(x1, x2, atol=1e-6)
@@ -98,8 +93,7 @@ def test_ratio_is_one_when_the_policy_has_not_moved():
 
 
 def test_ratio_respects_the_trust_region():
-    # Ratio is exp(lp_new - lp_old); a policy that got 10 nats MORE likely
-    # would be e^10, so the upper clip must bind.
+    # Ratio is exp(lp_new - lp_old). A policy that got 10 nats MORE likely.
     lp_new = torch.zeros(50)
     lp_old = torch.full((50,), -10.0)
     r = gaussian_step_ratio(lp_new, lp_old, 0.05)
@@ -149,7 +143,6 @@ def test_done_flag_zeroes_the_bootstrap_at_that_step():
     v = torch.ones(1, K + 1)
     g = 0.99
     # Terminal residual with no reward: delta = 0 + 0*V(s') - V(s) = -1.
-    # The flag's job is removing the +g*V(s') term; the -V(s) term stays.
     d = torch.zeros(1, K, dtype=torch.bool)
     d[0, K - 1] = True
     got = denoising_chain_gae(r, v, d, gamma=g)

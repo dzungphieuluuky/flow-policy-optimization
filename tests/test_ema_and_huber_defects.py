@@ -1,12 +1,4 @@
-"""Defect found from a Humanoid run that peaked at 131k and decayed 46%.
-
-The EMA shadow covered the flow model but not the conditioning encoder, so every
-eval measured EMA_actor(live_encoder(obs)) -- a pairing that never trained.
-
-The file used to hold a second case, a Huber knee scaled by ``returns_rms``.
-That value loss is gone: FPO++ trains plain MSE, so the knee had nothing to be
-faithful to. See ``tests/test_value_loss.py``.
-"""
+"""Defect found from a Humanoid run that peaked at 131k and decayed 46%."""
 
 import dataclasses
 import warnings
@@ -35,7 +27,7 @@ def _warm(p: SJFPOPolicy) -> SJFPOPolicy:
     return p
 
 
-# --- EMA covers the encoder -------------------------------------------------
+# --- EMA covers the encoder -------------------------------------------------.
 
 
 def test_ema_shadow_covers_the_encoder():
@@ -89,7 +81,7 @@ def test_an_actor_only_shadow_is_reseeded_not_half_applied():
         n: torch.zeros_like(q) for n, q in p.actor.named_parameters()
     }}
     with warnings.catch_warnings():
-        warnings.simplefilter("error")  # nothing should warn at this layer
+        warnings.simplefilter("error")  # nothing should warn at this layer.
         assert p.load_ema_state_dict(legacy) is False
     assert p._ema_shadow == {}
     assert p._ema_initialised is False
@@ -103,7 +95,7 @@ def test_a_matching_shadow_is_restored():
     assert set(fresh._ema_shadow) == set(p._ema_shadow)
 
 
-# --- state dict -----------------------------------------------------------
+# --- state dict -----------------------------------------------------------.
 
 
 def test_the_ema_state_dict_carries_the_encoder():

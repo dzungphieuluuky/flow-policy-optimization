@@ -62,7 +62,7 @@ def test_clip_counts_is_optional():
 
 
 def test_executed_only_keys_use_the_executed_rows():
-    """The legacy keys keep their all-rows meaning; the new ones mask first."""
+    """The legacy keys keep their all-rows meaning. The new ones mask first."""
     batch = make_batch()
     out = compute_rollout_diagnostics(batch)
     action = batch["action"]

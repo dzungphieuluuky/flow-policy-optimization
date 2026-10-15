@@ -1,8 +1,4 @@
-"""Regression tests for the metric audit.
-
-Before the fix these asserted the DEFECTIVE behaviour. They now assert the
-corrected behaviour, so they fail if a defect is reintroduced.
-"""
+"""Regression tests for the metric audit."""
 import math
 import sys
 from pathlib import Path
@@ -40,7 +36,7 @@ def _cfg(**kw):
     return SJFPOConfig(**base)
 
 
-# --- A. saturation is measured by clip count, not by post-clip magnitude ---
+# --- A.
 def test_stored_actions_never_exceed_unit_abs_so_a_magnitude_guard_is_useless():
     """Why the >1.05 guard was dead: clipping happens before storage."""
     lo, rng = resolve_action_bounds([-2.0, -1.0, -0.3], [2.0, 1.0, 0.3])
@@ -73,7 +69,7 @@ def test_action_clip_rate_is_absent_when_no_clip_counts_were_collected():
     ) == {}
 
 
-# --- B. action_abs_mean excludes unexecuted rows ----------------------
+# --- B.
 def test_rollout_diagnostics_reports_executed_rows_only():
     """action_abs_mean must not be diluted by rows the robot never ran."""
     from myfpo.train_sjfpo import compute_rollout_diagnostics
@@ -84,8 +80,7 @@ def test_rollout_diagnostics_reports_executed_rows_only():
     pad = torch.zeros(2, 8, dtype=torch.bool)
     pad[0, 3:] = True
     out = compute_rollout_diagnostics({"action": a, "action_is_pad": pad})
-    # The legacy key keeps its all-rows meaning; the executed-only figure,
-    # which is what the robot actually did, is the new one.
+    # The legacy key keeps its all-rows meaning. The executed-only figure,.
     assert out["action_abs_mean"] == pytest.approx(0.6875)
     assert out["action_abs_mean_executed"] == pytest.approx(1.0)
     assert out["action_abs_max"] == pytest.approx(1.0)
@@ -105,12 +100,12 @@ def test_executed_only_metrics_differ_when_padding_carries_real_values():
     assert out["action_abs_mean"] < 1.0
 
 
-# --- C. action_jerk is not scale-free -----------------------------------
+# --- C.
 
 
-# --- C. action_jerk is not scale-free -----------------------------------
+# --- C.
 def test_action_jerk_scales_with_amplitude_squared():
-    """It is NOT scale-free; the docstring now says so. Compare within a run."""
+    """It is NOT scale-free. The docstring now says so."""
     rng = np.random.default_rng(0)
     t = np.arange(60, dtype=np.float32)
     sig = np.stack([t + rng.normal(0, 0.3, 60).astype(np.float32) for _ in range(2)], 1)
@@ -125,7 +120,7 @@ def test_action_jerk_is_zero_for_constant_and_constant_velocity():
     assert compute_action_jerk(np.stack([t, 2 * t], 1)) == 0.0
 
 
-# --- D. chunk jerk is blind to inter-chunk seams ------------------------
+# --- D.
 def test_chunk_jerk_is_still_chunk_internal_and_does_not_claim_otherwise():
     """The two jerk metrics are complementary, not duplicates."""
     H, D = 8, 2
@@ -170,8 +165,7 @@ def test_seam_jerk_is_zero_for_a_continuous_rollout():
 def test_seam_jerk_returns_none_when_nothing_qualifies():
     chunk = np.zeros((1, 8, 2), dtype=np.float32)
     assert compute_seam_jerk(chunk, np.zeros((1, 8), dtype=bool)) is None
-    # A seam whose earlier chunk has a single executed step cannot form a
-    # second difference, so it must not be counted as a clean seam.
+    # A seam whose earlier chunk has a single executed step cannot form a.
     two = np.zeros((2, 8, 2), dtype=np.float32)
     pad = np.zeros((2, 8), dtype=bool)
     pad[0, 1:] = True
@@ -181,14 +175,14 @@ def test_seam_jerk_returns_none_when_nothing_qualifies():
 def test_seam_jerk_skips_seams_whose_earlier_chunk_is_truncated():
     H, D = 4, 2
     a = np.zeros((2, H, D), dtype=np.float32)
-    a[0, 0] = 10.0            # only one executed step before the seam
+    a[0, 0] = 10.0            # only one executed step before the seam.
     a[1, 0] = 20.0
     pad = np.zeros((2, H), dtype=bool)
     pad[0, 1:] = True
     assert compute_seam_jerk(a, pad) is None
 
 
-# --- E. explained_var vs the min the backup actually uses --------------
+# --- E.
 def test_explained_var_min_is_logged_and_is_never_optimistic():
     torch.manual_seed(0)
     C, n = 2, 64
@@ -239,7 +233,7 @@ def test_value_pred_std_member_mean_is_within_member_spread():
     )
 
 
-# --- F. the token axis is positional, and says so -----------------------
+# --- F.
 def _ratio_metrics(cfg, N=32, MC=8, TOK=8):
     ratio = torch.rand(N, MC, TOK) * 2.0
     return compute_ratio_metrics(
@@ -249,13 +243,7 @@ def _ratio_metrics(cfg, N=32, MC=8, TOK=8):
 
 
 def test_the_token_axis_split_is_named_for_what_it_splits():
-    """The DCT is gone, so early/late is not low/high frequency.
-
-    A key reading ``lowfreq`` would promise a spectral cut this does not
-    perform, and ``token_axis_is_spectral`` would be a constant carrying that
-    claim. Both are gone rather than pinned, so nothing survives that could be
-    read as a spectral statement.
-    """
+    """The DCT is gone, so early/late is not low/high frequency."""
     c = _cfg(action_horizon=8)
     m, ratio = _ratio_metrics(c)
     per_token = ratio.mean(dim=(0, 1))
@@ -272,12 +260,7 @@ def test_the_token_axis_split_is_named_for_what_it_splits():
 
 
 def test_no_logged_key_is_a_constant_or_an_always_nan():
-    """A key that can never move is noise on a dashboard.
-
-    ``token_axis_is_spectral`` was pinned at 0 and the ``*_spectral_*`` pair at
-    NaN purely so old dashboards could not misread them. Both are removed
-    instead, so the check is that no such key comes back.
-    """
+    """A key that can never move is noise on a dashboard."""
     c = _cfg(action_horizon=8)
     m, _ = _ratio_metrics(c)
     dead = {
@@ -289,9 +272,9 @@ def test_no_logged_key_is_a_constant_or_an_always_nan():
     assert not dead, f"always-NaN keys: {sorted(dead)}"
 
 
-# --- G. reward_improvement_pct on negative returns ----------------------
+# --- G.
 def test_reward_improvement_pct_reads_wrong_on_a_negative_baseline():
-    prev, cur = -1000.0, -500.0   # a real improvement of 500
+    prev, cur = -1000.0, -500.0   # a real improvement of 500.
     out = compute_eval_summary_metrics(
         mean_return=cur,
         eval_results=[
@@ -301,10 +284,10 @@ def test_reward_improvement_pct_reads_wrong_on_a_negative_baseline():
         eval_count=2,
     )
     assert out["eval/reward_improvement"] == pytest.approx(500.0)  # correct
-    assert out["eval/reward_improvement_pct"] == pytest.approx(0.5)  # reads as +50%
+    assert out["eval/reward_improvement_pct"] == pytest.approx(0.5)  # reads as +50%.
 
 
-# --- H. empty eval windows report NaN, not 0.0 ---------------------------
+# --- H.
 def test_stats_over_an_empty_eval_window_are_nan_not_zero():
     """0.0 would assert a measurement: "all episodes had the same length"."""
     out = compute_eval_summary_metrics(
@@ -335,14 +318,9 @@ def test_stats_over_a_real_eval_window_are_finite():
         assert math.isfinite(out[key]), f"{key} = {out[key]}"
 
 
-# --- I. the diverge/regress step is never a bare 0 ------------------------
+# --- I.
 def test_the_diverge_step_is_not_reported_as_zero_when_nothing_fired():
-    """Step 0 is pre-training, so a 0 there is a step that never happened.
-
-    The step keys are emitted only on the eval where the flag fires, and the
-    trainer breaks out of the eval loop at that point, so their absence is the
-    honest signal.
-    """
+    """Step 0 is pre-training, so a 0 there is a step that never happened."""
     import inspect
     import re
 
@@ -352,8 +330,7 @@ def test_the_diverge_step_is_not_reported_as_zero_when_nothing_fired():
     # No "global_step if diverged_now else 0" style fallback anywhere.
     assert not re.search(r"diverge_step.*else 0", src)
     assert not re.search(r"regression_step.*else 0", src)
-    # And the flags themselves are logged on the ordinary eval path too, so a
-    # 0 is recorded rather than a gap appearing.
+    # And the flags themselves are logged on the ordinary eval path too, so a.
     assert '"eval/diverged": 0.0' in src
     assert '"eval/regressed": 0.0' in src
 

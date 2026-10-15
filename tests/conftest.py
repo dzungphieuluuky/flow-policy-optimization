@@ -19,11 +19,7 @@ def pytest_configure(config):
 
 
 def pytest_sessionfinish(session, exitstatus):
-    """``--snapshot-regen`` rewrites the snapshot once, at the end of the run.
-
-    Lives here rather than in the test module: pytest collects session hooks
-    only from conftest and plugins.
-    """
+    """``--snapshot-regen`` rewrites the snapshot once, at the end of the run."""
     if not session.config.getoption("--snapshot-regen"):
         return
     mod = sys.modules.get("test_guard_messages")

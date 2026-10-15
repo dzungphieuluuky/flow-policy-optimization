@@ -1,9 +1,4 @@
-"""Spectral prior removed. What must not change: the white-noise FPO++ path.
-
-These pin the behaviour the deletion had to preserve: white noise is
-``torch.randn``, and a default rollout is finite. Everything here should pass
-both before and after the spectral code is gone.
-"""
+"""Spectral prior removed."""
 import sys
 from pathlib import Path
 
@@ -30,7 +25,7 @@ def test_normal_mode_is_plain_randn():
 
 
 def test_uniform_mode_scales_to_unit_variance():
-    """Marginal mode is FPO++'s, not spectral. Uniform on sqrt(3)."""
+    """Marginal mode is FPO++'s, not spectral."""
     g = torch.Generator().manual_seed(7)
     got = sample_noise((4096,), _cfg(noise_sampling_mode="uniform"), torch.device("cpu"), g)
     assert abs(float(got.std()) - 1.0) < 0.05
@@ -43,7 +38,7 @@ def test_unknown_marginal_mode_still_raises():
 
 
 def test_generated_noise_is_reproducible():
-    """Rollouts draw eps from a seeded generator; twice must match."""
+    """Rollouts draw eps from a seeded generator. Twice must match."""
     shape = (2, 3, 8, 3)
     a = sample_noise(shape, _cfg(), torch.device("cpu"), torch.Generator().manual_seed(3))
     b = sample_noise(shape, _cfg(), torch.device("cpu"), torch.Generator().manual_seed(3))

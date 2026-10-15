@@ -1,16 +1,4 @@
-"""Every logged scalar must mean what its name says.
-
-Two failure modes, both of which have actually happened here:
-
-  * a key that reports 0.0 because nothing measured it, so a clean line reads
-    as a clean measurement -- ``budget_truncated_chunk_frac`` did exactly this,
-    because ``mark_incomplete`` is a no-op so no budget-cut flag exists;
-  * a key whose name promises a quantity its expression does not compute --
-    ``action_magnitude`` was mean|a|, which reads as an L2 norm.
-
-The arithmetic is checked elsewhere. This file checks the naming contract and
-the unmeasured case, which no numeric assertion can catch.
-"""
+"""Every logged scalar must mean what its name says."""
 
 import math
 import warnings
@@ -35,16 +23,11 @@ def _gae(n=8, **kw):
     return compute_gae_diagnostics(**args)
 
 
-# --- unmeasured must not read as measured ----------------------------------
+# --- unmeasured must not read as measured ----------------------------------.
 
 
 def test_budget_truncated_is_nan_when_the_collector_cannot_supply_it():
-    """The metric that motivated this file.
-
-    mark_incomplete is a no-op, so chunk_budget_truncated does not exist and
-    this quantity is unmeasured. 0.0 would assert "no chunk was cut short by the
-    budget", which is a claim about the data.
-    """
+    """The metric that motivated this file."""
     out = _gae()
     assert math.isnan(out["budget_truncated_chunk_frac"])
 
@@ -75,7 +58,7 @@ def test_no_diagnostic_is_nan_when_the_rollout_is_measurable():
     assert not math.isnan(out["advantage_std_fraction"])
 
 
-# --- names must not overstate ---------------------------------------------
+# --- names must not overstate ---------------------------------------------.
 
 
 def test_action_abs_mean_is_mean_absolute_value_not_an_l2_norm():
@@ -86,7 +69,7 @@ def test_action_abs_mean_is_mean_absolute_value_not_an_l2_norm():
     }
     out = compute_rollout_diagnostics(batch)
     assert out["action_abs_mean"] == pytest.approx(3.5)          # mean|a|
-    assert out["action_abs_mean"] != pytest.approx(5.0)          # not L2
+    assert out["action_abs_mean"] != pytest.approx(5.0)          # not L2.
     assert out["action_abs_max"] == pytest.approx(4.0)
 
 
@@ -111,11 +94,11 @@ def test_linked_frac_is_live_under_the_default_trace():
     assert 0.0 <= _gae()["linked_frac"] <= 1.0
 
 
-# --- dead logging ---------------------------------------------------------
+# --- dead logging ---------------------------------------------------------.
 
 
 def test_the_spectral_energy_key_is_gone_from_the_batch():
-    """d0f97c2 removed its source; a passthrough slot for it is dead weight."""
+    """d0f97c2 removed its source. A passthrough slot for it is dead weight."""
     import inspect
 
     import myfpo.train_sjfpo as T
@@ -153,12 +136,7 @@ def test_trainer_emits_no_key_it_cannot_compute():
 
 
 def test_rollout_diagnostics_keys_match_the_scalar_count():
-    """keys and scalars are zipped positionally.
-
-    A length mismatch does not raise -- zip truncates -- it silently drops or
-    mislabels a metric. step_delta rides along here and is consumed by the
-    global-step accumulator rather than logged, so it is expected.
-    """
+    """keys and scalars are zipped positionally."""
     import ast
     import inspect
 
@@ -176,10 +154,7 @@ def test_rollout_diagnostics_keys_match_the_scalar_count():
 
 
 def test_metrics_survive_the_wandb_scalar_pack():
-    """compute_info reshapes every metric to 0-d before one device transfer.
-
-    A non-scalar that reaches the tracker fails the whole update.
-    """
+    """compute_info reshapes every metric to 0-d before one device transfer."""
     from myfpo.modeling_sjfpo import compute_cfm_metrics
 
     out = compute_cfm_metrics(
@@ -193,7 +168,7 @@ def test_metrics_survive_the_wandb_scalar_pack():
 
 
 def test_nan_metrics_do_not_raise_in_the_tracker():
-    """NaN is how we say "unmeasured"; the packer must not choke on it."""
+    """NaN is how we say "unmeasured". The packer must not choke on it."""
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         out = _gae()

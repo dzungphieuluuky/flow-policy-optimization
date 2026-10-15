@@ -1,13 +1,4 @@
-"""The backup's target chunk must live in the same space as the data's chunks.
-
-``RolloutBuffer.chunk_actions`` holds chunks scaled to ``[-1, 1]``
-(``scale_and_clip_chunk``), while ``predict_action_chunk`` returns actions in
-real env bounds. QC's backup is ``Q(s_{t+h}, a_{t+h:t+2h})``, so an unscaled
-proposal silently feeds the critic an action ``(high - low) / 2`` times too
-large. On Reacher, whose bounds are +/-2, that is a 2x error on every proposed
-row, and nothing else in the batch would show it: the boot observation looks
-right and the value is finite.
-"""
+"""The backup's target chunk must live in the same space as the data's chunks."""
 
 import dataclasses
 
@@ -68,15 +59,10 @@ def test_every_row_carries_a_chunk(batch):
 
 
 def test_terminated_rows_keep_their_own_chunk_not_a_proposal(batch):
-    """A terminated chunk's bootstrap keeps its own chunk actions. Not zeroed.
-
-    The backup masks those rows with ``(1 - terminated)``, so their values never
-    reach the target. If the proposal leaked onto those rows, the cost would be
-    the unfiltered one that the filter exists to avoid.
-    """
-    # a rollout of live chunks only is the case where the filter matters most
+    """A terminated chunk's bootstrap keeps its own chunk actions."""
+    # a rollout of live chunks only is the case where the filter matters most.
     policy = _policy()
-    env = FakeVecEnv(n=N_ENVS, obs_dim=OBS, act_dim=ACT, episode=8)  # falls often
+    env = FakeVecEnv(n=N_ENVS, obs_dim=OBS, act_dim=ACT, episode=8)  # falls often.
     out = policy.generate_rollout(env, TOTAL_STEPS, action_low=LOW, action_high=HIGH)
     assert out["boot_actions"].isfinite().all()
     assert out["boot_actions"].abs().max() <= 1.0

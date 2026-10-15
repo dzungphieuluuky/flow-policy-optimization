@@ -1,13 +1,4 @@
-"""The value loss is plain MSE, which is what FPO++ trains.
-
-Both released variants use the squared error: ``fpo.py:497``, and
-``clip_vloss=False`` in the manipulation config. This repo used to run a Huber
-whose knee tracked the critic's residual RMS (``value_huber_delta_scale``); that
-was a deviation, not a port, and it is gone.
-
-Kept here: the target broadcasts over the critic's member axis, and the loss is
-reduced per chunk so the value loss lands on the right scale.
-"""
+"""The value loss is plain MSE, which is what FPO++ trains."""
 
 import torch
 
@@ -43,14 +34,7 @@ def test_target_broadcasts_over_the_member_axis():
 
 
 def test_there_is_no_clipped_value_branch():
-    """Deliberate: the release reports value clipping adds instability here.
-
-    ``clip_vloss`` is False in FPO++ (``finetune_online_rl.py:122``) and
-    ``use_clipped_value_loss`` defaults False (``rl_cfg.py:183``), because with
-    FPO's tighter policy band the clipped bound inflates the penalty more often
-    than it flatters it. This repo trains the plain squared error and does not
-    carry the branch, so there is nothing to test beyond its absence.
-    """
+    """Deliberate: the release reports value clipping adds instability here."""
     import inspect
 
     import myfpo.modeling_sjfpo as m

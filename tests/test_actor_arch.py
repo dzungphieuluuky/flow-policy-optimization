@@ -1,12 +1,4 @@
-"""``actor_arch: mlp`` must be FPO++'s actor, not a smaller DiT.
-
-FPO++'s manipulation experiments ship ``flow_net_mlp.py``: one MLP over the
-flattened chunk, the time embedding and the observation conditioning, Mish
-activations, ``[512, 512, 512]`` wide, output reshaped back to ``[B, K, D]``
-(``flow_net_mlp.py:95-115``, ``242-264``). The point of the flag is that the two
-arms differ only in the network, so the contract has to be pinned: same forward
-signature, same shapes, same zero-velocity-at-init behaviour.
-"""
+"""``actor_arch: mlp`` must be FPO++'s actor, not a smaller DiT."""
 
 import dataclasses
 
@@ -106,8 +98,7 @@ def test_every_token_reaches_the_output():
 
 def test_the_policy_builds_either_actor():
     for arch, cls in (("dit", SJFPOFlowModel), ("mlp", SJFPOFlowMLP)):
-        # compile=False: torch.compile wraps the module, so the class check would
-        # see OptimizedModule instead.
+        # compile=False: torch.compile wraps the module, so the class check would.
         policy = build_policy(
             OBS, ACT, _cfg(actor_arch=arch, compile=False), device="cpu",
             action_low=[-1.0] * ACT, action_high=[1.0] * ACT,

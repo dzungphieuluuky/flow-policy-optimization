@@ -1,13 +1,4 @@
-"""``adam_betas`` has to reach the optimizer, not just validate.
-
-Adam's two moment decay rates are the plasticity knob (Dohare et al.,
-arXiv:2306.13812): he reports Adam exacerbating loss of plasticity, and policy
-collapse being mitigated by using the same value for both moments. The default is
-therefore the symmetric ``(0.999, 0.999)``, overriding the asymmetric
-``(0.9, 0.999)`` that ``AdamWConfig`` hands over. Without the override line in
-``build_optimizer`` the preset wins and the run trains with the very betas this
-field exists to avoid, with nothing in the logs to say so.
-"""
+"""``adam_betas`` has to reach the optimizer, not just validate."""
 
 import dataclasses
 
@@ -32,13 +23,7 @@ def _config(**overrides):
 
 
 def test_the_default_overrides_the_preset():
-    """The field exists to depart from ``AdamWConfig``, so this is a real override.
-
-    ``build_optimizer`` used to pass the preset through verbatim, which made the
-    asymmetric ``(0.9, 0.999)`` pair unavoidable. The default is now the
-    symmetric one, so if the override line is dropped the preset wins and the
-    run silently trains with the asymmetric betas this field exists to avoid.
-    """
+    """The field exists to depart from ``AdamWConfig``, so this is a real override."""
     preset = _config().get_optimizer_preset()
     assert preset.betas == (0.9, 0.999)
     assert _config().adam_betas == (0.9, 0.99)

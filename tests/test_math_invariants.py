@@ -1,25 +1,19 @@
-"""Algorithmic invariant tests for heavy-math compute functions.
-
-Detect only — does not fix bugs; fails when invariants are violated.
-New identifiers: test_gae_chunk_advantage_invariant,
-test_fpo_policy_ratio_pessimistic, test_fpo_cfm_loss_mask_shape.
-"""
+"""Algorithmic invariant tests for heavy-math compute functions."""
 import torch
 
 
 class TestGAEChunkAdvantageInvariant:
     def test_gae_chunk_advantage_invariant(self):
-        """GAE: advantages + chunk_q == target; gamma^h scales bootstrap."""
+        """GAE: advantages + chunk_q == target. Gamma^h scales bootstrap."""
         from myfpo.gae import compute_chunk_advantages
 
-        # Minimal synthetic chunk: 2 chunks, length 3 each, gamma=1.0 (no discount)
-        # Then target = R + 1*(1-0)*next_q = R + next_q; advantage = target - q
+        # Minimal synthetic chunk: 2 chunks, length 3, gamma=1.0. (no discount) Then target = R + 1*(1-0)*next_q = R + next_q. Advantage = target - q.
         chunk_q = torch.ones(2, dtype=torch.float32)
         chunk_next_q = torch.ones(2, dtype=torch.float32) * 2.0
         chunk_starts = torch.tensor([0, 3], dtype=torch.long)
         chunk_lengths = torch.tensor([3, 3], dtype=torch.long)
         chunk_terminated = torch.tensor([False, False], dtype=torch.bool)
-        # step_rewards: 6 steps, 3 per chunk
+        # step_rewards: 6 steps, 3 per chunk.
         step_rewards = torch.ones(6, dtype=torch.float32)
 
         advantages, targets = compute_chunk_advantages(
@@ -33,9 +27,8 @@ class TestGAEChunkAdvantageInvariant:
             gamma=1.0,
             gae_lambda=0.0,
         )
-        # With gamma=1 and no termination, target = R (3) + next_q (2) = 5
-        # advantage = target - chunk_q (1) = 4
-        expected_target = 3.0 + 2.0  # R + gamma^h * next_q
+        # With gamma=1 and no termination, target = R (3) + next_q (2) = 5 advantage = target - chunk_q (1) = 4.
+        expected_target = 3.0 + 2.0  # R + gamma^h * next_q.
         assert torch.allclose(targets, torch.tensor([expected_target, expected_target], dtype=torch.float32))
         assert torch.allclose(advantages, targets - chunk_q)
 
@@ -49,12 +42,7 @@ class TestFPORatioInvariant:
 
 class TestCFMLossMaskShape:
     def test_fpo_cfm_loss_mask_shape(self):
-        """CFM: an all-False pad mask must leave the loss bit-identical to unmasked.
-
-        Asserts the ``"both"`` reduction at the 4-D ``[n, mc, horizon, dim]``
-        shape both production call sites use, where the mask broadcasts over the
-        MC axis without inserting one.
-        """
+        """CFM: an all-False pad mask must leave the loss bit-identical to unmasked."""
         from myfpo.configuration_sjfpo import SJFPOConfig
         from myfpo.fpo_core import compute_cfm_loss
 
@@ -72,7 +60,7 @@ class TestCFMLossMaskShape:
 
 class TestFPOCoreRemaining:
     def test_fpo_aspo_surrogate_shape(self):
-        """ASPO: for A>0 returns PPO; A<0 returns SPO; elementwise."""
+        """ASPO: for A>0 returns PPO. A<0 returns SPO. Elementwise."""
         from myfpo.fpo_core import compute_aspo_surrogate
         from myfpo.configuration_sjfpo import SJFPOConfig
         import torch
@@ -84,11 +72,7 @@ class TestFPOCoreRemaining:
         assert result.shape == ratio.shape
 
     def test_spo_uses_its_own_width_not_the_ppo_one(self):
-        """FPO++ gives SPO a separate coefficient (``spo_clip_coef``).
-
-        Sharing ``clip_param`` would silently rescale the negative-advantage
-        branch whenever the PPO band moves.
-        """
+        """FPO++ gives SPO a separate coefficient (``spo_clip_coef``)."""
         import dataclasses
 
         import torch
@@ -110,7 +94,7 @@ class TestFPOCoreRemaining:
         assert torch.allclose(got[1], torch.tensor(ppo_clipped)), "A>0 must stay PPO"
 
     def test_fpo_policy_ratio_clip_invariant(self):
-        """Policy ratio: exp(delta_st) with clamped delta; backward through delta."""
+        """Policy ratio: exp(delta_st) with clamped delta. Backward through delta."""
         from myfpo.fpo_core import compute_policy_ratio
         from myfpo.configuration_sjfpo import SJFPOConfig
         import torch
@@ -120,7 +104,7 @@ class TestFPOCoreRemaining:
         cfm_loss_new = torch.ones(2, 2) * 0.9
         ratio = compute_policy_ratio(cfm_loss_old, cfm_loss_new, cfg)
         assert ratio.shape == cfm_loss_old.shape
-        # With identical old/new and no clamp, ratio should be 1 (exp(0) = 1)
+        # With identical old/new and no clamp, ratio should be 1 (exp(0) = 1).
         ratio_same = compute_policy_ratio(cfm_loss_old, cfm_loss_old, cfg)
         assert torch.isclose(ratio_same, torch.ones_like(ratio_same), atol=1e-5).all()
 

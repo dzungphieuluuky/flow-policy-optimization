@@ -1,15 +1,4 @@
-"""``select_action`` must hand out a chunk in the order it planned it.
-
-This is the eval path: ``_EvalPolicy`` and ``scripts/play.py`` both call it,
-while ``collect_chunks_vec`` does not -- the collector steps ``plan[..., pos_t]``
-itself. So a reversed order here trains fine and then plays backwards, and
-every eval number reads that return: ``eval/mean_return``, ``eval/steps_to_best``,
-the best-checkpoint choice, and the plateau LR decay. Order is a correctness
-property here, not a style one.
-
-The regression lived here unnoticed because nothing tested ``select_action`` at
-all, so these are the first tests to touch it.
-"""
+"""``select_action`` must hand out a chunk in the order it planned it."""
 
 import dataclasses
 
@@ -131,11 +120,7 @@ def test_executes_no_more_than_the_chunk_holds():
 
 
 def test_the_collector_executes_the_same_order():
-    """Both paths agree, which is what made the divergence invisible.
-
-    The collector never touches ``_action_buffer``, so this is the reference
-    the eval path has to match.
-    """
+    """Both paths agree, which is what made the divergence invisible."""
     cfg = _cfg(action_horizon=4, n_action_steps=4)
     policy, cfg = _policy(cfg)
     chunk = _ramp(horizon=4)
@@ -145,8 +130,8 @@ def test_the_collector_executes_the_same_order():
     env = FakeVecEnv(n=2, obs_dim=OBS, act_dim=ACT, episode=1000)
     policy.generate_rollout(env, 8, action_low=LOW, action_high=HIGH)
 
-    seen = np.stack(env.actions_seen[:4])          # [4 steps, 2 envs, ACT]
-    want = chunk[0, :, 0].numpy()                  # [4 steps]
+    seen = np.stack(env.actions_seen[:4])          # [4 steps, 2 envs, ACT].
+    want = chunk[0, :, 0].numpy()                  # [4 steps].
     for step in range(4):
         assert np.allclose(seen[step, :, 0], want[step]), (
             f"step {step}: env saw {seen[step, :, 0]}, plan said {want[step]}"
@@ -165,8 +150,7 @@ def test_eval_and_collection_agree_on_the_first_chunk():
     collected_first = np.array(env.actions_seen[0][0])
 
     policy.reset()
-    # eval path returns env-bounds actions, collector stored scaled-to-[-1,1]
-    # ones; bounds are +/-1 here, so the two are the same numbers.
+    # eval path returns env-bounds actions, collector stored scaled-to-[-1,1].
     eval_first = policy.select_action(_window(cfg))[0].numpy()
     assert np.allclose(eval_first, collected_first), (
         f"eval {eval_first} vs collector {collected_first}"

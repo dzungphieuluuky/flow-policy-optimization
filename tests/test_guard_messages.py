@@ -1,21 +1,4 @@
-"""Snapshot the exact text of every reachable ValueError message.
-
-Refactors that merge guard clauses change the message even when they change
-no behaviour, and 20 tests already pin a substring of some of them. This
-records the rest, so "same functionality" is checked rather than asserted.
-
-Coverage is deliberately partial. These are the guards reachable by building a
-config, constructing a module, or calling a pure function with bad arguments.
-Guards needing a populated rollout buffer are not covered, and a guard that
-moves out of this list stops being checked silently -- so the module-level
-counts are asserted in ``test_coverage_is_what_we_think_it_is``.
-
-After a deliberate message change:
-
-    pytest tests/test_guard_messages.py --snapshot-regen
-
-and read the resulting diff before committing it.
-"""
+"""Snapshot the exact text of every reachable ValueError message."""
 
 from __future__ import annotations
 
@@ -27,8 +10,7 @@ import torch
 
 SNAPSHOT = Path(__file__).with_name("guard_messages.json")
 
-#: Guard count the table below is expected to cover. Bump deliberately when a
-#: guard is added; a silent drop here means that guard is no longer checked.
+# : Guard count the table below is expected to cover.
 EXPECTED_CASES = 77
 
 _CASES: list[tuple[str, object]] = []
@@ -50,8 +32,7 @@ def _raises(thunk) -> str:
     raise AssertionError("expected ValueError, nothing was raised")
 
 
-# --- configuration_sjfpo.SJFPOConfig -----------------------------------------
-# The largest guard cluster: nearly all reachable by one bad field.
+# --- configuration_sjfpo.SJFPOConfig -----------------------------------------.
 from myfpo.configuration_sjfpo import SJFPOConfig
 
 _BAD_CONFIG = {
@@ -106,7 +87,7 @@ def _missing_input_features() -> None:
     SJFPOConfig().validate_features()
 
 
-# --- network constructors ----------------------------------------------------
+# --- network constructors ----------------------------------------------------.
 from myfpo.attention import DiTBlock, SelfAttention
 from myfpo.critic import Critic, CriticMember
 from myfpo.encoder import RunningMeanStd, StateEncoder
@@ -136,9 +117,7 @@ case("critic:ensemble:obs_dim")(lambda: Critic(0, 8, 2, 4, 8, num_critics=2))
 case("critic:ensemble:critics")(lambda: Critic(3, 8, 2, 4, 8, num_critics=0))
 case("critic:ensemble:obs_steps")(lambda: Critic(3, 8, 2, 0, 8, num_critics=2))
 
-# DiTBlock.forward, not the constructor: a batch disagreement between x and c
-# used to reach modulate and surface as a broadcast RuntimeError naming the wrong
-# shapes, which reads as a layout bug rather than the batch mismatch it is.
+# DiTBlock.forward, not the constructor: a batch disagreement between x and c.
 case("attention:DiTBlock:forward:token-batch")(
     lambda: DiTBlock(8, 2, 2.0)(torch.randn(2, 4, 8), torch.randn(3, 4, 8))
 )
@@ -146,7 +125,7 @@ case("attention:DiTBlock:forward:cond-batch")(
     lambda: DiTBlock(8, 2, 2.0)(torch.randn(2, 4, 8), torch.randn(3, 8))
 )
 
-# --- pure functions ----------------------------------------------------------
+# --- pure functions ----------------------------------------------------------.
 from myfpo.fpo_core import (
     compute_cfm_loss,
     run_monte_carlo_sampling,
@@ -229,7 +208,7 @@ def test_snapshot_is_complete(request):
         "Update EXPECTED_CASES deliberately when a guard is added or removed."
     )
     if request.config.getoption("--snapshot-regen"):
-        return  # the file is being rewritten at session end
+        return  # the file is being rewritten at session end.
     snap = json.loads(SNAPSHOT.read_text())
     missing = sorted(set(_IDS) - set(snap))
     assert not missing, f"snapshot is missing: {missing}"

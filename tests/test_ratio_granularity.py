@@ -1,11 +1,4 @@
-"""``ratio_granularity`` must select the trust region the papers name.
-
-The three values were once two, and the surviving names did not match what they
-computed: ``per_action`` exponentiated each (tau, eps) pair separately, which is
-FPO++ Eq 10, so a file claiming to reproduce FPO's Eq 9 was running FPO++'s
-first contribution. Nothing in the loss said so -- all three granularities agree
-exactly when every ratio is 1, which is every on-policy step.
-"""
+"""``ratio_granularity`` must select the trust region the papers name."""
 
 import dataclasses
 from pathlib import Path
@@ -41,11 +34,7 @@ def _cfg(**overrides):
 
 
 def _policy_and_batch(cfg, seed=0):
-    """A batch like ``generate_rollout``'s, with the behaviour losses filled in.
-
-    ``out`` is zero-initialised, which would make ``old_actor`` and ``actor``
-    agree and collapse every ratio to 1, so it is perturbed first.
-    """
+    """A batch like ``generate_rollout``'s, with the behaviour losses filled in."""
     rng = np.random.default_rng(seed)
     torch.manual_seed(seed)
     policy = build_policy(OBS, ACT, cfg, device="cpu", action_low=LOW, action_high=HIGH)
@@ -103,8 +92,7 @@ def _recorded(cfg):
 
     M.compute_policy_ratio, M.compute_aspo_surrogate = ratio_spy, surrogate_spy
     try:
-        # compute_info=True: the metric pass reads the same delta, so a branch
-        # that forgets to bind it only fails once the tracker is on.
+        # compute_info=True: the metric pass reads the same delta, so a branch.
         policy(batch, compute_info=True, check_finite=False)
     finally:
         M.compute_policy_ratio = real_ratio
@@ -154,11 +142,7 @@ def test_per_sample_clips_per_token():
 
 
 def _padded_per_sample_batch(pad_from=HORIZON // 2):
-    """A ``per_sample`` batch whose second row is padded from ``pad_from`` on.
-
-    The behaviour losses are recomputed against the same mask, so the padded
-    tokens really do have zero loss the way they do in a live rollout.
-    """
+    """A ``per_sample`` batch whose second row is padded from ``pad_from`` on."""
     cfg = per_sample()
     policy, batch = _policy_and_batch(cfg)
     batch["action_is_pad"][1, pad_from:] = True
@@ -201,12 +185,7 @@ def test_per_sample_is_unchanged_when_every_token_ran():
 
 
 def test_per_sample_masks_padded_tokens_before_the_mean():
-    """A short chunk reduces over its executed tokens only.
-
-    Dividing by ``num_mc * action_horizon`` instead down-weights every chunk that
-    ended early, by ``length / action_horizon``, for no reason the chunk is
-    responsible for. ``atol=0``: only the summation order may differ.
-    """
+    """A short chunk reduces over its executed tokens only."""
     pad_from = HORIZON // 2
     policy, batch = _padded_per_sample_batch(pad_from=pad_from)
     losses, surrogate = _per_sample_surrogate(policy, batch)
@@ -220,13 +199,7 @@ def test_per_sample_masks_padded_tokens_before_the_mean():
 
 
 def test_padded_tokens_evaluate_to_the_advantage_not_to_zero():
-    """Why the value needs masking and not just the divisor.
-
-    A padded token has zero CFM loss, so ``delta = 0``, so ``ratio = 1.0``, and
-    the ASPO surrogate at ratio 1 is exactly the advantage: zero gradient, but
-    not zero value. Pin that, because it is why the old mean shifted
-    ``policy_loss`` by about ``(H - length) / H`` of the advantage per pair.
-    """
+    """Why the value needs masking and not just the divisor."""
     pad_from = HORIZON // 2
     policy, batch = _padded_per_sample_batch(pad_from=pad_from)
     _, surrogate = _per_sample_surrogate(policy, batch)
@@ -258,16 +231,10 @@ def test_an_unknown_granularity_is_rejected():
 
 
 def test_the_baselines_select_the_trust_regions_they_name():
-    """A baseline that names an equation must select the ratio implementing it.
-
-    Checked through baselines.apply_baseline, which is now the only source of
-    baseline config. The configs/baselines/*.yaml files are gone; they disagreed
-    with this registry (max_grad_norm 48.0 vs 1.0), so keeping them would have
-    left two ways to run "the same" baseline with different gradient clipping.
-    """
+    """A baseline that names an equation must select the ratio implementing it."""
     from myfpo.baselines import apply_baseline
 
-    # (trust region, token axis folded, MC group size)
+    # (trust region, token axis folded, MC group size).
     expected = {
         "fpo": ("ppo", True, -1),
         "fpo++": ("aspo", True, 1),
@@ -277,17 +244,12 @@ def test_the_baselines_select_the_trust_regions_they_name():
         assert cfg.trust_region_mode == mode, name
         assert cfg.do_average_cfm_loss_in_chunk is token_avg, name
         assert cfg.cfm_average_group_size == group, name
-        # FPO's Eq 8 is a sum over the chunk; FPO++'s manipulation variant
-        # reduces over the chunk's valid tokens instead, so "mean".
+        # FPO's Eq 8 is a sum over the chunk. FPO++'s manipulation variant.
         assert cfg.cfm_loss_reduction == ("sum" if name == "fpo" else "mean"), name
 
 
 def test_a_baseline_cannot_inherit_the_default_it_is_been_compared_against():
-    """The reason fpo++ got explicit overrides.
-
-    Every baseline pins its identifying fields, so moving a default cannot
-    silently redefine what the baseline is.
-    """
+    """The reason fpo++ got explicit overrides."""
     from myfpo.baselines import BASELINES, _OVERRIDES
 
     for name in BASELINES:
@@ -295,13 +257,7 @@ def test_a_baseline_cannot_inherit_the_default_it_is_been_compared_against():
 
 
 def test_every_baseline_note_belongs_to_an_override_it_can_be_printed_for():
-    """A provenance note keyed to nothing is documentation no reader sees.
-
-    ``baseline_report`` looks each note up by the override field it explains, so
-    a key that is not an override is silently dropped -- which is how two notes
-    ended up written and never printed, including the one stating that the
-    ``dppo`` arm does not run DPPO.
-    """
+    """A provenance note keyed to nothing is documentation no reader sees."""
     from myfpo.baselines import _NOTES, _OVERRIDES
 
     for name, notes in _NOTES.items():

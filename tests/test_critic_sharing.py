@@ -1,13 +1,4 @@
-"""``critic_share_encoder`` reproduces FPO++'s actor-critic sharing.
-
-FPO++'s chunk-level critic is fed ``actor_module.model.encode_observations(...)``
--- the actor's own observation encoder (``finetune_online_rl.py:1177``). So the
-critic reads one ``[B, hidden]`` vector rather than the raw observation window,
-and the encoder serves both networks.
-
-This matters more than it looks: it is the one piece of actor-critic coupling in
-the released code, and the repo's own title claims coupling it does not have.
-"""
+"""``critic_share_encoder`` reproduces FPO++'s actor-critic sharing."""
 
 import dataclasses
 
@@ -99,7 +90,7 @@ def test_both_settings_pass_a_rollout_and_a_forward():
         batch["behavior_cfm_loss_token"] = old_tok
 
         loss, _ = policy(batch, compute_info=False, check_finite=False)
-        loss.backward()  # already unpacked: forward returns (loss, info)
+        loss.backward()  # already unpacked: forward returns (loss, info).
         assert torch.isfinite(loss), share
         assert policy.critic.condition_dim == (HIDDEN if share else None), share
 

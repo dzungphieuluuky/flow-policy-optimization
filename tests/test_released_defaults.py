@@ -1,22 +1,10 @@
-"""The config defaults must equal FPO++'s released manipulation values.
-
-Found the hard way: the ``fpo++`` arm pinned ``num_mc_samples=8``,
-``cfm_loss_reduction="sum"`` and 4 sampling steps, and every one of those was
-wrong against the release (``rl_cfg.py:217``, ``flow_model_config.py:68``,
-``finetune_online_rl.py:93-96``). Nothing caught it, because nothing compared
-this file to anything.
-
-The numbers below are the ones a default can silently drift away from. Where the
-two released variants disagree, the manipulation values win -- that is the
-parity target this repo picked -- and the disagreement is named in the comment so
-nobody has to re-derive it.
-"""
+"""The config defaults must equal FPO++'s released manipulation values."""
 
 from myfpo.configuration_sjfpo import SJFPOConfig
 
-# name -> (dataclass default, released value, where it comes from)
+# name -> (dataclass default, released value, where it comes from).
 RELEASED = {
-    # Isaac Lab ships 16 too (rl_cfg.py:217); Spot and H1 raise it to 32.
+    # Isaac Lab ships 16 too (rl_cfg.py:217). Spot and H1 raise it to 32.
     "num_mc_samples": (16, "rl_cfg.py:217 / finetune_online_rl.py:93"),
     "clip_param": (0.01, "finetune_online_rl.py:117 clip_coef"),
     "spo_clip_param": (0.01, "finetune_online_rl.py:118 spo_clip_coef"),

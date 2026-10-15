@@ -90,11 +90,7 @@ def _name(**kw) -> str:
 
 
 def test_run_name_keeps_the_readable_tags():
-    """The tags are the scan-friendly part; the hash only breaks ties.
-
-    Built from the config rather than written out, so a hyperparameter change
-    does not have to be mirrored here or the test fails for the wrong reason.
-    """
+    """The tags are the scan-friendly part. The hash only breaks ties."""
     c = _cfg()
     name = _name()
     prefix = (
@@ -133,7 +129,7 @@ def test_feature_dicts_do_not_change_the_name():
     )
 
 
-# --- forgetting: the peak-regression stop ----------------------------------
+# --- forgetting: the peak-regression stop ----------------------------------.
 
 
 def _regression_streak(returns: list[float], best: float = 500.0) -> list[tuple[int, bool]]:
@@ -160,7 +156,7 @@ def test_a_window_completes_once_per_patience_bad_evals():
 
 
 def test_being_just_above_the_threshold_is_not_a_regression():
-    """0.7 * 500 = 350, and 349 is below it. The boundary is the whole point."""
+    """0.7 * 500 = 350, and 349 is below it."""
     assert check_regression(350, 500, 0, return_frac=0.7, patience=1) == (0, False)
     assert check_regression(349, 500, 0, return_frac=0.7, patience=1) == (0, True)
 

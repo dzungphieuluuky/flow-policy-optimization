@@ -1,16 +1,4 @@
-"""The buffer stores one obs window per chunk plus one frame per step.
-
-Three shapes, three consumers, and nothing else may be stored:
-
-    chunk_state      [C, obs_steps, obs_dim]   the window the policy saw
-    chunk_next_state [C, obs_steps, obs_dim]   the window the chunk ran to
-    step_frames      [T, obs_dim]              raw obs after each executed step
-
-The old layout kept ``[T, obs_steps, obs_dim]`` for the first two, so 15/16 of
-every row and 15/16 of all rows went unread. These tests pin the invariants that
-make the split safe, and they pin them against the real collector, not a
-synthetic buffer, because the layout is chunk-major with envs interleaved.
-"""
+"""The buffer stores one obs window per chunk plus one frame per step."""
 
 import numpy as np
 import pytest
@@ -64,12 +52,7 @@ def _collect(total_steps: int = 240, n: int = NUM_ENVS):
 
 
 def test_shapes_match_their_consumers():
-    """One row per chunk for the windows, one per step for the frames.
-
-    The chunk tensors are allocated at chunk_capacity, not at n_chunks, because
-    the chunk count is only known once the rollout ends. So assert the written
-    prefix, not the allocation.
-    """
+    """One row per chunk for the windows, one per step for the frames."""
     buf = _collect()
     n = buf.n_chunks
     assert buf.chunk_state[:n].shape == (n, OBS_STEPS, OBS_DIM)
@@ -81,14 +64,13 @@ def test_step_frames_are_the_per_step_observations():
     """Every executed step contributed exactly one frame, and no padding."""
     buf = _collect()
     assert buf.n_steps == int(buf.chunk_lengths[: buf.n_chunks].sum())
-    # Frames are raw observations, so they are unbounded but finite and not
-    # all identical. A zero-filled tail would show up as a constant block.
+    # Frames are raw observations, so they are unbounded but finite and not all identical.
     assert torch.isfinite(buf.step_frames).all()
     assert buf.step_frames.std(dim=0).max() > 0
 
 
 def test_chunk_state_is_the_window_the_policy_saw():
-    """A recording policy captures what it was handed; the buffer must match."""
+    """A recording policy captures what it was handed. The buffer must match."""
     pytest.importorskip("gymnasium")
     envs = _pendulum_vec()
     buffer = RolloutBuffer(
@@ -119,8 +101,7 @@ def test_chunk_state_is_the_window_the_policy_saw():
     )
     envs.close()
 
-    # The policy is called once per wavefront, in the order of `need`. Flattening
-    # those calls in call order must line up with the chunks in buffer order.
+    # The policy is called once per wavefront, in the order of `need`.
     flat = torch.cat(seen, dim=0)
     assert flat.shape[0] == buffer.n_chunks
     torch.testing.assert_close(buffer.chunk_state[: buffer.n_chunks], flat)
@@ -140,11 +121,7 @@ def test_chunk_next_state_is_the_final_window():
 
 
 def test_next_state_frames_agree_across_chunks():
-    """The invariant that made the shift look global. Wavefront order means
-    adjacent chunks belong to different envs, so a naive ``t + 1`` index over the
-    flat step axis is wrong at every chunk boundary. This is the test that
-    catches a regression to exactly that mistake.
-    """
+    """The invariant that made the shift look global."""
     buf = _collect()
     env_id = buf.chunk_env_id[: buf.n_chunks].to(torch.long)
 
@@ -158,8 +135,7 @@ def test_next_state_frames_agree_across_chunks():
         if not successor:
             continue
         d = successor[0]
-        # The window the next chunk of the same env started from is the window
-        # the previous chunk of that env ran to.
+        # The window the next chunk of the same env started from is the window.
         torch.testing.assert_close(
             buf.chunk_state[d][-1, :],
             buf.chunk_next_state[c][-1, :],
@@ -170,12 +146,7 @@ def test_next_state_frames_agree_across_chunks():
 
 
 def test_single_step_chunk():
-    """n_exec == 1: chunk_next_state[c] is the one and only step window.
-
-    tests/test_gae.py has a chunk_starts=zeros(1) case, but that is n_chunks=1,
-    not n_exec=1. This path is the one that a ``[:, -1, :]`` slice or an
-    off-by-one in add_chunk would break silently.
-    """
+    """n_exec == 1: chunk_next_state[c] is the one and only step window."""
     buf = RolloutBuffer(
         max_chunks=4,
         max_steps=8,
@@ -204,7 +175,7 @@ def test_single_step_chunk():
 
 
 def test_reset_keeps_storage_and_clears_cursors():
-    """The buffer is reused across rollouts; storage must survive."""
+    """The buffer is reused across rollouts. Storage must survive."""
     buf = _collect(total_steps=80)
     before = buf.chunk_state.clone()
     buf.reset()

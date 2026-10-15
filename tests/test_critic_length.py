@@ -1,19 +1,4 @@
-"""The critic is told how much of each planned chunk actually ran.
-
-A chunk is planned at ``action_horizon`` but only ``lengths`` steps execute --
-``execute_open_loop_steps_into`` breaks on terminate/truncate -- so the tail of
-``chunk_actions`` is a plan that never ran. The critic is regressed onto a
-return that covers only the executed prefix, so without the length input Q is
-asked to be invariant to a distinction it cannot see.
-
-Two rows matter and they are NOT the same number:
-
-  * the Q under training gets that chunk's own ``lengths``
-  * the bootstrap gets ``n_action_steps / H``, because ``boot_actions`` is a
-    full-horizon proposal that will only be executed for ``n_action_steps``
-
-Getting the second one wrong puts the mismatch straight back, one level down.
-"""
+"""The critic is told how much of each planned chunk actually ran."""
 
 import pytest
 import torch
@@ -61,7 +46,7 @@ def test_exec_frac_normalises_by_the_horizon():
 
 
 def test_exec_frac_is_fp32_even_from_a_long_tensor():
-    """The critic runs under autocast; an int64 column would not concatenate."""
+    """The critic runs under autocast. An int64 column would not concatenate."""
     policy = _policy_with_critic(_cfg())
     got = policy.exec_length_frac(torch.tensor([2, 4], dtype=torch.long))
     assert got.dtype == torch.float32

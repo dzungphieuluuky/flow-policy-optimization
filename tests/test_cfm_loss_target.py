@@ -1,16 +1,4 @@
-"""``cfm_loss_target`` picks which endpoint the CFM loss regresses.
-
-FPO++'s ``cfm_loss_mode`` (``flow_model.py:592-631``) has three modes: velocity
-(``u``), the action endpoint (its ``x0``) and the noise endpoint (its ``eps``).
-The names differ because the reference runs time the other way -- ``t=0`` is the
-action there, ``t=1`` is the action here -- so a field literally called ``x0``
-would mean the opposite endpoint in this repo.
-
-The network keeps predicting velocity in every mode, so the only thing that moves
-is the comparison. That buys an exact invariant: on the straight path
-``x_t = (1 - t) * eps + t * a`` and ``v = a - eps``, so feeding the true velocity
-to any mode must give a target-exact prediction and therefore a zero CFM loss.
-"""
+"""``cfm_loss_target`` picks which endpoint the CFM loss regresses."""
 
 import dataclasses
 
@@ -39,13 +27,7 @@ def _path(n=3, m=4, k=5, d=2, seed=0):
 
 @pytest.mark.parametrize("mode", MODES)
 def test_the_true_velocity_is_a_perfect_prediction_in_every_mode(mode):
-    """``x_t + (1 - t) * v == a`` and ``x_t - t * v == eps``.
-
-    ``velocity`` compares the prediction with the target expression itself, so
-    it is bit-exact. The endpoint modes reconstruct through ``(1 - t) * eps +
-    t * a``, which fp32 only carries to rounding -- 1e-15 here -- so the bar is
-    fp32 noise, not zero.
-    """
+    """``x_t + (1 - t) * v == a`` and ``x_t - t * v == eps``."""
     a, eps, t, x_t, v = _path()
     cfg = _cfg(cfm_loss_target=mode)
 
