@@ -243,6 +243,7 @@ a flat curve and read the `lr1e3` arm before blaming the algorithm.
 | `train/log_ratio_clip_frac` | fraction of ratios outside the clip band. 0 means neither PPO clip nor SPO quadratic is constraining anything |
 | `train/explained_var` | critic fit. Flat below ~0.3 means advantages are critic error, and the policy loss is training on noise |
 | `train/grad_norm_preclip` | against `max_grad_norm`. Saturated means the clip, not the loss, is setting the step size |
+| `train/sigreg_raw` | Weak SIGReg penalty on the encoder conditioning. 0 and unlogged unless `--sjfpo.sigreg_mode` is on |
 | `eval/mean_return` vs `eval/steps_to_best` | peak location and how late it came |
 
 `train/grad_norm_preclip` is one key over actor and critic together. If it
@@ -318,6 +319,30 @@ run_arm("lr1e3", ["--sjfpo.policy_lr", "1e-3", "--sjfpo.critic_lr", "1e-3"])
 Do **not** sweep `cfm_clamp` or `log_ratio_cap`. The logged run had
 `cfm_above_clamp_frac=0` and `log_ratio_clip_frac=0`; neither bound, so neither
 is a lever.
+
+### Representation regularization (SIGReg)
+
+Weak SIGReg matches the encoder conditioning covariance to identity. It guards
+the representation that feeds the actor and the critic. One knob starts it:
+`--sjfpo.sigreg_mode weak` with `--sjfpo.sigreg_coef`.
+
+Calibrate before trusting a live value. The log-only arm records
+`train/sigreg_raw` without touching the loss. Read its scale first. Then set
+the coef so the weighted penalty starts near 1% of the policy loss.
+
+```python
+# Log-only: no loss effect, reports the natural penalty scale.
+run_arm("sigreg_logonly", ["--sjfpo.sigreg_mode", "weak", "--sjfpo.sigreg_coef", "0.0"])
+
+# Live arms on Humanoid-v5.
+run_arm("sigreg_w1e4", ["--sjfpo.sigreg_mode", "weak", "--sjfpo.sigreg_coef", "1e-4"])
+run_arm("sigreg_w1e3", ["--sjfpo.sigreg_mode", "weak", "--sjfpo.sigreg_coef", "1e-3"])
+```
+
+`decorr` standardizes each feature first, so only redundancy pays and column
+scales survive. Prefer it if the `weak` arms move `train/sigreg_raw` but not
+returns. Sketch dim defaults to 64 and clamps to the batch automatically, so
+leave it alone unless the row count drops under it.
 
 ### Reading the results
 
