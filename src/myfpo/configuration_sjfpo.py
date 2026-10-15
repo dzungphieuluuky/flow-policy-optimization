@@ -111,6 +111,10 @@ class SJFPOConfig(PreTrainedConfig):
     # it was unexecuted, while its regression target covered only the executed
     # prefix. Set False to restore the old, tail-blind critic exactly.
     critic_condition_on_exec_length: bool = True
+    # FPO++'s chunk-level critic consumes the actor's own observation encoder
+    # output (finetune_online_rl.py:1177). On, the critic takes hidden_dim
+    # instead of the raw obs window; the encoder then serves both networks.
+    critic_share_encoder: bool = False
     # The critic was welded to the actor's width, which is wrong across the env
     # ladder: obs_dim runs 3 (Pendulum) to 348 (Humanoid-v5), so the critic's
     # first layer sees 56 or 5704 inputs and squeezes both into hidden_dim. None

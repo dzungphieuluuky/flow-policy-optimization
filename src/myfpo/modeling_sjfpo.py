@@ -346,17 +346,21 @@ class SJFPOPolicy(PreTrainedPolicy):
                 config.time_embed_dim,
             )
         self.encoder = StateEncoder(obs_dim, config.hidden_dim, config.n_obs_steps)
-        self.critic = Critic(
-            obs_dim,
+        critic_width = (
             config.critic_hidden_dim
             if config.critic_hidden_dim is not None
-            else config.hidden_dim,
+            else config.hidden_dim
+        )
+        self.critic = Critic(
+            obs_dim,
+            critic_width,
             action_dim,
             config.n_obs_steps,
             config.action_horizon,
             config.num_critics,
             condition_on_exec_length=config.critic_condition_on_exec_length,
             num_layers=config.critic_num_layers,
+            condition_dim=config.hidden_dim if config.critic_share_encoder else None,
         )
         self.obs_normalizer = RunningMeanStd(obs_dim)
 
@@ -790,6 +794,18 @@ class SJFPOPolicy(PreTrainedPolicy):
         return self._action_buffer.popleft()
 
 
+    def critic_inputs(
+        self, normalised_states: torch.Tensor, condition: torch.Tensor
+    ) -> torch.Tensor:
+        """What the critic reads: the obs window, or the shared encoder's vector.
+
+        With ``critic_share_encoder`` the critic is fed the same embedding the
+        actor conditions on, which is FPO++'s arrangement
+        (``finetune_online_rl.py:1177``). Off by default, so the critic keeps its
+        own view of the observation.
+        """
+        return condition if self.config.critic_share_encoder else normalised_states
+
     def exec_length_frac(self, executed_steps: torch.Tensor) -> torch.Tensor:
         """Normalise an executed-step count to ``[0, 1]``.
 
@@ -1021,13 +1037,26 @@ class SJFPOPolicy(PreTrainedPolicy):
             )
             # amin across members: backup only, never in the loss.
             # The value loss averages the same members.
+            # The shared encoder runs here so the critic can read it; one pass
+            # for both the chunk and its bootstrap, same weights as the actor's.
+            critic_cond = (
+                self.encoder(all_chunk_normalised_states)
+                if cfg.critic_share_encoder
+                else None
+            )
+            chunk_cond = critic_cond[:n_chunks] if critic_cond is not None else None
+            next_cond = critic_cond[n_chunks:] if critic_cond is not None else None
             with autocast_context(device):
                 chunk_q = self.critic(
-                    normalised_states, actions, exec_length_frac
+                    self.critic_inputs(normalised_states, chunk_cond),
+                    actions,
+                    exec_length_frac,
                 ).float().amin(dim=0)
             with torch.inference_mode(), autocast_context(device):
                 boot_q = self.critic(
-                    normalised_next_states, boot_actions, boot_exec_frac
+                    self.critic_inputs(normalised_next_states, next_cond),
+                    boot_actions,
+                    boot_exec_frac,
                 ).float().amin(dim=0)
 
         # One chunk is one macro-transition: sum rewards, discount gamma**h.
@@ -1229,10 +1258,10 @@ class SJFPOPolicy(PreTrainedPolicy):
         actor_tau = flatten_timestep.squeeze(-1)
 
         with autocast_context(device):
-            cond_flat = einx.id(
-                "n m d -> (n m) d",
-                einx.id("n d -> n m d", self.encoder(states), m=num_mc),
-            )
+            # One encoder pass: the actor gets the MC-broadcast copy, and the
+            # critic gets the unbroadcast one when it shares this encoder.
+            cond = self.encoder(states)
+            cond_flat = einx.id("n m d -> (n m) d", einx.id("n d -> n m d", cond, m=num_mc))
         if "behavior_cfm_loss" not in batch or "behavior_cfm_loss_token" not in batch:
             raise KeyError(
                 "forward requires 'behavior_cfm_loss' and 'behavior_cfm_loss_token' "
@@ -1335,7 +1364,8 @@ class SJFPOPolicy(PreTrainedPolicy):
         with autocast_context(device):
             # action_is_pad marks unexecuted steps; count the complement.
             chunk_exec_frac = self.exec_length_frac((~action_is_pad).sum(dim=-1))
-            raw_value_pred = self.critic(states, actions, chunk_exec_frac).float()  # [num_critics, n]
+            critic_in = self.critic_inputs(states, cond)
+            raw_value_pred = self.critic(critic_in, actions, chunk_exec_frac).float()  # [num_critics, n]
         raw_returns_flat = raw_returns.reshape(-1)
         if raw_value_pred.shape[-1] != raw_returns_flat.shape[0]:
             raise ValueError(

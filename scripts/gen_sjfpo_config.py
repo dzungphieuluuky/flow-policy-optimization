@@ -82,6 +82,7 @@ SECTIONS: list[tuple[str, list[str]]] = [
         "Critic and value targets",
         [
             "num_critics",
+            "critic_share_encoder",
             "critic_condition_on_exec_length",
             "critic_hidden_dim",
             "critic_num_layers",

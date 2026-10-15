@@ -15,6 +15,11 @@ class CriticMember(nn.Module):
     final input. Without it the head cannot distinguish two chunks that share an
     executed prefix but differ in the tail that was planned and never run, yet
     it is regressed onto the same return.
+
+    ``condition_dim`` is the shared-encoder option. FPO++'s chunk-level critic
+    consumes ``actor_module.model.encode_observations(...)`` -- the actor's own
+    observation encoder (``finetune_online_rl.py:1177``) -- so with it set the
+    head takes one ``[B, condition_dim]`` vector instead of an obs window.
     """
 
     def __init__(
@@ -27,6 +32,7 @@ class CriticMember(nn.Module):
         *,
         condition_on_exec_length: bool = True,
         num_layers: int = 2,
+        condition_dim: int | None = None,
     ):
         super().__init__()
         if action_dim < 1:
@@ -42,9 +48,20 @@ class CriticMember(nn.Module):
         self.n_obs_steps = n_obs_steps
         self.action_horizon = action_horizon
         self.condition_on_exec_length = condition_on_exec_length
-        self.input_dim = (
-            n_obs_steps * obs_dim + action_horizon * action_dim
-        ) + (1 if condition_on_exec_length else 0)
+        self.condition_dim = condition_dim
+        state_dim = (
+            condition_dim if condition_dim is not None else n_obs_steps * obs_dim
+        )
+        if condition_dim is not None and n_obs_steps != 1:
+            # The obs window is not read in this mode; refuse the ambiguity
+            # rather than silently ignoring a caller that passes one.
+            raise ValueError(
+                f"condition_dim is set, so n_obs_steps must be 1 (unused), got "
+                f"{n_obs_steps}"
+            )
+        self.input_dim = state_dim + action_horizon * action_dim + (
+            1 if condition_on_exec_length else 0
+        )
         in_dim = self.input_dim
         layers: list[nn.Module] = [nn.Linear(in_dim, hidden_dim), nn.ReLU()]
         for _ in range(num_layers - 1):
@@ -58,7 +75,18 @@ class CriticMember(nn.Module):
         actions: torch.Tensor,
         exec_length_frac: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """``[B, T, obs]`` and ``[B, H, action_dim]`` -> ``[B]``."""
+        """``[B, T, obs]`` (or ``[B, condition_dim]``) and ``[B, H, action_dim]`` -> ``[B]``."""
+        if self.condition_dim is not None:
+            if states.dim() != 2 or states.shape[1] != self.condition_dim:
+                raise ValueError(
+                    f"condition must have shape [B, {self.condition_dim}], got "
+                    f"{tuple(states.shape)}"
+                )
+        elif states.dim() != 3 or states.shape[1] != self.n_obs_steps:
+            raise ValueError(
+                f"states must have shape [B, {self.n_obs_steps}, {self.obs_dim}], "
+                f"got {tuple(states.shape)}"
+            )
         parts = [states.flatten(1), actions.flatten(1)]
         if self.condition_on_exec_length:
             if exec_length_frac is None:
@@ -94,8 +122,11 @@ class Critic(nn.Module):
         *,
         condition_on_exec_length: bool = True,
         num_layers: int = 2,
+        condition_dim: int | None = None,
     ):
         super().__init__()
+        if condition_dim is not None and condition_dim < 1:
+            raise ValueError("condition_dim must be >= 1 when set")
         if obs_dim <= 0:
             raise ValueError("obs_dim must be positive")
         if hidden_dim < 1:
@@ -112,16 +143,18 @@ class Critic(nn.Module):
         self.action_horizon = action_horizon
         self.num_critics = num_critics
         self.condition_on_exec_length = condition_on_exec_length
+        self.condition_dim = condition_dim
         self.networks = nn.ModuleList(
             [
                 CriticMember(
                     obs_dim,
                     action_dim,
                     hidden_dim,
-                    n_obs_steps,
+                    1 if condition_dim is not None else n_obs_steps,
                     action_horizon,
                     condition_on_exec_length=condition_on_exec_length,
                     num_layers=num_layers,
+                    condition_dim=condition_dim,
                 )
                 for _ in range(num_critics)
             ]
@@ -139,11 +172,18 @@ class Critic(nn.Module):
         actions: torch.Tensor,
         exec_length_frac: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """``[B, T, obs]``, ``[B, H, action_dim]`` -> ``[num_critics, B]``."""
-        if states.dim() != 3 or states.shape[2] != self.obs_dim:
-            raise ValueError(f"states must have shape [B, {self.n_obs_steps}, {self.obs_dim}], got {tuple(states.shape)}")
-        if states.shape[1] != self.n_obs_steps:
-            raise ValueError(f"states has {states.shape[1]} time steps but the critic was built for n_obs_steps={self.n_obs_steps}")
+        """``[B, T, obs]`` (or ``[B, condition_dim]``), ``[B, H, action_dim]`` -> ``[num_critics, B]``."""
+        if self.condition_dim is not None:
+            if states.dim() != 2 or states.shape[1] != self.condition_dim:
+                raise ValueError(
+                    f"condition must have shape [B, {self.condition_dim}], got "
+                    f"{tuple(states.shape)}"
+                )
+        else:
+            if states.dim() != 3 or states.shape[2] != self.obs_dim:
+                raise ValueError(f"states must have shape [B, {self.n_obs_steps}, {self.obs_dim}], got {tuple(states.shape)}")
+            if states.shape[1] != self.n_obs_steps:
+                raise ValueError(f"states has {states.shape[1]} time steps but the critic was built for n_obs_steps={self.n_obs_steps}")
         if actions.dim() != 3:
             raise ValueError(f"actions must have shape [B, H, action_dim], got {tuple(actions.shape)}")
         if actions.shape[2] != self.action_dim:
