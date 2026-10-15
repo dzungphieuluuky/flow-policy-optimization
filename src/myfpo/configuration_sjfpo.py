@@ -27,7 +27,7 @@ class SJFPOConfig(PreTrainedConfig):
     n_obs_steps: int = 16
     action_horizon: int = 8
     n_action_steps: int = 4
-    action_perturb_std: float = 0.02
+    action_perturb_std: float = 0.0
     hidden_dim: int = 128
 
     num_envs: int = 64
