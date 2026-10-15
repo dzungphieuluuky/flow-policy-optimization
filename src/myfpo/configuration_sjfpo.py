@@ -86,10 +86,15 @@ class SJFPOConfig(PreTrainedConfig):
     # both. The behaviour here is the behaviour of manipulation.
     spo_clip_param: float = 0.01
     trust_region_mode: str = "aspo"
-    # The default is "mean", not the "sum" of Eq. 8 in FPO. Under "sum" the
-    # function compute_cfm_loss deliberately does not renormalise for padding.
-    # The loss of a short chunk then scales with its executed length. Its
-    # effective clip width scales with that length too.
+    # The sample-level reduction: "mean" (default), "sum", or "sqrt". The
+    # default "mean" is not the "sum" of Eq. 8 in FPO. Under "sum" the function
+    # compute_cfm_loss deliberately does not renormalise for padding, so a short
+    # chunk's loss scales with its executed length.
+    #
+    # It reaches the policy gradient only when do_average_cfm_loss_in_chunk is
+    # True. The default per-token path always averages over the action
+    # dimension, so this flag does not change the loss there. It still feeds the
+    # sample-level diagnostics and the above-clamp gate.
     # Both baselines pin "sum". See baselines.py.
     cfm_loss_reduction: str = "mean"
     # What the CFM loss compares against. This is the ``cfm_loss_mode`` of FPO++
