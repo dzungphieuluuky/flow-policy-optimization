@@ -200,6 +200,8 @@ def compute_ratio_metrics(
     """Trust-region diagnostics, with a per-token axis split.
 
     ``log_ratio_*`` reads raw delta, never the clamped one.
+    ``log_ratio_clip_frac`` counts the upper side only. That is the side
+    ``compute_policy_ratio`` clamps.
     ``clipfrac`` near zero means the trust region never binds.
 
     ``mean_log_ratio``, ``log_ratio_max``, ``log_ratio_clip_frac``,
@@ -211,7 +213,7 @@ def compute_ratio_metrics(
     ``pos`` keys: this is not a frequency cut.
     """
     log_ratio_abs = delta.abs()
-    log_ratio_clip_frac = (log_ratio_abs > cfg.log_ratio_cap).float().mean()
+    log_ratio_clip_frac = (delta > cfg.log_ratio_cap).float().mean()
 
     ratio_token_mean = ratio_token.mean(dim=(0, 1))
     num_tokens = ratio_token_mean.numel()

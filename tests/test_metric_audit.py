@@ -271,6 +271,18 @@ def test_no_logged_key_is_a_constant_or_an_always_nan():
     assert not dead, f"always-NaN keys: {sorted(dead)}"
 
 
+def test_log_ratio_clip_frac_counts_the_capped_side_only():
+    """compute_policy_ratio clamps delta > cap, never the lower side."""
+    c = _cfg(log_ratio_cap=10.0)
+    delta = torch.tensor([[20.0, -20.0, 0.0, 5.0]])
+    ratio = torch.ones(1, 1, 4)
+    m = compute_ratio_metrics(
+        ratio=ratio, ratio_token=ratio, delta=delta,
+        action_is_pad=torch.zeros(1, 4, dtype=torch.bool), cfg=c,
+    )
+    assert m["log_ratio_clip_frac"] == pytest.approx(0.25)
+
+
 # --- G.
 def test_reward_improvement_pct_reads_wrong_on_a_negative_baseline():
     prev, cur = -1000.0, -500.0   # a real improvement of 500.
