@@ -267,7 +267,7 @@ def compute_value_metrics(
         # The pessimism the backup actually uses.
         "explained_var_min": 1.0
         - (raw_returns_flat - min_value_pred).var(correction=0) / returns_var,
-        "value_huber_max": mean_value_pred.sub(raw_returns_flat).abs().max(),
+        "value_abs_err_max": mean_value_pred.sub(raw_returns_flat).abs().max(),
         "value_pred_max": mean_value_pred.abs().max(),
         "value_target_std": raw_returns_flat.std(correction=0),
         # Pooled over [num_critics, n]: within- and between-member spread.
