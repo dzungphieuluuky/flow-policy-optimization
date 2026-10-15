@@ -118,8 +118,8 @@ def compute_gae_diagnostics(
         ((e[1:] == e[:-1]) & ~ends).sum().double() / max(n - 1, 1),
         adv_std,
         rms(ret).double(),
-        # A = R - V, so Var(A) <= Var(R).
-        # 1.0 means an inert critic.
+        # adv_std / ret_std. 1.0 reads as an inert critic.
+        # Not bounded by 1: Var(A) > Var(R) is possible.
         adv_std / ret_std,
         # Budget cut. Not chunk_truncated, not truncated_chunk_frac.
         budget_truncated.to(torch.bool).float().mean().double()
