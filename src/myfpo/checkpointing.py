@@ -126,13 +126,12 @@ def save_policy_checkpoint(
     d.mkdir(parents=True, exist_ok=True)
 
     policy.save_pretrained(d, state_dict=policy.state_dict())
-    # The file ema.pt holds the EMA shadow. The function does NOT overlay the
-    # shadow onto actor.* here. The logical weights in model.safetensors stay
-    # the live policy. FPO++ resumes the live weights and the EMA weights
-    # independently (finetune_online_rl.py), and this matches that.
-    # An earlier version overwrote actor.* with the shadow. Then the restored
-    # live policy equalled the old EMA policy. That silently changed the
-    # resumed training trajectory.
+    # The file ema.pt holds the EMA shadow. This function does not overlay the
+    # shadow onto actor.*. The logical weights in model.safetensors stay the live
+    # policy. FPO++ resumes the live weights and the EMA weights independently
+    # (finetune_online_rl.py), and this code matches that. An earlier version
+    # overwrote actor.* with the shadow. The restored live policy then equalled
+    # the old EMA policy. That silently changed the resumed training trajectory.
     if ema_state is not None:
         save_torch_atomically(d / "ema.pt", ema_state)
 
@@ -161,7 +160,8 @@ def load_optimizer(policy, d: Path) -> torch.optim.Optimizer:
     drift. Fails loudly on a structural mismatch instead of relying on
     ``load_state_dict``'s opaque errors.
     """
-    # Deferred import (circular: checkpointing uses modeling_sjfpo optimizer).
+    # Deferred import. A top-level import would be circular: checkpointing uses
+    # the modeling_sjfpo optimizer.
     from myfpo.modeling_sjfpo import build_optimizer
 
     optimizer = build_optimizer(policy)
@@ -210,7 +210,7 @@ def load_rng(d: Path) -> None:
     try:
         rng = torch.load(path, map_location="cpu", weights_only=True)
     except Exception:
-        return  # corrupt RNG file shouldn't block resume
+        return  # A corrupt RNG file must not block a resume.
     if "torch" in rng:
         torch.set_rng_state(rng["torch"])
     if "cuda" in rng and torch.cuda.is_available():
@@ -231,7 +231,8 @@ def load_policy_checkpoint(
     Action bounds are runtime state: pass both ``action_low`` and ``action_high``
     to restore the postprocessor mapping.
     """
-    from myfpo.modeling_sjfpo import SJFPOPolicy  # lazy: import-light module
+    # Lazy import. This module stays import-light.
+    from myfpo.modeling_sjfpo import SJFPOPolicy
 
     d = Path(dir_path)
     missing = [

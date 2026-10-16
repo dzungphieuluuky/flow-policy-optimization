@@ -8,10 +8,11 @@ import numpy as np
 _FEATURE_KEYS = ("input_features", "output_features")
 
 def compact_value(v) -> str:
-    """Render a metric compactly for a wandb run name.
+    """Render a metric as short text for a wandb run name.
 
-    Bools become ints, floats use ``:g``, non-finite floats become
-    ``nan``/``inf``/``-inf`` instead of an empty or padded string.
+    A bool becomes an int. A float uses ``:g``. A float that is not finite
+    becomes ``nan``, ``inf`` or ``-inf``. It does not become an empty or padded
+    string.
     """
     if isinstance(v, bool):
         return str(int(v))
@@ -29,12 +30,13 @@ def compact_value(v) -> str:
 
 
 def config_hash(cfg_dict: dict) -> str:
-    """Six hex chars over every config value, so no two configs share a name.
+    """Six hex characters over every config value. Two configs cannot then
+    share a name.
 
-    The tags in ``build_run_name`` only cover the settings that usually vary, so
-    two runs differing in anything else (gamma, action_horizon, tau) collided.
-    The feature dicts are excluded: they are fixed by the env and render badly
-    in a tensorboard path.
+    The tags in ``build_run_name`` cover only the settings that usually change.
+    Two runs that differed in any other setting (gamma, action_horizon, tau)
+    got the same name. The feature dicts are not part of the hash. The env
+    fixes those dicts, and they render badly in a tensorboard path.
     """
     items = [
         (key, compact_value(value))
@@ -45,17 +47,17 @@ def config_hash(cfg_dict: dict) -> str:
 
 
 def build_run_name(method: str, env_name: str, seed: int, cfg_dict: dict) -> str:
-    """Build the wandb run name from the method, the env, the seed, the key
-    settings, and a config hash.
+    """Build the wandb run name. The name holds the method, the env, the seed,
+    the key settings, and a config hash.
 
     The form is ``method_env_sseed_tag_tag_hash``. The tags stay readable. The
-    hash makes the name unique per config. That is what tells two runs with the
-    same seed apart in the user interface.
+    hash makes the name unique for each config. Thus two runs with the same
+    seed have different names in the user interface.
     """
     tags: list[str] = []
     get = cfg_dict.get
-    # h is the token count now that the DCT is gone: the loss reduces over the
-    # chunk's action steps, so it is always the horizon.
+    # h is the token count. The DCT is gone. The loss reduces over the chunk's
+    # action steps, so h is always the horizon.
     if (v := get("action_horizon")) is not None:
         tags.append(f"h{v}")
     if (v := get("hidden_dim")) is not None and (d := get("dit_depth")) is not None:
@@ -83,12 +85,14 @@ def compute_eval_summary_metrics(
     best_return: float | None = None,
     steps_to_best: int | None = None,
 ) -> dict:
-    """Return the eval scalars for one eval window. Add the peak and streak
-    figures when the caller supplies them.
+    """Return the eval scalars for one eval window.
+
+    The function adds the peak and streak figures only if the caller supplies
+    them.
 
     A statistic over an empty window is NaN, not 0.0. The value
-    ``std_length = 0.0`` reads as "every episode had the same length". That is a
-    claim about the data. With no episodes, there is no such claim to make.
+    ``std_length = 0.0`` says that every episode had the same length. That is a
+    claim about the data. With no episodes, the function cannot make that claim.
     """
     returns = [r["return"] for r in eval_results]
     lengths = [r["length"] for r in eval_results]
@@ -110,9 +114,9 @@ def compute_eval_summary_metrics(
         data["eval/steps_to_best"] = int(steps_to_best)
     if r_rand is not None:
         data["eval/sample_random_baseline"] = float(r_rand)
-    # The function compares only when the last recorded mean belongs to this
-    # window. So the series has no gap between the two values. Otherwise prev
-    # belongs to a different eval, and the delta is not a delta.
+    # Compare only if the last recorded mean belongs to this window. Then the
+    # series has no gap between the two values. Otherwise prev belongs to a
+    # different eval, and the delta is not a delta.
     if len(all_eval_returns) >= 2 and all_eval_returns[-1] == mean_return:
         prev = all_eval_returns[-2]
         data["eval/reward_improvement"] = float(mean_return - prev)
@@ -143,7 +147,7 @@ class ExperimentTrackerBackend(Protocol):
 
 
 class ExperimentTracker:
-    """Fan every call out to each configured backend."""
+    """Send every call to each configured backend."""
 
     def __init__(self, backends: list[ExperimentTrackerBackend]):
         self.backends = backends

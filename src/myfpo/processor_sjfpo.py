@@ -1,8 +1,9 @@
-"""SJFPO pre/post processors (LeRobot style): norm obs, unscale action.
+"""SJFPO pre/post processors (LeRobot style). The pair norms the obs and
+unscales the action.
 
-``ProcessorStep`` is not an ``nn.Module``, so bounds stay plain CPU tensors.
-``unnormalize`` casts them to the caller's device and dtype on every call.
-Small cost: two tiny tensors, once per chunk.
+``ProcessorStep`` is not an ``nn.Module``, so the bounds stay plain CPU tensors.
+The postprocessor casts them to the device and dtype of the caller on every
+call. The cost is small: two tiny tensors, once per chunk.
 """
 
 from __future__ import annotations
@@ -45,8 +46,8 @@ class SJFPOObservationProcessorStep(ProcessorStep):
 class SJFPOActionPostprocessorStep(ProcessorStep):
     """Unscale action chunks from ``[-1, 1]`` to env bounds.
 
-    ``set_action_bounds`` recomputes the scale and bias. No caches to clear --
-    there are only the two CPU coefficient tensors.
+    ``set_action_bounds`` recomputes the scale and bias. The object has no
+    caches to clear. Only the two CPU coefficient tensors exist.
     """
 
     def __init__(self, action_low: torch.Tensor, action_high: torch.Tensor):
@@ -57,7 +58,8 @@ class SJFPOActionPostprocessorStep(ProcessorStep):
         action_low: torch.Tensor,
         action_high: torch.Tensor,
     ) -> None:
-        """Set the action bounds, invalidate cached coefficients."""
+        """Set the action bounds. The function recomputes the scale and bias
+        coefficients from them."""
         low = torch.as_tensor(action_low, dtype=torch.float32).reshape(-1).clone()
         high = torch.as_tensor(action_high, dtype=torch.float32).reshape(-1).clone()
         if low.shape != high.shape:
@@ -76,7 +78,7 @@ class SJFPOActionPostprocessorStep(ProcessorStep):
 
     @torch.inference_mode()
     def __call__(self, batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
-        # Unscale into real env bounds; coefficients cast per call.
+        # Unscale into real env bounds. The coefficients cast per call.
         scaled = batch[ACTION]
         scale = self._scale_cpu.to(device=scaled.device, dtype=scaled.dtype)
         bias = self._bias_cpu.to(device=scaled.device, dtype=scaled.dtype)

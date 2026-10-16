@@ -22,7 +22,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "configs" / "sjfpo.yaml"
 
-# Field name -> section heading. Order is the emission order.
+# Field name to section heading. The order here is the emission order.
 SECTIONS: list[tuple[str, list[str]]] = [
     (
         "Observation / action geometry",
@@ -191,8 +191,8 @@ def render() -> str:
             emitted.add(name)
             lines.append(f"{name}: {_yaml_value(getattr(cfg, name))}")
     known = {f.name for f in dataclasses.fields(cfg)}
-    # report_to is excluded above on purpose: it is a reporting sink, not a
-    # training knob, and the default is "all" which wandb-side would override.
+    # The SECTIONS table excludes report_to on purpose. It is a reporting sink,
+    # not a training knob. Its default is "all", which wandb-side would override.
     skipped = sorted(known - emitted)
     if skipped:
         lines.append("\n# -- Not emitted (non-hyperparameters) " + "-" * 20)

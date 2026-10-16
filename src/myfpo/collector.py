@@ -24,15 +24,15 @@ from myfpo.configuration_sjfpo import SJFPOConfig
 __all__ = ["RolloutBuffer", "collect_chunks_vec"]
 
 
-# Lazily-constructed config (import cost only on first use).
+# Lazy config. The import cost occurs only on first use.
 _DEFAULT_CFG: SJFPOConfig | None = None
 
 
 def get_default_config() -> SJFPOConfig:
-    """Default config singleton with feature specs for smoke/training."""
+    """Default config singleton, with feature specs for smoke and training."""
     global _DEFAULT_CFG
     if _DEFAULT_CFG is None:
-        # Include minimal feature specs so validation passes.
+        # The feature specs are minimal, so validation passes.
         from lerobot.configs.types import FeatureType, PolicyFeature
         _DEFAULT_CFG = SJFPOConfig(
             input_features={
@@ -43,8 +43,8 @@ def get_default_config() -> SJFPOConfig:
     return _DEFAULT_CFG
 
 
-# Dtypes: observations and rewards are fp32 end-to-end. Only policy outputs
-# and policy data use the execution-device dtype policy.
+# Dtypes. Observations and rewards are fp32 end-to-end. Only the policy outputs
+# and the policy data use the dtype policy of the execution device.
 _OBS_DTYPE = torch.float32
 _REWARD_DTYPE = torch.float32
 _INDEX_DTYPE = torch.int64
@@ -212,7 +212,7 @@ class RolloutBuffer:
         self.chunk_lengths[chunk_index] = n_exec
         self.chunk_terminated[chunk_index] = terminated
         self.chunk_truncated[chunk_index] = truncated
-        # Written unconditionally: reset() clears cursors, not storage.
+        # Write it unconditionally. reset() clears the cursors, not the storage.
         self.chunk_clip_counts[chunk_index] = int(clip_count)
         self.chunk_env_id[chunk_index] = int(env_id)
         self.n_chunks += 1
@@ -258,11 +258,11 @@ class RolloutBuffer:
     def mark_incomplete(self, chunk_index: int) -> None:
         """No-op, and deliberately so.
 
-        Called when the step budget cuts a chunk short. The episode continues, so
-        this must NOT set ``chunk_truncated``: that flag is the env's own time
-        limit and drives the GAE bootstrap. Budget cuts therefore stay invisible
-        -- there is no flag for them -- which is why
-        ``budget_truncated_chunk_frac`` reports NaN rather than 0.0.
+        The caller runs this when the step budget cuts a chunk short. The
+        episode continues, so the function must not set ``chunk_truncated``.
+        That flag is the time limit of the env itself, and it drives the GAE
+        bootstrap. Budget cuts therefore stay invisible. There is no flag for
+        them. That is why ``budget_truncated_chunk_frac`` reports NaN, not 0.0.
         """
         if not 0 <= chunk_index < self.n_chunks:
             raise IndexError(f"chunk index {chunk_index} out of range")
@@ -376,11 +376,11 @@ def flush_on_collection_error(
 
 
 def validate_autoreset_mode(envs) -> None:
-    """Reject vec envs whose autoreset mode breaks the awaiting machine.
+    """Reject a vec env whose autoreset mode breaks the awaiting machine.
 
-    ``collect_chunks_vec`` resets in a two-step handshake: flag the env on the
-    ``done=True`` step, take the reset obs on the following ``step()``. Only
-    works under ``NEXT_STEP``.
+    ``collect_chunks_vec`` resets in a two-step handshake. It flags the env on
+    the ``done=True`` step, then takes the reset obs on the following
+    ``step()``. The handshake works only under ``NEXT_STEP``.
     """
     mode = getattr(envs, "autoreset_mode", None)
     if mode is None:
@@ -459,8 +459,9 @@ def collect_chunks_vec(
         obs0 = torch.from_numpy(np.asarray(obs, dtype=np.float32))
         windows = torch.zeros(n, n_obs_steps, obs_dim, dtype=_OBS_DTYPE)
         windows.copy_(obs0[:, None, :].expand_as(windows))
-        # Reused per chunk: slot ``pos`` is overwritten on every chunk of env i, so
-        # ``add_chunk`` must consume ``reward_windows[i, :n_exec]`` first.
+        # The code reuses this per chunk. Slot ``pos`` is overwritten on every
+        # chunk of env i, so ``add_chunk`` must consume
+        # ``reward_windows[i, :n_exec]`` first.
         reward_windows = torch.zeros(n, chunk_size, dtype=_REWARD_DTYPE)
         # One frame per step, not one window per step. The window the chunk
         # ends on is already in hand when the chunk closes.
@@ -528,8 +529,8 @@ def collect_chunks_vec(
                     pos_t.clamp(max=chunk_size - 1),
                 ]
             )
-            # No early-out: envs flagged ``awaiting`` still need this step() to take
-            # their reset observation.
+            # Do not skip this step. An env flagged ``awaiting`` still needs this
+            # step() to take its reset observation.
             actions_np = actions_t.cpu().numpy()
 
             obs, rew, term, trunc, _ = envs.step(actions_np)

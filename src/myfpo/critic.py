@@ -20,10 +20,10 @@ class CriticMember(nn.Module):
     never ran. The head is still regressed onto the same return for both.
 
     ``condition_dim`` selects the shared-encoder option. The chunk-level critic
-    of FPO++ consumes ``actor_module.model.encode_observations(...)``, which is
-    the observation encoder of the actor itself
+    of FPO++ consumes ``actor_module.model.encode_observations(...)``. That call
+    is the observation encoder of the actor itself
     (``finetune_online_rl.py:1177``). With the option set, the head takes one
-    vector of shape ``[B, condition_dim]`` instead of an observation window.
+    vector of shape ``[B, condition_dim]``, not an observation window.
     """
 
     def __init__(
@@ -57,9 +57,9 @@ class CriticMember(nn.Module):
             condition_dim if condition_dim is not None else n_obs_steps * obs_dim
         )
         if condition_dim is not None and n_obs_steps != 1:
-            # The function does not read the observation window in this mode.
-            # It rejects the ambiguity instead of ignoring a caller that passes
-            # a window.
+            # The function does not read the observation window in this mode. It
+            # rejects the ambiguity. It does not ignore a caller that passes a
+            # window.
             raise ValueError(
                 f"condition_dim is set, so n_obs_steps must be 1 (unused), got "
                 f"{n_obs_steps}"
@@ -83,8 +83,8 @@ class CriticMember(nn.Module):
         """Accept ``[B, T, obs]`` or ``[B, condition_dim]``, plus ``[B, H,
         action_dim]``. Return ``[B]``.
 
-        Shapes are checked by the owning :class:`Critic`, which validates once
-        per batch instead of once per ensemble member.
+        Shapes are checked by the owning :class:`Critic`. That class validates
+        once per batch, not once per ensemble member.
         """
         parts = [states.flatten(1), actions.flatten(1)]
         if self.condition_on_exec_length:
@@ -165,8 +165,9 @@ class Critic(nn.Module):
 
     @property
     def input_dim(self) -> int:
-        """First-layer input width. Shifts by 1 when the length feature is on,
-        which is what makes old checkpoints unloadable without a migration."""
+        """First-layer input width. The width shifts by 1 when the length
+        feature is on. That shift is what makes old checkpoints unloadable
+        without a migration."""
         return self.networks[0].input_dim
 
     def forward(

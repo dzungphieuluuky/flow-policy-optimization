@@ -16,11 +16,11 @@ __all__ = ["SJFPOConfig"]
 class SJFPOConfig(PreTrainedConfig):
     """SJFPO hyperparameters.
 
-    ``n_action_steps`` is the executed prefix, default 4, half of
-    ``action_horizon``. Set it to ``None`` and ``__post_init__`` fills in
-    ``action_horizon`` -- that is the open-loop no-correction case.
-    ``num_inference_steps`` is for zero-sampling, ``num_euler_steps`` for a
-    sampled-noise start.
+    ``n_action_steps`` is the executed prefix. Its default is 4, which is half
+    of ``action_horizon``. Set ``n_action_steps`` to ``None``, and
+    ``__post_init__`` fills in ``action_horizon``. That is the open-loop
+    no-correction case. ``num_inference_steps`` applies to a zero-sampling
+    start. ``num_euler_steps`` applies to a sampled-noise start.
     """
 
     report_to: str = "all"
@@ -120,9 +120,9 @@ class SJFPOConfig(PreTrainedConfig):
         the env registry. Then ``train.py`` compares those dimensions with the
         live observation and action spaces.
 
-        The requirement is enforced by ``validate_features`` instead. That
-        function runs from ``SJFPOPolicy.__init__``, after the features are
-        attached.
+        ``validate_features`` enforces the requirement instead. That function
+        runs from ``SJFPOPolicy.__init__``, after the code attaches the
+        features.
         """
         if self.n_obs_steps < 1:
             raise ValueError(f"n_obs_steps={self.n_obs_steps} must be >= 1")
@@ -326,7 +326,8 @@ class SJFPOConfig(PreTrainedConfig):
             )
 
     def validate_features(self) -> None:
-        """Require the run-time features. Called from SJFPOPolicy.__init__."""
+        """Require the run-time features. ``SJFPOPolicy.__init__`` calls this
+        function."""
         if self.robot_state_feature is None:
             raise ValueError("SJFPO requires 'observation.state' in input_features.")
         if self.action_feature is None:

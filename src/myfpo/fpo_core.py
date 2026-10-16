@@ -1,4 +1,5 @@
-"""FPO++ core maths: CFM loss, ratio, ASPO trust region, Euler sampler.
+"""FPO++ core maths. The module holds the CFM loss, the ratio, the ASPO trust
+region, and the Euler sampler.
 
 Source: arXiv 2602.02481, equations 3 to 13.
 """
@@ -78,17 +79,18 @@ def sample_noise(
 def run_monte_carlo_sampling(
     a: torch.Tensor, eps: torch.Tensor, tau
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, tuple[int, ...], int]:
-    """Broadcast action, noise, and the per-token timestep over the MC axis.
-    Returns ``[B*M, ...]``.
+    """Broadcast the action, the noise, and the per-token timestep over the MC
+    axis. The function returns ``[B*M, ...]``.
 
     ``tau`` has the shape ``[B, M, K, 1]``. Each action step gets its own time.
-    That keeps a token's velocity and its target on the same ``tau``.
+    That step keeps the velocity of a token and the target of that token on the
+    same ``tau``.
 
     This function no longer accepts a scalar or a per-chunk shape. No caller
     could reach either one.
 
-    The cast onto ``eps``'s device and dtype stops a scalar from moving to the
-    CPU in the middle of the graph.
+    The cast onto the device and dtype of ``eps`` stops a scalar from moving to
+    the CPU in the middle of the graph.
     """
     b, num_mc = eps.shape[0], eps.shape[1]
     flow_shape = tuple(a.shape[1:])
@@ -261,11 +263,12 @@ def _sigreg_sketch(z: torch.Tensor, sketch_dim: int) -> torch.Tensor:
 
 
 def sigreg_weak_loss(z: torch.Tensor, sketch_dim: int = 64) -> torch.Tensor:
-    """Weak SIGReg: match the row covariance to identity (LeWorldModel).
+    """Weak SIGReg. The function matches the row covariance to identity
+    (LeWorldModel).
 
     The penalty is ``||Cov - I||_F`` over sketched, centered rows. One row
-    returns zero: no covariance exists. Input casts to float32, so bf16
-    callers stay valid.
+    returns zero, because no covariance exists. The input casts to float32, so
+    bf16 callers stay valid.
     """
     z = z.float()
     if z.shape[0] < 2:
@@ -278,11 +281,11 @@ def sigreg_weak_loss(z: torch.Tensor, sketch_dim: int = 64) -> torch.Tensor:
 
 
 def sigreg_decorr_loss(z: torch.Tensor, sketch_dim: int = 64) -> torch.Tensor:
-    """Decorrelation-only SIGReg: standardize columns, then kill the
-    off-diagonal.
+    """Decorrelation-only SIGReg. The function standardises the columns, then
+    removes the off-diagonal.
 
-    Column scales survive. Only redundancy pays. Same row-count guard and
-    float32 cast as :func:`sigreg_weak_loss`.
+    The column scales survive. Only redundancy pays. The function uses the same
+    row-count guard and the same float32 cast as :func:`sigreg_weak_loss`.
     """
     z = z.float()
     if z.shape[0] < 2:
@@ -456,7 +459,8 @@ def sample_action(
         for i in range(num_inference_steps):
             t_current = grid[i].reshape(1)
             v_hat = predict_velocity(x, t_current, condition)
-            # addcmul, not x + dt*v: same value, one kernel instead of two, and
-            # this loop runs num_euler_steps times per policy call.
+            # The code uses addcmul, not x + dt*v. Both give the same value, and
+            # addcmul uses one kernel, not two. This loop runs num_euler_steps
+            # times per policy call.
             x = torch.addcmul(x, v_hat, dts[i])
     return x

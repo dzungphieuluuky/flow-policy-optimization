@@ -110,8 +110,9 @@ def compute_chunk_advantages(
             raise ValueError(f"{name} must have {n_chunks} entries, got {tensor.numel()}")
 
     if chunk_truncated is None:
-        # Absent means "no timeouts in this rollout", which is exactly the QC
-        # backup: nothing to inject, and `done` collapses to `terminated`.
+        # An absent mask means "no timeouts in this rollout". That is exactly the
+        # QC backup. There is nothing to inject, and `done` collapses to
+        # `terminated`.
         truncated = torch.zeros(n_chunks, device=device, dtype=torch.bool)
     else:
         truncated = chunk_truncated.to(device=device, dtype=torch.bool).reshape(-1)
@@ -165,8 +166,9 @@ def compute_chunk_advantages(
     delta = chunk_rewards + bootstrap * chunk_next_q - chunk_q
 
     if gae_lambda == 0.0:
-        # QC. Returns early so the default path is untouched by the recursion
-        # below -- not merely equal to it, but not running it at all.
+        # QC. The function returns early, so the default path never runs the
+        # recursion below. It is not merely equal to that path. It does not run
+        # it at all.
         return delta, delta + chunk_q
 
     env_id = chunk_env_id.to(device=device, dtype=torch.long).reshape(-1)

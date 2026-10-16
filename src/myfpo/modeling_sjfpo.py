@@ -1,10 +1,12 @@
-"""SJFPO policy: flow head + state conditioner + critic.
+"""SJFPO policy. The class holds the flow head, the state conditioner, and the
+critic.
 
-Batch contract: ``[B, T, obs]`` states, ``[B, H, action_dim]``
-chunks, frozen GAE advantages/returns from the rollout.
+Batch contract. The states are ``[B, T, obs]``. The chunks are
+``[B, H, action_dim]``. The GAE advantages and the returns come frozen from the
+rollout.
 
-Diagnostics batch into one device-to-host transfer.
-``float()`` on a device tensor is a blocking sync.
+Diagnostics batch into one device-to-host transfer. ``float()`` on a device
+tensor is a blocking sync.
 """
 
 from __future__ import annotations
@@ -65,19 +67,20 @@ class SJFPOAborted(RuntimeError):
 def compute_value_loss(
     pred: torch.Tensor, target: torch.Tensor
 ) -> torch.Tensor:
-    """Squared error against the return, ``target`` broadcast over members.
+    """Squared error against the return. The function broadcasts ``target`` over
+    the members.
 
-    Plain MSE, which is what both FPO++ variants use
-    (``fpo.py:497``, and ``clip_vloss`` off in the manipulation config). No
-    clipped variant: the release reports that value clipping adds instability
-    with FPO's tighter policy band (``rl_cfg.py:181-185``).
+    The function uses plain MSE, which is what both FPO++ variants use
+    (``fpo.py:497``, and ``clip_vloss`` off in the manipulation config). It has
+    no clipped variant. The release reports that value clipping adds instability
+    with the tighter policy band of FPO (``rl_cfg.py:181-185``).
     """
     return torch.square(pred - target.expand_as(pred))
 
 
-# Diagnostics dict pack order. Trainer reads by key.
-# budget_truncated_chunk_frac is always NaN in training: no rollout path
-# supplies budget_truncated.
+# Diagnostics dict pack order. The trainer reads by key.
+# budget_truncated_chunk_frac is always NaN in training, because no rollout
+# path supplies budget_truncated.
 _GAE_DIAGNOSTIC_KEYS = (
     "linked_frac",
     "advantage_std",
@@ -97,12 +100,12 @@ def compute_gae_diagnostics(
 ) -> dict[str, float]:
     """Trace-liveness and scale probes for the chunk backup.
 
-    Adjacent same-env chunk pairs, not split by episode
-    end. Near 0 means a dead trace.
-    Read it only when gae_lambda > 0, the default.
+    The probes use adjacent same-env chunk pairs, not split by episode end. A
+    value near 0 means a dead trace. Read the probes only when gae_lambda > 0,
+    which is the default.
 
-    ``budget_truncated`` is NaN when unsupplied, which is
-    normal. NaN, not 0.0: zero claims nothing was cut.
+    ``budget_truncated`` is NaN when unsupplied, which is normal. The value is
+    NaN, not 0.0, because zero claims that nothing was cut.
     """
     n = env_id.numel()
     if n == 0:
@@ -111,15 +114,15 @@ def compute_gae_diagnostics(
     e = env_id.to(torch.long)[order]
     ends = terminated.to(torch.bool)[order][:-1] | truncated.to(torch.bool)[order][:-1]
     ret = raw_returns.float()
-    # Population std: unbiased is NaN at n == 1.
+    # Population std. The unbiased form is NaN at n == 1.
     adv_std = advantages.float().std(correction=0)
     ret_std = ret.std(correction=0).clamp_min(1e-8)
     fields = [
         ((e[1:] == e[:-1]) & ~ends).sum().double() / max(n - 1, 1),
         adv_std,
         rms(ret).double(),
-        # adv_std / ret_std. 1.0 reads as an inert critic.
-        # Not bounded by 1: Var(A) > Var(R) is possible.
+        # adv_std / ret_std. A value of 1.0 reads as an inert critic.
+        # The value is not bounded by 1, because Var(A) > Var(R) is possible.
         adv_std / ret_std,
         # Budget cut. Not chunk_truncated, not truncated_chunk_frac.
         budget_truncated.to(torch.bool).float().mean().double()
@@ -153,7 +156,7 @@ def build_optimizer(policy: SJFPOPolicy) -> torch.optim.Optimizer:
     """
     cfg = policy.config
     kwargs = dataclasses.asdict(policy.config.get_optimizer_preset())
-    kwargs.pop("grad_clip_norm", None)  # clipping is joint, applied by the caller
+    kwargs.pop("grad_clip_norm", None)  # Clipping is joint. The caller applies it.
     kwargs["betas"] = policy.config.adam_betas
     if next(policy.parameters()).is_cuda:
         kwargs["fused"] = True
@@ -185,15 +188,15 @@ def compute_mc_xt(
     t = flatten_mc_timestep.expand(-1, -1, flow_shape[-1])
     noise = flatten_mc_noise.reshape(-1, *flow_shape)
     action = flatten_mc_action.reshape(-1, *flow_shape)
-    # lerp: same value, one kernel instead of four.
+    # The code uses lerp. It gives the same value in one kernel, not four.
     return torch.lerp(noise, action, t)
 
 
 def mc_draws(
     actions: torch.Tensor, eps: torch.Tensor, tau: torch.Tensor
 ) -> tuple[torch.Tensor, torch.Tensor, tuple[int, ...], int]:
-    """The shared MC prologue of ``compute_behavior_cfm_losses`` and
-    ``forward``: interpolate the draws, one tau per token."""
+    """The shared MC prologue of ``compute_behavior_cfm_losses`` and ``forward``.
+    The function interpolates the draws, with one tau per token."""
     flatten_timestep, flatten_mc_noise, flatten_mc_action, flow_shape, num_mc = (
         run_monte_carlo_sampling(actions, eps, tau)
     )
@@ -269,10 +272,10 @@ def compute_ratio_metrics(
         "flow_ratio_token_pos_low_outside_frac": low_outside,
         "flow_ratio_token_pos_high_outside_frac": high_outside,
         "flow_ratio_token_outside_frac": outside(ratio_token),
-        # The key counts the chunks with an unexecuted row. The mask drops
-        # the row.
+        # The key counts the chunks with an unexecuted row. The mask drops the
+        # row.
         "truncated_chunk_frac": action_is_pad.any(dim=1).float().mean(),
-        # Executed rows: CFM loss surviving the mask.
+        # Executed rows. That is the CFM loss that survives the mask.
         "executed_action_step_frac": (~action_is_pad).float().mean(),
     }
 
@@ -305,7 +308,8 @@ def compute_value_metrics(
         "value_abs_err_max": mean_value_pred.sub(raw_returns_flat).abs().max(),
         "value_pred_max": mean_value_pred.abs().max(),
         "value_target_std": raw_returns_flat.std(correction=0),
-        # Pooled over [num_critics, n]: within- and between-member spread.
+        # Pooled over [num_critics, n]. That is the within- and between-member
+        # spread.
         "value_pred_std": raw_value_pred.std(correction=0),
         "value_pred_std_member_mean": raw_value_pred.std(dim=1, correction=0).mean(),
         "value_pred_member_gap": (
@@ -323,8 +327,8 @@ def compute_cfm_metrics(
 ) -> dict[str, torch.Tensor]:
     """Flow-matching loss diagnostics.
 
-    ``cfm_above_clamp_frac``: clamped samples give no
-    gradient, so a stuck run trains the critic only.
+    ``cfm_above_clamp_frac``. A clamped sample gives no gradient, so a stuck run
+    trains the critic only.
     """
     cfm_loss_old_std = cfm_loss_old.std(correction=0)
     cfm_loss_new_std = cfm_loss_new.std(correction=0)
@@ -465,15 +469,16 @@ class SJFPOPolicy(PreTrainedPolicy):
         self.postprocessor.set_action_bounds(self.action_low, self.action_high)
 
     def _ema_named_params(self) -> dict[str, torch.nn.Parameter]:
-        """List every parameter that the EMA shadow covers. Namespace them by module.
+        """List every parameter that the EMA shadow covers. The names carry the
+        module prefix.
 
         The list holds the actor and the encoder together. The two drift as one.
-        The encoder has no loss of its own. It gets a gradient only from the
-        CFM loss of the actor. Its output reaches the actor through adaLN. It
-        does not reach the actor through attention.
+        The encoder has no loss of its own. It gets a gradient only from the CFM
+        loss of the actor. Its output reaches the actor through adaLN. It does
+        not reach the actor through attention.
 
-        Swapping in one of the two without the other evaluates a pairing that
-        never existed during training.
+        A swap of one of the two without the other evaluates a pairing that never
+        existed during training.
         """
         out: dict[str, torch.nn.Parameter] = {}
         for prefix, module in (("actor", self.actor), ("encoder", self.encoder)):
@@ -487,7 +492,7 @@ class SJFPOPolicy(PreTrainedPolicy):
     ) -> tuple[list[str], list[torch.Tensor], list[torch.Tensor]]:
         """Names, live shadow tensors, detached value tensors.
 
-        The shadow list is live memory, never a copy, so the caller writes
+        The shadow list is live memory, never a copy. So the caller writes
         through it.
         """
         names = list(self._ema_shadow)
@@ -498,8 +503,8 @@ class SJFPOPolicy(PreTrainedPolicy):
     def update_ema(self, global_step: int) -> None:
         """Update the actor EMA after an optimizer step.
 
-        Seeded on first call, hard-copied at warmup end.
-        Only warmed weights enter the average.
+        The code seeds the shadow on the first call. It hard-copies the shadow
+        at the end of warmup. Only warmed weights enter the average.
         """
         decay = self.config.ema_decay
         if decay <= 0:
@@ -532,11 +537,12 @@ class SJFPOPolicy(PreTrainedPolicy):
 
     @torch.no_grad()
     def swap_in_ema(self, global_step: int) -> dict[str, torch.Tensor]:
-        """Copy the EMA shadow in, returning displaced live weights.
+        """Copy the EMA shadow in, and return the displaced live weights.
 
-        The caller hands them back to :meth:`swap_out_ema`. No-op
-        returning ``{}`` until the shadow is warm. Takes ``global_step``,
-        not ``step_count``: the shadow warms on the env-step clock.
+        The caller hands them back to :meth:`swap_out_ema`. The function is a
+        no-op that returns ``{}`` until the shadow is warm. It takes
+        ``global_step``, not ``step_count``, because the shadow warms on the
+        env-step clock.
         """
         if not self.ema_ready(global_step):
             return {}
@@ -649,8 +655,8 @@ class SJFPOPolicy(PreTrainedPolicy):
     ) -> torch.Tensor:
         """Actor on a flow point.
 
-        ``condition`` arrives already broadcast over the MC draws,
-        so one conditioning pass covers every draw.
+        ``condition`` arrives already broadcast over the MC draws, so one
+        conditioning pass covers every draw.
         """
         cfg = self.config
         return clip_transported(self.actor(x_t, tau, condition), cfg.transported_clip_value)
@@ -672,7 +678,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         cfg = self.config
         device = next(self.actor.parameters()).device
 
-        # [B, T, obs] passes through; a [T, obs] window gains the batch axis.
+        # [B, T, obs] passes through. A [T, obs] window gains the batch axis.
         # A bare [obs] frame belongs to select_action.
         states = to_tensor(batch[OBS_STATE])
         states = states.to(dtype=resolve_storage_dtype(states.device))
@@ -720,13 +726,14 @@ class SJFPOPolicy(PreTrainedPolicy):
     def select_action(self, batch: dict[str, torch.Tensor], **kwargs) -> torch.Tensor:
         """Next action, receding through a cached chunk.
 
-        ``batch`` holds ``observation.state``: ``[obs]`` one
-        frame or ``[T, obs]`` a window. Kwargs pass to
+        ``batch`` holds ``observation.state``. That value is ``[obs]`` for one
+        frame or ``[T, obs]`` for a window. Kwargs pass to
         :meth:`predict_action_chunk`.
 
-        FIFO: left is next out. Chunk appended in plan order: ``chunk[0, 0]``
-        first, ``chunk[0, n_execute - 1]`` last. Collector uses direct index
-        ``plan[..., pos_t]``, so this buffer only serves eval/play.
+        The buffer is FIFO. The left value is next out. The code appends the
+        chunk in plan order: ``chunk[0, 0]`` first, ``chunk[0, n_execute - 1]``
+        last. The collector uses the direct index ``plan[..., pos_t]``, so this
+        buffer only serves eval and play.
         """
         obs = to_tensor(batch[OBS_STATE])
         obs = obs.to(dtype=resolve_storage_dtype(obs.device))
@@ -766,8 +773,8 @@ class SJFPOPolicy(PreTrainedPolicy):
     def exec_length_frac(self, executed_steps: torch.Tensor) -> torch.Tensor:
         """Normalise an executed-step count to ``[0, 1]``.
 
-        Always returns even when unused, so a caller never
-        branches on the flag.
+        The function always returns, even when the caller does not use the
+        value. So a caller never branches on the flag.
         """
         return executed_steps.to(torch.float32) / float(self.config.action_horizon)
 
@@ -779,15 +786,16 @@ class SJFPOPolicy(PreTrainedPolicy):
         eps: torch.Tensor,
         action_is_pad: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """The behavior policy's CFM loss: the ratio's ``cfm_loss_old``.
+        """The CFM loss of the behavior policy. That is the ``cfm_loss_old`` of
+        the ratio.
 
         The behavior policy is the live one. This function runs inside
         ``generate_rollout``, and no optimizer step runs until the rollout
         returns. So the live weights are already frozen. A second copy of the
         actor would hold the same numbers.
 
-        Both reductions masked exactly like the live losses, so
-        the ratio never mixes means over different positions.
+        The code masks both reductions in the same way as the live losses. So the
+        ratio never mixes means over different positions.
         """
         cfg = self.config
         x_t, actor_tau, flow_shape, num_mc = mc_draws(actions, eps, tau)
@@ -876,8 +884,8 @@ class SJFPOPolicy(PreTrainedPolicy):
 
         if (
             self._rollout_buffer is None
-            # [:6] drops pin_memory, a device property. The full
-            # tuple would never match.
+            # [:6] drops pin_memory, which is a device property. The full tuple
+            # would never match.
             or self._rollout_buffer.capacity_key()[:6] != buffer_key
         ):
             self._rollout_buffer = make_buffer(pin_memory=device.type == "cuda")
@@ -927,16 +935,15 @@ class SJFPOPolicy(PreTrainedPolicy):
         actions = active["chunk_actions"]
         states = active["chunk_state"]
 
-        # Two obs windows per chunk, start and end: the
-        # preprocessor sees 2 * n_chunks, not 2 * n_steps.
+        # Two obs windows per chunk, the start and the end. The preprocessor
+        # sees 2 * n_chunks, not 2 * n_steps.
         # The normalizer updates from normalizer_observations.
         # The bootstrap a' is drawn fresh at the end state of each chunk.
-        # That end state is the target of QC. A terminated row keeps the
-        # chunk.
+        # That end state is the target of QC. A terminated row keeps the chunk.
         with torch.inference_mode():
             next_states = active["chunk_next_state"]
             # Seeded from the chunk, so no row is garbage.
-            # Backup scales by ~terminated: 0 * NaN is NaN.
+            # The backup scales by ~terminated. 0 * NaN is NaN.
             boot_actions = actions.clone()
             # Only a live chunk needs a proposal. A terminated chunk keeps the
             # cloned chunk actions. Nothing reads those values. The backup masks
@@ -945,7 +952,8 @@ class SJFPOPolicy(PreTrainedPolicy):
             if bool(needs_proposal.any()):
                 # The call predict_action_chunk returns the env bounds. The
                 # tensor chunk_actions is scaled to [-1, 1]. The critic reads
-                # the scaled form. So the proposal takes the same affine.
+                # the scaled form. So the proposal takes the same affine
+                # transform.
                 proposed = self.predict_action_chunk(
                     {OBS_STATE: to_device_async(next_states[needs_proposal], device)},
                     zero_sampling=False,
@@ -967,11 +975,12 @@ class SJFPOPolicy(PreTrainedPolicy):
             boot_exec_frac = self.exec_length_frac(
                 torch.full_like(lengths, cfg.n_action_steps)
             )
-            # amin across members: backup only, never in the loss.
+            # amin across members. That is for the backup only, never in the
+            # loss.
             # The value loss averages the same members.
             # The shared encoder runs here so the critic can read it. One pass
-            # covers the chunk and its bootstrap. The weights are the weights
-            # of the actor.
+            # covers the chunk and its bootstrap. The weights are the weights of
+            # the actor.
             critic_cond = (
                 self.encoder(all_chunk_normalised_states)
                 if cfg.critic_share_encoder
@@ -985,8 +994,8 @@ class SJFPOPolicy(PreTrainedPolicy):
                     actions,
                     exec_length_frac,
                 ).float().amin(dim=0)
-            # Already inside the outer inference_mode; autocast is the only
-            # context this block adds.
+            # The code is already inside the outer inference_mode. Autocast is
+            # the only context this block adds.
             with autocast_context(device):
                 boot_q = self.critic(
                     self.critic_inputs(normalised_next_states, next_cond),
@@ -994,8 +1003,9 @@ class SJFPOPolicy(PreTrainedPolicy):
                     boot_exec_frac,
                 ).float().amin(dim=0)
 
-        # One chunk is one macro-transition: sum rewards, discount gamma**h.
-        # rsl-rl space: Q predicts raw returns, target is the
+        # One chunk is one macro-transition. Sum the rewards, then discount by
+        # gamma**h.
+        # This is the rsl-rl space. Q predicts raw returns, and the target is the
         # raw return, so Q is the true expected return.
         raw_advantages, raw_returns = compute_chunk_advantages(
             all_rewards,
@@ -1008,24 +1018,23 @@ class SJFPOPolicy(PreTrainedPolicy):
             gamma=cfg.gamma,
             # The code reads both values only when gae_lambda > 0. QC ignores
             # both.
-            # The value chunk_truncated is the ENV limit. It is not the step
-            # budget. The two limits are separate. So a live episode is never
-            # read
-            # as finished.
+            # The value chunk_truncated is the ENV limit, not the step budget.
+            # The two limits are separate. So the code never reads a live
+            # episode as finished.
             chunk_truncated=active["chunk_truncated"],
             chunk_env_id=active["chunk_env_id"],
             gae_lambda=cfg.gae_lambda,
         )
         normalised_advantages = raw_advantages
-        # correction=0 rationale: see compute_gae_diagnostics.
+        # The rationale for correction=0 is in compute_gae_diagnostics.
         if cfg.normalize_advantage and raw_advantages.numel() > 0:
             normalised_advantages = (raw_advantages - raw_advantages.mean()) / (
                 raw_advantages.std(correction=0).clamp_min(1e-8)
             )
         # FPO++ clamps inside the minibatch loop, right before the surrogate.
-        # Applied here instead: the clamp is a fixed elementwise bound, so
-        # clamping once per rollout is the same numbers and one fewer pass.
-        # Ordered after normalisation, as theirs is.
+        # This code clamps here instead. The clamp is a fixed elementwise bound,
+        # so one clamp per rollout gives the same numbers in one fewer pass.
+        # The order is after normalisation, as theirs is.
         neg_clamp, pos_clamp = cfg.advantage_clamp
         normalised_advantages = normalised_advantages.clamp(-neg_clamp, pos_clamp)
         gae_diagnostics = compute_gae_diagnostics(
@@ -1037,9 +1046,9 @@ class SJFPOPolicy(PreTrainedPolicy):
         )
         raw_advantages = raw_advantages.to(storage_dtype)
         normalised_advantages = normalised_advantages.to(storage_dtype)
-        # raw_returns stays fp32: critic target, and the only
-        # stored tensor not O(1) (returns_rms runs to 35), where
-        # bf16's 8 mantissa bits lose real precision.
+        # raw_returns stays fp32. It is the critic target, and it is the only
+        # stored tensor that is not O(1) (returns_rms runs to 35). There, the 8
+        # mantissa bits of bf16 lose real precision.
 
         action_is_pad = torch.arange(cfg.action_horizon, device=device).unsqueeze(
             0
@@ -1062,9 +1071,9 @@ class SJFPOPolicy(PreTrainedPolicy):
             "normalised_advantages": normalised_advantages,
             "raw_returns": raw_returns,
             "normalizer_observations": active["step_frames"].detach(),
-            # Critic drift from the bootstrap value the targets used.
-            # Target critic: the price of the slow teacher.
-            # Without one: the target's own drift.
+            # Critic drift from the bootstrap value that the targets used.
+            # Target critic. That is the price of the slow teacher.
+            # Without one, the target's own drift.
             "boot_observations": all_chunk_normalised_states[n_chunks:].to(storage_dtype),
             "boot_actions": boot_actions.to(storage_dtype),
             "boot_values_start": boot_q.unsqueeze(1),
@@ -1120,7 +1129,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         device = next(self.parameters()).device
         storage_dtype = resolve_storage_dtype(device)
 
-        # states and actions go async: they are the two large tensors here.
+        # states and actions go async. They are the two large tensors here.
         # The rest are small enough that the pinned transfer costs more.
         states = self._load(batch, OBS_STATE, device, storage_dtype, async_=True)
         actions = self._load(batch, ACTION, device, storage_dtype, async_=True)
@@ -1177,12 +1186,13 @@ class SJFPOPolicy(PreTrainedPolicy):
         x_t_flat, actor_tau, flow_shape, num_mc = mc_draws(actions, eps, tau)
 
         with autocast_context(device):
-            # One encoder pass: the actor gets the MC-broadcast copy, and the
-            # critic gets the unbroadcast one when it shares this encoder.
+            # One encoder pass. The actor gets the MC-broadcast copy. The critic
+            # gets the unbroadcast one when it shares this encoder.
             cond = self.encoder(states)
             cond_flat = broadcast_condition(cond, num_mc)
-        # Representation health, not the trust region. "none" skips all new
-        # math. The raw value logs even at coef 0.0, for calibration.
+        # This is representation health, not the trust region. The value "none"
+        # skips all new math. The raw value logs even at coef 0.0, for
+        # calibration.
         sigreg_raw = torch.zeros((), device=device)
         if cfg.sigreg_mode == "weak":
             sigreg_raw = sigreg_weak_loss(cond.float(), cfg.sigreg_sketch_dim)
@@ -1244,9 +1254,10 @@ class SJFPOPolicy(PreTrainedPolicy):
                 v_new_r_f, v_star_f, cfg, "both", loss_mask,
                 cfm_loss_weight(tau, cfg),
             )
-            # Both ratios take the advantage: without it the A<0 clamp is skipped.
+            # Both ratios take the advantage. Without it, the A<0 clamp is
+            # skipped.
             # The token loss is [n, num_mc, H], so the advantage needs the extra
-            # axis: [n, 1] would not line up with it.
+            # axis. [n, 1] would not line up with it.
             ratio_token = compute_policy_ratio(
                 cfm_loss_old_token, cfm_loss_new_token, cfg,
                 advantage=adv_mc.unsqueeze(-1),
@@ -1254,8 +1265,8 @@ class SJFPOPolicy(PreTrainedPolicy):
             self.cfm_above_clamp_frac = (cfm_loss_new > cfg.cfm_clamp).float().mean().detach()
 
             # Token axis, then MC-sample axis. ``ratio_token`` doubles as the loss
-            # ratio when the token axis is kept, so the expensive per-token pass
-            # is not recomputed.
+            # ratio when the token axis is kept, so the code does not recompute
+            # the expensive per-token pass.
             if cfg.do_average_cfm_loss_in_chunk:
                 loss_old, loss_new = cfm_loss_old, cfm_loss_new
             else:
@@ -1271,12 +1282,11 @@ class SJFPOPolicy(PreTrainedPolicy):
             )
             surrogate = compute_aspo_surrogate(ratio, adv_ratio, cfg)
             if surrogate.dim() == 3:
-                # The token axis survived. So the padded tokens are still in
-                # the average. A padded token has cfm_loss 0. So its ratio is
-                # 1.0. That gives a zero gradient. The surrogate still
-                # evaluates to A though. So the code masks the value. It then
-                # divides by the executed token count and not by the full
-                # horizon.
+                # The token axis survived. So the padded tokens are still in the
+                # average. A padded token has cfm_loss 0, so its ratio is 1.0.
+                # That gives a zero gradient. The surrogate still evaluates to A,
+                # though. So the code masks the value, then divides by the
+                # executed token count, not by the full horizon.
                 keep = (~action_is_pad).to(surrogate.dtype)
                 surrogate = surrogate * keep[:, None, :]
                 n_executed = keep.sum(dim=-1).clamp_min(1.0)

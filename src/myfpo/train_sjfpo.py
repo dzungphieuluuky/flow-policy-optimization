@@ -41,8 +41,8 @@ from myfpo.tracking import build_tracker, compute_eval_summary_metrics
 # above its max, so the policy stops learning while the critic keeps training.
 ABOVE_CLAMP_ABORT_UPDATES = 5
 
-# GAE diagnostic name -> logged name. Deliberately not a uniform prefix:
-# return_rms is logged as returns_rms.
+# GAE diagnostic name to logged name. The prefix is deliberately not uniform.
+# The key return_rms is logged as returns_rms.
 _GAE_DIAG_LOG_KEYS = {
     "linked_frac": "gae_linked_frac",
     "advantage_std": "gae_advantage_std",
@@ -205,9 +205,12 @@ def apply_lr_schedule(optimizer, step_count: int, lr_decays: int, cfg) -> None:
 
 
 def warm_observation_stats(policy, env, *, obs_dim: int, seed: int) -> int:
-    """Fold random-policy frames into the running obs stats. The normalizer is
-    identity until its first update and updates only after a rollout, so without
-    this the whole first rollout runs on raw obs. Env is reset after."""
+    """Fold random-policy frames into the running obs stats.
+
+    The normalizer is the identity until its first update, and it updates only
+    after a rollout. So without this function, the whole first rollout runs on
+    raw obs. The env resets after.
+    """
     env.action_space.seed(seed)
     obs, _ = env.reset()
     frames = []
@@ -536,8 +539,8 @@ def train_sjfpo_run(
     def _save(dir_name: str) -> str:
         """Save one checkpoint under `out_dir/checkpoints/` -> artifact path.
 
-        The three call sites (best / step_N / final) were written out three
-        times; only the directory name differs.
+        The three call sites (best / step_N / final) each need the same code.
+        Only the directory name differs.
         """
         ckpt_dir = out_dir / CHECKPOINTS_DIR / dir_name
         save_policy_checkpoint(

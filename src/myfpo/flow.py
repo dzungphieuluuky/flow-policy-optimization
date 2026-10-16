@@ -12,11 +12,12 @@ from myfpo.layers import CondMLP, SinusoidalEncoding, build_rms_norm, modulate
 from myfpo.utils import rms
 
 def effective_rank(features: torch.Tensor) -> torch.Tensor:
-    """``exp`` spectral entropy of ``[n, hidden]``. Dohare et al. (2306.13812)
-    collapse probe: falls as backprop settles on a low-rank solution.
+    """``exp`` spectral entropy of ``[n, hidden]``. This is the collapse probe
+    of Dohare et al. (2306.13812). It falls as backprop settles on a low-rank
+    solution.
 
-    0-dim. Input reshapes to ``[n, hidden]``, singular values number
-    ``min(n, hidden)``, return is one scalar.
+    The result is 0-dim. The input reshapes to ``[n, hidden]``. The singular
+    values number ``min(n, hidden)``. The function returns one scalar.
     """
     matrix = features.reshape(-1, features.shape[-1]).float()
     sigma = torch.linalg.svdvals(matrix)
@@ -70,7 +71,7 @@ class SJFPOFlowMLP(nn.Module):
             prev = hidden
         layers.append(nn.Linear(prev, action_horizon * action_dim))
         self.mlp = nn.Sequential(*layers)
-        # Same contract as the DiT: an untrained actor predicts zero velocity.
+        # Same contract as the DiT. An untrained actor predicts zero velocity.
         nn.init.zeros_(self.mlp[-1].weight)
         nn.init.zeros_(self.mlp[-1].bias)
 
@@ -104,7 +105,7 @@ class SJFPOFlowMLP(nn.Module):
                 t = t.expand(b)
             elif t.numel() != b:
                 raise ValueError(f"t must contain 1 or {b} values, got {t.numel()}")
-            # One time per chunk: broadcast it over the tokens.
+            # One time per chunk. Broadcast it over the tokens.
             temb = self.time_embedder.encode_times(t).unsqueeze(1).expand(b, k, -1)
         else:
             if t.dim() == 3 and t.shape[-1] == 1:
@@ -128,16 +129,16 @@ class SJFPOFlowModel(nn.Module):
     """DiT velocity model over noisy action tokens, adaLN conditioned.
 
     ``return_stats=True`` gives ``(velocity, stats)`` plus per-block gate and
-    scale RMS reductions. Default path returns velocity only, nothing
-    reduced.
+    scale RMS reductions. The default path returns the velocity only. It
+    reduces nothing.
 
-    The stats path is expensive: it runs an SVD (``effective_rank``) and a full
+    The stats path is expensive. It runs an SVD (``effective_rank``) and a full
     parameter sweep (``weight_magnitude``). ``SJFPOPolicy.forward`` calls it on
-    every minibatch forward whenever ``compute_info=True``, and the trainer
-    passes ``compute_info=tracker.enabled``. So with ``report_to`` set to
-    wandb or tensorboard it runs once per microbatch per optimizer step. For
-    throughput runs use ``--sjfpo.report_to none``, which turns the stats path
-    off along with every other metric.
+    every minibatch forward if ``compute_info=True``, and the trainer passes
+    ``compute_info=tracker.enabled``. So if ``report_to`` is wandb or
+    tensorboard, it runs once per microbatch per optimizer step. For throughput
+    runs, use ``--sjfpo.report_to none``. That flag turns the stats path off,
+    along with every other metric.
     """
 
     def __init__(
@@ -181,9 +182,11 @@ class SJFPOFlowModel(nn.Module):
 
     @torch.inference_mode()
     def weight_magnitude(self) -> torch.Tensor:
-        """Mean absolute weight. Dohare's correlate: magnitudes grow under
-        continual training, before the rank drop. Per-param sums, not one
-        accumulator: a float scalar would land on CPU."""
+        """Mean absolute weight. This is the correlate of Dohare. The magnitudes
+        grow under continual training, before the rank drop.
+
+        The function sums per parameter. It does not use one accumulator. A
+        float scalar would land on CPU."""
         total = None
         count = 0
         for param in self.parameters():
@@ -199,10 +202,13 @@ class SJFPOFlowModel(nn.Module):
         condition: torch.Tensor,
         return_stats: bool = False,
     ) -> torch.Tensor | tuple[torch.Tensor, dict[str, torch.Tensor]]:
-        """Predict velocity from token actions and per-token times. ``t``:
-        scalar, ``[B]``, or ``[B, K, 1]``, one time per token shared across its
-        action dims. Last layer zero-init, so untrained predicts near-zero
-        velocity. Returns ``[B, K, action_dim]``, plus stats if asked."""
+        """Predict the velocity from the token actions and the per-token times.
+
+        ``t`` is a scalar, ``[B]`` or ``[B, K, 1]``. One time belongs to each
+        token, and that time is shared across the action dims of the token. The
+        last layer is zero-init, so an untrained model predicts a near-zero
+        velocity. The function returns ``[B, K, action_dim]``, plus stats if
+        asked."""
         if x_t.dim() != 3 or x_t.shape[2] != self.action_dim:
             raise ValueError(f"x_t must have shape [B, K, {self.action_dim}], got {tuple(x_t.shape)}")
         if condition.dim() != 2 or condition.shape[0] != x_t.shape[0] or condition.shape[1] != self.hidden_dim:

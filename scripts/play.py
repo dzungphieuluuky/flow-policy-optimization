@@ -13,7 +13,8 @@ from pathlib import Path
 
 import torch
 
-# Match train.py: CUDA precision / benchmark setup before any module load
+# Match train.py. Set the CUDA precision and benchmark options before any
+# module load.
 if torch.cuda.is_available():
     torch.backends.cuda.matmul.fp32_precision = "ieee"
     torch.backends.cudnn.fp32_precision = "ieee"
@@ -90,8 +91,8 @@ def main(argv: list[str] | None = None) -> int:
 
     import gymnasium as gym  # noqa: E402
 
-    # No render_mode here: Evaluator only steps the env, and the video pass
-    # builds its own rgb_array env inside render_episode_frames.
+    # There is no render_mode here. The Evaluator only steps the env. The video
+    # pass builds its own rgb_array env inside render_episode_frames.
     env = gym.make(args.env)
     try:
         evaluator = Evaluator(
@@ -103,8 +104,8 @@ def main(argv: list[str] | None = None) -> int:
 
         def policy_callable(obs: np.ndarray) -> np.ndarray:
             with torch.inference_mode():
-                # Bare [obs]: select_action buffers the frame into a window
-                # itself. A rank-2 input is read as a [T, obs] window and then
+                # Bare [obs]. select_action buffers the frame into a window
+                # itself. A rank-2 input is read as a [T, obs] window, then
                 # rejected unless T == n_obs_steps.
                 batch = {"observation.state": torch.as_tensor(obs, dtype=torch.float32)}
                 return policy.select_action(batch, zero_sampling=True).cpu().numpy()

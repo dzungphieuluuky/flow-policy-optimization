@@ -66,7 +66,8 @@ def configure_torch_cuda() -> bool:
     torch.backends.cudnn.conv.fp32_precision = "tf32"
     torch.backends.cudnn.rnn.fp32_precision = "tf32"
     torch.backends.cudnn.benchmark = True
-    # Memory allocation hint (harmless if already set by user env).
+    # Memory allocation hint. It is harmless if the user environment already set
+    # it.
     os.environ.setdefault(
         "PYTORCH_CUDA_ALLOC_CONF",
         "max_split_size_mb:128,expandable_segments:True",
@@ -98,9 +99,9 @@ def apply_runtime_settings() -> dict:
     # Turing is accepted and ignored. So the "highest" branch exists to make that
     # no-op visible in the metadata. It does not change the behaviour.
     torch.set_float32_matmul_precision("high" if tf32 else "highest")
-    # Past 8 shape variants dynamo silently falls back to eager: you keep paying
-    # compile cost and get none of the benefit. The rollout's chunk count varies
-    # every run, so the default of 8 is reached quickly.
+    # After 8 shape variants, dynamo silently falls back to eager. Then you keep
+    # paying the compile cost and get none of the benefit. The chunk count of the
+    # rollout varies every run, so the default of 8 is reached quickly.
     torch._dynamo.config.cache_size_limit = 32
 
     settings = {
@@ -128,9 +129,9 @@ class TrainConfig:
     obs_dim: int | None = None
     action_dim: int | None = None
     out_dir: str = "outputs/"
-    config: str | None = None  # legacy flat YAML overlay for the method config
-    # Resume an sjfpo checkpoint dir (checkpoint_<step>/ or
-    # checkpoint_final/): continues policy + optimizer + counters into a FRESH
+    config: str | None = None  # Legacy flat YAML overlay for the method config
+    # Resume an sjfpo checkpoint dir (checkpoint_<step>/ or checkpoint_final/).
+    # The run continues the policy, the optimizer and the counters into a FRESH
     # run dir (<base>_resume[/2...]). total_steps stays an absolute env-step
     # budget.
     resume: str | None = None
@@ -212,7 +213,8 @@ def _sjfpo_cli_fields(argv: list[str]) -> set[str]:
 def default_intervals(
     total: int, args_val: int | None, yaml_dict: dict, key: str, cap: int
 ) -> int:
-    """CLI > YAML > capped default (the cap keeps smoke runs sane)."""
+    """Resolve an interval: CLI first, then YAML, then a capped default. The cap
+    keeps smoke runs sane."""
     if args_val:
         return args_val
     return int(yaml_dict.get(key, min(cap, total)))
@@ -367,7 +369,8 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
 
-    # Suffixed when resuming so the source run is never overwritten.
+    # The run dir gets a suffix when resuming, so the source run is never
+    # overwritten.
     run_dir = resolve_run_dir(
         args.out_dir, args.method, args.env, args.seed, args.resume
     )

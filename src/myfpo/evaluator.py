@@ -1,8 +1,10 @@
-"""SJFPO evaluator: deterministic rollouts, ``eval_history.csv``.
+"""SJFPO evaluator. The module runs deterministic rollouts and writes
+``eval_history.csv``.
 
-Rollouts call ``env.reset(seed=...)`` and step to termination, truncation, or
-the step budget. Actions store per step in fp32. ``compute_action_jerk`` is the mean
-squared second-difference, a scale-free smoothness probe.
+A rollout calls ``env.reset(seed=...)`` and steps to termination, to truncation,
+or to the step budget. The code stores the actions per step in fp32.
+``compute_action_jerk`` is the mean squared second-difference. It is a scale-free
+smoothness probe.
 """
 
 from __future__ import annotations
@@ -56,15 +58,17 @@ def compute_action_jerk(actions: np.ndarray) -> float | None:
 
 
 def compute_seam_jerk(actions: np.ndarray, action_is_pad: np.ndarray) -> float | None:
-    """Mean squared second-difference *across* consecutive chunk boundaries.
+    """Mean squared second-difference across consecutive chunk boundaries.
 
-    ``actions`` ``[N, H, D]``, ``action_is_pad`` ``[N, H]``. A seam needs two
-    executed steps before it and one after. None if none qualify.
+    ``actions`` is ``[N, H, D]`` and ``action_is_pad`` is ``[N, H]``. A seam
+    needs two executed steps before it and one after. The function returns None
+    if no seam qualifies.
 
-    :func:`compute_mean_chunk_jerk` reduces inside each chunk and so scores 0
-    for a policy that steps at every seam. The buffer appends in wavefront
-    order, so consecutive rows are often different envs and this over-counts:
-    a conservative upper bound, never a false negative.
+    :func:`compute_mean_chunk_jerk` reduces inside each chunk. It therefore
+    scores 0 for a policy that steps at every seam. The buffer appends in
+    wavefront order, so consecutive rows are often different environments. Thus
+    this function over-counts. The result is a conservative upper bound, never a
+    false negative.
     """
     a, pad = _jerk_inputs(actions, action_is_pad)
     n = a.shape[0]

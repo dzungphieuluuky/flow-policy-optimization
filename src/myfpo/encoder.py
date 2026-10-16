@@ -78,8 +78,8 @@ class RunningMeanStd(nn.Module):
         """Normalise with the frozen statistics.
 
         The function returns ``x`` unchanged until the first update. The
-        collector is supposed to call ``update()`` first. So the function warns
-        once if a call arrives before that.
+        collector must call ``update()`` first. So the function warns once if a
+        call arrives before that.
         """
         if self._uninitialised:
             if not self._passthrough_warned:
