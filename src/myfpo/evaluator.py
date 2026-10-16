@@ -66,13 +66,7 @@ def compute_seam_jerk(actions: np.ndarray, action_is_pad: np.ndarray) -> float |
     order, so consecutive rows are often different envs and this over-counts:
     a conservative upper bound, never a false negative.
     """
-    a = np.asarray(actions)
-    pad = np.asarray(action_is_pad, dtype=bool)
-    if a.ndim != 3 or pad.shape != a.shape[:2]:
-        raise ValueError(
-            f"expected actions [N, H, D] and action_is_pad [N, H]; "
-            f"got {a.shape} and {pad.shape}"
-        )
+    a, pad = _jerk_inputs(actions, action_is_pad)
     n = a.shape[0]
     seams: list[float] = []
     for i in range(n - 1):
@@ -83,6 +77,18 @@ def compute_seam_jerk(actions: np.ndarray, action_is_pad: np.ndarray) -> float |
         window = np.stack([a[i, tail[-2]], a[i, tail[-1]], a[i + 1, head[0]]])
         seams.append(float(np.square(window[2:] - 2.0 * window[1:-1] + window[:-2]).mean()))
     return float(np.mean(seams)) if seams else None
+
+
+def _jerk_inputs(actions, action_is_pad) -> tuple[np.ndarray, np.ndarray]:
+    """Shared validation for the two jerk functions."""
+    a = np.asarray(actions)
+    pad = np.asarray(action_is_pad, dtype=bool)
+    if a.ndim != 3 or pad.shape != a.shape[:2]:
+        raise ValueError(
+            f"expected actions [N, H, D] and action_is_pad [N, H]; "
+            f"got {a.shape} and {pad.shape}"
+        )
+    return a, pad
 
 
 def extract_success(info: dict) -> float | None:
@@ -106,13 +112,7 @@ def compute_mean_chunk_jerk(actions: np.ndarray, action_is_pad: np.ndarray) -> f
     The function covers the inside of a chunk only. Use
     :func:`compute_seam_jerk` for the boundaries between chunks.
     """
-    a = np.asarray(actions)
-    pad = np.asarray(action_is_pad, dtype=bool)
-    if a.ndim != 3 or pad.shape != a.shape[:2]:
-        raise ValueError(
-            f"expected actions [N, H, D] and action_is_pad [N, H]; "
-            f"got {a.shape} and {pad.shape}"
-        )
+    a, pad = _jerk_inputs(actions, action_is_pad)
     jerks: list[float] = []
     for chunk, mask in zip(a, pad):
         n_exec = int((~mask).sum())

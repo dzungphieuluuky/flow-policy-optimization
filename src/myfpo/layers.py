@@ -15,9 +15,6 @@ class _RMSNorm(nn.RMSNorm):
     policy.
     """
 
-    def __init__(self, hidden_dim: int, eps: float = 1e-6):
-        super().__init__(hidden_dim, eps=eps)
-
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Normalise the trailing dimensions with the learned scale. Reduce in
         fp32. Cast the result back.

@@ -209,15 +209,6 @@ def _sjfpo_cli_fields(argv: list[str]) -> set[str]:
     return fields
 
 
-def select_method_cfg(
-    args: TrainConfig, yaml_dict: dict, cli_fields: set[str] | None = None
-):
-    """Nested draccus sub-config for the method, overlaid with flat YAML.
-
-    """
-    return apply_flat_yaml(args.sjfpo, yaml_dict, cli_fields=cli_fields)
-
-
 def default_intervals(
     total: int, args_val: int | None, yaml_dict: dict, key: str, cap: int
 ) -> int:
@@ -273,7 +264,6 @@ def resolve_run_dir(
 
 
 def run_single(
-    method: str,
     env_id: str,
     seed: int,
     out_dir: Path,
@@ -319,9 +309,6 @@ def run_single(
 
         from myfpo.train_sjfpo import train_sjfpo_run
 
-        if resume_from_checkpoint is not None and method != "sjfpo":
-            raise ValueError(f"--resume is sjfpo-only, got method={method!r}")
-
         return train_sjfpo_run(
             env=env,
             out_dir=out_dir,
@@ -360,7 +347,7 @@ def main(argv: list[str] | None = None) -> int:
 
     eval_s = default_intervals(total, args.eval_steps, yaml_dict, "eval_steps", 1000)
     ckpt_i = default_intervals(total, args.save_steps, yaml_dict, "save_steps", 1000)
-    cfg = select_method_cfg(args, yaml_dict, _sjfpo_cli_fields(argv))
+    cfg = apply_flat_yaml(args.sjfpo, yaml_dict, cli_fields=_sjfpo_cli_fields(argv))
 
     if args.resume and args.method != "sjfpo":
         print(
@@ -388,7 +375,6 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         result = run_single(
-            args.method,
             args.env,
             args.seed,
             run_dir,

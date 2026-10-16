@@ -65,15 +65,6 @@ class RunningMeanStd(nn.Module):
         self.count.copy_(total)
         self._uninitialised = False
 
-    @torch.inference_mode()
-    def reset(self) -> None:
-        """Clear the latch. Reset the statistics."""
-        self.mean.zero_()
-        self.var.fill_(1.0)
-        self.count.zero_()
-        self._uninitialised = True
-        self._passthrough_warned = False
-
     def _load_from_state_dict(self, *args, **kwargs):
         """Load the state. Derive the latch again.
 

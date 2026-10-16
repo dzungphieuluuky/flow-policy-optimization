@@ -7,7 +7,7 @@
 - `verify_deps.sh` — dep-pin gate, **stale**, see Notes
 
 ## Where to Look
-- `train.py:select_method_cfg` — CLI > flat YAML > dataclass defaults. Only dataclass fields pass. `total_steps` / `eval_steps` / `save_steps` / `obs_dim` / `action_dim` are runner scalars, NOT config fields.
+- `train.py:apply_flat_yaml(args.sjfpo, ...)` — CLI > flat YAML > dataclass defaults. Only dataclass fields pass. `total_steps` / `eval_steps` / `save_steps` / `obs_dim` / `action_dim` are runner scalars, NOT config fields.
 - `train.py:run_single` — cross-checks registry dims in `configs/envs.yaml` against the live space, then calls `train_sjfpo_run`.
 - `gen_sjfpo_config.py:render` — the SECTIONS table lists every emitted field in emission order. A new config field must be added there, or it lands in the trailing "Not emitted" list. Run the script after adding the field.
 

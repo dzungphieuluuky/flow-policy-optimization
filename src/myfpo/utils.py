@@ -76,9 +76,7 @@ def resolve_device() -> torch.device:
     want = os.environ.get("SJFPO_DEVICE", "auto").lower()
     if want == "cpu":
         return torch.device("cpu")
-    if want == "cuda":
-        return torch.device("cuda") if cuda_available() else torch.device("cpu")
-    if want != "auto":
+    if want not in {"auto", "cuda"}:
         raise ValueError(
             f"SJFPO_DEVICE={want!r} unknown; expected 'auto', 'cpu', or 'cuda'"
         )
@@ -99,29 +97,24 @@ def resolve_storage_dtype(
 
 
 def resolve_compute_dtype() -> torch.dtype:
-    """Matmul/autocast dtype, honouring ``SJFPO_DTYPE``. Parsed before the
-    Blackwell fast path, so ``fp32`` is honoured there too. BF16 only with
-    CUDA support."""
+    """Matmul/autocast dtype, honouring ``SJFPO_DTYPE``. BF16 only with CUDA
+    support."""
     want = os.environ.get("SJFPO_DTYPE", "auto").lower()
     if want not in {"auto", "fp32", "bf16"}:
         raise ValueError(
             f"SJFPO_DTYPE={want!r} unknown; expected 'auto', 'fp32', or 'bf16'"
         )
-    if want == "fp32":
+    # fp32, or no CUDA: fp32. Otherwise the bf16 support test covers the
+    # Blackwell fast path too, so the explicit Blackwell branch added nothing.
+    if want == "fp32" or not cuda_available():
         return torch.float32
-    if not cuda_available():
-        return torch.float32
-    if want == "bf16":
-        return torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float32
-    if is_rtx_1000_pro_blackwell():
-        return torch.bfloat16
     return torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float32
 
 
 def autocast_context(device=None):
     """bf16 autocast context on CUDA, no-op elsewhere."""
-    if not cuda_available():
-        return contextlib.nullcontext()
+    # resolve_compute_dtype returns fp32 whenever CUDA is absent, so the
+    # no-cuda case needs no separate check.
     if resolve_compute_dtype() != torch.bfloat16:
         return contextlib.nullcontext()
     dev_type = device.type if isinstance(device, torch.device) else "cuda"

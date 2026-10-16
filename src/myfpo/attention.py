@@ -29,8 +29,6 @@ class SelfAttention(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Self-attention over the ``L`` action tokens. ``[B, L, D]`` -> ``[B, L, D]``."""
-        if x.dim() != 3:
-            raise ValueError(f"x must have shape [B, L, D], got {tuple(x.shape)}")
         b, l, _ = x.shape
         h = self.n_heads
         d = self.head_dim
