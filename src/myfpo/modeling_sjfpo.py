@@ -458,6 +458,18 @@ class SJFPOPolicy(PreTrainedPolicy):
                     out[f"{prefix}.{name}"] = param
         return out
 
+    def _ema_foreach(
+        self, values: dict[str, torch.nn.Parameter]
+    ) -> tuple[list[str], list[torch.Tensor], list[torch.Tensor]]:
+        """Names, live shadow tensors, detached value tensors.
+
+        The shadow list is live memory, never a copy, so the caller writes
+        through it.
+        """
+        names = list(self._ema_shadow)
+        shadow = [self._ema_shadow[name] for name in names]
+        return names, shadow, [values[name].detach() for name in names]
+
     @torch.inference_mode()
     def update_ema(self, global_step: int) -> None:
         """Update the actor EMA after an optimizer step.
@@ -477,21 +489,14 @@ class SJFPOPolicy(PreTrainedPolicy):
             # The gate makes the hard copy one-shot.
             # global_step moves by a whole rollout, so an ==
             # ema_warmup_steps test never fires.
-            names = list(self._ema_shadow)
-            torch._foreach_copy_(
-                [self._ema_shadow[name] for name in names],
-                [current[name].detach() for name in names],
-            )
+            _, shadow, values = self._ema_foreach(current)
+            torch._foreach_copy_(shadow, values)
             self._ema_initialised = True
             return
         if global_step > self.config.ema_warmup_steps:
-            names = list(self._ema_shadow)
-            torch._foreach_mul_([self._ema_shadow[name] for name in names], decay)
-            torch._foreach_add_(
-                [self._ema_shadow[name] for name in names],
-                [current[name].detach() for name in names],
-                alpha=1.0 - decay,
-            )
+            _, shadow, values = self._ema_foreach(current)
+            torch._foreach_mul_(shadow, decay)
+            torch._foreach_add_(shadow, values, alpha=1.0 - decay)
 
     def ema_ready(self, global_step: int) -> bool:
         """Can the EMA shadow be used for evaluation yet?"""
@@ -512,12 +517,9 @@ class SJFPOPolicy(PreTrainedPolicy):
         if not self.ema_ready(global_step):
             return {}
         params = self._ema_named_params()
-        names = list(self._ema_shadow)
-        displaced = {name: params[name].detach().clone() for name in names}
-        torch._foreach_copy_(
-            [params[name] for name in names],
-            [self._ema_shadow[name] for name in names],
-        )
+        names, shadow, values = self._ema_foreach(params)
+        displaced = {name: value.clone() for name, value in zip(names, values)}
+        torch._foreach_copy_(values, shadow)
         return displaced
 
     @torch.no_grad()
@@ -878,21 +880,26 @@ class SJFPOPolicy(PreTrainedPolicy):
             cfg.action_horizon,
             action_dim,
         )
-        if (
-            self._rollout_buffer is None
-            # [:6] drops pin_memory, a device property. The full
-            # tuple would never match.
-            or self._rollout_buffer.capacity_key()[:6] != buffer_key
-        ):
-            self._rollout_buffer = RolloutBuffer(
+
+        def make_buffer(**extra) -> RolloutBuffer:
+            """Host and device buffers share every shape argument."""
+            return RolloutBuffer(
                 max_chunks=max_chunks,
                 max_steps=total_steps,
                 obs_steps=cfg.n_obs_steps,
                 obs_dim=obs_dim,
                 action_horizon=cfg.action_horizon,
                 action_dim=action_dim,
-                pin_memory=device.type == "cuda",
+                **extra,
             )
+
+        if (
+            self._rollout_buffer is None
+            # [:6] drops pin_memory, a device property. The full
+            # tuple would never match.
+            or self._rollout_buffer.capacity_key()[:6] != buffer_key
+        ):
+            self._rollout_buffer = make_buffer(pin_memory=device.type == "cuda")
         buffer = self._rollout_buffer
         buffer.reset()
 
@@ -923,15 +930,7 @@ class SJFPOPolicy(PreTrainedPolicy):
                 self._device_rollout_buffer is None
                 or self._device_rollout_buffer.capacity_key()[:6] != buffer.capacity_key()[:6]
             ):
-                self._device_rollout_buffer = RolloutBuffer(
-                    max_chunks=max_chunks,
-                    max_steps=total_steps,
-                    obs_steps=cfg.n_obs_steps,
-                    obs_dim=obs_dim,
-                    action_horizon=cfg.action_horizon,
-                    action_dim=action_dim,
-                    device=device,
-                )
+                self._device_rollout_buffer = make_buffer(device=device)
             buffer.copy_to(self._device_rollout_buffer, non_blocking=True)
             self._rollout_h2d_event = torch.cuda.Event()
             self._rollout_h2d_event.record()
@@ -1070,13 +1069,6 @@ class SJFPOPolicy(PreTrainedPolicy):
             None,
         ).unsqueeze(-1)
         eps = sample_eps(cfg, n_chunks, action_dim, device)
-
-        expected_eps_shape = (n_chunks, cfg.num_mc_samples, horizon, action_dim)
-        if tuple(eps.shape) != expected_eps_shape:
-            raise ValueError(
-                f"MC noise shape {tuple(eps.shape)} != expected "
-                f"{expected_eps_shape}"
-            )
 
         chunk_clip_counts = active["chunk_clip_counts"][:n_chunks]
 
