@@ -6,7 +6,7 @@ Saved checkpoint dir:
 * ``model.safetensors`` — policy weights (unwrapped keys)
 * ``optimizer.pt``      — AdamW state_dict (pickled, weights-only)
 * ``counters.json``     — ``{global_step, step_count}``
-* ``rng.pt``            — torch / cuda RNG state, when ``save_rng=True``
+* ``rng.pt``            — torch / cuda RNG state
 
 Optimizer, counters, and RNG go to a temp file then get replaced atomically.
 Model and config follow the LeRobot/HuggingFace ``save_pretrained`` path and are
@@ -108,10 +108,9 @@ def save_policy_checkpoint(
     optimizer: torch.optim.Optimizer | None = None,
     global_step: int,
     ema_state: dict | None = None,
-    save_rng: bool = True,
 ) -> None:
     """Save through the LeRobot ``HubMixin``. Then save ``optimizer.pt`` and
-    ``counters.json``.
+    ``counters.json``. RNG state goes to ``rng.pt``.
 
     The file ``model.safetensors`` holds the eager keys. So a fresh
     ``SJFPOFlowModel`` finds every key that it expects.
@@ -123,18 +122,6 @@ def save_policy_checkpoint(
     parameter groups. So one call to ``step`` drives both. The clipping stays
     per role.
     """
-    # Deferred import: circular dependency checkpointing <-> modeling_sjfpo.
-    from myfpo.modeling_sjfpo import SJFPOPolicy
-
-    if not isinstance(policy, SJFPOPolicy):
-        raise ValueError(
-            f"save_policy_checkpoint needs an SJFPOPolicy, got {type(policy).__name__}"
-        )
-    if int(global_step) < 0:
-        raise ValueError(f"global_step={global_step} must be >= 0")
-    if optimizer is None:
-        raise ValueError("provide an optimizer")
-
     d = Path(dir_path)
     d.mkdir(parents=True, exist_ok=True)
 
@@ -160,11 +147,10 @@ def save_policy_checkpoint(
         json.dumps(counters, indent=2).encode("utf-8"),
     )
 
-    if save_rng:
-        rng = {"torch": torch.get_rng_state()}
-        if torch.cuda.is_available():
-            rng["cuda"] = torch.cuda.get_rng_state_all()
-        save_torch_atomically(d / RNG_FILE, rng)
+    rng = {"torch": torch.get_rng_state()}
+    if torch.cuda.is_available():
+        rng["cuda"] = torch.cuda.get_rng_state_all()
+    save_torch_atomically(d / RNG_FILE, rng)
 
 
 def load_optimizer(policy, d: Path) -> torch.optim.Optimizer:
@@ -235,7 +221,6 @@ def load_policy_checkpoint(
     dir_path: str | os.PathLike,
     *,
     device: str | torch.device | None = None,
-    restore_rng: bool = True,
     action_low=None,
     action_high=None,
 ):
@@ -299,8 +284,7 @@ def load_policy_checkpoint(
         )
     policy.step_count = step_count
 
-    if restore_rng:
-        load_rng(d)
+    load_rng(d)
 
     counters = {"global_step": global_step, "step_count": step_count}
     return policy, optimizer, counters

@@ -48,8 +48,6 @@ _GAE_DIAG_LOG_KEYS = {
     "advantage_std": "gae_advantage_std",
     "return_rms": "returns_rms",
     "advantage_std_fraction": "advantage_std_fraction",
-    # Always NaN in training. No rollout path supplies budget_truncated.
-    "budget_truncated_chunk_frac": "budget_truncated_chunk_frac",
 }
 
 # Always present in compute_rollout_diagnostics' output.
@@ -122,12 +120,8 @@ def build_policy(
     device=None,
     action_low: np.ndarray | None = None,
     action_high: np.ndarray | None = None,
-    policy_cls: type[SJFPOPolicy] = SJFPOPolicy,
 ) -> SJFPOPolicy:
-    """Attach runtime features, then build the policy.
-
-    ``policy_cls`` lets a swapped actor in without touching the loop.
-    """
+    """Attach runtime features, then build the policy."""
     device = torch.device(device) if device is not None else resolve_device()
     policy_cfg = dataclasses.replace(
         cfg,
@@ -136,7 +130,7 @@ def build_policy(
         },
         output_features={"action": PolicyFeature(FeatureType.ACTION, (action_dim,))},
     )
-    policy = policy_cls(policy_cfg).to(device)
+    policy = SJFPOPolicy(policy_cfg).to(device)
     if action_low is not None and action_high is not None:
         policy.set_action_bounds(action_low, action_high)
     if getattr(cfg, "compile", False):
@@ -453,7 +447,6 @@ def train_sjfpo_run(
     obs_dim: int | None = None,
     action_dim: int | None = None,
     resume_from_checkpoint: str | Path | None = None,
-    policy_cls: type[SJFPOPolicy] = SJFPOPolicy,
     runtime: dict | None = None,
 ) -> dict[str, Any]:
     """One SJFPO training run. Env builds before any CUDA init, so forked
@@ -511,13 +504,6 @@ def train_sjfpo_run(
 
     global_step = 0
     if resume_from_checkpoint is not None:
-        if policy_cls is not SJFPOPolicy:
-            # load_policy_checkpoint rebuilds a hardcoded SJFPOPolicy, so a
-            # subclass comes back with the wrong actor architecture.
-            raise ValueError(
-                f"resume is not supported for policy_cls={policy_cls.__name__}; "
-                "actor checkpoints are not interchangeable between architectures"
-            )
         policy, optimizer, counters = load_policy_checkpoint(
             resume_from_checkpoint,
             device=device,
@@ -544,9 +530,24 @@ def train_sjfpo_run(
             device=device,
             action_low=action_low,
             action_high=action_high,
-            policy_cls=policy_cls,
         )
         optimizer = build_optimizer(policy)
+
+    def _save(dir_name: str) -> str:
+        """Save one checkpoint under `out_dir/checkpoints/` -> artifact path.
+
+        The three call sites (best / step_N / final) were written out three
+        times; only the directory name differs.
+        """
+        ckpt_dir = out_dir / CHECKPOINTS_DIR / dir_name
+        save_policy_checkpoint(
+            ckpt_dir,
+            policy=policy,
+            optimizer=optimizer,
+            global_step=global_step,
+            ema_state=policy.ema_state_dict(),
+        )
+        return str(ckpt_dir / "model.safetensors")
 
     warmed = warm_observation_stats(
         policy,
@@ -623,13 +624,11 @@ def train_sjfpo_run(
             global_step += step_delta
             action_abs_max = rollout["action_abs_max"]
 
-            rollout_jerk = None
-            rollout_seam_jerk = None
-            if "action" in batch and "action_is_pad" in batch:
-                jerk_action = batch["action"].detach().cpu().numpy()
-                jerk_pad = batch["action_is_pad"].detach().cpu().numpy()
-                rollout_jerk = compute_mean_chunk_jerk(jerk_action, jerk_pad)
-                rollout_seam_jerk = compute_seam_jerk(jerk_action, jerk_pad)
+            # generate_rollout always emits both keys; the jerk reads them raw.
+            jerk_action = batch["action"].detach().cpu().numpy()
+            jerk_pad = batch["action_is_pad"].detach().cpu().numpy()
+            rollout_jerk = compute_mean_chunk_jerk(jerk_action, jerk_pad)
+            rollout_seam_jerk = compute_seam_jerk(jerk_action, jerk_pad)
             action_clip_rates = compute_action_clip_rate(batch)
             if action_abs_max > 1.0 + 1e-3:
                 # Only reachable if the scaling affine itself is wrong.
@@ -819,15 +818,7 @@ def train_sjfpo_run(
                     # save_steps cadence, the nearest periodic checkpoint can
                     # sit 100k steps away. The run always ends on the last
                     # checkpoint. So the peak needs its own file.
-                    best_ckpt_dir = out_dir / CHECKPOINTS_DIR / "best"
-                    save_policy_checkpoint(
-                        best_ckpt_dir,
-                        policy=policy,
-                        optimizer=optimizer,
-                        global_step=global_step,
-                        ema_state=policy.ema_state_dict(),
-                    )
-                    best_artifact = str(best_ckpt_dir / "model.safetensors")
+                    best_artifact = _save("best")
                 if tracker.enabled:
                     tracker.log(
                         compute_eval_summary_metrics(
@@ -934,15 +925,7 @@ def train_sjfpo_run(
                 break
 
             if global_step >= next_save or global_step >= total_steps:
-                ckpt_dir = out_dir / CHECKPOINTS_DIR / f"step_{global_step}"
-                save_policy_checkpoint(
-                    ckpt_dir,
-                    policy=policy,
-                    optimizer=optimizer,
-                    global_step=global_step,
-                    ema_state=policy.ema_state_dict(),
-                )
-                artifacts.append(str(ckpt_dir / "model.safetensors"))
+                artifacts.append(_save(f"step_{global_step}"))
                 next_save = max(global_step + save_steps, next_save + save_steps)
 
         elapsed = time.time() - t_start
@@ -957,15 +940,7 @@ def train_sjfpo_run(
             train_env.close()
         tracker.finish(exit_code=1 if diverged else 0)
 
-    ckpt_dir = out_dir / CHECKPOINTS_DIR / "final"
-    save_policy_checkpoint(
-        ckpt_dir,
-        policy=policy,
-        optimizer=optimizer,
-        global_step=global_step,
-        ema_state=policy.ema_state_dict(),
-    )
-    artifacts.append(str(ckpt_dir / "model.safetensors"))
+    artifacts.append(_save("final"))
     if best_artifact is not None and best_artifact not in artifacts:
         artifacts.append(best_artifact)
 
