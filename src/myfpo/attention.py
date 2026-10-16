@@ -81,32 +81,23 @@ class DiTBlock(nn.Module):
             k = x.shape[1]
             if c.shape[1] != k:
                 raise ValueError(f"c has {c.shape[1]} conditioning tokens but x has {k}")
-            parts = self.adaLN(c).view(b, k, 6, -1)
-            (
-                shift_msa,
-                scale_msa,
-                gate_msa,
-                shift_mlp,
-                scale_mlp,
-                gate_mlp,
-            ) = parts.unbind(dim=2)
-            h = modulate(self.norm1(x), shift_msa, scale_msa)
-            x = x + gate_msa * self.attn(h)
-            out = x + gate_mlp * self.mlp(
-                modulate(self.norm2(x), shift_mlp, scale_mlp)
-            )
         else:
             if c.dim() != 2 or c.shape[1] != self.adaLN.fc1.in_features:
                 raise ValueError(f"c must have shape [{b}, {self.adaLN.fc1.in_features}], got {tuple(c.shape)}")
-            parts = self.adaLN(c).view(b, 6, -1)
-            shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = parts.unbind(
-                dim=1
-            )
-            h = modulate(self.norm1(x), shift_msa.unsqueeze(1), scale_msa.unsqueeze(1))
-            x = x + gate_msa.unsqueeze(1) * self.attn(h)
-            out = x + gate_mlp.unsqueeze(1) * self.mlp(
-                modulate(self.norm2(x), shift_mlp.unsqueeze(1), scale_mlp.unsqueeze(1))
-            )
+            # One broadcast row: the token path and the vector path then share
+            # the whole body, and [B, 1, D] gates broadcast over K exactly as
+            # the old unsqueezes did.
+            c = c[:, None, :]
+
+        parts = self.adaLN(c).view(b, c.shape[1], 6, -1)
+        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = parts.unbind(
+            dim=2
+        )
+        h = modulate(self.norm1(x), shift_msa, scale_msa)
+        x = x + gate_msa * self.attn(h)
+        out = x + gate_mlp * self.mlp(
+            modulate(self.norm2(x), shift_mlp, scale_mlp)
+        )
 
         if not return_stats:
             return out

@@ -211,6 +211,7 @@ class SJFPOFlowModel(nn.Module):
             raise ValueError(f"action token count {x_t.shape[1]} exceeds action_horizon {self.action_horizon}")
 
         t = torch.as_tensor(t, dtype=torch.float32, device=x_t.device)
+        cond = condition.to(device=x_t.device, dtype=x_t.dtype)
         token_axis = t.dim() in (2, 3) and tuple(t.shape[:2]) == tuple(x_t.shape[:2])
         if token_axis:
             if t.dim() == 3:
@@ -221,9 +222,7 @@ class SJFPOFlowModel(nn.Module):
             temb = temb.reshape(x_t.shape[0], x_t.shape[1], -1).to(
                 device=x_t.device, dtype=x_t.dtype
             )
-            c = self.time_mlp(temb) + condition.to(
-                device=x_t.device, dtype=x_t.dtype
-            )[:, None, :]
+            c = self.time_mlp(temb) + cond[:, None, :]
         elif t.dim() <= 1:
             t = t.reshape(-1)
             if t.numel() not in (1, x_t.shape[0]):
@@ -231,9 +230,7 @@ class SJFPOFlowModel(nn.Module):
             temb = self.timestep_embedder.encode_times(t).to(
                 device=x_t.device, dtype=x_t.dtype
             )
-            c = self.time_mlp(temb) + condition.to(
-                device=x_t.device, dtype=x_t.dtype
-            )
+            c = self.time_mlp(temb) + cond
         else:
             raise ValueError(f"t must be scalar, [B], or [B, K, 1], got {tuple(t.shape)}")
 

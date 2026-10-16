@@ -189,6 +189,30 @@ def compute_mc_xt(
     return torch.lerp(noise, action, t)
 
 
+def mc_draws(
+    actions: torch.Tensor, eps: torch.Tensor, tau: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor, tuple[int, ...], int]:
+    """The shared MC prologue of ``compute_behavior_cfm_losses`` and
+    ``forward``: interpolate the draws, one tau per token."""
+    flatten_timestep, flatten_mc_noise, flatten_mc_action, flow_shape, num_mc = (
+        run_monte_carlo_sampling(actions, eps, tau)
+    )
+    x_t = compute_mc_xt(flatten_timestep, flatten_mc_noise, flatten_mc_action, flow_shape)
+    return x_t, flatten_timestep.squeeze(-1), flow_shape, num_mc
+
+
+def broadcast_condition(condition: torch.Tensor, num_mc: int) -> torch.Tensor:
+    """Repeat each row ``m`` times, row-major: ``flat[i * m + j] = condition[i]``."""
+    return einx.id("n m d -> (n m) d", einx.id("n d -> n m d", condition, m=num_mc))
+
+
+def sample_tau(cfg: SJFPOConfig, n: int, device: torch.device) -> torch.Tensor:
+    """MC timesteps, one trailing axis: ``[n, M, horizon, 1]``."""
+    return sample_timesteps(
+        (n, cfg.num_mc_samples, cfg.action_horizon), cfg, device, None
+    ).unsqueeze(-1)
+
+
 def compute_ratio_metrics(
     *,
     ratio: torch.Tensor,
@@ -801,16 +825,10 @@ class SJFPOPolicy(PreTrainedPolicy):
         the ratio never mixes means over different positions.
         """
         cfg = self.config
-        flatten_timestep, flatten_mc_noise, flatten_mc_action, flow_shape, num_mc = (
-            run_monte_carlo_sampling(actions, eps, tau)
-        )
-        x_t = compute_mc_xt(flatten_timestep, flatten_mc_noise, flatten_mc_action, flow_shape)
-        actor_tau = flatten_timestep.squeeze(-1)
+        x_t, actor_tau, flow_shape, num_mc = mc_draws(actions, eps, tau)
         with torch.inference_mode(), autocast_context(actions.device):
             condition = self.encoder(normalised_states)
-            condition_flat = einx.id(
-                "n d -> n m d", condition, m=num_mc
-            ).reshape(num_mc * condition.shape[0], condition.shape[-1])
+            condition_flat = broadcast_condition(condition, num_mc)
             v_old = self.compute_predicted_velocity(
                 x_t, actor_tau, condition_flat
             ).float()
@@ -1004,7 +1022,9 @@ class SJFPOPolicy(PreTrainedPolicy):
                     actions,
                     exec_length_frac,
                 ).float().amin(dim=0)
-            with torch.inference_mode(), autocast_context(device):
+            # Already inside the outer inference_mode; autocast is the only
+            # context this block adds.
+            with autocast_context(device):
                 boot_q = self.critic(
                     self.critic_inputs(normalised_next_states, next_cond),
                     boot_actions,
@@ -1062,12 +1082,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             0
         ) >= lengths.unsqueeze(1)
 
-        tau = sample_timesteps(
-            (n_chunks, cfg.num_mc_samples, horizon),
-            cfg,
-            device,
-            None,
-        ).unsqueeze(-1)
+        tau = sample_tau(cfg, n_chunks, device)
         eps = sample_eps(cfg, n_chunks, action_dim, device)
 
         chunk_clip_counts = active["chunk_clip_counts"][:n_chunks]
@@ -1193,27 +1208,16 @@ class SJFPOPolicy(PreTrainedPolicy):
                     f"stored MC noise shape {tuple(eps.shape)} != {expected_eps}"
                 )
         else:
-            tau = sample_timesteps(
-                (n, cfg.num_mc_samples, horizon),
-                cfg,
-                device,
-                None,
-            ).unsqueeze(-1)
+            tau = sample_tau(cfg, n, device)
             eps = sample_eps(cfg, n, action_dim, device)
 
-        flatten_timestep, flatten_mc_noise, flatten_mc_action, flow_shape, num_mc = (
-            run_monte_carlo_sampling(actions, eps, tau)
-        )
-        x_t_flat = compute_mc_xt(
-            flatten_timestep, flatten_mc_noise, flatten_mc_action, flow_shape
-        )
-        actor_tau = flatten_timestep.squeeze(-1)
+        x_t_flat, actor_tau, flow_shape, num_mc = mc_draws(actions, eps, tau)
 
         with autocast_context(device):
             # One encoder pass: the actor gets the MC-broadcast copy, and the
             # critic gets the unbroadcast one when it shares this encoder.
             cond = self.encoder(states)
-            cond_flat = einx.id("n m d -> (n m) d", einx.id("n d -> n m d", cond, m=num_mc))
+            cond_flat = broadcast_condition(cond, num_mc)
         # Representation health, not the trust region. "none" skips all new
         # math. The raw value logs even at coef 0.0, for calibration.
         sigreg_raw = torch.zeros((), device=device)
