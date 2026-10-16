@@ -39,7 +39,6 @@ def test_none_gives_a_disabled_tracker():
     assert isinstance(t, ExperimentTracker)
     assert t.enabled is False
     t.log({"x": 1.0}, 0)
-    t.log_video([], 0, fps=30)
     t.finish(0)
 
 
@@ -59,9 +58,6 @@ def test_all_fans_out_to_every_backend():
     class Spy:
         def log(self, data, step):
             seen.append((data, step))
-
-        def log_video(self, *a, **k):
-            pass
 
         def finish(self, code):
             pass

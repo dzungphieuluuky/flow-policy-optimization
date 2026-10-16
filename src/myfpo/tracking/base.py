@@ -60,11 +60,11 @@ def build_run_name(method: str, env_name: str, seed: int, cfg_dict: dict) -> str
         tags.append(f"h{v}")
     if (v := get("hidden_dim")) is not None and (d := get("dit_depth")) is not None:
         tags.append(f"d{v}x{d}")
-    if (v := get("num_learning_epochs", get("num_epochs"))) is not None:
+    if (v := get("num_learning_epochs")) is not None:
         tags.append(f"ep{v}")
-    if (v := get("policy_lr", get("lr"))) is not None:
+    if (v := get("policy_lr")) is not None:
         tags.append(f"lr{v:g}" if isinstance(v, float) else f"lr{v}")
-    if (v := get("clip_param", get("epsilon_clip"))) is not None:
+    if (v := get("clip_param")) is not None:
         tags.append(f"eps{compact_value(v)}")
     if (v := get("num_mc_samples")) is not None:
         tags.append(f"mc{v}")
@@ -139,7 +139,6 @@ def compute_eval_summary_metrics(
 
 class ExperimentTrackerBackend(Protocol):
     def log(self, data: dict[str, float], step: int) -> None: ...
-    def log_video(self, frames: list, step: int, *, fps: int) -> None: ...
     def finish(self, exit_code: int) -> None: ...
 
 
@@ -156,10 +155,6 @@ class ExperimentTracker:
     def log(self, data: dict[str, float], step: int) -> None:
         for b in self.backends:
             b.log(data, step)
-
-    def log_video(self, frames: list, step: int, *, fps: int = 30) -> None:
-        for b in self.backends:
-            b.log_video(frames, step, fps=fps)
 
     def finish(self, exit_code: int = 0) -> None:
         for b in self.backends:

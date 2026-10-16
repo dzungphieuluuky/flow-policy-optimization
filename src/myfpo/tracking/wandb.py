@@ -5,7 +5,6 @@ import os
 import wandb
 
 from .base import build_run_name
-from .tensorboard import stack_frames
 
 
 class WandbBackend:
@@ -32,15 +31,6 @@ class WandbBackend:
 
     def log(self, data: dict[str, float], step: int) -> None:
         wandb.log(data, step=step)
-
-    def log_video(self, frames: list, step: int, *, fps: int = 30) -> None:
-        video = stack_frames(frames)
-        if video is None:
-            return
-        try:
-            wandb.log({"eval/video": wandb.Video(video, fps=fps, format="mp4")}, step=step)
-        except (ValueError, RuntimeError, KeyError):  # tracking best-effort
-            return
 
     def log_eval_table(self, eval_results: list[dict], step: int) -> None:
         if not eval_results:
