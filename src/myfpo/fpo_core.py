@@ -418,31 +418,6 @@ def compute_policy_ratio(
     return torch.exp(delta_st)
 
 
-def trajectory_straightness(velocities) -> float:
-    """Return the mean cosine between two consecutive velocities of an Euler
-    trajectory.
-
-    A lower value means a curvier path. The value does not replace measurement.
-    It can stay flat while the sampling cost moves. It can also move while the
-    cost stays flat.
-
-    ``velocities`` holds the ``v_hat`` sequence that the sampler used, in order.
-    The function returns NaN for fewer than two steps. A 1-step sampler gives
-    exactly that.
-    """
-    if len(velocities) < 2:
-        return float("nan")
-    cosines = []
-    for a, b in zip(velocities[:-1], velocities[1:]):
-        num = (a * b).sum()
-        den = a.norm() * b.norm()
-        if float(den) > 0:
-            cosines.append(float(num / den))
-    if not cosines:
-        return float("nan")
-    return sum(cosines) / len(cosines)
-
-
 def sample_action(
     predict_velocity: Callable[[torch.Tensor, torch.Tensor, Any], torch.Tensor],
     shape,
@@ -450,8 +425,6 @@ def sample_action(
     num_inference_steps: int,
     eps: torch.Tensor,
     device: torch.device | str | None,
-    *,
-    return_velocities: bool = False,
 ):
     """Euler-sample the flow from t=0 (noise) to t=1 (data). The caller draws
     ``eps``.
@@ -460,12 +433,6 @@ def sample_action(
     It does not treat ``None`` as a request for the CPU. The sampler runs on the
     rollout path. There, the device is the device the policy runs on. It is not
     something to infer.
-
-    ``return_velocities`` also returns the ``v_hat`` sequence that
-    :func:`trajectory_straightness` needs. The default is off, because the flag
-    keeps every velocity alive for the whole solve. The inference path does not
-    need that. Nothing in the training or rollout path sets it, so the
-    straightness metric has no caller outside the tests.
     """
     if device is None:
         raise ValueError("device must be provided explicitly")
@@ -484,15 +451,12 @@ def sample_action(
         eps = eps.to(device)
 
     x = eps
-    velocities = [] if return_velocities else None
     with torch.inference_mode():
         dts = grid[1:] - grid[:-1]
         for i in range(num_inference_steps):
             t_current = grid[i].reshape(1)
             v_hat = predict_velocity(x, t_current, condition)
-            if velocities is not None:
-                velocities.append(v_hat.detach().float())
             # addcmul, not x + dt*v: same value, one kernel instead of two, and
             # this loop runs num_euler_steps times per policy call.
             x = torch.addcmul(x, v_hat, dts[i])
-    return (x, velocities) if return_velocities else x
+    return x
