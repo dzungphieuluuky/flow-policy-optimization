@@ -96,12 +96,13 @@ def main(argv: list[str] | None = None) -> int:
 
             with torch.inference_mode():
                 batch = {
-                    "observation.state": torch.as_tensor(
-                        obs, dtype=torch.float32
-                    ).unsqueeze(0)
+                    # Bare [obs]: select_action buffers the frame into a window
+                    # itself. A rank-2 input is read as a [T, obs] window and
+                    # then rejected unless T == n_obs_steps.
+                    "observation.state": torch.as_tensor(obs, dtype=torch.float32)
                 }
                 action = policy.select_action(batch, zero_sampling=True)
-                return action.squeeze(0).cpu().numpy()
+                return action.cpu().numpy()
 
         print(
             f"Running {args.episodes} episode(s) with render_mode={args.render_mode!r}"
