@@ -180,7 +180,7 @@ def render() -> str:
     sys.path.insert(0, str(ROOT / "src"))
     from myfpo.configuration_sjfpo import SJFPOConfig
 
-    cfg = dataclasses.replace(SJFPOConfig())
+    cfg = SJFPOConfig()
     lines = [HEADER]
     emitted: set[str] = set()
     for title, names in SECTIONS:
@@ -189,9 +189,6 @@ def render() -> str:
             if name not in {f.name for f in dataclasses.fields(cfg)}:
                 raise SystemExit(f"unknown field in SECTIONS: {name}")
             emitted.add(name)
-            # The call repr() keeps tuples as YAML-native sequences and keeps
-            # None as null. A bare str() would emit "None", which parses as the
-            # 4-char string.
             lines.append(f"{name}: {_yaml_value(getattr(cfg, name))}")
     known = {f.name for f in dataclasses.fields(cfg)}
     # report_to is excluded above on purpose: it is a reporting sink, not a
