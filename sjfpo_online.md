@@ -129,6 +129,7 @@ scikit-learn
 scikit-image
 opencv-python-headless
 pillow
+imageio
 imageio-ffmpeg
 av
 moviepy
@@ -170,6 +171,79 @@ if _wandb_key:
     !wandb login $_wandb_key
 else:
     print("WANDB_API_KEY not found; training will run without wandb sync.")
+```
+
+### Evaluation and video helper
+
+Define once here. The evaluation cells further down only call
+`eval_and_play(...)`. `MUJOCO_GL=egl` is set for the render path, same as the
+training cells, so this works without a display.
+
+```python
+import os
+import sys
+from pathlib import Path
+
+import imageio.v2 as imageio
+import torch
+from IPython.display import Video, display
+
+os.environ.setdefault("MUJOCO_GL", "egl")
+sys.path.insert(0, "src")  # %cd myfpo already ran, so this is the repo root
+
+from myfpo.checkpointing import load_policy_checkpoint
+from myfpo.evaluator import Evaluator, render_episode_frames
+
+
+def latest_ckpt(run_dir, which="best"):
+    """Checkpoint dir to play: `which` if present, else highest step_N, else final."""
+    base = Path(run_dir) / "checkpoints"
+    if (base / which).is_dir():
+        return base / which
+    steps = sorted(base.glob("step_*"), key=lambda p: int(p.name.split("_")[1]))
+    if steps:
+        return steps[-1]
+    if (base / "final").is_dir():
+        return base / "final"
+    raise FileNotFoundError(f"no checkpoint under {base}")
+
+
+def eval_and_play(run_dir, env_id, episodes=3, max_steps=1000, seed=42,
+                  fps=30):
+    """Score the checkpoint numerically, then embed one rollout as a video."""
+    ckpt = latest_ckpt(run_dir)
+    policy, _, counters = load_policy_checkpoint(ckpt, device="cpu")
+    policy.eval()
+
+    def act(obs):
+        # Bare [obs], not [1, obs]: select_action buffers the frame itself.
+        # Rank 2 is read as a [T, obs] window and then needs T == n_obs_steps.
+        with torch.inference_mode():
+            frame = torch.as_tensor(obs, dtype=torch.float32)
+            return policy.select_action(
+                {"observation.state": frame}, zero_sampling=True
+            ).cpu().numpy()
+
+    import gymnasium as gym
+
+    # Numeric pass: no pixels, so it stays fast.
+    env = gym.make(env_id)
+    try:
+        rows = Evaluator(env=env, eval_seed=seed, max_episodes=episodes,
+                         max_steps=max_steps).evaluate(act)
+    finally:
+        env.close()
+    for r in rows:
+        print(f"  ep{r['episode']}: return={r['return']:.1f} len={r['length']} "
+              f"success={r['success']} jerk={r['jerk']}")
+    print(f"  step={counters.get('global_step', '?')}  ckpt={ckpt}")
+
+    # Video pass: same policy, own env, frames at rgb_array.
+    frames, ret = render_episode_frames(env_id, act, seed=seed, max_steps=max_steps)
+    mp4 = Path(run_dir) / f"play_{ckpt.name}.mp4"
+    imageio.mimwrite(mp4, frames, fps=fps, codec="libx264", quality=7)
+    display(Video(str(mp4), embed=True))
+    print(f"  frames={len(frames)} return={ret:.1f} -> {mp4}")
 ```
 
 ## 1. The algorithm
@@ -236,6 +310,15 @@ diff. Do not assume a future default change leaves a comparison intact.
 not for training one from scratch, so on Reacher or Humanoid from scratch expect
 a flat curve and read the `lr1e3` arm before blaming the algorithm.
 
+```python
+# Evaluate and play the run above. `best` beats `final` when both exist.
+eval_and_play("outputs/sjfpo_Reacher-v5_seed3407", "Reacher-v5")
+```
+
+The run directory is `<out_dir>/sjfpo_<env>_seed<seed>`, resolved by
+`resolve_run_dir` in `scripts/train.py`. Pass `--out_dir` to `scripts/train.py`
+to shorten it.
+
 ## 2. Reading the metrics
 
 | Key | Meaning |
@@ -257,6 +340,10 @@ budget is the first thing worth instrumenting.
 
 Sequential by design. `num_envs=64` forks a vector-env pool, so run **one arm at
 a time** even on a big GPU.
+
+Every arm plays a video when it finishes. Humanoid-v5 at 1000 steps is a ~33 s
+clip, so pass `max_steps=300` on the expensive arms. `run_arm("exec4",
+play=False)` skips the video and leaves the numbers.
 
 ```python
 # Shared settings. ENV and TOTAL_STEPS are the only two things to change.
@@ -282,12 +369,16 @@ BASE = [
     "--sjfpo.compile", COMPILE,
 ]
 
-def run_arm(tag, extra=()):
+def run_arm(tag, extra=(), play=True, **play_kw):
     out = f"outputs/sweep_{tag}"
     cmd = ["python", "scripts/train.py", "--env", ENV, "--out_dir", out, *BASE, *extra]
     print(f"\n=== {tag} ===\n{' '.join(cmd)}\n", flush=True)
     rc = subprocess.call(cmd)
     print(f"=== {tag} exit={rc} -> {out} ===", flush=True)
+    # resolve_run_dir appends this to --out_dir. A failed arm has no checkpoint.
+    run_dir = f"{out}/sjfpo_{ENV}_seed{SEED}"
+    if play and rc == 0:
+        eval_and_play(run_dir, ENV, **play_kw)
     return rc
 ```
 
