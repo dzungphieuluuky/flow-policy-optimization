@@ -21,7 +21,7 @@ import torch
 
 from myfpo.configuration_sjfpo import SJFPOConfig
 
-__all__ = ["RolloutBuffer", "collect_chunks", "collect_chunks_vec"]
+__all__ = ["RolloutBuffer", "collect_chunks_vec"]
 
 
 # Lazily-constructed config (import cost only on first use).
@@ -339,39 +339,25 @@ def scale_and_clip_chunk(
     return executed, scaled, clip_mask.sum(dim=(-2, -1))
 
 
-def execute_open_loop_steps_into(
-    env,
-    executed_np: np.ndarray,
-    window: torch.Tensor,
-    step_frames: torch.Tensor,
-    rewards: torch.Tensor,
-    executed_total: int,
-    total_steps: int,
+def resolve_chunk_args(
+    n_obs_steps: int | None,
     n_action_steps: int,
-) -> tuple[int, str]:
-    """Execute one chunk into preallocated frame and reward storage.
+    chunk_size: int | None,
+) -> tuple[int, int]:
+    """Fill the chunk defaults from the config, then check the execution span.
 
-    ``step_frames`` gets the raw observation after each step. The obs window
-    itself is left in ``window``, which the caller reads once the chunk closes.
+    The caller adds one further check, that ``n_action_steps`` fits inside the
+    obs ring, because the vec window is a ring rather than a slide.
     """
-    n_exec = 0
-    done_kind = "continue"
-    for i in range(n_action_steps):
-        if executed_total + n_exec >= total_steps:
-            break
-        obs, reward, terminated, truncated, _info = env.step(executed_np[i])
-        n_exec += 1
-        rewards[n_exec - 1] = reward
-        window[:-1].copy_(window[1:].clone())
-        window[-1].copy_(torch.as_tensor(np.asarray(obs, dtype=np.float32)))
-        step_frames[n_exec - 1].copy_(window[-1])
-        if terminated:
-            done_kind = "terminated"
-            break
-        if truncated:
-            done_kind = "truncated"
-            break
-    return n_exec, done_kind
+    cfg = get_default_config()
+    n_obs_steps = cfg.n_obs_steps if n_obs_steps is None else n_obs_steps
+    chunk_size = cfg.action_horizon if chunk_size is None else int(chunk_size)
+    if not 1 <= n_action_steps <= chunk_size:
+        raise ValueError(
+            f"n_action_steps={n_action_steps} must satisfy "
+            f"1 <= n <= chunk_size={chunk_size}"
+        )
+    return n_obs_steps, chunk_size
 
 
 def flush_on_collection_error(
@@ -439,9 +425,9 @@ def collect_chunks_vec(
 
     Needs ``AutoresetMode.NEXT_STEP``, see :func:`validate_autoreset_mode`.
     """
-    cfg = get_default_config()
-    n_obs_steps = cfg.n_obs_steps if n_obs_steps is None else n_obs_steps
-    chunk_size = cfg.action_horizon if chunk_size is None else int(chunk_size)
+    n_obs_steps, chunk_size = resolve_chunk_args(
+        n_obs_steps, n_action_steps, chunk_size
+    )
 
     validate_autoreset_mode(envs)
 
@@ -451,11 +437,6 @@ def collect_chunks_vec(
 
     low, range_ = resolve_action_bounds(action_low, action_high)
 
-    if not 1 <= n_action_steps <= chunk_size:
-        raise ValueError(
-            f"n_action_steps={n_action_steps} must satisfy "
-            f"1 <= n <= chunk_size={chunk_size}"
-        )
     # The obs window is a ring of n_obs_steps rows. A chunk writes one row per
     # step. So a chunk deeper than the window has nowhere to put its frames.
     # Single-env collection slides the window instead. It has no such limit.
@@ -613,89 +594,6 @@ def collect_chunks_vec(
                 buffer.mark_incomplete(prev_chunk_indices[i])
         return buffer
 
-    except (ValueError, RuntimeError, KeyError):
-        flush_on_collection_error(on_error_flush)
-        raise
-
-
-def collect_chunks(
-    env,
-    policy: Callable[[torch.Tensor], torch.Tensor],
-    total_steps: int,
-    action_low: float | np.ndarray,
-    action_high: float | np.ndarray,
-    *,
-    n_obs_steps: int | None = None,
-    n_action_steps: int,
-    chunk_size: int | None = None,
-    on_error_flush: Callable[[], None] | None = None,
-    buffer: RolloutBuffer,
-) -> RolloutBuffer:
-    """Collect executed action chunks from one env into ``buffer``.
-
-    Chunks come from the current obs window and run open loop, the window
-    chained across each chunk's steps. ``n_obs_steps`` and ``chunk_size`` fall
-    back to the default config.
-    """
-    cfg = get_default_config()
-    n_obs_steps = cfg.n_obs_steps if n_obs_steps is None else n_obs_steps
-    chunk_size = cfg.action_horizon if chunk_size is None else int(chunk_size)
-
-    low, range_ = resolve_action_bounds(action_low, action_high)
-
-    if not 1 <= n_action_steps <= chunk_size:
-        raise ValueError(
-            f"n_action_steps={n_action_steps} must satisfy "
-            f"1 <= n <= chunk_size={chunk_size}"
-        )
-    try:
-        obs, _ = env.reset()
-        # The warmup window is the reset observation repeated, one row per
-        # history step.
-        window = as_float_tensor(obs).repeat(n_obs_steps, 1)
-        step_frames = torch.zeros(chunk_size, int(window.shape[-1]))
-        reward_window = torch.zeros(chunk_size, dtype=_REWARD_DTYPE)
-        executed_total = 0
-        while executed_total < total_steps:
-            state = window.clone()
-            proposed = as_float_tensor(policy(state))
-            executed, scaled, clip_count = scale_and_clip_chunk(proposed, low, range_)
-            executed_np = executed.detach().cpu().numpy()
-            n_exec, done_kind = execute_open_loop_steps_into(
-                env,
-                executed_np,
-                window,
-                step_frames,
-                reward_window,
-                executed_total,
-                total_steps,
-                n_action_steps,
-            )
-            if n_exec < 1:
-                raise RuntimeError("collection executed zero steps")
-            chunk_index = buffer.add_chunk(
-                state=state,
-                next_state=window,
-                action=scaled,
-                rewards=reward_window[:n_exec],
-                step_frames=step_frames[:n_exec],
-                terminated=done_kind == "terminated",
-                truncated=done_kind == "truncated",
-                clip_count=int(clip_count),
-            )
-            if done_kind == "continue" and n_exec < n_action_steps:
-                # The step budget cut the chunk short. The env is still alive.
-                # So this is not a truncation. A truncation would make GAE treat
-                # every live chunk as the end of an episode. GAE would then
-                # drop the chain to the next chunk.
-                # The caller must pass done_kind. An early termination also
-                # produces a short chunk.
-                buffer.mark_incomplete(chunk_index)
-            executed_total += n_exec
-            if done_kind != "continue":
-                obs, _ = env.reset()
-                window.copy_(as_float_tensor(obs).expand_as(window))
-        return buffer
     except (ValueError, RuntimeError, KeyError):
         flush_on_collection_error(on_error_flush)
         raise

@@ -25,7 +25,6 @@ from lerobot.utils.constants import ACTION, OBS_STATE
 from myfpo.configuration_sjfpo import SJFPOConfig
 from myfpo.collector import (
     RolloutBuffer,
-    collect_chunks,
     collect_chunks_vec,
     resolve_action_bounds,
     scale_and_clip_chunk,
@@ -857,12 +856,6 @@ class SJFPOPolicy(PreTrainedPolicy):
         device = next(self.parameters()).device
         storage_dtype = resolve_storage_dtype(device)
 
-        def propose(state: torch.Tensor) -> torch.Tensor:
-            chunk = self.predict_action_chunk(
-                {OBS_STATE: to_device_async(state, device)}, zero_sampling=not noisy
-            )[0]
-            return chunk.cpu()
-
         def propose_batch(states: torch.Tensor) -> torch.Tensor:
             chunk = self.predict_action_chunk(
                 {OBS_STATE: to_device_async(states, device)}, zero_sampling=not noisy
@@ -903,30 +896,27 @@ class SJFPOPolicy(PreTrainedPolicy):
         buffer = self._rollout_buffer
         buffer.reset()
 
-        if num_envs > 1:
-            collect_chunks_vec(
-                env,
-                propose_batch,
-                total_steps,
-                action_low,
-                action_high,
-                n_obs_steps=cfg.n_obs_steps,
-                n_action_steps=cfg.n_action_steps,
-                chunk_size=cfg.action_horizon,
-                buffer=buffer,
-            )
+        collect_kwargs = dict(
+            total_steps=total_steps,
+            action_low=action_low,
+            action_high=action_high,
+            n_obs_steps=cfg.n_obs_steps,
+            n_action_steps=cfg.n_action_steps,
+            chunk_size=cfg.action_horizon,
+            buffer=buffer,
+        )
+        # A single env becomes a 1-env vec env. One collector, so the chunk
+        # contract cannot drift between the n==1 and n>1 paths.
+        if num_envs == 1:
+            import gymnasium as gym
+
+            envs = gym.vector.SyncVectorEnv([lambda: env])
+            try:
+                collect_chunks_vec(envs, propose_batch, **collect_kwargs)
+            finally:
+                envs.close()
         else:
-            collect_chunks(
-                env,
-                propose,
-                total_steps,
-                action_low,
-                action_high,
-                n_obs_steps=cfg.n_obs_steps,
-                n_action_steps=cfg.n_action_steps,
-                chunk_size=cfg.action_horizon,
-                buffer=buffer,
-            )
+            collect_chunks_vec(env, propose_batch, **collect_kwargs)
 
         if device.type == "cuda":
             if (
