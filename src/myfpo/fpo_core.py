@@ -65,7 +65,7 @@ def sample_noise(
 
     This is the only definition of the base sample. The CFM path reads it
     twice. ``compute_mc_xt`` builds ``lerp(noise, action, t)``.
-    ``compute_target_velocity`` returns ``a - eps``.
+    ``cfm_target`` returns ``a - eps``.
     """
     mode = cfg.noise_sampling_mode
     if mode == "normal":

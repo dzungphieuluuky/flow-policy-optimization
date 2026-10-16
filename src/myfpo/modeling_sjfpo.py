@@ -641,20 +641,6 @@ class SJFPOPolicy(PreTrainedPolicy):
         }
 
 
-    @staticmethod
-    def compute_target_velocity(
-        a: torch.Tensor, eps: torch.Tensor, cfg: SJFPOConfig
-    ) -> torch.Tensor:
-        """Build the flow-matching regression target, per ``cfg.cfm_loss_target``.
-
-        The value ``velocity`` is ``v* = a - eps``. It broadcasts over the MC
-        draws: ``[B, *flow]`` against ``[B, m, *flow]``.
-
-        The endpoint modes compare an action or a noise vector instead. See
-        :func:`myfpo.fpo_core.cfm_target`.
-        """
-        return cfm_target(a, eps, cfg)
-
     def compute_predicted_velocity(
         self,
         x_t: torch.Tensor,
@@ -668,25 +654,6 @@ class SJFPOPolicy(PreTrainedPolicy):
         """
         cfg = self.config
         return clip_transported(self.actor(x_t, tau, condition), cfg.transported_clip_value)
-
-
-    def standardize_obs_tensor(self, states: torch.Tensor) -> torch.Tensor:
-        """Coerce obs to ``[B, T, obs]``, in storage dtype.
-
-        Takes rank 3 as-is and rank 2 as a window. Rank 1 raises -- a bare
-        ``[obs]`` frame is :meth:`select_action`'s job, not this one's.
-        """
-        states = to_tensor(states)
-        states = states.to(dtype=resolve_storage_dtype(states.device))
-        if states.dim() == 3:
-            return states
-        if states.dim() == 2 and states.shape[0] == self.config.n_obs_steps:
-            return einx.id("t d -> 1 t d", states)
-        raise ValueError(
-            f"observation.state must be [B, T, obs] or [T, obs]; "
-            f"got {tuple(states.shape)}. A bare [obs] frame goes through "
-            "select_action, which buffers it into a window."
-        )
 
 
     def predict_action_chunk(
@@ -705,7 +672,18 @@ class SJFPOPolicy(PreTrainedPolicy):
         cfg = self.config
         device = next(self.actor.parameters()).device
 
-        states = self.standardize_obs_tensor(batch[OBS_STATE])
+        # [B, T, obs] passes through; a [T, obs] window gains the batch axis.
+        # A bare [obs] frame belongs to select_action.
+        states = to_tensor(batch[OBS_STATE])
+        states = states.to(dtype=resolve_storage_dtype(states.device))
+        if states.dim() == 2 and states.shape[0] == cfg.n_obs_steps:
+            states = einx.id("t d -> 1 t d", states)
+        elif states.dim() != 3:
+            raise ValueError(
+                f"observation.state must be [B, T, obs] or [T, obs]; "
+                f"got {tuple(states.shape)}. A bare [obs] frame goes through "
+                "select_action, which buffers it into a window."
+            )
         states = to_device_async(states, device)
         states = self.preprocessor({OBS_STATE: states})[OBS_STATE]
 
@@ -733,7 +711,7 @@ class SJFPOPolicy(PreTrainedPolicy):
                 device=device,
             ).float()
 
-        scaled = x0[:, : cfg.action_horizon, :].clamp(-1.0, 1.0)
+        scaled = x0.clamp(-1.0, 1.0)
 
         if self.training and cfg.action_perturb_std > 0:
             scaled = scaled + cfg.action_perturb_std * torch.randn_like(scaled)
@@ -793,19 +771,6 @@ class SJFPOPolicy(PreTrainedPolicy):
         """
         return executed_steps.to(torch.float32) / float(self.config.action_horizon)
 
-    def prepare_cfm_loss_inputs(
-        self,
-        action_is_pad: torch.Tensor,
-        *velocities: torch.Tensor,
-    ) -> tuple[torch.Tensor | None, tuple[torch.Tensor, ...]]:
-        """Execution mask plus the velocities it indexes.
-
-        Pass-through: the velocities are already action steps, so
-        the mask applies directly. Both ``cfm_loss_old`` and ``cfm_loss_new``
-        must route through it to stay masked alike.
-        """
-        return action_is_pad, velocities
-
     def compute_behavior_cfm_losses(
         self,
         normalised_states: torch.Tensor,
@@ -833,7 +798,7 @@ class SJFPOPolicy(PreTrainedPolicy):
                 x_t, actor_tau, condition_flat
             ).float()
         with torch.autocast(device_type=actions.device.type, enabled=False):
-            v_star = self.compute_target_velocity(actions, eps, cfg).float()
+            v_star = cfm_target(actions, eps, cfg).float()
             v_old = v_old.reshape(eps.shape[0], num_mc, *flow_shape)
             # Same target as the live pass, so the ratio compares like with like.
             v_old = cfm_prediction(
@@ -842,9 +807,7 @@ class SJFPOPolicy(PreTrainedPolicy):
                 tau,
                 cfg,
             )
-            loss_mask, (v_old, v_star) = self.prepare_cfm_loss_inputs(
-                action_is_pad, v_old, v_star
-            )
+            loss_mask = action_is_pad
             return compute_cfm_loss(
                 v_old, v_star, cfg, "both", loss_mask, cfm_loss_weight(tau, cfg)
             )
@@ -1272,10 +1235,8 @@ class SJFPOPolicy(PreTrainedPolicy):
                 tau,
                 cfg,
             )
-            v_star_f = self.compute_target_velocity(actions, eps, cfg).float()
-            loss_mask, (v_new_r_f, v_star_f) = self.prepare_cfm_loss_inputs(
-                action_is_pad, v_new_r_f, v_star_f
-            )
+            v_star_f = cfm_target(actions, eps, cfg).float()
+            loss_mask = action_is_pad
 
             adv = normalised_advantages.float()
             adv_mc = adv.unsqueeze(1)

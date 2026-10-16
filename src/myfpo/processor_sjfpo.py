@@ -27,14 +27,10 @@ class SJFPOObservationProcessorStep(ProcessorStep):
         self.normalizer = normalizer
 
     @torch.no_grad()
-    def normalize(self, states: torch.Tensor) -> torch.Tensor:
-        """Norm a raw obs window. Identity until the first stats update."""
-        return self.normalizer(states)
-
-    @torch.no_grad()
     def __call__(self, batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
         out = dict(batch)
-        out[OBS_STATE] = self.normalize(batch[OBS_STATE])
+        # Identity until the first stats update.
+        out[OBS_STATE] = self.normalizer(batch[OBS_STATE])
         return out
 
     def transform_features(
@@ -79,16 +75,13 @@ class SJFPOActionPostprocessorStep(ProcessorStep):
         self._bias_cpu = 0.5 * (high + low)
 
     @torch.inference_mode()
-    def unnormalize(self, scaled: torch.Tensor) -> torch.Tensor:
-        """Unscale a chunk into real env bounds. Casts coefficients per call."""
+    def __call__(self, batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+        # Unscale into real env bounds; coefficients cast per call.
+        scaled = batch[ACTION]
         scale = self._scale_cpu.to(device=scaled.device, dtype=scaled.dtype)
         bias = self._bias_cpu.to(device=scaled.device, dtype=scaled.dtype)
-        return torch.addcmul(bias, scale, scaled)
-
-    @torch.inference_mode()
-    def __call__(self, batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
         out = dict(batch)
-        out[ACTION] = self.unnormalize(batch[ACTION])
+        out[ACTION] = torch.addcmul(bias, scale, scaled)
         return out
 
     def transform_features(
