@@ -82,18 +82,10 @@ class CriticMember(nn.Module):
     ) -> torch.Tensor:
         """Accept ``[B, T, obs]`` or ``[B, condition_dim]``, plus ``[B, H,
         action_dim]``. Return ``[B]``.
+
+        Shapes are checked by the owning :class:`Critic`, which validates once
+        per batch instead of once per ensemble member.
         """
-        if self.condition_dim is not None:
-            if states.dim() != 2 or states.shape[1] != self.condition_dim:
-                raise ValueError(
-                    f"condition must have shape [B, {self.condition_dim}], got "
-                    f"{tuple(states.shape)}"
-                )
-        elif states.dim() != 3 or states.shape[1] != self.n_obs_steps:
-            raise ValueError(
-                f"states must have shape [B, {self.n_obs_steps}, {self.obs_dim}], "
-                f"got {tuple(states.shape)}"
-            )
         parts = [states.flatten(1), actions.flatten(1)]
         if self.condition_on_exec_length:
             if exec_length_frac is None:

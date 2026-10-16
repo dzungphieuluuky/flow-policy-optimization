@@ -224,10 +224,6 @@ class SJFPOFlowModel(nn.Module):
             c = self.time_mlp(temb) + condition.to(
                 device=x_t.device, dtype=x_t.dtype
             )[:, None, :]
-            token_pos = self.token_pos[:, : x_t.shape[1], :].to(
-                device=x_t.device, dtype=x_t.dtype
-            )
-            h = self.in_proj(x_t) + token_pos
         elif t.dim() <= 1:
             t = t.reshape(-1)
             if t.numel() not in (1, x_t.shape[0]):
@@ -238,12 +234,14 @@ class SJFPOFlowModel(nn.Module):
             c = self.time_mlp(temb) + condition.to(
                 device=x_t.device, dtype=x_t.dtype
             )
-            token_pos = self.token_pos[:, : x_t.shape[1], :].to(
-                device=x_t.device, dtype=x_t.dtype
-            )
-            h = self.in_proj(x_t) + token_pos
         else:
             raise ValueError(f"t must be scalar, [B], or [B, K, 1], got {tuple(t.shape)}")
+
+        # Both branches reach the same projection. Only temb's rank differed.
+        token_pos = self.token_pos[:, : x_t.shape[1], :].to(
+            device=x_t.device, dtype=x_t.dtype
+        )
+        h = self.in_proj(x_t) + token_pos
 
         def decode(hidden: torch.Tensor) -> torch.Tensor:
             shift, scale = self.adaLN_out(c).chunk(2, dim=-1)
