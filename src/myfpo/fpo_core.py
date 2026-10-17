@@ -351,11 +351,10 @@ def cfm_loss_weight(t: torch.Tensor, cfg: SJFPOConfig) -> torch.Tensor:
     return 0.01 + 0.99 * t
 
 
-def cfm_prediction(
+def velocity_to_target_param(
     v: torch.Tensor, x_t: torch.Tensor, t: torch.Tensor, cfg: SJFPOConfig
 ) -> torch.Tensor:
-    """Map a velocity prediction to the quantity that ``cfg.cfm_loss_target``
-    compares.
+    """Re-express a velocity in the space ``cfg.cfm_loss_target`` compares.
 
     The network always predicts the velocity. Only the loss changes.
 
@@ -368,6 +367,11 @@ def cfm_prediction(
     predicts (``flow_network_output_param``). Holding that at ``u`` here is the
     smaller change. It also leaves ``transported_clip_value`` clipping one
     thing.
+
+    The function was named ``velocity_to_target_param``. It predicts nothing. It takes a
+    prediction the network already made and maps it. FPO++ names the parameter
+    this map targets ``flow_network_output_param``, so the new name says which
+    parameter of the flow network the value stands in for.
     """
     mode = cfg.cfm_loss_target
     if mode == "velocity":
@@ -380,7 +384,12 @@ def cfm_prediction(
 def cfm_target(
     a: torch.Tensor, eps: torch.Tensor, cfg: SJFPOConfig
 ) -> torch.Tensor:
-    """The regression target for ``cfg.cfm_loss_target``. ``[B, *flow]``."""
+    """The regression target for ``cfg.cfm_loss_target``. ``[B, *flow]``.
+
+    Pair this with :func:`velocity_to_target_param`. That function maps the
+    network output into the same space. This one builds the value the map is
+    compared against.
+    """
     mode = cfg.cfm_loss_target
     if mode == "velocity":
         return a.unsqueeze(1) - eps

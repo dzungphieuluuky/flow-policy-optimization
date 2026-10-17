@@ -34,7 +34,7 @@ from myfpo.collector import (
 from myfpo.fpo_core import (
     cfm_loss_weight,
     group_cfm_loss,
-    cfm_prediction,
+    velocity_to_target_param,
     cfm_target,
     clamp_saturation,
     compute_aspo_surrogate,
@@ -848,7 +848,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             v_star = cfm_target(actions, eps, cfg).float()
             v_old = v_old.reshape(eps.shape[0], num_mc, *flow_shape)
             # Same target as the live pass, so the ratio compares like with like.
-            v_old = cfm_prediction(
+            v_old = velocity_to_target_param(
                 v_old,
                 x_t.reshape(eps.shape[0], num_mc, *flow_shape),
                 tau,
@@ -1277,7 +1277,7 @@ class SJFPOPolicy(PreTrainedPolicy):
                 )
 
         with torch.autocast(device_type=device.type, enabled=False):
-            v_new_r_f = cfm_prediction(
+            v_new_r_f = velocity_to_target_param(
                 v_new.reshape(n, num_mc, *flow_shape),
                 x_t_flat.reshape(n, num_mc, *flow_shape),
                 tau,

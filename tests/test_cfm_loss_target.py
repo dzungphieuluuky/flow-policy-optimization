@@ -6,7 +6,7 @@ import pytest
 import torch
 
 from myfpo.configuration_sjfpo import SJFPOConfig
-from myfpo.fpo_core import cfm_prediction, cfm_target, compute_cfm_loss
+from myfpo.fpo_core import velocity_to_target_param, cfm_target, compute_cfm_loss
 
 MODES = ("velocity", "action", "noise")
 
@@ -31,7 +31,7 @@ def test_the_true_velocity_is_a_perfect_prediction_in_every_mode(mode):
     a, eps, t, x_t, v = _path()
     cfg = _cfg(cfm_loss_target=mode)
 
-    pred = cfm_prediction(v, x_t, t, cfg)
+    pred = velocity_to_target_param(v, x_t, t, cfg)
     loss = compute_cfm_loss(pred, cfm_target(a, eps, cfg), cfg, "scalar")
 
     bar = 0.0 if mode == "velocity" else 1e-6
@@ -44,7 +44,7 @@ def test_a_wrong_velocity_is_caught_in_every_mode(mode):
     a, eps, t, x_t, v = _path()
     cfg = _cfg(cfm_loss_target=mode)
 
-    pred = cfm_prediction(v + 0.5, x_t, t, cfg)
+    pred = velocity_to_target_param(v + 0.5, x_t, t, cfg)
     loss = compute_cfm_loss(pred, cfm_target(a, eps, cfg), cfg, "scalar")
 
     assert float(loss) > 0.0, f"{mode}: a wrong velocity scored zero"
@@ -55,13 +55,34 @@ def test_velocity_is_the_default_and_is_the_identity_map():
     assert SJFPOConfig().cfm_loss_target == "velocity"
     a, eps, t, x_t, v = _path()
     cfg = _cfg()
-    assert torch.equal(cfm_prediction(v, x_t, t, cfg), v)
+    assert torch.equal(velocity_to_target_param(v, x_t, t, cfg), v)
     assert torch.equal(cfm_target(a, eps, cfg), a.unsqueeze(1) - eps)
 
 
 def test_an_unknown_target_is_rejected():
     with pytest.raises(ValueError, match="cfm_loss_target"):
         _cfg(cfm_loss_target="x0").validate()
+
+
+def test_the_map_names_the_flow_network_parameter_it_stands_in_for():
+    """The name must not claim the function predicts.
+
+    ``velocity_to_target_param`` maps an output the network already produced.
+    FPO++ reaches the same three endpoints by moving ``u``, its
+    ``flow_network_output_param``. The new name says which parameter.
+    """
+    from myfpo import fpo_core
+
+    assert hasattr(fpo_core, "velocity_to_target_param")
+    assert not hasattr(fpo_core, "cfm_prediction"), "the old name is still exported"
+
+    # The map is not a prediction: it is invertible on the straight path, so the
+    # same velocity always lands on the same parameter value.
+    a, eps, t, x_t, v = _path()
+    cfg = _cfg()
+    first = velocity_to_target_param(v, x_t, t, cfg)
+    second = velocity_to_target_param(v.clone(), x_t.clone(), t.clone(), cfg)
+    assert torch.equal(first, second)
 
 
 def test_the_target_shapes_stay_broadcastable():
