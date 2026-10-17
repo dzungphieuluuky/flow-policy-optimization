@@ -196,8 +196,8 @@ def compute_mean_chunk_jerk(actions: np.ndarray, action_is_pad: np.ndarray) -> f
     return float(np.mean(jerks)) if jerks else None
 
 
-def interval_straddles(value: float, threshold: float, low: float, high: float) -> bool:
-    """Does the interval for ``value`` cross ``threshold``?
+def interval_straddles(threshold: float, low: float, high: float) -> bool:
+    """Does the interval ``[low, high]`` cross ``threshold``?
 
     It returns True when ``low`` is at or below ``threshold`` and ``high`` is at
     or above ``threshold``. So the data cannot tell which side of the threshold
@@ -207,6 +207,11 @@ def interval_straddles(value: float, threshold: float, low: float, high: float) 
     returns False. A caller with no interval keeps the old behaviour, which
     acts on the point estimate alone. An unknown bound must not silence a real
     signal, so it must not invent one either.
+
+    The function took a first argument ``value``, the point estimate the
+    interval was built around. The body never read it. A caller could pass an
+    interval built around a different value, and the mismatch was invisible. So
+    the parameter is gone. A caller must now pass only the bounds it means.
     """
     if not (np.isfinite(low) and np.isfinite(high)):
         return False
@@ -239,9 +244,7 @@ def check_divergence(
     if baseline <= 0:
         return 0, False
     threshold = threshold_frac * baseline
-    if mean_return < threshold and not interval_straddles(
-        mean_return, threshold, ci_low, ci_high
-    ):
+    if mean_return < threshold and not interval_straddles(threshold, ci_low, ci_high):
         consecutive += 1
     else:
         consecutive = 0
@@ -275,9 +278,7 @@ def check_regression(
     if best_return is None or best_return <= 0:
         return 0, False
     threshold = return_frac * best_return
-    if mean_return >= threshold or interval_straddles(
-        mean_return, threshold, ci_low, ci_high
-    ):
+    if mean_return >= threshold or interval_straddles(threshold, ci_low, ci_high):
         return 0, False
     consecutive += 1
     if consecutive < patience:

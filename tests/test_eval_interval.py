@@ -121,20 +121,34 @@ def test_the_median_of_an_empty_list_is_nan():
 
 
 def test_a_straddling_interval_is_reported_as_one():
-    assert interval_straddles(50.0, 60.0, 40.0, 80.0)
-    assert interval_straddles(50.0, 60.0, 60.0, 80.0), "the bound counts"
-    assert interval_straddles(50.0, 60.0, 40.0, 60.0), "the bound counts"
+    assert interval_straddles(60.0, 40.0, 80.0)
+    assert interval_straddles(60.0, 60.0, 80.0), "the bound counts"
+    assert interval_straddles(60.0, 40.0, 60.0), "the bound counts"
 
 
 def test_a_clear_interval_does_not_straddle():
-    assert not interval_straddles(50.0, 60.0, 40.0, 59.0)
-    assert not interval_straddles(50.0, 60.0, 61.0, 80.0)
+    assert not interval_straddles(60.0, 40.0, 59.0)
+    assert not interval_straddles(60.0, 61.0, 80.0)
 
 
 def test_an_unknown_interval_does_not_straddle():
     """An absent interval must not silence a real signal."""
-    assert not interval_straddles(10.0, 60.0, NAN, NAN)
-    assert not interval_straddles(10.0, 60.0, NAN, 80.0)
+    assert not interval_straddles(60.0, NAN, NAN)
+    assert not interval_straddles(60.0, NAN, 80.0)
+
+
+def test_the_straddle_test_takes_no_point_estimate():
+    """The removed parameter was never read, and it hid a caller mismatch.
+
+    A caller that passed an interval built around a different value got a
+    silent answer. The signature now forces the caller to name only the bounds.
+    """
+    import inspect
+
+    params = list(inspect.signature(interval_straddles).parameters)
+    assert params == ["threshold", "low", "high"], (
+        f"interval_straddles now takes {params}"
+    )
 
 
 # --- divergence -----------------------------------------------------------
