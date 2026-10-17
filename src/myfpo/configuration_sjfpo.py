@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-
+import warnings
 from dataclasses import dataclass
 
 from lerobot.configs import PreTrainedConfig
@@ -123,6 +123,10 @@ class SJFPOConfig(PreTrainedConfig):
         ``validate_features`` enforces the requirement instead. That function
         runs from ``SJFPOPolicy.__init__``, after the code attaches the
         features.
+
+        The function raises for every invalid value. It warns once, for the
+        ``fpo_beta`` mode at ``timestep_inverse_cdf_beta=1.0``. That setting
+        runs. It only names the uniform law.
         """
         if self.n_obs_steps < 1:
             raise ValueError(f"n_obs_steps={self.n_obs_steps} must be >= 1")
@@ -266,6 +270,17 @@ class SJFPOConfig(PreTrainedConfig):
             raise ValueError("noise_sampling_mode must be 'normal' or 'uniform'")
         if self.timestep_inverse_cdf_beta <= 0:
             raise ValueError("timestep_inverse_cdf_beta must be > 0")
+        if self.timestep_inverse_cdf_beta == 1.0 and self.timestep_sampling_mode == "fpo_beta":
+            # The closed form is lo + (hi - lo) * (1 - (1 - u) ** (1 / 1.0)).
+            # That reduces to lo + (hi - lo) * u. So this mode draws the same
+            # law as "uniform". The name promises a non-uniform draw.
+            warnings.warn(
+                "timestep_inverse_cdf_beta=1.0 makes timestep_sampling_mode="
+                "'fpo_beta' draw the same law as 'uniform'. Choose a beta "
+                "other than 1.0 to sample a non-uniform timestep law.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
         if self.timestep_beta_alpha <= 0 or self.timestep_beta_beta <= 0:
             raise ValueError("timestep beta alpha/beta must be > 0")
         if self.value_loss_coef < 0:
