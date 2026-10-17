@@ -821,3 +821,223 @@ this repo runs one env per run and has no notion of a region. Build it only if
 - Do not put `action_horizon` in this sweep. `collect_chunks_vec` sizes its plan
   by `chunk_size` while `RolloutBuffer` sizes storage by `action_horizon`. They
   agree only because the single call site hardcodes `chunk_size = action_horizon`.
+
+## 5. Comparing `resmlp` against `dit`
+
+`actor_arch` has two values. `dit` is the DiT trunk. `resmlp` keeps the same
+self-attention and the same adaLN conditioning, and replaces the MLP with the
+residual unit of Wang et al. (2025), arXiv:2503.14858.
+
+The reason `resmlp` keeps the attention is that paper's own limits. The paper's
+trunk takes a flattened goal vector. It has no token axis and no time input.
+This repo needs both: the action chunk is ordered, and the CFM draw gives every
+token its own `t`. So the paper supplies the residual unit and the depth
+accounting, not the whole block.
+
+**Expect this to be flat.** The paper's own Appendix A.2 reports that
+temporal-difference actor-critics saturate at depth 4 with zero or negative
+gains from going deeper, and this repo is one. The paper's headline is for
+self-supervised contrastive RL, not for advantage-based TD. Read the table as a
+measurement, not as a confirmation.
+
+This section reuses `tb_dirs`, `tb_series` and `decline_report` from section 4.
+Run section 4.2 first.
+
+### 5.1 What each arm costs, before you spend GPU time
+
+Depth in the paper's metric is the count of Dense layers. The DiT block holds
+six, and one `resmlp` block holds `resmlp_units`, four by default. So the two
+actors do not reach a given depth at the same block count, and they do not cost
+the same parameters at a given depth. Read this table before choosing arms.
+
+```python
+from myfpo.flow import SJFPOFlowModel, SJFPOFlowResMLP
+
+OBS_DIM, ACT_DIM = 11, 3          # Hopper-v5 is obs 11 / act 3.
+HIDDEN, HEADS, TIME_EMBED = 128, 2, 32
+MULT, UNITS = 2.0, 4
+
+
+def n_params(module):
+    return sum(p.numel() for p in module.parameters())
+
+
+def dit_actor(depth):
+    return SJFPOFlowModel(ACT_DIM, 8, HIDDEN, depth, HEADS, MULT, TIME_EMBED)
+
+
+def resmlp_actor(blocks, units=UNITS, mult=MULT):
+    return SJFPOFlowResMLP(ACT_DIM, 8, HIDDEN, blocks, units, mult, HEADS, TIME_EMBED)
+
+
+print(f"{'actor':>8} {'blocks':>7} {'Dense':>7} {'params':>12} {'x dit_d3':>9}")
+base = n_params(dit_actor(3))
+for label, knob, actor, dense in (
+    ("dit",    1, dit_actor(1), 6),
+    ("dit",    3, dit_actor(3), 18),
+    ("dit",    5, dit_actor(5), 30),
+    ("resmlp", 1, resmlp_actor(1), 4),
+    ("resmlp", 2, resmlp_actor(2), 8),
+    ("resmlp", 4, resmlp_actor(4), 16),
+    ("resmlp", 8, resmlp_actor(8), 32),
+):
+    p = n_params(actor)
+    print(f"{label:>8} {knob:>7} {dense:>7} {p:>12,} {p / base:>8.2f}x")
+```
+
+Pick the comparison deliberately:
+
+| Comparison | Arms | What a win would mean |
+|---|---|---|
+| matched depth | `dit_d3` vs `resmlp_b2` | the residual unit beats a wider SwiGLU at similar MLP depth |
+| matched params | `dit_d3` vs `resmlp_b4` | the residual unit packs more usable depth per parameter |
+| depth ladder | `resmlp_b1/b2/b4/b8` | the paper's claim, on this algorithm |
+
+A `resmlp` win at three times the parameters is a parameters result. Say which
+one you ran.
+
+### 5.2 Run the arms
+
+Three seeds each. Run one at a time, because `num_envs=64` forks a vector-env
+pool. Start with the control alone and read 5.3 on it before spending the rest.
+
+```python
+import glob, os, statistics, subprocess   # section 5 is self-contained
+
+ARCH_SEEDS = [0, 1, 2]
+ARCH_ENV = ENV
+ARCH_STEPS = TOTAL_STEPS
+
+# arch, flag, value. Swap in the arms you chose from 5.1.
+ARCH_ARMS = {
+    "dit_d3":    ("dit",    "--sjfpo.dit_depth",     3),
+    "resmlp_b2": ("resmlp", "--sjfpo.resmlp_blocks", 2),
+    "resmlp_b4": ("resmlp", "--sjfpo.resmlp_blocks", 4),
+}
+# The depth ladder, if you want it instead:
+# ARCH_ARMS = {f"resmlp_b{b}": ("resmlp", "--sjfpo.resmlp_blocks", b)
+#              for b in (1, 2, 4, 8)}
+
+ARCH_TB = {}    # (arm, seed) -> tensorboard run dir
+
+
+def arch_dirs():
+    return {d for d in glob.glob("tensorboard/*") if glob.glob(os.path.join(d, "*"))}
+
+
+def run_arch_arm(arm, seed):
+    """One run, and remember which tensorboard dir it wrote to.
+
+    The run name carries `d{hidden}x{dit_depth}`. A resmlp arm does not change
+    `dit_depth`, so several resmlp arms share one run-name prefix and differ
+    only by the trailing hash. So the directory snapshot is the only safe
+    association here. Do not match arms by run name.
+    """
+    arch, flag, value = ARCH_ARMS[arm]
+    tag = f"arch_{arm}_s{seed}"
+    before = arch_dirs()
+    cmd = [
+        "python", "scripts/train.py", "--env", ARCH_ENV,
+        "--out_dir", f"outputs/{tag}", "--seed", str(seed),
+        "--total_steps", str(ARCH_STEPS),
+        "--eval_steps", str(EVAL_STEPS),
+        "--save_steps", str(SAVE_STEPS),
+        "--sjfpo.report_to", "all",
+        "--sjfpo.compile", COMPILE,
+        "--sjfpo.actor_arch", arch, flag, str(value),
+    ]
+    print(f"\n=== {tag} ===\n{' '.join(cmd)}\n", flush=True)
+    rc = subprocess.call(cmd)
+    new = sorted(arch_dirs() - before)
+    if len(new) == 1:
+        ARCH_TB[(arm, seed)] = new[0]
+    elif new:
+        print(f"  WARNING: {len(new)} new tensorboard dirs, cannot attribute:\n"
+              + "\n".join(new), flush=True)
+    print(f"=== {tag} exit={rc} tb={new} ===", flush=True)
+    return rc
+
+
+for arm in ARCH_ARMS:
+    for seed in ARCH_SEEDS:
+        run_arch_arm(arm, seed)
+```
+
+`--sjfpo.report_to all` is not optional here either. `train/cond_*` is the only
+place `effective_rank` is reported, and `effective_rank` is the collapse probe
+the paper's depth argument rests on. With the tracker off, both actors look
+identical in the logs.
+
+### 5.3 Compare
+
+```python
+def arch_rows():
+    rows = []
+    for arm in ARCH_ARMS:
+        for seed in ARCH_SEEDS:
+            r = decline_report(ARCH_TB.get((arm, seed)), f"{arm}_s{seed}")
+            if r:
+                rows.append(r)
+    return rows
+
+
+def paper_depth(arm):
+    """Dense layers in the MLP part, which is the metric the paper counts."""
+    arch, _, value = ARCH_ARMS[arm]
+    return 6 * int(value) if arch == "dit" else int(value) * 4
+
+
+def actor_params(arm):
+    arch, _, value = ARCH_ARMS[arm]
+    return n_params(dit_actor(int(value))) if arch == "dit" \
+        else n_params(resmlp_actor(int(value)))
+
+
+rows = arch_rows()
+if rows:
+    print(f"{'arm':>12} {'arch':>7} {'Dense':>6} {'params':>12} {'peak':>9} "
+          f"{'final':>9} {'fall%':>7}")
+    for arm in ARCH_ARMS:
+        g = [r for r in rows if r["label"].startswith(arm + "_s")]
+        if not g:
+            continue
+        print(f"{arm:>12} {ARCH_ARMS[arm][0]:>7} {paper_depth(arm):>6} "
+              f"{actor_params(arm):>12,} "
+              f"{statistics.fmean(r['peak'] for r in g):>9.1f} "
+              f"{statistics.fmean(r['final'] for r in g):>9.1f} "
+              f"{statistics.fmean(r['fall_pct'] for r in g):>6.1f}%")
+
+    print(f"\n{'arm':>12} {'peak sd':>9} {'final sd':>9} {'n':>3}")
+    for arm in ARCH_ARMS:
+        g = [r for r in rows if r["label"].startswith(arm + "_s")]
+        if not g:
+            continue
+        ps = statistics.stdev([r["peak"] for r in g]) if len(g) > 1 else float("nan")
+        fs = statistics.stdev([r["final"] for r in g]) if len(g) > 1 else float("nan")
+        print(f"{arm:>12} {ps:>9.1f} {fs:>9.1f} {len(g):>3}")
+
+    ctrl = [r for r in rows if r["label"].startswith("dit_d3_s")]
+    if len(ctrl) > 1:
+        print(f"\ncontrol peak sd across seeds: "
+              f"{statistics.stdev([r['peak'] for r in ctrl]):.1f}. "
+              "An arm that beats dit_d3 by less than that is noise.")
+```
+
+### 5.4 Reading it
+
+| Observation | Meaning |
+|---|---|
+| every arm flat, all seeds overlapping | no architecture signal on this task. Expected, given Appendix A.2 |
+| `resmlp_b4` wins but costs 2x the params | a parameters result, not a residual-unit result |
+| `resmlp_b2` wins at similar params and depth | the residual unit is doing something the SwiGLU block is not |
+| only the deepest `resmlp` wins | a depth result. Then run the critic ladder too; the paper found the two axes complementary |
+| a win that does not survive seed 3 | nothing |
+
+One asymmetry to keep in mind. The two trunks do not share the MLP: `dit` uses
+gated SwiGLU, `resmlp` uses an ungated Dense -> RMSNorm -> Swish chain. So a
+difference between the arms is a difference between those two MLP designs at
+matched attention and matched adaLN. It does not isolate the paper's residual
+layout, because the gating changed at the same time.
+
+To isolate the residual layout alone you would need a third actor that keeps
+SwiGLU and moves only where the skip is added. This repo does not have one.
