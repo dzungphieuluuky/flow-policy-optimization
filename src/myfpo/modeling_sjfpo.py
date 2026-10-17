@@ -422,6 +422,7 @@ class SJFPOPolicy(PreTrainedPolicy):
 
         self.cfm_above_clamp_frac = torch.zeros(())
         self.cfm_both_clamped_frac = torch.zeros(())
+        self.action_pre_clamp_frac = torch.zeros(())
 
         self._frame_buffer: deque[torch.Tensor] = deque(maxlen=config.n_obs_steps)
         self._action_buffer: deque[torch.Tensor] = deque()
@@ -731,6 +732,15 @@ class SJFPOPolicy(PreTrainedPolicy):
             ).float()
 
         scaled = x0.clamp(-1.0, 1.0)
+        # The share of coordinates this clamp had to move. This is the
+        # projection the CFM target is built on, so it belongs in the log.
+        # ``chunk_clip_counts`` cannot see it: the collector's
+        # ``scale_and_clip_chunk`` receives a value that is already inside the
+        # env bounds, so that count is structurally zero.
+        #
+        # The value is the last proposal of the rollout, not a rollout average.
+        # It is a 0-dim tensor, so reading it costs the caller one sync.
+        self.action_pre_clamp_frac = (x0.abs() > 1.0).float().mean().detach()
 
         if self.training and cfg.action_perturb_std > 0:
             scaled = scaled + cfg.action_perturb_std * torch.randn_like(scaled)
