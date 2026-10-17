@@ -88,7 +88,8 @@ SECTIONS: list[tuple[str, list[str]]] = [
             "critic_hidden_dim",
             "critic_num_layers",
             "value_loss_coef",
-            "advantage_clamp",
+            "advantage_clamp_neg",
+            "advantage_clamp_pos",
         ],
     ),
     (

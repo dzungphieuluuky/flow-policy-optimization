@@ -56,7 +56,8 @@ critic_condition_on_exec_length: True
 critic_hidden_dim: null
 critic_num_layers: 2
 value_loss_coef: 1.0
-advantage_clamp: [100.0, 100.0]
+advantage_clamp_neg: 100.0
+advantage_clamp_pos: 100.0
 
 # -- CFM loss --------------------------------------------------
 cfm_loss_use_huber: True

@@ -1072,8 +1072,9 @@ class SJFPOPolicy(PreTrainedPolicy):
         # This code clamps here instead. The clamp is a fixed elementwise bound,
         # so one clamp per rollout gives the same numbers in one fewer pass.
         # The order is after normalisation, as theirs is.
-        neg_clamp, pos_clamp = cfg.advantage_clamp
-        normalised_advantages = normalised_advantages.clamp(-neg_clamp, pos_clamp)
+        normalised_advantages = normalised_advantages.clamp(
+            -cfg.advantage_clamp_neg, cfg.advantage_clamp_pos
+        )
         gae_diagnostics = compute_gae_diagnostics(
             active["chunk_env_id"][:n_chunks],
             active["chunk_terminated"][:n_chunks],

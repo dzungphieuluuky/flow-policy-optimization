@@ -224,7 +224,9 @@ def test_transported_clip_bounds_the_sampler_output_too():
 def test_advantage_clamp_is_applied_after_normalisation():
     import gymnasium as gym
 
-    policy = _policy(obs_dim=3, action_dim=1, advantage_clamp=(0.01, 0.01))
+    policy = _policy(
+        obs_dim=3, action_dim=1, advantage_clamp_neg=0.01, advantage_clamp_pos=0.01
+    )
     env = gym.make("Pendulum-v1")
     try:
         batch = policy.generate_rollout(env, 32, action_low=-2.0, action_high=2.0)
@@ -238,7 +240,9 @@ def test_advantage_clamp_is_applied_after_normalisation():
 def test_advantage_clamp_leaves_unclamped_values_alone():
     import gymnasium as gym
 
-    policy = _policy(obs_dim=3, action_dim=1, advantage_clamp=(1e6, 1e6))
+    policy = _policy(
+        obs_dim=3, action_dim=1, advantage_clamp_neg=1e6, advantage_clamp_pos=1e6
+    )
     env = gym.make("Pendulum-v1")
     try:
         batch = policy.generate_rollout(env, 32, action_low=-2.0, action_high=2.0)
@@ -436,6 +440,32 @@ def test_loss_clamps_match_fpops_values():
     cfg = SJFPOConfig()
     assert cfg.cfm_clamp == 20.0
     assert cfg.cfm_loss_clamp_negative_advantages_max == 20.0
+
+
+def test_the_advantage_clamp_keeps_its_sign():
+    """Two named fields cannot be transposed. The tuple could.
+
+    The field was ``advantage_clamp: tuple[float, float]``. The order lived in
+    an error string and in the unpack at the clamp site. Swapping the two values
+    produced a config that validated and clamped the wrong side.
+    """
+    cfg = SJFPOConfig()
+    assert cfg.advantage_clamp_neg == 100.0
+    assert cfg.advantage_clamp_pos == 100.0
+
+    # Binary-exact values, so the assertion needs no tolerance.
+    a = torch.tensor([-1.0, 4.0, -0.25])
+    cfg_neg = dataclasses.replace(
+        SJFPOConfig(), advantage_clamp_neg=0.5, advantage_clamp_pos=64.0
+    )
+    got = a.clamp(-cfg_neg.advantage_clamp_neg, cfg_neg.advantage_clamp_pos)
+    assert got.tolist() == [-0.5, 4.0, -0.25], got.tolist()
+
+    cfg_pos = dataclasses.replace(
+        SJFPOConfig(), advantage_clamp_neg=64.0, advantage_clamp_pos=0.75
+    )
+    got = a.clamp(-cfg_pos.advantage_clamp_neg, cfg_pos.advantage_clamp_pos)
+    assert got.tolist() == [-1.0, 0.75, -0.25], got.tolist()
 
 
 def test_the_negative_advantage_clamp_is_not_dead_at_the_default():

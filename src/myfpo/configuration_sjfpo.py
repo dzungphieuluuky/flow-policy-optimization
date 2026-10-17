@@ -81,7 +81,12 @@ class SJFPOConfig(PreTrainedConfig):
     critic_hidden_dim: int | None = None
     critic_num_layers: int = 2
     normalize_advantage: bool = True
-    advantage_clamp: tuple[float, float] = (100.0, 100.0)
+    # The advantage clamp, split by sign. The code applies
+    # ``clamp(-advantage_clamp_neg, advantage_clamp_pos)``. The field was a
+    # 2-tuple named ``advantage_clamp``, so the order lived only in a comment on
+    # the unpack and in an error string. Two named fields cannot be transposed.
+    advantage_clamp_neg: float = 100.0
+    advantage_clamp_pos: float = 100.0
     value_loss_coef: float = 1.0
     sigreg_mode: str = "none"
     sigreg_coef: float = 0.0
@@ -217,15 +222,12 @@ class SJFPOConfig(PreTrainedConfig):
             raise ValueError(
                 f"transported_clip_value={self.transported_clip_value} must be > 0"
             )
-        if len(self.advantage_clamp) != 2:
-            raise ValueError(
-                f"advantage_clamp={self.advantage_clamp} must be "
-                "(negative_clamp, positive_clamp)"
-            )
-        if any(c <= 0 for c in self.advantage_clamp):
-            raise ValueError(
-                f"advantage_clamp={self.advantage_clamp} entries must be > 0"
-            )
+        for name, value in (
+            ("advantage_clamp_neg", self.advantage_clamp_neg),
+            ("advantage_clamp_pos", self.advantage_clamp_pos),
+        ):
+            if value <= 0:
+                raise ValueError(f"{name}={value} must be > 0")
         if self.eval_max_episodes < 1:
             raise ValueError(f"eval_max_episodes={self.eval_max_episodes} must be >= 1")
         for name, value in (

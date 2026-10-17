@@ -38,7 +38,7 @@ from myfpo.configuration_sjfpo import SJFPOConfig
 _BAD_CONFIG = {
     "action_perturb_std": -1.0,
     "actor_lr_warmup_steps": -1,
-    "advantage_clamp": (0.0, 1.0),
+    "advantage_clamp_pos": 0.0,
     "batch_size": 0,
     "cfm_clamp": 0.0,
     "cfm_loss_clamp_negative_advantages_max": 0.0,
