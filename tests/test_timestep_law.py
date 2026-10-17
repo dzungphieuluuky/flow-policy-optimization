@@ -4,6 +4,7 @@ The mode name ``fpo_beta`` promises a non-uniform law. This file pins the law
 for every mode, and pins the one value where ``fpo_beta`` loses its shape.
 """
 
+import dataclasses
 import math
 
 import pytest
@@ -132,10 +133,6 @@ def test_fpo_beta_beta_sweep_is_monotone_in_the_mean():
         assert earlier > later, f"means did not decrease: {means}"
 
 
-def test_the_default_config_warns_about_the_null_case():
-    """A bare config carries beta=1.0. The warning must name the problem."""
-    with pytest.warns(RuntimeWarning, match="uniform"):
-        SJFPOConfig()
 
 
 def test_a_beta_away_from_one_does_not_warn():
@@ -150,10 +147,109 @@ def test_a_beta_away_from_one_does_not_warn():
         SJFPOConfig(timestep_sampling_mode="beta")
 
 
-def test_the_default_is_the_null_case():
-    """Record the defect. A later default change must move this assertion."""
+
+def test_the_default_config_does_not_sample_uniform():
+    """The defect: the default named a law it did not draw.
+
+    ``fpo_beta`` at ``timestep_inverse_cdf_beta=1.0`` reduces to
+    ``lo + (hi - lo) * u``, which is ``uniform`` bit for bit. The shipped default
+    was 1.0, so every default run sampled uniform while the config claimed the
+    FPO++ beta law. Only a RuntimeWarning said so, and it fired on every
+    construction.
+    """
+    import dataclasses
+
+    import torch
+
     cfg = SJFPOConfig()
+    assert cfg.timestep_sampling_mode == "fpo_beta"
+
+    g = torch.Generator().manual_seed(0)
+    default = sample_timesteps(200_000, cfg, "cpu", g)
+    g2 = torch.Generator().manual_seed(0)
+    uniform = sample_timesteps(
+        200_000, dataclasses.replace(cfg, timestep_sampling_mode="uniform"), "cpu", g2
+    )
+
+    assert not torch.equal(default, uniform), (
+        "the default draw is still identical to uniform"
+    )
+    # The beta law with 2.0 skews low, so its mean sits well under the midpoint.
+    assert float(default.mean()) < float(uniform.mean()) - 0.1, (
+        f"expected the skewed law to sit low: "
+        f"{float(default.mean()):.4f} vs {float(uniform.mean()):.4f}"
+    )
+
+
+
+def test_beta_one_is_the_null_case():
+    """At 1.0 the fpo_beta transform is the identity, so it draws uniform.
+
+    The default was 1.0 until 2026-10-17, which meant every default run sampled
+    uniform while the config named the FPO++ beta law. The default is now 2.0.
+    The identity is kept here so nobody re-picks 1.0 without seeing this.
+    """
+    cfg = dataclasses.replace(SJFPOConfig(), timestep_inverse_cdf_beta=1.0)
     assert cfg.timestep_sampling_mode == "fpo_beta"
     assert cfg.timestep_inverse_cdf_beta == 1.0
     # 1.0 ** (1.0 / 1.0) == 1.0, so the transform is the identity.
     assert math.isclose(1.0 - (1.0 - 0.5) ** (1.0 / 1.0), 0.5)
+
+    gen = torch.Generator().manual_seed(0)
+    beta = sample_timesteps(100_000, cfg, "cpu", gen)
+    gen2 = torch.Generator().manual_seed(0)
+    uniform = sample_timesteps(
+        100_000, dataclasses.replace(cfg, timestep_sampling_mode="uniform"), "cpu", gen2
+    )
+    assert torch.equal(beta, uniform), "beta=1.0 no longer equals uniform"
+
+
+def test_only_an_explicit_one_warns():
+    """The warning fires for a caller who asks for the null case.
+
+    It used to fire on every construction, because 1.0 was the default.
+    """
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        SJFPOConfig()
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        SJFPOConfig(timestep_sampling_mode="fpo_beta", timestep_inverse_cdf_beta=1.0)
+    assert any(issubclass(w.category, RuntimeWarning) for w in caught), (
+        "an explicit beta=1.0 must still warn"
+    )
+
+
+def test_the_default_config_does_not_sample_uniform():
+    """The regression: the default once named a law it did not draw.
+
+    ``fpo_beta`` at ``timestep_inverse_cdf_beta=1.0`` reduces to
+    ``lo + (hi - lo) * u``, which is ``uniform`` bit for bit. The shipped default
+    was 1.0, so every default run sampled uniform while the config claimed the
+    FPO++ beta law.
+    """
+    import dataclasses
+
+    import torch
+
+    cfg = SJFPOConfig()
+    assert cfg.timestep_sampling_mode == "fpo_beta"
+    assert cfg.timestep_inverse_cdf_beta != 1.0
+
+    gen = torch.Generator().manual_seed(0)
+    default = sample_timesteps(200_000, cfg, "cpu", gen)
+    gen2 = torch.Generator().manual_seed(0)
+    uniform = sample_timesteps(
+        200_000, dataclasses.replace(cfg, timestep_sampling_mode="uniform"), "cpu", gen2
+    )
+    assert not torch.equal(default, uniform), (
+        "the default draw is still identical to uniform"
+    )
+    # The beta law at 2.0 skews low, so its mean sits well under the midpoint.
+    assert float(default.mean()) < float(uniform.mean()) - 0.1, (
+        f"expected the skewed law to sit low: "
+        f"{float(default.mean()):.4f} vs {float(uniform.mean()):.4f}"
+    )

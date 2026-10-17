@@ -28,7 +28,7 @@ min_sampled_timestep: 0.005
 max_sampled_timestep: 0.995
 timestep_sampling_mode: 'fpo_beta'
 noise_sampling_mode: 'normal'
-timestep_inverse_cdf_beta: 1.0
+timestep_inverse_cdf_beta: 2.0
 timestep_beta_alpha: 2.0
 timestep_beta_beta: 2.0
 

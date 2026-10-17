@@ -74,7 +74,12 @@ class SJFPOConfig(PreTrainedConfig):
     max_sampled_timestep: float = 0.995
     timestep_sampling_mode: str = "fpo_beta"
     noise_sampling_mode: str = "normal"
-    timestep_inverse_cdf_beta: float = 1.0
+    # The inverse-CDF exponent for ``fpo_beta``. At 1.0 the branch reduces to
+    # ``lo + (hi - lo) * u``, which is ``uniform`` bit for bit, so the default
+    # used to name a law it did not sample. The value is 2.0, so the default now
+    # draws the skewed law the mode asks for. Set it back to 1.0 to get uniform
+    # on purpose, and the constructor warning says so.
+    timestep_inverse_cdf_beta: float = 2.0
     timestep_beta_alpha: float = 2.0
     timestep_beta_beta: float = 2.0
 
@@ -182,7 +187,8 @@ class SJFPOConfig(PreTrainedConfig):
 
         The function raises for every invalid value. It warns once, for the
         ``fpo_beta`` mode at ``timestep_inverse_cdf_beta=1.0``. That setting
-        runs. It only names the uniform law.
+        runs and samples uniform, so it only names the uniform law. The default
+        is 2.0, so a default config does not warn and does not sample uniform.
         """
         if self.n_obs_steps < 1:
             raise ValueError(f"n_obs_steps={self.n_obs_steps} must be >= 1")
