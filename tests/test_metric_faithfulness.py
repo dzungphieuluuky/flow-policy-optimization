@@ -55,7 +55,36 @@ def test_no_diagnostic_is_nan_when_the_rollout_is_measurable():
     assert not math.isnan(out["linked_frac"])
     assert not math.isnan(out["advantage_std"])
     assert not math.isnan(out["return_rms"])
-    assert not math.isnan(out["advantage_std_fraction"])
+    assert not math.isnan(out["advantage_std_over_return_std"])
+
+
+def test_the_key_states_the_denominator_it_divides_by():
+    """The old key was ``advantage_std_fraction``.
+
+    "Fraction" said only that the value was a quotient. The denominator is the
+    return standard deviation, and that fact decides how a reader compares two
+    runs: it is not a fraction of anything on the advantage side.
+    """
+    import dataclasses
+
+    from myfpo.modeling_sjfpo import _GAE_DIAGNOSTIC_KEYS, compute_gae_diagnostics
+
+    assert "advantage_std_fraction" not in _GAE_DIAGNOSTIC_KEYS
+    assert "advantage_std_over_return_std" in _GAE_DIAGNOSTIC_KEYS
+
+    n = 8
+    # Returns with a known spread, advantages with half that spread.
+    returns = torch.tensor([1.0, -1.0] * (n // 2), dtype=torch.float32)
+    adv = returns * 0.5
+    out = compute_gae_diagnostics(
+        torch.zeros(n, dtype=torch.long),
+        torch.zeros(n, dtype=torch.bool),
+        torch.zeros(n, dtype=torch.bool),
+        adv,
+        returns,
+    )
+    got = out["advantage_std_over_return_std"]
+    assert got == pytest.approx(0.5, abs=1e-5), got
 
 
 # --- names must not overstate ---------------------------------------------.

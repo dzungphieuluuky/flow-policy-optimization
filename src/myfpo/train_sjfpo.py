@@ -55,7 +55,7 @@ _GAE_DIAG_LOG_KEYS = {
     "linked_frac": "gae_linked_frac",
     "advantage_std": "gae_advantage_std",
     "return_rms": "returns_rms",
-    "advantage_std_fraction": "advantage_std_fraction",
+    "advantage_std_over_return_std": "advantage_std_over_return_std",
 }
 
 # Always present in compute_rollout_diagnostics' output.

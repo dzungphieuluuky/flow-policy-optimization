@@ -86,7 +86,7 @@ _GAE_DIAGNOSTIC_KEYS = (
     "linked_frac",
     "advantage_std",
     "return_rms",
-    "advantage_std_fraction",
+    "advantage_std_over_return_std",
     "budget_truncated_chunk_frac",
 )
 
@@ -124,6 +124,8 @@ def compute_gae_diagnostics(
         rms(ret).double(),
         # adv_std / ret_std. A value of 1.0 reads as an inert critic.
         # The value is not bounded by 1, because Var(A) > Var(R) is possible.
+        # The key names the denominator. "fraction" alone said only that the
+        # value was a quotient, and not of what.
         adv_std / ret_std,
         # Budget cut. Not chunk_truncated, not truncated_chunk_frac.
         budget_truncated.to(torch.bool).float().mean().double()
