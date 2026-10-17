@@ -225,6 +225,47 @@ def test_regression_stays_off_without_a_peak():
     assert check_regression(1.0, 0.0, 3, return_frac=0.7, patience=1) == (0, False)
 
 
+def test_the_two_checks_reset_differently_and_both_are_right():
+    """A divergence flag is terminal. A regression flag spends one LR decay.
+
+    So the divergence streak survives its own flag, and the regression streak
+    does not. Without the reset, one streak of ``patience`` evals would buy
+    every decay in the same row. ``max_lr_decays`` would be reached in
+    ``patience`` evals instead of ``patience * max_lr_decays``.
+
+    This test exists so the difference is never "corrected" back to symmetry.
+    """
+    div_streak, div_flag = check_divergence(1.0, 100.0, 2)
+    assert div_flag and div_streak == 3, "the divergence streak survives its flag"
+
+    reg_streak, reg_flag = check_regression(
+        1.0, 100.0, 4, return_frac=0.7, patience=1
+    )
+    assert reg_flag and reg_streak == 0, "the regression streak resets on its flag"
+
+
+def test_the_regression_reset_spaces_the_lr_decays():
+    """The pin on the number of evals each decay costs.
+
+    ``patience`` evals below the peak buy one decay, then the counter restarts.
+    So ``max_lr_decays`` decays need ``patience * max_lr_decays`` evals. The
+    loop in ``train_sjfpo_run`` reads this streak on every eval.
+    """
+    patience, max_lr_decays = 5, 3
+    streak, decays, evals = 0, 0, 0
+    while decays < max_lr_decays:
+        evals += 1
+        streak, flagged = check_regression(
+            50.0, 100.0, streak, return_frac=0.7, patience=patience
+        )
+        if flagged:
+            decays += 1
+    assert evals == patience * max_lr_decays, (
+        f"{max_lr_decays} decays took {evals} evals, not "
+        f"{patience * max_lr_decays}"
+    )
+
+
 # --- the seeded random baseline ------------------------------------------
 
 

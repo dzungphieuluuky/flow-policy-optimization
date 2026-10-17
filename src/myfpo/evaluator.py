@@ -240,6 +240,10 @@ def check_divergence(
     evidence does not separate collapse from noise, so the run continues. The
     function needs ``ci_low <= mean_return <= ci_high``. A caller that passes an
     interval from a different value gets a reset it cannot interpret.
+
+    This function returns the incremented streak when it flags, so the streak
+    keeps its value. :func:`check_regression` resets it instead, because its
+    flag is a repeat action. See that function for the reason.
     """
     if baseline <= 0:
         return 0, False
@@ -274,6 +278,19 @@ def check_regression(
     The values ``ci_low`` and ``ci_high`` behave as in :func:`check_divergence`.
     An interval that straddles the threshold resets the streak. So a run whose
     drop sits inside the noise keeps its best checkpoint and keeps training.
+
+    This function returns ``(0, True)`` when it flags. It resets the streak.
+    :func:`check_divergence` returns the incremented streak instead. The two
+    functions differ here on purpose, because their flags mean different things.
+
+    A divergence flag is terminal. The caller breaks the loop, so the returned
+    streak is never read again. Either value would work.
+
+    A regression flag is not terminal. The caller may spend one LR decay and
+    keep training. The reset is what spaces the decays out. Without it, one
+    streak of ``patience`` evals would buy every decay in the same row, and
+    ``max_lr_decays`` would be reached in ``patience`` evals rather than
+    ``patience * max_lr_decays``.
     """
     if best_return is None or best_return <= 0:
         return 0, False
