@@ -2,9 +2,11 @@
 
 What this covers
     One forward pass of ``SJFPOPolicy`` on a fixed batch, the full ``info``
-    dict it returns, and the gradient of every named parameter. It also runs
-    the same pass a second time under a fresh policy of the other architecture,
-    so a change in one actor cannot pass unnoticed because the other moved too.
+    dict it returns, and the gradient of every named parameter. It runs three
+    configurations: the ``dit`` actor, the ``resmlp`` actor, and ``dit`` at a
+    clamp low enough to saturate. A change in one actor cannot pass unnoticed
+    because the other moved too, and the clamp arm exists because the default
+    bound hides every clamp diagnostic at 0.0.
 
 What this does not cover
     Rollout collection, the eval loop, or anything in ``denoising_mdp.py``.
@@ -19,6 +21,7 @@ The baseline is a binary file and is not tracked. See ``README.md``.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import sys
 from pathlib import Path
 
@@ -47,16 +50,9 @@ def gradients(policy) -> dict:
     return out
 
 
-def run_one(arch: str) -> dict:
+def run_one(cfg) -> dict:
     """One forward pass and one backward pass, flattened to plain numbers."""
-    cfg = pin_config()
     policy = build(cfg)
-    if arch != cfg.actor_arch:
-        import dataclasses
-
-        cfg = dataclasses.replace(cfg, actor_arch=arch)
-        policy = build(cfg)
-
     batch = fixed_batch(policy)
     loss, info = policy(batch, compute_info=True)
     loss.backward()
@@ -67,16 +63,32 @@ def run_one(arch: str) -> dict:
     return out
 
 
-def collect() -> dict:
-    """Both architectures, under one key space.
+# The configurations the pin covers. Each label is a key prefix.
+#
+# The clamp arm is not optional. At the default ``cfm_clamp=20.0`` both clamp
+# diagnostics read 0.0, because no loss in this fixture reaches 20.0. A pin
+# that only ran the default could not detect any change to the saturation
+# figures. On 2026-10-17 that blindness hid a real defect: the diagnostic read
+# the per-sample loss while the ratio clamped the per-token one, and the two
+# agreed only because both were zero. The 0.5 arm puts the share strictly
+# inside (0, 1), so the two axes are distinguishable.
+CONFIGS = {
+    "dit": pin_config(),
+    "resmlp": dataclasses.replace(pin_config(), actor_arch="resmlp"),
+    "dit.clamp0.5": dataclasses.replace(pin_config(), cfm_clamp=0.5),
+}
 
-    Prefixing by architecture keeps the two apart. A key that exists for one
-    architecture and not the other is a difference the pin must report.
+
+def collect() -> dict:
+    """Every configuration, under one key space.
+
+    Prefixing by label keeps the arms apart. A key that exists for one arm and
+    not another is a difference the pin must report.
     """
     out = {}
-    for arch in ("dit", "resmlp"):
-        for key, value in run_one(arch).items():
-            out[f"{arch}.{key}"] = value
+    for label, cfg in CONFIGS.items():
+        for key, value in run_one(cfg).items():
+            out[f"{label}.{key}"] = value
     return out
 
 

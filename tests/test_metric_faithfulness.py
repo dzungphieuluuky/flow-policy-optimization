@@ -190,7 +190,7 @@ def test_metrics_survive_the_wandb_scalar_pack():
         cfm_loss_old=torch.zeros(2),
         cfm_loss_new=torch.ones(2),
         v_star_f=torch.ones(2, 8, 3),
-        cfg=SJFPOConfig(),
+        above_clamp_frac=torch.zeros(()),
         both_clamped_frac=torch.zeros(()),
     )
     for key, value in out.items():

@@ -157,3 +157,124 @@ def test_the_default_run_is_not_saturated():
     loss = compute_cfm_loss(v_hat, v_star, cfg, "sample")
     assert float(clamp_saturation(loss.detach(), loss.detach() + 0.1, cfg)) == 0.0
     assert float(np.asarray(loss.detach()).max()) < cfg.cfm_clamp
+
+def _policy_and_batch(cfm_clamp):
+    """A policy on a fixed batch, with the clamp low enough to bite.
+
+    The bound 2.0 matters. At the default 20.0 both readings are 0.0, so a
+    wrong axis looks correct. The sweep below shows where the two axes cross.
+    """
+    from lerobot.configs.policies import PolicyFeature
+    from lerobot.configs.types import FeatureType
+
+    from myfpo.fpo_core import sample_timesteps
+    from myfpo.train_sjfpo import build_policy
+
+    obs, act, horizon, mc = 6, 3, 4, 4
+    cfg = dataclasses.replace(
+        SJFPOConfig(
+            action_horizon=horizon, num_mc_samples=mc, hidden_dim=32,
+            time_embed_dim=16, dit_depth=1, dit_heads=2, n_obs_steps=2,
+            compile=False, report_to="none", cfm_clamp=cfm_clamp,
+            input_features={"observation.state": PolicyFeature(FeatureType.STATE, (obs,))},
+            output_features={"action": PolicyFeature(FeatureType.ACTION, (act,))},
+        )
+    )
+    torch.manual_seed(0)
+    policy = build_policy(
+        obs, act, cfg, device="cpu",
+        action_low=[-1.0] * act, action_high=[1.0] * act,
+    )
+    n = 3
+    torch.manual_seed(1)
+    states = torch.randn(n, cfg.n_obs_steps, obs)
+    actions = torch.randn(n, horizon, act)
+    t = sample_timesteps((n, mc, horizon), cfg, "cpu", None).unsqueeze(-1)
+    eps = torch.randn(n, mc, horizon, act)
+    pad = torch.zeros(n, horizon, dtype=torch.bool)
+    pre = policy.preprocessor({"observation.state": states})["observation.state"]
+    old, old_token = policy.compute_behavior_cfm_losses(pre, actions, t, eps, pad)
+    batch = {
+        "observation.state": states, "action": actions, "action_is_pad": pad,
+        "normalised_advantages": torch.randn(n, generator=torch.Generator().manual_seed(7)),
+        "raw_returns": torch.randn(n, generator=torch.Generator().manual_seed(8)),
+        "mc_t": t, "mc_eps": eps,
+        "behavior_cfm_loss": old, "behavior_cfm_loss_token": old_token,
+    }
+    return policy, batch, cfg
+
+
+def test_above_clamp_frac_reads_the_tensor_the_ratio_actually_clamps(monkeypatch):
+    """The defect: the diagnostic sat on the per-sample loss.
+
+    ``compute_policy_ratio`` clamps whichever tensor the caller passes. On the
+    default path that is the per-token loss, shape ``[n, num_mc, H]``. The
+    diagnostic read ``cfm_loss_new``, shape ``[n, num_mc]``. The two axes cross,
+    so the reading was wrong in both directions: it under-reported at a high
+    bound and over-reported at a low one.
+    """
+    import myfpo.modeling_sjfpo as modeling
+
+    real = modeling.compute_policy_ratio
+    clamped = []
+
+    def spy(old, new, cfg, advantage=None):
+        clamped.append(new.detach())
+        return real(old, new, cfg, advantage=advantage)
+
+    monkeypatch.setattr(modeling, "compute_policy_ratio", spy)
+
+    # The two axes cross inside this range, so the test covers both signs of
+    # the error rather than one lucky bound.
+    crossings = {}
+    for bound in (2.0, 1.0, 0.8, 0.6, 0.5):
+        policy, batch, cfg = _policy_and_batch(bound)
+        clamped.clear()
+        policy(batch, compute_info=True)
+        reported = float(policy.cfm_above_clamp_frac)
+        truth = [
+            float((new > bound).float().mean()) for new in clamped
+        ]
+        assert truth, "the ratio was never called, so nothing was clamped"
+        crossings[bound] = (reported, truth[0])
+        # The clamped tensor must be the per-token one. If the token path ever
+        # stops being the surviving ratio, this test would silently stop
+        # testing anything.
+        assert clamped[0].dim() == 3, (
+            f"cfm_clamp={bound}: the clamped tensor has shape "
+            f"{tuple(clamped[0].shape)}, expected [n, num_mc, H]"
+        )
+        # The reported figure must equal the share on the clamped tensor.
+        assert reported == pytest.approx(truth[0], abs=0.0), (
+            f"cfm_clamp={bound}: reported {reported} but the clamped tensor "
+            f"{tuple(clamped[0].shape)} has share {truth[0]}"
+        )
+
+    # The fixture must be able to tell the axes apart. Every swept bound has to
+    # leave a share strictly inside (0, 1). A bound that saturates the figure
+    # cannot distinguish a correct reading from a wrong one, because both axes
+    # read 1.0 there.
+    for bound, (reported, truth) in crossings.items():
+        assert 0.0 < truth < 1.0, (
+            f"cfm_clamp={bound}: share {truth} is saturated, so this bound "
+            "cannot discriminate between the two axes"
+        )
+
+
+def test_both_clamped_frac_and_above_clamp_frac_read_the_same_pair():
+    """The two saturation figures must come from one sample space.
+
+    ``cfm_both_clamped_frac`` counts the elements where both losses exceed the
+    bound. ``cfm_above_clamp_frac`` counts the elements where the new loss
+    does. Both count over the same elements, so the first can never exceed the
+    second. The inequality breaks only if the two read different tensors.
+    """
+    for bound in (2.0, 1.0, 0.8, 0.6, 0.5, 20.0):
+        policy, batch, _ = _policy_and_batch(bound)
+        policy(batch, compute_info=True)
+        above = float(policy.cfm_above_clamp_frac)
+        both = float(policy.cfm_both_clamped_frac)
+        assert above >= both, (
+            f"cfm_clamp={bound}: above={above} < both={both}. The two figures "
+            "read different tensors."
+        )
