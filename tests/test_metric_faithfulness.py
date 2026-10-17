@@ -184,7 +184,7 @@ def test_rollout_diagnostics_keys_match_the_scalar_count():
 
 def test_metrics_survive_the_wandb_scalar_pack():
     """compute_info reshapes every metric to 0-d before one device transfer."""
-    from myfpo.modeling_sjfpo import compute_cfm_metrics
+    from myfpo.metrics import compute_cfm_metrics
 
     out = compute_cfm_metrics(
         cfm_loss_old=torch.zeros(2),

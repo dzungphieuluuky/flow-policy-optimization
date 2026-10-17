@@ -49,11 +49,9 @@ from myfpo.fpo_core import (
 from myfpo.gae import compute_chunk_advantages
 from myfpo.metrics import (
     broadcast_condition,
-    compute_cfm_metrics,
     compute_gae_diagnostics,
-    compute_ratio_metrics,
+    compute_policy_info,
     compute_value_loss,
-    compute_value_metrics,
     mc_draws,
     sample_eps,
     sample_mc_timesteps,
@@ -1131,7 +1129,9 @@ class SJFPOPolicy(PreTrainedPolicy):
         if not compute_info:
             return loss, None
 
-        info = self.compute_info(
+        info = compute_policy_info(
+            above_clamp_frac=self.cfm_above_clamp_frac,
+            both_clamped_frac=self.cfm_both_clamped_frac,
             cfm_loss_old=cfm_loss_old,
             cfm_loss_new=cfm_loss_new,
             ratio=ratio,
@@ -1150,63 +1150,4 @@ class SJFPOPolicy(PreTrainedPolicy):
         return loss, info
 
 
-    @torch.inference_mode()
-    def compute_info(
-        self,
-        *,
-        cfm_loss_old,
-        cfm_loss_new,
-        ratio,
-        ratio_token,
-        delta,
-        action_is_pad,
-        v_star_f,
-        raw_value_pred,
-        raw_returns_flat,
-        policy_per_chunk,
-        value_loss_per_chunk,
-        cond_stats,
-        cfg,
-    ) -> dict[str, float]:
-        """Merge the metric groups into one device transfer.
-
-        The call costs one sync, not about 20. Plain floats are accepted next
-        to the tensors. NaN marks a metric that does not apply.
-        """
-        scalars = {
-            **compute_ratio_metrics(
-                ratio=ratio,
-                ratio_token=ratio_token,
-                delta=delta,
-                action_is_pad=action_is_pad,
-                cfg=cfg,
-            ),
-            **compute_value_metrics(
-                raw_value_pred=raw_value_pred,
-                raw_returns_flat=raw_returns_flat,
-                policy_per_chunk=policy_per_chunk,
-                value_loss_per_chunk=value_loss_per_chunk,
-            ),
-            **compute_cfm_metrics(
-                cfm_loss_old=cfm_loss_old,
-                cfm_loss_new=cfm_loss_new,
-                v_star_f=v_star_f,
-                above_clamp_frac=self.cfm_above_clamp_frac,
-                both_clamped_frac=self.cfm_both_clamped_frac,
-            ),
-        }
-        if cond_stats:
-            scalars.update(
-                {
-                    f"cond_{k}": torch.as_tensor(cond_stats[k], device=ratio.device)
-                    for k in cond_stats
-                }
-            )
-        packed = [
-            s.detach().reshape(())
-            if isinstance(s, torch.Tensor)
-            else torch.as_tensor(float(s))
-            for s in scalars.values()
-        ]
-        return dict(zip(scalars.keys(), torch.stack(packed).float().cpu().tolist()))
 

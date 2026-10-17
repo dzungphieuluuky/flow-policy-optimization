@@ -33,6 +33,7 @@ __all__ = [
     "compute_value_loss",
     "compute_value_metrics",
     "compute_cfm_metrics",
+    "compute_policy_info",
     "mc_draws",
     "sample_eps",
     "sample_mc_timesteps",
@@ -311,3 +312,79 @@ def compute_cfm_metrics(
         / corr_denom,
     }
     return out
+
+
+@torch.inference_mode()
+def compute_policy_info(
+    *,
+    cfm_loss_old,
+    cfm_loss_new,
+    ratio,
+    ratio_token,
+    delta,
+    action_is_pad,
+    v_star_f,
+    raw_value_pred,
+    raw_returns_flat,
+    policy_per_chunk,
+    value_loss_per_chunk,
+    cond_stats,
+    above_clamp_frac,
+    both_clamped_frac,
+    cfg: SJFPOConfig,
+) -> dict[str, float]:
+    """Merge the metric groups into one device transfer.
+
+    The call costs one sync, not about 20. Plain floats are accepted next to the
+    tensors. NaN marks a metric that does not apply.
+
+    This function composes :func:`compute_ratio_metrics`,
+    :func:`compute_value_metrics`, and :func:`compute_cfm_metrics`, then stacks
+    the result so the caller transfers once. It reads nothing from a policy, so
+    the clamp fractions arrive as arguments rather than off an instance.
+
+    The two clamp fractions are the ones :func:`compute_cfm_metrics` needs, and
+    it cannot recompute them: it would measure the per-sample loss while the
+    ratio clamps the per-token one.
+
+    The decorator is load-bearing. The function runs under
+    ``torch.inference_mode()``, so the pack builds no autograd graph and the
+    metrics cannot hold a reference to a live graph. Dropping it does not change
+    any value here, and it does change what a long run holds in memory.
+    """
+    scalars = {
+        **compute_ratio_metrics(
+            ratio=ratio,
+            ratio_token=ratio_token,
+            delta=delta,
+            action_is_pad=action_is_pad,
+            cfg=cfg,
+        ),
+        **compute_value_metrics(
+            raw_value_pred=raw_value_pred,
+            raw_returns_flat=raw_returns_flat,
+            policy_per_chunk=policy_per_chunk,
+            value_loss_per_chunk=value_loss_per_chunk,
+        ),
+        **compute_cfm_metrics(
+            cfm_loss_old=cfm_loss_old,
+            cfm_loss_new=cfm_loss_new,
+            v_star_f=v_star_f,
+            above_clamp_frac=above_clamp_frac,
+            both_clamped_frac=both_clamped_frac,
+        ),
+    }
+    if cond_stats:
+        scalars.update(
+            {
+                f"cond_{k}": torch.as_tensor(cond_stats[k], device=ratio.device)
+                for k in cond_stats
+            }
+        )
+    packed = [
+        s.detach().reshape(())
+        if isinstance(s, torch.Tensor)
+        else torch.as_tensor(float(s))
+        for s in scalars.values()
+    ]
+    return dict(zip(scalars.keys(), torch.stack(packed).float().cpu().tolist()))

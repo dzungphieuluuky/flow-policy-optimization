@@ -18,7 +18,7 @@ from myfpo.evaluator import (
     compute_mean_chunk_jerk,
     compute_seam_jerk,
 )
-from myfpo.modeling_sjfpo import (
+from myfpo.metrics import (
     compute_ratio_metrics,
     compute_value_metrics,
 )
