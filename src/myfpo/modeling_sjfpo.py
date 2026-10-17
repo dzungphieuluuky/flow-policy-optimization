@@ -942,7 +942,6 @@ class SJFPOPolicy(PreTrainedPolicy):
             action_high=action_high,
             n_obs_steps=cfg.n_obs_steps,
             n_action_steps=cfg.n_action_steps,
-            chunk_size=cfg.action_horizon,
             buffer=buffer,
         )
         # A single env becomes a 1-env vec env. One collector, so the chunk

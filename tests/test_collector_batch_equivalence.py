@@ -76,7 +76,7 @@ def collect(
     collect_chunks_vec(
         env, policy, total_steps,
         -torch.ones(ACT_DIM), torch.ones(ACT_DIM),
-        n_obs_steps=n_obs_steps, n_action_steps=HORIZON, chunk_size=HORIZON,
+        n_obs_steps=n_obs_steps, n_action_steps=HORIZON,
         buffer=buf, seed=0,
     )
     return buf, env
@@ -200,7 +200,7 @@ def test_a_buffer_is_required_and_returns_itself():
 
     kwargs = {
         "n_obs_steps": N_OBS, "n_action_steps": HORIZON,
-        "chunk_size": HORIZON, "seed": 0,
+        "seed": 0,
     }
     with pytest.raises(TypeError):
         collect_chunks_vec(

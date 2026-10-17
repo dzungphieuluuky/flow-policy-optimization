@@ -43,7 +43,6 @@ def _collect(total_steps: int = 240, n: int = NUM_ENVS):
         action_low=-2.0,
         action_high=2.0,
         n_obs_steps=OBS_STEPS,
-        chunk_size=HORIZON,
         buffer=buffer,
         seed=0,
     )
@@ -95,7 +94,6 @@ def test_chunk_state_is_the_window_the_policy_saw():
         action_low=-2.0,
         action_high=2.0,
         n_obs_steps=OBS_STEPS,
-        chunk_size=HORIZON,
         buffer=buffer,
         seed=0,
     )
@@ -200,3 +198,35 @@ def test_copy_to_matches_the_active_prefix():
     assert set(active) == set(mirrored)
     for name in active:
         assert torch.equal(active[name], mirrored[name]), name
+
+
+def test_the_buffer_is_the_only_source_of_the_row_width():
+    """The collector must not be able to disagree with the buffer.
+
+    ``collect_chunks_vec`` used to take ``chunk_size`` and size its plan by it,
+    while ``RolloutBuffer`` sized storage by ``action_horizon``. The two agreed
+    only because the single caller passed ``cfg.action_horizon``. A second
+    caller, or a swept ``action_horizon``, could have split them. One source
+    removes the question.
+    """
+    import inspect
+
+    from myfpo.collector import resolve_chunk_args
+
+    params = inspect.signature(collect_chunks_vec).parameters
+    assert "chunk_size" not in params, (
+        "collect_chunks_vec regrew a second source for the row width"
+    )
+
+    # The horizon is required, so there is no silent fallback to the config.
+    horizon = inspect.signature(resolve_chunk_args).parameters["action_horizon"]
+    assert horizon.default is inspect.Parameter.empty, (
+        "action_horizon became optional again, which restores the second source"
+    )
+
+    # And it is the buffer's own value, not a fresh read of the config.
+    buf = RolloutBuffer(
+        max_chunks=4, max_steps=8, obs_steps=2, obs_dim=OBS_DIM,
+        action_horizon=HORIZON + 3, action_dim=ACT_DIM,
+    )
+    assert buf.action_horizon == HORIZON + 3

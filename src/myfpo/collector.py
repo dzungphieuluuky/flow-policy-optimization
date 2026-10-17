@@ -391,22 +391,27 @@ def scale_and_clip_chunk(
 def resolve_chunk_args(
     n_obs_steps: int | None,
     n_action_steps: int,
-    chunk_size: int | None,
+    action_horizon: int,
 ) -> tuple[int, int]:
-    """Fill the chunk defaults from the config, then check the execution span.
+    """Fill the obs-step default, then check the execution span.
+
+    The argument ``action_horizon`` is required. It used to be optional and to
+    fall back to the config, which gave the chunk width a second source next to
+    the buffer's. Two sources meant the collector and the buffer could disagree
+    about the row width, and they agreed only because the one caller passed
+    ``cfg.action_horizon`` explicitly. The caller now reads it from the buffer.
 
     The caller adds one further check, that ``n_action_steps`` fits inside the
     obs ring, because the vec window is a ring rather than a slide.
     """
     cfg = get_default_config()
     n_obs_steps = cfg.n_obs_steps if n_obs_steps is None else n_obs_steps
-    chunk_size = cfg.action_horizon if chunk_size is None else int(chunk_size)
-    if not 1 <= n_action_steps <= chunk_size:
+    if not 1 <= n_action_steps <= action_horizon:
         raise ValueError(
             f"n_action_steps={n_action_steps} must satisfy "
-            f"1 <= n <= chunk_size={chunk_size}"
+            f"1 <= n <= action_horizon={action_horizon}"
         )
-    return n_obs_steps, chunk_size
+    return n_obs_steps, action_horizon
 
 
 def flush_on_collection_error(
@@ -461,7 +466,6 @@ def collect_chunks_vec(
     *,
     n_obs_steps: int | None = None,
     n_action_steps: int,
-    chunk_size: int | None = None,
     seed: int | None = None,
     on_error_flush: Callable[[], None] | None = None,
     buffer: RolloutBuffer,
@@ -482,8 +486,8 @@ def collect_chunks_vec(
 
     Needs ``AutoresetMode.NEXT_STEP``, see :func:`validate_autoreset_mode`.
     """
-    n_obs_steps, chunk_size = resolve_chunk_args(
-        n_obs_steps, n_action_steps, chunk_size
+    n_obs_steps, action_horizon = resolve_chunk_args(
+        n_obs_steps, n_action_steps, buffer.action_horizon
     )
 
     validate_autoreset_mode(envs)
@@ -519,16 +523,16 @@ def collect_chunks_vec(
         # The code reuses this per chunk. Slot ``pos`` is overwritten on every
         # chunk of env i, so ``add_chunk`` must consume
         # ``reward_windows[i, :n_exec]`` first.
-        reward_windows = torch.zeros(n, chunk_size, dtype=_REWARD_DTYPE)
+        reward_windows = torch.zeros(n, action_horizon, dtype=_REWARD_DTYPE)
         # One frame per step, not one window per step. The window the chunk
         # ends on is already in hand when the chunk closes.
-        step_frames = torch.zeros(n, chunk_size, obs_dim, dtype=_OBS_DTYPE)
+        step_frames = torch.zeros(n, action_horizon, obs_dim, dtype=_OBS_DTYPE)
         # One entry per env. An entry is None when the env holds no chunk.
         in_flight: list[InFlightChunk | None] = [None] * n
         pos_t = torch.zeros(n, dtype=torch.long)
         # Action chunks for the wavefront, indexed by env. Row n is a zero row so an
         # env with no chunk reads zeros.
-        plan = torch.zeros(n + 1, chunk_size, act_dim, dtype=torch.float32)
+        plan = torch.zeros(n + 1, action_horizon, act_dim, dtype=torch.float32)
         env_rows = torch.arange(n)
         idle_row = torch.full_like(env_rows, n)
         # The table satisfies roll_table[w][j] == (w + j) % n_obs_steps. So
@@ -594,7 +598,7 @@ def collect_chunks_vec(
             actions_t.copy_(
                 plan[
                     torch.where(stepping, env_rows, idle_row),
-                    pos_t.clamp(max=chunk_size - 1),
+                    pos_t.clamp(max=action_horizon - 1),
                 ]
             )
             # Do not skip this step. An env flagged ``awaiting`` still needs this
