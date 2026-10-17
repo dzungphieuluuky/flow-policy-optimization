@@ -231,3 +231,39 @@ def test_the_projection_probe_reports_a_monotone_curve():
     assert probe.spearman([1.0, 2.0, 3.0], [1.0, 2.0, 3.0]) == pytest.approx(1.0)
     assert probe.spearman([1.0, 2.0, 3.0], [3.0, 2.0, 1.0]) == pytest.approx(-1.0)
     assert np.isnan(probe.spearman([1.0], [2.0])), "a short series has no rank"
+
+def test_the_perturbation_cannot_leave_the_unit_interval():
+    """The second clamp. Without it, chunk_clip_counts is not structural.
+
+    The noise is unbounded, so a large ``action_perturb_std`` used to push the
+    returned action past the env bounds. The collector would then clip it, and
+    the count that ``action_pre_clamp_frac`` was said to make structural would
+    read non-zero.
+    """
+    policy = _policy(action_perturb_std=0.9)
+    policy.train()
+    states = {"observation.state": torch.randn(64, 16, 11) * 3.0}
+    # The env bounds for this fixture are [-2, 2]. The returned action is in env
+    # units, not the normalised unit interval, so the bound to check is the env
+    # one. Exceeding it is what makes the collector clip, and a clip is what
+    # ``chunk_clip_counts`` counts.
+    for _ in range(8):
+        out = policy.predict_action_chunk(states, start_from_zero=False)
+        assert out.shape[-1] == 3
+        assert float(out.abs().max()) <= 2.0 + 1e-6, (
+            f"perturbed action left the env bounds: {float(out.abs().max())}"
+        )
+
+
+def test_the_projection_metric_still_measures_the_first_clamp():
+    """Moving the clamp must not move the metric it names.
+
+    ``action_pre_clamp_frac`` reads ``action_chunk``, before either clamp. The
+    second clamp is invisible to it by design.
+    """
+    policy = _policy(action_perturb_std=0.0)
+    policy.train()
+    states = {"observation.state": torch.randn(64, 16, 11) * 3.0}
+    policy.predict_action_chunk(states, start_from_zero=False)
+    frac = float(policy.action_pre_clamp_frac)
+    assert 0.0 < frac <= 1.0, frac

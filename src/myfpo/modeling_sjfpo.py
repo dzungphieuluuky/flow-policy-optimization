@@ -480,19 +480,25 @@ class SJFPOPolicy(PreTrainedPolicy):
                 device=device,
             ).float()
 
-        scaled = action_chunk.clamp(-1.0, 1.0)
-        # The share of coordinates this clamp had to move. This is the
+        # The share of coordinates the first clamp had to move. This is the
         # projection the CFM target is built on, so it belongs in the log.
-        # ``chunk_clip_counts`` cannot see it: the collector's
-        # ``scale_and_clip_chunk`` receives a value that is already inside the
-        # env bounds, so that count is structurally zero.
         #
         # The value is the last proposal of the rollout, not a rollout average.
         # It is a 0-dim tensor, so reading it costs the caller one sync.
         self.action_pre_clamp_frac = (action_chunk.abs() > 1.0).float().mean().detach()
 
+        scaled = action_chunk.clamp(-1.0, 1.0)
         if self.training and cfg.action_perturb_std > 0:
             scaled = scaled + cfg.action_perturb_std * torch.randn_like(scaled)
+        # The clamp runs again after the noise. The noise is unbounded, so
+        # without this the perturbed value can leave the unit interval and the
+        # collector's ``scale_and_clip_chunk`` clips it. That made
+        # ``chunk_clip_counts`` non-zero whenever ``action_perturb_std`` was
+        # positive, which contradicted the claim that the count is structural.
+        # With the second clamp the count is zero by construction at every
+        # setting, so ``action_pre_clamp_frac`` is the only place the projection
+        # shows up.
+        scaled = scaled.clamp(-1.0, 1.0)
         return self.postprocessor({ACTION: scaled})[ACTION]
 
     def select_action(self, batch: dict[str, torch.Tensor], **kwargs) -> torch.Tensor:
