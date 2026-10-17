@@ -16,7 +16,7 @@ import pytest
 
 from myfpo.configuration_sjfpo import SJFPOConfig
 
-SAMPLINGS = ("zero", "stochastic")
+SAMPLINGS = ("zero_start", "noise_start")
 
 
 # --- the config -----------------------------------------------------------
@@ -24,10 +24,10 @@ SAMPLINGS = ("zero", "stochastic")
 
 def test_both_fields_default_to_the_trained_distribution():
     cfg = SJFPOConfig()
-    assert cfg.eval_sampling == "stochastic", (
+    assert cfg.eval_sampling == "noise_start", (
         "the reported score must read the distribution training optimizes"
     )
-    assert cfg.stop_eval_sampling == "stochastic", (
+    assert cfg.stop_eval_sampling == "noise_start", (
         "the stopper must read the distribution training optimizes"
     )
 
@@ -35,11 +35,11 @@ def test_both_fields_default_to_the_trained_distribution():
 def test_the_two_fields_are_independent():
     """Reporting one start and stopping on the other is a valid request."""
     cfg = dataclasses.replace(
-        SJFPOConfig(), eval_sampling="zero", stop_eval_sampling="stochastic"
+        SJFPOConfig(), eval_sampling="zero_start", stop_eval_sampling="noise_start"
     )
     cfg.validate()
-    assert cfg.eval_sampling == "zero"
-    assert cfg.stop_eval_sampling == "stochastic"
+    assert cfg.eval_sampling == "zero_start"
+    assert cfg.stop_eval_sampling == "noise_start"
 
 
 @pytest.mark.parametrize("field", ["eval_sampling", "stop_eval_sampling"])
@@ -81,8 +81,8 @@ def test_the_adapter_maps_the_config_value_to_the_start_point():
     class _P:
         pass
 
-    assert _EvalPolicy.for_sampling(_P(), "zero").zero_sampling is True
-    assert _EvalPolicy.for_sampling(_P(), "stochastic").zero_sampling is False
+    assert _EvalPolicy.for_sampling(_P(), "zero_start").start_from_zero is True
+    assert _EvalPolicy.for_sampling(_P(), "noise_start").start_from_zero is False
 
 
 def test_the_adapter_rejects_an_unknown_start():
@@ -118,14 +118,14 @@ def test_the_two_adapters_give_different_returns():
             action_high=high,
         )
         ev = Evaluator(env, eval_seed=4, max_episodes=6)
-        zero = ev.summarize(
-            ev.evaluate(_EvalPolicy.for_sampling(policy, "zero")), seed=4
+        zero_start = ev.summarize(
+            ev.evaluate(_EvalPolicy.for_sampling(policy, "zero_start")), seed=4
         )
-        stoch = ev.summarize(
-            ev.evaluate(_EvalPolicy.for_sampling(policy, "stochastic")), seed=4
+        noise_start = ev.summarize(
+            ev.evaluate(_EvalPolicy.for_sampling(policy, "noise_start")), seed=4
         )
         assert (
-            zero["return_mean"] != stoch["return_mean"]
+            zero_start["return_mean"] != noise_start["return_mean"]
         ), "a fresh policy gave the same score for both starts; the two paths are not wired"
     finally:
         env.close()
@@ -140,8 +140,8 @@ def test_the_trainer_builds_both_adapters_once():
     from myfpo.train_sjfpo import train_sjfpo_run
 
     src = inspect.getsource(train_sjfpo_run)
-    assert '"zero": _EvalPolicy(policy, zero_sampling=True)' in src
-    assert '"stochastic": _EvalPolicy(policy, zero_sampling=False)' in src
+    assert '"zero_start": _EvalPolicy(policy, start_from_zero=True)' in src
+    assert '"noise_start": _EvalPolicy(policy, start_from_zero=False)' in src
 
 
 def test_the_trainer_reads_both_names_from_the_config():

@@ -48,8 +48,8 @@ SECTIONS: list[tuple[str, list[str]]] = [
     (
         "Flow sampling",
         [
-            "num_euler_steps",
-            "num_inference_steps",
+            "num_steps_zero_start",
+            "num_steps_noise_start",
             "min_timestep",
             "max_timestep",
             "timestep_sampling_mode",

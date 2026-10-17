@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "myfpo"))
 
 from myfpo.configuration_sjfpo import SJFPOConfig
 from myfpo.fpo_core import (
-    clip_transported,
+    clip_velocity,
     compute_cfm_loss,
     compute_policy_ratio,
 )
@@ -184,12 +184,12 @@ def test_huber_cfm_loss_keeps_the_mask_renormalisation():
 
 def test_transported_clip_none_is_a_no_op():
     x = torch.randn(5) * 100
-    assert torch.equal(clip_transported(x, None), x)
+    assert torch.equal(clip_velocity(x, None), x)
 
 
 def test_transported_clip_bounds_both_sides():
     x = torch.tensor([-30.0, -1.0, 0.0, 1.0, 30.0])
-    got = clip_transported(x, 2.0)
+    got = clip_velocity(x, 2.0)
     assert torch.equal(got, torch.tensor([-2.0, -1.0, 0.0, 1.0, 2.0]))
 
 

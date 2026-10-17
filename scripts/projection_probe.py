@@ -192,7 +192,7 @@ def projection_measurement(
     import gymnasium as gym
 
     from myfpo.checkpointing import load_policy_checkpoint
-    from myfpo.fpo_core import clip_transported, sample_action, sample_noise
+    from myfpo.fpo_core import clip_velocity, sample_action, sample_noise
     from myfpo.train_sjfpo import build_policy
 
     rows: list[dict] = []
@@ -239,12 +239,12 @@ def projection_measurement(
                 condition = policy.encoder(normalised)
                 eps = sample_noise(shape, cfg, "cpu", None)
                 x0 = sample_action(
-                    lambda x, t, c: clip_transported(
+                    lambda x, t, c: clip_velocity(
                         policy.actor(x, t, c), cfg.transported_clip_value
                     ),
                     shape,
                     condition,
-                    num_inference_steps=cfg.num_euler_steps,
+                    num_steps=cfg.num_steps_noise_start,
                     eps=eps,
                     device="cpu",
                 ).float()

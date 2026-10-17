@@ -23,7 +23,7 @@ from lerobot.configs.types import FeatureType, PolicyFeature
 from lerobot.utils.random_utils import set_seed
 
 from myfpo.checkpointing import load_policy_checkpoint, save_policy_checkpoint
-from myfpo.configuration_sjfpo import SJFPOConfig
+from myfpo.configuration_sjfpo import FLOW_STARTS, SJFPOConfig
 from myfpo.evaluator import (
     Evaluator,
     check_divergence,
@@ -91,29 +91,42 @@ def generate_mini_batch_indices(
 class _EvalPolicy:
     """A single-action eval adapter over :meth:`SJFPOPolicy.select_action`.
 
-    The value ``zero_sampling`` picks the start point of the flow. The value
-    ``True`` starts from ``eps=0``. The value ``False`` starts from sampled
-    noise, and the training rollouts use it.
+    The value ``start_from_zero`` picks the start point of the flow. The value
+    ``True`` starts from ``eps=0``. The value ``False`` starts from a drawn
+    ``eps``, and the training rollouts use it.
 
-    The name ``deterministic_return`` means the zero start. The name
-    ``stochastic_return`` means the sampled start. The names match the config
-    values ``zero`` and ``stochastic``, so one vocabulary covers the config, the
-    logs, and this adapter.
+    The argument was named ``zero_sampling``, which read as a sampling method.
+    It is a start point. The name also collided with ``noise_sampling_mode``,
+    which is a real method.
+
+    One vocabulary covers the config, the logs, and this adapter:
+
+    ==========================  =========================================
+    Config value                Meaning
+    ==========================  =========================================
+    ``zero_start``              ``start_from_zero=True``. Chain starts at
+                                 ``eps=0``.
+    ``noise_start``             ``start_from_zero=False``. Chain starts at
+                                 a drawn ``eps``.
+    ==========================  =========================================
 
     Running both adapters over the same seeds is the only way to see the two
     distributions diverge.
     """
 
-    def __init__(self, policy: SJFPOPolicy, zero_sampling: bool = True):
+    def __init__(self, policy: SJFPOPolicy, start_from_zero: bool = True):
         self.policy = policy
-        self.zero_sampling = zero_sampling
+        self.start_from_zero = start_from_zero
 
     @classmethod
     def for_sampling(cls, policy: SJFPOPolicy, sampling: str) -> "_EvalPolicy":
         """Build the adapter for the config value ``sampling``."""
-        if sampling not in ("zero", "stochastic"):
-            raise ValueError(f"sampling={sampling!r} must be 'zero' or 'stochastic'")
-        return cls(policy, zero_sampling=(sampling == "zero"))
+        if sampling not in FLOW_STARTS:
+            raise ValueError(
+                f"sampling={sampling!r} must be one of "
+                f"{', '.join(repr(k) for k in FLOW_STARTS)}"
+            )
+        return cls(policy, start_from_zero=(sampling == "zero_start"))
 
     def reset(self) -> None:
         """Drop the policy's cached chunk state before a new episode."""
@@ -124,7 +137,8 @@ class _EvalPolicy:
         self.policy.eval()
         try:
             action = self.policy.select_action(
-                {"observation.state": obs}, zero_sampling=self.zero_sampling
+                {"observation.state": obs},
+                start_from_zero=self.start_from_zero,
             )
         finally:
             self.policy.train(was_training)
@@ -626,8 +640,8 @@ def train_sjfpo_run(
     # One adapter per named flow start. Both run over the same eval seeds, so the
     # episode pairs line up and the two scores differ only by the start point.
     eval_policies = {
-        "zero": _EvalPolicy(policy, zero_sampling=True),
-        "stochastic": _EvalPolicy(policy, zero_sampling=False),
+        "zero_start": _EvalPolicy(policy, start_from_zero=True),
+        "noise_start": _EvalPolicy(policy, start_from_zero=False),
     }
     reported_name = cfg.eval_sampling
     stop_name = cfg.stop_eval_sampling
@@ -964,7 +978,7 @@ def train_sjfpo_run(
                                 f"eval/{name}_return_mean": summaries[name][
                                     "return_mean"
                                 ]
-                                for name in ("zero", "stochastic")
+                                for name in FLOW_STARTS
                             },
                         },
                         step=global_step,

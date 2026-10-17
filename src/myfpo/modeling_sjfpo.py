@@ -39,7 +39,7 @@ from myfpo.fpo_core import (
     clamp_saturation,
     compute_aspo_surrogate,
     compute_cfm_loss,
-    clip_transported,
+    clip_velocity,
     compute_policy_ratio,
     run_monte_carlo_sampling,
     sample_action,
@@ -673,7 +673,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         conditioning pass covers every draw.
         """
         cfg = self.config
-        return clip_transported(self.actor(x_t, tau, condition), cfg.transported_clip_value)
+        return clip_velocity(self.actor(x_t, tau, condition), cfg.transported_clip_value)
 
 
     def predict_action_chunk(
@@ -681,14 +681,15 @@ class SJFPOPolicy(PreTrainedPolicy):
     ) -> torch.Tensor:
         """Predict ``[B, H, action_dim]``.
 
-        The value ``zero_sampling`` starts at ``eps=0`` and runs
-        ``num_inference_steps``. Without it, the call starts from sampled noise
-        and runs ``num_euler_steps``.
+        The value ``start_from_zero`` starts at ``eps=0`` and runs
+        ``num_steps_zero_start``. Without it, the call starts from sampled noise
+        and runs ``num_steps_noise_start``. Both runs use the same Euler loop.
+        The two counts differ only in the start point.
 
         Perturbation runs before the postprocessing. This matches FPO++. So the
         noise lands in the normalised action space.
         """
-        zero_sampling = kwargs.get("zero_sampling", True)
+        start_from_zero = kwargs.get("start_from_zero", True)
         cfg = self.config
         device = next(self.actor.parameters()).device
 
@@ -714,24 +715,26 @@ class SJFPOPolicy(PreTrainedPolicy):
         with torch.inference_mode(), autocast_context(device):
             condition = self.encoder(states)
             shape = (states.shape[0], horizon, action_dim)
-            if zero_sampling:
+            if start_from_zero:
                 eps = torch.zeros(*shape, device=device)
-                num_steps = cfg.num_inference_steps
+                num_steps = cfg.num_steps_zero_start
             else:
                 eps = sample_noise(shape, cfg, device, None)
-                num_steps = cfg.num_euler_steps
-            x0 = sample_action(
-                lambda x, t, c: clip_transported(
+                num_steps = cfg.num_steps_noise_start
+            # The chain runs t=0 (noise) to t=1 (action), so this is the END of
+            # the chain. The old name x0 read as the START.
+            action_chunk = sample_action(
+                lambda x, t, c: clip_velocity(
                     actor(x, t, c), cfg.transported_clip_value
                 ),
                 shape,
                 condition,
-                num_inference_steps=num_steps,
+                num_steps=num_steps,
                 eps=eps,
                 device=device,
             ).float()
 
-        scaled = x0.clamp(-1.0, 1.0)
+        scaled = action_chunk.clamp(-1.0, 1.0)
         # The share of coordinates this clamp had to move. This is the
         # projection the CFM target is built on, so it belongs in the log.
         # ``chunk_clip_counts`` cannot see it: the collector's
@@ -740,7 +743,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         #
         # The value is the last proposal of the rollout, not a rollout average.
         # It is a 0-dim tensor, so reading it costs the caller one sync.
-        self.action_pre_clamp_frac = (x0.abs() > 1.0).float().mean().detach()
+        self.action_pre_clamp_frac = (action_chunk.abs() > 1.0).float().mean().detach()
 
         if self.training and cfg.action_perturb_std > 0:
             scaled = scaled + cfg.action_perturb_std * torch.randn_like(scaled)
@@ -872,7 +875,7 @@ class SJFPOPolicy(PreTrainedPolicy):
 
         def propose_batch(states: torch.Tensor) -> torch.Tensor:
             chunk = self.predict_action_chunk(
-                {OBS_STATE: to_device_async(states, device)}, zero_sampling=not noisy
+                {OBS_STATE: to_device_async(states, device)}, start_from_zero=not noisy
             )
             return chunk.cpu()
 
@@ -979,7 +982,7 @@ class SJFPOPolicy(PreTrainedPolicy):
                 # transform.
                 proposed = self.predict_action_chunk(
                     {OBS_STATE: to_device_async(next_states[needs_proposal], device)},
-                    zero_sampling=False,
+                    start_from_zero=False,
                 )
                 low_t, range_t = resolve_action_bounds(action_low, action_high)
                 boot_actions[needs_proposal] = scale_and_clip_chunk(

@@ -113,7 +113,7 @@ def test_the_policy_records_a_pre_clamp_fraction():
     policy = _policy()
     assert float(policy.action_pre_clamp_frac) == 0.0, "must start at zero"
     states = {"observation.state": torch.zeros(2, 16, 11)}
-    policy.predict_action_chunk(states, zero_sampling=False)
+    policy.predict_action_chunk(states, start_from_zero=False)
     frac = float(policy.action_pre_clamp_frac)
     assert 0.0 <= frac <= 1.0
 
@@ -128,7 +128,7 @@ def test_an_untrained_policy_projects_a_third_of_its_coordinates():
     policy = _policy()
     torch.manual_seed(0)
     states = {"observation.state": torch.zeros(64, 16, 11)}
-    policy.predict_action_chunk(states, zero_sampling=False)
+    policy.predict_action_chunk(states, start_from_zero=False)
     frac = float(policy.action_pre_clamp_frac)
     assert 0.25 < frac < 0.40, f"untrained projection fraction was {frac:.4f}"
 
@@ -137,7 +137,7 @@ def test_the_projection_grows_with_the_velocity():
     """A stronger velocity pushes the chunk further past the bounds."""
     policy = _policy()
     states = {"observation.state": torch.zeros(64, 16, 11)}
-    policy.predict_action_chunk(states, zero_sampling=False)
+    policy.predict_action_chunk(states, start_from_zero=False)
     weak = float(policy.action_pre_clamp_frac)
 
     gen = torch.Generator().manual_seed(0)
@@ -148,7 +148,7 @@ def test_the_projection_grows_with_the_velocity():
         policy.actor.out.bias.add_(
             0.5 * torch.randn(policy.actor.out.bias.shape, generator=gen)
         )
-    policy.predict_action_chunk(states, zero_sampling=False)
+    policy.predict_action_chunk(states, start_from_zero=False)
     strong = float(policy.action_pre_clamp_frac)
     assert strong > weak, f"{strong:.4f} did not exceed {weak:.4f}"
     assert strong > 0.7, f"a 0.5 perturbation only reached {strong:.4f}"
@@ -158,9 +158,9 @@ def test_a_zero_start_projects_less_than_a_sampled_start():
     """The zero start begins at the origin, so it lands inside the bounds."""
     policy = _policy()
     states = {"observation.state": torch.zeros(64, 16, 11)}
-    policy.predict_action_chunk(states, zero_sampling=True)
+    policy.predict_action_chunk(states, start_from_zero=True)
     zero_start = float(policy.action_pre_clamp_frac)
-    policy.predict_action_chunk(states, zero_sampling=False)
+    policy.predict_action_chunk(states, start_from_zero=False)
     sampled = float(policy.action_pre_clamp_frac)
     assert zero_start < sampled, f"zero {zero_start:.4f} !< sampled {sampled:.4f}"
 
@@ -169,7 +169,7 @@ def test_the_value_is_a_zero_dim_tensor():
     """The trainer stacks it with other scalars, so the rank must be zero."""
     policy = _policy()
     states = {"observation.state": torch.zeros(4, 16, 11)}
-    policy.predict_action_chunk(states, zero_sampling=False)
+    policy.predict_action_chunk(states, start_from_zero=False)
     assert policy.action_pre_clamp_frac.dim() == 0
     assert torch.stack(
         [policy.action_pre_clamp_frac, policy.cfm_above_clamp_frac]
@@ -211,9 +211,10 @@ def test_the_probe_script_exists_and_names_the_real_clamp():
 def test_the_clamp_still_runs_on_the_policy_path():
     """The behaviour must not change. The measurement sits beside the clamp."""
     src = (ROOT / "src" / "myfpo" / "modeling_sjfpo.py").read_text()
-    assert "scaled = x0.clamp(-1.0, 1.0)" in src
-    # The measurement must read x0, not scaled, or it would always read zero.
-    assert "self.action_pre_clamp_frac = (x0.abs() > 1.0)" in src
+    assert "scaled = action_chunk.clamp(-1.0, 1.0)" in src
+    # The measurement must read the pre-clamp tensor, or it would always read
+    # zero. The tensor was renamed from x0, which read as the chain start.
+    assert "self.action_pre_clamp_frac = (action_chunk.abs() > 1.0)" in src
 
 
 def test_the_projection_probe_reports_a_monotone_curve():

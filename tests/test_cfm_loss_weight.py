@@ -23,7 +23,7 @@ def test_constant_is_ones_everywhere():
 
 
 @pytest.mark.parametrize(
-    "mode,low", [("linear_1_to_0.1", 0.1), ("linear_1_to_0.01", 0.01)]
+    "mode,low", [("linear_0.1_to_1", 0.1), ("linear_0.01_to_1", 0.01)]
 )
 def test_the_ramp_is_full_at_the_action_end_and_low_at_noise(mode, low):
     """The inversion pin."""
@@ -41,7 +41,7 @@ def test_the_ramp_is_full_at_the_action_end_and_low_at_noise(mode, low):
 
 def test_a_naive_copy_of_the_reference_formula_would_fail():
     """Spell out the bug this guards, so the sign convention is on the record."""
-    cfg = _cfg(cfm_loss_weight_from_t="linear_1_to_0.1")
+    cfg = _cfg(cfm_loss_weight_from_t="linear_0.1_to_1")
     t = torch.tensor([[ACTION_END], [NOISE_END]])
     naive = 1.0 - 0.9 * t
 
@@ -53,7 +53,7 @@ def test_a_naive_copy_of_the_reference_formula_would_fail():
 
 def test_the_weight_scales_the_loss_in_proportion():
     """It multiplies the squared error before the reduction, so the ratio holds."""
-    cfg = _cfg(cfm_loss_weight_from_t="linear_1_to_0.01")
+    cfg = _cfg(cfm_loss_weight_from_t="linear_0.01_to_1")
     pred = torch.zeros(2, 1, 1, 2)
     target = torch.ones(2, 1, 1, 2)          # squared error 1 everywhere.
     t = torch.tensor([[ACTION_END], [NOISE_END]])
@@ -67,7 +67,7 @@ def test_the_weight_scales_the_loss_in_proportion():
 
 def test_padded_tokens_are_still_zero_after_weighting():
     """The weight multiplies the masked square, so padding stays padded."""
-    cfg = _cfg(cfm_loss_weight_from_t="linear_1_to_0.1")
+    cfg = _cfg(cfm_loss_weight_from_t="linear_0.1_to_1")
     pred = torch.zeros(1, 1, 2, 1)
     target = torch.ones(1, 1, 2, 1)
     pad = torch.tensor([[False, True]])
@@ -87,4 +87,28 @@ def test_padded_tokens_are_still_zero_after_weighting():
 
 def test_an_unknown_schedule_is_rejected():
     with pytest.raises(ValueError, match="cfm_loss_weight_from_t"):
-        _cfg(cfm_loss_weight_from_t="linear_1_to_0.5").validate()
+        _cfg(cfm_loss_weight_from_t="linear_0.5_to_1").validate()
+
+
+def test_the_name_states_the_direction_the_code_uses():
+    """The defect this file now also guards: the old names read as a fall.
+
+    A linear name gives the weight at t=0 first, then the weight at t=1. Under
+    this repo's path the noise sits at t=0 and the action at t=1. So a rising
+    weight is correct, and the name must rise with it.
+    """
+    for mode, low in (("linear_0.1_to_1", 0.1), ("linear_0.01_to_1", 0.01)):
+        cfg = _cfg(cfm_loss_weight_from_t=mode)
+        t = torch.tensor([[NOISE_END], [ACTION_END]])
+        weight = cfm_loss_weight(t, cfg)
+        first, last = float(weight[0]), float(weight[1])
+        assert first == pytest.approx(low), f"{mode}: t=0 gave {first}"
+        assert last == pytest.approx(1.0), f"{mode}: t=1 gave {last}"
+        assert last > first, f"{mode}: the name says it rises, but it fell"
+
+
+def test_the_old_misleading_names_are_rejected():
+    """A config that still carries the old value must fail loudly."""
+    for old in ("linear_1_to_0.1", "linear_1_to_0.01"):
+        with pytest.raises(ValueError, match="cfm_loss_weight_from_t"):
+            _cfg(cfm_loss_weight_from_t=old).validate()

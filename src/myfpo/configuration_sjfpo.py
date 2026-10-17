@@ -8,7 +8,16 @@ from dataclasses import dataclass
 from lerobot.configs import PreTrainedConfig
 from lerobot.optim import AdamWConfig
 
-__all__ = ["SJFPOConfig"]
+__all__ = ["FLOW_STARTS", "SJFPOConfig"]
+
+# The two values a flow start may take. They cover the config fields, the
+# tracker keys, and _EvalPolicy in train_sjfpo. One vocabulary, so a reader does
+# not meet "zero", "stochastic", "noise", and "zero_sampling" for the same two
+# choices.
+#
+# The value "zero_start" means the Euler chain starts at eps=0.
+# The value "noise_start" means the chain starts at a drawn eps.
+FLOW_STARTS = ("zero_start", "noise_start")
 
 
 @PreTrainedConfig.register_subclass("sjfpo")
@@ -19,8 +28,12 @@ class SJFPOConfig(PreTrainedConfig):
     ``n_action_steps`` is the executed prefix. Its default is 4, which is half
     of ``action_horizon``. Set ``n_action_steps`` to ``None``, and
     ``__post_init__`` fills in ``action_horizon``. That is the open-loop
-    no-correction case. ``num_inference_steps`` applies to a zero-sampling
-    start. ``num_euler_steps`` applies to a sampled-noise start.
+    no-correction case.
+
+    Both step counts feed the same Euler loop. They differ only in the start
+    point. ``num_steps_zero_start`` applies when the chain starts at ``eps=0``.
+    ``num_steps_noise_start`` applies when the chain starts at a drawn
+    ``eps``. The names state the start, because the integrator is the same.
     """
 
     report_to: str = "all"
@@ -37,8 +50,8 @@ class SJFPOConfig(PreTrainedConfig):
     batch_size: int = 128
     grad_accum_steps: int = 1
 
-    num_euler_steps: int = 10
-    num_inference_steps: int = 10
+    num_steps_zero_start: int = 10
+    num_steps_noise_start: int = 10
     min_timestep: float = 0.005
     max_timestep: float = 0.995
     timestep_sampling_mode: str = "fpo_beta"
@@ -98,23 +111,25 @@ class SJFPOConfig(PreTrainedConfig):
     ema_warmup_steps: int = 500
 
     eval_max_episodes: int = 50
-    # Which flow start the reported score uses. "zero" starts the Euler chain at
-    # eps=0, so the flow runs from the origin. "stochastic" starts it at a drawn
-    # eps, so the flow runs from the prior that training collects from.
+    # Which flow start the reported score uses. "zero_start" starts the Euler
+    # chain at eps=0, so the flow runs from the origin. "noise_start" starts it
+    # at a drawn eps, so the flow runs from the prior that training collects
+    # from.
     #
-    # Training collects with the stochastic start. The critic bootstraps from the
-    # stochastic start. So "stochastic" is the number that answers "what does the
-    # policy that training produced return". "zero" is the deployment number.
+    # Training collects with the noise start. The critic bootstraps from the
+    # noise start. So "noise_start" is the number that answers "what does the
+    # policy that training produced return". "zero_start" is the deployment
+    # number.
     #
-    # The value "stochastic" is the default. It is the distribution the run
+    # The value "noise_start" is the default. It is the distribution the run
     # optimizes. A reported score from the other distribution measures a policy
     # that training never optimized.
-    eval_sampling: str = "stochastic"
-    # Which distribution the early-stopping rules read. It must name a value the
+    eval_sampling: str = "noise_start"
+    # Which flow start the early-stopping rules read. It must name a value the
     # evaluator produces. The stopper needs the distribution that training
-    # optimizes, so this default is "stochastic" too. A run can report "zero" and
-    # stop on "stochastic", which separates the two questions.
-    stop_eval_sampling: str = "stochastic"
+    # optimizes, so this default is "noise_start" too. A run can report
+    # "zero_start" and stop on "noise_start", which separates the two questions.
+    stop_eval_sampling: str = "noise_start"
     stop_return_frac: float = 0.7
     stop_patience: int = 5
     lr_decay: float = 0.5
@@ -217,9 +232,10 @@ class SJFPOConfig(PreTrainedConfig):
             ("eval_sampling", self.eval_sampling),
             ("stop_eval_sampling", self.stop_eval_sampling),
         ):
-            if value not in ("zero", "stochastic"):
+            if value not in FLOW_STARTS:
                 raise ValueError(
-                    f"{name}={value!r} must be 'zero' or 'stochastic'"
+                    f"{name}={value!r} must be one of "
+                    f"{', '.join(repr(k) for k in FLOW_STARTS)}"
                 )
         if not 0.0 < self.stop_return_frac <= 1.0:
             raise ValueError(
@@ -269,12 +285,14 @@ class SJFPOConfig(PreTrainedConfig):
             )
         if self.cfm_loss_weight_from_t not in {
             "constant",
-            "linear_1_to_0.1",
-            "linear_1_to_0.01",
+            "linear_0.1_to_1",
+            "linear_0.01_to_1",
         }:
             raise ValueError(
-                "cfm_loss_weight_from_t must be 'constant', 'linear_1_to_0.1', "
-                "or 'linear_1_to_0.01'"
+                "cfm_loss_weight_from_t must be 'constant', 'linear_0.1_to_1', "
+                "or 'linear_0.01_to_1'. A linear name states the weight at t=0 "
+                "first, then the weight at t=1. Under this repo's path the "
+                "noise sits at t=0, so a rising weight is full at the action end."
             )
         if self.cfm_clamp <= 0:
             raise ValueError(f"cfm_clamp={self.cfm_clamp} must be > 0")
@@ -358,11 +376,13 @@ class SJFPOConfig(PreTrainedConfig):
             raise ValueError(f"num_envs={self.num_envs} must be >= 1")
         if self.num_mc_samples < 1:
             raise ValueError(f"num_mc_samples={self.num_mc_samples} must be >= 1")
-        if self.num_euler_steps < 1:
-            raise ValueError(f"num_euler_steps={self.num_euler_steps} must be >= 1")
-        if self.num_inference_steps < 1:
+        if self.num_steps_zero_start < 1:
             raise ValueError(
-                f"num_inference_steps={self.num_inference_steps} must be >= 1"
+                f"num_steps_zero_start={self.num_steps_zero_start} must be >= 1"
+            )
+        if self.num_steps_noise_start < 1:
+            raise ValueError(
+                f"num_steps_noise_start={self.num_steps_noise_start} must be >= 1"
             )
 
     def validate_features(self) -> None:

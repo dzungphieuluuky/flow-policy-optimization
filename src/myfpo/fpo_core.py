@@ -121,18 +121,23 @@ def run_monte_carlo_sampling(
     )
 
 
-def clip_transported(x: torch.Tensor, clip: float | None) -> torch.Tensor:
-    """Bound the actor's transported output. FPO++ ``transported_clip_value``.
+def clip_velocity(velocity: torch.Tensor, bound: float | None) -> torch.Tensor:
+    """Bound the actor's raw velocity output. FPO++ ``transported_clip_value``.
 
     The bound applies at every site that produces a raw velocity. Those sites
     are the training loss, the frozen ``cfm_loss_old`` pass, and the Euler
     sampler. All three see the same map, so the ratio stays consistent.
 
-    ``None`` does nothing.
+    The value ``bound`` of ``None`` does nothing.
+
+    The function was named ``clip_transported``, and its argument was named
+    ``clip``. "Transported" is the FPO++ word for the raw velocity before any
+    projection, so the name did not say what was bounded. The argument named
+    ``clip`` the operation, not the limit.
     """
-    if clip is None:
-        return x
-    return x.clamp(-clip, clip)
+    if bound is None:
+        return velocity
+    return velocity.clamp(-bound, bound)
 
 
 def compute_cfm_loss(
@@ -314,12 +319,17 @@ def cfm_loss_weight(t: torch.Tensor, cfg: SJFPOConfig) -> torch.Tensor:
     the reference (``flow_model.py:648-661``). In the reference, ``t=0`` is the
     action and ``t=1`` is the noise.
 
-    This repo runs time in the other direction. So the same two schedules read
-    ``0.1 + 0.9t`` and ``0.01 + 0.99t`` here. The weight is full at the action
-    end and least at the noise end.
+    This repo runs time in the other direction. Under the path
+    ``x_t = (1 - t) * eps + t * a``, the action sits at ``t=1`` and the noise at
+    ``t=0``. So the same two schedules read ``0.1 + 0.9t`` and ``0.01 + 0.99t``
+    here. The weight is 1.0 at the action end and least at the noise end.
 
-    A verbatim copy of the formula gives the noise end the largest weight. That
-    is the opposite of the intent.
+    A verbatim copy of the reference formula gives the noise end the largest
+    weight. That is the opposite of the intent.
+
+    The mode names state the ENDPOINTS in the order t=0 to t=1. So
+    ``linear_0.1_to_1`` rises from 0.1 at the noise end to 1.0 at the action
+    end. An earlier name read ``1_to_0.1``, which stated the opposite direction.
 
     ``t`` has the shape ``[..., 1]``. The weight therefore broadcasts over the
     action dimensions without a change.
@@ -327,7 +337,7 @@ def cfm_loss_weight(t: torch.Tensor, cfg: SJFPOConfig) -> torch.Tensor:
     mode = cfg.cfm_loss_weight_from_t
     if mode == "constant":
         return torch.ones_like(t)
-    if mode == "linear_1_to_0.1":
+    if mode == "linear_0.1_to_1":
         return 0.1 + 0.9 * t
     return 0.01 + 0.99 * t
 
@@ -463,12 +473,16 @@ def sample_action(
     predict_velocity: Callable[[torch.Tensor, torch.Tensor, Any], torch.Tensor],
     shape,
     condition,
-    num_inference_steps: int,
+    num_steps: int,
     eps: torch.Tensor,
     device: torch.device | str | None,
 ):
     """Euler-sample the flow from t=0 (noise) to t=1 (data). The caller draws
     ``eps``.
+
+    The argument ``num_steps`` is the only integrator this module offers. It was
+    named ``num_inference_steps``, which suggested a second integrator next to
+    ``num_euler_steps``. There is one.
 
     ``device`` has no default, on purpose. The function rejects ``None`` below.
     It does not treat ``None`` as a request for the CPU. The sampler runs on the
@@ -483,7 +497,7 @@ def sample_action(
     grid = torch.linspace(
         0.0,
         1.0,
-        num_inference_steps + 1,
+        num_steps + 1,
         device=device,
         dtype=torch.float32,
     )
@@ -494,11 +508,11 @@ def sample_action(
     x = eps
     with torch.inference_mode():
         dts = grid[1:] - grid[:-1]
-        for i in range(num_inference_steps):
+        for i in range(num_steps):
             t_current = grid[i].reshape(1)
             v_hat = predict_velocity(x, t_current, condition)
             # The code uses addcmul, not x + dt*v. Both give the same value, and
-            # addcmul uses one kernel, not two. This loop runs num_euler_steps
+            # addcmul uses one kernel, not two. This loop runs num_steps
             # times per policy call.
             x = torch.addcmul(x, v_hat, dts[i])
     return x

@@ -108,7 +108,7 @@ def main(argv: list[str] | None = None) -> int:
                 # itself. A rank-2 input is read as a [T, obs] window, then
                 # rejected unless T == n_obs_steps.
                 batch = {"observation.state": torch.as_tensor(obs, dtype=torch.float32)}
-                return policy.select_action(batch, zero_sampling=True).cpu().numpy()
+                return policy.select_action(batch, start_from_zero=True).cpu().numpy()
 
         print(f"Running {args.episodes} episode(s)")
         for r in evaluator.evaluate(policy_callable):
