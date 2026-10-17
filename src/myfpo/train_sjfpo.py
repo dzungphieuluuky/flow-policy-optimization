@@ -350,10 +350,13 @@ def measure_pre_clamp_projection(policy: SJFPOPolicy) -> dict[str, float]:
 def measure_value_drift(policy, batch, device) -> tuple[torch.Tensor, torch.Tensor]:
     """Both critic-drift metrics off one critic forward.
 
-    ``boot_value_delta``: relative RMS move of the live critic from the
-    bootstrap value in use. Small means staleness is not what limits the critic.
-    ``value_target_drift``: the same move in value-loss units, a fraction of
-    target RMS. Large against V can still be negligible against the return.
+    ``boot_value_relative_drift``: the live critic against the bootstrap value in
+    use, as ``rms(move) / rms(bootstrap)``. It is a ratio. It was logged as
+    ``boot_value_delta``, and "delta" reads as ``V_new - V_old``, which is a
+    difference and not a ratio. Small means staleness is not what limits the
+    critic.
+    ``value_target_drift``: the same move against the return RMS, so it reads in
+    loss units. Large against V can still be negligible against the return.
     """
     # The buffer stores boot_observations and boot_actions in the storage
     # dtype. The critic weights are fp32. This code runs outside autocast. So
@@ -829,7 +832,7 @@ def train_sjfpo_run(
                 data["train/cfm_above_clamp_frac"] = above_clamp_frac
                 data["train/cfm_both_clamped_frac"] = both_clamped_frac
                 if cfg.log_drift_diagnostics and drift_means:
-                    data["train/boot_value_delta"] = drift_means[0]
+                    data["train/boot_value_relative_drift"] = drift_means[0]
                     data["train/value_target_drift"] = drift_means[1]
                 if rollout_jerk is not None:
                     data["train/rollout_jerk"] = rollout_jerk
