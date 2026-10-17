@@ -162,6 +162,7 @@ def test_metrics_survive_the_wandb_scalar_pack():
         cfm_loss_new=torch.ones(2),
         v_star_f=torch.ones(2, 8, 3),
         cfg=SJFPOConfig(),
+        both_clamped_frac=torch.zeros(()),
     )
     for key, value in out.items():
         assert torch.as_tensor(value).reshape(()).numel() == 1, key

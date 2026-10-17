@@ -41,6 +41,13 @@ from myfpo.tracking import build_tracker, compute_eval_summary_metrics
 # above its max, so the policy stops learning while the critic keeps training.
 ABOVE_CLAMP_ABORT_UPDATES = 5
 
+# Share of ratio elements whose two losses both sit above cfm_clamp. At that
+# share the ratio is exactly 1.0, so the policy gradient is zero. The share
+# reads high when the loss level sits above the clamp, which the reduction and
+# the action horizon both set. The value is half, so an ordinary run that keeps
+# a gradient stays well under it.
+BOTH_CLAMPED_ABORT_FRAC = 0.5
+
 # GAE diagnostic name to logged name. The prefix is deliberately not uniform.
 # The key return_rms is logged as returns_rms.
 _GAE_DIAG_LOG_KEYS = {
@@ -593,6 +600,7 @@ def train_sjfpo_run(
     consecutive_below_best = 0
     lr_decays = 0
     above_clamp_updates = 0
+    both_clamped_updates = 0
     diverged = False
     regressed = False
     best_return: float | None = None
@@ -647,6 +655,7 @@ def train_sjfpo_run(
             epoch_infos: list[dict[str, float]] = []
             grad_norms_pre: list[torch.Tensor] = []
             above_clamp_fracs: list[torch.Tensor] = []
+            both_clamped_fracs: list[torch.Tensor] = []
             n_chunks = batch["raw_advantages"].shape[0]
             microbatches = list(
                 generate_mini_batch_indices(
@@ -696,6 +705,7 @@ def train_sjfpo_run(
                     )
                     grad_norms_pre.append(pre_clip_total.detach())
                     above_clamp_fracs.append(policy.cfm_above_clamp_frac)
+                    both_clamped_fracs.append(policy.cfm_both_clamped_frac)
                     optimizer.step()
                     optimizer.zero_grad(set_to_none=True)
                     policy.step_count += 1
@@ -732,18 +742,22 @@ def train_sjfpo_run(
             scalars = [
                 torch.stack(grad_norms_pre).mean(),
                 torch.stack(above_clamp_fracs).mean(),
+                torch.stack(both_clamped_fracs).mean(),
             ]
             if drift is not None:
                 scalars.extend(drift)
             (
                 grad_norm_mean_pre,
                 above_clamp_frac,
+                both_clamped_frac,
                 *drift_means,
             ) = torch.stack(scalars).tolist()
 
             if tracker.enabled and info is not None:
                 data = {f"train/{k}": v for k, v in info.items()}
                 data["train/grad_norm_preclip"] = grad_norm_mean_pre
+                data["train/cfm_above_clamp_frac"] = above_clamp_frac
+                data["train/cfm_both_clamped_frac"] = both_clamped_frac
                 if cfg.log_drift_diagnostics and drift_means:
                     data["train/boot_value_delta"] = drift_means[0]
                     data["train/value_target_drift"] = drift_means[1]
@@ -771,8 +785,29 @@ def train_sjfpo_run(
                 )
                 tracker.log(data, step=global_step)
 
-            if above_clamp_frac > 0.5:
+            # Named here because the abort message needs it. The tracker can
+            # be off, in which case info is None.
+            l_new_mean = info["l_new_mean"] if info is not None else float("nan")
+            if both_clamped_frac > BOTH_CLAMPED_ABORT_FRAC:
+                # The stricter test. Both losses clamp to the same bound, so the
+                # ratio is exactly 1.0. The policy receives no gradient at all,
+                # while the critic keeps training.
+                both_clamped_updates += 1
+                if both_clamped_updates >= ABOVE_CLAMP_ABORT_UPDATES:
+                    raise SJFPOAborted(
+                        f"{ABOVE_CLAMP_ABORT_UPDATES} consecutive updates with >"
+                        f"{BOTH_CLAMPED_ABORT_FRAC:.0%} of ratio elements whose two "
+                        f"CFM losses both sit above cfm_clamp={cfg.cfm_clamp} "
+                        f"(frac={both_clamped_frac:.2f}, "
+                        f"l_new_mean={l_new_mean:.4f}, "
+                        f"cfm_loss_reduction={cfg.cfm_loss_reduction!r}, "
+                        f"action_horizon={cfg.action_horizon}). The ratio is pinned "
+                        "at 1 and the policy gets no gradient. Raise cfm_clamp, "
+                        "use reduction='mean', or lower action_horizon."
+                    )
+            elif above_clamp_frac > 0.5:
                 above_clamp_updates += 1
+                both_clamped_updates = 0
                 if above_clamp_updates >= ABOVE_CLAMP_ABORT_UPDATES:
                     raise SJFPOAborted(
                         f"{ABOVE_CLAMP_ABORT_UPDATES} consecutive updates with >50% "
@@ -784,6 +819,7 @@ def train_sjfpo_run(
                     )
             else:
                 above_clamp_updates = 0
+                both_clamped_updates = 0
 
             diverged_now = False
             regressed_now = False

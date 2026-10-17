@@ -36,6 +36,7 @@ from myfpo.fpo_core import (
     group_cfm_loss,
     cfm_prediction,
     cfm_target,
+    clamp_saturation,
     compute_aspo_surrogate,
     compute_cfm_loss,
     clip_transported,
@@ -324,11 +325,21 @@ def compute_cfm_metrics(
     cfm_loss_new: torch.Tensor,
     v_star_f: torch.Tensor,
     cfg: SJFPOConfig,
+    both_clamped_frac: torch.Tensor,
 ) -> dict[str, torch.Tensor]:
     """Flow-matching loss diagnostics.
 
     ``cfm_above_clamp_frac``. A clamped sample gives no gradient, so a stuck run
     trains the critic only.
+
+    ``cfm_both_clamped_frac``. The share whose two losses both sit above the
+    clamp. The ratio there is exactly 1.0, so the policy receives no gradient at
+    all. This key is the direct cause. The key ``cfm_above_clamp_frac`` can read
+    high while the ratio still carries a gradient.
+
+    The argument ``both_clamped_frac`` comes from the caller. The caller knows
+    which pair of losses the ratio clamps. The key cannot be recomputed here,
+    because the reduction and the group size both move the level.
     """
     cfm_loss_old_std = cfm_loss_old.std(correction=0)
     cfm_loss_new_std = cfm_loss_new.std(correction=0)
@@ -340,6 +351,7 @@ def compute_cfm_metrics(
         "cfm_loss_old_std": cfm_loss_old_std,
         "cfm_loss_new_std": cfm_loss_new_std,
         "cfm_above_clamp_frac": (cfm_loss_new > cfg.cfm_clamp).float().mean(),
+        "cfm_both_clamped_frac": both_clamped_frac,
         "l_old_new_corr": ((cfm_loss_old - cfm_loss_old.mean()) * (cfm_loss_new - cfm_loss_new.mean())).mean()
         / corr_denom,
     }
@@ -409,6 +421,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         self._rollout_h2d_event: torch.cuda.Event | None = None
 
         self.cfm_above_clamp_frac = torch.zeros(())
+        self.cfm_both_clamped_frac = torch.zeros(())
 
         self._frame_buffer: deque[torch.Tensor] = deque(maxlen=config.n_obs_steps)
         self._action_buffer: deque[torch.Tensor] = deque()
@@ -1273,6 +1286,12 @@ class SJFPOPolicy(PreTrainedPolicy):
                 loss_old, loss_new = cfm_loss_old_token, cfm_loss_new_token
             loss_old = group_cfm_loss(loss_old, cfg.cfm_average_group_size)
             loss_new = group_cfm_loss(loss_new, cfg.cfm_average_group_size)
+            # Measured after grouping, because these are the two tensors the
+            # surviving ratio clamps. Measuring the token pair would read the
+            # ungrouped level when cfm_average_group_size averages the draws.
+            self.cfm_both_clamped_frac = clamp_saturation(
+                loss_old, loss_new, cfg
+            ).detach()
             delta = loss_old - loss_new
             adv_ratio = adv.reshape(-1, *([1] * (delta.dim() - 1)))
             ratio = (
@@ -1401,6 +1420,7 @@ class SJFPOPolicy(PreTrainedPolicy):
                 cfm_loss_new=cfm_loss_new,
                 v_star_f=v_star_f,
                 cfg=cfg,
+                both_clamped_frac=self.cfm_both_clamped_frac,
             ),
         }
         if cond_stats:

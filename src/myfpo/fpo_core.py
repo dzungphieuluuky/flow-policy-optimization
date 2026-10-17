@@ -162,6 +162,14 @@ def compute_cfm_loss(
     ``sum`` does not divide. Equation 8 takes the squared norm over the whole
     chunk. So the loss of a short chunk, and the trust region it carries, both
     scale with the chunk length.
+
+    The reduction sets the level of the returned loss. ``mean`` stays flat as
+    the chunk grows. ``sqrt`` grows as the square root of the element count.
+    ``sum`` grows as the element count. ``cfm_clamp`` is compared against that
+    level. So one clamp value means different things under the three
+    reductions, and the meaning also moves with ``action_horizon``. Under
+    ``sum`` at a horizon above 4, the level exceeds the default clamp, and
+    :func:`clamp_saturation` then reports a saturated share.
     """
     if v_hat.shape != v_star.shape:
         raise ValueError(
@@ -386,6 +394,36 @@ def compute_aspo_surrogate(
     if cfg.trust_region_mode == "spo":
         return spo
     return torch.where(advantage > 0, ppo, spo)
+
+
+def clamp_saturation(
+    cfm_loss_old: torch.Tensor,
+    cfm_loss_new: torch.Tensor,
+    cfg: SJFPOConfig,
+) -> torch.Tensor:
+    """The share of elements whose two losses both sit above ``cfm_clamp``.
+
+    ``compute_policy_ratio`` clamps both losses at ``cfm_clamp``. When both
+    exceed it, both clamp to the same bound. The delta becomes zero. The ratio
+    becomes exactly 1.0. The surrogate returns the advantage, so the policy
+    receives no gradient. The critic keeps training.
+
+    This function reports that share. It is the direct cause, not the level.
+    A run can sit above ``cfm_clamp`` and still keep a gradient, when the old
+    loss is below it. So ``cfm_above_clamp_frac`` alone does not show the
+    failure.
+
+    The input shapes must match ``compute_policy_ratio``'s, so that a caller
+    measures the pair that the ratio clamps.
+    """
+    if cfm_loss_old.shape != cfm_loss_new.shape:
+        raise ValueError(
+            f"cfm_loss_old shape {tuple(cfm_loss_old.shape)} != "
+            f"{tuple(cfm_loss_new.shape)}"
+        )
+    bound = cfg.cfm_clamp
+    both = (cfm_loss_old > bound) & (cfm_loss_new > bound)
+    return both.to(torch.float32).mean()
 
 
 def compute_policy_ratio(
