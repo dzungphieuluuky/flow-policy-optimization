@@ -167,8 +167,21 @@ class RolloutBuffer:
             pin_memory=self.pin_memory and nbytes >= self._PIN_MIN_BYTES,
         )
 
-    def capacity_key(self) -> tuple[int, ...]:
-        """Buffer layout signature, device excluded."""
+    def shape_key(self) -> tuple[int, ...]:
+        """The buffer layout signature: the six shape fields, and nothing else.
+
+        A caller compares this against the shape it needs. Equal keys mean the
+        existing storage fits the new request.
+
+        The function was named ``capacity_key`` and its last element was
+        ``pin_memory``. That is a device property, not a capacity. Both call
+        sites in ``generate_rollout`` sliced it off with ``[:6]``, so the
+        function returned a field every caller had to remove.
+
+        ``pin_memory`` is fixed when the buffer is built, from the device type.
+        The device does not change inside a run. So it cannot invalidate a
+        reuse, and it does not belong in the key.
+        """
         return (
             self.max_chunks,
             self.max_steps,
@@ -176,7 +189,6 @@ class RolloutBuffer:
             self.obs_dim,
             self.action_horizon,
             self.action_dim,
-            self.pin_memory,
         )
 
     def reset(self) -> None:

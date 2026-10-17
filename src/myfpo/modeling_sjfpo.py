@@ -923,9 +923,7 @@ class SJFPOPolicy(PreTrainedPolicy):
 
         if (
             self._rollout_buffer is None
-            # [:6] drops pin_memory, which is a device property. The full tuple
-            # would never match.
-            or self._rollout_buffer.capacity_key()[:6] != buffer_key
+            or self._rollout_buffer.shape_key() != buffer_key
         ):
             self._rollout_buffer = make_buffer(pin_memory=device.type == "cuda")
         buffer = self._rollout_buffer
@@ -956,7 +954,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         if device.type == "cuda":
             if (
                 self._device_rollout_buffer is None
-                or self._device_rollout_buffer.capacity_key()[:6] != buffer.capacity_key()[:6]
+                or self._device_rollout_buffer.shape_key() != buffer.shape_key()
             ):
                 self._device_rollout_buffer = make_buffer(device=device)
             buffer.copy_to(self._device_rollout_buffer, non_blocking=True)

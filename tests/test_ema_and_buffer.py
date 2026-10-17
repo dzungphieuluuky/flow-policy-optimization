@@ -23,31 +23,60 @@ def _policy(**kw) -> SJFPOPolicy:
 # --- #1 buffer reuse -------------------------------------------------------.
 
 
-def test_capacity_key_shape_is_what_the_reuse_check_compares():
+def test_shape_key_holds_the_six_shape_fields_only():
+    """pin_memory is a device property. It cannot invalidate a reuse."""
     buf = RolloutBuffer(
         max_chunks=8, max_steps=8, obs_steps=2, obs_dim=3, action_horizon=4, action_dim=2
     )
-    assert len(buf.capacity_key()) == 7  # includes pin_memory.
-    assert len(buf.capacity_key()[:6]) == 6  # the shape generate_rollout builds.
+    assert len(buf.shape_key()) == 6, "the six fields generate_rollout builds"
+    assert buf.shape_key() == (8, 8, 2, 3, 4, 2)
+    # Two buffers that differ only in pinning share one key.
+    pinned = RolloutBuffer(
+        max_chunks=8,
+        max_steps=8,
+        obs_steps=2,
+        obs_dim=3,
+        action_horizon=4,
+        action_dim=2,
+        pin_memory=True,
+    )
+    assert pinned.shape_key() == buf.shape_key()
+    assert pinned.pin_memory is True and buf.pin_memory is False
 
 
 def test_reuse_condition_is_false_for_an_identical_key():
-    """The exact expression generate_rollout uses, so a future 8th field is caught."""
+    """The exact expression generate_rollout uses, so a future field is caught."""
     buf = RolloutBuffer(
         max_chunks=8, max_steps=8, obs_steps=2, obs_dim=3, action_horizon=4, action_dim=2
     )
     buffer_key = (8, 8, 2, 3, 4, 2)
     # equal -> the reuse condition is false -> the existing buffer is kept.
-    assert buf.capacity_key()[:6] == buffer_key
-    # unequal -> the reuse condition is true -> reallocate.
-    assert buf.capacity_key() != buffer_key
+    assert buf.shape_key() == buffer_key
 
 
 def test_reuse_condition_is_true_when_capacity_grows():
     buf = RolloutBuffer(
         max_chunks=4, max_steps=4, obs_steps=2, obs_dim=3, action_horizon=4, action_dim=2
     )
-    assert buf.capacity_key()[:6] != (8, 8, 2, 3, 4, 2)
+    assert buf.shape_key() != (8, 8, 2, 3, 4, 2)
+
+
+def test_no_caller_has_to_slice_the_key():
+    """No call site may drop a trailing field again.
+
+    The old key carried pin_memory as a seventh element, so both call sites
+    sliced [:6]. A slice here means the key holds something a caller does not
+    want.
+    """
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1] / "src" / "myfpo"
+    for rel in ("modeling_sjfpo.py", "collector.py"):
+        src = (root / rel).read_text()
+        assert not re.search(r"shape_key\(\)\s*\[", src), f"{rel} slices shape_key"
+        assert not re.search(r"def\s+capacity_key\b", src), f"{rel} still defines capacity_key"
+        assert ".capacity_key(" not in src, f"{rel} still calls capacity_key"
 
 
 # --- #2 EMA warmup ---------------------------------------------------------.
