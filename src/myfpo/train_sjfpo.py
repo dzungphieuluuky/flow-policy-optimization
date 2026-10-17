@@ -281,35 +281,9 @@ def compute_rollout_diagnostics(batch: dict[str, torch.Tensor]) -> dict[str, flo
         "action_abs_mean_executed",
         "action_abs_max_executed",
     ]
-    clip_counts = batch.get("chunk_clip_counts")
-    if clip_counts is not None:
-        scalars.append(clip_counts.float().mean())
-        keys.append("chunk_clip_counts")
     return dict(zip(keys, torch.stack(scalars).tolist()))
 
 
-@torch.no_grad()
-def compute_action_clip_rate(batch: dict[str, torch.Tensor]) -> dict[str, float]:
-    """Return how much of the proposal the action bounds had to truncate.
-
-    This function replaces the ``action_abs_max > 1.05`` guard. That guard could
-    never fire. ``scale_and_clip_chunk`` clamps into [-1, 1] before the value
-    reaches the buffer. So the observable magnitude is capped at 1.0 whatever
-    the policy proposed. The clip count is the only place saturation shows.
-
-    The key ``action_clip_frac`` covers all proposed coordinates. So it compares
-    across envs and across action dims.
-    """
-    clip_counts = batch.get("chunk_clip_counts")
-    if clip_counts is None:
-        return {}
-    total = float(clip_counts.sum())
-    rows = max(1, int(batch["action_is_pad"].numel()))
-    dims = int(batch["action"].shape[-1])
-    return {
-        "action_clip_count": total,
-        "action_clip_frac": total / (rows * dims),
-    }
 
 
 @torch.no_grad()
@@ -673,13 +647,12 @@ def train_sjfpo_run(
             jerk_pad = batch["action_is_pad"].detach().cpu().numpy()
             rollout_jerk = compute_mean_chunk_jerk(jerk_action, jerk_pad)
             rollout_seam_jerk = compute_seam_jerk(jerk_action, jerk_pad)
-            action_clip_rates = compute_action_clip_rate(batch)
             if action_abs_max > 1.0 + 1e-3:
                 # Only reachable if the scaling affine itself is wrong.
                 raise ValueError(
                     f"Post-clip action magnitude exceeded 1: max_abs="
                     f"{action_abs_max:.3f}. The stored chunk should already be "
-                    "scaled to [-1, 1]; check scale_and_clip_chunk and the "
+                    "scaled to [-1, 1]; check scale_action_chunk and the "
                     "action bounds."
                 )
 
@@ -793,7 +766,6 @@ def train_sjfpo_run(
                         info=info,
                         batch=batch,
                         rollout=rollout,
-                        action_clip_rates=action_clip_rates,
                         grad_norm_mean_pre=grad_norm_mean_pre,
                         above_clamp_frac=above_clamp_frac,
                         both_clamped_frac=both_clamped_frac,

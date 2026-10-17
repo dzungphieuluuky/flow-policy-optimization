@@ -163,7 +163,6 @@ def test_single_step_chunk():
         step_frames=next_window[-1:],
         terminated=True,
         truncated=False,
-        clip_count=0,
         env_id=0,
     )
     assert buf.n_steps == 1

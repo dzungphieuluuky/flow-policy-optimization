@@ -172,7 +172,7 @@ def projection_measurement(
     chunk. So it enters the objective.
 
     The tracker does not see it. ``chunk_clip_counts`` comes from
-    ``scale_and_clip_chunk``, which runs in the collector. The value it receives
+    ``scale_action_chunk``, which runs in the collector. The value it receives
     has already been clamped to [-1, 1] by the policy and then mapped onto the
     env bounds by the postprocessor, whose ``addcmul`` is exact. So that count is
     structurally zero, and ``train/action_clip_frac`` never leaves zero.

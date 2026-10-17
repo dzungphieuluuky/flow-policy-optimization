@@ -43,7 +43,6 @@ def build_train_metrics(
     info: dict,
     batch: dict,
     rollout: dict,
-    action_clip_rates: dict,
     grad_norm_mean_pre: float,
     above_clamp_frac: float,
     both_clamped_frac: float,
@@ -75,15 +74,8 @@ def build_train_metrics(
         # Non-zero here with a zero rollout_jerk is the
         # stale-input / missing-RTC signature.
         data["train/rollout_seam_jerk"] = rollout_seam_jerk
-    if "chunk_clip_counts" in rollout:
-        # The batch key is a vector, one count per chunk. The log key
-        # holds its mean, so the key says so. It cannot be
-        # train/action_clip_count: that key is the total, logged by
-        # compute_action_clip_rate.
-        data["train/chunk_clip_count_mean"] = rollout["chunk_clip_counts"]
     for key in _ROLLOUT_ABS_KEYS:
         data[f"train/{key}"] = rollout[key]
-    data.update({f"train/{k}": v for k, v in action_clip_rates.items()})
     gae_diag = batch.get("gae_diagnostics")
     if gae_diag:
         data.update(

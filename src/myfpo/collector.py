@@ -67,7 +67,6 @@ class InFlightChunk(NamedTuple):
     ==============  ==========  ================================================
     actions_env     ``[H, D]``  Chunk in env space. The env receives this.
     actions_scaled  ``[H, D]``  Same chunk in [-1, 1]. The buffer stores this.
-    clip_count      ``int``     Coordinates the bounds had to clamp.
     start_state     ``[T, O]``  Window the policy saw when it planned the chunk.
     step_limit      ``int``     How many steps this chunk may still execute.
     ==============  ==========  ================================================
@@ -75,7 +74,6 @@ class InFlightChunk(NamedTuple):
 
     actions_env: torch.Tensor
     actions_scaled: torch.Tensor
-    clip_count: int
     start_state: torch.Tensor
     step_limit: int
 
@@ -144,7 +142,6 @@ class RolloutBuffer:
         self.chunk_lengths = self.zeros_for((chunk_capacity,), _INDEX_DTYPE)
         self.chunk_terminated = self.zeros_for((chunk_capacity,), torch.bool)
         self.chunk_truncated = self.zeros_for((chunk_capacity,), torch.bool)
-        self.chunk_clip_counts = self.zeros_for((chunk_capacity,), _INDEX_DTYPE)
         self.chunk_env_id = self.zeros_for((chunk_capacity,), torch.int16)
         self.n_chunks = 0
         self.n_steps = 0
@@ -206,7 +203,6 @@ class RolloutBuffer:
         step_frames: torch.Tensor,
         terminated: bool,
         truncated: bool,
-        clip_count: int,
         env_id: int = 0,
     ) -> int:
         """Append one executed chunk.
@@ -255,7 +251,6 @@ class RolloutBuffer:
         self.chunk_terminated[chunk_index] = terminated
         self.chunk_truncated[chunk_index] = truncated
         # Write it unconditionally. reset() clears the cursors, not the storage.
-        self.chunk_clip_counts[chunk_index] = int(clip_count)
         self.chunk_env_id[chunk_index] = int(env_id)
         self.n_chunks += 1
         self.n_steps += n_exec
@@ -281,7 +276,6 @@ class RolloutBuffer:
             "chunk_lengths",
             "chunk_terminated",
             "chunk_truncated",
-            "chunk_clip_counts",
             "chunk_env_id",
         )
         # One multi-tensor copy rather than 14 launches. Only the active prefix
@@ -332,7 +326,6 @@ class RolloutBuffer:
             "chunk_lengths": self.chunk_lengths[:n_chunks],
             "chunk_terminated": self.chunk_terminated[:n_chunks],
             "chunk_truncated": self.chunk_truncated[:n_chunks],
-            "chunk_clip_counts": self.chunk_clip_counts[:n_chunks],
             "chunk_env_id": self.chunk_env_id[:n_chunks],
         }
 
@@ -373,19 +366,28 @@ def resolve_action_bounds(
     return lo, rng
 
 
-def scale_and_clip_chunk(
+def scale_action_chunk(
     proposed: torch.Tensor, low: torch.Tensor, range_: torch.Tensor
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Clamp a chunk to env bounds, then rescale to ``[-1, 1]``.
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Rescale an in-bounds chunk to ``[-1, 1]``.
+
+    The function does not clamp. The proposal arrives already inside the env
+    bounds because the postprocessor squashes it with ``tanh`` before it gets
+    here. So the old clamp and its counter were unreachable: they could only
+    fire if something upstream regressed.
+
+    The old counter, ``chunk_clip_counts``, was the subject of a standing claim
+    that it was structurally zero. It was zero at the default settings and
+    non-zero whenever ``action_perturb_std`` was positive, because the
+    perturbation was added after the clamp with unbounded noise. The squash
+    moved in front of the perturbation, so the guarantee is real now and the
+    counter has nothing left to report.
 
     ``proposed`` is ``[H, action_dim]`` or ``[B, H, action_dim]``, so the vec
     collector scales once per wavefront instead of once per env.
     """
-    high = low + range_
-    clip_mask = (proposed < low) | (proposed > high)
-    executed = torch.clamp(proposed, min=low, max=high)
-    scaled = 2.0 * (executed - low) / range_ - 1.0
-    return executed, scaled, clip_mask.sum(dim=(-2, -1))
+    scaled = 2.0 * (proposed - low) / range_ - 1.0
+    return proposed, scaled
 
 
 def resolve_chunk_args(
@@ -570,8 +572,8 @@ def collect_chunks_vec(
                 # Advanced indexing already returns a copy, so no clone.
                 states = windows[envs_needing_a_chunk]
                 proposed = as_float_tensor(policy(states))
-                # One clamp-and-rescale for the whole wavefront, not one per env.
-                executed_all, scaled_all, clip_counts_all = scale_and_clip_chunk(
+                # One rescale for the whole wavefront, not one per env.
+                executed_all, scaled_all = scale_action_chunk(
                     proposed, low, range_
                 )
                 wavefront = torch.as_tensor(envs_needing_a_chunk)
@@ -581,7 +583,6 @@ def collect_chunks_vec(
                     in_flight[i] = InFlightChunk(
                         actions_env=executed_all[k],
                         actions_scaled=scaled_all[k],
-                        clip_count=int(clip_counts_all[k]),
                         start_state=states[k],
                         step_limit=min(n_action_steps,
                                        targets[i] - executed_total[i]),
@@ -633,7 +634,6 @@ def collect_chunks_vec(
                 held = in_flight[i]
                 if done_np[i] or n_exec >= held.step_limit:
                     scaled = held.actions_scaled
-                    clip_count = held.clip_count
                     start_state = held.start_state
                     # Restore chronological order once per closing chunk. Frames
                     # went in at slot 0, 1, ... n_exec, so a left roll by the cursor
@@ -653,7 +653,6 @@ def collect_chunks_vec(
                         step_frames=step_frames[i, :n_exec],
                         terminated=bool(term_np[i]),
                         truncated=bool(trunc_np[i]),
-                        clip_count=clip_count,
                         env_id=i,
                     )
                     prev_close_reason[i] = (

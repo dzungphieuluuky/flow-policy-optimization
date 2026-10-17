@@ -143,3 +143,71 @@ def test_the_policy_no_longer_clamps_the_action():
     body = src.split("def predict_action_chunk", 1)[1].split("\n    def ", 1)[0]
     assert ".clamp(" not in body, "predict_action_chunk still clamps"
     assert "torch.tanh" not in body, "the squash belongs in the postprocessor"
+def test_the_collector_no_longer_clamps():
+    """scale_action_chunk rescales. It does not clamp, and does not count.
+
+    The clamp and the clip count were removed because the squash upstream makes
+    them unreachable. This test fails if either comes back.
+    """
+    from myfpo.collector import resolve_action_bounds, scale_action_chunk
+
+    lo, rng = resolve_action_bounds([-2.0, -1.0, -0.3], [2.0, 1.0, 0.3])
+    out = scale_action_chunk(torch.tensor([[9.0, -9.0, 5.0]]), lo, rng)
+    assert len(out) == 2, f"expected two returns, got {len(out)}"
+    executed, scaled = out
+    # A proposal outside the bounds passes through untouched now.
+    assert float(executed.abs().max()) == pytest.approx(9.0)
+    assert float(scaled.abs().max()) > 1.0, "the value was clamped somewhere"
+
+
+def test_the_stored_action_is_bounded_because_of_the_squash():
+    """The whole chain: actor output to the value the env receives.
+
+    This is the guarantee the removed clip count used to be argued about. It now
+    holds because tanh maps into the env range, not because a clamp enforces it.
+    """
+    policy = _policy(action_perturb_std=5.0)
+    policy.train()
+    states = {"observation.state": torch.randn(64, 16, 11) * 3.0}
+    for _ in range(8):
+        out = policy.predict_action_chunk(states, start_from_zero=False)
+        assert float(out.min()) >= -2.0 - 1e-6, float(out.min())
+        assert float(out.max()) <= 2.0 + 1e-6, float(out.max())
+
+
+def test_no_clamp_survives_on_the_collector_path():
+    """Checked on the syntax tree, not on the text.
+
+    The function's own docstring explains that the clamp was removed, so a search
+    for the word finds prose. This walks the parsed body and fails on a call.
+    """
+    import ast
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    src = (root / "src" / "myfpo" / "collector.py").read_text()
+    tree = ast.parse(src)
+
+    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef)
+              and n.name == "scale_action_chunk")
+    calls = [
+        ast.unparse(n.func)
+        for n in ast.walk(fn)
+        if isinstance(n, ast.Call)
+        and "clamp" in ast.unparse(n.func).lower()
+    ]
+    assert not calls, f"the collector clamps again: {calls}"
+
+    # The clip counter must be gone from the code, though the docstring still
+    # names it while explaining the removal.
+    names = {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
+    assert "chunk_clip_counts" not in names, "the clip counter is back"
+
+    buffer_cls = next(n for n in tree.body
+                      if isinstance(n, ast.ClassDef) and n.name == "RolloutBuffer")
+    assigned = {
+        t.attr for node in ast.walk(buffer_cls)
+        if isinstance(node, ast.Assign)
+        for t in node.targets if isinstance(t, ast.Attribute)
+    }
+    assert "chunk_clip_counts" not in assigned, "the buffer holds the counter again"

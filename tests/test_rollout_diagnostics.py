@@ -12,18 +12,15 @@ from myfpo.train_sjfpo import compute_rollout_diagnostics
 N, H, D = 8, 4, 3
 
 
-def make_batch(with_clip_counts=True):
+def make_batch():
     """One rollout's action/mask, every chunk executing a different prefix."""
     g = torch.Generator().manual_seed(0)
     batch = {
         "action": torch.randn(N, H, D, generator=g),
         "action_is_pad": torch.zeros(N, H, dtype=torch.bool),
-        "chunk_clip_counts": torch.randint(0, 5, (N,), generator=g),
     }
     for i in range(N):
         batch["action_is_pad"][i, i % H + 1 :] = True
-    if not with_clip_counts:
-        del batch["chunk_clip_counts"]
     return batch
 
 
@@ -35,9 +32,6 @@ def test_matches_the_unbatched_reductions():
     assert out["executed_action_steps"] == int((~batch["action_is_pad"]).sum())
     assert out["action_abs_max"] == float(action.abs().max())
     assert out["action_abs_mean"] == float(action.abs().mean())
-    assert out["chunk_clip_counts"] == float(
-        batch["chunk_clip_counts"].float().mean()
-    )
 
 
 def test_executed_action_steps_counts_executed_steps():
@@ -51,18 +45,6 @@ def test_executed_action_steps_counts_executed_steps():
     assert out["executed_action_steps"] == sum(
         int((~pad).sum()) for pad in batch["action_is_pad"]
     )
-
-
-def test_clip_counts_is_optional():
-    """generate_rollout always emits it, but the helper must not require it."""
-    out = compute_rollout_diagnostics(make_batch(with_clip_counts=False))
-    assert set(out) == {
-        "executed_action_steps",
-        "action_abs_max",
-        "action_abs_mean",
-        "action_abs_mean_executed",
-        "action_abs_max_executed",
-    }
 
 
 def test_executed_only_keys_use_the_executed_rows():

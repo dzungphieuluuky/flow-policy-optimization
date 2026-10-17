@@ -24,7 +24,6 @@ def test_training_logic():
         "mc_eps": torch.randn(1, cfg.num_mc_samples, cfg.action_horizon, 3),
         "behavior_cfm_loss": torch.ones(1, cfg.num_mc_samples),
         "behavior_cfm_loss_token": torch.ones(1, cfg.num_mc_samples, cfg.action_horizon),
-        "chunk_clip_counts": torch.zeros(1, dtype=torch.long),
         "normalizer_observations": torch.zeros(10, 5),
     }
     loss, info = policy(batch, compute_info=True)

@@ -28,7 +28,7 @@ from myfpo.collector import (
     RolloutBuffer,
     collect_chunks_vec,
     resolve_action_bounds,
-    scale_and_clip_chunk,
+    scale_action_chunk,
 )
 from lerobot.utils.constants import ACTION, OBS_STATE
 
@@ -212,7 +212,7 @@ def run_rollout(
                 start_from_zero=False,
             )
             low_t, range_t = resolve_action_bounds(action_low, action_high)
-            boot_actions[needs_proposal] = scale_and_clip_chunk(
+            boot_actions[needs_proposal] = scale_action_chunk(
                 proposed, low_t.to(proposed.device), range_t.to(proposed.device)
             )[1]
 
@@ -311,7 +311,6 @@ def run_rollout(
     t = sample_mc_timesteps(cfg, n_chunks, device)
     eps = sample_eps(cfg, n_chunks, action_dim, device)
 
-    chunk_clip_counts = active["chunk_clip_counts"][:n_chunks]
 
     behavior_cfm_loss, behavior_cfm_loss_token = policy.compute_behavior_cfm_losses(
         normalised_states, actions, t, eps, action_is_pad
@@ -333,7 +332,6 @@ def run_rollout(
         "boot_values_start": q_bootstrap.unsqueeze(1),
         "mc_t": t,
         "mc_eps": eps,
-        "chunk_clip_counts": chunk_clip_counts,
         "gae_diagnostics": gae_diagnostics,
         "behavior_cfm_loss": behavior_cfm_loss,
         "behavior_cfm_loss_token": behavior_cfm_loss_token,

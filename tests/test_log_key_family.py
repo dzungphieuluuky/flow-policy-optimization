@@ -94,15 +94,6 @@ def test_the_random_baseline_key_names_the_policy():
     assert "eval/random_baseline" not in out
 
 
-def test_the_chunk_clip_key_says_it_is_a_mean():
-    """The batch key is a vector. The log key holds its mean."""
-    src = _all_source()
-    assert "train/chunk_clip_count_mean" in src
-    assert "train/action_clip_count\"" not in src, (
-        "that key is the total, logged by compute_action_clip_rate"
-    )
-    out = _summary()
-    assert "train/action_clip_count" not in out
 
 
 def test_no_two_keys_carry_the_same_number():

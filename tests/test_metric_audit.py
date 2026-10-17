@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from lerobot.configs.types import FeatureType, PolicyFeature
 
-from myfpo.collector import resolve_action_bounds, scale_and_clip_chunk
+from myfpo.collector import resolve_action_bounds
 from myfpo.configuration_sjfpo import SJFPOConfig
 from myfpo.evaluator import (
     compute_action_jerk,
@@ -37,36 +37,6 @@ def _cfg(**kw):
 
 
 # --- A.
-def test_stored_actions_never_exceed_unit_abs_so_a_magnitude_guard_is_useless():
-    """Why the >1.05 guard was dead: clipping happens before storage."""
-    lo, rng = resolve_action_bounds([-2.0, -1.0, -0.3], [2.0, 1.0, 0.3])
-    _, scaled, n_clip = scale_and_clip_chunk(torch.tensor([[9.0, -9.0, 5.0]]), lo, rng)
-    assert int(n_clip) == 3, "the proposal WAS out of bounds"
-    assert scaled.abs().max().item() == pytest.approx(1.0)
-    _, scaled2, _ = scale_and_clip_chunk(torch.tensor([[1e9, -1e9, 1e9]]), lo, rng)
-    assert scaled2.abs().max().item() == pytest.approx(1.0)
-
-
-def test_action_clip_rate_reports_real_saturation():
-    from myfpo.train_sjfpo import compute_action_clip_rate
-
-    batch = {
-        "action": torch.zeros(4, 8, 3),
-        "action_is_pad": torch.zeros(4, 8, dtype=torch.bool),
-        "chunk_clip_counts": torch.tensor([0, 12, 6, 0]),
-    }
-    out = compute_action_clip_rate(batch)
-    assert out["action_clip_count"] == pytest.approx(18.0)
-    # 4 chunks * 8 steps * 3 dims = 96 proposed coordinates.
-    assert out["action_clip_frac"] == pytest.approx(18 / 96)
-
-
-def test_action_clip_rate_is_absent_when_no_clip_counts_were_collected():
-    from myfpo.train_sjfpo import compute_action_clip_rate
-
-    assert compute_action_clip_rate(
-        {"action": torch.zeros(1, 2, 2), "action_is_pad": torch.zeros(1, 2, dtype=torch.bool)}
-    ) == {}
 
 
 # --- B.
