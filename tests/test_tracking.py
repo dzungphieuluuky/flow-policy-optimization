@@ -1,4 +1,5 @@
 import dataclasses
+from pathlib import Path
 
 import pytest
 from lerobot.configs.policies import PolicyFeature
@@ -124,3 +125,55 @@ def test_feature_dicts_do_not_change_the_name():
     )
 
 
+
+
+def test_two_out_dirs_do_not_share_one_tensorboard_directory(tmp_path):
+    """The defect: out_dir was accepted and ignored.
+
+    The run name carries no out_dir, so with the log directory pinned to the
+    working directory two runs with the same config wrote to one place and their
+    series interleaved. The path is now under out_dir.
+    """
+    dirs = []
+    for name in ("run_a", "run_b"):
+        out = tmp_path / name
+        out.mkdir()
+        t = build_tracker(
+            _cfg(report_to="tensorboard"),
+            out_dir=str(out),
+            method="sjfpo",
+            env_name="Hopper-v5",
+            seed=1,
+            total_steps=100,
+        )
+        t.log({"x": 1.0}, 0)
+        backend = t.backends[0]
+        dirs.append(Path(backend.writer.log_dir))
+        t.finish(0)
+
+    assert dirs[0] != dirs[1], "two out_dirs resolved to one log directory"
+    for name, d in zip(("run_a", "run_b"), dirs):
+        assert d.parent.name == "tensorboard", d
+        assert d.parent.parent == tmp_path / name, f"{d} is not under its out_dir"
+
+
+def test_the_log_directory_is_not_in_the_working_directory(tmp_path, monkeypatch):
+    """A tracker must not write into whatever directory pytest was started in."""
+    work = tmp_path / "work"
+    work.mkdir()
+    monkeypatch.chdir(work)
+    out = tmp_path / "elsewhere"
+    out.mkdir()
+    t = build_tracker(
+        _cfg(report_to="tensorboard"),
+        out_dir=str(out),
+        method="sjfpo",
+        env_name="Hopper-v5",
+        seed=1,
+        total_steps=100,
+    )
+    t.log({"x": 1.0}, 0)
+    assert not (work / "tensorboard").exists(), (
+        "the tracker wrote into the working directory instead of out_dir"
+    )
+    t.finish(0)

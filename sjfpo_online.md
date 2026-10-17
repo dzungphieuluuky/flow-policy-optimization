@@ -292,8 +292,12 @@ FORGET_ARMS["critics"] = ["--sjfpo.num_critics", "3"]
 
 TB_SNAPSHOT = {}
 
-def tb_dirs():
-    return {d for d in glob.glob("tensorboard/*") if glob.glob(os.path.join(d, "*"))}
+def tb_dirs(root="."):
+    return {
+        d for d in glob.glob(os.path.join(root, "**", "tensorboard", "*"),
+                             recursive=True)
+        if glob.glob(os.path.join(d, "*"))
+    }
 
 def run_forget_arm(arm, seed):
     tag = f"forget_{arm}_s{seed}"
@@ -521,8 +525,12 @@ ARCH_ARMS = {
 
 ARCH_TB = {}
 
-def arch_dirs():
-    return {d for d in glob.glob("tensorboard/*") if glob.glob(os.path.join(d, "*"))}
+def arch_dirs(root="."):
+    return {
+        d for d in glob.glob(os.path.join(root, "**", "tensorboard", "*"),
+                             recursive=True)
+        if glob.glob(os.path.join(d, "*"))
+    }
 
 def run_arch_arm(arm, seed):
     arch, flag, value = ARCH_ARMS[arm]
