@@ -182,7 +182,7 @@ def test_divergence_fires_once_the_interval_clears():
     assert streak == 3 and flag
 
 
-def test_divergence_stays_off_without_a_positive_baseline():
+def test_divergence_stays_off_without_a_positive_random_return():
     assert check_divergence(1.0, 0.0, 4) == (0, False)
 
 
@@ -247,6 +247,34 @@ def test_the_abort_message_quotes_the_same_floor_the_check_uses():
     ).read_text()
     assert "0.10*R_rand" not in src, "the abort message still hard-codes the floor"
     assert "DIVERGENCE_FLOOR_FRAC:g}*R_rand" in src, "the message reads the constant"
+
+
+def test_the_divergence_reference_names_the_random_policy():
+    """The parameter was ``baseline``. ``best_return`` is the other reference.
+
+    ``check_regression`` compares against the best return so far. So a run has
+    two references, and both were reaching for the word "baseline".
+    """
+    import inspect
+
+    params = list(inspect.signature(check_divergence).parameters)
+    assert params[:3] == ["mean_return", "random_return", "consecutive"], params
+
+
+def test_the_regression_event_has_one_name():
+    """One event, one word.
+
+    The check was called "regression", the flag "plateaued", and the message
+    "plateau". "Plateau" claims improvement stopped. The code claims a drop
+    below ``return_frac`` of the peak. Those are different claims.
+    """
+    src = (
+        Path(__file__).resolve().parents[1] / "src" / "myfpo" / "train_sjfpo.py"
+    ).read_text()
+    for stale in ("plateaued", "regress_msg", "consecutive_below"):
+        assert stale not in src, f"train_sjfpo.py still names {stale}"
+    assert "regression_flagged" in src
+    assert 'f"regression at step ' in src, "the decay message says plateau"
 
 
 def test_regression_stays_off_without_a_peak():

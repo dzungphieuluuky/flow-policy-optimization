@@ -81,7 +81,7 @@ def compute_eval_summary_metrics(
     eval_count: int,
     *,
     r_rand: float | None = None,
-    consecutive_below: int | None = None,
+    streak_below_random_floor: int | None = None,
     best_return: float | None = None,
     steps_to_best: int | None = None,
 ) -> dict:
@@ -123,8 +123,8 @@ def compute_eval_summary_metrics(
         data["eval/reward_improvement_pct"] = float(
             (mean_return - prev) / max(abs(prev), 1e-8)
         )
-    if consecutive_below is not None:
-        data["eval/consecutive_below"] = int(consecutive_below)
+    if streak_below_random_floor is not None:
+        data["eval/streak_below_random_floor"] = int(streak_below_random_floor)
     data.update(
         {
             "eval/mean_length": stat(lengths, np.mean),

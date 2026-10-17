@@ -665,8 +665,8 @@ def train_sjfpo_run(
     next_save = save_steps
 
     eval_count = 0
-    consecutive_below = 0
-    consecutive_below_best = 0
+    streak_below_random_floor = 0
+    streak_below_peak = 0
     lr_decays = 0
     above_clamp_updates = 0
     both_clamped_updates = 0
@@ -949,7 +949,7 @@ def train_sjfpo_run(
                             all_eval_returns,
                             eval_count,
                             r_rand=r_rand,
-                            consecutive_below=consecutive_below,
+                            streak_below_random_floor=streak_below_random_floor,
                             best_return=best_return,
                             steps_to_best=steps_to_best,
                         ),
@@ -991,8 +991,8 @@ def train_sjfpo_run(
                     )
                     for b in tracker.backends:
                         getattr(b, "log_eval_table", lambda *_: None)(eval_results, global_step)
-                consecutive_below, diverged_now = check_divergence(
-                    stop_return, r_rand, consecutive_below,
+                streak_below_random_floor, diverged_now = check_divergence(
+                    stop_return, r_rand, streak_below_random_floor,
                     ci_low=stop_summary["return_ci_low"],
                     ci_high=stop_summary["return_ci_high"],
                 )
@@ -1003,31 +1003,35 @@ def train_sjfpo_run(
                         f"< {DIVERGENCE_FLOOR_FRAC:g}*R_rand="
                         f"{DIVERGENCE_FLOOR_FRAC * r_rand:.2f}"
                     )
-                consecutive_below_best, plateaued = check_regression(
+                streak_below_peak, regression_flagged = check_regression(
                     stop_return,
                     best_return,
-                    consecutive_below_best,
+                    streak_below_peak,
                     return_frac=cfg.stop_return_frac,
                     patience=cfg.stop_patience,
                     ci_low=stop_summary["return_ci_low"],
                     ci_high=stop_summary["return_ci_high"],
                 )
-                if plateaued:
+                # One event, three names. The check is called "regression", the
+                # flag is "regression", and the terminal message says
+                # REGRESSED. "Plateau" claimed improvement had stopped, which is
+                # a milder claim than a drop below stop_return_frac of the peak.
+                if regression_flagged:
                     if lr_decays < cfg.max_lr_decays:
                         lr_decays += 1
                         apply_lr_schedule(optimizer, policy.step_count, lr_decays, cfg)
-                        plateau_msg = (
-                            f"plateau at step {global_step} on the {stop_name} "
+                        decay_msg = (
+                            f"regression at step {global_step} on the {stop_name} "
                             f"start: return_mean={stop_return:.2f} < "
                             f"{cfg.stop_return_frac:g}*best={best_return:.2f} for "
                             f"{cfg.stop_patience} evals, "
                             f"lr x{cfg.lr_decay:g} ({lr_decays}/"
                             f"{cfg.max_lr_decays})"
                         )
-                        print(plateau_msg, file=sys.stderr)
+                        print(decay_msg, file=sys.stderr)
                     else:
                         regressed_now = True
-                        regress_msg = (
+                        regression_msg = (
                             f"REGRESSED at step {global_step} on the {stop_name} "
                             f"start: return_mean={stop_return:.2f} < "
                             f"{cfg.stop_return_frac:g}*best={best_return:.2f} after "
@@ -1064,7 +1068,7 @@ def train_sjfpo_run(
                 if diverged_now:
                     print(diverge_msg)
                 if regressed_now:
-                    print(regress_msg, file=sys.stderr)
+                    print(regression_msg, file=sys.stderr)
                 break
 
             if global_step >= next_save or global_step >= total_steps:

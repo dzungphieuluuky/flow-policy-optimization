@@ -261,11 +261,11 @@ def test_the_messages_name_the_start_they_read():
     # The messages span two f-strings each, so the shared fragment is what the
     # assertion reads.
     assert src.count("on the {stop_name}") == 3, (
-        "the DIVERGED, plateau, and REGRESSED messages must each name the start"
+        "the DIVERGED, regression, and REGRESSED messages must each name the start"
     )
     for token in ("DIVERGED at step {global_step}", "REGRESSED at step {global_step}"):
         assert token in src, token
-    assert "plateau at step {global_step} on the {stop_name}" in src
+    assert "regression at step {global_step} on the {stop_name}" in src
 
 
 # --- the generated artifact ----------------------------------------------

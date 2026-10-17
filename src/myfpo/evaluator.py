@@ -231,7 +231,7 @@ def interval_straddles(threshold: float, low: float, high: float) -> bool:
 
 def check_divergence(
     mean_return: float,
-    baseline: float,
+    random_return: float,
     consecutive: int,
     *,
     threshold_frac: float = DIVERGENCE_FLOOR_FRAC,
@@ -242,13 +242,17 @@ def check_divergence(
     """Increase a sub-threshold streak. Flag divergence after ``patience`` rows
     in a row.
 
-    The baseline must be strictly positive. If it is not, the check is off and
-    the counter resets. The function returns the new streak and whether it
-    flagged divergence.
+    The value ``random_return`` must be strictly positive. If it is not, the check is
+    off and the counter resets. The function returns the new streak and whether
+    it flagged divergence.
 
-    The threshold is ``threshold_frac * baseline``. The default
+    The threshold is ``threshold_frac * random_return``. The default
     ``threshold_frac`` is :data:`DIVERGENCE_FLOOR_FRAC`, so the abort message
     can quote the same number without restating it.
+
+    The parameter was named ``baseline``. :func:`check_regression` compares
+    against ``best_return``, which is the other reference a run has. Two
+    baselines for two thresholds is one word too many.
 
     The values ``ci_low`` and ``ci_high`` are the bounds of the interval around
     ``mean_return``. When they straddle the threshold, the streak resets. The
@@ -260,9 +264,9 @@ def check_divergence(
     keeps its value. :func:`check_regression` resets it instead, because its
     flag is a repeat action. See that function for the reason.
     """
-    if baseline <= 0:
+    if random_return <= 0:
         return 0, False
-    threshold = threshold_frac * baseline
+    threshold = threshold_frac * random_return
     if mean_return < threshold and not interval_straddles(threshold, ci_low, ci_high):
         consecutive += 1
     else:
