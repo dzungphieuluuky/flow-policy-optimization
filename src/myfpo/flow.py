@@ -39,6 +39,12 @@ class SJFPOFlowMLP(nn.Module):
     network and nothing else changes. ``return_stats=True`` returns an empty
     stats dict, so a tracked run unpacks it like the DiT.
 
+    The third argument is named ``hidden_dim`` in both classes. It used to be
+    ``condition_dim`` here, and the DiT called the same position ``hidden_dim``.
+    So the two actors disagreed on the name of one value at the same index. The
+    value is the width of the encoder output that conditions the flow, which is
+    ``cfg.hidden_dim`` because the encoder projects to that width.
+
     One difference is deliberate. The reference draws one time per chunk. The
     MC sampling of this repo gives every token its own ``tau``
     (:func:`myfpo.fpo_core.broadcast_over_mc_axis`). So the embedding is
@@ -51,18 +57,19 @@ class SJFPOFlowMLP(nn.Module):
         self,
         action_dim: int,
         action_horizon: int,
-        condition_dim: int,
+        hidden_dim: int,
         time_embed_dim: int,
         hidden_dims: tuple[int, ...],
     ):
         super().__init__()
         self.action_dim = action_dim
         self.action_horizon = action_horizon
+        self.hidden_dim = hidden_dim
         self.time_embedder = SinusoidalEncoding(time_embed_dim)
         width = (
             action_horizon * action_dim
             + action_horizon * time_embed_dim
-            + condition_dim
+            + hidden_dim
         )
         layers: list[nn.Module] = []
         prev = width
