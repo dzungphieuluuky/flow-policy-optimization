@@ -67,7 +67,7 @@ def test_the_key_states_the_denominator_it_divides_by():
     """
     import dataclasses
 
-    from myfpo.modeling_sjfpo import _GAE_DIAGNOSTIC_KEYS, compute_gae_diagnostics
+    from myfpo.metrics import _GAE_DIAGNOSTIC_KEYS, compute_gae_diagnostics
 
     assert "advantage_std_fraction" not in _GAE_DIAGNOSTIC_KEYS
     assert "advantage_std_over_return_std" in _GAE_DIAGNOSTIC_KEYS
