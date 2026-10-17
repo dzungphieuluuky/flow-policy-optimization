@@ -251,16 +251,20 @@ def test_the_stopper_reads_the_stop_distribution():
     """
     import inspect
 
+    from myfpo.runner import summarise_window
     from myfpo.train_sjfpo import train_sjfpo_run
 
     src = inspect.getsource(train_sjfpo_run)
-    assert "stop_summary = summaries[stop_name]" in src
-    assert 'stop_return = stop_summary["return_mean"]' in src
-    # The peak, and so the best checkpoint, comes from stop_return. Not from
-    # mean_return, which belongs to the reported distribution.
-    assert "improved = best_return is None or stop_return > best_return" in src
+    # The runner reads both names back off the window, and the peak is written
+    # from the stop one.
+    assert "stop_return = window.stop_return" in src
     assert "best_return = stop_return" in src
-    assert "improved = best_return is None or mean_return > best_return" not in src, (
+
+    # The rule itself lives in summarise_window now. The peak compares against
+    # stop_name, never against reported_name.
+    win = inspect.getsource(summarise_window)
+    assert 'summaries[stop_name]["return_mean"] > best_return' in win
+    assert 'summaries[reported_name]["return_mean"] > best_return' not in win, (
         "the best checkpoint must not be chosen on the reported distribution"
     )
 
@@ -293,3 +297,45 @@ def test_the_generator_emits_both_fields():
     emitted = {name for _title, names in mod.SECTIONS for name in names}
     assert "eval_sampling" in emitted
     assert "stop_eval_sampling" in emitted
+
+def test_summarise_window_peaks_on_the_stop_distribution():
+    """The rule, executed rather than scanned.
+
+    The reported start is deliberately the weaker one. If the peak read the
+    reported mean, this case would report improved on the first window and
+    lose the improvement on the second.
+    """
+    from myfpo.runner import summarise_window
+
+    def summarise(rows, *, seed):
+        # The seed only has to reach the call. The real summarize resamples.
+        return {
+            "return_mean": sum(r["return"] for r in rows) / len(rows),
+            "return_ci_low": 0.0,
+            "return_ci_high": 1.0,
+            "return_median": 0.0,
+            "return_n": len(rows),
+            "seed": seed,
+        }
+
+    rows = {"noise_start": [{"return": 100.0}], "zero_start": [{"return": 10.0}]}
+
+    first = summarise_window(
+        rows, reported_name="zero_start", stop_name="noise_start",
+        eval_seed=7, summarise=summarise, best_return=None,
+    )
+    assert first.mean_return == 10.0, "the reported score is the reported start"
+    assert first.stop_return == 100.0
+    assert first.improved is True, "there was no peak, so the first window improves"
+
+    # The second window is worse than the peak on the stop distribution and
+    # better than the reported mean. It must not improve.
+    later = {"noise_start": [{"return": 50.0}], "zero_start": [{"return": 90.0}]}
+    second = summarise_window(
+        later, reported_name="zero_start", stop_name="noise_start",
+        eval_seed=7, summarise=summarise, best_return=100.0,
+    )
+    assert second.stop_return == 50.0
+    assert second.improved is False, (
+        "the peak must read the stop distribution, not the reported mean"
+    )

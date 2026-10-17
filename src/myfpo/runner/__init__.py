@@ -9,6 +9,7 @@ Nothing in this package reads the policy. Nothing here writes to a tracker.
 The caller passes what each function needs and takes back what it produced.
 """
 
+from myfpo.runner.eval import WindowSummary, summarise_window
 from myfpo.runner.metrics import build_train_metrics
 
-__all__ = ["build_train_metrics"]
+__all__ = ["WindowSummary", "build_train_metrics", "summarise_window"]

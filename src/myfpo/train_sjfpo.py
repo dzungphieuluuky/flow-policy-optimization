@@ -33,7 +33,7 @@ from myfpo.modeling_sjfpo import SJFPOAborted, SJFPOPolicy, build_optimizer
 from lerobot.utils.constants import CHECKPOINTS_DIR
 from myfpo.utils import resolve_device, rms, to_numpy_1d
 from myfpo.tracking import build_tracker, compute_eval_summary_metrics
-from myfpo.runner import build_train_metrics
+from myfpo.runner import build_train_metrics, summarise_window
 
 
 # Consecutive above-clamp updates before aborting. clamp() has zero gradient
@@ -878,27 +878,23 @@ def train_sjfpo_run(
                     }
                 finally:
                     policy.swap_out_ema(displaced)
-                reported_results = results_by_sampling[reported_name]
-                summaries = {
-                    name: evaluator.summarize(rows, seed=eval_seed)
-                    for name, rows in results_by_sampling.items()
-                }
+                window = summarise_window(
+                    results_by_sampling,
+                    reported_name=reported_name,
+                    stop_name=stop_name,
+                    eval_seed=eval_seed,
+                    summarise=evaluator.summarize,
+                    best_return=best_return,
+                )
+                summaries = window.summaries
                 eval_summary = summaries[reported_name]
-                stop_summary = summaries[stop_name]
-                eval_results = reported_results
-                # The interval covers the spread across episodes. It does not
-                # cover the spread across training seeds. So it bounds the noise
-                # from one eval window, and not the noise from the whole run.
-                mean_return = eval_summary["return_mean"]
-                # The stopper reads the distribution the config names. It reads
-                # a different one from the reported score when stop_eval_sampling
-                # differs from eval_sampling.
-                stop_return = stop_summary["return_mean"]
+                eval_results = window.reported_results
+                mean_return = window.mean_return
+                stop_return = window.stop_return
                 all_eval_returns.append(mean_return)
                 recent_eval_returns.append(mean_return)
                 eval_count += 1
-                improved = best_return is None or stop_return > best_return
-                if improved:
+                if window.improved:
                     best_return = stop_return
                     steps_to_best = global_step
                     # The peak has to reach the disk when it happens. With a
