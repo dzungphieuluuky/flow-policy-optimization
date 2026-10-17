@@ -317,9 +317,10 @@ def test_the_trainer_passes_the_interval_to_both_rules():
     from myfpo.train_sjfpo import train_sjfpo_run
 
     src = inspect.getsource(train_sjfpo_run)
-    assert src.count("ci_low=eval_summary") == 2, (
-        "both check_divergence and check_regression must receive the interval"
+    assert src.count("ci_low=stop_summary") == 2, (
+        "both check_divergence and check_regression must receive an interval"
     )
+    assert src.count("ci_high=stop_summary") == 2
 
 
 def test_the_trainer_logs_the_interval():

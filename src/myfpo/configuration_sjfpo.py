@@ -98,6 +98,23 @@ class SJFPOConfig(PreTrainedConfig):
     ema_warmup_steps: int = 500
 
     eval_max_episodes: int = 50
+    # Which flow start the reported score uses. "zero" starts the Euler chain at
+    # eps=0, so the flow runs from the origin. "stochastic" starts it at a drawn
+    # eps, so the flow runs from the prior that training collects from.
+    #
+    # Training collects with the stochastic start. The critic bootstraps from the
+    # stochastic start. So "stochastic" is the number that answers "what does the
+    # policy that training produced return". "zero" is the deployment number.
+    #
+    # The value "stochastic" is the default. It is the distribution the run
+    # optimizes. A reported score from the other distribution measures a policy
+    # that training never optimized.
+    eval_sampling: str = "stochastic"
+    # Which distribution the early-stopping rules read. It must name a value the
+    # evaluator produces. The stopper needs the distribution that training
+    # optimizes, so this default is "stochastic" too. A run can report "zero" and
+    # stop on "stochastic", which separates the two questions.
+    stop_eval_sampling: str = "stochastic"
     stop_return_frac: float = 0.7
     stop_patience: int = 5
     lr_decay: float = 0.5
@@ -196,6 +213,14 @@ class SJFPOConfig(PreTrainedConfig):
             )
         if self.eval_max_episodes < 1:
             raise ValueError(f"eval_max_episodes={self.eval_max_episodes} must be >= 1")
+        for name, value in (
+            ("eval_sampling", self.eval_sampling),
+            ("stop_eval_sampling", self.stop_eval_sampling),
+        ):
+            if value not in ("zero", "stochastic"):
+                raise ValueError(
+                    f"{name}={value!r} must be 'zero' or 'stochastic'"
+                )
         if not 0.0 < self.stop_return_frac <= 1.0:
             raise ValueError(
                 f"stop_return_frac={self.stop_return_frac} must satisfy "

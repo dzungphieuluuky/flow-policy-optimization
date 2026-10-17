@@ -89,9 +89,11 @@ ema_warmup_steps: 500
 
 # -- Eval and early stopping -----------------------------------
 log_drift_diagnostics: True
+eval_sampling: 'stochastic'
 eval_max_episodes: 50
 stop_return_frac: 0.7
 stop_patience: 5
+stop_eval_sampling: 'stochastic'
 lr_decay: 0.5
 max_lr_decays: 3
 

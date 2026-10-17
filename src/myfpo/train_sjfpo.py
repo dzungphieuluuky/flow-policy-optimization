@@ -92,9 +92,13 @@ class _EvalPolicy:
     """A single-action eval adapter over :meth:`SJFPOPolicy.select_action`.
 
     The value ``zero_sampling`` picks the start point of the flow. The value
-    ``True`` starts from ``eps=0``. The eval pass and the reported metrics use
-    that value. The value ``False`` starts from sampled noise, and the training
-    rollouts use it.
+    ``True`` starts from ``eps=0``. The value ``False`` starts from sampled
+    noise, and the training rollouts use it.
+
+    The name ``deterministic_return`` means the zero start. The name
+    ``stochastic_return`` means the sampled start. The names match the config
+    values ``zero`` and ``stochastic``, so one vocabulary covers the config, the
+    logs, and this adapter.
 
     Running both adapters over the same seeds is the only way to see the two
     distributions diverge.
@@ -103,6 +107,13 @@ class _EvalPolicy:
     def __init__(self, policy: SJFPOPolicy, zero_sampling: bool = True):
         self.policy = policy
         self.zero_sampling = zero_sampling
+
+    @classmethod
+    def for_sampling(cls, policy: SJFPOPolicy, sampling: str) -> "_EvalPolicy":
+        """Build the adapter for the config value ``sampling``."""
+        if sampling not in ("zero", "stochastic"):
+            raise ValueError(f"sampling={sampling!r} must be 'zero' or 'stochastic'")
+        return cls(policy, zero_sampling=(sampling == "zero"))
 
     def reset(self) -> None:
         """Drop the policy's cached chunk state before a new episode."""
@@ -589,12 +600,14 @@ def train_sjfpo_run(
     evaluator = Evaluator(
         env, eval_seed=eval_seed, max_episodes=cfg.eval_max_episodes
     )
-    eval_policy = _EvalPolicy(policy)
-    # The adapter is the same. The start point is the opposite. The rollouts
-    # that build the critic targets and the advantages come from sampled noise.
-    # So the eps=0 return above measures a different distribution from the one
-    # that training uses.
-    stochastic_eval_policy = _EvalPolicy(policy, zero_sampling=False)
+    # One adapter per named flow start. Both run over the same eval seeds, so the
+    # episode pairs line up and the two scores differ only by the start point.
+    eval_policies = {
+        "zero": _EvalPolicy(policy, zero_sampling=True),
+        "stochastic": _EvalPolicy(policy, zero_sampling=False),
+    }
+    reported_name = cfg.eval_sampling
+    stop_name = cfg.stop_eval_sampling
     r_rand = sample_random_baseline(evaluator, env, seed=seed)
     tracker = build_tracker(
         cfg,
@@ -843,32 +856,41 @@ def train_sjfpo_run(
                 # The live weights go back right after.
                 displaced = policy.swap_in_ema(global_step)
                 try:
-                    eval_results = evaluator.evaluate(
-                        eval_policy, out_dir=out_dir, append_csv=True
-                    )
-                    # Same seeds, same evaluator, so the episode pairs line up.
-                    # No out_dir: this is a diagnostic, not a history entry.
-                    stochastic_results = evaluator.evaluate(
-                        stochastic_eval_policy
-                    )
+                    # Both starts run over the same seeds. The one the config
+                    # names writes the history. The other is a diagnostic, so it
+                    # writes nothing. Each start runs once.
+                    results_by_sampling = {
+                        name: evaluator.evaluate(
+                            adapter,
+                            out_dir=out_dir if name == reported_name else None,
+                            append_csv=(name == reported_name),
+                        )
+                        for name, adapter in eval_policies.items()
+                    }
                 finally:
                     policy.swap_out_ema(displaced)
-                mean_return = float(np.mean([r["return"] for r in eval_results]))
+                reported_results = results_by_sampling[reported_name]
+                summaries = {
+                    name: evaluator.summarize(rows, seed=eval_seed)
+                    for name, rows in results_by_sampling.items()
+                }
+                eval_summary = summaries[reported_name]
+                stop_summary = summaries[stop_name]
+                eval_results = reported_results
                 # The interval covers the spread across episodes. It does not
                 # cover the spread across training seeds. So it bounds the noise
                 # from one eval window, and not the noise from the whole run.
-                eval_summary = evaluator.summarize(eval_results, seed=eval_seed)
-                stochastic_mean_return = (
-                    float(np.mean([r["return"] for r in stochastic_results]))
-                    if stochastic_results
-                    else None
-                )
+                mean_return = eval_summary["return_mean"]
+                # The stopper reads the distribution the config names. It reads
+                # a different one from the reported score when stop_eval_sampling
+                # differs from eval_sampling.
+                stop_return = stop_summary["return_mean"]
                 all_eval_returns.append(mean_return)
                 recent_eval_returns.append(mean_return)
                 eval_count += 1
-                improved = best_return is None or mean_return > best_return
+                improved = best_return is None or stop_return > best_return
                 if improved:
-                    best_return = mean_return
+                    best_return = stop_return
                     steps_to_best = global_step
                     # The peak has to reach the disk when it happens. With a
                     # save_steps cadence, the nearest periodic checkpoint can
@@ -909,47 +931,53 @@ def train_sjfpo_run(
                             ),
                             "eval/return_median": eval_summary["return_median"],
                             "eval/return_n": eval_summary["return_n"],
+                            "eval/reported_sampling": reported_name,
+                            "eval/stop_sampling": stop_name,
                             "train/policy_lr": optimizer.param_groups[0]["lr"],
                             "train/critic_lr": optimizer.param_groups[-1]["lr"],
                             "train/lr_decays": lr_decays,
-                            **(
-                                {"train/stochastic_mean_return": stochastic_mean_return}
-                                if stochastic_mean_return is not None
-                                else {}
-                            ),
+                            # Both starts are logged under their own names, so a
+                            # run states which distribution each number came from.
+                            **{
+                                f"eval/{name}_return_mean": summaries[name][
+                                    "return_mean"
+                                ]
+                                for name in ("zero", "stochastic")
+                            },
                         },
                         step=global_step,
                     )
                     for b in tracker.backends:
                         getattr(b, "log_eval_table", lambda *_: None)(eval_results, global_step)
                 consecutive_below, diverged_now = check_divergence(
-                    mean_return, r_rand, consecutive_below,
-                    ci_low=eval_summary["return_ci_low"],
-                    ci_high=eval_summary["return_ci_high"],
+                    stop_return, r_rand, consecutive_below,
+                    ci_low=stop_summary["return_ci_low"],
+                    ci_high=stop_summary["return_ci_high"],
                 )
                 if diverged_now:
                     diverge_msg = (
-                        f"DIVERGED at step {global_step}: "
-                        f"mean_return={mean_return:.2f} "
+                        f"DIVERGED at step {global_step} on the {stop_name} start: "
+                        f"return_mean={stop_return:.2f} "
                         f"< 0.10*R_rand={0.10 * r_rand:.2f}"
                     )
                 consecutive_below_best, plateaued = check_regression(
-                    mean_return,
+                    stop_return,
                     best_return,
                     consecutive_below_best,
                     return_frac=cfg.stop_return_frac,
                     patience=cfg.stop_patience,
-                    ci_low=eval_summary["return_ci_low"],
-                    ci_high=eval_summary["return_ci_high"],
+                    ci_low=stop_summary["return_ci_low"],
+                    ci_high=stop_summary["return_ci_high"],
                 )
                 if plateaued:
                     if lr_decays < cfg.max_lr_decays:
                         lr_decays += 1
                         apply_lr_schedule(optimizer, policy.step_count, lr_decays, cfg)
                         plateau_msg = (
-                            f"plateau at step {global_step}: mean_return="
-                            f"{mean_return:.2f} < {cfg.stop_return_frac:g}*best="
-                            f"{best_return:.2f} for {cfg.stop_patience} evals, "
+                            f"plateau at step {global_step} on the {stop_name} "
+                            f"start: return_mean={stop_return:.2f} < "
+                            f"{cfg.stop_return_frac:g}*best={best_return:.2f} for "
+                            f"{cfg.stop_patience} evals, "
                             f"lr x{cfg.lr_decay:g} ({lr_decays}/"
                             f"{cfg.max_lr_decays})"
                         )
@@ -957,9 +985,10 @@ def train_sjfpo_run(
                     else:
                         regressed_now = True
                         regress_msg = (
-                            f"REGRESSED at step {global_step}: mean_return="
-                            f"{mean_return:.2f} < {cfg.stop_return_frac:g}*best="
-                            f"{best_return:.2f} after {lr_decays} lr decays; "
+                            f"REGRESSED at step {global_step} on the {stop_name} "
+                            f"start: return_mean={stop_return:.2f} < "
+                            f"{cfg.stop_return_frac:g}*best={best_return:.2f} after "
+                            f"{lr_decays} lr decays; "
                             f"the best checkpoint is the artifact"
                         )
                 next_eval = max(global_step + eval_steps, next_eval + eval_steps)
