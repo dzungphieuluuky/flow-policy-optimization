@@ -25,6 +25,7 @@ from lerobot.utils.random_utils import set_seed
 from myfpo.checkpointing import load_policy_checkpoint, save_policy_checkpoint
 from myfpo.configuration_sjfpo import FLOW_STARTS, SJFPOConfig
 from myfpo.evaluator import (
+    DIVERGENCE_FLOOR_FRAC,
     Evaluator,
     check_divergence,
     check_regression,
@@ -994,7 +995,8 @@ def train_sjfpo_run(
                     diverge_msg = (
                         f"DIVERGED at step {global_step} on the {stop_name} start: "
                         f"return_mean={stop_return:.2f} "
-                        f"< 0.10*R_rand={0.10 * r_rand:.2f}"
+                        f"< {DIVERGENCE_FLOOR_FRAC:g}*R_rand="
+                        f"{DIVERGENCE_FLOOR_FRAC * r_rand:.2f}"
                     )
                 consecutive_below_best, plateaued = check_regression(
                     stop_return,

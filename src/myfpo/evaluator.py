@@ -29,6 +29,17 @@ BOOTSTRAP_RESAMPLES = 10_000
 BOOTSTRAP_LOW_Q = 0.025
 BOOTSTRAP_HIGH_Q = 0.975
 
+# The divergence floor, as a fraction of the random-policy return. A run below
+# this share of random for ``DIVERGENCE_PATIENCE`` evals in a row has collapsed.
+#
+# The constant exists so the abort message in ``train_sjfpo_run`` reads the same
+# number as the check. The message used to write the literal ``0.10`` while the
+# check took a parameter defaulting to ``0.10``. They agreed, and nothing tied
+# them.
+DIVERGENCE_FLOOR_FRAC = 0.10
+# Consecutive evals below the floor before the run is declared diverged.
+DIVERGENCE_PATIENCE = 3
+
 
 def bootstrap_interval(
     returns: list[float],
@@ -223,8 +234,8 @@ def check_divergence(
     baseline: float,
     consecutive: int,
     *,
-    threshold_frac: float = 0.10,
-    patience: int = 3,
+    threshold_frac: float = DIVERGENCE_FLOOR_FRAC,
+    patience: int = DIVERGENCE_PATIENCE,
     ci_low: float = float("nan"),
     ci_high: float = float("nan"),
 ) -> tuple[int, bool]:
@@ -234,6 +245,10 @@ def check_divergence(
     The baseline must be strictly positive. If it is not, the check is off and
     the counter resets. The function returns the new streak and whether it
     flagged divergence.
+
+    The threshold is ``threshold_frac * baseline``. The default
+    ``threshold_frac`` is :data:`DIVERGENCE_FLOOR_FRAC`, so the abort message
+    can quote the same number without restating it.
 
     The values ``ci_low`` and ``ci_high`` are the bounds of the interval around
     ``mean_return``. When they straddle the threshold, the streak resets. The

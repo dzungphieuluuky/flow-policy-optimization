@@ -10,6 +10,7 @@ without an interval, and the determinism of the random baseline.
 """
 
 import dataclasses
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -218,6 +219,34 @@ def test_regression_fires_once_the_interval_clears():
         )
         flags.append(flag)
     assert flags[-1] is True, flags
+
+
+def test_the_abort_message_quotes_the_same_floor_the_check_uses():
+    """The message used to write the literal 0.10.
+
+    The check took a parameter defaulting to 0.10. Nothing tied the two, so the
+    day the default moved the message would name a floor the check never
+    applied. Both now read :data:`DIVERGENCE_FLOOR_FRAC`.
+    """
+    from myfpo.evaluator import DIVERGENCE_FLOOR_FRAC
+    from myfpo.train_sjfpo import DIVERGENCE_FLOOR_FRAC as TRAINER_FRAC
+
+    assert TRAINER_FRAC is DIVERGENCE_FLOOR_FRAC, (
+        "the trainer imported its own copy of the floor"
+    )
+
+    # The default must still produce the threshold the check applies.
+    r_rand = 1000.0
+    streak, flagged = check_divergence(DIVERGENCE_FLOOR_FRAC * r_rand + 1.0, r_rand, 0)
+    assert streak == 0 and not flagged, "just above the floor is not a collapse"
+    streak, _ = check_divergence(DIVERGENCE_FLOOR_FRAC * r_rand - 1.0, r_rand, 0)
+    assert streak == 1, "just below the floor is a collapse"
+
+    src = (
+        Path(__file__).resolve().parents[1] / "src" / "myfpo" / "train_sjfpo.py"
+    ).read_text()
+    assert "0.10*R_rand" not in src, "the abort message still hard-codes the floor"
+    assert "DIVERGENCE_FLOOR_FRAC:g}*R_rand" in src, "the message reads the constant"
 
 
 def test_regression_stays_off_without_a_peak():
