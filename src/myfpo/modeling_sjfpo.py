@@ -168,7 +168,6 @@ class SJFPOPolicy(PreTrainedPolicy):
 
         self.cfm_above_clamp_frac = torch.zeros(())
         self.cfm_both_clamped_frac = torch.zeros(())
-        self.action_pre_clamp_frac = torch.zeros(())
 
         self._frame_buffer: deque[torch.Tensor] = deque(maxlen=config.n_obs_steps)
         self._action_buffer: deque[torch.Tensor] = deque()
@@ -480,26 +479,15 @@ class SJFPOPolicy(PreTrainedPolicy):
                 device=device,
             ).float()
 
-        # The share of coordinates the first clamp had to move. This is the
-        # projection the CFM target is built on, so it belongs in the log.
-        #
-        # The value is the last proposal of the rollout, not a rollout average.
-        # It is a 0-dim tensor, so reading it costs the caller one sync.
-        self.action_pre_clamp_frac = (action_chunk.abs() > 1.0).float().mean().detach()
-
-        scaled = action_chunk.clamp(-1.0, 1.0)
+        proposal = action_chunk
         if self.training and cfg.action_perturb_std > 0:
-            scaled = scaled + cfg.action_perturb_std * torch.randn_like(scaled)
-        # The clamp runs again after the noise. The noise is unbounded, so
-        # without this the perturbed value can leave the unit interval and the
-        # collector's ``scale_and_clip_chunk`` clips it. That made
-        # ``chunk_clip_counts`` non-zero whenever ``action_perturb_std`` was
-        # positive, which contradicted the claim that the count is structural.
-        # With the second clamp the count is zero by construction at every
-        # setting, so ``action_pre_clamp_frac`` is the only place the projection
-        # shows up.
-        scaled = scaled.clamp(-1.0, 1.0)
-        return self.postprocessor({ACTION: scaled})[ACTION]
+            proposal = proposal + cfg.action_perturb_std * torch.randn_like(proposal)
+        # The postprocessor squashes with tanh and maps into the env bounds, so
+        # this function does not clamp. The perturbation is added before the
+        # squash, so it is bounded by it: an unbounded perturbation after the
+        # map could leave the env range and had to be clipped a second time in
+        # the collector.
+        return self.postprocessor({ACTION: proposal})[ACTION]
 
     def select_action(self, batch: dict[str, torch.Tensor], **kwargs) -> torch.Tensor:
         """Next action, receding through a cached chunk.

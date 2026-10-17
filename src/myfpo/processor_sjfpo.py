@@ -44,7 +44,22 @@ class SJFPOObservationProcessorStep(ProcessorStep):
 
 
 class SJFPOActionPostprocessorStep(ProcessorStep):
-    """Unscale action chunks from ``[-1, 1]`` to env bounds.
+    """Map the actor's raw output into the env's action bounds with ``tanh``.
+
+    The map is ``low + (tanh(x) + 1) / 2 * (high - low)``. The affine part is the
+    same scale and bias the plain unscale used. The ``tanh`` is new: it replaces
+    a clamp that lived in the policy.
+
+    Placing the squash here rather than in the policy means the range lives in
+    one place, and the per-dimension bounds the env declares are the only
+    source of it. A clamp in the policy could only ever produce ``[-1, 1]``,
+    which the affine then mapped on, so an out-of-range action reached the
+    collector and had to be clipped a second time.
+
+    ``tanh`` is open-interval over the reals, so the output stays strictly inside
+    the bounds for an ordinary proposal. In float32 it saturates: past about
+    ``|x| = 9`` the result is exactly ``-1.0`` or ``1.0``, so a confident actor
+    lands exactly on an endpoint. A clamp always sat on the endpoint.
 
     ``set_action_bounds`` recomputes the scale and bias. The object has no
     caches to clear. Only the two CPU coefficient tensors exist.
@@ -78,12 +93,14 @@ class SJFPOActionPostprocessorStep(ProcessorStep):
 
     @torch.inference_mode()
     def __call__(self, batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
-        # Unscale into real env bounds. The coefficients cast per call.
-        scaled = batch[ACTION]
-        scale = self._scale_cpu.to(device=scaled.device, dtype=scaled.dtype)
-        bias = self._bias_cpu.to(device=scaled.device, dtype=scaled.dtype)
+        # Squash into the unit interval, then unscale into the env bounds. The
+        # coefficients cast per call.
+        raw = batch[ACTION]
+        squashed = torch.tanh(raw)
+        scale = self._scale_cpu.to(device=squashed.device, dtype=squashed.dtype)
+        bias = self._bias_cpu.to(device=squashed.device, dtype=squashed.dtype)
         out = dict(batch)
-        out[ACTION] = torch.addcmul(bias, scale, scaled)
+        out[ACTION] = torch.addcmul(bias, scale, squashed)
         return out
 
     def transform_features(
