@@ -242,10 +242,17 @@ are separate knobs, so widening one leaves the other alone. The SPO branch keeps
 a gradient where PPO's clip saturates to zero. Negative advantages are where a
 plain PPO clip stops learning.
 
-**Sampling.** Euler integration, `num_euler_steps` steps. Eval starts from
-`eps=0`, which `_EvalPolicy` gets from its `zero_sampling=True` default, not
-from `--sjfpo.report_to` — that flag only picks the tracker. Training rollouts
-start from sampled noise.
+**Sampling.** Euler integration, `num_steps_noise_start` steps. Both flow starts
+use the same Euler loop, so the step counts differ only in the start point:
+`num_steps_zero_start` when the chain starts at `eps=0`, and
+`num_steps_noise_start` when it starts at a drawn `eps`.
+
+Eval runs both starts and reports the one `eval_sampling` names. The default is
+`noise_start`, because that is the distribution training collects from and the
+critic bootstraps from. `stop_eval_sampling` also defaults to `noise_start`, so
+the stopping rules read the distribution the run optimizes. Set both to
+`zero_start` to measure deployment behaviour instead. `--sjfpo.report_to` is
+unrelated: it picks the tracker, not the start.
 
 ```python
 # Run training directly from the cloned repo.
