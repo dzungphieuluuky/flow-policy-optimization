@@ -8,7 +8,17 @@ from dataclasses import dataclass
 from lerobot.configs import PreTrainedConfig
 from lerobot.optim import AdamWConfig
 
-__all__ = ["FLOW_STARTS", "SJFPOConfig"]
+__all__ = ["ACTOR_ARCHITECTURES", "FLOW_STARTS", "SJFPOConfig"]
+
+# The actor networks this repo ships. Each takes the same first three
+# arguments, so ``actor_arch`` swaps the trunk and nothing else.
+#
+# The value "mlp" used to be here. It flattened the chunk into one vector, so a
+# per-token timestep could not modulate per token. It also had three hidden
+# layers, Mish, and no residual and no normalisation. Both reference networks
+# for chunked action prediction mix across action steps: Diffusion Policy with a
+# temporal Conv1d (kernel_size=5), ACT with self-attention over the chunk.
+ACTOR_ARCHITECTURES = ("dit", "resmlp")
 
 # The two values a flow start may take. They cover the config fields, the
 # tracker keys, and _EvalPolicy in train_sjfpo. One vocabulary, so a reader does
@@ -103,7 +113,6 @@ class SJFPOConfig(PreTrainedConfig):
     compile: bool = True
 
     actor_arch: str = "dit"
-    mlp_hidden_dims: tuple[int, ...] = (512, 512, 512)
     dit_depth: int = 3
     dit_heads: int = 2
     dit_mlp_ratio: float = 2.0
@@ -203,10 +212,11 @@ class SJFPOConfig(PreTrainedConfig):
                 f"hidden_dim={self.hidden_dim} must be divisible by "
                 f"dit_heads={self.dit_heads}"
             )
-        if self.actor_arch not in {"dit", "mlp"}:
-            raise ValueError("actor_arch must be 'dit' or 'mlp'")
-        if not self.mlp_hidden_dims or any(d < 1 for d in self.mlp_hidden_dims):
-            raise ValueError("mlp_hidden_dims must be a non-empty tuple of >= 1")
+        if self.actor_arch not in ACTOR_ARCHITECTURES:
+            raise ValueError(
+                f"actor_arch={self.actor_arch!r} must be one of "
+                f"{', '.join(repr(k) for k in ACTOR_ARCHITECTURES)}"
+            )
         if self.dit_depth < 1:
             raise ValueError(f"dit_depth={self.dit_depth} must be >= 1")
         if self.dit_heads < 1:

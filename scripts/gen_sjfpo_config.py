@@ -112,7 +112,6 @@ SECTIONS: list[tuple[str, list[str]]] = [
         "DiT backbone",
         [
             "actor_arch",
-            "mlp_hidden_dims",
             "dit_depth",
             "dit_heads",
             "dit_mlp_ratio",
