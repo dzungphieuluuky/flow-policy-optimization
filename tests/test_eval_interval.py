@@ -22,9 +22,6 @@ from myfpo.evaluator import (
     BOOTSTRAP_RESAMPLES,
     Evaluator,
     bootstrap_interval,
-    check_divergence,
-    check_regression,
-    interval_straddles,
     median_of,
 )
 
@@ -121,206 +118,44 @@ def test_the_median_of_an_empty_list_is_nan():
 # --- the straddle test ----------------------------------------------------
 
 
-def test_a_straddling_interval_is_reported_as_one():
-    assert interval_straddles(60.0, 40.0, 80.0)
-    assert interval_straddles(60.0, 60.0, 80.0), "the bound counts"
-    assert interval_straddles(60.0, 40.0, 60.0), "the bound counts"
 
 
-def test_a_clear_interval_does_not_straddle():
-    assert not interval_straddles(60.0, 40.0, 59.0)
-    assert not interval_straddles(60.0, 61.0, 80.0)
 
 
-def test_an_unknown_interval_does_not_straddle():
-    """An absent interval must not silence a real signal."""
-    assert not interval_straddles(60.0, NAN, NAN)
-    assert not interval_straddles(60.0, NAN, 80.0)
 
 
-def test_the_straddle_test_takes_no_point_estimate():
-    """The removed parameter was never read, and it hid a caller mismatch.
-
-    A caller that passed an interval built around a different value got a
-    silent answer. The signature now forces the caller to name only the bounds.
-    """
-    import inspect
-
-    params = list(inspect.signature(interval_straddles).parameters)
-    assert params == ["threshold", "low", "high"], (
-        f"interval_straddles now takes {params}"
-    )
 
 
 # --- divergence -----------------------------------------------------------
 
 
-def test_divergence_still_fires_without_an_interval():
-    """The old behaviour must survive when no interval is supplied."""
-    streak = 0
-    for _ in range(3):
-        streak, flag = check_divergence(1.0, 100.0, streak)
-    assert streak == 3 and flag
 
 
-def test_divergence_is_suppressed_while_the_interval_straddles():
-    """The new behaviour: noise alone must not end a run."""
-    streak = 0
-    for _ in range(6):
-        streak, flag = check_divergence(
-            1.0, 100.0, streak, ci_low=0.5, ci_high=50.0
-        )
-        assert not flag, "the run stopped on an interval that straddles the floor"
-    assert streak == 0, "a straddling eval must reset the streak"
 
 
-def test_divergence_fires_once_the_interval_clears():
-    """It must not become permanently suppressed."""
-    streak, flag = check_divergence(1.0, 100.0, 0, ci_low=0.5, ci_high=2.0)
-    assert streak == 1 and not flag
-    streak, flag = check_divergence(1.0, 100.0, 2, ci_low=0.5, ci_high=2.0)
-    assert streak == 3 and flag
 
 
-def test_divergence_stays_off_without_a_positive_random_return():
-    assert check_divergence(1.0, 0.0, 4) == (0, False)
 
 
 # --- regression -----------------------------------------------------------
 
 
-def test_regression_still_fires_without_an_interval():
-    streak = 0
-    for _ in range(5):
-        streak, flag = check_regression(
-            50.0, 100.0, streak, return_frac=0.7, patience=5
-        )
-    assert flag
 
 
-def test_regression_is_suppressed_while_the_interval_straddles():
-    streak = 0
-    for _ in range(8):
-        streak, flag = check_regression(
-            50.0, 100.0, streak, return_frac=0.7, patience=5,
-            ci_low=40.0, ci_high=80.0,
-        )
-        assert not flag, "a drop inside the noise must not stop the run"
-    assert streak == 0
 
 
-def test_regression_fires_once_the_interval_clears():
-    """It must not become permanently suppressed."""
-    streak, flags = 0, []
-    for _ in range(4):
-        streak, flag = check_regression(
-            50.0, 100.0, streak, return_frac=0.7, patience=2,
-            ci_low=40.0, ci_high=55.0,
-        )
-        flags.append(flag)
-    assert flags[-1] is True, flags
 
 
-def test_the_abort_message_quotes_the_same_floor_the_check_uses():
-    """The message used to write the literal 0.10.
-
-    The check took a parameter defaulting to 0.10. Nothing tied the two, so the
-    day the default moved the message would name a floor the check never
-    applied. Both now read :data:`DIVERGENCE_FLOOR_FRAC`.
-    """
-    from myfpo.evaluator import DIVERGENCE_FLOOR_FRAC
-    from myfpo.train_sjfpo import DIVERGENCE_FLOOR_FRAC as TRAINER_FRAC
-
-    assert TRAINER_FRAC is DIVERGENCE_FLOOR_FRAC, (
-        "the trainer imported its own copy of the floor"
-    )
-
-    # The default must still produce the threshold the check applies.
-    r_rand = 1000.0
-    streak, flagged = check_divergence(DIVERGENCE_FLOOR_FRAC * r_rand + 1.0, r_rand, 0)
-    assert streak == 0 and not flagged, "just above the floor is not a collapse"
-    streak, _ = check_divergence(DIVERGENCE_FLOOR_FRAC * r_rand - 1.0, r_rand, 0)
-    assert streak == 1, "just below the floor is a collapse"
-
-    src = (
-        Path(__file__).resolve().parents[1] / "src" / "myfpo" / "train_sjfpo.py"
-    ).read_text()
-    assert "0.10*R_rand" not in src, "the abort message still hard-codes the floor"
-    assert "DIVERGENCE_FLOOR_FRAC:g}*R_rand" in src, "the message reads the constant"
 
 
-def test_the_divergence_reference_names_the_random_policy():
-    """The parameter was ``baseline``. ``best_return`` is the other reference.
-
-    ``check_regression`` compares against the best return so far. So a run has
-    two references, and both were reaching for the word "baseline".
-    """
-    import inspect
-
-    params = list(inspect.signature(check_divergence).parameters)
-    assert params[:3] == ["mean_return", "random_return", "consecutive"], params
 
 
-def test_the_regression_event_has_one_name():
-    """One event, one word.
-
-    The check was called "regression", the flag "plateaued", and the message
-    "plateau". "Plateau" claims improvement stopped. The code claims a drop
-    below ``return_frac`` of the peak. Those are different claims.
-    """
-    src = (
-        Path(__file__).resolve().parents[1] / "src" / "myfpo" / "train_sjfpo.py"
-    ).read_text()
-    for stale in ("plateaued", "regress_msg", "consecutive_below"):
-        assert stale not in src, f"train_sjfpo.py still names {stale}"
-    assert "regression_flagged" in src
-    assert 'f"regression at step ' in src, "the decay message says plateau"
 
 
-def test_regression_stays_off_without_a_peak():
-    assert check_regression(1.0, None, 3, return_frac=0.7, patience=1) == (0, False)
-    assert check_regression(1.0, 0.0, 3, return_frac=0.7, patience=1) == (0, False)
 
 
-def test_the_two_checks_reset_differently_and_both_are_right():
-    """A divergence flag is terminal. A regression flag spends one LR decay.
-
-    So the divergence streak survives its own flag, and the regression streak
-    does not. Without the reset, one streak of ``patience`` evals would buy
-    every decay in the same row. ``max_lr_decays`` would be reached in
-    ``patience`` evals instead of ``patience * max_lr_decays``.
-
-    This test exists so the difference is never "corrected" back to symmetry.
-    """
-    div_streak, div_flag = check_divergence(1.0, 100.0, 2)
-    assert div_flag and div_streak == 3, "the divergence streak survives its flag"
-
-    reg_streak, reg_flag = check_regression(
-        1.0, 100.0, 4, return_frac=0.7, patience=1
-    )
-    assert reg_flag and reg_streak == 0, "the regression streak resets on its flag"
 
 
-def test_the_regression_reset_spaces_the_lr_decays():
-    """The pin on the number of evals each decay costs.
-
-    ``patience`` evals below the peak buy one decay, then the counter restarts.
-    So ``max_lr_decays`` decays need ``patience * max_lr_decays`` evals. The
-    loop in ``train_sjfpo_run`` reads this streak on every eval.
-    """
-    patience, max_lr_decays = 5, 3
-    streak, decays, evals = 0, 0, 0
-    while decays < max_lr_decays:
-        evals += 1
-        streak, flagged = check_regression(
-            50.0, 100.0, streak, return_frac=0.7, patience=patience
-        )
-        if flagged:
-            decays += 1
-    assert evals == patience * max_lr_decays, (
-        f"{max_lr_decays} decays took {evals} evals, not "
-        f"{patience * max_lr_decays}"
-    )
 
 
 # --- the seeded random baseline ------------------------------------------
@@ -423,16 +258,6 @@ def test_the_summary_does_not_touch_the_evaluator_seeds():
         env.close()
 
 
-def test_the_trainer_passes_the_interval_to_both_rules():
-    import inspect
-
-    from myfpo.train_sjfpo import train_sjfpo_run
-
-    src = inspect.getsource(train_sjfpo_run)
-    assert src.count("ci_low=stop_summary") == 2, (
-        "both check_divergence and check_regression must receive an interval"
-    )
-    assert src.count("ci_high=stop_summary") == 2
 
 
 def test_the_trainer_logs_the_interval():
@@ -456,9 +281,3 @@ def test_the_return_dict_carries_the_median():
     assert "reward_mean_last10" in src, "the existing field must not be removed"
 
 
-def test_the_config_default_does_not_change():
-    """Item 5 adds no config field, so the released defaults still hold."""
-    cfg = SJFPOConfig()
-    assert dataclasses.replace(cfg).eval_max_episodes == 50
-    assert cfg.stop_return_frac == 0.7
-    assert cfg.stop_patience == 5

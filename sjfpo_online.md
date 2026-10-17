@@ -250,7 +250,7 @@ use the same Euler loop, so the step counts differ only in the start point:
 Eval runs both starts and reports the one `eval_sampling` names. The default is
 `noise_start`, because that is the distribution training collects from and the
 critic bootstraps from. `stop_eval_sampling` also defaults to `noise_start`, so
-the stopping rules read the distribution the run optimizes. Set both to
+the best checkpoint is chosen on the distribution the run optimizes. Set both to
 `zero_start` to measure deployment behaviour instead. `--sjfpo.report_to` is
 unrelated: it picks the tracker, not the start.
 

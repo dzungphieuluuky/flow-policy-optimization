@@ -11,7 +11,7 @@ import torch
 SNAPSHOT = Path(__file__).with_name("guard_messages.json")
 
 # : Guard count the table below is expected to cover.
-EXPECTED_CASES = 80
+EXPECTED_CASES = 76
 
 _CASES: list[tuple[str, object]] = []
 
@@ -54,10 +54,8 @@ _BAD_CONFIG = {
     "gae_lambda": 1.5,
     "gamma": 0.0,
     "grad_accum_steps": 0,
-    "lr_decay": 0.0,
     "log_ratio_cap": 0.0,
     "max_grad_norm": 0.0,
-    "max_lr_decays": -1,
     "min_sampled_timestep": -1.0,
     "noise_sampling_mode": "laplace",
     "num_critics": 0,
@@ -73,8 +71,6 @@ _BAD_CONFIG = {
     "sigreg_mode": "barlow",
     "sigreg_coef": -1.0,
     "sigreg_sketch_dim": 1,
-    "stop_patience": 0,
-    "stop_return_frac": 0.0,
     "timestep_inverse_cdf_beta": 0.0,
     "timestep_sampling_mode": "cosine",
     "transported_clip_value": 0.0,

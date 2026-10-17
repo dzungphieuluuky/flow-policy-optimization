@@ -126,10 +126,6 @@ def test_the_return_mean_key_matches_the_summarizer():
     assert "_return_mean" in src, "the per-start series must still exist"
 
 
-def test_the_streak_key_names_its_threshold():
-    out = _summary(streak_below_random_floor=3)
-    assert out["eval/streak_below_random_floor"] == 3
-    assert "eval/consecutive_below" not in out
 
 
 def test_an_empty_window_is_still_nan_not_zero():

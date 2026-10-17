@@ -136,16 +136,12 @@ SECTIONS: list[tuple[str, list[str]]] = [
         ],
     ),
     (
-        "Eval and early stopping",
+        "Eval and checkpointing",
         [
             "log_drift_diagnostics",
             "eval_sampling",
             "eval_max_episodes",
-            "stop_return_frac",
-            "stop_patience",
             "stop_eval_sampling",
-            "lr_decay",
-            "max_lr_decays",
         ],
     ),
 ]

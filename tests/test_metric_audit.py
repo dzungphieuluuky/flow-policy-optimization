@@ -335,20 +335,6 @@ def test_stats_over_a_real_eval_window_are_finite():
 
 
 # --- I.
-def test_the_diverge_step_is_not_reported_as_zero_when_nothing_fired():
-    """Step 0 is pre-training, so a 0 there is a step that never happened."""
-    import inspect
-    import re
-
-    import myfpo.train_sjfpo as T
-
-    src = inspect.getsource(T)
-    # No "global_step if diverged_now else 0" style fallback anywhere.
-    assert not re.search(r"diverge_step.*else 0", src)
-    assert not re.search(r"regression_step.*else 0", src)
-    # The flags themselves are logged on the ordinary eval path too.
-    assert '"eval/diverged": 0.0' in src
-    assert '"eval/regressed": 0.0' in src
 
 
 if __name__ == "__main__":

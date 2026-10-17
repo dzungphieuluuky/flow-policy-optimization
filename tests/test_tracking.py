@@ -5,7 +5,6 @@ from lerobot.configs.policies import PolicyFeature
 from lerobot.configs.types import FeatureType
 
 from myfpo.configuration_sjfpo import SJFPOConfig
-from myfpo.evaluator import check_regression
 from myfpo.tracking import build_tracker
 from myfpo.tracking.base import (
     ExperimentTracker,
@@ -125,37 +124,3 @@ def test_feature_dicts_do_not_change_the_name():
     )
 
 
-# --- forgetting: the peak-regression stop ----------------------------------.
-
-
-def _regression_streak(returns: list[float], best: float = 500.0) -> list[tuple[int, bool]]:
-    streak, out = 0, []
-    for r in returns:
-        streak, window = check_regression(
-            r, best, streak, return_frac=0.7, patience=3
-        )
-        out.append((streak, window))
-    return out
-
-
-def test_a_new_peak_resets_the_streak():
-    """One good eval has to clear the memory of the bad ones."""
-    # 0.7 * 500 = 350, so 300 is a regression and 600 is a new peak.
-    streak = _regression_streak([300, 300, 600])
-    assert [s for s, _ in streak] == [1, 2, 0]
-
-
-def test_a_window_completes_once_per_patience_bad_evals():
-    """Each window costs one lr decay, so the plateau gets a smaller step first."""
-    streak = _regression_streak([300, 300, 300, 300, 300, 300])
-    assert [w for _, w in streak] == [False, False, True, False, False, True]
-
-
-def test_being_just_above_the_threshold_is_not_a_regression():
-    """0.7 * 500 = 350, and 349 is below it."""
-    assert check_regression(350, 500, 0, return_frac=0.7, patience=1) == (0, False)
-    assert check_regression(349, 500, 0, return_frac=0.7, patience=1) == (0, True)
-
-
-def test_no_peak_yet_is_not_a_regression():
-    assert check_regression(0.0, None, 2, return_frac=0.7, patience=1) == (0, False)

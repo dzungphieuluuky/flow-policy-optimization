@@ -29,17 +29,6 @@ BOOTSTRAP_RESAMPLES = 10_000
 BOOTSTRAP_LOW_Q = 0.025
 BOOTSTRAP_HIGH_Q = 0.975
 
-# The divergence floor, as a fraction of the random-policy return. A run below
-# this share of random for ``DIVERGENCE_PATIENCE`` evals in a row has collapsed.
-#
-# The constant exists so the abort message in ``train_sjfpo_run`` reads the same
-# number as the check. The message used to write the literal ``0.10`` while the
-# check took a parameter defaulting to ``0.10``. They agreed, and nothing tied
-# them.
-DIVERGENCE_FLOOR_FRAC = 0.10
-# Consecutive evals below the floor before the run is declared diverged.
-DIVERGENCE_PATIENCE = 3
-
 
 def bootstrap_interval(
     returns: list[float],
@@ -207,119 +196,6 @@ def compute_mean_chunk_jerk(actions: np.ndarray, action_is_pad: np.ndarray) -> f
     return float(np.mean(jerks)) if jerks else None
 
 
-def interval_straddles(threshold: float, low: float, high: float) -> bool:
-    """Does the interval ``[low, high]`` cross ``threshold``?
-
-    It returns True when ``low`` is at or below ``threshold`` and ``high`` is at
-    or above ``threshold``. So the data cannot tell which side of the threshold
-    the policy sits on.
-
-    The bounds ``low`` and ``high`` may both be ``nan``. Then the function
-    returns False. A caller with no interval keeps the old behaviour, which
-    acts on the point estimate alone. An unknown bound must not silence a real
-    signal, so it must not invent one either.
-
-    The function took a first argument ``value``, the point estimate the
-    interval was built around. The body never read it. A caller could pass an
-    interval built around a different value, and the mismatch was invisible. So
-    the parameter is gone. A caller must now pass only the bounds it means.
-    """
-    if not (np.isfinite(low) and np.isfinite(high)):
-        return False
-    return bool(low <= threshold <= high)
-
-
-def check_divergence(
-    mean_return: float,
-    random_return: float,
-    consecutive: int,
-    *,
-    threshold_frac: float = DIVERGENCE_FLOOR_FRAC,
-    patience: int = DIVERGENCE_PATIENCE,
-    ci_low: float = float("nan"),
-    ci_high: float = float("nan"),
-) -> tuple[int, bool]:
-    """Increase a sub-threshold streak. Flag divergence after ``patience`` rows
-    in a row.
-
-    The value ``random_return`` must be strictly positive. If it is not, the check is
-    off and the counter resets. The function returns the new streak and whether
-    it flagged divergence.
-
-    The threshold is ``threshold_frac * random_return``. The default
-    ``threshold_frac`` is :data:`DIVERGENCE_FLOOR_FRAC`, so the abort message
-    can quote the same number without restating it.
-
-    The parameter was named ``baseline``. :func:`check_regression` compares
-    against ``best_return``, which is the other reference a run has. Two
-    baselines for two thresholds is one word too many.
-
-    The values ``ci_low`` and ``ci_high`` are the bounds of the interval around
-    ``mean_return``. When they straddle the threshold, the streak resets. The
-    evidence does not separate collapse from noise, so the run continues. The
-    function needs ``ci_low <= mean_return <= ci_high``. A caller that passes an
-    interval from a different value gets a reset it cannot interpret.
-
-    This function returns the incremented streak when it flags, so the streak
-    keeps its value. :func:`check_regression` resets it instead, because its
-    flag is a repeat action. See that function for the reason.
-    """
-    if random_return <= 0:
-        return 0, False
-    threshold = threshold_frac * random_return
-    if mean_return < threshold and not interval_straddles(threshold, ci_low, ci_high):
-        consecutive += 1
-    else:
-        consecutive = 0
-    return consecutive, consecutive >= patience
-
-
-def check_regression(
-    mean_return: float,
-    best_return: float | None,
-    consecutive: int,
-    *,
-    return_frac: float,
-    patience: int,
-    ci_low: float = float("nan"),
-    ci_high: float = float("nan"),
-) -> tuple[int, bool]:
-    """Increase a below-peak streak. Flag it once one ``patience`` window
-    completes.
-
-    Any eval that matches the peak resets the streak.
-
-    This function catches forgetting. It does not catch collapse.
-    The function :func:`check_divergence` catches collapse. A run that peaked
-    and then drifted to a third of its peak never reaches a floor. That floor is
-    set at a fraction of the random return.
-
-    The values ``ci_low`` and ``ci_high`` behave as in :func:`check_divergence`.
-    An interval that straddles the threshold resets the streak. So a run whose
-    drop sits inside the noise keeps its best checkpoint and keeps training.
-
-    This function returns ``(0, True)`` when it flags. It resets the streak.
-    :func:`check_divergence` returns the incremented streak instead. The two
-    functions differ here on purpose, because their flags mean different things.
-
-    A divergence flag is terminal. The caller breaks the loop, so the returned
-    streak is never read again. Either value would work.
-
-    A regression flag is not terminal. The caller may spend one LR decay and
-    keep training. The reset is what spaces the decays out. Without it, one
-    streak of ``patience`` evals would buy every decay in the same row, and
-    ``max_lr_decays`` would be reached in ``patience`` evals rather than
-    ``patience * max_lr_decays``.
-    """
-    if best_return is None or best_return <= 0:
-        return 0, False
-    threshold = return_frac * best_return
-    if mean_return >= threshold or interval_straddles(threshold, ci_low, ci_high):
-        return 0, False
-    consecutive += 1
-    if consecutive < patience:
-        return consecutive, False
-    return 0, True
 
 
 def render_episode_frames(

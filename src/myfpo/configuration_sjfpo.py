@@ -152,15 +152,12 @@ class SJFPOConfig(PreTrainedConfig):
     # optimizes. A reported score from the other distribution measures a policy
     # that training never optimized.
     eval_sampling: str = "noise_start"
-    # Which flow start the early-stopping rules read. It must name a value the
+    # Which flow start decides the best checkpoint. It must name a value the
     # evaluator produces. The stopper needs the distribution that training
     # optimizes, so this default is "noise_start" too. A run can report
-    # "zero_start" and stop on "noise_start", which separates the two questions.
+    # "zero_start" and keep its best on "noise_start", which separates the two
+    # questions.
     stop_eval_sampling: str = "noise_start"
-    stop_return_frac: float = 0.7
-    stop_patience: int = 5
-    lr_decay: float = 0.5
-    max_lr_decays: int = 3
 
     log_drift_diagnostics: bool = True
 
@@ -272,17 +269,6 @@ class SJFPOConfig(PreTrainedConfig):
                     f"{name}={value!r} must be one of "
                     f"{', '.join(repr(k) for k in FLOW_STARTS)}"
                 )
-        if not 0.0 < self.stop_return_frac <= 1.0:
-            raise ValueError(
-                f"stop_return_frac={self.stop_return_frac} must satisfy "
-                f"0 < frac <= 1"
-            )
-        if self.stop_patience < 1:
-            raise ValueError(f"stop_patience={self.stop_patience} must be >= 1")
-        if not 0.0 < self.lr_decay <= 1.0:
-            raise ValueError(f"lr_decay={self.lr_decay} must satisfy 0 < factor <= 1")
-        if self.max_lr_decays < 0:
-            raise ValueError(f"max_lr_decays={self.max_lr_decays} must be >= 0")
         if not 0.0 < self.gamma <= 1.0:
             raise ValueError(f"gamma={self.gamma} must satisfy 0 < gamma <= 1")
         if not 0.0 <= self.gae_lambda <= 1.0:

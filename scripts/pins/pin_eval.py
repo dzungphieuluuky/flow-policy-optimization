@@ -2,9 +2,7 @@
 
 What this covers
     ``compute_eval_summary_metrics`` over a fixed set of windows, the three
-    jerk functions, the bootstrap interval, and both stop guards. The stop
-    guards are in this pin on purpose: they decide when a run ends, and the
-    series that moves them has no other guard.
+    jerk functions and the bootstrap interval.
 
 What this does not cover
     Running an environment. Every input here is a number this file supplies.
@@ -39,10 +37,6 @@ RETURNS = [
     74.2, 19.6, 2.4, 55.1, -7.3, 41.8, 0.9, 63.5, 26.7, -4.2,
 ]
 
-# The guard patience. The pin sweeps the streak across this value, so it covers
-# a streak that trips the guard and a streak that does not.
-PATIENCE = 8
-
 
 def _episodes(returns):
     """One episode dict per return, with a varying length and jerk."""
@@ -74,8 +68,6 @@ def _windows():
 def collect() -> dict:
     from myfpo.evaluator import (
         bootstrap_interval,
-        check_divergence,
-        check_regression,
         compute_action_jerk,
         compute_mean_chunk_jerk,
         compute_seam_jerk,
@@ -89,7 +81,6 @@ def collect() -> dict:
             out.update(flatten(compute_eval_summary_metrics(
                 mean, episodes, all_returns, count,
                 r_rand=r_rand,
-                streak_below_random_floor=3,
                 best_return=max(all_returns),
                 steps_to_best=all_returns.index(max(all_returns)),
             ), tag + "."))
@@ -112,59 +103,6 @@ def collect() -> dict:
     out.update(flatten(compute_mean_chunk_jerk(chunk, pad), "jerk.mean_chunk."))
     out.update(flatten(compute_seam_jerk(chunk, pad), "jerk.seam."))
     out.update(flatten(compute_action_jerk(chunk[0, :2]), "jerk.short_action."))
-
-    # Both guards, over four situations each. Every branch must be reached:
-    # a pin that only ever sees the "no flag" path cannot tell a guard that
-    # stopped flagging from one that never would have. So for each guard there
-    # is a decline that trips it, a recovery that resets it, a null baseline
-    # that returns early, and an interval that straddles the threshold.
-    #
-    # check_regression takes the best return and resets the streak when it
-    # flags. check_divergence takes the random return and does not. That
-    # difference is the reason this pin exists.
-    def guard_rows(tag, value, streak, *, baseline,
-                   ci_low=float("nan"), ci_high=float("nan")):
-        """Name both guard outputs.
-
-        Both guards return ``(streak, flagged)``. The pin names the parts
-        because the two guards differ on the streak when they flag: one resets
-        it to zero, the other returns it. That difference is the reason this
-        function exists.
-        """
-        kw = dict(ci_low=ci_low, ci_high=ci_high)
-        div_streak, div_flag = check_divergence(
-            value, baseline, streak, threshold_frac=0.10, patience=PATIENCE, **kw
-        )
-        reg_streak, reg_flag = check_regression(
-            value, baseline, streak, return_frac=0.10, patience=PATIENCE, **kw
-        )
-        return {
-            f"{tag}.diverge.streak": float(div_streak),
-            f"{tag}.diverge.flagged": float(div_flag),
-            f"{tag}.regress.streak": float(reg_streak),
-            f"{tag}.regress.flagged": float(reg_flag),
-        }
-
-    for streak in (1, 2, 4, 8, 9, 40):
-        # The best return is 90.0, so the regression threshold is 9.0.
-        # The random return is 25.0, so the divergence threshold is 2.5.
-        for label, value, baseline in (
-            ("peak", 95.0, 90.0),
-            ("below_regress", 8.0, 90.0),
-            ("below_both", 1.0, 90.0),
-            ("below_div_only", 5.0, 90.0),
-            ("null_baseline", 1.0, 0.0),
-        ):
-            rows = guard_rows(
-                f"guard.{label}.s{streak}", value, streak, baseline=baseline
-            )
-            out.update(rows)
-        # The straddling interval. The evidence does not separate the drop
-        # from the noise, so both guards must reset.
-        out.update(guard_rows(
-            f"guard.straddle.s{streak}", 8.0, streak, baseline=90.0,
-            ci_low=1.0, ci_high=40.0,
-        ))
     return out
 
 

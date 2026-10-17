@@ -168,16 +168,6 @@ def test_each_start_is_evaluated_once():
     assert 'out_dir=out_dir if name == reported_name else None' in src
 
 
-def test_the_stopper_reads_the_stop_distribution():
-    import inspect
-
-    from myfpo.train_sjfpo import train_sjfpo_run
-
-    src = inspect.getsource(train_sjfpo_run)
-    assert "check_divergence(\n                    stop_return" in src, (
-        "check_divergence must read stop_return, not the reported mean"
-    )
-    assert "stop_return,\n                    best_return," in src
 
 
 def test_both_returns_are_logged_under_their_own_names():
@@ -251,21 +241,28 @@ def test_the_stochastic_mean_return_key_is_gone():
     )
 
 
-def test_the_messages_name_the_start_they_read():
-    """A stop message must say which distribution triggered it."""
+def test_the_stopper_reads_the_stop_distribution():
+    """The best checkpoint must come from the distribution stop_eval_sampling names.
+
+    This invariant outlived the stop guards. It used to say the guards read the
+    stop distribution rather than the reported mean. Now it says the
+    best-checkpoint decision reads it, which is the same claim with one fewer
+    reader.
+    """
     import inspect
 
     from myfpo.train_sjfpo import train_sjfpo_run
 
     src = inspect.getsource(train_sjfpo_run)
-    # The messages span two f-strings each, so the shared fragment is what the
-    # assertion reads.
-    assert src.count("on the {stop_name}") == 3, (
-        "the DIVERGED, regression, and REGRESSED messages must each name the start"
+    assert "stop_summary = summaries[stop_name]" in src
+    assert 'stop_return = stop_summary["return_mean"]' in src
+    # The peak, and so the best checkpoint, comes from stop_return. Not from
+    # mean_return, which belongs to the reported distribution.
+    assert "improved = best_return is None or stop_return > best_return" in src
+    assert "best_return = stop_return" in src
+    assert "improved = best_return is None or mean_return > best_return" not in src, (
+        "the best checkpoint must not be chosen on the reported distribution"
     )
-    for token in ("DIVERGED at step {global_step}", "REGRESSED at step {global_step}"):
-        assert token in src, token
-    assert "regression at step {global_step} on the {stop_name}" in src
 
 
 # --- the generated artifact ----------------------------------------------

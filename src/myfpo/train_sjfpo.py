@@ -25,10 +25,7 @@ from lerobot.utils.random_utils import set_seed
 from myfpo.checkpointing import load_policy_checkpoint, save_policy_checkpoint
 from myfpo.configuration_sjfpo import FLOW_STARTS, SJFPOConfig
 from myfpo.evaluator import (
-    DIVERGENCE_FLOOR_FRAC,
     Evaluator,
-    check_divergence,
-    check_regression,
     compute_mean_chunk_jerk,
     compute_seam_jerk,
 )
@@ -217,15 +214,18 @@ def sample_minibatch(
 _OBS_WARMUP_STEPS = 128
 
 
-def apply_lr_schedule(optimizer, step_count: int, lr_decays: int, cfg) -> None:
-    """Apply a linear warmup and the plateau decay, starting from the bases.
+def apply_lr_schedule(optimizer, step_count: int) -> None:
+    """Apply the linear warmup, starting from the bases.
 
-    The rule is ``lr = base_lr * lr_decay**lr_decays * min(1, step / warmup)``.
+    The rule is ``lr = base_lr * min(1, step / warmup)``.
 
-    The function recomputes the value instead of compounding it. A warmup that
-    runs before a decay and a decay that runs before a warmup both give the
-    same number. So a decay that lands in the middle of a warmup cannot leave a
-    group permanently scaled.
+    The function recomputes the value instead of compounding it, so the value
+    depends only on ``step_count`` and never on the order of the calls.
+
+    The function used to take ``lr_decays`` and multiply by
+    ``cfg.lr_decay**lr_decays``. A regression flag was the only caller that
+    raised the count, so the multiplier was always one and the parameter was
+    unreachable. Both the flag and the two config fields are gone.
 
     FPO++ reaches the warmup half through a scheduler
     (finetune_online_rl.py). This is the same ramp without the object.
@@ -234,7 +234,7 @@ def apply_lr_schedule(optimizer, step_count: int, lr_decays: int, cfg) -> None:
         base = group["base_lr"]
         warmup = group.get("lr_warmup_steps", 0)
         ramp = 1.0 if warmup <= 0 else min(1.0, step_count / warmup)
-        group["lr"] = base * (cfg.lr_decay**lr_decays) * ramp
+        group["lr"] = base * ramp
 
 
 def warm_observation_stats(policy, env, *, obs_dim: int, seed: int) -> int:
@@ -668,13 +668,8 @@ def train_sjfpo_run(
     next_save = save_steps
 
     eval_count = 0
-    streak_below_random_floor = 0
-    streak_below_peak = 0
-    lr_decays = 0
     above_clamp_updates = 0
     both_clamped_updates = 0
-    diverged = False
-    regressed = False
     best_return: float | None = None
     steps_to_best: int | None = None
     recent_eval_returns: deque[float] = deque(maxlen=10)
@@ -782,7 +777,7 @@ def train_sjfpo_run(
                     optimizer.step()
                     optimizer.zero_grad(set_to_none=True)
                     policy.step_count += 1
-                    apply_lr_schedule(optimizer, policy.step_count, lr_decays, cfg)
+                    apply_lr_schedule(optimizer, policy.step_count)
                 if epoch_info is not None:
                     epoch_infos.append(epoch_info)
 
@@ -898,9 +893,6 @@ def train_sjfpo_run(
                 above_clamp_updates = 0
                 both_clamped_updates = 0
 
-            diverged_now = False
-            regressed_now = False
-            diverge_msg = ""
             if global_step >= next_eval or global_step >= total_steps:
                 # The EMA actor once it is warm: at decay 0.95 the shadow averages
                 # the last ~20 optimizer steps, which smooths a curve this noisy.
@@ -956,7 +948,6 @@ def train_sjfpo_run(
                             all_eval_returns,
                             eval_count,
                             r_rand=r_rand,
-                            streak_below_random_floor=streak_below_random_floor,
                             best_return=best_return,
                             steps_to_best=steps_to_best,
                         ),
@@ -969,8 +960,6 @@ def train_sjfpo_run(
                             # read 0. A flag that appears only when true leaves a
                             # gap, and a gap is indistinguishable from the
                             # tracker dropping the key.
-                            "eval/diverged": 0.0,
-                            "eval/regressed": 0.0,
                             # The interval around the score the stopper reads.
                             # A width near zero means the episodes agreed. A width
                             # that spans the threshold means the run continues.
@@ -984,7 +973,6 @@ def train_sjfpo_run(
                             "eval/return_n": eval_summary["return_n"],
                             "train/policy_lr": optimizer.param_groups[0]["lr"],
                             "train/critic_lr": optimizer.param_groups[-1]["lr"],
-                            "train/lr_decays": lr_decays,
                             # Both starts are logged under their own names, so a
                             # run states which distribution each number came from.
                             **{
@@ -998,85 +986,7 @@ def train_sjfpo_run(
                     )
                     for b in tracker.backends:
                         getattr(b, "log_eval_table", lambda *_: None)(eval_results, global_step)
-                streak_below_random_floor, diverged_now = check_divergence(
-                    stop_return, r_rand, streak_below_random_floor,
-                    ci_low=stop_summary["return_ci_low"],
-                    ci_high=stop_summary["return_ci_high"],
-                )
-                if diverged_now:
-                    diverge_msg = (
-                        f"DIVERGED at step {global_step} on the {stop_name} start: "
-                        f"return_mean={stop_return:.2f} "
-                        f"< {DIVERGENCE_FLOOR_FRAC:g}*R_rand="
-                        f"{DIVERGENCE_FLOOR_FRAC * r_rand:.2f}"
-                    )
-                streak_below_peak, regression_flagged = check_regression(
-                    stop_return,
-                    best_return,
-                    streak_below_peak,
-                    return_frac=cfg.stop_return_frac,
-                    patience=cfg.stop_patience,
-                    ci_low=stop_summary["return_ci_low"],
-                    ci_high=stop_summary["return_ci_high"],
-                )
-                # One event, three names. The check is called "regression", the
-                # flag is "regression", and the terminal message says
-                # REGRESSED. "Plateau" claimed improvement had stopped, which is
-                # a milder claim than a drop below stop_return_frac of the peak.
-                if regression_flagged:
-                    if lr_decays < cfg.max_lr_decays:
-                        lr_decays += 1
-                        apply_lr_schedule(optimizer, policy.step_count, lr_decays, cfg)
-                        decay_msg = (
-                            f"regression at step {global_step} on the {stop_name} "
-                            f"start: return_mean={stop_return:.2f} < "
-                            f"{cfg.stop_return_frac:g}*best={best_return:.2f} for "
-                            f"{cfg.stop_patience} evals, "
-                            f"lr x{cfg.lr_decay:g} ({lr_decays}/"
-                            f"{cfg.max_lr_decays})"
-                        )
-                        print(decay_msg, file=sys.stderr)
-                    else:
-                        regressed_now = True
-                        regression_msg = (
-                            f"REGRESSED at step {global_step} on the {stop_name} "
-                            f"start: return_mean={stop_return:.2f} < "
-                            f"{cfg.stop_return_frac:g}*best={best_return:.2f} after "
-                            f"{lr_decays} lr decays; "
-                            f"the best checkpoint is the artifact"
-                        )
                 next_eval = max(global_step + eval_steps, next_eval + eval_steps)
-
-            if diverged_now or regressed_now:
-                diverged = diverged_now
-                regressed = regressed_now
-                if tracker.enabled:
-                    # This is the only eval where these flags fire. The loop
-                    # breaks here. So this is the last observation of them.
-                    # The step keys appear only now, because 0 would read as
-                    # "diverged at step 0".
-                    tracker.log(
-                        {
-                            "eval/diverged": float(diverged_now),
-                            "eval/regressed": float(regressed_now),
-                            **(
-                                {"eval/diverge_step": global_step}
-                                if diverged_now
-                                else {}
-                            ),
-                            **(
-                                {"eval/regression_step": global_step}
-                                if regressed_now
-                                else {}
-                            ),
-                        },
-                        step=global_step,
-                    )
-                if diverged_now:
-                    print(diverge_msg)
-                if regressed_now:
-                    print(regression_msg, file=sys.stderr)
-                break
 
             if global_step >= next_save or global_step >= total_steps:
                 artifacts.append(_save(f"step_{global_step}"))
@@ -1092,7 +1002,7 @@ def train_sjfpo_run(
     finally:
         if train_env is not env:
             train_env.close()
-        tracker.finish(exit_code=1 if diverged else 0)
+        tracker.finish()
 
     artifacts.append(_save("final"))
     if best_artifact is not None and best_artifact not in artifacts:
@@ -1119,8 +1029,5 @@ def train_sjfpo_run(
         "artifacts": artifacts,
         "best_artifact": best_artifact,
         "best_return": best_return,
-        "diverged": diverged,
-        "regressed": regressed,
-        "lr_decays": lr_decays,
         "global_step": global_step,
     }

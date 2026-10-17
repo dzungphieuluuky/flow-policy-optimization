@@ -362,8 +362,6 @@ def main() -> int:
         ),
         "run": {
             "best_return": result.get("best_return"),
-            "diverged": result.get("diverged"),
-            "regressed": result.get("regressed"),
         },
         "tensorboard_dir": str(tb_dir),
         "run_dir": str(run_dir),

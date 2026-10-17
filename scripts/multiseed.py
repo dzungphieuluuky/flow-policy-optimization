@@ -62,9 +62,6 @@ SUMMARY_FIELDS = [
     "best_return",
     "fps",
     "global_step",
-    "diverged",
-    "regressed",
-    "lr_decays",
     "run_dir",
 ]
 
@@ -211,8 +208,6 @@ def compare(paths: list[str], field: str, out: Path) -> int:
                 "median": stats["median"],
                 "ci_low": stats["ci_low"],
                 "ci_high": stats["ci_high"],
-                "n_diverged": sum(1 for r in rows if str(r.get("diverged")).lower() in ("true", "1")),
-                "n_regressed": sum(1 for r in rows if str(r.get("regressed")).lower() in ("true", "1")),
             }
         )
 
@@ -230,8 +225,6 @@ def compare(paths: list[str], field: str, out: Path) -> int:
                 "median": float("nan"),
                 "ci_low": low,
                 "ci_high": high,
-                "n_diverged": "",
-                "n_regressed": "",
                 "separated": separated,
             }
         )
@@ -245,8 +238,6 @@ def compare(paths: list[str], field: str, out: Path) -> int:
         "median",
         "ci_low",
         "ci_high",
-        "n_diverged",
-        "n_regressed",
         "separated",
     ]
     with open(out, "w", newline="", encoding="utf-8") as fh:
@@ -305,9 +296,6 @@ def run_mode(args) -> int:
                 "best_return": result.get("best_return"),
                 "fps": result.get("fps"),
                 "global_step": result.get("global_step"),
-                "diverged": result.get("diverged"),
-                "regressed": result.get("regressed"),
-                "lr_decays": result.get("lr_decays"),
                 "run_dir": str(run_dir),
             }
         )

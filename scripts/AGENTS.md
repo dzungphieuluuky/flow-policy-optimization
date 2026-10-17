@@ -12,7 +12,7 @@
 - `gen_sjfpo_config.py:render` — the SECTIONS table lists every emitted field in emission order. A new config field must be added there, or it lands in the trailing "Not emitted" list. Run the script after adding the field.
 
 ## Conventions
-- Exit codes: `0` ok, `1` usage, `2` runtime or divergence, `4` missing artifact.
+- Exit codes: `0` ok, `1` usage, `2` runtime error, `4` missing artifact.
 - `sys.path.insert(src)` in `train.py`. Alt: `PYTHONPATH=src`.
 - `.venv/bin/python` is the only interpreter. There is no `pip` module in the venv and no `.venv/bin/pip`. Use `uv pip` for installs.
 
@@ -46,3 +46,20 @@
 - **`.gitignore` does not ignore `*.ipynb`.** New notebooks are visible to git.
 - **Nothing references `configs/shared.yaml`,** so its absence costs nothing.
 - **`requirements.txt` pins `jax[cuda13]`, not cuda12.** The `sjfpo_online.md` install cell matches it now. Note that plain `jax` also appears at line 6, so a naive grep for the CUDA extra finds both.
+## Removed 2026-10-17 — do not reintroduce without a trigger
+- `check_divergence`, `check_regression`, and `interval_straddles` are gone from
+  `evaluator.py`. A regression flag was the only caller of the LR decay, so the
+  decay went with it: `apply_lr_schedule(optimizer, step_count)` now takes no
+  `lr_decays` and multiplies by nothing.
+- Config fields `stop_return_frac`, `stop_patience`, `lr_decay`, and
+  `max_lr_decays` are gone from `SJFPOConfig` and from the generator SECTIONS.
+  `configs/sjfpo.yaml` was regenerated.
+- The eval loop has **no early exit**. A run ends at `total_steps` or on a
+  non-finite loss, which raises `SJFPOAborted`. The log keys `eval/diverged`,
+  `eval/regressed`, `eval/diverge_step`, `eval/regression_step`, and
+  `train/lr_decays` are gone.
+- `stop_eval_sampling` **stayed**. It no longer selects a stopper, it selects the
+  distribution that decides `checkpoints/best`. Do not delete it with the guards.
+- `tests/test_eval_interval.py` lost 19 tests, `test_tracking.py` lost 4,
+  `test_metric_audit.py` lost 1, `test_fpo_parity.py` lost 1. The interval and
+  bootstrap tests stayed, because those functions stayed.

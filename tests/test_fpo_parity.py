@@ -263,7 +263,7 @@ def test_lr_warmup_ramps_then_holds():
     opt = build_optimizer(policy)
     seen = []
     for step in range(1, 7):
-        apply_lr_schedule(opt, step, 0, policy.config)
+        apply_lr_schedule(opt, step)
         seen.append([g["lr"] for g in opt.param_groups])
     assert seen[0][0] == pytest.approx(3e-4 / 4)
     assert seen[0][-1] == pytest.approx(1e-4 / 2)  # critic warms twice as fast.
@@ -272,24 +272,12 @@ def test_lr_warmup_ramps_then_holds():
     assert seen[5][0] == pytest.approx(3e-4)        # and held.
 
 
-def test_lr_warmup_and_plateau_decay_compose_without_order():
-    """A decay landing mid-warmup must not leave the group permanently scaled."""
-    policy = _policy(
-        policy_lr=1.0, critic_lr=1.0,
-        actor_lr_warmup_steps=4, critic_lr_warmup_steps=4,
-    )
-    opt = build_optimizer(policy)
-    apply_lr_schedule(opt, 2, 1, policy.config)
-    mid = opt.param_groups[0]["lr"]
-    assert mid == pytest.approx(0.5 * (2 / 4))
-    apply_lr_schedule(opt, 4, 1, policy.config)
-    assert opt.param_groups[0]["lr"] == pytest.approx(0.5)
 
 
 def test_zero_warmup_is_a_no_op():
     policy = _policy(policy_lr=3e-4, actor_lr_warmup_steps=0, critic_lr_warmup_steps=0)
     opt = build_optimizer(policy)
-    apply_lr_schedule(opt, 1, 0, policy.config)
+    apply_lr_schedule(opt, 1)
     assert opt.param_groups[0]["lr"] == pytest.approx(3e-4)
 
 

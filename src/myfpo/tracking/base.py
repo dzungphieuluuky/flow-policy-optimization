@@ -81,14 +81,12 @@ def compute_eval_summary_metrics(
     eval_count: int,
     *,
     r_rand: float | None = None,
-    streak_below_random_floor: int | None = None,
     best_return: float | None = None,
     steps_to_best: int | None = None,
 ) -> dict:
     """Return the eval scalars for one eval window.
 
-    The function adds the peak and streak figures only if the caller supplies
-    them.
+    The function adds the peak figures only if the caller supplies them.
 
     A statistic over an empty window is NaN, not 0.0. The value
     ``std_length = 0.0`` says that every episode had the same length. That is a
@@ -130,8 +128,6 @@ def compute_eval_summary_metrics(
         data["eval/return_improvement_frac"] = float(
             (mean_return - prev) / max(abs(prev), 1e-8)
         )
-    if streak_below_random_floor is not None:
-        data["eval/streak_below_random_floor"] = int(streak_below_random_floor)
     data.update(
         {
             "eval/mean_length": stat(lengths, np.mean),

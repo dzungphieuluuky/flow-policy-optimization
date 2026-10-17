@@ -90,15 +90,11 @@ max_grad_norm: 1.0
 ema_decay: 0.95
 ema_warmup_steps: 500
 
-# -- Eval and early stopping -----------------------------------
+# -- Eval and checkpointing ------------------------------------
 log_drift_diagnostics: True
 eval_sampling: 'noise_start'
 eval_max_episodes: 50
-stop_return_frac: 0.7
-stop_patience: 5
 stop_eval_sampling: 'noise_start'
-lr_decay: 0.5
-max_lr_decays: 3
 
 # -- Not emitted (non-hyperparameters) --------------------
 # compile, device, input_features, license, output_features, pretrained_path, pretrained_revision, private, push_to_hub, repo_id, report_to, tags, use_amp, use_peft
