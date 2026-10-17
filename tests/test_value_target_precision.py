@@ -8,6 +8,7 @@ from lerobot.configs.types import FeatureType
 
 from myfpo.configuration_sjfpo import SJFPOConfig
 from myfpo.modeling_sjfpo import SJFPOPolicy
+from myfpo.rollout import run_rollout
 from myfpo.train_sjfpo import (
     measure_value_drift,
 )
@@ -57,11 +58,23 @@ def test_generate_rollout_does_not_cast_the_value_target():
     """Write-side guard: the two fp32 tensors must not be cast on the way in."""
     import inspect
 
-    src = inspect.getsource(SJFPOPolicy.generate_rollout)
+    # The body moved to myfpo.rollout. The method on the policy is a wrapper,
+    # so reading its source would find none of the casts and pass vacuously.
+    src = inspect.getsource(run_rollout)
     for name in ("raw_returns", "raw_values"):
+        # Both spellings matter. The batch is built as a dict, so the cast would
+        # appear as "raw_returns": raw_returns.to(storage_dtype). A test that
+        # only rejects the assignment form passes on the dict form, which is the
+        # one the code actually uses.
         assert f"{name} = {name}.to(storage_dtype)" not in src, (
             f"{name} is the critic's regression target in raw reward units and "
             "must not be quantised by the storage dtype"
+        )
+        assert f'"{name}": {name}.to(storage_dtype)' not in src, (
+            f"{name} is quantised by the storage dtype in the batch dict"
+        )
+        assert f"{name}.to(storage_dtype)" not in src, (
+            f"{name} must not pass through the storage dtype in any form"
         )
     # The tensors that ride storage_dtype legitimately must still do so.
     assert "raw_advantages = raw_advantages.to(storage_dtype)" in src

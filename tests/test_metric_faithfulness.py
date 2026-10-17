@@ -7,7 +7,7 @@ import pytest
 import torch
 
 from myfpo.configuration_sjfpo import SJFPOConfig
-from myfpo.modeling_sjfpo import compute_gae_diagnostics
+from myfpo.metrics import compute_gae_diagnostics
 from myfpo.train_sjfpo import compute_rollout_diagnostics
 
 

@@ -25,12 +25,6 @@ from lerobot.processor.converters import to_tensor
 from lerobot.utils.constants import ACTION, OBS_STATE
 
 from myfpo.configuration_sjfpo import SJFPOConfig
-from myfpo.collector import (
-    RolloutBuffer,
-    collect_chunks_vec,
-    resolve_action_bounds,
-    scale_and_clip_chunk,
-)
 from myfpo.fpo_core import (
     cfm_loss_weight,
     group_cfm_loss,
@@ -46,10 +40,8 @@ from myfpo.fpo_core import (
     sigreg_decorr_loss,
     sigreg_weak_loss,
 )
-from myfpo.gae import compute_chunk_advantages
 from myfpo.metrics import (
     broadcast_condition,
-    compute_gae_diagnostics,
     compute_policy_info,
     compute_value_loss,
     mc_draws,
@@ -60,6 +52,7 @@ from myfpo.critic import Critic
 from myfpo.encoder import RunningMeanStd, StateEncoder
 from myfpo.flow import SJFPOFlowModel, SJFPOFlowResMLP
 from myfpo.processor_sjfpo import make_sjfpo_pre_post_processors
+from myfpo.rollout import RolloutBuffers, run_rollout
 from myfpo.utils import (
     autocast_context,
     resolve_storage_dtype,
@@ -171,9 +164,7 @@ class SJFPOPolicy(PreTrainedPolicy):
 
         self._ema_shadow: dict[str, torch.Tensor] = {}
         self._ema_initialised = False
-        self._rollout_buffer: RolloutBuffer | None = None
-        self._device_rollout_buffer: RolloutBuffer | None = None
-        self._rollout_h2d_event: torch.cuda.Event | None = None
+        self.rollout_buffers = RolloutBuffers()
 
         self.cfm_above_clamp_frac = torch.zeros(())
         self.cfm_both_clamped_frac = torch.zeros(())
@@ -610,259 +601,20 @@ class SJFPOPolicy(PreTrainedPolicy):
         action_high: float = 1.0,
         noisy: bool = True,
     ) -> dict[str, torch.Tensor]:
-        """Roll out open-loop chunks, build a training batch.
+        """Roll out open-loop chunks and build a training batch.
 
-        See :mod:`myfpo.gae`. A chunk can run one step and then terminate. So a
-        count can reach one.
-
-        The batch carries one raw post-step frame per executed step. The frames
-        stay separate from the overlapping obs windows. So the normalizer does
-        not count a frame twice.
-
-        The batch also carries the per-chunk and per-MC CFM draws. The policy
-        loss reuses those draws for the old value and for the new value.
+        The body is :func:`myfpo.rollout.run_rollout`. This method stays so the
+        call sites read the same and the buffers stay owned by the policy.
         """
-        if total_steps <= 0:
-            raise ValueError(f"total_steps={total_steps} must be positive")
-        cfg = self.config
-        device = next(self.parameters()).device
-        storage_dtype = resolve_storage_dtype(device)
-
-        def propose_batch(states: torch.Tensor) -> torch.Tensor:
-            chunk = self.predict_action_chunk(
-                {OBS_STATE: to_device_async(states, device)}, start_from_zero=not noisy
-            )
-            return chunk.cpu()
-
-        if self._rollout_h2d_event is not None:
-            self._rollout_h2d_event.synchronize()
-            self._rollout_h2d_event = None
-
-        num_envs = int(getattr(env, "num_envs", 1))
-        action_dim = int(self.config.action_feature.shape[0])
-        obs_dim = int(self.config.robot_state_feature.shape[0])
-        max_chunks = max(1, total_steps)
-        buffer_key = (
-            max_chunks,
+        return run_rollout(
+            self,
+            self.rollout_buffers,
+            env,
             total_steps,
-            cfg.n_obs_steps,
-            obs_dim,
-            cfg.action_horizon,
-            action_dim,
-        )
-
-        def make_buffer(**extra) -> RolloutBuffer:
-            """Host and device buffers share every shape argument."""
-            return RolloutBuffer(
-                max_chunks=max_chunks,
-                max_steps=total_steps,
-                obs_steps=cfg.n_obs_steps,
-                obs_dim=obs_dim,
-                action_horizon=cfg.action_horizon,
-                action_dim=action_dim,
-                **extra,
-            )
-
-        if (
-            self._rollout_buffer is None
-            or self._rollout_buffer.shape_key() != buffer_key
-        ):
-            self._rollout_buffer = make_buffer(pin_memory=device.type == "cuda")
-        buffer = self._rollout_buffer
-        buffer.reset()
-
-        collect_kwargs = dict(
-            total_steps=total_steps,
             action_low=action_low,
             action_high=action_high,
-            n_obs_steps=cfg.n_obs_steps,
-            n_action_steps=cfg.n_action_steps,
-            buffer=buffer,
+            noisy=noisy,
         )
-        # A single env becomes a 1-env vec env. One collector, so the chunk
-        # contract cannot drift between the n==1 and n>1 paths.
-        if num_envs == 1:
-            import gymnasium as gym
-
-            envs = gym.vector.SyncVectorEnv([lambda: env])
-            try:
-                collect_chunks_vec(envs, propose_batch, **collect_kwargs)
-            finally:
-                envs.close()
-        else:
-            collect_chunks_vec(env, propose_batch, **collect_kwargs)
-
-        if device.type == "cuda":
-            if (
-                self._device_rollout_buffer is None
-                or self._device_rollout_buffer.shape_key() != buffer.shape_key()
-            ):
-                self._device_rollout_buffer = make_buffer(device=device)
-            buffer.copy_to(self._device_rollout_buffer, non_blocking=True)
-            self._rollout_h2d_event = torch.cuda.Event()
-            self._rollout_h2d_event.record()
-            active = self._device_rollout_buffer.active()
-        else:
-            active = buffer.active()
-        n_chunks = buffer.n_chunks
-        horizon = cfg.action_horizon
-
-        lengths = active["chunk_lengths"]
-        chunk_starts = active["chunk_starts"]
-        all_rewards = active["step_rewards"]
-        actions = active["chunk_actions"]
-        states = active["chunk_state"]
-
-        # Two obs windows per chunk, the start and the end. The preprocessor
-        # sees 2 * n_chunks, not 2 * n_steps.
-        # The normalizer updates from normalizer_observations.
-        # The bootstrap a' is drawn fresh at the end state of each chunk.
-        # That end state is the target of QC. A terminated row keeps the chunk.
-        with torch.inference_mode():
-            next_states = active["chunk_next_state"]
-            # Seeded from the chunk, so no row is garbage.
-            # The backup scales by ~terminated. 0 * NaN is NaN.
-            boot_actions = actions.clone()
-            # Only a live chunk needs a proposal. A terminated chunk keeps the
-            # cloned chunk actions. Nothing reads those values. The backup masks
-            # them with (1 - terminated).
-            needs_proposal = ~active["chunk_terminated"]
-            if bool(needs_proposal.any()):
-                # The call predict_action_chunk returns the env bounds. The
-                # tensor chunk_actions is scaled to [-1, 1]. The critic reads
-                # the scaled form. So the proposal takes the same affine
-                # transform.
-                proposed = self.predict_action_chunk(
-                    {OBS_STATE: to_device_async(next_states[needs_proposal], device)},
-                    start_from_zero=False,
-                )
-                low_t, range_t = resolve_action_bounds(action_low, action_high)
-                boot_actions[needs_proposal] = scale_and_clip_chunk(
-                    proposed, low_t.to(proposed.device), range_t.to(proposed.device)
-                )[1]
-
-            all_chunk_normalised_states = self.preprocessor(
-                {OBS_STATE: torch.cat([states, next_states], dim=0)}
-            )[OBS_STATE]
-            normalised_states = all_chunk_normalised_states[:n_chunks]
-            normalised_next_states = all_chunk_normalised_states[n_chunks:]
-            # The bootstrap chunk only ever executes n_action_steps, so its
-            # fraction is n_action_steps/H, NOT H/H. Passing H/H
-            # reintroduces the mismatch this feature removes.
-            exec_length_frac = self.exec_length_frac(lengths)
-            boot_exec_frac = self.exec_length_frac(
-                torch.full_like(lengths, cfg.n_action_steps)
-            )
-            # amin across members. That is for the backup only, never in the
-            # loss.
-            # The value loss averages the same members.
-            # The shared encoder runs here so the critic can read it. One pass
-            # covers the chunk and its bootstrap. The weights are the weights of
-            # the actor.
-            critic_cond = (
-                self.encoder(all_chunk_normalised_states)
-                if cfg.critic_share_encoder
-                else None
-            )
-            chunk_cond = critic_cond[:n_chunks] if critic_cond is not None else None
-            next_cond = critic_cond[n_chunks:] if critic_cond is not None else None
-            with autocast_context(device):
-                q_current_chunk = self.critic(
-                    self.critic_inputs(normalised_states, chunk_cond),
-                    actions,
-                    exec_length_frac,
-                ).float().amin(dim=0)
-            # The code is already inside the outer inference_mode. Autocast is
-            # the only context this block adds.
-            with autocast_context(device):
-                q_bootstrap = self.critic(
-                    self.critic_inputs(normalised_next_states, next_cond),
-                    boot_actions,
-                    boot_exec_frac,
-                ).float().amin(dim=0)
-
-        # One chunk is one macro-transition. Sum the rewards, then discount by
-        # gamma**h.
-        # This is the rsl-rl space. Q predicts raw returns, and the target is the
-        # raw return, so Q is the true expected return.
-        raw_advantages, raw_returns = compute_chunk_advantages(
-            all_rewards,
-            q_current_chunk,
-            q_bootstrap,
-            chunk_starts,
-            lengths,
-            chunk_terminated=active["chunk_terminated"],
-            chunk_size=cfg.action_horizon,
-            gamma=cfg.gamma,
-            # The code reads both values only when gae_lambda > 0. QC ignores
-            # both.
-            # The value chunk_truncated is the ENV limit, not the step budget.
-            # The two limits are separate. So the code never reads a live
-            # episode as finished.
-            chunk_truncated=active["chunk_truncated"],
-            chunk_env_id=active["chunk_env_id"],
-            gae_lambda=cfg.gae_lambda,
-        )
-        normalised_advantages = raw_advantages
-        # The rationale for correction=0 is in compute_gae_diagnostics.
-        if cfg.normalize_advantage and raw_advantages.numel() > 0:
-            normalised_advantages = (raw_advantages - raw_advantages.mean()) / (
-                raw_advantages.std(correction=0).clamp_min(1e-8)
-            )
-        # FPO++ clamps inside the minibatch loop, right before the surrogate.
-        # This code clamps here instead. The clamp is a fixed elementwise bound,
-        # so one clamp per rollout gives the same numbers in one fewer pass.
-        # The order is after normalisation, as theirs is.
-        normalised_advantages = normalised_advantages.clamp(
-            -cfg.advantage_clamp_neg, cfg.advantage_clamp_pos
-        )
-        gae_diagnostics = compute_gae_diagnostics(
-            active["chunk_env_id"][:n_chunks],
-            active["chunk_terminated"][:n_chunks],
-            active["chunk_truncated"][:n_chunks],
-            raw_advantages,
-            raw_returns,
-        )
-        raw_advantages = raw_advantages.to(storage_dtype)
-        normalised_advantages = normalised_advantages.to(storage_dtype)
-        # raw_returns stays fp32. It is the critic target, and it is the only
-        # stored tensor that is not O(1) (returns_rms runs to 35). There, the 8
-        # mantissa bits of bf16 lose real precision.
-
-        action_is_pad = torch.arange(cfg.action_horizon, device=device).unsqueeze(
-            0
-        ) >= lengths.unsqueeze(1)
-
-        t = sample_mc_timesteps(cfg, n_chunks, device)
-        eps = sample_eps(cfg, n_chunks, action_dim, device)
-
-        chunk_clip_counts = active["chunk_clip_counts"][:n_chunks]
-
-        behavior_cfm_loss, behavior_cfm_loss_token = self.compute_behavior_cfm_losses(
-            normalised_states, actions, t, eps, action_is_pad
-        )
-
-        return {
-            OBS_STATE: states,
-            ACTION: actions,
-            "action_is_pad": action_is_pad,
-            "raw_advantages": raw_advantages,
-            "normalised_advantages": normalised_advantages,
-            "raw_returns": raw_returns,
-            "normalizer_observations": active["step_frames"].detach(),
-            # Critic drift from the bootstrap value that the targets used.
-            # Target critic. That is the price of the slow teacher.
-            # Without one, the target's own drift.
-            "boot_observations": all_chunk_normalised_states[n_chunks:].to(storage_dtype),
-            "boot_actions": boot_actions.to(storage_dtype),
-            "boot_values_start": q_bootstrap.unsqueeze(1),
-            "mc_t": t,
-            "mc_eps": eps,
-            "chunk_clip_counts": chunk_clip_counts,
-            "gae_diagnostics": gae_diagnostics,
-            "behavior_cfm_loss": behavior_cfm_loss,
-            "behavior_cfm_loss_token": behavior_cfm_loss_token,
-        }
 
 
     @staticmethod
