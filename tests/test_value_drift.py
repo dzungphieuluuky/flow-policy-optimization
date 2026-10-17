@@ -83,9 +83,11 @@ def test_the_logged_key_names_the_ratio_not_a_difference():
     """
     from pathlib import Path
 
-    src = (
-        Path(__file__).resolve().parents[1] / "src" / "myfpo" / "train_sjfpo.py"
-    ).read_text()
+    # The whole package, not one file. The chain that logs this key moved into
+    # the runner package, and a file-scoped search would have gone green on a
+    # file that no longer held it.
+    root = Path(__file__).resolve().parents[1] / "src" / "myfpo"
+    src = "\n".join(p.read_text() for p in sorted(root.rglob("*.py")))
     # The docstring names the old key on purpose. The log call must not.
     assert '"train/boot_value_delta"' not in src, "the old key is still logged"
     assert "train/boot_value_relative_drift" in src

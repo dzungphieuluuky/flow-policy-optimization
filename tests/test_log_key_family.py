@@ -14,6 +14,17 @@ from myfpo.tracking.base import compute_eval_summary_metrics
 
 SRC = Path(__file__).resolve().parents[1] / "src" / "myfpo"
 
+
+def _all_source() -> str:
+    """Every module under ``src/myfpo``, concatenated.
+
+    These tests ask whether a log key is logged anywhere. Reading one file
+    answered that wrongly once: the metric chain moved into the runner package
+    and the file-scoped search went green on code that no longer held the key.
+    The claim is about the package, so the search covers the package.
+    """
+    return "\n".join(p.read_text() for p in sorted(SRC.rglob("*.py")))
+
 OLD_KEYS = (
     "eval/mean_return",
     "eval/min_return",
@@ -85,7 +96,7 @@ def test_the_random_baseline_key_names_the_policy():
 
 def test_the_chunk_clip_key_says_it_is_a_mean():
     """The batch key is a vector. The log key holds its mean."""
-    src = (SRC / "train_sjfpo.py").read_text()
+    src = _all_source()
     assert "train/chunk_clip_count_mean" in src
     assert "train/action_clip_count\"" not in src, (
         "that key is the total, logged by compute_action_clip_rate"
@@ -139,6 +150,6 @@ def test_an_empty_window_is_still_nan_not_zero():
 
 
 def test_the_grad_norm_key_spells_out_before():
-    src = (SRC / "train_sjfpo.py").read_text()
+    src = _all_source()
     assert "train/grad_norm_before_clip" in src
     assert "train/grad_norm_preclip" not in src

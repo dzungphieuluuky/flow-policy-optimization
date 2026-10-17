@@ -33,6 +33,7 @@ from myfpo.modeling_sjfpo import SJFPOAborted, SJFPOPolicy, build_optimizer
 from lerobot.utils.constants import CHECKPOINTS_DIR
 from myfpo.utils import resolve_device, rms, to_numpy_1d
 from myfpo.tracking import build_tracker, compute_eval_summary_metrics
+from myfpo.runner import build_train_metrics
 
 
 # Consecutive above-clamp updates before aborting. clamp() has zero gradient
@@ -45,23 +46,6 @@ ABOVE_CLAMP_ABORT_UPDATES = 5
 # the action horizon both set. The value is half, so an ordinary run that keeps
 # a gradient stays well under it.
 BOTH_CLAMPED_ABORT_FRAC = 0.5
-
-# GAE diagnostic name to logged name. The prefix is deliberately not uniform.
-# The key return_rms is logged as returns_rms.
-_GAE_DIAG_LOG_KEYS = {
-    "linked_frac": "gae_linked_frac",
-    "advantage_std": "gae_advantage_std",
-    "return_rms": "returns_rms",
-    "advantage_std_over_return_std": "advantage_std_over_return_std",
-}
-
-# Always present in compute_rollout_diagnostics' output.
-_ROLLOUT_ABS_KEYS = (
-    "action_abs_mean",
-    "action_abs_mean_executed",
-    "action_abs_max_executed",
-)
-
 
 def generate_mini_batch_indices(
     n: int,
@@ -822,40 +806,22 @@ def train_sjfpo_run(
             ) = torch.stack(scalars).tolist()
 
             if tracker.enabled and info is not None:
-                data = {f"train/{k}": v for k, v in info.items()}
-                data["train/grad_norm_before_clip"] = grad_norm_mean_pre
-                data["train/cfm_above_clamp_frac"] = above_clamp_frac
-                data["train/cfm_both_clamped_frac"] = both_clamped_frac
-                if cfg.log_drift_diagnostics and drift_means:
-                    data["train/boot_value_relative_drift"] = drift_means[0]
-                    data["train/value_target_drift"] = drift_means[1]
-                if rollout_jerk is not None:
-                    data["train/rollout_jerk"] = rollout_jerk
-                if rollout_seam_jerk is not None:
-                    # Non-zero here with a zero rollout_jerk is the
-                    # stale-input / missing-RTC signature.
-                    data["train/rollout_seam_jerk"] = rollout_seam_jerk
-                if "chunk_clip_counts" in rollout:
-                    # The batch key is a vector, one count per chunk. The log key
-                    # holds its mean, so the key says so. It cannot be
-                    # train/action_clip_count: that key is the total, logged by
-                    # compute_action_clip_rate.
-                    data["train/chunk_clip_count_mean"] = rollout["chunk_clip_counts"]
-                for key in _ROLLOUT_ABS_KEYS:
-                    data[f"train/{key}"] = rollout[key]
-                data.update({f"train/{k}": v for k, v in action_clip_rates.items()})
-                gae_diag = batch.get("gae_diagnostics")
-                if gae_diag:
-                    data.update(
-                        {
-                            f"train/{log}": gae_diag[src]
-                            for src, log in _GAE_DIAG_LOG_KEYS.items()
-                        }
-                    )
-                data["train/total_loss"] = (
-                    info["policy_loss"] + cfg.value_loss_coef * info["value_loss"]
+                tracker.log(
+                    build_train_metrics(
+                        cfg=cfg,
+                        info=info,
+                        batch=batch,
+                        rollout=rollout,
+                        action_clip_rates=action_clip_rates,
+                        grad_norm_mean_pre=grad_norm_mean_pre,
+                        above_clamp_frac=above_clamp_frac,
+                        both_clamped_frac=both_clamped_frac,
+                        drift_means=drift_means,
+                        rollout_jerk=rollout_jerk,
+                        rollout_seam_jerk=rollout_seam_jerk,
+                    ),
+                    step=global_step,
                 )
-                tracker.log(data, step=global_step)
 
             # Named here because the abort message needs it. The tracker can
             # be off, in which case info is None.
