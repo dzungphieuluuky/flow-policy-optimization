@@ -158,18 +158,18 @@ case("gae:lengths")(lambda: _gae(chunk_lengths=torch.ones(5, dtype=torch.long)))
 case("gae:requires-truncated")(lambda: _gae(gae_lambda=0.95))
 
 
-def _mc_tau(**kw):
+def _mc_t(**kw):
     base = dict(
-        a=torch.zeros(2, 4, 3),
+        action=torch.zeros(2, 4, 3),
         eps=torch.zeros(2, 2, 4, 3),
-        tau=torch.zeros(2, 2, 4, 1),
+        t=torch.zeros(2, 2, 4, 1),
     )
     base.update(kw)
     return broadcast_over_mc_axis(**base)
 
 
-case("fpo_core:mc:eps-shape")(lambda: _mc_tau(eps=torch.zeros(2, 2, 4, 2)))
-case("fpo_core:mc:tau-shape")(lambda: _mc_tau(tau=torch.zeros(2, 2)))
+case("fpo_core:mc:eps-shape")(lambda: _mc_t(eps=torch.zeros(2, 2, 4, 2)))
+case("fpo_core:mc:t-shape")(lambda: _mc_t(t=torch.zeros(2, 2)))
 case("fpo_core:cfm:vhat-mismatch")(
     lambda: compute_cfm_loss(
         torch.zeros(2, 4, 3), torch.zeros(2, 5, 3), SJFPOConfig(), "sample"

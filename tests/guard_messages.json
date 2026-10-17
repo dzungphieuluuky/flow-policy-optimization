@@ -68,7 +68,7 @@
   "fpo_core:cfm:reduce-mode": "reduce_mode='mean' must be 'scalar', 'sample', 'sample_and_token', or 'token_mean'",
   "fpo_core:cfm:vhat-mismatch": "v_hat shape (2, 4, 3) != v_star shape (2, 5, 3)",
   "fpo_core:mc:eps-shape": "eps shape (2, 2, 4, 2) != (2, 2, 4, 3)",
-  "fpo_core:mc:tau-shape": "tau shape (2, 2) must be [B, num_mc_samples, K, 1] with B=2, num_mc_samples=2, K=4",
+  "fpo_core:mc:t-shape": "t shape (2, 2) must be [B, num_mc_samples, K, 1] with B=2, num_mc_samples=2, K=4",
   "fpo_core:sample_action:device": "device must be provided explicitly",
   "fpo_core:sample_action:shape": "eps shape (2, 1, 3) != requested (2, 4, 3)",
   "fpo_core:sample_timesteps:mode": "timestep_sampling_mode must be 'uniform', 'normal', 'beta', or 'fpo_beta'",

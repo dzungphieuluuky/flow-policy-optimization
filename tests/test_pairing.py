@@ -41,22 +41,22 @@ def _policy():
 
 def _pairs(policy, n):
     torch.manual_seed(0)
-    tau = sample_timesteps((n, MC, HORIZON), policy.config, "cpu", None).unsqueeze(-1)
+    t = sample_timesteps((n, MC, HORIZON), policy.config, "cpu", None).unsqueeze(-1)
     eps = torch.randn(n, MC, HORIZON, ACT)
-    return tau, eps
+    return t, eps
 
 
-def _batch(policy, states, actions, tau, eps):
+def _batch(policy, states, actions, t, eps):
     pre = policy.preprocessor({"observation.state": states})["observation.state"]
     pad = torch.zeros(states.shape[0], HORIZON, dtype=torch.bool)
-    old, old_token = policy.compute_behavior_cfm_losses(pre, actions, tau, eps, pad)
+    old, old_token = policy.compute_behavior_cfm_losses(pre, actions, t, eps, pad)
     return {
         "observation.state": states,
         "action": actions,
         "action_is_pad": pad,
         "normalised_advantages": torch.ones(states.shape[0]),
         "raw_returns": torch.ones(states.shape[0]),
-        "mc_tau": tau,
+        "mc_t": t,
         "mc_eps": eps,
         "behavior_cfm_loss": old,
         "behavior_cfm_loss_token": old_token,
@@ -70,8 +70,8 @@ def test_same_weights_and_same_pairs_give_ratio_one():
     torch.manual_seed(1)
     states = torch.randn(n, policy.config.n_obs_steps, OBS)
     actions = torch.randn(n, HORIZON, ACT)
-    tau, eps = _pairs(policy, n)
-    _, info = policy(_batch(policy, states, actions, tau, eps), compute_info=True)
+    t, eps = _pairs(policy, n)
+    _, info = policy(_batch(policy, states, actions, t, eps), compute_info=True)
     assert info["mean_log_ratio"] == 0.0
     assert info["log_ratio_max"] == 0.0
 
@@ -83,24 +83,24 @@ def test_swapped_pairs_move_the_ratio():
     torch.manual_seed(1)
     states = torch.randn(n, policy.config.n_obs_steps, OBS)
     actions = torch.randn(n, HORIZON, ACT)
-    tau, eps = _pairs(policy, n)
-    batch = _batch(policy, states, actions, tau, eps)
-    batch["mc_tau"] = torch.rand_like(tau)
+    t, eps = _pairs(policy, n)
+    batch = _batch(policy, states, actions, t, eps)
+    batch["mc_t"] = torch.rand_like(t)
     batch["mc_eps"] = torch.randn_like(eps)
     _, info = policy(batch, compute_info=True)
     assert info["log_ratio_max"] > 0.0
 
 
-def test_a_misshapen_stored_tau_raises():
+def test_a_misshapen_stored_timestep_raises():
     """The stored branch runs, so a bad stored shape cannot fall through."""
     policy = _policy()
     n = 2
     states = torch.zeros(n, policy.config.n_obs_steps, OBS)
     actions = torch.zeros(n, HORIZON, ACT)
-    tau, eps = _pairs(policy, n)
-    batch = _batch(policy, states, actions, tau, eps)
-    batch["mc_tau"] = torch.ones(n, MC, HORIZON + 1, 1)
-    with pytest.raises(ValueError, match="mc_tau shape"):
+    t, eps = _pairs(policy, n)
+    batch = _batch(policy, states, actions, t, eps)
+    batch["mc_t"] = torch.ones(n, MC, HORIZON + 1, 1)
+    with pytest.raises(ValueError, match="mc_t shape"):
         policy(batch, compute_info=False)
 
 
@@ -113,8 +113,8 @@ def test_the_frozen_pass_is_deterministic():
     actions = torch.randn(n, HORIZON, ACT)
     pre = policy.preprocessor({"observation.state": states})["observation.state"]
     pad = torch.zeros(n, HORIZON, dtype=torch.bool)
-    tau, eps = _pairs(policy, n)
-    first = policy.compute_behavior_cfm_losses(pre, actions, tau, eps, pad)
-    second = policy.compute_behavior_cfm_losses(pre, actions, tau, eps, pad)
+    t, eps = _pairs(policy, n)
+    first = policy.compute_behavior_cfm_losses(pre, actions, t, eps, pad)
+    second = policy.compute_behavior_cfm_losses(pre, actions, t, eps, pad)
     for a, b in zip(first, second):
         assert torch.equal(a, b)

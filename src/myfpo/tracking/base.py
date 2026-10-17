@@ -34,7 +34,7 @@ def config_hash(cfg_dict: dict) -> str:
     share a name.
 
     The tags in ``build_run_name`` cover only the settings that usually change.
-    Two runs that differed in any other setting (gamma, action_horizon, tau)
+    Two runs that differed in any other setting (gamma, action_horizon, timestep_sampling_mode)
     got the same name. The feature dicts are not part of the hash. The env
     fixes those dicts, and they render badly in a tensorboard path.
     """

@@ -46,7 +46,7 @@ class SJFPOFlowMLP(nn.Module):
     ``cfg.hidden_dim`` because the encoder projects to that width.
 
     One difference is deliberate. The reference draws one time per chunk. The
-    MC sampling of this repo gives every token its own ``tau``
+    MC sampling of this repo gives every token its own ``t``
     (:func:`myfpo.fpo_core.broadcast_over_mc_axis`). So the embedding is
     flattened next to the chunk instead of concatenated as one vector. Each
     token's velocity then matches the ``x_t`` that the token was built from. A

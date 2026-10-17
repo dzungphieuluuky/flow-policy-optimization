@@ -59,7 +59,7 @@ def _policy_and_batch(cfg, seed=0, pad_from=None):
         "raw_returns": torch.from_numpy(
             (rng.standard_normal(N, dtype=np.float32) * 10.0)
         ),
-        "mc_tau": torch.from_numpy(
+        "mc_t": torch.from_numpy(
             rng.uniform(0.05, 0.95, size=(N, MC, cfg.action_horizon, 1)).astype(
                 np.float32
             )
@@ -74,7 +74,7 @@ def _policy_and_batch(cfg, seed=0, pad_from=None):
         batch["action_is_pad"][1, pad_from:] = True
     normalised = policy.preprocessor({M.OBS_STATE: batch[M.OBS_STATE]})[M.OBS_STATE]
     cfm_loss_old, cfm_loss_old_token = policy.compute_behavior_cfm_losses(
-        normalised, batch[M.ACTION], batch["mc_tau"], batch["mc_eps"],
+        normalised, batch[M.ACTION], batch["mc_t"], batch["mc_eps"],
         batch["action_is_pad"],
     )
     batch["behavior_cfm_loss"] = cfm_loss_old
@@ -117,7 +117,7 @@ def per_chunk(**kw):
 
 
 def per_action(**kw):
-    """FPO++ Eq 10: tokens averaged, one ratio per (tau, eps) pair."""
+    """FPO++ Eq 10: tokens averaged, one ratio per (t, eps) pair."""
     return _cfg(do_average_cfm_loss_in_chunk=True, cfm_average_group_size=1, **kw)
 
 
@@ -138,7 +138,7 @@ def test_per_chunk_averages_the_mc_losses_before_exponentiating():
 
 
 def test_per_action_keeps_one_ratio_per_mc_pair():
-    """FPO++ Eq 10: each (tau, eps) pair clips on its own."""
+    """FPO++ Eq 10: each (t, eps) pair clips on its own."""
     ratios, surrogate_inputs, batch = _recorded(per_action())
     assert surrogate_inputs == [(N, MC)]
     per_pair = [call for call in ratios if call.dim() == 2]

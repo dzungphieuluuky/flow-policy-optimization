@@ -82,14 +82,19 @@ def sample_noise(
 
 
 def broadcast_over_mc_axis(
-    a: torch.Tensor, eps: torch.Tensor, tau
+    action: torch.Tensor, eps: torch.Tensor, t
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, tuple[int, ...], int]:
     """Broadcast the action, the noise, and the per-token timestep over the MC
     axis. The function returns ``[B*M, ...]``.
 
-    ``tau`` has the shape ``[B, M, K, 1]``. Each action step gets its own time.
+    ``t`` has the shape ``[B, M, K, 1]``. Each action step gets its own time.
     That step keeps the velocity of a token and the target of that token on the
-    same ``tau``.
+    same ``t``.
+
+    The flow time is ``t`` everywhere. It was also spelled ``tau`` here and in
+    the policy, while :func:`cfm_loss_weight` and
+    :func:`velocity_to_target_param` already used ``t``. One quantity, two
+    letters. ``eps`` keeps its own name, because that is the paper letter.
 
     This function no longer accepts a scalar or a per-chunk shape. No caller
     could reach either one.
@@ -101,29 +106,29 @@ def broadcast_over_mc_axis(
     old name ``broadcast_over_mc_axis`` implied iteration.
     """
     b, num_mc = eps.shape[0], eps.shape[1]
-    flow_shape = tuple(a.shape[1:])
+    flow_shape = tuple(action.shape[1:])
     if tuple(eps.shape) != (b, num_mc, *flow_shape):
         raise ValueError(f"eps shape {tuple(eps.shape)} != {(b, num_mc, *flow_shape)}")
 
     storage_dtype = resolve_storage_dtype(eps.device)
-    if isinstance(tau, torch.Tensor):
-        t = tau.to(device=eps.device, dtype=storage_dtype)
+    if isinstance(t, torch.Tensor):
+        t = t.to(device=eps.device, dtype=storage_dtype)
     else:
-        t = torch.as_tensor(tau, dtype=storage_dtype, device=eps.device)
+        t = torch.as_tensor(t, dtype=storage_dtype, device=eps.device)
 
     if t.dim() != 4 or tuple(t.shape) != (b, num_mc, flow_shape[0], 1):
         raise ValueError(
-            f"tau shape {tuple(t.shape)} must be [B, num_mc_samples, K, 1] "
+            f"t shape {tuple(t.shape)} must be [B, num_mc_samples, K, 1] "
             f"with B={b}, num_mc_samples={num_mc}, K={flow_shape[0]}"
         )
 
-    d = a.numel() // b
-    a_flat = a.reshape(b, 1, d).expand(b, num_mc, d).reshape(b * num_mc, d)
+    d = action.numel() // b
+    action_flat = action.reshape(b, 1, d).expand(b, num_mc, d).reshape(b * num_mc, d)
     flatten_mc_timestep = t.reshape(b * num_mc, flow_shape[0], 1)
     return (
         flatten_mc_timestep,
         eps.reshape(b * num_mc, d),
-        a_flat,
+        action_flat,
         flow_shape,
         num_mc,
     )

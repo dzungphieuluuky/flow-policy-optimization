@@ -20,7 +20,7 @@ def test_training_logic():
         "raw_advantages": torch.ones(1),
         "normalised_advantages": torch.ones(1),
         "raw_returns": torch.ones(1),
-        "mc_tau": torch.ones(1, cfg.num_mc_samples, cfg.action_horizon, 1),
+        "mc_t": torch.ones(1, cfg.num_mc_samples, cfg.action_horizon, 1),
         "mc_eps": torch.randn(1, cfg.num_mc_samples, cfg.action_horizon, 3),
         "behavior_cfm_loss": torch.ones(1, cfg.num_mc_samples),
         "behavior_cfm_loss_token": torch.ones(1, cfg.num_mc_samples, cfg.action_horizon),

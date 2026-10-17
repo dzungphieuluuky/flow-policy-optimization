@@ -199,9 +199,9 @@ def test_transported_clip_reaches_the_policy_output():
     policy = _policy(action_dim=2, transported_clip_value=0.01)
     horizon = policy.config.action_horizon
     x = torch.randn(4, horizon, 2) * 50
-    tau = torch.full((4, horizon), 0.5)
+    t = torch.full((4, horizon), 0.5)
     cond = torch.randn(4, policy.config.hidden_dim)
-    v = policy.compute_predicted_velocity(x, tau, cond)
+    v = policy.compute_predicted_velocity(x, t, cond)
     assert v.abs().max() <= 0.01 + 1e-6
 
 

@@ -196,12 +196,12 @@ def compute_mc_xt(
 
 
 def mc_draws(
-    actions: torch.Tensor, eps: torch.Tensor, tau: torch.Tensor
+    actions: torch.Tensor, eps: torch.Tensor, t: torch.Tensor
 ) -> tuple[torch.Tensor, torch.Tensor, tuple[int, ...], int]:
     """The shared MC prologue of ``compute_behavior_cfm_losses`` and ``forward``.
-    The function interpolates the draws, with one tau per token."""
+    The function interpolates the draws, with one t per token."""
     flatten_timestep, flatten_mc_noise, flatten_mc_action, flow_shape, num_mc = (
-        broadcast_over_mc_axis(actions, eps, tau)
+        broadcast_over_mc_axis(actions, eps, t)
     )
     x_t = compute_mc_xt(flatten_timestep, flatten_mc_noise, flatten_mc_action, flow_shape)
     return x_t, flatten_timestep.squeeze(-1), flow_shape, num_mc
@@ -212,7 +212,7 @@ def broadcast_condition(condition: torch.Tensor, num_mc: int) -> torch.Tensor:
     return einx.id("n m d -> (n m) d", einx.id("n d -> n m d", condition, m=num_mc))
 
 
-def sample_tau(cfg: SJFPOConfig, n: int, device: torch.device) -> torch.Tensor:
+def sample_mc_timesteps(cfg: SJFPOConfig, n: int, device: torch.device) -> torch.Tensor:
     """MC timesteps, one trailing axis: ``[n, M, horizon, 1]``."""
     return sample_timesteps(
         (n, cfg.num_mc_samples, cfg.action_horizon), cfg, device, None
@@ -679,7 +679,7 @@ class SJFPOPolicy(PreTrainedPolicy):
     def compute_predicted_velocity(
         self,
         x_t: torch.Tensor,
-        tau: torch.Tensor,
+        t: torch.Tensor,
         condition: torch.Tensor,
     ) -> torch.Tensor:
         """Actor on a flow point.
@@ -688,7 +688,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         conditioning pass covers every draw.
         """
         cfg = self.config
-        return clip_velocity(self.actor(x_t, tau, condition), cfg.transported_clip_value)
+        return clip_velocity(self.actor(x_t, t, condition), cfg.transported_clip_value)
 
 
     def predict_action_chunk(
@@ -823,7 +823,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         self,
         normalised_states: torch.Tensor,
         actions: torch.Tensor,
-        tau: torch.Tensor,
+        t: torch.Tensor,
         eps: torch.Tensor,
         action_is_pad: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -839,12 +839,12 @@ class SJFPOPolicy(PreTrainedPolicy):
         ratio never mixes means over different positions.
         """
         cfg = self.config
-        x_t, actor_tau, flow_shape, num_mc = mc_draws(actions, eps, tau)
+        x_t, actor_t, flow_shape, num_mc = mc_draws(actions, eps, t)
         with torch.inference_mode(), autocast_context(actions.device):
             condition = self.encoder(normalised_states)
             condition_flat = broadcast_condition(condition, num_mc)
             v_old = self.compute_predicted_velocity(
-                x_t, actor_tau, condition_flat
+                x_t, actor_t, condition_flat
             ).float()
         with torch.autocast(device_type=actions.device.type, enabled=False):
             v_star = cfm_target(actions, eps, cfg).float()
@@ -853,12 +853,12 @@ class SJFPOPolicy(PreTrainedPolicy):
             v_old = velocity_to_target_param(
                 v_old,
                 x_t.reshape(eps.shape[0], num_mc, *flow_shape),
-                tau,
+                t,
                 cfg,
             )
             loss_mask = action_is_pad
             return compute_cfm_loss(
-                v_old, v_star, cfg, "sample_and_token", loss_mask, cfm_loss_weight(tau, cfg)
+                v_old, v_star, cfg, "sample_and_token", loss_mask, cfm_loss_weight(t, cfg)
             )
 
     def generate_rollout(
@@ -1094,13 +1094,13 @@ class SJFPOPolicy(PreTrainedPolicy):
             0
         ) >= lengths.unsqueeze(1)
 
-        tau = sample_tau(cfg, n_chunks, device)
+        t = sample_mc_timesteps(cfg, n_chunks, device)
         eps = sample_eps(cfg, n_chunks, action_dim, device)
 
         chunk_clip_counts = active["chunk_clip_counts"][:n_chunks]
 
         behavior_cfm_loss, behavior_cfm_loss_token = self.compute_behavior_cfm_losses(
-            normalised_states, actions, tau, eps, action_is_pad
+            normalised_states, actions, t, eps, action_is_pad
         )
 
         return {
@@ -1117,7 +1117,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             "boot_observations": all_chunk_normalised_states[n_chunks:].to(storage_dtype),
             "boot_actions": boot_actions.to(storage_dtype),
             "boot_values_start": q_bootstrap.unsqueeze(1),
-            "mc_tau": tau,
+            "mc_t": t,
             "mc_eps": eps,
             "chunk_clip_counts": chunk_clip_counts,
             "gae_diagnostics": gae_diagnostics,
@@ -1202,16 +1202,16 @@ class SJFPOPolicy(PreTrainedPolicy):
         n = states.shape[0]
         action_dim = actions.shape[-1]
 
-        has_mc_tau = "mc_tau" in batch
+        has_mc_t = "mc_t" in batch
         has_mc_eps = "mc_eps" in batch
-        if has_mc_tau != has_mc_eps:
-            raise ValueError("mc_tau and mc_eps must be provided together")
-        if has_mc_tau:
-            tau = to_tensor(batch["mc_tau"], dtype=storage_dtype, device=device)
-            expected_tau = (n, cfg.num_mc_samples, horizon, 1)
-            if tuple(tau.shape) != expected_tau:
+        if has_mc_t != has_mc_eps:
+            raise ValueError("mc_t and mc_eps must be provided together")
+        if has_mc_t:
+            t = to_tensor(batch["mc_t"], dtype=storage_dtype, device=device)
+            expected_t = (n, cfg.num_mc_samples, horizon, 1)
+            if tuple(t.shape) != expected_t:
                 raise ValueError(
-                    f"mc_tau shape {tuple(tau.shape)} != {expected_tau}"
+                    f"mc_t shape {tuple(t.shape)} != {expected_t}"
                 )
             eps = to_tensor(batch["mc_eps"], dtype=storage_dtype, device=device)
             expected_eps = (n, cfg.num_mc_samples, horizon, action_dim)
@@ -1220,10 +1220,10 @@ class SJFPOPolicy(PreTrainedPolicy):
                     f"stored MC noise shape {tuple(eps.shape)} != {expected_eps}"
                 )
         else:
-            tau = sample_tau(cfg, n, device)
+            t = sample_mc_timesteps(cfg, n, device)
             eps = sample_eps(cfg, n, action_dim, device)
 
-        x_t_flat, actor_tau, flow_shape, num_mc = mc_draws(actions, eps, tau)
+        x_t_flat, actor_t, flow_shape, num_mc = mc_draws(actions, eps, t)
 
         with autocast_context(device):
             # One encoder pass. The actor gets the MC-broadcast copy. The critic
@@ -1263,7 +1263,7 @@ class SJFPOPolicy(PreTrainedPolicy):
 
         with autocast_context(device):
             v_new = self.compute_predicted_velocity(
-                x_t_flat, actor_tau, cond_flat
+                x_t_flat, actor_t, cond_flat
             ).float()
 
         cond_stats = None
@@ -1273,7 +1273,7 @@ class SJFPOPolicy(PreTrainedPolicy):
                 probe = max(1, cfg.hidden_dim // cfg.action_horizon)
                 _, cond_stats = self.actor(
                     x_t_flat[:probe],
-                    actor_tau[:probe],
+                    actor_t[:probe],
                     cond_flat[:probe],
                     return_stats=True,
                 )
@@ -1282,7 +1282,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             v_new_r_f = velocity_to_target_param(
                 v_new.reshape(n, num_mc, *flow_shape),
                 x_t_flat.reshape(n, num_mc, *flow_shape),
-                tau,
+                t,
                 cfg,
             )
             v_star_f = cfm_target(actions, eps, cfg).float()
@@ -1292,7 +1292,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             adv_mc = adv.unsqueeze(1)
             cfm_loss_new, cfm_loss_new_token = compute_cfm_loss(
                 v_new_r_f, v_star_f, cfg, "sample_and_token", loss_mask,
-                cfm_loss_weight(tau, cfg),
+                cfm_loss_weight(t, cfg),
             )
             # Both ratios take the advantage. Without it, the A<0 clamp is
             # skipped.

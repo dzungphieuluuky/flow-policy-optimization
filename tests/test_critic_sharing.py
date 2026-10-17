@@ -79,12 +79,12 @@ def test_both_settings_pass_a_rollout_and_a_forward():
             "action_is_pad": torch.zeros(4, HORIZON, dtype=torch.bool),
             "normalised_advantages": torch.randn(4),
             "raw_returns": torch.randn(4),
-            "mc_tau": torch.rand(4, 2, HORIZON, 1),
+            "mc_t": torch.rand(4, 2, HORIZON, 1),
             "mc_eps": torch.randn(4, 2, HORIZON, ACT),
         }
         states = policy.preprocessor({"observation.state": batch["observation.state"]})["observation.state"]
         old, old_tok = policy.compute_behavior_cfm_losses(
-            states, batch["action"], batch["mc_tau"], batch["mc_eps"], batch["action_is_pad"]
+            states, batch["action"], batch["mc_t"], batch["mc_eps"], batch["action_is_pad"]
         )
         batch["behavior_cfm_loss"] = old
         batch["behavior_cfm_loss_token"] = old_tok
@@ -104,12 +104,12 @@ def test_the_encoder_gets_gradient_from_the_critic_too():
         "action_is_pad": torch.zeros(4, HORIZON, dtype=torch.bool),
         "normalised_advantages": torch.randn(4),
         "raw_returns": torch.randn(4),
-        "mc_tau": torch.rand(4, 2, HORIZON, 1),
+        "mc_t": torch.rand(4, 2, HORIZON, 1),
         "mc_eps": torch.randn(4, 2, HORIZON, ACT),
     }
     states = policy.preprocessor({"observation.state": batch["observation.state"]})["observation.state"]
     old, old_tok = policy.compute_behavior_cfm_losses(
-        states, batch["action"], batch["mc_tau"], batch["mc_eps"], batch["action_is_pad"]
+        states, batch["action"], batch["mc_t"], batch["mc_eps"], batch["action_is_pad"]
     )
     batch["behavior_cfm_loss"] = old
     batch["behavior_cfm_loss_token"] = old_tok

@@ -41,7 +41,7 @@ def _policy_batch(policy, n=2):
         "action_is_pad": torch.zeros(n, HORIZON, dtype=torch.bool),
         "normalised_advantages": torch.ones(n),
         "raw_returns": torch.ones(n),
-        "mc_tau": torch.ones(n, mc, HORIZON, 1),
+        "mc_t": torch.ones(n, mc, HORIZON, 1),
         "mc_eps": torch.randn(n, mc, HORIZON, ACT),
         "behavior_cfm_loss": torch.ones(n, mc),
         "behavior_cfm_loss_token": torch.ones(n, mc, HORIZON),

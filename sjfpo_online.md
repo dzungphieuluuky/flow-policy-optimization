@@ -225,14 +225,14 @@ conditional flow-matching loss:
 r = exp(L_CFM_old - L_CFM_new)
 ```
 
-with `L_CFM` evaluated over `num_mc_samples` Monte-Carlo `(tau, eps)` draws,
+with `L_CFM` evaluated over `num_mc_samples` Monte-Carlo `(t, eps)` draws,
 frozen once per rollout and reused for both the old and the new pass. Those
 draws are **not** the noise the behaviour rollout saw: the sampler draws its
 own `eps` inside `predict_action_chunk` and discards it, and the rollout buffer
 never stores it. Only old-vs-new share draws. The ratio's granularity is two
 knobs, as in FPO++: `--sjfpo.do_average_cfm_loss_in_chunk` folds the chunk's
 tokens and `--sjfpo.cfm_average_group_size` folds the Monte-Carlo pairs. With
-the token axis folded you get one ratio per `(tau, eps)` pair, which is FPO++
+the token axis folded you get one ratio per `(t, eps)` pair, which is FPO++
 Eq. 10.
 
 **ASPO, the trust region.** Asymmetric, with two widths. `A > 0` takes PPO
