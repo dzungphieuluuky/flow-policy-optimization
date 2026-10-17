@@ -50,8 +50,8 @@ SECTIONS: list[tuple[str, list[str]]] = [
         [
             "num_steps_zero_start",
             "num_steps_noise_start",
-            "min_timestep",
-            "max_timestep",
+            "min_sampled_timestep",
+            "max_sampled_timestep",
             "timestep_sampling_mode",
             "noise_sampling_mode",
             "timestep_inverse_cdf_beta",

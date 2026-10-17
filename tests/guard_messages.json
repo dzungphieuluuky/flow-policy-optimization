@@ -29,7 +29,7 @@
   "config:lr_decay": "lr_decay=0.0 must satisfy 0 < factor <= 1",
   "config:max_grad_norm": "max_grad_norm=0.0 must be > 0",
   "config:max_lr_decays": "max_lr_decays=-1 must be >= 0",
-  "config:min_timestep": "require 0 <= min_timestep < max_timestep <= 1, got (-1.0, 0.995)",
+  "config:min_sampled_timestep": "require 0 <= min_sampled_timestep < max_sampled_timestep <= 1, got (-1.0, 0.995)",
   "config:missing-input-features": "SJFPO requires 'observation.state' in input_features.",
   "config:noise_sampling_mode": "noise_sampling_mode must be 'normal' or 'uniform'",
   "config:num_critics": "num_critics=0 must be >= 1",

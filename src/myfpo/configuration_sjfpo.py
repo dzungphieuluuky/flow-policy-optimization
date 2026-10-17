@@ -52,8 +52,12 @@ class SJFPOConfig(PreTrainedConfig):
 
     num_steps_zero_start: int = 10
     num_steps_noise_start: int = 10
-    min_timestep: float = 0.005
-    max_timestep: float = 0.995
+    # The bounds of the TRAINING draw only. The flow itself always runs over the
+    # full [0, 1]: ``sample_action`` builds its grid with ``linspace(0, 1, ...)``
+    # and never reads these. The fields were named ``min_timestep`` and
+    # ``max_timestep``, which read as the range of the flow.
+    min_sampled_timestep: float = 0.005
+    max_sampled_timestep: float = 0.995
     timestep_sampling_mode: str = "fpo_beta"
     noise_sampling_mode: str = "normal"
     timestep_inverse_cdf_beta: float = 1.0
@@ -302,10 +306,15 @@ class SJFPOConfig(PreTrainedConfig):
             raise ValueError("cfm_loss_clamp_negative_advantages_max must be > 0")
         if self.log_ratio_cap <= 0:
             raise ValueError(f"log_ratio_cap={self.log_ratio_cap} must be > 0")
-        if not 0.0 <= self.min_timestep < self.max_timestep <= 1.0:
+        if not (
+            0.0
+            <= self.min_sampled_timestep
+            < self.max_sampled_timestep
+            <= 1.0
+        ):
             raise ValueError(
-                "require 0 <= min_timestep < max_timestep <= 1, got "
-                f"({self.min_timestep}, {self.max_timestep})"
+                "require 0 <= min_sampled_timestep < max_sampled_timestep <= 1, got "
+                f"({self.min_sampled_timestep}, {self.max_sampled_timestep})"
             )
         if self.timestep_sampling_mode not in {"uniform", "normal", "beta", "fpo_beta"}:
             raise ValueError(

@@ -141,8 +141,8 @@ class TestSamplingFunctions:
 
         cfg = SJFPOConfig()
         t = sample_timesteps(10, cfg, device=torch.device("cpu"), generator=None)
-        assert (t >= cfg.min_timestep - 1e-5).all()
-        assert (t <= cfg.max_timestep + 1e-5).all()
+        assert (t >= cfg.min_sampled_timestep - 1e-5).all()
+        assert (t <= cfg.max_sampled_timestep + 1e-5).all()
 
     def test_sample_noise_shape(self):
         """Noise shape matches request."""

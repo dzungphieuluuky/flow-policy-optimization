@@ -28,9 +28,51 @@ def _draw(**kwargs) -> torch.Tensor:
     return sample_timesteps(N, cfg, "cpu", None)
 
 
+def test_the_draw_bounds_are_not_the_range_of_the_flow():
+    """Two separate ranges. The old names read as one.
+
+    ``sample_action`` integrates over ``[0, 1]`` on every call and never reads
+    the config. The two fields bound the training draw only.
+    """
+    cfg = SJFPOConfig()
+    assert cfg.min_sampled_timestep == 0.005
+    assert cfg.max_sampled_timestep == 0.995
+    assert cfg.min_sampled_timestep > 0.0, "the draw must not sit exactly on t=0"
+    assert cfg.max_sampled_timestep < 1.0, "the draw must not sit exactly on t=1"
+
+    # The sampler grid starts at 0 and ends at 1 regardless of the draw bounds.
+    from myfpo.fpo_core import sample_action
+
+    seen = []
+
+    def predict_velocity(x, t, condition):
+        seen.append(float(t.reshape(-1)[0]))
+        return torch.zeros_like(x)
+
+    sample_action(
+        predict_velocity,
+        (1, 2, 1),
+        None,
+        num_steps=cfg.num_steps_noise_start,
+        eps=torch.zeros(1, 2, 1),
+        device="cpu",
+    )
+    # The loop evaluates grid[0 .. num_steps-1], so the times it reads start at
+    # exactly 0.0 and stop one step short of 1.0. The final update lands on 1.0.
+    assert seen[0] == 0.0 and seen[-1] < 1.0, seen
+    assert min(seen) < cfg.min_sampled_timestep, (
+        "the sampler must evaluate times the training draw never sees"
+    )
+    # And the integration still covers the whole interval, so the draw bounds
+    # cannot be read as the flow range.
+    assert cfg.max_sampled_timestep - cfg.min_sampled_timestep < 1.0
+    grid = torch.linspace(0.0, 1.0, cfg.num_steps_noise_start + 1)
+    assert float(grid[-1]) == 1.0, "the sampler integrates to t=1"
+
+
 def test_fpo_beta_at_one_equals_uniform():
     """The defect this file exists for: the default beta is the null case."""
-    lo, hi = SJFPOConfig().min_timestep, SJFPOConfig().max_timestep
+    lo, hi = SJFPOConfig().min_sampled_timestep, SJFPOConfig().max_sampled_timestep
     fpo = _draw(timestep_sampling_mode="fpo_beta", timestep_inverse_cdf_beta=1.0)
     uni = _draw(timestep_sampling_mode="uniform")
 
@@ -49,8 +91,8 @@ def test_fpo_beta_away_from_one_differs_from_uniform():
 
 
 def test_fpo_beta_leans_toward_the_lower_bound():
-    """beta > 1 puts more mass near ``min_timestep`` than a uniform draw."""
-    lo, hi = SJFPOConfig().min_timestep, SJFPOConfig().max_timestep
+    """beta > 1 puts more mass near ``min_sampled_timestep`` than a uniform draw."""
+    lo, hi = SJFPOConfig().min_sampled_timestep, SJFPOConfig().max_sampled_timestep
     mid = (lo + hi) / 2
     for beta in (0.5, 2.0, 4.0, 8.0):
         draw = _draw(timestep_sampling_mode="fpo_beta", timestep_inverse_cdf_beta=beta)
@@ -67,8 +109,8 @@ def test_every_mode_draws_inside_its_range():
     # The clamp returns the fp32 neighbour of the bound. That neighbour sits
     # just below the Python float when the bound is not representable. So the
     # test compares against the fp32 value, not the Python value.
-    lo = torch.tensor(cfg.min_timestep, dtype=torch.float32)
-    hi = torch.tensor(cfg.max_timestep, dtype=torch.float32)
+    lo = torch.tensor(cfg.min_sampled_timestep, dtype=torch.float32)
+    hi = torch.tensor(cfg.max_sampled_timestep, dtype=torch.float32)
     for mode in ("uniform", "normal", "beta", "fpo_beta"):
         draw = _draw(timestep_sampling_mode=mode)
         assert float(draw.min()) >= float(lo), f"{mode} went below lo"

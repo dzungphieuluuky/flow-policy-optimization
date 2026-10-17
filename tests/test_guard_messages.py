@@ -58,7 +58,7 @@ _BAD_CONFIG = {
     "log_ratio_cap": 0.0,
     "max_grad_norm": 0.0,
     "max_lr_decays": -1,
-    "min_timestep": -1.0,
+    "min_sampled_timestep": -1.0,
     "noise_sampling_mode": "laplace",
     "num_critics": 0,
     "num_steps_noise_start": 0,

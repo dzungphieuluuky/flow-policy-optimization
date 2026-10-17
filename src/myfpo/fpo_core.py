@@ -22,8 +22,13 @@ def sample_timesteps(
     device: torch.device | str,
     generator: torch.Generator | None,
 ):
-    """Flow timesteps in ``[min_timestep, max_timestep]``. ``[num_samples]``."""
-    lo, hi = cfg.min_timestep, cfg.max_timestep
+    """Training timesteps in ``[cfg.min_sampled_timestep,
+    cfg.max_sampled_timestep]``. ``[num_samples]``.
+
+    These are the bounds of the draw, not of the flow. The sampler runs over
+    the full ``[0, 1]`` and never reads these two fields.
+    """
+    lo, hi = cfg.min_sampled_timestep, cfg.max_sampled_timestep
     mode = cfg.timestep_sampling_mode
     if mode == "uniform":
         return (
