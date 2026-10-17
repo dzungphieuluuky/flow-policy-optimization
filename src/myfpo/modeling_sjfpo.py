@@ -51,7 +51,7 @@ from myfpo.fpo_core import (
 from myfpo.gae import compute_chunk_advantages
 from myfpo.critic import Critic
 from myfpo.encoder import RunningMeanStd, StateEncoder
-from myfpo.flow import SJFPOFlowModel
+from myfpo.flow import SJFPOFlowModel, SJFPOFlowResMLP
 from myfpo.processor_sjfpo import make_sjfpo_pre_post_processors
 from myfpo.utils import (
     autocast_context,
@@ -385,15 +385,27 @@ class SJFPOPolicy(PreTrainedPolicy):
         obs_dim = int(config.robot_state_feature.shape[0])
         action_dim = int(config.action_feature.shape[0])
 
-        self.actor = SJFPOFlowModel(
-            action_dim,
-            config.action_horizon,
-            config.hidden_dim,
-            config.dit_depth,
-            config.dit_heads,
-            config.dit_mlp_ratio,
-            config.time_embed_dim,
-        )
+        if config.actor_arch == "resmlp":
+            self.actor = SJFPOFlowResMLP(
+                action_dim,
+                config.action_horizon,
+                config.hidden_dim,
+                config.resmlp_blocks,
+                config.resmlp_units,
+                config.resmlp_hidden_mult,
+                config.dit_heads,
+                config.time_embed_dim,
+            )
+        else:
+            self.actor = SJFPOFlowModel(
+                action_dim,
+                config.action_horizon,
+                config.hidden_dim,
+                config.dit_depth,
+                config.dit_heads,
+                config.dit_mlp_ratio,
+                config.time_embed_dim,
+            )
         self.encoder = StateEncoder(obs_dim, config.hidden_dim, config.n_obs_steps)
         critic_width = (
             config.critic_hidden_dim

@@ -20,6 +20,10 @@ __all__ = ["ACTOR_ARCHITECTURES", "FLOW_STARTS", "SJFPOConfig"]
 # temporal Conv1d (kernel_size=5), ACT with self-attention over the chunk.
 ACTOR_ARCHITECTURES = ("dit", "resmlp")
 
+# ``dit_heads`` serves both actors. The resmlp block uses the same self-attention
+# as the DiT block, so one head count keeps the two comparable and keeps the
+# config surface one field smaller.
+
 # The two values a flow start may take. They cover the config fields, the
 # tracker keys, and _EvalPolicy in train_sjfpo. One vocabulary, so a reader does
 # not meet "zero", "stochastic", "noise", and "zero_sampling" for the same two
@@ -116,6 +120,11 @@ class SJFPOConfig(PreTrainedConfig):
     dit_depth: int = 3
     dit_heads: int = 2
     dit_mlp_ratio: float = 2.0
+    # The resmlp actor. The block count and the unit count are separate, because
+    # Wang et al. (2025) count depth in Dense layers and fix the unit at four.
+    resmlp_blocks: int = 2
+    resmlp_units: int = 4
+    resmlp_hidden_mult: float = 2.0
     time_embed_dim: int = 32
 
     policy_lr: float = 1e-5
@@ -223,6 +232,16 @@ class SJFPOConfig(PreTrainedConfig):
             raise ValueError(f"dit_heads={self.dit_heads} must be >= 1")
         if self.dit_mlp_ratio <= 0:
             raise ValueError(f"dit_mlp_ratio={self.dit_mlp_ratio} must be > 0")
+        for name, value in (
+            ("resmlp_blocks", self.resmlp_blocks),
+            ("resmlp_units", self.resmlp_units),
+        ):
+            if value < 1:
+                raise ValueError(f"{name}={value} must be >= 1")
+        if self.resmlp_hidden_mult <= 0:
+            raise ValueError(
+                f"resmlp_hidden_mult={self.resmlp_hidden_mult} must be > 0"
+            )
         if self.time_embed_dim < 1:
             raise ValueError(f"time_embed_dim={self.time_embed_dim} must be >= 1")
         if self.cfm_loss_huber_delta <= 0:

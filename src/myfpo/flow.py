@@ -1,13 +1,27 @@
-"""Conditional flow-matching velocity model over action tokens."""
+"""Conditional flow-matching velocity model over action tokens.
+
+Two actors live here and both keep the action tokens on separate axes:
+
+``SJFPOFlowModel``
+    The DiT actor. One block is self-attention, one SwiGLU, and adaLN.
+``SJFPOFlowResMLP``
+    The ``resmlp`` actor. The self-attention and the adaLN conditioning are
+    kept, because this repo needs both. What changes is the MLP: it becomes the
+    residual unit of Wang et al. (2025), arXiv:2503.14858.
+
+Both take ``(action_dim, action_horizon, hidden_dim, ...)``, so ``actor_arch``
+swaps the trunk and nothing else.
+"""
 
 from __future__ import annotations
 
 import math
 
 import torch
+import torch.nn.functional as F
 from torch import nn
 
-from myfpo.attention import DiTBlock
+from myfpo.attention import DiTBlock, SelfAttention
 from myfpo.layers import CondMLP, SinusoidalEncoding, build_rms_norm, modulate
 from myfpo.utils import rms
 
@@ -26,8 +40,12 @@ def effective_rank(features: torch.Tensor) -> torch.Tensor:
     return torch.exp(torch.special.entr(p).sum())
 
 
-class SJFPOFlowModel(nn.Module):
-    """DiT velocity model over noisy action tokens, adaLN conditioned.
+class _FlowActorBase(nn.Module):
+    """The stem both actors share: embed, project, condition, decode.
+
+    Every part of this class is actor-independent. The action tokens stay on
+    their own axis throughout, because the CFM draw gives each token its own
+    ``t``. A subclass supplies only the block list.
 
     ``return_stats=True`` gives ``(velocity, stats)`` plus per-block gate and
     scale RMS reductions. The default path returns the velocity only. It
@@ -47,20 +65,19 @@ class SJFPOFlowModel(nn.Module):
         action_dim: int,
         action_horizon: int,
         hidden_dim: int,
-        dit_depth: int,
-        dit_heads: int,
-        dit_mlp_ratio: float,
         time_embed_dim: int,
+        block_cls: type[nn.Module],
+        block_kwargs: dict,
     ):
         super().__init__()
         if action_dim < 1 or hidden_dim < 2:
             raise ValueError("action_dim must be positive and hidden_dim at least 2")
         if action_horizon < 1:
             raise ValueError("action_horizon must be positive")
-        if dit_depth < 1 or dit_heads < 1 or time_embed_dim < 2:
-            raise ValueError("dit_depth, dit_heads, and time_embed_dim must be positive")
-        if not math.isfinite(dit_mlp_ratio) or dit_mlp_ratio <= 0 or int(hidden_dim * dit_mlp_ratio) < 1:
-            raise ValueError("dit_mlp_ratio must produce a positive hidden width")
+        if time_embed_dim < 2:
+            raise ValueError(f"time_embed_dim={time_embed_dim} must be at least 2")
+        if self.num_blocks < 1:
+            raise ValueError(f"an actor needs >= 1 block, got {self.num_blocks}")
         self.action_dim = action_dim
         self.hidden_dim = hidden_dim
         self.action_horizon = action_horizon
@@ -70,8 +87,11 @@ class SJFPOFlowModel(nn.Module):
         self.token_pos = nn.Parameter(torch.zeros(1, action_horizon, hidden_dim))
         nn.init.normal_(self.token_pos, std=0.02)
         self.time_mlp = CondMLP(time_embed_dim, 4 * hidden_dim, hidden_dim)
+        # The blocks are built at this exact point. Parameter construction order
+        # fixes the torch RNG stream, so building them elsewhere would redraw
+        # every weight in the actor and silently change a seeded run.
         self.blocks = nn.ModuleList(
-            DiTBlock(hidden_dim, dit_heads, dit_mlp_ratio) for _ in range(dit_depth)
+            block_cls(**block_kwargs) for _ in range(self.num_blocks)
         )
         self.norm_out = build_rms_norm(hidden_dim)
         self.adaLN_out = nn.Linear(hidden_dim, 2 * hidden_dim)
@@ -213,3 +233,213 @@ class SJFPOFlowModel(nn.Module):
                 "weight_magnitude": self.weight_magnitude(),
             }
 
+
+
+class SJFPOFlowModel(_FlowActorBase):
+    """The DiT actor. One block is self-attention, one SwiGLU, and adaLN.
+
+    ``dit_depth`` counts blocks. Each block holds six Dense layers, so the
+    `` Dense-layer depth of Wang et al. (2025)`` is ``6 * dit_depth``. At the
+    default ``dit_depth=3`` that is 18, against the depth-4 baseline that paper
+    scales from.
+
+    The block itself already contains every component that paper credits:
+    residual connections, a norm, and a Swish-based activation. So this actor is
+    that paper's building block plus attention and a wider modulation.
+    """
+
+    def __init__(
+        self,
+        action_dim: int,
+        action_horizon: int,
+        hidden_dim: int,
+        dit_depth: int,
+        dit_heads: int,
+        dit_mlp_ratio: float,
+        time_embed_dim: int,
+    ):
+        if dit_depth < 1 or dit_heads < 1:
+            raise ValueError(
+                f"dit_depth={dit_depth} and dit_heads={dit_heads} must be >= 1"
+            )
+        if (
+            not math.isfinite(dit_mlp_ratio)
+            or dit_mlp_ratio <= 0
+            or int(hidden_dim * dit_mlp_ratio) < 1
+        ):
+            raise ValueError("dit_mlp_ratio must produce a positive hidden width")
+        self.num_blocks = dit_depth
+        super().__init__(
+            action_dim,
+            action_horizon,
+            hidden_dim,
+            time_embed_dim,
+            DiTBlock,
+            {"hidden_dim": hidden_dim, "n_heads": dit_heads,
+             "mlp_ratio": dit_mlp_ratio},
+        )
+
+
+class ResidualMLP(nn.Module):
+    """The residual unit of Wang et al. (2025), arXiv:2503.14858, Section 3.
+
+    The paper's block is ``num_units`` repeats of Dense -> LayerNorm -> Swish,
+    with one residual skip added immediately after the final activation. The
+    paper puts the skip there and not after every unit, so the gradient path is
+    ``num_units`` layers long however deep the stack.
+
+    Two departures from the paper, both deliberate and both recorded here.
+
+    The norm is RMSNorm, not LayerNorm. The paper's other citations and the
+    DiT lineage this repo descends from both use it, and the repo already has
+    one norm implementation.
+
+    The activation is ``F.silu``, which is Swish. The paper's Swish is the same
+    function. The DiT block here gates it into SwiGLU; this unit does not, so
+    the two actors differ in the MLP as well as in the residual layout.
+    """
+
+    def __init__(self, hidden_dim: int, hidden_mult: float, num_units: int):
+        super().__init__()
+        if hidden_dim < 2:
+            raise ValueError("hidden_dim must be at least 2")
+        if num_units < 1:
+            raise ValueError(f"num_units={num_units} must be >= 1")
+        inner = int(hidden_dim * hidden_mult)
+        if inner < 1:
+            raise ValueError("resmlp_hidden_mult must produce a positive width")
+        self.inner = inner
+        self.num_units = num_units
+        self.denses = nn.ModuleList(
+            nn.Linear(hidden_dim if i == 0 else inner, inner)
+            for i in range(num_units)
+        )
+        self.norms = nn.ModuleList(build_rms_norm(inner) for _ in range(num_units))
+        self.out = nn.Linear(inner, hidden_dim)
+        nn.init.zeros_(self.out.weight)
+        nn.init.zeros_(self.out.bias)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """``x + residual(x)``. The residual is zero at init, so this is the
+        identity on a fresh actor."""
+        h = x
+        for dense, norm in zip(self.denses, self.norms, strict=True):
+            h = norm(dense(h))
+            h = F.silu(h)
+        return x + self.out(h)
+
+
+class ResMLPBlock(nn.Module):
+    """One ``resmlp`` block: attention, then the paper's residual MLP.
+
+    The self-attention and the adaLN conditioning are the DiT parts, and they
+    stay. Two reasons, both measured rather than assumed.
+
+    The attention keeps the chunk as a sequence. The CFM loss is separable
+    across tokens, so per-token mixing would train, but the ASPO trust region
+    and the per-chunk advantage still couple the tokens. Both reference networks
+    for chunked action prediction mix across action steps: Diffusion Policy with
+    a temporal ``Conv1d`` (``kernel_size=5``) and ACT with self-attention over
+    the chunk.
+
+    The adaLN keeps ``t`` available at every depth. The 1000-layer paper has no
+    time input, so it can condition once at the input. A flow model cannot, and
+    the paper has no evidence about that case.
+    """
+
+    def __init__(
+        self,
+        hidden_dim: int,
+        n_heads: int,
+        hidden_mult: float,
+        num_units: int,
+    ):
+        super().__init__()
+        self.norm1 = build_rms_norm(hidden_dim)
+        self.attn = SelfAttention(hidden_dim, n_heads)
+        self.norm2 = build_rms_norm(hidden_dim)
+        self.mlp = ResidualMLP(hidden_dim, hidden_mult, num_units)
+        self.adaLN = CondMLP(hidden_dim, hidden_dim, 6 * hidden_dim)
+        nn.init.constant_(self.adaLN.fc2.weight, 0.0)
+        nn.init.constant_(self.adaLN.fc2.bias, 0.0)
+
+    def forward(
+        self, x: torch.Tensor, c: torch.Tensor, return_stats: bool = False
+    ) -> torch.Tensor | tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        """``[B, K, H]`` in, ``[B, K, H]`` out. ``c`` is ``[B, H]`` or
+        ``[B, K, H]``. The modulation head is zero-init, so a fresh stack is the
+        identity."""
+        if x.dim() != 3:
+            raise ValueError(f"x must have shape [B, K, H], got {tuple(x.shape)}")
+        b = x.shape[0]
+        if c.shape[0] != b:
+            raise ValueError(f"c has batch {c.shape[0]} but x has {b}")
+        if c.dim() == 3:
+            if c.shape[1] != x.shape[1]:
+                raise ValueError(
+                    f"c has {c.shape[1]} conditioning tokens but x has {x.shape[1]}"
+                )
+        else:
+            if c.dim() != 2 or c.shape[1] != self.adaLN.fc1.in_features:
+                raise ValueError(
+                    f"c must have shape [{b}, {self.adaLN.fc1.in_features}], "
+                    f"got {tuple(c.shape)}"
+                )
+            c = c[:, None, :]
+
+        parts = self.adaLN(c).view(b, c.shape[1], 6, -1)
+        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = parts.unbind(
+            dim=2
+        )
+        h = modulate(self.norm1(x), shift_msa, scale_msa)
+        x = x + gate_msa * self.attn(h)
+        out = x + gate_mlp * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
+
+        if not return_stats:
+            return out
+        with torch.inference_mode():
+            stats = {
+                "gate_msa": rms(gate_msa),
+                "gate_mlp": rms(gate_mlp),
+                "scale_msa": rms(1.0 + scale_msa),
+                "scale_mlp": rms(1.0 + scale_mlp),
+            }
+        return out, stats
+
+
+class SJFPOFlowResMLP(_FlowActorBase):
+    """The ``resmlp`` actor. DiT's attention and adaLN, the paper's MLP unit.
+
+    ``resmlp_blocks`` counts blocks and ``resmlp_units`` counts the Dense layers
+    inside one block's residual unit. So the paper's depth metric, which counts
+    Dense layers, is ``resmlp_blocks * resmlp_units`` for the MLP part alone.
+    The paper fixes the unit at four.
+    """
+
+    def __init__(
+        self,
+        action_dim: int,
+        action_horizon: int,
+        hidden_dim: int,
+        resmlp_blocks: int,
+        resmlp_units: int,
+        resmlp_hidden_mult: float,
+        n_heads: int,
+        time_embed_dim: int,
+    ):
+        if resmlp_blocks < 1:
+            raise ValueError(f"resmlp_blocks={resmlp_blocks} must be >= 1")
+        if resmlp_units < 1:
+            raise ValueError(f"resmlp_units={resmlp_units} must be >= 1")
+        if n_heads < 1:
+            raise ValueError(f"n_heads={n_heads} must be >= 1")
+        self.num_blocks = resmlp_blocks
+        super().__init__(
+            action_dim,
+            action_horizon,
+            hidden_dim,
+            time_embed_dim,
+            ResMLPBlock,
+            {"hidden_dim": hidden_dim, "n_heads": n_heads,
+             "hidden_mult": resmlp_hidden_mult, "num_units": resmlp_units},
+        )

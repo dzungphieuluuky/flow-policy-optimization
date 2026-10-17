@@ -62,7 +62,7 @@
   "encoder:StateEncoder:hidden": "hidden_dim must be at least 2",
   "encoder:StateEncoder:steps": "max_obs_steps must be >= 1, got 0",
   "flow:actor:action_dim": "action_dim must be positive and hidden_dim at least 2",
-  "flow:actor:depth": "dit_depth, dit_heads, and time_embed_dim must be positive",
+  "flow:actor:depth": "dit_depth=0 and dit_heads=2 must be >= 1",
   "flow:actor:horizon": "action_horizon must be positive",
   "flow:actor:mlp_ratio": "dit_mlp_ratio must produce a positive hidden width",
   "fpo_core:cfm:reduce-mode": "reduce_mode='mean' must be 'scalar', 'sample', 'sample_and_token', or 'token_mean'",
