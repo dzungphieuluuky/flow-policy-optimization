@@ -187,8 +187,56 @@ def test_both_returns_are_logged_under_their_own_names():
 
     src = inspect.getsource(train_sjfpo_run)
     assert 'f"eval/{name}_return_mean"' in src
-    assert '"eval/reported_sampling"' in src
-    assert '"eval/stop_sampling"' in src
+    # The tracker takes floats only, so the two names must not be scalars.
+    assert '"eval/reported_sampling"' not in src
+    assert '"eval/stop_sampling"' not in src
+
+
+def test_the_names_go_to_the_run_metadata_instead():
+    """A string constant cannot be a per-step scalar. It belongs in the metadata."""
+    import inspect
+
+    from myfpo.train_sjfpo import train_sjfpo_run
+
+    src = inspect.getsource(train_sjfpo_run)
+    assert 'runtime["eval_sampling"] = cfg.eval_sampling' in src
+    assert 'runtime["stop_eval_sampling"] = cfg.stop_eval_sampling' in src
+
+
+def test_the_tracker_rejects_no_key_after_this_change():
+    """Every value the trainer logs must be a float. The tensorboard backend
+    calls ``float(value)``, so one string aborts the run."""
+    import inspect
+
+    from myfpo.train_sjfpo import train_sjfpo_run
+
+    src = inspect.getsource(train_sjfpo_run)
+    # The one remaining string-valued value is the EMA flag, which is already
+    # wrapped in float(). Every literal string in a logged dict is a key, not a
+    # value, so this asserts there is no bare string assigned as a value.
+    assert '"train/stochastic_mean_return"' not in src
+    for line in src.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith('"eval/') or ":" not in stripped:
+            continue
+        value = stripped.split(":", 1)[1].strip().rstrip(",")
+        if not value or value.startswith(('"', "f\"", "{")):
+            # A key literal, an f-string key, or a spread of another mapping.
+            continue
+        literal = value.split("}")[0].strip() if value.startswith("(") else value
+        if (
+            literal.startswith("float(")
+            or literal.endswith(")")
+            or "[" in literal
+            or "(" in literal
+        ):
+            # A float() call, a parenthesised expression, a dict subscript, or a
+            # helper call. All of these resolve to a float at run time.
+            continue
+        try:
+            float(literal)
+        except ValueError:
+            pytest.fail(f"tracker value is not numeric: {stripped}")
 
 
 def test_the_stochastic_mean_return_key_is_gone():

@@ -308,6 +308,24 @@ def compute_action_clip_rate(batch: dict[str, torch.Tensor]) -> dict[str, float]
     }
 
 
+def measure_pre_clamp_projection(policy: SJFPOPolicy) -> dict[str, float]:
+    """The share of coordinates the policy's own clamp had to move.
+
+    The key ``action_clip_frac`` is structurally zero. ``scale_and_clip_chunk``
+    runs in the collector, and the value it receives has already been clamped to
+    [-1, 1] by ``predict_action_chunk`` and then mapped onto the env bounds by
+    the postprocessor. So nothing can reach it out of range.
+
+    This key reads the clamp that actually fires. It covers the last proposal of
+    the rollout, because ``predict_action_chunk`` overwrites the value on each
+    call. So it is a sample, and not a rollout average.
+    """
+    frac = getattr(policy, "action_pre_clamp_frac", None)
+    if frac is None:
+        return {}
+    return {"action_pre_clamp_frac": float(frac.detach().cpu())}
+
+
 @torch.no_grad()
 def measure_value_drift(policy, batch, device) -> tuple[torch.Tensor, torch.Tensor]:
     """Both critic-drift metrics off one critic forward.
@@ -526,6 +544,11 @@ def train_sjfpo_run(
                 stacklevel=2,
             )
     if runtime is not None:
+        # The tracker takes floats only, so a string constant cannot be a
+        # per-step scalar. It goes here instead. A run states which flow start
+        # produced each reported number.
+        runtime["eval_sampling"] = cfg.eval_sampling
+        runtime["stop_eval_sampling"] = cfg.stop_eval_sampling
         # Audits every auto-applied decision, so a run is self-describing after
         # the fact. Written before the first rollout, not at the end.
         (out_dir / "run_metadata.json").write_text(
@@ -667,6 +690,7 @@ def train_sjfpo_run(
             rollout_jerk = compute_mean_chunk_jerk(jerk_action, jerk_pad)
             rollout_seam_jerk = compute_seam_jerk(jerk_action, jerk_pad)
             action_clip_rates = compute_action_clip_rate(batch)
+            action_clip_rates.update(measure_pre_clamp_projection(policy))
             if action_abs_max > 1.0 + 1e-3:
                 # Only reachable if the scaling affine itself is wrong.
                 raise ValueError(
@@ -931,8 +955,6 @@ def train_sjfpo_run(
                             ),
                             "eval/return_median": eval_summary["return_median"],
                             "eval/return_n": eval_summary["return_n"],
-                            "eval/reported_sampling": reported_name,
-                            "eval/stop_sampling": stop_name,
                             "train/policy_lr": optimizer.param_groups[0]["lr"],
                             "train/critic_lr": optimizer.param_groups[-1]["lr"],
                             "train/lr_decays": lr_decays,
