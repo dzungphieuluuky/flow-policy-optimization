@@ -35,8 +35,18 @@ class RunningMeanStd(nn.Module):
     def update(self, x: torch.Tensor) -> None:
         """Fold raw frames into the running statistics.
 
-        The merge is the parallel variance merge of Chan et al. It runs in fp64
-        and casts back to fp32. The updates do not drift.
+        The merge is the parallel variance merge of Chan et al.
+
+        The precision is mixed, and the docstring used to call it fp64. The batch
+        is cast to fp32, so ``b_mean`` and ``delta`` are fp32, and the mean
+        update stays fp32: ``count`` is a 0-dim fp64 tensor, and a 0-dim tensor
+        does not promote an fp32 one under PyTorch's type rules. The variance
+        expression is the only place fp64 enters, because it multiplies
+        ``count`` by a 1-dim ``var``.
+
+        So the mean accumulates in fp32 over the life of a run. This docstring
+        used to say the updates do not drift. That was not a claim the code
+        supported, and it is gone.
         """
         if x.shape[-1] != self.mean.numel():
             raise ValueError(f"update got last dim {x.shape[-1]}, expected {self.mean.numel()}")
