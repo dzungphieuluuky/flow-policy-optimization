@@ -356,13 +356,25 @@ def _accumulation_group_sizes(
 
 
 def sample_random_baseline(
-    evaluator: Evaluator, env: Any, max_episodes: int = 30
+    evaluator: Evaluator, env: Any, max_episodes: int = 30, seed: int | None = None
 ) -> float:
     """Random-policy return, the divergence reference.
 
     ``0.0`` when no episode evaluated. Callers gate on ``baseline > 0``, so that
     disables divergence detection instead of falsely flagging every later run.
+
+    The argument ``seed`` seeds the action space before the draw. Without it the
+    value changes between calls in one process, so two runs of one config set
+    different divergence floors. A floor that moves cannot support a comparison
+    between runs.
+
+    The random actions come from ``env.action_space``, while the episodes run on
+    the evaluator's own copy of the environment. The two are different objects.
+    Seeding ``env`` therefore covers the actions, and the episode seeds still
+    come from the evaluator.
     """
+    if seed is not None:
+        env.action_space.seed(int(seed))
     baseline_evaluator = Evaluator(
         env,
         eval_seed=evaluator.eval_seed,
@@ -573,8 +585,9 @@ def train_sjfpo_run(
         f"params={sum(p.numel() for p in policy.parameters()):,}",
         file=sys.stderr,
     )
+    eval_seed = 10000 + seed
     evaluator = Evaluator(
-        env, eval_seed=10000 + seed, max_episodes=cfg.eval_max_episodes
+        env, eval_seed=eval_seed, max_episodes=cfg.eval_max_episodes
     )
     eval_policy = _EvalPolicy(policy)
     # The adapter is the same. The start point is the opposite. The rollouts
@@ -582,7 +595,7 @@ def train_sjfpo_run(
     # So the eps=0 return above measures a different distribution from the one
     # that training uses.
     stochastic_eval_policy = _EvalPolicy(policy, zero_sampling=False)
-    r_rand = sample_random_baseline(evaluator, env)
+    r_rand = sample_random_baseline(evaluator, env, seed=seed)
     tracker = build_tracker(
         cfg,
         out_dir=out_dir,
@@ -841,6 +854,10 @@ def train_sjfpo_run(
                 finally:
                     policy.swap_out_ema(displaced)
                 mean_return = float(np.mean([r["return"] for r in eval_results]))
+                # The interval covers the spread across episodes. It does not
+                # cover the spread across training seeds. So it bounds the noise
+                # from one eval window, and not the noise from the whole run.
+                eval_summary = evaluator.summarize(eval_results, seed=eval_seed)
                 stochastic_mean_return = (
                     float(np.mean([r["return"] for r in stochastic_results]))
                     if stochastic_results
@@ -881,6 +898,17 @@ def train_sjfpo_run(
                             # tracker dropping the key.
                             "eval/diverged": 0.0,
                             "eval/regressed": 0.0,
+                            # The interval around the score the stopper reads.
+                            # A width near zero means the episodes agreed. A width
+                            # that spans the threshold means the run continues.
+                            "eval/return_ci_low": eval_summary["return_ci_low"],
+                            "eval/return_ci_high": eval_summary["return_ci_high"],
+                            "eval/return_ci_width": (
+                                eval_summary["return_ci_high"]
+                                - eval_summary["return_ci_low"]
+                            ),
+                            "eval/return_median": eval_summary["return_median"],
+                            "eval/return_n": eval_summary["return_n"],
                             "train/policy_lr": optimizer.param_groups[0]["lr"],
                             "train/critic_lr": optimizer.param_groups[-1]["lr"],
                             "train/lr_decays": lr_decays,
@@ -895,7 +923,9 @@ def train_sjfpo_run(
                     for b in tracker.backends:
                         getattr(b, "log_eval_table", lambda *_: None)(eval_results, global_step)
                 consecutive_below, diverged_now = check_divergence(
-                    mean_return, r_rand, consecutive_below
+                    mean_return, r_rand, consecutive_below,
+                    ci_low=eval_summary["return_ci_low"],
+                    ci_high=eval_summary["return_ci_high"],
                 )
                 if diverged_now:
                     diverge_msg = (
@@ -909,6 +939,8 @@ def train_sjfpo_run(
                     consecutive_below_best,
                     return_frac=cfg.stop_return_frac,
                     patience=cfg.stop_patience,
+                    ci_low=eval_summary["return_ci_low"],
+                    ci_high=eval_summary["return_ci_high"],
                 )
                 if plateaued:
                     if lr_decays < cfg.max_lr_decays:
@@ -993,6 +1025,12 @@ def train_sjfpo_run(
         "seed": seed,
         "reward_mean_last10": (
             float(np.mean(recent_eval_returns)) if recent_eval_returns else 0.0
+        ),
+        # The median of the same window. It resists one collapsed episode, which
+        # the mean does not. The field is additive. The mean stays for
+        # continuity with the runs already recorded.
+        "reward_median_last10": (
+            float(np.median(recent_eval_returns)) if recent_eval_returns else 0.0
         ),
         "fps": fps,
         "artifacts": artifacts,

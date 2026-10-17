@@ -19,6 +19,75 @@ import numpy as np
 
 CSV_FIELDS = ["episode", "return", "length", "success", "jerk"]
 
+# Bootstrap resamples for the percentile interval. The interval resamples the
+# episode returns that the evaluator already holds. It does not resample the
+# rollout seeds. So it covers the spread across episodes, and not the spread
+# across environments. A run with one episode gets a zero width interval.
+BOOTSTRAP_RESAMPLES = 10_000
+# The percentile interval reads two tails. The value is 0.975 for a 95 percent
+# two-sided interval.
+BOOTSTRAP_LOW_Q = 0.025
+BOOTSTRAP_HIGH_Q = 0.975
+
+
+def bootstrap_interval(
+    returns: list[float],
+    resamples: int = BOOTSTRAP_RESAMPLES,
+    low_q: float = BOOTSTRAP_LOW_Q,
+    high_q: float = BOOTSTRAP_HIGH_Q,
+    seed: int = 0,
+) -> tuple[float, float, float]:
+    """A percentile interval for the mean of ``returns``.
+
+    It returns ``(mean, low, high)``. The value ``nan`` stands for any part it
+    cannot compute.
+
+    The function draws ``resamples`` indices with replacement, takes the mean
+    of each draw, and reports the two percentiles of those means. It makes no
+    assumption about the shape of the return distribution.
+
+    The value ``returns`` empty, or a single value, gives ``nan`` bounds. One
+    episode cannot support an interval. So ``nan`` marks the case. The caller
+    must treat an unknown bound as unknown, not as a wide one.
+
+    The argument ``seed`` fixes the resampling. The same input gives the same
+    interval. Without it, the interval moves between calls and two runs of one
+    policy disagree for no reason.
+    """
+    values = np.asarray([float(r) for r in returns], dtype=np.float64)
+    values = values[np.isfinite(values)]
+    if values.size == 0:
+        return float("nan"), float("nan"), float("nan")
+    mean = float(values.mean())
+    if values.size < 2:
+        return mean, float("nan"), float("nan")
+    if not 0.0 <= low_q < high_q <= 1.0:
+        raise ValueError(f"need 0 <= low_q < high_q <= 1, got ({low_q}, {high_q})")
+    if resamples < 1:
+        raise ValueError(f"resamples={resamples} must be >= 1")
+    rng = np.random.default_rng(seed)
+    # One [resamples, n] index matrix, then one mean over axis 1. The loop would
+    # cost resamples Python iterations.
+    idx = rng.integers(0, values.size, size=(resamples, values.size))
+    means = values[idx].mean(axis=1)
+    low = float(np.percentile(means, 100.0 * low_q))
+    high = float(np.percentile(means, 100.0 * high_q))
+    return mean, low, high
+
+
+def median_of(returns: list[float]) -> float:
+    """The median of ``returns``. It returns ``nan`` for an empty input.
+
+    The median resists one bad episode. The mean does not. A run whose eval
+    window holds one collapsed episode reads a lower mean, and the stopper acts
+    on that lower mean.
+    """
+    values = np.asarray([float(r) for r in returns], dtype=np.float64)
+    values = values[np.isfinite(values)]
+    if values.size == 0:
+        return float("nan")
+    return float(np.median(values))
+
 
 def write_eval_csv(
     results: list[dict[str, Any]],
@@ -127,6 +196,23 @@ def compute_mean_chunk_jerk(actions: np.ndarray, action_is_pad: np.ndarray) -> f
     return float(np.mean(jerks)) if jerks else None
 
 
+def interval_straddles(value: float, threshold: float, low: float, high: float) -> bool:
+    """Does the interval for ``value`` cross ``threshold``?
+
+    It returns True when ``low`` is at or below ``threshold`` and ``high`` is at
+    or above ``threshold``. So the data cannot tell which side of the threshold
+    the policy sits on.
+
+    The bounds ``low`` and ``high`` may both be ``nan``. Then the function
+    returns False. A caller with no interval keeps the old behaviour, which
+    acts on the point estimate alone. An unknown bound must not silence a real
+    signal, so it must not invent one either.
+    """
+    if not (np.isfinite(low) and np.isfinite(high)):
+        return False
+    return bool(low <= threshold <= high)
+
+
 def check_divergence(
     mean_return: float,
     baseline: float,
@@ -134,6 +220,8 @@ def check_divergence(
     *,
     threshold_frac: float = 0.10,
     patience: int = 3,
+    ci_low: float = float("nan"),
+    ci_high: float = float("nan"),
 ) -> tuple[int, bool]:
     """Increase a sub-threshold streak. Flag divergence after ``patience`` rows
     in a row.
@@ -141,8 +229,19 @@ def check_divergence(
     The baseline must be strictly positive. If it is not, the check is off and
     the counter resets. The function returns the new streak and whether it
     flagged divergence.
+
+    The values ``ci_low`` and ``ci_high`` are the bounds of the interval around
+    ``mean_return``. When they straddle the threshold, the streak resets. The
+    evidence does not separate collapse from noise, so the run continues. The
+    function needs ``ci_low <= mean_return <= ci_high``. A caller that passes an
+    interval from a different value gets a reset it cannot interpret.
     """
-    if baseline > 0 and mean_return < threshold_frac * baseline:
+    if baseline <= 0:
+        return 0, False
+    threshold = threshold_frac * baseline
+    if mean_return < threshold and not interval_straddles(
+        mean_return, threshold, ci_low, ci_high
+    ):
         consecutive += 1
     else:
         consecutive = 0
@@ -156,6 +255,8 @@ def check_regression(
     *,
     return_frac: float,
     patience: int,
+    ci_low: float = float("nan"),
+    ci_high: float = float("nan"),
 ) -> tuple[int, bool]:
     """Increase a below-peak streak. Flag it once one ``patience`` window
     completes.
@@ -166,10 +267,17 @@ def check_regression(
     The function :func:`check_divergence` catches collapse. A run that peaked
     and then drifted to a third of its peak never reaches a floor. That floor is
     set at a fraction of the random return.
+
+    The values ``ci_low`` and ``ci_high`` behave as in :func:`check_divergence`.
+    An interval that straddles the threshold resets the streak. So a run whose
+    drop sits inside the noise keeps its best checkpoint and keeps training.
     """
     if best_return is None or best_return <= 0:
         return 0, False
-    if mean_return >= return_frac * best_return:
+    threshold = return_frac * best_return
+    if mean_return >= threshold or interval_straddles(
+        mean_return, threshold, ci_low, ci_high
+    ):
         return 0, False
     consecutive += 1
     if consecutive < patience:
@@ -298,6 +406,9 @@ class Evaluator:
         so repeat evals of one policy match while successive episodes differ.
         With ``self.max_steps`` set, the loop stops early once that budget is
         spent. One dict per episode, keys in :data:`CSV_FIELDS`.
+
+        The caller reads the interval through :meth:`summarize`. The episodes
+        themselves carry no interval, so a stored row means one episode.
         """
         rng = np.random.default_rng(self.eval_seed)
         results: list[dict[str, Any]] = []
@@ -313,3 +424,32 @@ class Evaluator:
         if out_dir is not None:
             write_eval_csv(results, out_dir, append=append_csv)
         return results
+
+    def summarize(
+        self, results: list[dict[str, Any]], seed: int = 0
+    ) -> dict[str, float]:
+        """The mean, the median, the interval, and the count for one eval.
+
+        It returns the keys ``return_mean``, ``return_median``,
+        ``return_ci_low``, ``return_ci_high``, and ``return_n``.
+
+        The bounds come from :func:`bootstrap_interval`. They are ``nan`` when
+        fewer than two episodes carry a finite return. So the caller can tell an
+        unmeasured bound from a wide one.
+
+        The argument ``seed`` reaches the resampler. A caller that compares two
+        policies must pass the same value to both, so the comparison does not
+        turn on the resampling.
+        """
+        returns = [
+            float(r["return"]) for r in results if r.get("return") is not None
+        ]
+        mean, low, high = bootstrap_interval(returns, seed=seed)
+        finite = sum(1 for r in returns if np.isfinite(r))
+        return {
+            "return_mean": mean,
+            "return_median": median_of(returns),
+            "return_ci_low": low,
+            "return_ci_high": high,
+            "return_n": float(finite),
+        }
