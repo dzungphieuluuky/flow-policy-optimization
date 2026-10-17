@@ -102,25 +102,32 @@ def compute_eval_summary_metrics(
     def stat(values, fn):
         return float(fn(values)) if values else float("nan")
 
+    # Every key names the quantity before the statistic, so one family reads
+    # return_mean / return_min / return_max / return_std / return_median. The
+    # keys used to be mean_return / min_return / max_return / std_return, which
+    # put the statistic first and left the module saying "reward" for the
+    # improvement pair while eight other keys said "return".
     data = {
-        "eval/mean_return": float(mean_return),
-        "eval/min_return": stat(returns, np.min),
-        "eval/max_return": stat(returns, np.max),
-        "eval/std_return": stat(returns, np.std),
+        "eval/return_mean": float(mean_return),
+        "eval/return_min": stat(returns, np.min),
+        "eval/return_max": stat(returns, np.max),
+        "eval/return_std": stat(returns, np.std),
     }
     if best_return is not None:
-        data["eval/best_mean_return"] = float(best_return)
+        data["eval/return_best"] = float(best_return)
     if steps_to_best is not None:
         data["eval/steps_to_best"] = int(steps_to_best)
     if r_rand is not None:
-        data["eval/sample_random_baseline"] = float(r_rand)
+        data["eval/random_policy_return"] = float(r_rand)
     # Compare only if the last recorded mean belongs to this window. Then the
     # series has no gap between the two values. Otherwise prev belongs to a
     # different eval, and the delta is not a delta.
     if len(all_eval_returns) >= 2 and all_eval_returns[-1] == mean_return:
         prev = all_eval_returns[-2]
-        data["eval/reward_improvement"] = float(mean_return - prev)
-        data["eval/reward_improvement_pct"] = float(
+        data["eval/return_improvement"] = float(mean_return - prev)
+        # The key used to read "pct". It is a fraction, not a percentage, and a
+        # reader saw 0.5 and looked for 50.
+        data["eval/return_improvement_frac"] = float(
             (mean_return - prev) / max(abs(prev), 1e-8)
         )
     if streak_below_random_floor is not None:

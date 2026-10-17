@@ -289,7 +289,7 @@ def test_log_ratio_clip_frac_counts_the_capped_side_only():
 
 
 # --- G.
-def test_reward_improvement_pct_reads_wrong_on_a_negative_baseline():
+def test_return_improvement_frac_reads_wrong_on_a_negative_baseline():
     prev, cur = -1000.0, -500.0   # a real improvement of 500.
     out = compute_eval_summary_metrics(
         mean_return=cur,
@@ -299,8 +299,8 @@ def test_reward_improvement_pct_reads_wrong_on_a_negative_baseline():
         all_eval_returns=[prev, cur],
         eval_count=2,
     )
-    assert out["eval/reward_improvement"] == pytest.approx(500.0)  # correct
-    assert out["eval/reward_improvement_pct"] == pytest.approx(0.5)  # reads as +50%.
+    assert out["eval/return_improvement"] == pytest.approx(500.0)  # correct
+    assert out["eval/return_improvement_frac"] == pytest.approx(0.5)  # a fraction, not 50%.
 
 
 # --- H.
@@ -310,9 +310,9 @@ def test_stats_over_an_empty_eval_window_are_nan_not_zero():
         mean_return=0.0, eval_results=[], all_eval_returns=[0.0], eval_count=0,
     )
     for key in (
-        "eval/min_return",
-        "eval/max_return",
-        "eval/std_return",
+        "eval/return_min",
+        "eval/return_max",
+        "eval/return_std",
         "eval/mean_length",
         "eval/max_length",
         "eval/std_length",
@@ -330,7 +330,7 @@ def test_stats_over_a_real_eval_window_are_finite():
         all_eval_returns=[2.0],
         eval_count=2,
     )
-    for key in ("eval/min_return", "eval/max_return", "eval/mean_length"):
+    for key in ("eval/return_min", "eval/return_max", "eval/mean_length"):
         assert math.isfinite(out[key]), f"{key} = {out[key]}"
 
 

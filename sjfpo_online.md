@@ -296,11 +296,11 @@ to shorten it.
 | `train/log_ratio_clip_frac` | fraction of log-ratios past `log_ratio_cap`. 0 means the cap never fired, nothing more |
 | `train/clipfrac` | fraction of ratios outside the `clip_param` band. 0 means the PPO clip never bound. Under ASPO it ignores `spo_clip_param`, so it is not the whole trust-region fraction |
 | `train/explained_var` | critic fit. Flat below ~0.3 means advantages are critic error, and the policy loss is training on noise |
-| `train/grad_norm_preclip` | against `max_grad_norm`. Saturated means the clip, not the loss, is setting the step size |
+| `train/grad_norm_before_clip` | against `max_grad_norm`. Saturated means the clip, not the loss, is setting the step size |
 | `train/sigreg_raw` | SIGReg penalty on the encoder conditioning. Logged every update, 0.0 when `sigreg_mode` is `none` |
-| `eval/mean_return` vs `eval/steps_to_best` | peak location and how late it came |
+| `eval/return_mean` vs `eval/steps_to_best` | peak location and how late it came |
 
-`train/grad_norm_preclip` is one key over actor and critic together. If it
+`train/grad_norm_before_clip` is one key over actor and critic together. If it
 saturates, the split between the two is not visible, and which one owns the
 budget is the first thing worth instrumenting.
 

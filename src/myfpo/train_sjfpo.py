@@ -828,7 +828,7 @@ def train_sjfpo_run(
 
             if tracker.enabled and info is not None:
                 data = {f"train/{k}": v for k, v in info.items()}
-                data["train/grad_norm_preclip"] = grad_norm_mean_pre
+                data["train/grad_norm_before_clip"] = grad_norm_mean_pre
                 data["train/cfm_above_clamp_frac"] = above_clamp_frac
                 data["train/cfm_both_clamped_frac"] = both_clamped_frac
                 if cfg.log_drift_diagnostics and drift_means:
@@ -841,7 +841,11 @@ def train_sjfpo_run(
                     # stale-input / missing-RTC signature.
                     data["train/rollout_seam_jerk"] = rollout_seam_jerk
                 if "chunk_clip_counts" in rollout:
-                    data["train/chunk_clip_counts"] = rollout["chunk_clip_counts"]
+                    # The batch key is a vector, one count per chunk. The log key
+                    # holds its mean, so the key says so. It cannot be
+                    # train/action_clip_count: that key is the total, logged by
+                    # compute_action_clip_rate.
+                    data["train/chunk_clip_count_mean"] = rollout["chunk_clip_counts"]
                 for key in _ROLLOUT_ABS_KEYS:
                     data[f"train/{key}"] = rollout[key]
                 data.update({f"train/{k}": v for k, v in action_clip_rates.items()})
