@@ -85,7 +85,7 @@ def test_rollout_diagnostics_reports_executed_rows_only():
     assert out["action_abs_mean_executed"] == pytest.approx(1.0)
     assert out["action_abs_max"] == pytest.approx(1.0)
     assert out["action_abs_max_executed"] == pytest.approx(1.0)
-    assert out["step_delta"] == 11.0
+    assert out["executed_action_steps"] == 11.0
 
 
 def test_executed_only_metrics_differ_when_padding_carries_real_values():

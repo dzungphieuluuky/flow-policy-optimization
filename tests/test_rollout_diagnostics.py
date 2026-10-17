@@ -32,7 +32,7 @@ def test_matches_the_unbatched_reductions():
     batch = make_batch()
     out = compute_rollout_diagnostics(batch)
     action = batch["action"]
-    assert out["step_delta"] == int((~batch["action_is_pad"]).sum())
+    assert out["executed_action_steps"] == int((~batch["action_is_pad"]).sum())
     assert out["action_abs_max"] == float(action.abs().max())
     assert out["action_abs_mean"] == float(action.abs().mean())
     assert out["chunk_clip_counts"] == float(
@@ -40,11 +40,15 @@ def test_matches_the_unbatched_reductions():
     )
 
 
-def test_step_delta_counts_executed_steps():
-    """step_delta drives global_step, so a padded row must contribute nothing."""
+def test_executed_action_steps_counts_executed_steps():
+    """The key drives global_step, so a padded row must contribute nothing.
+
+    The key was named ``step_delta``. It is a count of steps, not a difference
+    of anything, and the trainer only adds it to ``global_step``.
+    """
     batch = make_batch()
     out = compute_rollout_diagnostics(batch)
-    assert out["step_delta"] == sum(
+    assert out["executed_action_steps"] == sum(
         int((~pad).sum()) for pad in batch["action_is_pad"]
     )
 
@@ -53,7 +57,7 @@ def test_clip_counts_is_optional():
     """generate_rollout always emits it, but the helper must not require it."""
     out = compute_rollout_diagnostics(make_batch(with_clip_counts=False))
     assert set(out) == {
-        "step_delta",
+        "executed_action_steps",
         "action_abs_max",
         "action_abs_mean",
         "action_abs_mean_executed",

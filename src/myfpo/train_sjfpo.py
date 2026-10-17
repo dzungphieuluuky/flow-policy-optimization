@@ -273,6 +273,11 @@ def compute_rollout_diagnostics(batch: dict[str, torch.Tensor]) -> dict[str, flo
 
     The key ``action_abs_mean`` holds mean|a|. It does not hold an L2 norm. The
     name pairs it with ``action_abs_max``, and that key is a max.
+
+    The key ``executed_action_steps`` is a count, not a magnitude. It counts the
+    executed action steps in this rollout, and it is what advances
+    ``global_step``. The key was named ``step_delta``, which reads as the change
+    in a step count. Nothing is subtracted here, and nothing was.
     """
     action = batch["action"].float()
     is_pad = batch["action_is_pad"]
@@ -286,7 +291,7 @@ def compute_rollout_diagnostics(batch: dict[str, torch.Tensor]) -> dict[str, flo
         exec_action.abs().max(),
     ]
     keys = [
-        "step_delta",
+        "executed_action_steps",
         "action_abs_max",
         "action_abs_mean",
         "action_abs_mean_executed",
@@ -690,13 +695,13 @@ def train_sjfpo_run(
                 action_high=action_high,
             )
             rollout = compute_rollout_diagnostics(batch)
-            step_delta = int(rollout["step_delta"])
-            if step_delta <= 0:
+            steps_this_rollout = int(rollout["executed_action_steps"])
+            if steps_this_rollout <= 0:
                 raise RuntimeError(
                     "rollout returned zero executed steps; aborting to avoid "
                     "an infinite training loop."
                 )
-            global_step += step_delta
+            global_step += steps_this_rollout
             action_abs_max = rollout["action_abs_max"]
 
             # generate_rollout always emits both keys; the jerk reads them raw.
