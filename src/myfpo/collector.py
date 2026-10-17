@@ -14,6 +14,8 @@ action. The function validates the mode before the run.
 
 from __future__ import annotations
 
+from typing import NamedTuple
+
 from collections.abc import Callable
 
 import numpy as np
@@ -48,6 +50,34 @@ def get_default_config() -> SJFPOConfig:
 _OBS_DTYPE = torch.float32
 _REWARD_DTYPE = torch.float32
 _INDEX_DTYPE = torch.int64
+
+
+class InFlightChunk(NamedTuple):
+    """What one env is executing right now, while it holds a chunk.
+
+    The collector stored this as a bare 5-tuple and unpacked it by index.
+    An index cannot be checked and cannot be named at the unpack site, so the
+    two discarded slots read as ``_executed`` and ``_limit``, which told a
+    reader nothing.
+
+    The fields are:
+
+    ==============  ==========  ================================================
+    Field           Shape       Meaning
+    ==============  ==========  ================================================
+    actions_env     ``[H, D]``  Chunk in env space. The env receives this.
+    actions_scaled  ``[H, D]``  Same chunk in [-1, 1]. The buffer stores this.
+    clip_count      ``int``     Coordinates the bounds had to clamp.
+    start_state     ``[T, O]``  Window the policy saw when it planned the chunk.
+    step_limit      ``int``     How many steps this chunk may still execute.
+    ==============  ==========  ================================================
+    """
+
+    actions_env: torch.Tensor
+    actions_scaled: torch.Tensor
+    clip_count: int
+    start_state: torch.Tensor
+    step_limit: int
 
 
 class RolloutBuffer:
@@ -255,14 +285,21 @@ class RolloutBuffer:
             non_blocking=non_blocking,
         )
 
-    def mark_incomplete(self, chunk_index: int) -> None:
-        """No-op, and deliberately so.
+    def assert_budget_cut_is_not_a_timeout(self, chunk_index: int) -> None:
+        """Check the bounds of a budget-cut chunk, and deliberately record nothing.
 
         The caller runs this when the step budget cuts a chunk short. The
         episode continues, so the function must not set ``chunk_truncated``.
         That flag is the time limit of the env itself, and it drives the GAE
         bootstrap. Budget cuts therefore stay invisible. There is no flag for
         them. That is why ``budget_truncated_chunk_frac`` reports NaN, not 0.0.
+
+        The function was named ``mark_incomplete``, which claimed it recorded
+        something. It records nothing. Its only effect is the bounds check, and
+        the new name says what the caller is asserting.
+
+        The parameter is named ``chunk_index`` because the buffer stores chunks,
+        not steps, even though a budget cut lands on a step count.
         """
         if not 0 <= chunk_index < self.n_chunks:
             raise IndexError(f"chunk index {chunk_index} out of range")
@@ -375,6 +412,14 @@ def flush_on_collection_error(
             pass
 
 
+# Why a chunk closed. A chunk closes on an env termination, on an env time
+# limit, or on the step budget. The three cases differ in what the GAE may do
+# with the bootstrap, so the collector records which one happened.
+_CLOSE_CONTINUE = "continue"
+_CLOSE_TERMINATED = "terminated"
+_CLOSE_TRUNCATED = "truncated"
+
+
 def validate_autoreset_mode(envs) -> None:
     """Reject a vec env whose autoreset mode breaks the awaiting machine.
 
@@ -466,7 +511,8 @@ def collect_chunks_vec(
         # One frame per step, not one window per step. The window the chunk
         # ends on is already in hand when the chunk closes.
         step_frames = torch.zeros(n, chunk_size, obs_dim, dtype=_OBS_DTYPE)
-        cur: list = [None] * n
+        # One entry per env. An entry is None when the env holds no chunk.
+        in_flight: list[InFlightChunk | None] = [None] * n
         pos_t = torch.zeros(n, dtype=torch.long)
         # Action chunks for the wavefront, indexed by env. Row n is a zero row so an
         # env with no chunk reads zeros.
@@ -482,46 +528,56 @@ def collect_chunks_vec(
         ) % n_obs_steps
         executed_total = [0] * n
         awaiting = [False] * n
-        prev_done = ["continue"] * n
+        # Why each env's last chunk closed. A reader must check all three
+        # values, not one boolean. The old name prev_done implied a single
+        # done flag. It held a three-value enum.
+        prev_close_reason = [_CLOSE_CONTINUE] * n
         prev_chunk_indices: list[int | None] = [None] * n
 
         actions_t = torch.zeros((n, act_dim), dtype=torch.float32)
         remaining = sum(targets)
         while remaining:
-            need = [
+            # The envs that need a new chunk planned: idle, not awaiting a
+            # reset, and short of their own step budget. The old name was
+            # "need", which said nothing about what was needed.
+            envs_needing_a_chunk = [
                 i
                 for i in range(n)
                 if (
-                    cur[i] is None
+                    in_flight[i] is None
                     and not awaiting[i]
                     and executed_total[i] < targets[i]
                 )
             ]
-            if need:
+            if envs_needing_a_chunk:
                 # pos_t is 0 here: rewound when this env's previous chunk closed.
                 # Advanced indexing already returns a copy, so no clone.
-                states = windows[need]
+                states = windows[envs_needing_a_chunk]
                 proposed = as_float_tensor(policy(states))
                 # One clamp-and-rescale for the whole wavefront, not one per env.
                 executed_all, scaled_all, clip_counts_all = scale_and_clip_chunk(
                     proposed, low, range_
                 )
-                plan[torch.as_tensor(need)] = executed_all
-                pos_t[torch.as_tensor(need)] = 0
-                for k, i in enumerate(need):
-                    cur[i] = (
-                        executed_all[k],
-                        scaled_all[k],
-                        int(clip_counts_all[k]),
-                        states[k],
-                        min(n_action_steps, targets[i] - executed_total[i]),
+                wavefront = torch.as_tensor(envs_needing_a_chunk)
+                plan[wavefront] = executed_all
+                pos_t[wavefront] = 0
+                for k, i in enumerate(envs_needing_a_chunk):
+                    in_flight[i] = InFlightChunk(
+                        actions_env=executed_all[k],
+                        actions_scaled=scaled_all[k],
+                        clip_count=int(clip_counts_all[k]),
+                        start_state=states[k],
+                        step_limit=min(n_action_steps,
+                                       targets[i] - executed_total[i]),
                     )
 
             # An env is stepping exactly when it holds a chunk. So the code
-            # reads that off ``cur``. It does not track it with a second flag.
-            # Such a flag would have to stay in step with ``cur``. An idle env
-            # and an awaiting env read the zero row n.
-            stepping = torch.tensor([c is not None for c in cur], dtype=torch.bool)
+            # reads that off ``in_flight``. It does not track it with a second
+            # flag, because a second flag would have to stay in step with it.
+            # An idle env and an awaiting env read the zero row n.
+            stepping = torch.tensor(
+                [held is not None for held in in_flight], dtype=torch.bool
+            )
             live_idx = env_rows[stepping]
             actions_t.copy_(
                 plan[
@@ -555,11 +611,14 @@ def collect_chunks_vec(
                     windows[i].copy_(obs_t[i].expand_as(windows[i]))
                     awaiting[i] = False
                     continue
-                if cur[i] is None:
+                if in_flight[i] is None:
                     continue
                 n_exec = int(pos_t[i])
-                if done_np[i] or n_exec >= cur[i][4]:
-                    _executed, scaled, clip_count, replan, _limit = cur[i]
+                held = in_flight[i]
+                if done_np[i] or n_exec >= held.step_limit:
+                    scaled = held.actions_scaled
+                    clip_count = held.clip_count
+                    start_state = held.start_state
                     # Restore chronological order once per closing chunk. Frames
                     # went in at slot 0, 1, ... n_exec, so a left roll by the cursor
                     # puts the oldest frame back at row 0. The modulo is load-bearing
@@ -571,7 +630,7 @@ def collect_chunks_vec(
                     executed_total[i] += n_exec
                     remaining -= n_exec
                     prev_chunk_indices[i] = buffer.add_chunk(
-                        state=replan,
+                        state=start_state,
                         next_state=windows[i],
                         action=scaled,
                         rewards=reward_windows[i, :n_exec],
@@ -581,18 +640,18 @@ def collect_chunks_vec(
                         clip_count=clip_count,
                         env_id=i,
                     )
-                    prev_done[i] = (
-                        "terminated" if term_np[i]
-                        else "truncated" if trunc_np[i]
-                        else "continue"
+                    prev_close_reason[i] = (
+                        _CLOSE_TERMINATED if term_np[i]
+                        else _CLOSE_TRUNCATED if trunc_np[i]
+                        else _CLOSE_CONTINUE
                     )
-                    cur[i] = None
+                    in_flight[i] = None
                     if done_np[i]:
                         awaiting[i] = True
 
         for i in range(n):
-            if prev_done[i] == "continue" and prev_chunk_indices[i] is not None:
-                buffer.mark_incomplete(prev_chunk_indices[i])
+            if prev_close_reason[i] == _CLOSE_CONTINUE and prev_chunk_indices[i] is not None:
+                buffer.assert_budget_cut_is_not_a_timeout(prev_chunk_indices[i])
         return buffer
 
     except (ValueError, RuntimeError, KeyError):

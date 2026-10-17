@@ -5,12 +5,12 @@ import torch
 
 class TestGAEChunkAdvantageInvariant:
     def test_gae_chunk_advantage_invariant(self):
-        """GAE: advantages + chunk_q == target. Gamma^h scales bootstrap."""
+        """GAE: advantages + q_current_chunk == target. Gamma^h scales bootstrap."""
         from myfpo.gae import compute_chunk_advantages
 
         # Minimal synthetic chunk: 2 chunks, length 3, gamma=1.0. (no discount) Then target = R + 1*(1-0)*next_q = R + next_q. Advantage = target - q.
-        chunk_q = torch.ones(2, dtype=torch.float32)
-        chunk_next_q = torch.ones(2, dtype=torch.float32) * 2.0
+        q_current_chunk = torch.ones(2, dtype=torch.float32)
+        q_next_state = torch.ones(2, dtype=torch.float32) * 2.0
         chunk_starts = torch.tensor([0, 3], dtype=torch.long)
         chunk_lengths = torch.tensor([3, 3], dtype=torch.long)
         chunk_terminated = torch.tensor([False, False], dtype=torch.bool)
@@ -19,8 +19,8 @@ class TestGAEChunkAdvantageInvariant:
 
         advantages, targets = compute_chunk_advantages(
             step_rewards=step_rewards,
-            chunk_q=chunk_q,
-            chunk_next_q=chunk_next_q,
+            q_current_chunk=q_current_chunk,
+            q_next_state=q_next_state,
             chunk_starts=chunk_starts,
             chunk_lengths=chunk_lengths,
             chunk_terminated=chunk_terminated,
@@ -28,10 +28,10 @@ class TestGAEChunkAdvantageInvariant:
             gamma=1.0,
             gae_lambda=0.0,
         )
-        # With gamma=1 and no termination, target = R (3) + next_q (2) = 5 advantage = target - chunk_q (1) = 4.
+        # With gamma=1 and no termination, target = R (3) + next_q (2) = 5 advantage = target - q_current_chunk (1) = 4.
         expected_target = 3.0 + 2.0  # R + gamma^h * next_q.
         assert torch.allclose(targets, torch.tensor([expected_target, expected_target], dtype=torch.float32))
-        assert torch.allclose(advantages, targets - chunk_q)
+        assert torch.allclose(advantages, targets - q_current_chunk)
 
 
 class TestFPORatioInvariant:
@@ -67,8 +67,8 @@ class TestCFMLossMaskShape:
         v_star = torch.randn(n, mc, horizon, dim, generator=g, dtype=torch.float64)
         no_pad = torch.zeros(n, horizon, dtype=torch.bool)
 
-        masked = compute_cfm_loss(v_hat, v_star, SJFPOConfig(), "both", no_pad)
-        unmasked = compute_cfm_loss(v_hat, v_star, SJFPOConfig(), "both", None)
+        masked = compute_cfm_loss(v_hat, v_star, SJFPOConfig(), "sample_and_token", no_pad)
+        unmasked = compute_cfm_loss(v_hat, v_star, SJFPOConfig(), "sample_and_token", None)
         for got, want in zip(masked, unmasked):
             assert torch.equal(got, want)
 

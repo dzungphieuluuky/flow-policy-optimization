@@ -131,7 +131,7 @@ case("attention:DiTBlock:forward:cond-batch")(
 # --- pure functions ----------------------------------------------------------.
 from myfpo.fpo_core import (
     compute_cfm_loss,
-    run_monte_carlo_sampling,
+    broadcast_over_mc_axis,
     sample_action,
     sample_timesteps,
 )
@@ -141,8 +141,8 @@ from myfpo.gae import compute_chunk_advantages
 def _gae(**kw):
     base = dict(
         step_rewards=torch.zeros(4),
-        chunk_q=torch.zeros(2),
-        chunk_next_q=torch.zeros(2),
+        q_current_chunk=torch.zeros(2),
+        q_next_state=torch.zeros(2),
         chunk_starts=torch.zeros(2, dtype=torch.long),
         chunk_lengths=torch.ones(2, dtype=torch.long),
         chunk_terminated=torch.zeros(2, dtype=torch.bool),
@@ -165,7 +165,7 @@ def _mc_tau(**kw):
         tau=torch.zeros(2, 2, 4, 1),
     )
     base.update(kw)
-    return run_monte_carlo_sampling(**base)
+    return broadcast_over_mc_axis(**base)
 
 
 case("fpo_core:mc:eps-shape")(lambda: _mc_tau(eps=torch.zeros(2, 2, 4, 2)))

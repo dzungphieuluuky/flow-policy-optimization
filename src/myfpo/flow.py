@@ -41,7 +41,7 @@ class SJFPOFlowMLP(nn.Module):
 
     One difference is deliberate. The reference draws one time per chunk. The
     MC sampling of this repo gives every token its own ``tau``
-    (:func:`myfpo.fpo_core.run_monte_carlo_sampling`). So the embedding is
+    (:func:`myfpo.fpo_core.broadcast_over_mc_axis`). So the embedding is
     flattened next to the chunk instead of concatenated as one vector. Each
     token's velocity then matches the ``x_t`` that the token was built from. A
     single time per chunk would contradict that ``x_t``.

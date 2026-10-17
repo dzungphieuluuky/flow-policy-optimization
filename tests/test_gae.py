@@ -17,7 +17,7 @@ def expected_chunk_reward(lengths, reward=1.0):
     return [sum(GAMMA**k * reward for k in range(h)) for h in lengths]
 
 
-def run(lengths, terminated=None, chunk_q=0.0, chunk_next_q=2.0, reward=1.0,
+def run(lengths, terminated=None, q_current_chunk=0.0, q_next_state=2.0, reward=1.0,
         total_steps=None, chunk_size=H):
     """Build one rollout as the caller does."""
     lengths_t = torch.tensor(lengths, dtype=torch.long)
@@ -26,8 +26,8 @@ def run(lengths, terminated=None, chunk_q=0.0, chunk_next_q=2.0, reward=1.0,
     total = int(total_steps if total_steps is not None else lengths_t.sum())
     return compute_chunk_advantages(
         torch.full((total,), float(reward)),
-        torch.full((n,), float(chunk_q)),
-        torch.full((n,), float(chunk_next_q)),
+        torch.full((n,), float(q_current_chunk)),
+        torch.full((n,), float(q_next_state)),
         starts, lengths_t,
         chunk_terminated=(
             torch.zeros(n, dtype=torch.bool)
@@ -75,8 +75,8 @@ def test_returns_are_qcs_target_expression():
 
 def test_baseline_subtraction_scales_with_the_value():
     """A higher Q lowers the advantage by exactly what it raised Q by."""
-    raw = run([H], terminated=[True], chunk_q=0.0)[0]
-    raised = run([H], terminated=[True], chunk_q=9.0)[0]
+    raw = run([H], terminated=[True], q_current_chunk=0.0)[0]
+    raised = run([H], terminated=[True], q_current_chunk=9.0)[0]
     torch.testing.assert_close(raw - raised, torch.tensor([9.0]))
     assert float(raw) > 0 > float(raised)
 
@@ -211,7 +211,7 @@ def test_values_are_per_chunk_not_per_step():
 
 
 def _traced(lengths, env_id=None, terminated=None, truncated=None, lam=0.95,
-            chunk_q=0.0, chunk_next_q=0.0, reward=1.0):
+            q_current_chunk=0.0, q_next_state=0.0, reward=1.0):
     """One rollout on the GAE path with the masks the trace needs."""
     lengths_t = torch.tensor(lengths, dtype=torch.long)
     n = lengths_t.numel()
@@ -219,8 +219,8 @@ def _traced(lengths, env_id=None, terminated=None, truncated=None, lam=0.95,
     n_env = len(set(env_id)) if env_id is not None else 1
     return compute_chunk_advantages(
         torch.full((int(lengths_t.sum()),), float(reward)),
-        torch.full((n,), float(chunk_q)),
-        torch.full((n,), float(chunk_next_q)),
+        torch.full((n,), float(q_current_chunk)),
+        torch.full((n,), float(q_next_state)),
         starts, lengths_t,
         chunk_terminated=(torch.zeros(n, dtype=torch.bool) if terminated is None
                           else torch.tensor(terminated, dtype=torch.bool)),
@@ -236,9 +236,9 @@ def _traced(lengths, env_id=None, terminated=None, truncated=None, lam=0.95,
 def test_lambda_zero_is_bit_identical_to_the_qc_path():
     """lambda=0.0 is bit-identical to the QC call that omits the trace args."""
     lengths = [H, 2, 3, H]
-    qc_adv, qc_ret = run(lengths, chunk_q=1.0, chunk_next_q=2.5, reward=0.7)
+    qc_adv, qc_ret = run(lengths, q_current_chunk=1.0, q_next_state=2.5, reward=0.7)
     traced_adv, traced_ret = _traced(
-        lengths, lam=0.0, chunk_q=1.0, chunk_next_q=2.5, reward=0.7
+        lengths, lam=0.0, q_current_chunk=1.0, q_next_state=2.5, reward=0.7
     )
     torch.testing.assert_close(traced_adv, qc_adv, rtol=0, atol=0)
     torch.testing.assert_close(traced_ret, qc_ret, rtol=0, atol=0)
@@ -248,8 +248,8 @@ def test_lambda_zero_returns_before_running_the_recursion():
     """lambda=0.0 returns before the recursion runs, so a broken successor map cannot hide."""
     lengths = [H] * 3
     # env ids deliberately wrong (interleaved, none matching buffer order).
-    adv, _ = _traced(lengths, env_id=[0, 1, 0], lam=0.0, chunk_next_q=2.0)
-    qc_adv, _ = run(lengths, chunk_next_q=2.0)
+    adv, _ = _traced(lengths, env_id=[0, 1, 0], lam=0.0, q_next_state=2.0)
+    qc_adv, _ = run(lengths, q_next_state=2.0)
     torch.testing.assert_close(adv, qc_adv, rtol=0, atol=0)
 
 
@@ -293,7 +293,7 @@ def test_trace_discount_is_gamma_h_times_lambda_not_gamma_lambda_to_the_h():
     """Pins the macro-MDP convention: lambda decays once per chunk, not per env step."""
     # Two chunks, one env, bootstrap value zero, so only the trace propagates.
     lengths = [H] * 2
-    got, _ = _traced(lengths, lam=0.95, chunk_next_q=0.0)
+    got, _ = _traced(lengths, lam=0.95, q_next_state=0.0)
     r = sum(GAMMA**k for k in range(H))
     trace = GAMMA**H * 0.95
     # delta_0 = r, delta_1 = r, so A_0 = r + trace * r.
@@ -307,18 +307,18 @@ def test_truncation_stops_the_trace_but_keeps_the_bootstrap():
     """A timeout is not an episode end: bootstrap yes, trace no."""
     lengths = [H] * 3
     truncated = [False, True, False]
-    adv, ret = _traced(lengths, truncated=truncated, lam=0.9, chunk_next_q=2.0)
+    adv, ret = _traced(lengths, truncated=truncated, lam=0.9, q_next_state=2.0)
     r = sum(GAMMA**k for k in range(H))
     # Chunk 1 is truncated: its bootstrap survives, so its target still carries gamma^h * Q'.
     assert ret[1].item() == pytest.approx(r + GAMMA**H * 2.0, abs=1e-5)
-    two_free = _traced([H] * 2, lam=0.9, chunk_next_q=2.0)[0]
+    two_free = _traced([H] * 2, lam=0.9, q_next_state=2.0)[0]
     assert adv[2].item() == pytest.approx(two_free[1].item(), abs=1e-5)
 
 
 def test_termination_still_zeroes_the_bootstrap_and_the_trace():
     lengths = [H] * 3
     adv, ret = _traced(lengths, terminated=[False, True, False],
-                       lam=0.9, chunk_next_q=2.0)
+                       lam=0.9, q_next_state=2.0)
     r = sum(GAMMA**k for k in range(H))
     # No bootstrap, and nothing to propagate: the advantage is the reward sum.
     assert ret[1].item() == pytest.approx(r, abs=1e-5)
@@ -329,7 +329,7 @@ def test_chunks_from_different_envs_do_not_interact():
     lengths = [H] * 6
     env_id = [0, 1, 0, 1, 0, 1]
     lam = 0.95
-    base, _ = _traced(lengths, env_id=env_id, lam=lam, chunk_next_q=1.0)
+    base, _ = _traced(lengths, env_id=env_id, lam=lam, q_next_state=1.0)
     # Same rollout, but env 1's rewards multiplied by 10 via a separate call.
     lengths_t = torch.tensor(lengths)
     starts = torch.cat([torch.zeros(1, dtype=torch.long), lengths_t.cumsum(0)[:-1]])
@@ -356,7 +356,7 @@ def test_successor_is_the_next_chunk_of_the_same_env_not_the_next_buffer_row():
     lengths = [H] * 3
     env_id = [0, 1, 0]
     lam = 0.95
-    got, _ = _traced(lengths, env_id=env_id, lam=lam, chunk_next_q=0.0)
+    got, _ = _traced(lengths, env_id=env_id, lam=lam, q_next_state=0.0)
     r = sum(GAMMA**k for k in range(H))
     # Chunk 0 -> chunk 2 (env 0).
     assert got[0].item() == pytest.approx(r + (GAMMA**H * lam) * r, abs=1e-5)
@@ -367,8 +367,8 @@ def test_successor_is_the_next_chunk_of_the_same_env_not_the_next_buffer_row():
 def test_last_chunk_of_each_env_gets_a_one_chunk_advantage():
     lengths = [H] * 4
     env_id = [0, 1, 0, 1]
-    got, _ = _traced(lengths, env_id=env_id, lam=0.95, chunk_next_q=0.0)
-    qc, _ = run(lengths, chunk_next_q=0.0)
+    got, _ = _traced(lengths, env_id=env_id, lam=0.95, q_next_state=0.0)
+    qc, _ = run(lengths, q_next_state=0.0)
     # Chunks 2 and 3 end their env, so their traces stop: 0->2, 1->3.
     for i in (2, 3):
         assert got[i].item() == pytest.approx(qc[i].item(), abs=1e-6)
@@ -377,12 +377,12 @@ def test_last_chunk_of_each_env_gets_a_one_chunk_advantage():
 def test_advantage_is_monotone_in_lambda_between_delta_and_the_full_return():
     """Higher lambda moves credit further back, never past the true return."""
     lengths = [H] * 4
-    endpoint = _traced(lengths, lam=0.0, chunk_next_q=0.0)[0]
+    endpoint = _traced(lengths, lam=0.0, q_next_state=0.0)[0]
     lam = 0.95
-    got, _ = _traced(lengths, lam=lam, chunk_next_q=0.0)
+    got, _ = _traced(lengths, lam=lam, q_next_state=0.0)
     assert (got[:-1] >= endpoint[:-1] - 1e-5).all(), "lambda shrank the advantage"
     # lambda=1 and a zero bootstrap value makes it the full discounted return.
-    full, _ = _traced(lengths, lam=1.0, chunk_next_q=0.0)
+    full, _ = _traced(lengths, lam=1.0, q_next_state=0.0)
     want = sum(
         sum(GAMMA ** (i * H + k) for k in range(H)) for i in range(4)
     )
@@ -394,8 +394,8 @@ def test_trace_requires_its_inputs():
     lengths_t = torch.tensor([H])
     common = dict(
         step_rewards=torch.ones(H),
-        chunk_q=torch.zeros(1),
-        chunk_next_q=torch.zeros(1),
+        q_current_chunk=torch.zeros(1),
+        q_next_state=torch.zeros(1),
         chunk_starts=torch.zeros(1, dtype=torch.long),
         chunk_lengths=lengths_t,
         chunk_terminated=torch.zeros(1, dtype=torch.bool),
@@ -482,13 +482,13 @@ def test_rejects_value_arrays_of_the_wrong_length():
         chunk_terminated=torch.zeros(n, dtype=torch.bool),
         chunk_size=4,
     )
-    with pytest.raises(ValueError, match="chunk_q"):
+    with pytest.raises(ValueError, match="q_current_chunk"):
         compute_chunk_advantages(
-            chunk_q=torch.zeros(16), chunk_next_q=torch.zeros(n), **common
+            q_current_chunk=torch.zeros(16), q_next_state=torch.zeros(n), **common
         )
-    with pytest.raises(ValueError, match="chunk_next_q"):
+    with pytest.raises(ValueError, match="q_next_state"):
         compute_chunk_advantages(
-            chunk_q=torch.zeros(n), chunk_next_q=torch.zeros(16), **common
+            q_current_chunk=torch.zeros(n), q_next_state=torch.zeros(16), **common
         )
 
 

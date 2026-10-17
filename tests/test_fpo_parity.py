@@ -42,8 +42,8 @@ def _gae_inputs(term, trunc, n=6, seed=0):
     assert len(term) == n and len(trunc) == n
     return {
         "step_rewards": torch.rand(24, generator=g),
-        "chunk_q": torch.rand(n, generator=g),
-        "chunk_next_q": torch.rand(n, generator=g),
+        "q_current_chunk": torch.rand(n, generator=g),
+        "q_next_state": torch.rand(n, generator=g),
         "chunk_starts": torch.arange(n) * 4,
         "chunk_lengths": torch.full((n,), 4),
         "chunk_terminated": torch.tensor(term, dtype=torch.bool),
@@ -68,7 +68,7 @@ def _previous_encoding(kw, term, trunc):
     """The formula this replaced, reimplemented rather than recalled."""
     gamma, lam = kw["gamma"], kw["gae_lambda"]
     gamma_h = gamma ** kw["chunk_lengths"]
-    q, q_next = kw["chunk_q"], kw["chunk_next_q"]
+    q, q_next = kw["q_current_chunk"], kw["q_next_state"]
     bootstrap = gamma_h * (~term)
     delta = _discounted_chunk_rewards(kw) + bootstrap * q_next - q
     trace = bootstrap * (~trunc) * lam
@@ -102,7 +102,7 @@ def test_timeout_re_encoding_is_bit_identical(term, trunc, lam):
     adv_old = _sweep(delta_old, trace_old, succ) if lam > 0 else delta_old
 
     assert torch.equal(adv_new, adv_old), "advantage diverged from the previous form"
-    assert torch.equal(ret_new, adv_old + kw["chunk_q"])
+    assert torch.equal(ret_new, adv_old + kw["q_current_chunk"])
 
 
 def test_a_timed_out_chunk_still_carries_the_bootstrap():
@@ -113,8 +113,8 @@ def test_a_timed_out_chunk_still_carries_the_bootstrap():
     gamma_h = kw["gamma"] ** kw["chunk_lengths"]
     want = (
         _discounted_chunk_rewards(kw)[2]
-        + gamma_h[2] * kw["chunk_next_q"][2]
-        - kw["chunk_q"][2]
+        + gamma_h[2] * kw["q_next_state"][2]
+        - kw["q_current_chunk"][2]
     )
     assert delta[2] == pytest.approx(float(want))
 
@@ -123,7 +123,7 @@ def test_a_terminated_chunk_drops_the_bootstrap_entirely():
     kw = _gae_inputs([0, 1, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0])
     kw["gae_lambda"] = 0.0
     delta, _ = compute_chunk_advantages(**kw)
-    want = _discounted_chunk_rewards(kw)[1] - kw["chunk_q"][1]
+    want = _discounted_chunk_rewards(kw)[1] - kw["q_current_chunk"][1]
     assert delta[1] == pytest.approx(float(want))
 
 
@@ -132,7 +132,7 @@ def test_terminated_and_truncated_together_keeps_the_terminal_reading():
     kw = _gae_inputs([0, 1, 0, 0, 0, 0], [0, 1, 0, 0, 0, 0])
     kw["gae_lambda"] = 0.0
     delta, _ = compute_chunk_advantages(**kw)
-    want = _discounted_chunk_rewards(kw)[1] - kw["chunk_q"][1]
+    want = _discounted_chunk_rewards(kw)[1] - kw["q_current_chunk"][1]
     assert delta[1] == pytest.approx(float(want))
 
 

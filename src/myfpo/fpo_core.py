@@ -76,7 +76,7 @@ def sample_noise(
     raise ValueError(f"mode={mode!r} unknown; expected 'normal' or 'uniform'")
 
 
-def run_monte_carlo_sampling(
+def broadcast_over_mc_axis(
     a: torch.Tensor, eps: torch.Tensor, tau
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, tuple[int, ...], int]:
     """Broadcast the action, the noise, and the per-token timestep over the MC
@@ -91,6 +91,9 @@ def run_monte_carlo_sampling(
 
     The cast onto the device and dtype of ``eps`` stops a scalar from moving to
     the CPU in the middle of the graph.
+
+    The function runs no loop and holds no state. It reshapes and broadcasts. The
+    old name ``broadcast_over_mc_axis`` implied iteration.
     """
     b, num_mc = eps.shape[0], eps.shape[1]
     flow_shape = tuple(a.shape[1:])
@@ -156,7 +159,8 @@ def compute_cfm_loss(
 
     ``sample``: flatten the tokens, then reduce with ``cfg.cfm_loss_reduction``.
     ``token_mean``: divide by action_dim only. Masking cannot move this value.
-    ``both``: return the masked sample and one masked square.
+    ``sample_and_token``: return the masked sample plus the masked per-token
+    mean. The mode was named ``both``, which did not say both of what.
     ``scalar``: return one number.
 
     ``action_is_pad`` has the shape ``[n, horizon]`` and is True where padded.
@@ -215,7 +219,7 @@ def compute_cfm_loss(
     if reduce_mode == "scalar":
         return sq.mean() if n_valid is None else sq.sum() / n_valid.sum()
 
-    if reduce_mode in ("sample", "both"):
+    if reduce_mode in ("sample", "sample_and_token"):
         flat = sq.flatten(2)
         if cfg.cfm_loss_reduction == "mean":
             sample = flat.mean(dim=-1) if n_valid is None else flat.sum(dim=-1) / n_valid
@@ -236,8 +240,8 @@ def compute_cfm_loss(
         # the token count. The mask above already zeroed the padded rows.
         return sq.mean(dim=-1)
     raise ValueError(
-        f"reduce_mode={reduce_mode!r} must be 'scalar', 'sample', 'token_mean', "
-        "or 'both'"
+        f"reduce_mode={reduce_mode!r} must be 'scalar', 'sample', "
+        "'sample_and_token', or 'token_mean'"
     )
 
 

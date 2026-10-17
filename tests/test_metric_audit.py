@@ -246,14 +246,19 @@ def test_the_token_axis_split_is_named_for_what_it_splits():
     c = _cfg(action_horizon=8)
     m, ratio = _ratio_metrics(c)
     per_token = ratio.mean(dim=(0, 1))
-    assert m["flow_ratio_token_pos_low"] == pytest.approx(per_token[:4].mean().item())
-    assert m["flow_ratio_token_pos_high"] == pytest.approx(per_token[4:].mean().item())
+    assert m["flow_ratio_token_early_half"] == pytest.approx(per_token[:4].mean().item())
+    assert m["flow_ratio_token_late_half"] == pytest.approx(per_token[4:].mean().item())
     gone = {
         "flow_ratio_token_lowfreq",
         "flow_ratio_token_highfreq",
         "flow_ratio_token_spectral_low",
         "flow_ratio_token_spectral_high",
         "token_axis_is_spectral",
+        # The names that read as a frequency or a position index.
+        "flow_ratio_token_pos_low",
+        "flow_ratio_token_pos_high",
+        "flow_ratio_token_pos_low_outside_frac",
+        "flow_ratio_token_pos_high_outside_frac",
     }
     assert not gone & set(m)
 

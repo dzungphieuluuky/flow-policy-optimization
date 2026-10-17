@@ -41,7 +41,7 @@ from myfpo.fpo_core import (
     compute_cfm_loss,
     clip_velocity,
     compute_policy_ratio,
-    run_monte_carlo_sampling,
+    broadcast_over_mc_axis,
     sample_action,
     sample_noise,
     sample_timesteps,
@@ -199,7 +199,7 @@ def mc_draws(
     """The shared MC prologue of ``compute_behavior_cfm_losses`` and ``forward``.
     The function interpolates the draws, with one tau per token."""
     flatten_timestep, flatten_mc_noise, flatten_mc_action, flow_shape, num_mc = (
-        run_monte_carlo_sampling(actions, eps, tau)
+        broadcast_over_mc_axis(actions, eps, tau)
     )
     x_t = compute_mc_xt(flatten_timestep, flatten_mc_noise, flatten_mc_action, flow_shape)
     return x_t, flatten_timestep.squeeze(-1), flow_shape, num_mc
@@ -234,30 +234,41 @@ def compute_ratio_metrics(
     the negative-advantage branch uses ``spo_clip_param``, so ``clipfrac`` is
     not the whole trust-region binding fraction.
 
+    The ``_early_half`` and ``_late_half`` keys split the token axis at
+    ``split = num_tokens // 2``. The split is an INDEX cut along the action-step
+    axis, not a frequency cut. The old names ended in ``_pos_low`` and
+    ``_pos_high``, which read as a position in the frequency spectrum. "pos"
+    also names the write cursor in the collector, so the same three letters
+    meant two things.
+
     ``mean_log_ratio``, ``log_ratio_max``, ``log_ratio_clip_frac``,
     ``clipfrac``, and ``flow_ratio_*`` average over every element of ``delta``
     and ``ratio``. Their axis follows the ratio granularity: the token axis
     under the default flags. ``flow_ratio_token_*`` is always per token.
 
-    The token axis is action steps, split early/late.
-    ``pos`` keys: this is not a frequency cut.
+    The token axis is the action steps of the chunk. ``_early_half`` covers the
+    first half of them and ``_late_half`` the second half.
     """
     log_ratio_abs = delta.abs()
     log_ratio_clip_frac = (delta > cfg.log_ratio_cap).float().mean()
 
-    ratio_token_mean = ratio_token.mean(dim=(0, 1))
-    num_tokens = ratio_token_mean.numel()
+    ratio_token_mean_per_step = ratio_token.mean(dim=(0, 1))
+    num_tokens = ratio_token_mean_per_step.numel()
     split = max(1, num_tokens // 2)
     # One epsilon across the token axis, as the surrogate.
     def outside(t: torch.Tensor) -> torch.Tensor:
         return ((t < 1.0 - cfg.clip_param) | (t > 1.0 + cfg.clip_param)).float().mean()
 
-    low_outside = outside(ratio_token[..., :split])
-    high_outside = outside(ratio_token[..., split:]) if num_tokens > 1 else low_outside
+    early_outside = outside(ratio_token[..., :split])
+    late_outside = (
+        outside(ratio_token[..., split:]) if num_tokens > 1 else early_outside
+    )
 
-    low_mean = ratio_token_mean[:split].mean()
-    high_mean = (
-        ratio_token_mean[split:].mean() if num_tokens > 1 else ratio_token_mean.mean()
+    early_mean = ratio_token_mean_per_step[:split].mean()
+    late_mean = (
+        ratio_token_mean_per_step[split:].mean()
+        if num_tokens > 1
+        else ratio_token_mean_per_step.mean()
     )
 
     return {
@@ -267,11 +278,13 @@ def compute_ratio_metrics(
         "clipfrac": outside(ratio),
         "flow_ratio_mean": ratio.mean(),
         "flow_ratio_std": ratio.std(correction=0),
-        "flow_ratio_token_range": ratio_token_mean.max() - ratio_token_mean.min(),
-        "flow_ratio_token_pos_low": low_mean,
-        "flow_ratio_token_pos_high": high_mean,
-        "flow_ratio_token_pos_low_outside_frac": low_outside,
-        "flow_ratio_token_pos_high_outside_frac": high_outside,
+        "flow_ratio_token_range": (
+            ratio_token_mean_per_step.max() - ratio_token_mean_per_step.min()
+        ),
+        "flow_ratio_token_early_half": early_mean,
+        "flow_ratio_token_late_half": late_mean,
+        "flow_ratio_token_early_half_outside_frac": early_outside,
+        "flow_ratio_token_late_half_outside_frac": late_outside,
         "flow_ratio_token_outside_frac": outside(ratio_token),
         # The key counts the chunks with an unexecuted row. The mask drops the
         # row.
@@ -843,7 +856,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             )
             loss_mask = action_is_pad
             return compute_cfm_loss(
-                v_old, v_star, cfg, "both", loss_mask, cfm_loss_weight(tau, cfg)
+                v_old, v_star, cfg, "sample_and_token", loss_mask, cfm_loss_weight(tau, cfg)
             )
 
     def generate_rollout(
@@ -1015,7 +1028,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             chunk_cond = critic_cond[:n_chunks] if critic_cond is not None else None
             next_cond = critic_cond[n_chunks:] if critic_cond is not None else None
             with autocast_context(device):
-                chunk_q = self.critic(
+                q_current_chunk = self.critic(
                     self.critic_inputs(normalised_states, chunk_cond),
                     actions,
                     exec_length_frac,
@@ -1023,7 +1036,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             # The code is already inside the outer inference_mode. Autocast is
             # the only context this block adds.
             with autocast_context(device):
-                boot_q = self.critic(
+                q_bootstrap = self.critic(
                     self.critic_inputs(normalised_next_states, next_cond),
                     boot_actions,
                     boot_exec_frac,
@@ -1035,8 +1048,8 @@ class SJFPOPolicy(PreTrainedPolicy):
         # raw return, so Q is the true expected return.
         raw_advantages, raw_returns = compute_chunk_advantages(
             all_rewards,
-            chunk_q,
-            boot_q,
+            q_current_chunk,
+            q_bootstrap,
             chunk_starts,
             lengths,
             chunk_terminated=active["chunk_terminated"],
@@ -1102,7 +1115,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             # Without one, the target's own drift.
             "boot_observations": all_chunk_normalised_states[n_chunks:].to(storage_dtype),
             "boot_actions": boot_actions.to(storage_dtype),
-            "boot_values_start": boot_q.unsqueeze(1),
+            "boot_values_start": q_bootstrap.unsqueeze(1),
             "mc_tau": tau,
             "mc_eps": eps,
             "chunk_clip_counts": chunk_clip_counts,
@@ -1277,7 +1290,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             adv = normalised_advantages.float()
             adv_mc = adv.unsqueeze(1)
             cfm_loss_new, cfm_loss_new_token = compute_cfm_loss(
-                v_new_r_f, v_star_f, cfg, "both", loss_mask,
+                v_new_r_f, v_star_f, cfg, "sample_and_token", loss_mask,
                 cfm_loss_weight(tau, cfg),
             )
             # Both ratios take the advantage. Without it, the A<0 clamp is

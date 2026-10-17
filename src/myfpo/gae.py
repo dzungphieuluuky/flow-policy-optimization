@@ -54,8 +54,8 @@ import torch
 @torch.no_grad()
 def compute_chunk_advantages(
     step_rewards: torch.Tensor,
-    chunk_q: torch.Tensor,
-    chunk_next_q: torch.Tensor,
+    q_current_chunk: torch.Tensor,
+    q_next_state: torch.Tensor,
     chunk_starts: torch.Tensor,
     chunk_lengths: torch.Tensor,
     *,
@@ -67,8 +67,14 @@ def compute_chunk_advantages(
     gae_lambda: float = 0.95,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Return the ``[n]`` advantages and the regression target. The target is
-    ``chunk_q + advantages``. The value ``chunk_q[i]`` is Q(s_i, a_i). The
-    value ``chunk_next_q[i]`` is Q(s_{i+1}, a' ~ pi(s_{i+1})).
+    ``q_current_chunk + advantages``.
+
+    ``q_current_chunk[i]`` is Q(s_i, a_i). The value ``q_next_state[i]`` is
+    Q(s_{i+1}, a' ~ pi(s_{i+1})), the bootstrap at the chunk end.
+
+    The two Q arguments were named ``chunk_q`` and ``chunk_next_q``. The prefixes
+    ordered by position in the chunk, not by role, and the caller also held a
+    ``boot_q``. The names now say which chunk each value belongs to.
 
     At ``gae_lambda == 0`` the target reduces exactly to the QC target
     ``R_i + gamma^{h_i} (1 - term_i) Q(s_{i+1}, a')``.
@@ -89,12 +95,12 @@ def compute_chunk_advantages(
     if not 0.0 <= gae_lambda <= 1.0:
         raise ValueError(f"gae_lambda must be in [0, 1], got {gae_lambda}")
 
-    device = chunk_q.device
+    device = q_current_chunk.device
     dtype = torch.float32
 
     rewards = step_rewards.to(device=device, dtype=dtype).reshape(-1)
-    chunk_q = chunk_q.to(device=device, dtype=dtype).reshape(-1)
-    chunk_next_q = chunk_next_q.to(device=device, dtype=dtype).reshape(-1)
+    q_current_chunk = q_current_chunk.to(device=device, dtype=dtype).reshape(-1)
+    q_next_state = q_next_state.to(device=device, dtype=dtype).reshape(-1)
     starts = chunk_starts.to(device=device, dtype=torch.long).reshape(-1)
     lengths = chunk_lengths.to(device=device, dtype=torch.long).reshape(-1)
     terminated = chunk_terminated.to(device=device, dtype=torch.bool).reshape(-1)
@@ -103,8 +109,8 @@ def compute_chunk_advantages(
     for name, tensor in (
         ("chunk_lengths", lengths),
         ("chunk_terminated", terminated),
-        ("chunk_q", chunk_q),
-        ("chunk_next_q", chunk_next_q),
+        ("q_current_chunk", q_current_chunk),
+        ("q_next_state", q_next_state),
     ):
         if tensor.numel() != n_chunks:
             raise ValueError(f"{name} must have {n_chunks} entries, got {tensor.numel()}")
@@ -161,15 +167,15 @@ def compute_chunk_advantages(
     # A chunk that both terminated and truncated keeps the terminal reading:
     # injecting there would resurrect a value for an episode that really ended.
     injected = truncated & ~terminated
-    chunk_rewards = chunk_rewards + gamma_h * injected * chunk_next_q
+    chunk_rewards = chunk_rewards + gamma_h * injected * q_next_state
     bootstrap = gamma_h * (~done)
-    delta = chunk_rewards + bootstrap * chunk_next_q - chunk_q
+    delta = chunk_rewards + bootstrap * q_next_state - q_current_chunk
 
     if gae_lambda == 0.0:
         # QC. The function returns early, so the default path never runs the
         # recursion below. It is not merely equal to that path. It does not run
         # it at all.
-        return delta, delta + chunk_q
+        return delta, delta + q_current_chunk
 
     env_id = chunk_env_id.to(device=device, dtype=torch.long).reshape(-1)
     if env_id.numel() != n_chunks:
@@ -196,4 +202,4 @@ def compute_chunk_advantages(
         j = successor_host[i]
         if j >= 0:
             adv[i] = delta[i] + trace[i] * adv[j]
-    return adv, adv + chunk_q
+    return adv, adv + q_current_chunk
