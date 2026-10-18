@@ -98,9 +98,9 @@ def build_policy(
                     mode = "reduce-overhead"
         except Exception:
             pass
-        policy.actor = torch.compile(policy.actor, dynamic=True, mode=mode, fullgraph=False)
-        policy.encoder = torch.compile(policy.encoder, dynamic=True, mode=mode, fullgraph=False)
-        policy.critic = torch.compile(policy.critic, dynamic=True, mode=mode, fullgraph=False)
+        policy.actor = torch.compile(policy.actor, dynamic=True, mode=mode, fullgraph=True)
+        policy.encoder = torch.compile(policy.encoder, dynamic=True, mode=mode, fullgraph=True)
+        policy.critic = torch.compile(policy.critic, dynamic=True, mode=mode, fullgraph=True)
     return policy
 
 
