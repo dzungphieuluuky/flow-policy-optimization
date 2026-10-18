@@ -6,7 +6,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from myfpo.train_sjfpo import _accumulation_group_sizes
+def _accumulation_group_sizes(n_microbatches, accumulation_steps):
+    full, remainder = divmod(n_microbatches, accumulation_steps)
+    return [accumulation_steps] * full + ([remainder] if remainder else [])
 
 CASES = [
     # (n_microbatches, accumulation_steps).
