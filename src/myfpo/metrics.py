@@ -40,7 +40,6 @@ _GAE_DIAGNOSTIC_KEYS = (
     "advantage_std",
     "return_rms",
     "advantage_std_over_return_std",
-    "budget_truncated_chunk_frac",
 )
 
 
@@ -50,7 +49,6 @@ def compute_gae_diagnostics(
     truncated: torch.Tensor,
     advantages: torch.Tensor,
     raw_returns: torch.Tensor,
-    budget_truncated: torch.Tensor | None = None,
 ) -> dict[str, float]:
     """Trace-liveness and scale probes for the chunk backup."""
     n = env_id.numel()
@@ -67,9 +65,6 @@ def compute_gae_diagnostics(
         adv_std,
         rms(ret).double(),
         adv_std / ret_std,
-        budget_truncated.to(torch.bool).float().mean().double()
-        if budget_truncated is not None
-        else ret.double().new_tensor(float("nan")),
     ]
     return dict(zip(_GAE_DIAGNOSTIC_KEYS, torch.stack(fields).tolist()))
 

@@ -41,7 +41,7 @@ from typing import Literal
 
 import draccus
 
-# Make src/ importable before any sjfpo.* import.
+# Import src/.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from myfpo.config import (  # noqa: E402
@@ -76,14 +76,9 @@ def configure_torch_cuda() -> bool:
 
 
 def apply_runtime_settings() -> dict:
-    """Apply the settings that are no-ops where the arch lacks the hardware.
+    """Apply settings (no-op on unsupported hardware).
 
-    Only settings whose sole effect on unsupported hardware is nothing. Precision
-    is deliberately not touched: ``resolve_storage_dtype`` and
-    ``resolve_compute_dtype`` are the operator's choice, so a T4 run and a
-    Blackwell run from one config stay comparable.
-
-    Returns what was applied, for ``run_metadata.json``.
+    Returns applied settings for metadata.
     """
     import torch
 

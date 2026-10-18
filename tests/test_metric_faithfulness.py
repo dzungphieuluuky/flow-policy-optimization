@@ -26,16 +26,8 @@ def _gae(n=8, **kw):
 # --- unmeasured must not read as measured ----------------------------------.
 
 
-def test_budget_truncated_is_nan_when_the_collector_cannot_supply_it():
-    """The metric that motivated this file."""
-    out = _gae()
-    assert math.isnan(out["budget_truncated_chunk_frac"])
 
 
-def test_budget_truncated_is_a_real_fraction_when_supplied():
-    supplied = torch.tensor([True] * 4 + [False] * 4)
-    out = _gae(budget_truncated=supplied)
-    assert out["budget_truncated_chunk_frac"] == pytest.approx(0.5)
 
 
 def test_an_empty_rollout_reports_nan_not_zero():

@@ -1,4 +1,4 @@
-"""Pins the chunked Q backup: ``myfpo.gae.compute_chunk_advantages``."""
+"""GAE backup."""
 import sys
 from pathlib import Path
 
@@ -13,13 +13,13 @@ GAMMA, H = 0.99, 4
 
 
 def expected_chunk_reward(lengths, reward=1.0):
-    """R_i: discounted sum over executed steps only."""
+    """R_i: executed-step discount."""
     return [sum(GAMMA**k * reward for k in range(h)) for h in lengths]
 
 
 def run(lengths, terminated=None, q_current_chunk=0.0, q_next_state=2.0, reward=1.0,
         total_steps=None, chunk_size=H):
-    """Build one rollout as the caller does."""
+    """Build rollout."""
     lengths_t = torch.tensor(lengths, dtype=torch.long)
     n = lengths_t.numel()
     starts = torch.cat([torch.zeros(1, dtype=torch.long), lengths_t.cumsum(0)[:-1]])
@@ -39,7 +39,7 @@ def run(lengths, terminated=None, q_current_chunk=0.0, q_next_state=2.0, reward=
     )
 
 
-# --- the backup identity ---------------------------------------------------.
+# Backup identity.
 
 
 def test_delta_is_one_chunked_backup():
@@ -81,7 +81,7 @@ def test_baseline_subtraction_scales_with_the_value():
     assert float(raw) > 0 > float(raised)
 
 
-# --- masks -----------------------------------------------------------------.
+# Masks.
 
 
 def test_terminated_zeroes_the_bootstrap():
@@ -137,7 +137,7 @@ def test_budget_cut_does_not_reach_the_backup():
     assert "budget" not in inspect.signature(compute_chunk_advantages).parameters
 
 
-# --- discounting and the reward gather --------------------------------------.
+# Discount/reward.
 
 
 def test_discount_uses_the_executed_length_not_the_horizon():
@@ -207,7 +207,7 @@ def test_values_are_per_chunk_not_per_step():
     assert adv.tolist() == pytest.approx(want, abs=1e-5)
 
 
-# --- the opt-in chunk-level GAE trace ---------------------------------------.
+# GAE trace.
 
 
 def _traced(lengths, env_id=None, terminated=None, truncated=None, lam=0.95,
@@ -449,7 +449,7 @@ def test_config_rejects_an_out_of_range_lambda():
         SJFPOConfig(gae_lambda=2.0).validate()
 
 
-# --- validation ------------------------------------------------------------.
+# Validation.
 
 
 def test_empty_rollout():
