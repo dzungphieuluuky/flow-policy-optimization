@@ -76,7 +76,10 @@ def save_policy_checkpoint(
     if ema_state is not None:
         save_torch_atomically(d / "ema.pt", ema_state)
 
-    save_torch_atomically(d / OPTIMIZER_FILE, optimizer.state_dict())
+    if optimizer is not None:
+        save_torch_atomically(d / OPTIMIZER_FILE, optimizer.state_dict())
+    else:
+        raise ValueError("optimizer is required for checkpoint save")
 
     counters = {
         "global_step": int(global_step),

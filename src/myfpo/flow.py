@@ -47,8 +47,6 @@ class _FlowActorBase(nn.Module):
         self.time_embed_dim = time_embed_dim
         self.timestep_embedder = SinusoidalEncoding(self.time_embed_dim)
         self.in_proj = nn.Linear(action_dim, hidden_dim)
-        self.token_pos = nn.Parameter(torch.zeros(1, action_horizon, hidden_dim))
-        nn.init.normal_(self.token_pos, std=0.02)
         self.time_mlp = CondMLP(time_embed_dim, 4 * hidden_dim, hidden_dim)
         self.blocks = nn.ModuleList(
             block_cls(**block_kwargs) for _ in range(self.num_blocks)
@@ -111,10 +109,7 @@ class _FlowActorBase(nn.Module):
         else:
             raise ValueError(f"t must be scalar, [B], or [B, K, 1], got {tuple(t.shape)}")
 
-        token_pos = self.token_pos[:, : x_t.shape[1], :].to(
-            device=x_t.device, dtype=x_t.dtype
-        )
-        h = self.in_proj(x_t) + token_pos
+        h = self.in_proj(x_t)
 
         def decode(hidden: torch.Tensor) -> torch.Tensor:
             shift, scale = self.adaLN_out(c).chunk(2, dim=-1)

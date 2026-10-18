@@ -302,6 +302,8 @@ def train_update(policy, optimizer, batch, tracker, cfg, device, clip_params):
         finite_error |= ~torch.isfinite(loss)
         if loss.dim() != 0:
             raise ValueError(f"Loss must be scalar before backward; got {tuple(loss.shape)}.")
+        if not bool(torch.isfinite(loss).all()):
+            raise SJFPOAborted(f"Non-finite loss at step {micro_step}: {loss}")
         (loss / group_size).backward()
         is_boundary = (
             (micro_step + 1) % accumulation_steps == 0 or micro_step + 1 == len(microbatches)
@@ -337,7 +339,7 @@ def evaluate_policy(policy, global_step, out_dir, evaluator, eval_policies, cfg,
         stop_name=cfg.stop_eval_sampling,
         eval_seed=evaluator.eval_seed,
         summarise=evaluator.summarize,
-        best_return=eval_state[0],
+        best_return=best_return,
     )
     summaries = window_obj.summaries
     eval_summary = summaries.get(cfg.eval_sampling, {})
@@ -599,7 +601,7 @@ def train_sjfpo_run(
 
             if global_step >= next_eval or global_step >= total_steps:
                 result, summaries = evaluate_policy(
-                    policy, global_step, out_dir, evaluator, eval_policies, cfg, tracker, window=None, best_return=eval_state[0], best_return_ref=None, steps_to_best_ref=eval_state[1]
+                    policy, global_step, out_dir, evaluator, eval_policies, cfg, tracker, window=None, best_return=best_return
                 )
                 mean_return = result.get("mean_return", 0.0)
                 stop_return = result.get("stop_return", mean_return)
@@ -639,8 +641,8 @@ def train_sjfpo_run(
                             result.get("eval_results", []),
                             all_eval_returns,
                             eval_state[2],
-                            r_rand=0.0,
-                            best_return=eval_state[0],
+                            r_rand=r_rand,
+                            best_return=best_return,
                             steps_to_best=eval_state[1],
                         ) if result.get("eval_results") else {},
                         step=global_step,

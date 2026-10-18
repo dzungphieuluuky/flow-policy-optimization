@@ -11,6 +11,14 @@ from torch import nn
 from myfpo.layers import CondMLP, SwiGLU, build_rms_norm, modulate
 from myfpo.utils import rms
 
+def _rope(x: torch.Tensor, inv_freq: torch.Tensor) -> torch.Tensor:
+    pos = torch.arange(x.shape[-2], device=x.device, dtype=torch.float32)
+    freqs = torch.einsum("k,d->kd", pos, inv_freq)
+    cos, sin = freqs.cos()[None, None, :, :], freqs.sin()[None, None, :, :]
+    x1, x2 = x[..., 0::2], x[..., 1::2]
+    return torch.stack([x1 * cos - x2 * sin, x1 * sin + x2 * cos], dim=-1).flatten(-2)
+
+
 class SelfAttention(nn.Module):
     """SDPA self-attention. The attention is maskless. The action tokens are the"""
 
@@ -24,6 +32,11 @@ class SelfAttention(nn.Module):
             raise ValueError(f"hidden_dim={hidden_dim} must split over {n_heads} heads")
         self.n_heads = n_heads
         self.head_dim = hidden_dim // n_heads
+        self.register_buffer(
+            "inv_freq",
+            1.0 / (10000 ** (torch.arange(hidden_dim // (2 * n_heads)).float() / (hidden_dim // (2 * n_heads)))),
+            persistent=False,
+        )
         self.qkv = nn.Linear(hidden_dim, 3 * hidden_dim)
         self.out = nn.Linear(hidden_dim, hidden_dim)
 
@@ -39,7 +52,9 @@ class SelfAttention(nn.Module):
         k = k.view(b, l, h, d).transpose(1, 2)
         v = v.view(b, l, h, d).transpose(1, 2)
 
-        y = F.scaled_dot_product_attention(q, k, v)
+        q = _rope(q, self.inv_freq)
+        k = _rope(k, self.inv_freq)
+        y = F.scaled_dot_product_attention(q, k, v, is_causal=True)
         y = y.transpose(1, 2).reshape(b, l, h * d)
         return self.out(y)
 
