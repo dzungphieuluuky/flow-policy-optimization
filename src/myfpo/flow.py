@@ -14,7 +14,7 @@ from myfpo.utils import rms
 
 def effective_rank(features: torch.Tensor) -> torch.Tensor:
     """``exp`` spectral entropy of ``[n, hidden]``. This is the collapse probe"""
-    matrix = features.reshape(-1, features.shape[-1]).float()
+    matrix = features.view(features.numel() // features.shape[-1], features.shape[-1]).float()
     sigma = torch.linalg.svdvals(matrix)
     p = sigma / sigma.sum().clamp_min(1e-12)
     return torch.exp(torch.special.entr(p).sum())
@@ -129,6 +129,7 @@ class _FlowActorBase(nn.Module):
         stats = self._collect_stats(temb, condition, c, h, block_stats)
         return decode(h), stats
 
+    @torch.compiler.disable
     def _collect_stats(
         self,
         temb: torch.Tensor,
