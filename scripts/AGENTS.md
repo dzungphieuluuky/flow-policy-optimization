@@ -46,6 +46,7 @@
 - **`.gitignore` does not ignore `*.ipynb`.** New notebooks are visible to git.
 - **Nothing references `configs/shared.yaml`,** so its absence costs nothing.
 - **`requirements.txt` pins `jax[cuda13]`, not cuda12.** The `sjfpo_online.md` install cell matches it now. Note that plain `jax` also appears at line 6, so a naive grep for the CUDA extra finds both.
+- `literature_review.md` (new): full synthesis of flow-matching robot RL landscape (FPO, FPO++, GoRL, GORL, GenPO, OGPO, DBPO, GPC, PSS) with comparison table, reading roadmap, and dependency graph. Referenced by `README.md` and `docs/ablation_reference.md`.
 ## Removed 2026-10-17 — do not reintroduce without a trigger
 - `check_divergence`, `check_regression`, and `interval_straddles` are gone from
   `evaluator.py`. A regression flag was the only caller of the LR decay, so the

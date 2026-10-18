@@ -194,7 +194,7 @@ def _sigreg_sketch(z: torch.Tensor, sketch_dim: int) -> torch.Tensor:
 
 
 def sigreg_weak_loss(z: torch.Tensor, sketch_dim: int = 64) -> torch.Tensor:
-    """Weak SIGReg. The function matches the row covariance to identity"""
+    """Weak SIGReg. Minimizes ||cov - eye||_F (distance to identity), not a match."""
     z = z.float()
     if z.shape[0] < 2:
         return torch.zeros((), device=z.device)
@@ -219,7 +219,7 @@ def sigreg_decorr_loss(z: torch.Tensor, sketch_dim: int = 64) -> torch.Tensor:
 
 
 def cfm_loss_weight(t: torch.Tensor, cfg: SJFPOConfig) -> torch.Tensor:
-    """Per-token CFM loss weight (broadcasts over action dims). Time direction is reversed vs. reference: weight rises to 1.0 at action end (t=1)."""
+    """Per-token CFM loss weight (broadcasts over action dims). Weight rises linearly to 1.0 at t=1 (0.01 + 0.99*t); no verified 'reversed vs reference' claim."""
     mode = cfg.cfm_loss_weight_from_t
     if mode == "constant":
         return torch.ones_like(t)
@@ -288,6 +288,9 @@ def clamp_saturation(
     return both.to(torch.float32).mean()
 
 
+# NOTE (publishability): Approximate ratio rho_hat = exp(L_old - L_new)
+# is a biased proxy for log pi_new/pi_old. See FPO (arXiv:2507.21053),
+# FPO++ (arXiv:2602.02481), and literature_review.md (Sec 4.2).
 def compute_policy_ratio(
     cfm_loss_old: torch.Tensor,
     cfm_loss_new: torch.Tensor,
