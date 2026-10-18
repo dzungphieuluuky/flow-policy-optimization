@@ -30,6 +30,18 @@ from myfpo.tracking import build_tracker, compute_eval_summary_metrics
 from myfpo.runner import build_train_metrics, summarise_window
 
 
+class _EvalPolicy:
+    def __init__(self, policy, start_from_zero=True): self.policy=policy; self.start=start_from_zero
+    @classmethod
+    def for_sampling(cls, policy, sampling):
+        return cls(policy, start_from_zero=(sampling=="zero_start"))
+    def reset(self): self.policy.reset()
+    def __call__(self, obs):
+        was=self.policy.training; self.policy.eval()
+        try: r=self.policy.select_action({"observation.state":obs}, start_from_zero=self.start)
+        finally: self.policy.train(was)
+        return to_numpy_1d(r)
+
 ABOVE_CLAMP_ABORT_UPDATES = 5
 
 BOTH_CLAMPED_ABORT_FRAC = 0.5
@@ -457,17 +469,9 @@ def train_sjfpo_run(
     evaluator = Evaluator(
         env, eval_seed=eval_seed, max_episodes=cfg.eval_max_episodes
     )
-    def _eval_policy(policy, start_from_zero: bool):
-        class Adapter:
-            def reset(self): policy.reset()
-            def __call__(self, obs):
-                policy.eval()
-                try: return policy.select_action({"observation.state": obs}, start_from_zero=start_from_zero)
-                finally: policy.train(policy.training)
-        return Adapter()
     eval_policies = {
-        "zero_start": _eval_policy(policy, True),
-        "noise_start": _eval_policy(policy, False),
+        "zero_start": _EvalPolicy(policy, start_from_zero=True),
+        "noise_start": _EvalPolicy(policy, start_from_zero=False),
     }
     reported_name = cfg.eval_sampling
     stop_name = cfg.stop_eval_sampling
