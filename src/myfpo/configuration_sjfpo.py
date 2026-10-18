@@ -37,9 +37,9 @@ class SJFPOConfig(PreTrainedConfig):
 
     num_steps_zero_start: int = 10
     num_steps_noise_start: int = 10
-    min_sampled_timestep: float = 0.005
-    max_sampled_timestep: float = 0.995
-    timestep_sampling_mode: str = "fpo_beta"
+    min_sampled_timestep: float = 0.1
+    max_sampled_timestep: float = 0.9
+    timestep_sampling_mode: str = "uniform"
     noise_sampling_mode: str = "normal"
     timestep_inverse_cdf_beta: float = 2.0
     timestep_beta_alpha: float = 2.0

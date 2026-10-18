@@ -538,26 +538,16 @@ class SJFPOPolicy(PreTrainedPolicy):
         n = states.shape[0]
         action_dim = actions.shape[-1]
 
-        has_mc_t = "mc_t" in batch
-        has_mc_eps = "mc_eps" in batch
-        if has_mc_t != has_mc_eps:
-            raise ValueError("mc_t and mc_eps must be provided together")
-        if has_mc_t:
-            t = to_tensor(batch["mc_t"], dtype=storage_dtype, device=device)
-            expected_t = (n, cfg.num_mc_samples, horizon, 1)
-            if tuple(t.shape) != expected_t:
-                raise ValueError(
-                    f"mc_t shape {tuple(t.shape)} != {expected_t}"
-                )
-            eps = to_tensor(batch["mc_eps"], dtype=storage_dtype, device=device)
-            expected_eps = (n, cfg.num_mc_samples, horizon, action_dim)
-            if tuple(eps.shape) != expected_eps:
-                raise ValueError(
-                    f"stored MC noise shape {tuple(eps.shape)} != {expected_eps}"
-                )
-        else:
-            t = sample_mc_timesteps(cfg, n, device)
-            eps = sample_eps(cfg, n, action_dim, device)
+        if "mc_t" not in batch or "mc_eps" not in batch:
+            raise ValueError("Mandatory paired reuse: batch must contain 'mc_t' and 'mc_eps' (coupled draws for both old/new CFM loss)")
+        t = to_tensor(batch["mc_t"], dtype=storage_dtype, device=device)
+        expected_t = (n, cfg.num_mc_samples, horizon, 1)
+        if tuple(t.shape) != expected_t:
+            raise ValueError(f"mc_t shape {tuple(t.shape)} != {expected_t}")
+        eps = to_tensor(batch["mc_eps"], dtype=storage_dtype, device=device)
+        expected_eps = (n, cfg.num_mc_samples, horizon, action_dim)
+        if tuple(eps.shape) != expected_eps:
+            raise ValueError(f"stored MC noise shape {tuple(eps.shape)} != {expected_eps}")
 
         x_t_flat, actor_t, flow_shape, num_mc = mc_draws(actions, eps, t)
 

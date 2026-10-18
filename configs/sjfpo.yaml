@@ -24,9 +24,9 @@ grad_accum_steps: 1
 # -- Flow sampling ---------------------------------------------
 num_steps_zero_start: 10
 num_steps_noise_start: 10
-min_sampled_timestep: 0.005
-max_sampled_timestep: 0.995
-timestep_sampling_mode: 'fpo_beta'
+min_sampled_timestep: 0.1
+max_sampled_timestep: 0.9
+timestep_sampling_mode: 'uniform'
 noise_sampling_mode: 'normal'
 timestep_inverse_cdf_beta: 2.0
 timestep_beta_alpha: 2.0

@@ -129,7 +129,6 @@ class _FlowActorBase(nn.Module):
         stats = self._collect_stats(temb, condition, c, h, block_stats)
         return decode(h), stats
 
-    @torch.compiler.disable
     def _collect_stats(
         self,
         temb: torch.Tensor,

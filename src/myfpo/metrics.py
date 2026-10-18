@@ -75,9 +75,11 @@ def sample_eps(
     action_dim: int,
     device: torch.device,
 ) -> torch.Tensor:
-    """MC noise: ``[n, M, tokens, action_dim]``."""
-    shape = (n, cfg.num_mc_samples, cfg.action_horizon, action_dim)
-    return sample_noise(shape, cfg, device, None)
+    """Antithetic MC noise: pair eps with -eps. ``[n, 2*half, tokens, action_dim]``."""
+    half = max(1, cfg.num_mc_samples // 2)
+    shape_half = (n, half, cfg.action_horizon, action_dim)
+    eps_half = sample_noise(shape_half, cfg, device, None)
+    return torch.cat([eps_half, -eps_half], dim=1)  # [n, 2*half, ...]
 
 def compute_mc_xt(
     flatten_mc_timestep: torch.Tensor,

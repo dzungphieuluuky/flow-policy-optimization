@@ -166,9 +166,8 @@ def run_rollout(
         normalised_states = all_chunk_normalised_states[:n_chunks]
         normalised_next_states = all_chunk_normalised_states[n_chunks:]
         exec_length_frac = policy.exec_length_frac(lengths)
-        boot_exec_frac = policy.exec_length_frac(
-            torch.full_like(lengths, cfg.n_action_steps)
-        )
+        fitted_steps = (lengths.float().mean() if lengths.numel() > 0 else torch.tensor(float(cfg.action_horizon), device=lengths.device, dtype=torch.float32))
+        boot_exec_frac = policy.exec_length_frac(torch.full_like(lengths, int(round(fitted_steps.item()))))
         critic_cond = (
             policy.encoder(all_chunk_normalised_states)
             if cfg.critic_share_encoder
