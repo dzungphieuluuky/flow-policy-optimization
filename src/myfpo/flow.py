@@ -1,17 +1,4 @@
-"""Conditional flow-matching velocity model over action tokens.
-
-Two actors live here and both keep the action tokens on separate axes:
-
-``SJFPOFlowModel``
-    The DiT actor. One block is self-attention, one SwiGLU, and adaLN.
-``SJFPOFlowResMLP``
-    The ``resmlp`` actor. The self-attention and the adaLN conditioning are
-    kept, because this repo needs both. What changes is the MLP: it becomes the
-    residual unit of Wang et al. (2025), arXiv:2503.14858.
-
-Both take ``(action_dim, action_horizon, hidden_dim, ...)``, so ``actor_arch``
-swaps the trunk and nothing else.
-"""
+"""Conditional flow-matching velocity model over action tokens."""
 
 from __future__ import annotations
 
@@ -26,39 +13,15 @@ from myfpo.layers import CondMLP, SinusoidalEncoding, build_rms_norm, modulate
 from myfpo.utils import rms
 
 def effective_rank(features: torch.Tensor) -> torch.Tensor:
-    """``exp`` spectral entropy of ``[n, hidden]``. This is the collapse probe
-    of Dohare et al. (2306.13812). It falls as backprop settles on a low-rank
-    solution.
-
-    The result is 0-dim. The input reshapes to ``[n, hidden]``. The singular
-    values number ``min(n, hidden)``. The function returns one scalar.
-    """
+    """``exp`` spectral entropy of ``[n, hidden]``. This is the collapse probe"""
     matrix = features.reshape(-1, features.shape[-1]).float()
     sigma = torch.linalg.svdvals(matrix)
     p = sigma / sigma.sum().clamp_min(1e-12)
-    # entr(0) is 0 by convention, so the rank-deficient case needs no clamp.
     return torch.exp(torch.special.entr(p).sum())
 
 
 class _FlowActorBase(nn.Module):
-    """The stem both actors share: embed, project, condition, decode.
-
-    Every part of this class is actor-independent. The action tokens stay on
-    their own axis throughout, because the CFM draw gives each token its own
-    ``t``. A subclass supplies only the block list.
-
-    ``return_stats=True`` gives ``(velocity, stats)`` plus per-block gate and
-    scale RMS reductions. The default path returns the velocity only. It
-    reduces nothing.
-
-    The stats path is expensive. It runs an SVD (``effective_rank``) and a full
-    parameter sweep (``weight_magnitude``). ``SJFPOPolicy.forward`` calls it on
-    every minibatch forward if ``compute_info=True``, and the trainer passes
-    ``compute_info=tracker.enabled``. So if ``report_to`` is wandb or
-    tensorboard, it runs once per microbatch per optimizer step. For throughput
-    runs, use ``--sjfpo.report_to none``. That flag turns the stats path off,
-    along with every other metric.
-    """
+    """The stem both actors share: embed, project, condition, decode."""
 
     def __init__(
         self,
@@ -87,9 +50,6 @@ class _FlowActorBase(nn.Module):
         self.token_pos = nn.Parameter(torch.zeros(1, action_horizon, hidden_dim))
         nn.init.normal_(self.token_pos, std=0.02)
         self.time_mlp = CondMLP(time_embed_dim, 4 * hidden_dim, hidden_dim)
-        # The blocks are built at this exact point. Parameter construction order
-        # fixes the torch RNG stream, so building them elsewhere would redraw
-        # every weight in the actor and silently change a seeded run.
         self.blocks = nn.ModuleList(
             block_cls(**block_kwargs) for _ in range(self.num_blocks)
         )
@@ -103,11 +63,7 @@ class _FlowActorBase(nn.Module):
 
     @torch.inference_mode()
     def weight_magnitude(self) -> torch.Tensor:
-        """Mean absolute weight. This is the correlate of Dohare. The magnitudes
-        grow under continual training, before the rank drop.
-
-        The function sums per parameter. It does not use one accumulator. A
-        float scalar would land on CPU."""
+        """Mean absolute weight. This is the correlate of Dohare. The magnitudes"""
         total = None
         count = 0
         for param in self.parameters():
@@ -123,13 +79,7 @@ class _FlowActorBase(nn.Module):
         condition: torch.Tensor,
         return_stats: bool = False,
     ) -> torch.Tensor | tuple[torch.Tensor, dict[str, torch.Tensor]]:
-        """Predict the velocity from the token actions and the per-token times.
-
-        ``t`` is a scalar, ``[B]`` or ``[B, K, 1]``. One time belongs to each
-        token, and that time is shared across the action dims of the token. The
-        last layer is zero-init, so an untrained model predicts a near-zero
-        velocity. The function returns ``[B, K, action_dim]``, plus stats if
-        asked."""
+        """Predict the velocity from the token actions and the per-token times."""
         if x_t.dim() != 3 or x_t.shape[2] != self.action_dim:
             raise ValueError(f"x_t must have shape [B, K, {self.action_dim}], got {tuple(x_t.shape)}")
         if condition.dim() != 2 or condition.shape[0] != x_t.shape[0] or condition.shape[1] != self.hidden_dim:
@@ -161,7 +111,6 @@ class _FlowActorBase(nn.Module):
         else:
             raise ValueError(f"t must be scalar, [B], or [B, K, 1], got {tuple(t.shape)}")
 
-        # Both branches reach the same projection. Only temb's rank differed.
         token_pos = self.token_pos[:, : x_t.shape[1], :].to(
             device=x_t.device, dtype=x_t.dtype
         )
@@ -194,32 +143,7 @@ class _FlowActorBase(nn.Module):
         h: torch.Tensor,
         block_stats: list[dict[str, torch.Tensor]],
     ) -> dict[str, torch.Tensor]:
-        """Diagnostics, deliberately outside any compiled graph.
-
-        The decorator ``torch.compiler.disable`` holds this code up. It does not
-        make the code faster. Under ``torch.compile``, this block died with::
-
-            BackendCompilerFailed: backend='inductor' raised:
-            RuntimeError: <weakref ... to 'torch.storage.UntypedStorage'>
-            While executing %reshape_5 ... features.reshape(-1, hidden)
-
-        Two independent problems compound:
-
-        1. A call to ``torch.inference_mode()`` inside a traced region mints inference
-           tensors. The version counter of those tensors confuses inductor. The
-           storage is released while the lowering still holds a weak reference
-           to it.
-        2. A call to ``svdvals`` lowers to a LAPACK call. Inductor does not own
-           the lifetime of that call. So the same early release reaches it.
-
-        Breaking the graph once per statistics pass avoids both problems.
-        Dynamo stops tracing at the decorator. So nothing downstream of it is
-        captured.
-
-        The default path sets ``return_stats=False``. That path never enters
-        this function. So it stays fully compiled. That is the path that matters
-        for throughput.
-        """
+        """Diagnostics, deliberately outside any compiled graph."""
         with torch.inference_mode():
             return {
                 "temb": rms(temb),
@@ -236,17 +160,7 @@ class _FlowActorBase(nn.Module):
 
 
 class SJFPOFlowModel(_FlowActorBase):
-    """The DiT actor. One block is self-attention, one SwiGLU, and adaLN.
-
-    ``dit_depth`` counts blocks. Each block holds six Dense layers, so the
-    `` Dense-layer depth of Wang et al. (2025)`` is ``6 * dit_depth``. At the
-    default ``dit_depth=3`` that is 18, against the depth-4 baseline that paper
-    scales from.
-
-    The block itself already contains every component that paper credits:
-    residual connections, a norm, and a Swish-based activation. So this actor is
-    that paper's building block plus attention and a wider modulation.
-    """
+    """The DiT actor. One block is self-attention, one SwiGLU, and adaLN."""
 
     def __init__(
         self,
@@ -281,23 +195,7 @@ class SJFPOFlowModel(_FlowActorBase):
 
 
 class ResidualMLP(nn.Module):
-    """The residual unit of Wang et al. (2025), arXiv:2503.14858, Section 3.
-
-    The paper's block is ``num_units`` repeats of Dense -> LayerNorm -> Swish,
-    with one residual skip added immediately after the final activation. The
-    paper puts the skip there and not after every unit, so the gradient path is
-    ``num_units`` layers long however deep the stack.
-
-    Two departures from the paper, both deliberate and both recorded here.
-
-    The norm is RMSNorm, not LayerNorm. The paper's other citations and the
-    DiT lineage this repo descends from both use it, and the repo already has
-    one norm implementation.
-
-    The activation is ``F.silu``, which is Swish. The paper's Swish is the same
-    function. The DiT block here gates it into SwiGLU; this unit does not, so
-    the two actors differ in the MLP as well as in the residual layout.
-    """
+    """The residual unit of Wang et al. (2025), arXiv:2503.14858, Section 3."""
 
     def __init__(self, hidden_dim: int, hidden_mult: float, num_units: int):
         super().__init__()
@@ -320,8 +218,7 @@ class ResidualMLP(nn.Module):
         nn.init.zeros_(self.out.bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """``x + residual(x)``. The residual is zero at init, so this is the
-        identity on a fresh actor."""
+        """``x + residual(x)``. The residual is zero at init, so this is the"""
         h = x
         for dense, norm in zip(self.denses, self.norms, strict=True):
             h = norm(dense(h))
@@ -330,22 +227,7 @@ class ResidualMLP(nn.Module):
 
 
 class ResMLPBlock(nn.Module):
-    """One ``resmlp`` block: attention, then the paper's residual MLP.
-
-    The self-attention and the adaLN conditioning are the DiT parts, and they
-    stay. Two reasons, both measured rather than assumed.
-
-    The attention keeps the chunk as a sequence. The CFM loss is separable
-    across tokens, so per-token mixing would train, but the ASPO trust region
-    and the per-chunk advantage still couple the tokens. Both reference networks
-    for chunked action prediction mix across action steps: Diffusion Policy with
-    a temporal ``Conv1d`` (``kernel_size=5``) and ACT with self-attention over
-    the chunk.
-
-    The adaLN keeps ``t`` available at every depth. The 1000-layer paper has no
-    time input, so it can condition once at the input. A flow model cannot, and
-    the paper has no evidence about that case.
-    """
+    """One ``resmlp`` block: attention, then the paper's residual MLP."""
 
     def __init__(
         self,
@@ -366,9 +248,7 @@ class ResMLPBlock(nn.Module):
     def forward(
         self, x: torch.Tensor, c: torch.Tensor, return_stats: bool = False
     ) -> torch.Tensor | tuple[torch.Tensor, dict[str, torch.Tensor]]:
-        """``[B, K, H]`` in, ``[B, K, H]`` out. ``c`` is ``[B, H]`` or
-        ``[B, K, H]``. The modulation head is zero-init, so a fresh stack is the
-        identity."""
+        """``[B, K, H]`` in, ``[B, K, H]`` out. ``c`` is ``[B, H]`` or"""
         if x.dim() != 3:
             raise ValueError(f"x must have shape [B, K, H], got {tuple(x.shape)}")
         b = x.shape[0]
@@ -408,13 +288,7 @@ class ResMLPBlock(nn.Module):
 
 
 class SJFPOFlowResMLP(_FlowActorBase):
-    """The ``resmlp`` actor. DiT's attention and adaLN, the paper's MLP unit.
-
-    ``resmlp_blocks`` counts blocks and ``resmlp_units`` counts the Dense layers
-    inside one block's residual unit. So the paper's depth metric, which counts
-    Dense layers, is ``resmlp_blocks * resmlp_units`` for the MLP part alone.
-    The paper fixes the unit at four.
-    """
+    """The ``resmlp`` actor. DiT's attention and adaLN, the paper's MLP unit."""
 
     def __init__(
         self,

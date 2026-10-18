@@ -12,8 +12,7 @@ from myfpo.layers import CondMLP, SwiGLU, build_rms_norm, modulate
 from myfpo.utils import rms
 
 class SelfAttention(nn.Module):
-    """SDPA self-attention. The attention is maskless. The action tokens are the
-    only sequence."""
+    """SDPA self-attention. The attention is maskless. The action tokens are the"""
 
     def __init__(self, hidden_dim: int, n_heads: int):
         super().__init__()
@@ -29,8 +28,7 @@ class SelfAttention(nn.Module):
         self.out = nn.Linear(hidden_dim, hidden_dim)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Self-attention over the ``L`` action tokens. The shape stays
-        ``[B, L, D]``."""
+        """Self-attention over the ``L`` action tokens. The shape stays"""
         b, l, _ = x.shape
         h = self.n_heads
         d = self.head_dim
@@ -47,8 +45,7 @@ class SelfAttention(nn.Module):
 
 
 class DiTBlock(nn.Module):
-    """Pre-norm DiT block, adaLN-Zero. The flag ``return_stats=True`` adds
-    diagnostic reductions. The default path adds none."""
+    """Pre-norm DiT block, adaLN-Zero. The flag ``return_stats=True`` adds"""
 
     def __init__(self, hidden_dim: int, n_heads: int, mlp_ratio: float):
         super().__init__()
@@ -68,16 +65,11 @@ class DiTBlock(nn.Module):
     def forward(
         self, x: torch.Tensor, c: torch.Tensor, return_stats: bool = False
     ) -> torch.Tensor | tuple[torch.Tensor, dict[str, torch.Tensor]]:
-        """``[B, K, H]`` action tokens, with adaLN conditioning on ``c``. ``c``
-        is ``[B, H]`` or ``[B, K, H]``. The modulation head is zero-init, so the
-        stack starts as the identity."""
+        """``[B, K, H]`` action tokens, with adaLN conditioning on ``c``. ``c``"""
         if x.dim() != 3:
             raise ValueError(f"x must have shape [B, K, H], got {tuple(x.shape)}")
         b = x.shape[0]
         if c.shape[0] != b:
-            # Check it here, and do not leave it to broadcast. A batch mismatch
-            # inside modulate reports the wrong shapes, and that reads as a
-            # layout bug.
             raise ValueError(f"c has batch {c.shape[0]} but x has {b}")
         token_axis = c.dim() == 3
         if token_axis:
@@ -87,9 +79,6 @@ class DiTBlock(nn.Module):
         else:
             if c.dim() != 2 or c.shape[1] != self.adaLN.fc1.in_features:
                 raise ValueError(f"c must have shape [{b}, {self.adaLN.fc1.in_features}], got {tuple(c.shape)}")
-            # One broadcast row. The token path and the vector path then share
-            # the whole body. The ``[B, 1, D]`` gates broadcast over ``K`` in the
-            # same way as the old unsqueezes.
             c = c[:, None, :]
 
         parts = self.adaLN(c).view(b, c.shape[1], 6, -1)

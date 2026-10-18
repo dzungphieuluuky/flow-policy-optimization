@@ -1,11 +1,4 @@
-"""SJFPO evaluator. The module runs deterministic rollouts and writes
-``eval_history.csv``.
-
-A rollout calls ``env.reset(seed=...)`` and steps to termination, to truncation,
-or to the step budget. The code stores the actions per step in fp32.
-``compute_action_jerk`` is the mean squared second-difference. It is a scale-free
-smoothness probe.
-"""
+"""SJFPO evaluator. The module runs deterministic rollouts and writes"""
 
 from __future__ import annotations
 
@@ -19,13 +12,7 @@ import numpy as np
 
 CSV_FIELDS = ["episode", "return", "length", "success", "jerk"]
 
-# Bootstrap resamples for the percentile interval. The interval resamples the
-# episode returns that the evaluator already holds. It does not resample the
-# rollout seeds. So it covers the spread across episodes, and not the spread
-# across environments. A run with one episode gets a zero width interval.
 BOOTSTRAP_RESAMPLES = 10_000
-# The percentile interval reads two tails. The value is 0.975 for a 95 percent
-# two-sided interval.
 BOOTSTRAP_LOW_Q = 0.025
 BOOTSTRAP_HIGH_Q = 0.975
 
@@ -37,23 +24,7 @@ def bootstrap_interval(
     high_q: float = BOOTSTRAP_HIGH_Q,
     seed: int = 0,
 ) -> tuple[float, float, float]:
-    """A percentile interval for the mean of ``returns``.
-
-    It returns ``(mean, low, high)``. The value ``nan`` stands for any part it
-    cannot compute.
-
-    The function draws ``resamples`` indices with replacement, takes the mean
-    of each draw, and reports the two percentiles of those means. It makes no
-    assumption about the shape of the return distribution.
-
-    The value ``returns`` empty, or a single value, gives ``nan`` bounds. One
-    episode cannot support an interval. So ``nan`` marks the case. The caller
-    must treat an unknown bound as unknown, not as a wide one.
-
-    The argument ``seed`` fixes the resampling. The same input gives the same
-    interval. Without it, the interval moves between calls and two runs of one
-    policy disagree for no reason.
-    """
+    """A percentile interval for the mean of ``returns``."""
     values = np.asarray([float(r) for r in returns], dtype=np.float64)
     values = values[np.isfinite(values)]
     if values.size == 0:
@@ -66,8 +37,6 @@ def bootstrap_interval(
     if resamples < 1:
         raise ValueError(f"resamples={resamples} must be >= 1")
     rng = np.random.default_rng(seed)
-    # One [resamples, n] index matrix, then one mean over axis 1. The loop would
-    # cost resamples Python iterations.
     idx = rng.integers(0, values.size, size=(resamples, values.size))
     means = values[idx].mean(axis=1)
     low = float(np.percentile(means, 100.0 * low_q))
@@ -76,12 +45,7 @@ def bootstrap_interval(
 
 
 def median_of(returns: list[float]) -> float:
-    """The median of ``returns``. It returns ``nan`` for an empty input.
-
-    The median resists one bad episode. The mean does not. A run whose eval
-    window holds one collapsed episode reads a lower mean, and the stopper acts
-    on that lower mean.
-    """
+    """The median of ``returns``. It returns ``nan`` for an empty input."""
     values = np.asarray([float(r) for r in returns], dtype=np.float64)
     values = values[np.isfinite(values)]
     if values.size == 0:
@@ -95,11 +59,7 @@ def write_eval_csv(
     *,
     append: bool = False,
 ) -> Path:
-    """Write ``eval_history.csv``, columns ``[episode, return, length, success, jerk]``.
-
-    With ``append=True``, old rows stay and the header is written only if the
-    file is new.
-    """
+    """Write ``eval_history.csv``, columns ``[episode, return, length, success, jerk]``."""
     out_path = Path(out_dir)
     out_path.mkdir(parents=True, exist_ok=True)
     csv_path = out_path / "eval_history.csv"
@@ -114,11 +74,7 @@ def write_eval_csv(
 
 
 def compute_action_jerk(actions: np.ndarray) -> float | None:
-    """Mean squared second-difference of actions ``[T, D]``. None if T < 3.
-
-    Scales with amplitude squared, so compare within a run, never across action
-    scales. Exactly ``0.0`` for constant or constant-velocity motion.
-    """
+    """Mean squared second-difference of actions ``[T, D]``. None if T < 3."""
     a = np.asarray(actions, dtype=np.float32)
     if a.ndim != 2 or a.shape[0] < 3:
         return None
@@ -127,18 +83,7 @@ def compute_action_jerk(actions: np.ndarray) -> float | None:
 
 
 def compute_seam_jerk(actions: np.ndarray, action_is_pad: np.ndarray) -> float | None:
-    """Mean squared second-difference across consecutive chunk boundaries.
-
-    ``actions`` is ``[N, H, D]`` and ``action_is_pad`` is ``[N, H]``. A seam
-    needs two executed steps before it and one after. The function returns None
-    if no seam qualifies.
-
-    :func:`compute_mean_chunk_jerk` reduces inside each chunk. It therefore
-    scores 0 for a policy that steps at every seam. The buffer appends in
-    wavefront order, so consecutive rows are often different environments. Thus
-    this function over-counts. The result is a conservative upper bound, never a
-    false negative.
-    """
+    """Mean squared second-difference across consecutive chunk boundaries."""
     a, pad = _jerk_inputs(actions, action_is_pad)
     n = a.shape[0]
     seams: list[float] = []
@@ -165,26 +110,14 @@ def _jerk_inputs(actions, action_is_pad) -> tuple[np.ndarray, np.ndarray]:
 
 
 def extract_success(info: dict) -> float | None:
-    """Task success flag out of an info dict.
-
-    1.0 or 0.0 if reported, else None when the env reports nothing.
-    """
+    """Task success flag out of an info dict."""
     if not isinstance(info, dict) or info.get("success") is None:
         return None
     return float(bool(info["success"]))
 
 
 def compute_mean_chunk_jerk(actions: np.ndarray, action_is_pad: np.ndarray) -> float | None:
-    """Average :func:`compute_action_jerk` over the executed prefixes of the
-    chunks.
-
-    The argument ``actions`` has the shape ``[N, H, D]``. The argument
-    ``action_is_pad`` has the shape ``[N, H]``. The function skips every chunk
-    with fewer than 3 executed steps. It returns None if no chunk qualifies.
-
-    The function covers the inside of a chunk only. Use
-    :func:`compute_seam_jerk` for the boundaries between chunks.
-    """
+    """Average :func:`compute_action_jerk` over the executed prefixes of the"""
     a, pad = _jerk_inputs(actions, action_is_pad)
     jerks: list[float] = []
     for chunk, mask in zip(a, pad):
@@ -204,11 +137,7 @@ def render_episode_frames(
     seed: int = 0,
     max_steps: int = 1000,
 ) -> tuple[list[np.ndarray], float]:
-    """Roll out one episode, collect rendered frames.
-
-    ``policy`` gets ``reset()`` first if it has one. Returns the uint8 frames
-    and the episode return.
-    """
+    """Roll out one episode, collect rendered frames."""
     import gymnasium as gym
 
     env = gym.make(env_id, render_mode="rgb_array")
@@ -268,12 +197,7 @@ class Evaluator:
         episode: int,
         step_budget: int | None,
     ) -> tuple[dict[str, Any], int]:
-        """One deterministic episode. Returns ``(result, steps_taken)``.
-
-        ``step_budget``, when set, caps the episode and the returned length
-        reflects the truncated count. ``policy`` gets ``reset()`` first if it
-        has one.
-        """
+        """One deterministic episode. Returns ``(result, steps_taken)``."""
         obs, _ = self.env.reset(seed=seed)
         if hasattr(policy, "reset"):
             policy.reset()
@@ -313,16 +237,7 @@ class Evaluator:
         out_dir: str | Path | None = None,
         append_csv: bool = False,
     ) -> list[dict[str, Any]]:
-        """Deterministic rollouts, optionally writing ``eval_history.csv``.
-
-        Each episode draws a seed from a generator seeded by ``self.eval_seed``,
-        so repeat evals of one policy match while successive episodes differ.
-        With ``self.max_steps`` set, the loop stops early once that budget is
-        spent. One dict per episode, keys in :data:`CSV_FIELDS`.
-
-        The caller reads the interval through :meth:`summarize`. The episodes
-        themselves carry no interval, so a stored row means one episode.
-        """
+        """Deterministic rollouts, optionally writing ``eval_history.csv``."""
         rng = np.random.default_rng(self.eval_seed)
         results: list[dict[str, Any]] = []
         total_steps = 0
@@ -341,19 +256,7 @@ class Evaluator:
     def summarize(
         self, results: list[dict[str, Any]], seed: int = 0
     ) -> dict[str, float]:
-        """The mean, the median, the interval, and the count for one eval.
-
-        It returns the keys ``return_mean``, ``return_median``,
-        ``return_ci_low``, ``return_ci_high``, and ``return_n``.
-
-        The bounds come from :func:`bootstrap_interval`. They are ``nan`` when
-        fewer than two episodes carry a finite return. So the caller can tell an
-        unmeasured bound from a wide one.
-
-        The argument ``seed`` reaches the resampler. A caller that compares two
-        policies must pass the same value to both, so the comparison does not
-        turn on the resampling.
-        """
+        """The mean, the median, the interval, and the count for one eval."""
         returns = [
             float(r["return"]) for r in results if r.get("return") is not None
         ]

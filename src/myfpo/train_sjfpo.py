@@ -1,10 +1,4 @@
-"""SJFPO online training entry (LeRobot-native, MuJoCo-only).
-
-``generate_rollout`` gathers a batch, ``forward`` computes the loss. This loop
-steps the optimizer, evaluates, and checkpoints. It also warms the obs stats,
-sets the LR, updates the EMA, folds frames into the normalizer, and reads the
-rollout diagnostics. Not loss math -- that lives in the policy.
-"""
+"""SJFPO online training entry (LeRobot-native, MuJoCo-only)."""
 
 from __future__ import annotations
 
@@ -36,15 +30,8 @@ from myfpo.tracking import build_tracker, compute_eval_summary_metrics
 from myfpo.runner import build_train_metrics, summarise_window
 
 
-# Consecutive above-clamp updates before aborting. clamp() has zero gradient
-# above its max, so the policy stops learning while the critic keeps training.
 ABOVE_CLAMP_ABORT_UPDATES = 5
 
-# Share of ratio elements whose two losses both sit above cfm_clamp. At that
-# share the ratio is exactly 1.0, so the policy gradient is zero. The share
-# reads high when the loss level sits above the clamp, which the reduction and
-# the action horizon both set. The value is half, so an ordinary run that keeps
-# a gradient stays well under it.
 BOTH_CLAMPED_ABORT_FRAC = 0.5
 
 def generate_mini_batch_indices(
@@ -53,12 +40,7 @@ def generate_mini_batch_indices(
     device: torch.device | str,
     num_learning_epochs: int = 1,
 ):
-    """Yield shuffled minibatch indices, one tensor per epoch.
-
-    Every epoch reshuffles. The splits use the proportional form
-    ``(i * n) // n_mb``. So a remainder spreads over the frequencies instead of
-    being dropped.
-    """
+    """Yield shuffled minibatch indices, one tensor per epoch."""
     if n < 1:
         raise ValueError(f"n={n} must be >= 1")
     n_mb = max(1, min(int(num_mini_batches), n))
@@ -71,30 +53,7 @@ def generate_mini_batch_indices(
             yield perm[start:stop]
 
 class _EvalPolicy:
-    """A single-action eval adapter over :meth:`SJFPOPolicy.select_action`.
-
-    The value ``start_from_zero`` picks the start point of the flow. The value
-    ``True`` starts from ``eps=0``. The value ``False`` starts from a drawn
-    ``eps``, and the training rollouts use it.
-
-    The argument was named ``zero_sampling``, which read as a sampling method.
-    It is a start point. The name also collided with ``noise_sampling_mode``,
-    which is a real method.
-
-    One vocabulary covers the config, the logs, and this adapter:
-
-    ==========================  =========================================
-    Config value                Meaning
-    ==========================  =========================================
-    ``zero_start``              ``start_from_zero=True``. Chain starts at
-                                 ``eps=0``.
-    ``noise_start``             ``start_from_zero=False``. Chain starts at
-                                 a drawn ``eps``.
-    ==========================  =========================================
-
-    Running both adapters over the same seeds is the only way to see the two
-    distributions diverge.
-    """
+    """A single-action eval adapter over :meth:`SJFPOPolicy.select_action`."""
 
     def __init__(self, policy: SJFPOPolicy, start_from_zero: bool = True):
         self.policy = policy
@@ -148,10 +107,6 @@ def build_policy(
     if action_low is not None and action_high is not None:
         policy.set_action_bounds(action_low, action_high)
     if getattr(cfg, "compile", False):
-        # The mode comes from the capability, as the PyTorch docs state.
-        # sm_89 and above give max-autotune. A lower capability gives
-        # default or reduce-overhead. The value fullgraph=True needs static
-        # graphs.
         mode = "default"
         try:
             if device.type == "cuda":
@@ -163,8 +118,6 @@ def build_policy(
                     mode = "reduce-overhead"
         except Exception:
             pass
-        # fullgraph=False avoids recompilation on varying chunk/MC shapes.
-        # Assignment breaks EMA/state_dict identity (gate 0b/0c).
         policy.actor = torch.compile(policy.actor, dynamic=True, mode=mode, fullgraph=False)
         policy.encoder = torch.compile(policy.encoder, dynamic=True, mode=mode, fullgraph=False)
         policy.critic = torch.compile(policy.critic, dynamic=True, mode=mode, fullgraph=False)
@@ -176,14 +129,7 @@ def sample_minibatch(
     indices: torch.Tensor,
     out: dict[str, torch.Tensor] | None = None,
 ) -> dict[str, torch.Tensor]:
-    """Slice the leading dimension of every per-chunk batch value.
-
-    They all have the shape ``[B, ...]``. So one index tensor keeps them
-    consistent.
-
-    The values ``normalizer_observations`` and ``gae_diagnostics`` pass through.
-    They have one row per executed env step, not one row per chunk.
-    """
+    """Slice the leading dimension of every per-chunk batch value."""
     if out is None:
         out = {}
     passthrough = ("normalizer_observations", "gae_diagnostics")
@@ -199,21 +145,7 @@ _OBS_WARMUP_STEPS = 128
 
 
 def apply_lr_schedule(optimizer, step_count: int) -> None:
-    """Apply the linear warmup, starting from the bases.
-
-    The rule is ``lr = base_lr * min(1, step / warmup)``.
-
-    The function recomputes the value instead of compounding it, so the value
-    depends only on ``step_count`` and never on the order of the calls.
-
-    The function used to take ``lr_decays`` and multiply by
-    ``cfg.lr_decay**lr_decays``. A regression flag was the only caller that
-    raised the count, so the multiplier was always one and the parameter was
-    unreachable. Both the flag and the two config fields are gone.
-
-    FPO++ reaches the warmup half through a scheduler
-    (finetune_online_rl.py). This is the same ramp without the object.
-    """
+    """Apply the linear warmup, starting from the bases."""
     for group in optimizer.param_groups:
         base = group["base_lr"]
         warmup = group.get("lr_warmup_steps", 0)
@@ -222,12 +154,7 @@ def apply_lr_schedule(optimizer, step_count: int) -> None:
 
 
 def warm_observation_stats(policy, env, *, obs_dim: int, seed: int) -> int:
-    """Fold random-policy frames into the running obs stats.
-
-    The normalizer is the identity until its first update, and it updates only
-    after a rollout. So without this function, the whole first rollout runs on
-    raw obs. The env resets after.
-    """
+    """Fold random-policy frames into the running obs stats."""
     env.action_space.seed(seed)
     obs, _ = env.reset()
     frames = []
@@ -246,23 +173,7 @@ def warm_observation_stats(policy, env, *, obs_dim: int, seed: int) -> int:
 
 @torch.no_grad()
 def compute_rollout_diagnostics(batch: dict[str, torch.Tensor]) -> dict[str, float]:
-    """Read the post-rollout scalars with one device-to-host transfer.
-
-    A separate ``float()`` call costs one CUDA sync each. The key
-    ``action_abs_max`` blocks on one of those syncs.
-
-    The collector stores the full scaled chunk. So the unexecuted rows still
-    carry a real proposed action. The all-rows keys keep that meaning. The
-    ``_executed`` keys apply the mask first.
-
-    The key ``action_abs_mean`` holds mean|a|. It does not hold an L2 norm. The
-    name pairs it with ``action_abs_max``, and that key is a max.
-
-    The key ``executed_action_steps`` is a count, not a magnitude. It counts the
-    executed action steps in this rollout, and it is what advances
-    ``global_step``. The key was named ``step_delta``, which reads as the change
-    in a step count. Nothing is subtracted here, and nothing was.
-    """
+    """Read the post-rollout scalars with one device-to-host transfer."""
     action = batch["action"].float()
     is_pad = batch["action_is_pad"]
     executed = (~is_pad)
@@ -288,25 +199,10 @@ def compute_rollout_diagnostics(batch: dict[str, torch.Tensor]) -> dict[str, flo
 
 @torch.no_grad()
 def measure_value_drift(policy, batch, device) -> tuple[torch.Tensor, torch.Tensor]:
-    """Both critic-drift metrics off one critic forward.
-
-    ``boot_value_relative_drift``: the live critic against the bootstrap value in
-    use, as ``rms(move) / rms(bootstrap)``. It is a ratio. It was logged as
-    ``boot_value_delta``, and "delta" reads as ``V_new - V_old``, which is a
-    difference and not a ratio. Small means staleness is not what limits the
-    critic.
-    ``value_target_drift``: the same move against the return RMS, so it reads in
-    loss units. Large against V can still be negligible against the return.
-    """
-    # The buffer stores boot_observations and boot_actions in the storage
-    # dtype. The critic weights are fp32. This code runs outside autocast. So
-    # the cast goes up to fp32.
+    """Both critic-drift metrics off one critic forward."""
     boot_obs = batch["boot_observations"].to(device=device, dtype=torch.float32)
     boot_actions = batch["boot_actions"].to(device=device, dtype=torch.float32)
     start = batch["boot_values_start"].to(device).reshape(-1)
-    # Must be the same fraction generate_rollout fed the bootstrap, or this
-    # compares Q(s',a',f1) against Q(s',a',f2) and reports the gap between two
-    # different functions as staleness.
     boot_exec_frac = policy.exec_length_frac(
         torch.full(
             (boot_obs.shape[0],),
@@ -329,15 +225,7 @@ def measure_value_drift(policy, batch, device) -> tuple[torch.Tensor, torch.Tens
 def _accumulation_group_sizes(
     n_microbatches: int, accumulation_steps: int
 ) -> list[int]:
-    """Return the microbatch count for each gradient-accumulation group.
-
-    Every group but the last is ``accumulation_steps`` wide. The last group is
-    short when the total does not divide. The loop flushes that group on its
-    own. It does not drop it.
-
-    Each microbatch is scaled by the size of its own group. So a short last
-    group still contributes one full gradient instead of a fraction of one.
-    """
+    """Return the microbatch count for each gradient-accumulation group."""
     if n_microbatches < 1 or accumulation_steps < 1:
         raise ValueError(
             f"n_microbatches={n_microbatches} and accumulation_steps="
@@ -350,21 +238,7 @@ def _accumulation_group_sizes(
 def sample_random_baseline(
     evaluator: Evaluator, env: Any, max_episodes: int = 30, seed: int | None = None
 ) -> float:
-    """Random-policy return, the divergence reference.
-
-    ``0.0`` when no episode evaluated. Callers gate on ``baseline > 0``, so that
-    disables divergence detection instead of falsely flagging every later run.
-
-    The argument ``seed`` seeds the action space before the draw. Without it the
-    value changes between calls in one process, so two runs of one config set
-    different divergence floors. A floor that moves cannot support a comparison
-    between runs.
-
-    The random actions come from ``env.action_space``, while the episodes run on
-    the evaluator's own copy of the environment. The two are different objects.
-    Seeding ``env`` therefore covers the actions, and the episode seeds still
-    come from the evaluator.
-    """
+    """Random-policy return, the divergence reference."""
     if seed is not None:
         env.action_space.seed(int(seed))
     baseline_evaluator = Evaluator(
@@ -381,42 +255,11 @@ def sample_random_baseline(
     return float(np.mean([r["return"] for r in results]))
 
 def make_vec_env(env_name: str, num_envs: int, record: dict | None = None):
-    """Build a vectorised env with ``forkserver`` workers.
-
-    The value ``context="forkserver"`` is not the platform default. Linux
-    defaults to ``fork``. By the time this function runs, ``resolve_device()``
-    has already called ``cuda_available()``.
-
-    Forking a process that holds a CUDA runtime is unsupported. It can deadlock
-    or can corrupt the context in the child. ``forkserver`` forks from a clean
-    single-threaded server instead. It costs less than ``spawn``, because the
-    workers do not import the world again.
-
-    The function falls back to ``SyncVectorEnv`` with a warning. It does not
-    fall back silently. The sync path is one to two orders of magnitude
-    slower. The ``fps`` field is the only other sign of it.
-    """
+    """Build a vectorised env with ``forkserver`` workers."""
     import gymnasium as gym
 
     def make_one():
-        """Build one worker env, registering third-party namespaces locally.
-
-        The import of ``gymnasium_robotics`` registers the ``AdroitHand*`` ids
-        as a side effect. The script ``scripts/train.py`` runs that import in
-        the *parent* process only.
-
-        Under ``forkserver``, the workers fork from a clean interpreter that
-        never ran the import. So the lambda failed at
-        ``gym.make("AdroitHandDoor-v1")``. It raised
-        ``NameNotFound: Environment 'AdroitHandDoor' doesn't exist``. The worker
-        died. Then the parent surfaced a misleading
-        ``ConnectionResetError: [Errno 104]``.
-
-        The import inside the closure fixes the cause. Each worker performs the
-        registration itself. So the parent and the children agree on the
-        registry, whatever the start method is. The change is harmless for the
-        MuJoCo ids, because gymnasium registers those at core import.
-        """
+        """Build one worker env, registering third-party namespaces locally."""
         if env_name.startswith("AdroitHand"):
             try:
                 import gymnasium_robotics  # noqa: F401
@@ -427,15 +270,12 @@ def make_vec_env(env_name: str, num_envs: int, record: dict | None = None):
         return gym.make(env_name)
 
     env_fns = [make_one for _ in range(num_envs)]
-    # The autoreset_mode must survive vectorisation in either branch. The
-    # collector validates NEXT_STEP. See validate_autoreset_mode.
     try:
         env = gym.vector.AsyncVectorEnv(env_fns, context="forkserver")
         if record is not None:
             record["vector_env"] = "forkserver"
         return env
     except (ValueError, RuntimeError, ImportError) as exc:
-        # Fallback only on env/vectorisation errors, not user interruption.
         warnings.warn(
             f"AsyncVectorEnv(env_name={env_name!r}, num_envs={num_envs}, "
             f"context='forkserver') failed: {exc!r}. Falling back to "
@@ -572,16 +412,7 @@ def train_sjfpo_run(
     resume_from_checkpoint: str | Path | None = None,
     runtime: dict | None = None,
 ) -> dict[str, Any]:
-    """One SJFPO training run. Env builds before any CUDA init, so forked
-    workers do not inherit the parent's CUDA context (cleanrl / SB3 ordering).
-
-    Accumulation contract: backward every microbatch, step only at the group
-    boundary, always flush a final partial group.
-
-    One clip, both roles. ``clip_grad_norm_`` gets a flat list of every
-    parameter -- actor and critic together -- so a big critic norm eats the
-    actor's budget. Not per-optimizer, not per-group.
-    """
+    """One SJFPO training run. Env builds before any CUDA init, so forked"""
     cfg = cfg or SJFPOConfig()
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -600,13 +431,9 @@ def train_sjfpo_run(
     if cfg.num_envs > 1 and env_name != "unknown":
         train_env = make_vec_env(env_name, cfg.num_envs, record=runtime)
     else:
-        # Recorded even when num_envs == 1, so the artifact says which path ran.
         if runtime is not None:
             runtime["vector_env"] = "single"
         if cfg.num_envs > 1:
-            # num_envs is a throughput knob, not a correctness one, so this falls
-            # back rather than failing. Silently, it used to be a run that claimed
-            # 64 envs and used one.
             warnings.warn(
                 f"num_envs={cfg.num_envs} requested but env_name={env_name!r} "
                 "(no spec.id on the passed env), so vectorisation was skipped "
@@ -616,13 +443,8 @@ def train_sjfpo_run(
                 stacklevel=2,
             )
     if runtime is not None:
-        # The tracker takes floats only, so a string constant cannot be a
-        # per-step scalar. It goes here instead. A run states which flow start
-        # produced each reported number.
         runtime["eval_sampling"] = cfg.eval_sampling
         runtime["stop_eval_sampling"] = cfg.stop_eval_sampling
-        # Audits every auto-applied decision, so a run is self-describing after
-        # the fact. Written before the first rollout, not at the end.
         (out_dir / "run_metadata.json").write_text(
             json.dumps(runtime, indent=2, sort_keys=True), encoding="utf-8"
         )
@@ -679,8 +501,6 @@ def train_sjfpo_run(
     evaluator = Evaluator(
         env, eval_seed=eval_seed, max_episodes=cfg.eval_max_episodes
     )
-    # One adapter per named flow start. Both run over the same eval seeds, so the
-    # episode pairs line up and the two scores differ only by the start point.
     eval_policies = {
         "zero_start": _EvalPolicy(policy, start_from_zero=True),
         "noise_start": _EvalPolicy(policy, start_from_zero=False),
@@ -732,8 +552,6 @@ def train_sjfpo_run(
                 policy, optimizer, batch, tracker, cfg, device, clip_params
             )
 
-            # Once per rollout, not per boundary: a full critic pass over
-            # 2 * n_chunks windows, and the number only grows with steps taken.
             drift = None
             if cfg.log_drift_diagnostics and tracker.enabled:
                 drift = measure_value_drift(policy, batch, device)
@@ -780,13 +598,8 @@ def train_sjfpo_run(
                     step=global_step,
                 )
 
-            # Named here because the abort message needs it. The tracker can
-            # be off, in which case info is None.
             l_new_mean = info["l_new_mean"] if info is not None else float("nan")
             if both_clamped_frac > BOTH_CLAMPED_ABORT_FRAC:
-                # The stricter test. Both losses clamp to the same bound, so the
-                # ratio is exactly 1.0. The policy receives no gradient at all,
-                # while the critic keeps training.
                 both_clamped_updates += 1
                 if both_clamped_updates >= ABOVE_CLAMP_ABORT_UPDATES:
                     raise SJFPOAborted(
@@ -830,7 +643,6 @@ def train_sjfpo_run(
                     steps_to_best = global_step
                     best_artifact_path, _ = save_checkpoint(out_dir, policy, optimizer, global_step, "best")
                     best_artifact = best_artifact_path
-                # Restore tracking logs (required by tests)
                 if tracker.enabled:
                     eval_summary = summaries.get(cfg.eval_sampling, {})
                     tracker.log(
@@ -899,9 +711,6 @@ def train_sjfpo_run(
         "reward_mean_last10": (
             float(np.mean(recent_eval_returns)) if recent_eval_returns else 0.0
         ),
-        # The median of the same window. It resists one collapsed episode, which
-        # the mean does not. The field is additive. The mean stays for
-        # continuity with the runs already recorded.
         "reward_median_last10": (
             float(np.median(recent_eval_returns)) if recent_eval_returns else 0.0
         ),

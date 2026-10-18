@@ -15,13 +15,7 @@ KNOWN_ENVS = tuple(_ENV_REGISTRY.keys())
 
 
 def get_observation_action_dim(env_id: str) -> tuple[int, int]:
-    """Obs and action dims for ``env_id``, from ``configs/envs.yaml``.
-
-    The function reads the registry that import parsed once. So a call and
-    ``KNOWN_ENVS`` cannot disagree about which environments exist.
-
-    Raises ``KeyError`` if the registry is empty or ``env_id`` is absent.
-    """
+    """Obs and action dims for ``env_id``, from ``configs/envs.yaml``."""
     if not _ENV_REGISTRY:
         raise KeyError(f"registry empty at {ENV_REGISTRY_PATH}")
     entry = _ENV_REGISTRY.get(env_id)

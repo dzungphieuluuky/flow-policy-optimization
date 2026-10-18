@@ -1,8 +1,4 @@
-"""FPO++ core maths. The module holds the CFM loss, the ratio, the ASPO trust
-region, and the Euler sampler.
-
-Source: arXiv 2602.02481, equations 3 to 13.
-"""
+"""FPO++ core maths. The module holds the CFM loss, the ratio, the ASPO trust"""
 
 from __future__ import annotations
 
@@ -74,8 +70,7 @@ def sample_noise(
 def broadcast_over_mc_axis(
     action: torch.Tensor, eps: torch.Tensor, t
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, tuple[int, ...], int]:
-    """Broadcast action, noise, and timestep over the MC axis. Returns ``[B*M, ...]``.
-    ``t`` shape: ``[B, M, K, 1]``."""
+    """Broadcast action, noise, and timestep over the MC axis. Returns ``[B*M, ...]``."""
     b, num_mc = eps.shape[0], eps.shape[1]
     flow_shape = tuple(action.shape[1:])
     if tuple(eps.shape) != (b, num_mc, *flow_shape):
@@ -125,13 +120,8 @@ def compute_cfm_loss(
         raise ValueError(
             f"v_hat shape {tuple(v_hat.shape)} != v_star shape {tuple(v_star.shape)}"
         )
-    # F.mse_loss with reduction="none" is square(v_hat - v_star). The default
-    # reduction would divide, and the masking below already divides.
     diff = v_hat - v_star
     if cfg.cfm_loss_use_huber:
-        # FPO++ flow_model.py:_compute_squared_error. The quadratic branch has no
-        # 0.5 factor. So this equals MSE for |diff| <= delta. Only the tail is
-        # linear.
         delta = cfg.cfm_loss_huber_delta
         abs_diff = diff.abs()
         sq = torch.where(
@@ -143,11 +133,7 @@ def compute_cfm_loss(
         sq = diff.square()
     n_valid = None
     if action_is_pad is not None:
-        # action_is_pad marks the rows to drop, so the function flips it. Keep is 1 on
-        # an executed position and 0 on a padded position.
         keep = (~action_is_pad).to(sq.dtype)[:, None, :, None]
-        # The scale factor is action_dim, so the divisor counts scalar elements
-        # and not tokens.
         n_valid = (
             (~action_is_pad).sum(dim=-1, keepdim=True).to(sq.dtype) * sq.shape[-1]
         )
@@ -177,8 +163,6 @@ def compute_cfm_loss(
             return sample
         return sample, sq.mean(dim=-1)
     if reduce_mode == "token_mean":
-        # Per-token diagnostic. Dividing by action_dim keeps the value independent of
-        # the token count. The mask above already zeroed the padded rows.
         return sq.mean(dim=-1)
     raise ValueError(
         f"reduce_mode={reduce_mode!r} must be 'scalar', 'sample', "
@@ -210,13 +194,7 @@ def _sigreg_sketch(z: torch.Tensor, sketch_dim: int) -> torch.Tensor:
 
 
 def sigreg_weak_loss(z: torch.Tensor, sketch_dim: int = 64) -> torch.Tensor:
-    """Weak SIGReg. The function matches the row covariance to identity
-    (LeWorldModel).
-
-    The penalty is ``||Cov - I||_F`` over sketched, centered rows. One row
-    returns zero, because no covariance exists. The input casts to float32, so
-    bf16 callers stay valid.
-    """
+    """Weak SIGReg. The function matches the row covariance to identity"""
     z = z.float()
     if z.shape[0] < 2:
         return torch.zeros((), device=z.device)
@@ -228,12 +206,7 @@ def sigreg_weak_loss(z: torch.Tensor, sketch_dim: int = 64) -> torch.Tensor:
 
 
 def sigreg_decorr_loss(z: torch.Tensor, sketch_dim: int = 64) -> torch.Tensor:
-    """Decorrelation-only SIGReg. The function standardises the columns, then
-    removes the off-diagonal.
-
-    The column scales survive. Only redundancy pays. The function uses the same
-    row-count guard and the same float32 cast as :func:`sigreg_weak_loss`.
-    """
+    """Decorrelation-only SIGReg. The function standardises the columns, then"""
     z = z.float()
     if z.shape[0] < 2:
         return torch.zeros((), device=z.device)
@@ -270,12 +243,7 @@ def velocity_to_target_param(
 def cfm_target(
     a: torch.Tensor, eps: torch.Tensor, cfg: SJFPOConfig
 ) -> torch.Tensor:
-    """The regression target for ``cfg.cfm_loss_target``. ``[B, *flow]``.
-
-    Pair this with :func:`velocity_to_target_param`. That function maps the
-    network output into the same space. This one builds the value the map is
-    compared against.
-    """
+    """The regression target for ``cfg.cfm_loss_target``. ``[B, *flow]``."""
     mode = cfg.cfm_loss_target
     if mode == "velocity":
         return a.unsqueeze(1) - eps
@@ -289,13 +257,7 @@ def compute_aspo_surrogate(
     advantage: torch.Tensor,
     cfg: SJFPOConfig,
 ) -> torch.Tensor:
-    """FPO++ trust region. ASPO is PPO for A>0 and SPO for A<0. It runs on each
-    element.
-
-    PPO clips at ``clip_param``. The SPO quadratic uses ``spo_clip_param``.
-    These are two widths, not one. The manipulation loop of FPO++ carries them
-    as two coefficients (``finetune_online_rl.py:117-118``).
-    """
+    """FPO++ trust region. ASPO is PPO for A>0 and SPO for A<0. It runs on each"""
     ratio_adv = ratio * advantage
     ratio_clipped = torch.clamp(ratio, 1.0 - cfg.clip_param, 1.0 + cfg.clip_param)
     ppo = torch.min(ratio_adv, ratio_clipped * advantage)
@@ -378,8 +340,5 @@ def sample_action(
         for i in range(num_steps):
             t_current = grid[i].reshape(1)
             v_hat = predict_velocity(x, t_current, condition)
-            # The code uses addcmul, not x + dt*v. Both give the same value, and
-            # addcmul uses one kernel, not two. This loop runs num_steps
-            # times per policy call.
             x = torch.addcmul(x, v_hat, dts[i])
     return x

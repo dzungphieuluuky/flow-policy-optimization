@@ -19,18 +19,7 @@ FLOW_STARTS = ("zero_start", "noise_start")
 @PreTrainedConfig.register_subclass("sjfpo")
 @dataclass
 class SJFPOConfig(PreTrainedConfig):
-    """SJFPO hyperparameters.
-
-    ``n_action_steps`` is the executed prefix. Its default is 4, which is half
-    of ``action_horizon``. Set ``n_action_steps`` to ``None``, and
-    ``__post_init__`` fills in ``action_horizon``. That is the open-loop
-    no-correction case.
-
-    Both step counts feed the same Euler loop. They differ only in the start
-    point. ``num_steps_zero_start`` applies when the chain starts at ``eps=0``.
-    ``num_steps_noise_start`` applies when the chain starts at a drawn
-    ``eps``. The names state the start, because the integrator is the same.
-    """
+    """SJFPO hyperparameters."""
 
     report_to: str = "all"
     n_obs_steps: int = 16
@@ -122,23 +111,7 @@ class SJFPOConfig(PreTrainedConfig):
         self.validate()
 
     def validate(self) -> None:
-        """Run every check inline. The function calls no other check method.
-
-        This function does not check the feature shapes. The fields
-        ``input_features`` and ``output_features`` are empty on a bare config.
-        ``build_policy`` fills them in at run time. It takes the dimensions from
-        the env registry. Then ``train.py`` compares those dimensions with the
-        live observation and action spaces.
-
-        ``validate_features`` enforces the requirement instead. That function
-        runs from ``SJFPOPolicy.__init__``, after the code attaches the
-        features.
-
-        The function raises for every invalid value. It warns once, for the
-        ``fpo_beta`` mode at ``timestep_inverse_cdf_beta=1.0``. That setting
-        runs and samples uniform, so it only names the uniform law. The default
-        is 2.0, so a default config does not warn and does not sample uniform.
-        """
+        """Run every check inline. The function calls no other check method."""
         if self.n_obs_steps < 1:
             raise ValueError(f"n_obs_steps={self.n_obs_steps} must be >= 1")
         if self.report_to not in ("wandb", "tensorboard", "all", "none"):
@@ -364,8 +337,7 @@ class SJFPOConfig(PreTrainedConfig):
             )
 
     def validate_features(self) -> None:
-        """Require the run-time features. ``SJFPOPolicy.__init__`` calls this
-        function."""
+        """Require the run-time features. ``SJFPOPolicy.__init__`` calls this"""
         if self.robot_state_feature is None:
             raise ValueError("SJFPO requires 'observation.state' in input_features.")
         if self.action_feature is None:

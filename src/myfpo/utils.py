@@ -1,5 +1,4 @@
-"""Shared stateless utilities. The module imports no ``sjfpo.*`` name, so it
-cannot take part in an import cycle."""
+"""Shared stateless utilities. The module imports no ``sjfpo.*`` name, so it"""
 
 from __future__ import annotations
 
@@ -16,18 +15,13 @@ from lerobot.processor.converters import from_tensor_to_numpy, to_tensor
 
 @lru_cache(maxsize=1)
 def cuda_available() -> bool:
-    """Report whether CUDA is usable. The result is cached. The first call
-    builds the context."""
+    """Report whether CUDA is usable. The result is cached. The first call"""
     return torch.cuda.is_available()
 
 
 @lru_cache(maxsize=1)
 def is_rtx_1000_pro_blackwell() -> bool:
-    """Detect an NVIDIA RTX PRO 1000 Blackwell GPU.
-
-    The result is cached. The function returns False if CUDA is unavailable or
-    the device name is unreadable.
-    """
+    """Detect an NVIDIA RTX PRO 1000 Blackwell GPU."""
     if not cuda_available():
         return False
     try:
@@ -39,19 +33,7 @@ def is_rtx_1000_pro_blackwell() -> bool:
 
 @lru_cache(maxsize=1)
 def detect_gpu() -> dict | None:
-    """Return the device name, the compute capability, and what that
-    architecture supports.
-
-    The function returns ``None`` if CUDA is unusable.
-
-    The result comes from the capability, not from a name match. Thus the
-    result stays correct for a GPU that ships tomorrow. It also stays correct
-    for any SKU that the host spells differently. That includes the
-    ``machine_shape`` of Kaggle, a cloud provider, and a vGPU profile.
-
-    The thresholds are these. FP16 tensor cores start at Volta, sm_70. Both bf16
-    and TF32 start at Ampere, sm_80. See the NVIDIA architecture whitepapers.
-    """
+    """Return the device name, the compute capability, and what that"""
     if not cuda_available():
         return None
     try:
@@ -71,12 +53,7 @@ def detect_gpu() -> dict | None:
 
 
 def resolve_device() -> torch.device:
-    """Execution device from ``SJFPO_DEVICE``.
-
-    The function falls back to CPU if the caller asks for CUDA and CUDA is
-    unavailable. It raises ``ValueError`` unless ``SJFPO_DEVICE`` is ``auto``,
-    ``cpu`` or ``cuda``.
-    """
+    """Execution device from ``SJFPO_DEVICE``."""
     want = os.environ.get("SJFPO_DEVICE", "auto").lower()
     if want == "cpu":
         return torch.device("cpu")
@@ -90,27 +67,19 @@ def resolve_device() -> torch.device:
 def resolve_storage_dtype(
     device: str | torch.device | None = None,
 ) -> torch.dtype:
-    """Storage dtype for the real execution device.
-
-    CPU is always FP32. RTX PRO 1000 Blackwell uses BF16 storage on CUDA.
-    Everything else is FP32.
-    """
+    """Storage dtype for the real execution device."""
     if device is not None and torch.device(device).type == "cpu":
         return torch.float32
     return torch.bfloat16 if is_rtx_1000_pro_blackwell() else torch.float32
 
 
 def resolve_compute_dtype() -> torch.dtype:
-    """Matmul and autocast dtype, from ``SJFPO_DTYPE``. BF16 only if CUDA
-    supports it."""
+    """Matmul and autocast dtype, from ``SJFPO_DTYPE``. BF16 only if CUDA"""
     want = os.environ.get("SJFPO_DTYPE", "auto").lower()
     if want not in {"auto", "fp32", "bf16"}:
         raise ValueError(
             f"SJFPO_DTYPE={want!r} unknown; expected 'auto', 'fp32', or 'bf16'"
         )
-    # The result is fp32 for a request of fp32, and for absent CUDA. Otherwise
-    # the bf16 support test also covers the Blackwell fast path, so the code
-    # needs no separate Blackwell branch.
     if want == "fp32" or not cuda_available():
         return torch.float32
     return torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float32
@@ -118,8 +87,6 @@ def resolve_compute_dtype() -> torch.dtype:
 
 def autocast_context(device=None):
     """A bf16 autocast context on CUDA. A no-op elsewhere."""
-    # resolve_compute_dtype returns fp32 if CUDA is absent. So this code needs
-    # no separate no-CUDA check.
     if resolve_compute_dtype() != torch.bfloat16:
         return contextlib.nullcontext()
     dev_type = device.type if isinstance(device, torch.device) else "cuda"
@@ -129,21 +96,12 @@ def autocast_context(device=None):
 
 
 def rms(x: torch.Tensor) -> torch.Tensor:
-    """Root mean square over every element.
-
-    The function uses ``torch.linalg.vector_norm`` in one reduction. It does
-    not use the three passes of ``square().mean().sqrt()``. ``F.rms_norm`` is
-    no substitute. It divides by the RMS and returns the shape of the input.
-    """
+    """Root mean square over every element."""
     return torch.linalg.vector_norm(x) / math.sqrt(x.numel())
 
 
 def to_device_async(x: torch.Tensor, device) -> torch.Tensor:
-    """Move a tensor to the device. On CUDA the copy overlaps CPU work.
-
-    The caller must synchronise before it reads the tensor. Any ``.item()``,
-    any ``.cpu()`` and any numpy conversion synchronises implicitly.
-    """
+    """Move a tensor to the device. On CUDA the copy overlaps CPU work."""
     device = torch.device(device)
     if device.type == "cuda" and x.device != device:
         if not x.is_pinned():
@@ -153,8 +111,7 @@ def to_device_async(x: torch.Tensor, device) -> torch.Tensor:
 
 
 def to_numpy_1d(x: torch.Tensor | np.ndarray | float) -> np.ndarray:
-    """Convert to numpy, always at least 1-D. A singleton stays ``[1]``, not
-    0-d."""
+    """Convert to numpy, always at least 1-D. A singleton stays ``[1]``, not"""
     return np.atleast_1d(from_tensor_to_numpy(x))
 
 
@@ -163,6 +120,5 @@ def to_tensor_1d(
     dtype: torch.dtype | None = torch.float32,
     device: torch.device | str | None = None,
 ) -> torch.Tensor:
-    """Convert to a tensor, always at least 1-D. A singleton stays ``[1]``, not
-    0-d."""
+    """Convert to a tensor, always at least 1-D. A singleton stays ``[1]``, not"""
     return torch.atleast_1d(to_tensor(x, dtype=dtype, device=device))

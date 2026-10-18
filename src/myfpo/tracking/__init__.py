@@ -28,12 +28,7 @@ def build_tracker(
     seed: int,
     total_steps: int,
 ) -> ExperimentTracker:
-    """Build the tracker fan-out for one run.
-
-    The argument ``out_dir`` names the run's output directory. The TensorBoard
-    backend writes under ``<out_dir>/tensorboard/``. Weights & Biases takes no
-    directory: wandb owns its own run store.
-    """
+    """Build the tracker fan-out for one run."""
     report_to = getattr(cfg, "report_to", "none")
     if report_to not in _REPORT_TO:
         raise ValueError(
@@ -60,10 +55,6 @@ def build_tracker(
         from .base import build_run_name
         from .tensorboard import TensorboardBackend
 
-        # Under ``out_dir``, not in the working directory. The run name carries
-        # no out_dir, so two runs with the same config but different
-        # ``--out_dir`` used to share one directory and their series
-        # interleaved. The path is now ``<out_dir>/tensorboard/<run_name>``.
         log_dir = Path(out_dir) / "tensorboard" / build_run_name(
             method, env_name, seed, cfg_dict
         )

@@ -8,23 +8,7 @@ from torch import nn
 
 
 class CriticMember(nn.Module):
-    """One Q(s, a_{t:t+h}) head. The network is a concat MLP. It has no FiLM
-    modulation. The input contracts stay the same. Only the deliberate
-    non-additive conditioning is gone.
-
-    ``condition_on_exec_length`` appends the executed fraction of the chunk as
-    the final input.
-
-    Without that input the head cannot tell two chunks apart. The two chunks
-    share an executed prefix. They differ in the tail that was planned and then
-    never ran. The head is still regressed onto the same return for both.
-
-    ``condition_dim`` selects the shared-encoder option. The chunk-level critic
-    of FPO++ consumes ``actor_module.model.encode_observations(...)``. That call
-    is the observation encoder of the actor itself
-    (``finetune_online_rl.py:1177``). With the option set, the head takes one
-    vector of shape ``[B, condition_dim]``, not an observation window.
-    """
+    """One Q(s, a_{t:t+h}) head. The network is a concat MLP. It has no FiLM"""
 
     def __init__(
         self,
@@ -57,9 +41,6 @@ class CriticMember(nn.Module):
             condition_dim if condition_dim is not None else n_obs_steps * obs_dim
         )
         if condition_dim is not None and n_obs_steps != 1:
-            # The function does not read the observation window in this mode. It
-            # rejects the ambiguity. It does not ignore a caller that passes a
-            # window.
             raise ValueError(
                 f"condition_dim is set, so n_obs_steps must be 1 (unused), got "
                 f"{n_obs_steps}"
@@ -80,12 +61,7 @@ class CriticMember(nn.Module):
         actions: torch.Tensor,
         exec_length_frac: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """Accept ``[B, T, obs]`` or ``[B, condition_dim]``, plus ``[B, H,
-        action_dim]``. Return ``[B]``.
-
-        Shapes are checked by the owning :class:`Critic`. That class validates
-        once per batch, not once per ensemble member.
-        """
+        """Accept ``[B, T, obs]`` or ``[B, condition_dim]``, plus ``[B, H,"""
         parts = [states.flatten(1), actions.flatten(1)]
         if self.condition_on_exec_length:
             if exec_length_frac is None:
@@ -103,16 +79,7 @@ class CriticMember(nn.Module):
 
 
 class Critic(nn.Module):
-    """Q(s_t, a_{t:t+h}) over the full window. The chunk is the executed action
-    sequence. So Q is the value that the QC target backs up to.
-
-    The return is ``[num_critics, B]``. The default ``num_critics=2`` is a real
-    ensemble. The members stay fully independent. So the caller must aggregate
-    them.
-
-    Use ``min`` for the backup. Use ``mean`` for the value loss. Never use
-    ``min`` inside the loss.
-    """
+    """Q(s_t, a_{t:t+h}) over the full window. The chunk is the executed action"""
 
     def __init__(
         self,
@@ -165,9 +132,7 @@ class Critic(nn.Module):
 
     @property
     def input_dim(self) -> int:
-        """First-layer input width. The width shifts by 1 when the length
-        feature is on. That shift is what makes old checkpoints unloadable
-        without a migration."""
+        """First-layer input width. The width shifts by 1 when the length"""
         return self.networks[0].input_dim
 
     def forward(
@@ -176,9 +141,7 @@ class Critic(nn.Module):
         actions: torch.Tensor,
         exec_length_frac: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """Accept ``[B, T, obs]`` or ``[B, condition_dim]``, plus ``[B, H,
-        action_dim]``. Return ``[num_critics, B]``.
-        """
+        """Accept ``[B, T, obs]`` or ``[B, condition_dim]``, plus ``[B, H,"""
         if self.condition_dim is not None:
             if states.dim() != 2 or states.shape[1] != self.condition_dim:
                 raise ValueError(

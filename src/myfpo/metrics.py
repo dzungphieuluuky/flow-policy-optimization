@@ -1,16 +1,4 @@
-"""The metric and sampling functions that compute a training step.
-
-Every function here is free. It takes tensors, a config, or both, and returns
-tensors or a dict of tensors. None of them reads or writes instance state, so
-none of them can be a method on the policy.
-
-``SJFPOPolicy.forward`` assembles the loss. This module reports on it. Keeping
-the two apart means the loss path and the reporting path can be read
-separately, and it means a change to a log key cannot reach the gradients.
-
-``build_optimizer`` stays in ``modeling_sjfpo.py``. It needs the policy class,
-and importing that class here would make a cycle.
-"""
+"""The metric and sampling functions that compute a training step."""
 
 from __future__ import annotations
 
@@ -43,20 +31,10 @@ __all__ = [
 def compute_value_loss(
     pred: torch.Tensor, target: torch.Tensor
 ) -> torch.Tensor:
-    """Squared error against the return. The function broadcasts ``target`` over
-    the members.
-
-    The function uses plain MSE, which is what both FPO++ variants use
-    (``fpo.py:497``, and ``clip_vloss`` off in the manipulation config). It has
-    no clipped variant. The release reports that value clipping adds instability
-    with the tighter policy band of FPO (``rl_cfg.py:181-185``).
-    """
+    """Squared error against the return. The function broadcasts ``target`` over"""
     return torch.square(pred - target.expand_as(pred))
 
 
-# Diagnostics dict pack order. The trainer reads by key.
-# budget_truncated_chunk_frac is always NaN in training, because no rollout
-# path supplies budget_truncated.
 _GAE_DIAGNOSTIC_KEYS = (
     "linked_frac",
     "advantage_std",
@@ -74,15 +52,7 @@ def compute_gae_diagnostics(
     raw_returns: torch.Tensor,
     budget_truncated: torch.Tensor | None = None,
 ) -> dict[str, float]:
-    """Trace-liveness and scale probes for the chunk backup.
-
-    The probes use adjacent same-env chunk pairs, not split by episode end. A
-    value near 0 means a dead trace. Read the probes only when gae_lambda > 0,
-    which is the default.
-
-    ``budget_truncated`` is NaN when unsupplied, which is normal. The value is
-    NaN, not 0.0, because zero claims that nothing was cut.
-    """
+    """Trace-liveness and scale probes for the chunk backup."""
     n = env_id.numel()
     if n == 0:
         return dict.fromkeys(_GAE_DIAGNOSTIC_KEYS, float("nan"))
@@ -90,19 +60,13 @@ def compute_gae_diagnostics(
     e = env_id.to(torch.long)[order]
     ends = terminated.to(torch.bool)[order][:-1] | truncated.to(torch.bool)[order][:-1]
     ret = raw_returns.float()
-    # Population std. The unbiased form is NaN at n == 1.
     adv_std = advantages.float().std(correction=0)
     ret_std = ret.std(correction=0).clamp_min(1e-8)
     fields = [
         ((e[1:] == e[:-1]) & ~ends).sum().double() / max(n - 1, 1),
         adv_std,
         rms(ret).double(),
-        # adv_std / ret_std. A value of 1.0 reads as an inert critic.
-        # The value is not bounded by 1, because Var(A) > Var(R) is possible.
-        # The key names the denominator. "fraction" alone said only that the
-        # value was a quotient, and not of what.
         adv_std / ret_std,
-        # Budget cut. Not chunk_truncated, not truncated_chunk_frac.
         budget_truncated.to(torch.bool).float().mean().double()
         if budget_truncated is not None
         else ret.double().new_tensor(float("nan")),
@@ -130,15 +94,13 @@ def compute_mc_xt(
     t = flatten_mc_timestep.expand(-1, -1, flow_shape[-1])
     noise = flatten_mc_noise.reshape(-1, *flow_shape)
     action = flatten_mc_action.reshape(-1, *flow_shape)
-    # The code uses lerp. It gives the same value in one kernel, not four.
     return torch.lerp(noise, action, t)
 
 
 def mc_draws(
     actions: torch.Tensor, eps: torch.Tensor, t: torch.Tensor
 ) -> tuple[torch.Tensor, torch.Tensor, tuple[int, ...], int]:
-    """The shared MC prologue of ``compute_behavior_cfm_losses`` and ``forward``.
-    The function interpolates the draws, with one t per token."""
+    """The shared MC prologue of ``compute_behavior_cfm_losses`` and ``forward``."""
     flatten_timestep, flatten_mc_noise, flatten_mc_action, flow_shape, num_mc = (
         broadcast_over_mc_axis(actions, eps, t)
     )
@@ -166,37 +128,13 @@ def compute_ratio_metrics(
     action_is_pad: torch.Tensor,
     cfg: SJFPOConfig,
 ) -> dict[str, torch.Tensor]:
-    """Trust-region diagnostics, with a per-token axis split.
-
-    ``log_ratio_*`` reads raw delta, never the clamped one.
-    ``log_ratio_clip_frac`` counts the upper side only. That is the side
-    ``compute_policy_ratio`` clamps.
-    ``clipfrac`` compares against ``clip_param``, the PPO width. Under ASPO
-    the negative-advantage branch uses ``spo_clip_param``, so ``clipfrac`` is
-    not the whole trust-region binding fraction.
-
-    The ``_early_half`` and ``_late_half`` keys split the token axis at
-    ``split = num_tokens // 2``. The split is an INDEX cut along the action-step
-    axis, not a frequency cut. The old names ended in ``_pos_low`` and
-    ``_pos_high``, which read as a position in the frequency spectrum. "pos"
-    also names the write cursor in the collector, so the same three letters
-    meant two things.
-
-    ``mean_log_ratio``, ``log_ratio_max``, ``log_ratio_clip_frac``,
-    ``clipfrac``, and ``flow_ratio_*`` average over every element of ``delta``
-    and ``ratio``. Their axis follows the ratio granularity: the token axis
-    under the default flags. ``flow_ratio_token_*`` is always per token.
-
-    The token axis is the action steps of the chunk. ``_early_half`` covers the
-    first half of them and ``_late_half`` the second half.
-    """
+    """Trust-region diagnostics, with a per-token axis split."""
     log_ratio_abs = delta.abs()
     log_ratio_clip_frac = (delta > cfg.log_ratio_cap).float().mean()
 
     ratio_token_mean_per_step = ratio_token.mean(dim=(0, 1))
     num_tokens = ratio_token_mean_per_step.numel()
     split = max(1, num_tokens // 2)
-    # One epsilon across the token axis, as the surrogate.
     def outside(t: torch.Tensor) -> torch.Tensor:
         return ((t < 1.0 - cfg.clip_param) | (t > 1.0 + cfg.clip_param)).float().mean()
 
@@ -227,10 +165,7 @@ def compute_ratio_metrics(
         "flow_ratio_token_early_half_outside_frac": early_outside,
         "flow_ratio_token_late_half_outside_frac": late_outside,
         "flow_ratio_token_outside_frac": outside(ratio_token),
-        # The key counts the chunks with an unexecuted row. The mask drops the
-        # row.
         "truncated_chunk_frac": action_is_pad.any(dim=1).float().mean(),
-        # Executed rows. That is the CFM loss that survives the mask.
         "executed_action_step_frac": (~action_is_pad).float().mean(),
     }
 
@@ -242,13 +177,7 @@ def compute_value_metrics(
     policy_per_chunk: torch.Tensor,
     value_loss_per_chunk: torch.Tensor,
 ) -> dict[str, torch.Tensor]:
-    """Critic diagnostics.
-
-    ``explained_var`` scores the member mean, which the loss trains.
-    The backup uses ``amin``. ``explained_var_min`` is that same reading for
-    the pessimistic member. The two are not ordered: a pointwise-smaller
-    predictor need not lower the residual variance.
-    """
+    """Critic diagnostics."""
     mean_value_pred = raw_value_pred.mean(dim=0)
     min_value_pred = raw_value_pred.amin(dim=0)
     returns_var = raw_returns_flat.var(correction=0).clamp_min(1e-8)
@@ -257,14 +186,11 @@ def compute_value_metrics(
         "value_loss": value_loss_per_chunk.mean(),
         "explained_var": 1.0
         - (raw_returns_flat - mean_value_pred).var(correction=0) / returns_var,
-        # The pessimism the backup actually uses.
         "explained_var_min": 1.0
         - (raw_returns_flat - min_value_pred).var(correction=0) / returns_var,
         "value_abs_err_max": mean_value_pred.sub(raw_returns_flat).abs().max(),
         "value_pred_max": mean_value_pred.abs().max(),
         "value_target_std": raw_returns_flat.std(correction=0),
-        # Pooled over [num_critics, n]. That is the within- and between-member
-        # spread.
         "value_pred_std": raw_value_pred.std(correction=0),
         "value_pred_std_member_mean": raw_value_pred.std(dim=1, correction=0).mean(),
         "value_pred_member_gap": (
@@ -281,22 +207,7 @@ def compute_cfm_metrics(
     above_clamp_frac: torch.Tensor,
     both_clamped_frac: torch.Tensor,
 ) -> dict[str, torch.Tensor]:
-    """Flow-matching loss diagnostics.
-
-    ``cfm_above_clamp_frac``. A clamped sample gives no gradient, so a stuck run
-    trains the critic only.
-
-    ``cfm_both_clamped_frac``. The share whose two losses both sit above the
-    clamp. The ratio there is exactly 1.0, so the policy receives no gradient at
-    all. This key is the direct cause. The key ``cfm_above_clamp_frac`` can read
-    high while the ratio still carries a gradient.
-
-    Both arguments come from the caller. The caller knows which pair of losses
-    the ratio clamps. Neither key can be recomputed here, because ``cfm_loss_new``
-    is the per-sample loss while the ratio clamps the per-token one. Reading it
-    gave 1.0 while 73% of the clamped elements sat above the bound at
-    ``cfm_clamp=0.5``.
-    """
+    """Flow-matching loss diagnostics."""
     cfm_loss_old_std = cfm_loss_old.std(correction=0)
     cfm_loss_new_std = cfm_loss_new.std(correction=0)
     corr_denom = cfm_loss_old_std * cfm_loss_new_std + 1e-8
@@ -333,25 +244,7 @@ def compute_policy_info(
     both_clamped_frac,
     cfg: SJFPOConfig,
 ) -> dict[str, float]:
-    """Merge the metric groups into one device transfer.
-
-    The call costs one sync, not about 20. Plain floats are accepted next to the
-    tensors. NaN marks a metric that does not apply.
-
-    This function composes :func:`compute_ratio_metrics`,
-    :func:`compute_value_metrics`, and :func:`compute_cfm_metrics`, then stacks
-    the result so the caller transfers once. It reads nothing from a policy, so
-    the clamp fractions arrive as arguments rather than off an instance.
-
-    The two clamp fractions are the ones :func:`compute_cfm_metrics` needs, and
-    it cannot recompute them: it would measure the per-sample loss while the
-    ratio clamps the per-token one.
-
-    The decorator is load-bearing. The function runs under
-    ``torch.inference_mode()``, so the pack builds no autograd graph and the
-    metrics cannot hold a reference to a live graph. Dropping it does not change
-    any value here, and it does change what a long run holds in memory.
-    """
+    """Merge the metric groups into one device transfer."""
     scalars = {
         **compute_ratio_metrics(
             ratio=ratio,

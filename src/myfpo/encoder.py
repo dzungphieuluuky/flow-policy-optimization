@@ -10,14 +10,7 @@ from torch import nn
 from myfpo.layers import CondMLP
 
 class RunningMeanStd(nn.Module):
-    """Per-dimension running mean and variance over raw obs frames.
-
-    The mean and the variance use fp32. The count uses fp64, because fp32 stops
-    counting at 2^24.
-
-    The warm-up latch is a plain bool. A buffer would show up in
-    ``state_dict``. A tensor read would cause a device-to-host sync.
-    """
+    """Per-dimension running mean and variance over raw obs frames."""
 
     def __init__(self, dim: int, eps: float = 1e-8, clip: float = 10.0):
         super().__init__()
@@ -33,21 +26,7 @@ class RunningMeanStd(nn.Module):
 
     @torch.inference_mode()
     def update(self, x: torch.Tensor) -> None:
-        """Fold raw frames into the running statistics.
-
-        The merge is the parallel variance merge of Chan et al.
-
-        The precision is mixed, and the docstring used to call it fp64. The batch
-        is cast to fp32, so ``b_mean`` and ``delta`` are fp32, and the mean
-        update stays fp32: ``count`` is a 0-dim fp64 tensor, and a 0-dim tensor
-        does not promote an fp32 one under PyTorch's type rules. The variance
-        expression is the only place fp64 enters, because it multiplies
-        ``count`` by a 1-dim ``var``.
-
-        So the mean accumulates in fp32 over the life of a run. This docstring
-        used to say the updates do not drift. That was not a claim the code
-        supported, and it is gone.
-        """
+        """Fold raw frames into the running statistics."""
         if x.shape[-1] != self.mean.numel():
             raise ValueError(f"update got last dim {x.shape[-1]}, expected {self.mean.numel()}")
         batch = (
@@ -58,8 +37,6 @@ class RunningMeanStd(nn.Module):
         b = batch.shape[0]
         if b == 0:
             return
-        # One pass gives both moments. A call to mean() and then a call to var()
-        # would walk the batch twice.
         b_var, b_mean = torch.var_mean(batch, dim=0, unbiased=False)
         delta = b_mean - self.mean
         total = self.count + b
@@ -76,21 +53,12 @@ class RunningMeanStd(nn.Module):
         self._uninitialised = False
 
     def _load_from_state_dict(self, *args, **kwargs):
-        """Load the state. Derive the latch again.
-
-        The latch is not persisted. So a value of ``count == 0`` means the
-        function passes frames through.
-        """
+        """Load the state. Derive the latch again."""
         super()._load_from_state_dict(*args, **kwargs)
         self._uninitialised = bool(self.count.item() == 0)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Normalise with the frozen statistics.
-
-        The function returns ``x`` unchanged until the first update. The
-        collector must call ``update()`` first. So the function warns once if a
-        call arrives before that.
-        """
+        """Normalise with the frozen statistics."""
         if self._uninitialised:
             if not self._passthrough_warned:
                 warnings.warn(
@@ -103,14 +71,7 @@ class RunningMeanStd(nn.Module):
         return norm.clamp(-self.clip, self.clip).to(x.dtype)
 
 class StateEncoder(nn.Module):
-    """Flatten the window. Pass it to one SiLU MLP. Return the conditioning
-    vector.
-
-    The flatten reads the frame order. A mean pool cannot read the order.
-
-    A DCT concat was a rotation of the same flatten. So it added no subspace,
-    and the code dropped it.
-    """
+    """Flatten the window. Pass it to one SiLU MLP. Return the conditioning"""
 
     def __init__(self, obs_dim: int, hidden_dim: int, max_obs_steps: int):
         super().__init__()
@@ -123,9 +84,7 @@ class StateEncoder(nn.Module):
         self.net = CondMLP(max_obs_steps * obs_dim, hidden_dim, hidden_dim)
 
     def forward(self, states: torch.Tensor) -> torch.Tensor:
-        """Accept the window ``[B, T, obs]``. Return one conditioning vector of
-        shape ``[B, hidden]``.
-        """
+        """Accept the window ``[B, T, obs]``. Return one conditioning vector of"""
         if states.dim() != 3 or states.shape[2] != self.obs_dim:
             raise ValueError(f"states must have shape [B, {self.max_obs_steps}, {self.obs_dim}], got {tuple(states.shape)}")
         if states.shape[1] != self.max_obs_steps:
