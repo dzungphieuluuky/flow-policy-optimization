@@ -52,38 +52,6 @@ def generate_mini_batch_indices(
             stop = ((i + 1) * n) // n_mb
             yield perm[start:stop]
 
-class _EvalPolicy:
-    """A single-action eval adapter over :meth:`SJFPOPolicy.select_action`."""
-
-    def __init__(self, policy: SJFPOPolicy, start_from_zero: bool = True):
-        self.policy = policy
-        self.start_from_zero = start_from_zero
-
-    @classmethod
-    def for_sampling(cls, policy: SJFPOPolicy, sampling: str) -> "_EvalPolicy":
-        """Build the adapter for the config value ``sampling``."""
-        if sampling not in FLOW_STARTS:
-            raise ValueError(
-                f"sampling={sampling!r} must be one of "
-                f"{', '.join(repr(k) for k in FLOW_STARTS)}"
-            )
-        return cls(policy, start_from_zero=(sampling == "zero_start"))
-
-    def reset(self) -> None:
-        """Drop the policy's cached chunk state before a new episode."""
-        self.policy.reset()
-
-    def __call__(self, obs: np.ndarray) -> np.ndarray:
-        was_training = self.policy.training
-        self.policy.eval()
-        try:
-            action = self.policy.select_action(
-                {"observation.state": obs},
-                start_from_zero=self.start_from_zero,
-            )
-        finally:
-            self.policy.train(was_training)
-        return to_numpy_1d(action)
 
 
 def build_policy(
@@ -222,19 +190,6 @@ def measure_value_drift(policy, batch, device) -> tuple[torch.Tensor, torch.Tens
     )
 
 
-def _accumulation_group_sizes(
-    n_microbatches: int, accumulation_steps: int
-) -> list[int]:
-    """Return the microbatch count for each gradient-accumulation group."""
-    if n_microbatches < 1 or accumulation_steps < 1:
-        raise ValueError(
-            f"n_microbatches={n_microbatches} and accumulation_steps="
-            f"{accumulation_steps} must both be >= 1"
-        )
-    full, remainder = divmod(n_microbatches, accumulation_steps)
-    return [accumulation_steps] * full + ([remainder] if remainder else [])
-
-
 def sample_random_baseline(
     evaluator: Evaluator, env: Any, max_episodes: int = 30, seed: int | None = None
 ) -> float:
@@ -321,7 +276,8 @@ def train_update(policy, optimizer, batch, tracker, cfg, device, clip_params):
         )
     )
     accumulation_steps = cfg.grad_accum_steps
-    group_sizes = _accumulation_group_sizes(len(microbatches), accumulation_steps)
+    full, remainder = divmod(len(microbatches), accumulation_steps)
+    group_sizes = [accumulation_steps] * full + ([remainder] if remainder else [])
     optimizer.zero_grad(set_to_none=True)
     minibatch: dict[str, torch.Tensor] = {}
     finite_error = torch.zeros(
@@ -369,7 +325,7 @@ def evaluate_policy(policy, global_step, out_dir, evaluator, eval_policies, cfg,
         stop_name=cfg.stop_eval_sampling,
         eval_seed=evaluator.eval_seed,
         summarise=evaluator.summarize,
-        best_return=best_return,
+        best_return=eval_state[0],
     )
     summaries = window_obj.summaries
     eval_summary = summaries.get(cfg.eval_sampling, {})
@@ -501,9 +457,17 @@ def train_sjfpo_run(
     evaluator = Evaluator(
         env, eval_seed=eval_seed, max_episodes=cfg.eval_max_episodes
     )
+    def _eval_policy(policy, start_from_zero: bool):
+        class Adapter:
+            def reset(self): policy.reset()
+            def __call__(self, obs):
+                policy.eval()
+                try: return policy.select_action({"observation.state": obs}, start_from_zero=start_from_zero)
+                finally: policy.train(policy.training)
+        return Adapter()
     eval_policies = {
-        "zero_start": _EvalPolicy(policy, start_from_zero=True),
-        "noise_start": _EvalPolicy(policy, start_from_zero=False),
+        "zero_start": _eval_policy(policy, True),
+        "noise_start": _eval_policy(policy, False),
     }
     reported_name = cfg.eval_sampling
     stop_name = cfg.stop_eval_sampling
@@ -520,11 +484,12 @@ def train_sjfpo_run(
     next_eval = eval_steps
     next_save = save_steps
 
-    eval_count = 0
+    eval_state[2] = 0
     above_clamp_updates = 0
     both_clamped_updates = 0
     best_return: float | None = None
     steps_to_best: int | None = None
+    eval_state = (best_return, steps_to_best, 0)  # (best_return, steps_to_best, eval_state[2])
     recent_eval_returns: deque[float] = deque(maxlen=10)
     all_eval_returns: list[float] = []
     artifacts: list[str] = []
@@ -631,16 +596,17 @@ def train_sjfpo_run(
 
             if global_step >= next_eval or global_step >= total_steps:
                 result, summaries = evaluate_policy(
-                    policy, global_step, out_dir, evaluator, eval_policies, cfg, tracker, window=None, best_return=best_return
+                    policy, global_step, out_dir, evaluator, eval_policies, cfg, tracker, window=None, best_return=eval_state[0], best_return_ref=None, steps_to_best_ref=eval_state[1]
                 )
                 mean_return = result.get("mean_return", 0.0)
                 stop_return = result.get("stop_return", mean_return)
                 all_eval_returns.append(mean_return)
                 recent_eval_returns.append(mean_return)
-                eval_count += 1
+                eval_state = (stop_return if result.get("improved", False) else eval_state[0],
+                             global_step if result.get("improved", False) else eval_state[1],
+                             eval_state[2] + 1)
                 if result.get("improved", False):
-                    best_return = stop_return
-                    steps_to_best = global_step
+                    best_return, steps_to_best = stop_return, global_step
                     best_artifact_path, _ = save_checkpoint(out_dir, policy, optimizer, global_step, "best")
                     best_artifact = best_artifact_path
                 if tracker.enabled:
@@ -669,10 +635,10 @@ def train_sjfpo_run(
                             mean_return,
                             result.get("eval_results", []),
                             all_eval_returns,
-                            eval_count,
+                            eval_state[2],
                             r_rand=0.0,
-                            best_return=best_return,
-                            steps_to_best=steps_to_best,
+                            best_return=eval_state[0],
+                            steps_to_best=eval_state[1],
                         ) if result.get("eval_results") else {},
                         step=global_step,
                     )
