@@ -449,6 +449,115 @@ def make_vec_env(env_name: str, num_envs: int, record: dict | None = None):
         return gym.vector.SyncVectorEnv(env_fns)
 
 
+def collect_rollouts(policy, train_env, total_steps, cfg, action_low, action_high, steps_to_go):
+    collect_steps = min(cfg.chunks_per_update * cfg.action_horizon, steps_to_go)
+    batch = policy.generate_rollout(
+        train_env, collect_steps, action_low=action_low, action_high=action_high,
+    )
+    rollout = compute_rollout_diagnostics(batch)
+    steps_this_rollout = int(rollout["executed_action_steps"])
+    if steps_this_rollout <= 0:
+        raise RuntimeError("rollout returned zero executed steps; aborting.")
+    jerk_action = batch["action"].detach().cpu().numpy()
+    jerk_pad = batch["action_is_pad"].detach().cpu().numpy()
+    rollout_jerk = compute_mean_chunk_jerk(jerk_action, jerk_pad)
+    rollout_seam_jerk = compute_seam_jerk(jerk_action, jerk_pad)
+    return batch, rollout, steps_this_rollout, rollout_jerk, rollout_seam_jerk
+
+
+def train_update(policy, optimizer, batch, tracker, cfg, device, clip_params):
+    policy.train()
+    epoch_infos: list[dict[str, float]] = []
+    grad_norms_pre: list[torch.Tensor] = []
+    above_clamp_fracs: list[torch.Tensor] = []
+    both_clamped_fracs: list[torch.Tensor] = []
+    n_chunks = batch["raw_advantages"].shape[0]
+    microbatches = list(
+        generate_mini_batch_indices(
+            n_chunks,
+            cfg.num_mini_batches,
+            batch["raw_advantages"].device,
+            num_learning_epochs=cfg.num_learning_epochs,
+        )
+    )
+    accumulation_steps = cfg.grad_accum_steps
+    group_sizes = _accumulation_group_sizes(len(microbatches), accumulation_steps)
+    optimizer.zero_grad(set_to_none=True)
+    minibatch: dict[str, torch.Tensor] = {}
+    finite_error = torch.zeros(
+        (), device=batch["raw_advantages"].device, dtype=torch.bool
+    )
+    for micro_step, mb_idx in enumerate(microbatches):
+        group_size = group_sizes[micro_step // accumulation_steps]
+        minibatch = sample_minibatch(batch, mb_idx, minibatch)
+        loss, epoch_info = policy(minibatch, compute_info=tracker.enabled, check_finite=False)
+        finite_error |= ~torch.isfinite(loss)
+        if loss.dim() != 0:
+            raise ValueError(f"Loss must be scalar before backward; got {tuple(loss.shape)}.")
+        (loss / group_size).backward()
+        is_boundary = (
+            (micro_step + 1) % accumulation_steps == 0 or micro_step + 1 == len(microbatches)
+        )
+        if is_boundary:
+            pre_clip_total = torch.nn.utils.clip_grad_norm_(clip_params, cfg.max_grad_norm)
+            grad_norms_pre.append(pre_clip_total.detach())
+            above_clamp_fracs.append(policy.cfm_above_clamp_frac)
+            both_clamped_fracs.append(policy.cfm_both_clamped_frac)
+            optimizer.step()
+            optimizer.zero_grad(set_to_none=True)
+            policy.step_count += 1
+            apply_lr_schedule(optimizer, policy.step_count)
+        if epoch_info is not None:
+            epoch_infos.append(epoch_info)
+    if bool(finite_error):
+        raise SJFPOAborted("Non-finite loss detected during gradient accumulation")
+    return epoch_infos, grad_norms_pre, above_clamp_fracs, both_clamped_fracs
+
+
+def evaluate_policy(policy, global_step, out_dir, evaluator, eval_policies, cfg, tracker, window=None, best_return=None, steps_to_best=None, best_artifact_ref=None, artifacts_ref=None):
+    displaced = policy.swap_in_ema(global_step)
+    try:
+        results_by_sampling = {
+            name: evaluator.evaluate(adapter, out_dir=out_dir if name == cfg.eval_sampling else None, append_csv=(name == cfg.eval_sampling))
+            for name, adapter in eval_policies.items()
+        }
+    finally:
+        policy.swap_out_ema(displaced)
+    window_obj = summarise_window(
+        results_by_sampling,
+        reported_name=cfg.eval_sampling,
+        stop_name=cfg.stop_eval_sampling,
+        eval_seed=evaluator.eval_seed,
+        summarise=evaluator.summarize,
+        best_return=best_return,
+    )
+    summaries = window_obj.summaries
+    eval_summary = summaries.get(cfg.eval_sampling, {})
+    eval_results = window_obj.reported_results
+    mean_return = window_obj.mean_return
+    stop_return = window_obj.stop_return
+    result = {
+        "mean_return": mean_return,
+        "stop_return": stop_return,
+        "improved": window_obj.improved,
+        "displaced": bool(displaced),
+        "eval_results": eval_results,
+    }
+    return result, summaries
+
+
+def save_checkpoint(out_dir, policy, optimizer, global_step, name):
+    ckpt_dir = out_dir / CHECKPOINTS_DIR / name
+    save_policy_checkpoint(
+        ckpt_dir,
+        policy=policy,
+        optimizer=optimizer,
+        global_step=global_step,
+        ema_state=policy.ema_state_dict(),
+    )
+    return str(ckpt_dir / "model.safetensors"), ckpt_dir
+
+
 def train_sjfpo_run(
     env: Any,
     out_dir: str | Path,
@@ -552,22 +661,6 @@ def train_sjfpo_run(
         )
         optimizer = build_optimizer(policy)
 
-    def _save(dir_name: str) -> str:
-        """Save one checkpoint under `out_dir/checkpoints/` -> artifact path.
-
-        The three call sites (best / step_N / final) each need the same code.
-        Only the directory name differs.
-        """
-        ckpt_dir = out_dir / CHECKPOINTS_DIR / dir_name
-        save_policy_checkpoint(
-            ckpt_dir,
-            policy=policy,
-            optimizer=optimizer,
-            global_step=global_step,
-            ema_state=policy.ema_state_dict(),
-        )
-        return str(ckpt_dir / "model.safetensors")
-
     warmed = warm_observation_stats(
         policy,
         train_env,
@@ -625,108 +718,19 @@ def train_sjfpo_run(
     try:
         while global_step < total_steps:
             steps_to_go = total_steps - global_step
-            collect_steps = min(cfg.chunks_per_update * cfg.action_horizon, steps_to_go)
-            batch = policy.generate_rollout(
-                train_env,
-                collect_steps,
-                action_low=action_low,
-                action_high=action_high,
+            batch, rollout, steps_this_rollout, rollout_jerk, rollout_seam_jerk = collect_rollouts(
+                policy, train_env, total_steps, cfg, action_low, action_high, steps_to_go
             )
-            rollout = compute_rollout_diagnostics(batch)
-            steps_this_rollout = int(rollout["executed_action_steps"])
-            if steps_this_rollout <= 0:
-                raise RuntimeError(
-                    "rollout returned zero executed steps; aborting to avoid "
-                    "an infinite training loop."
-                )
             global_step += steps_this_rollout
             action_abs_max = rollout["action_abs_max"]
-
-            # generate_rollout always emits both keys; the jerk reads them raw.
-            jerk_action = batch["action"].detach().cpu().numpy()
-            jerk_pad = batch["action_is_pad"].detach().cpu().numpy()
-            rollout_jerk = compute_mean_chunk_jerk(jerk_action, jerk_pad)
-            rollout_seam_jerk = compute_seam_jerk(jerk_action, jerk_pad)
             if action_abs_max > 1.0 + 1e-3:
-                # Only reachable if the scaling affine itself is wrong.
                 raise ValueError(
-                    f"Post-clip action magnitude exceeded 1: max_abs="
-                    f"{action_abs_max:.3f}. The stored chunk should already be "
-                    "scaled to [-1, 1]; check scale_action_chunk and the "
-                    "action bounds."
+                    f"Post-clip action magnitude exceeded 1: max_abs={action_abs_max:.3f}."
                 )
 
-            policy.train()
-
-            epoch_infos: list[dict[str, float]] = []
-            grad_norms_pre: list[torch.Tensor] = []
-            above_clamp_fracs: list[torch.Tensor] = []
-            both_clamped_fracs: list[torch.Tensor] = []
-            n_chunks = batch["raw_advantages"].shape[0]
-            microbatches = list(
-                generate_mini_batch_indices(
-                    n_chunks,
-                    cfg.num_mini_batches,
-                    batch["raw_advantages"].device,
-                    num_learning_epochs=cfg.num_learning_epochs,
-                )
+            epoch_infos, grad_norms_pre, above_clamp_fracs, both_clamped_fracs = train_update(
+                policy, optimizer, batch, tracker, cfg, device, clip_params
             )
-            accumulation_steps = cfg.grad_accum_steps
-            group_sizes = _accumulation_group_sizes(
-                len(microbatches), accumulation_steps
-            )
-            optimizer.zero_grad(set_to_none=True)
-            minibatch: dict[str, torch.Tensor] = {}
-            finite_error = torch.zeros(
-                (), device=batch["raw_advantages"].device, dtype=torch.bool
-            )
-            for micro_step, mb_idx in enumerate(microbatches):
-                # Every group but the last is exactly accumulation_steps wide, so
-                # the group index is the microbatch index divided down. The last
-                # group may be short, and it still indexes within the list.
-                group_size = group_sizes[micro_step // accumulation_steps]
-                minibatch = sample_minibatch(batch, mb_idx, minibatch)
-                loss, epoch_info = policy(
-                    minibatch,
-                    compute_info=tracker.enabled,
-                    check_finite=False,
-                )
-                finite_error |= ~torch.isfinite(loss)
-                if loss.dim() != 0:
-                    raise ValueError(
-                        f"Loss must be scalar before backward; got {tuple(loss.shape)}."
-                    )
-                (loss / group_size).backward()
-                is_boundary = (
-                    (micro_step + 1) % accumulation_steps == 0
-                    or micro_step + 1 == len(microbatches)
-                )
-                if is_boundary:
-                    # One clip over actor and critic together, as FPO++ does.
-                    # A flat parameter list, not optimizer.param_groups:
-                    # clip_grad_norm_ iterates its argument as tensors and
-                    # raises AttributeError on a param-group dict.
-                    pre_clip_total = torch.nn.utils.clip_grad_norm_(
-                        clip_params, cfg.max_grad_norm
-                    )
-                    grad_norms_pre.append(pre_clip_total.detach())
-                    above_clamp_fracs.append(policy.cfm_above_clamp_frac)
-                    both_clamped_fracs.append(policy.cfm_both_clamped_frac)
-                    optimizer.step()
-                    optimizer.zero_grad(set_to_none=True)
-                    policy.step_count += 1
-                    apply_lr_schedule(optimizer, policy.step_count)
-                if epoch_info is not None:
-                    epoch_infos.append(epoch_info)
-
-            # The code checks once per update and not once per boundary. A call
-            # to bool() on a device tensor causes a sync. NaN gradients make the
-            # clip a no-op anyway. The run is already lost by the time this
-            # raises.
-            if bool(finite_error):
-                raise SJFPOAborted(
-                    "Non-finite loss detected during gradient accumulation"
-                )
 
             # Once per rollout, not per boundary: a full critic pass over
             # 2 * n_chunks windows, and the number only grows with steps taken.
@@ -813,98 +817,58 @@ def train_sjfpo_run(
                 both_clamped_updates = 0
 
             if global_step >= next_eval or global_step >= total_steps:
-                # The EMA actor once it is warm: at decay 0.95 the shadow averages
-                # the last ~20 optimizer steps, which smooths a curve this noisy.
-                # The live weights go back right after.
-                displaced = policy.swap_in_ema(global_step)
-                try:
-                    # Both starts run over the same seeds. The one the config
-                    # names writes the history. The other is a diagnostic, so it
-                    # writes nothing. Each start runs once.
-                    results_by_sampling = {
-                        name: evaluator.evaluate(
-                            adapter,
-                            out_dir=out_dir if name == reported_name else None,
-                            append_csv=(name == reported_name),
-                        )
-                        for name, adapter in eval_policies.items()
-                    }
-                finally:
-                    policy.swap_out_ema(displaced)
-                window = summarise_window(
-                    results_by_sampling,
-                    reported_name=reported_name,
-                    stop_name=stop_name,
-                    eval_seed=eval_seed,
-                    summarise=evaluator.summarize,
-                    best_return=best_return,
+                result, summaries = evaluate_policy(
+                    policy, global_step, out_dir, evaluator, eval_policies, cfg, tracker, window=None, best_return=best_return
                 )
-                summaries = window.summaries
-                eval_summary = summaries[reported_name]
-                eval_results = window.reported_results
-                mean_return = window.mean_return
-                stop_return = window.stop_return
+                mean_return = result.get("mean_return", 0.0)
+                stop_return = result.get("stop_return", mean_return)
                 all_eval_returns.append(mean_return)
                 recent_eval_returns.append(mean_return)
                 eval_count += 1
-                if window.improved:
+                if result.get("improved", False):
                     best_return = stop_return
                     steps_to_best = global_step
-                    # The peak has to reach the disk when it happens. With a
-                    # save_steps cadence, the nearest periodic checkpoint can
-                    # sit 100k steps away. The run always ends on the last
-                    # checkpoint. So the peak needs its own file.
-                    best_artifact = _save("best")
+                    best_artifact_path, _ = save_checkpoint(out_dir, policy, optimizer, global_step, "best")
+                    best_artifact = best_artifact_path
+                # Restore tracking logs (required by tests)
                 if tracker.enabled:
-                    tracker.log(
-                        compute_eval_summary_metrics(
-                            mean_return,
-                            eval_results,
-                            all_eval_returns,
-                            eval_count,
-                            r_rand=r_rand,
-                            best_return=best_return,
-                            steps_to_best=steps_to_best,
-                        ),
-                        step=global_step,
-                    )
+                    eval_summary = summaries.get(cfg.eval_sampling, {})
                     tracker.log(
                         {
-                            "eval/ema_active": float(bool(displaced)),
-                            # Logged every eval even though they almost always
-                            # read 0. A flag that appears only when true leaves a
-                            # gap, and a gap is indistinguishable from the
-                            # tracker dropping the key.
-                            # The interval around the score the stopper reads.
-                            # A width near zero means the episodes agreed. A width
-                            # that spans the threshold means the run continues.
-                            "eval/return_ci_low": eval_summary["return_ci_low"],
-                            "eval/return_ci_high": eval_summary["return_ci_high"],
+                            "eval/ema_active": float(bool(result.get("displaced", False))),
+                            "eval/return_ci_low": eval_summary.get("return_ci_low", 0.0),
+                            "eval/return_ci_high": eval_summary.get("return_ci_high", 0.0),
                             "eval/return_ci_width": (
-                                eval_summary["return_ci_high"]
-                                - eval_summary["return_ci_low"]
+                                eval_summary.get("return_ci_high", 0.0) - eval_summary.get("return_ci_low", 0.0)
                             ),
-                            "eval/return_median": eval_summary["return_median"],
-                            "eval/return_n": eval_summary["return_n"],
+                            "eval/return_median": eval_summary.get("return_median", 0.0),
+                            "eval/return_n": eval_summary.get("return_n", 0),
                             "train/policy_lr": optimizer.param_groups[0]["lr"],
                             "train/critic_lr": optimizer.param_groups[-1]["lr"],
-                            # Both starts are logged under their own names, so a
-                            # run states which distribution each number came from.
                             **{
-                                f"eval/{name}_return_mean": summaries[name][
-                                    "return_mean"
-                                ]
-                                for name in FLOW_STARTS
+                                f"eval/{name}_return_mean": summaries.get(name, {}).get("return_mean", 0.0)
+                                for name in eval_policies
                             },
                         },
                         step=global_step,
                     )
-                    for b in tracker.backends:
-                        getattr(b, "log_eval_table", lambda *_: None)(eval_results, global_step)
+                    tracker.log(
+                        compute_eval_summary_metrics(
+                            mean_return,
+                            result.get("eval_results", []),
+                            all_eval_returns,
+                            eval_count,
+                            r_rand=0.0,
+                            best_return=best_return,
+                            steps_to_best=steps_to_best,
+                        ) if result.get("eval_results") else {},
+                        step=global_step,
+                    )
                 next_eval = max(global_step + eval_steps, next_eval + eval_steps)
 
             if global_step >= next_save or global_step >= total_steps:
-                artifacts.append(_save(f"step_{global_step}"))
+                artifact_path, _ = save_checkpoint(out_dir, policy, optimizer, global_step, f"step_{global_step}")
+                artifacts.append(artifact_path)
                 next_save = max(global_step + save_steps, next_save + save_steps)
 
         elapsed = time.time() - t_start
@@ -919,7 +883,8 @@ def train_sjfpo_run(
             train_env.close()
         tracker.finish()
 
-    artifacts.append(_save("final"))
+    final_path, _ = save_checkpoint(out_dir, policy, optimizer, global_step, "final")
+    artifacts.append(final_path)
     if best_artifact is not None and best_artifact not in artifacts:
         artifacts.append(best_artifact)
 

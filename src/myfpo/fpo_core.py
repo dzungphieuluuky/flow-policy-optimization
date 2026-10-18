@@ -22,12 +22,7 @@ def sample_timesteps(
     device: torch.device | str,
     generator: torch.Generator | None,
 ):
-    """Training timesteps in ``[cfg.min_sampled_timestep,
-    cfg.max_sampled_timestep]``. ``[num_samples]``.
-
-    These are the bounds of the draw, not of the flow. The sampler runs over
-    the full ``[0, 1]`` and never reads these two fields.
-    """
+    """Training timesteps in ``[cfg.min_sampled_timestep, cfg.max_sampled_timestep]``.``[num_samples]``."""
     lo, hi = cfg.min_sampled_timestep, cfg.max_sampled_timestep
     mode = cfg.timestep_sampling_mode
     if mode == "uniform":
@@ -67,12 +62,7 @@ def sample_noise(
     device: torch.device | str,
     generator: torch.Generator | None,
 ):
-    """MC noise. The marginal comes from ``noise_sampling_mode``.
-
-    This is the only definition of the base sample. The CFM path reads it
-    twice. ``compute_mc_xt`` builds ``lerp(noise, action, t)``.
-    ``cfm_target`` returns ``a - eps``.
-    """
+    """MC noise. The marginal comes from ``noise_sampling_mode``."""
     mode = cfg.noise_sampling_mode
     if mode == "normal":
         return torch.randn(*shape, device=device, generator=generator)
@@ -84,27 +74,8 @@ def sample_noise(
 def broadcast_over_mc_axis(
     action: torch.Tensor, eps: torch.Tensor, t
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, tuple[int, ...], int]:
-    """Broadcast the action, the noise, and the per-token timestep over the MC
-    axis. The function returns ``[B*M, ...]``.
-
-    ``t`` has the shape ``[B, M, K, 1]``. Each action step gets its own time.
-    That step keeps the velocity of a token and the target of that token on the
-    same ``t``.
-
-    The flow time is ``t`` everywhere. It was also spelled ``tau`` here and in
-    the policy, while :func:`cfm_loss_weight` and
-    :func:`velocity_to_target_param` already used ``t``. One quantity, two
-    letters. ``eps`` keeps its own name, because that is the paper letter.
-
-    This function no longer accepts a scalar or a per-chunk shape. No caller
-    could reach either one.
-
-    The cast onto the device and dtype of ``eps`` stops a scalar from moving to
-    the CPU in the middle of the graph.
-
-    The function runs no loop and holds no state. It reshapes and broadcasts. The
-    old name ``broadcast_over_mc_axis`` implied iteration.
-    """
+    """Broadcast action, noise, and timestep over the MC axis. Returns ``[B*M, ...]``.
+    ``t`` shape: ``[B, M, K, 1]``."""
     b, num_mc = eps.shape[0], eps.shape[1]
     flow_shape = tuple(action.shape[1:])
     if tuple(eps.shape) != (b, num_mc, *flow_shape):
@@ -135,19 +106,7 @@ def broadcast_over_mc_axis(
 
 
 def clip_velocity(velocity: torch.Tensor, bound: float | None) -> torch.Tensor:
-    """Bound the actor's raw velocity output. FPO++ ``transported_clip_value``.
-
-    The bound applies at every site that produces a raw velocity. Those sites
-    are the training loss, the frozen ``cfm_loss_old`` pass, and the Euler
-    sampler. All three see the same map, so the ratio stays consistent.
-
-    The value ``bound`` of ``None`` does nothing.
-
-    The function was named ``clip_transported``, and its argument was named
-    ``clip``. "Transported" is the FPO++ word for the raw velocity before any
-    projection, so the name did not say what was bounded. The argument named
-    ``clip`` the operation, not the limit.
-    """
+    """Bound the actor's raw velocity output (FPO++ ``transported_clip_value``). ``None`` does nothing."""
     if bound is None:
         return velocity
     return velocity.clamp(-bound, bound)
@@ -161,35 +120,7 @@ def compute_cfm_loss(
     action_is_pad: torch.Tensor | None = None,
     weight: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """CFM squared-velocity loss. FPO++ Eq. 7-8.
-
-    ``weight`` multiplies the squared error before the reduction. This is where
-    FPO++ applies its schedule over t (``flow_model.py:631-634``). The weight
-    applies after the padding mask, so padded rows stay zero.
-
-    ``sample``: flatten the tokens, then reduce with ``cfg.cfm_loss_reduction``.
-    ``token_mean``: divide by action_dim only. Masking cannot move this value.
-    ``sample_and_token``: return the masked sample plus the masked per-token
-    mean. The mode was named ``both``, which did not say both of what.
-    ``scalar``: return one number.
-
-    ``action_is_pad`` has the shape ``[n, horizon]`` and is True where padded.
-    The function zeroes those rows. For every reduction except ``sum``, it then
-    divides by the executed count, so a short chunk keeps the magnitude of a
-    full chunk.
-
-    ``sum`` does not divide. Equation 8 takes the squared norm over the whole
-    chunk. So the loss of a short chunk, and the trust region it carries, both
-    scale with the chunk length.
-
-    The reduction sets the level of the returned loss. ``mean`` stays flat as
-    the chunk grows. ``sqrt`` grows as the square root of the element count.
-    ``sum`` grows as the element count. ``cfm_clamp`` is compared against that
-    level. So one clamp value means different things under the three
-    reductions, and the meaning also moves with ``action_horizon``. Under
-    ``sum`` at a horizon above 4, the level exceeds the default clamp, and
-    :func:`clamp_saturation` then reports a saturated share.
-    """
+    """CFM squared-velocity loss (FPO++ Eq. 7-8). ``reduce_mode`` picks the reduction; ``action_is_pad`` masks padded rows."""
     if v_hat.shape != v_star.shape:
         raise ValueError(
             f"v_hat shape {tuple(v_hat.shape)} != v_star shape {tuple(v_star.shape)}"
@@ -256,18 +187,7 @@ def compute_cfm_loss(
 
 
 def group_cfm_loss(loss: torch.Tensor, group_size: int) -> torch.Tensor:
-    """Average a CFM loss over groups of MC samples. Input ``[n, num_mc, ...]``.
-
-    FPO++ groups the Monte-Carlo axis before it exponentiates
-    (``finetune_online_rl.py:803-806``). The value ``-1`` puts every sample in
-    one group. This is FPO Eq. 9: mean the MC losses, then exponentiate.
-
-    The function groups the loss. It does not group ``old - new``. The two
-    agree because ``exp(mean(old) - mean(new)) == exp(mean(old - new))``.
-
-    The value ``1`` returns the input unchanged. So per-sample ratios cost
-    nothing.
-    """
+    """Average CFM loss over MC groups. ``-1`` = one group over all samples (FPO Eq. 9)."""
     if group_size == 1:
         return loss
     n, num_mc = loss.shape[0], loss.shape[1]
@@ -326,28 +246,7 @@ def sigreg_decorr_loss(z: torch.Tensor, sketch_dim: int = 64) -> torch.Tensor:
 
 
 def cfm_loss_weight(t: torch.Tensor, cfg: SJFPOConfig) -> torch.Tensor:
-    """Return the per-token CFM loss weight. The value broadcasts over the action
-    dimension.
-
-    FPO++ has two ramps. They are ``1 - 0.9t`` and ``1 - 0.99t`` on the time of
-    the reference (``flow_model.py:648-661``). In the reference, ``t=0`` is the
-    action and ``t=1`` is the noise.
-
-    This repo runs time in the other direction. Under the path
-    ``x_t = (1 - t) * eps + t * a``, the action sits at ``t=1`` and the noise at
-    ``t=0``. So the same two schedules read ``0.1 + 0.9t`` and ``0.01 + 0.99t``
-    here. The weight is 1.0 at the action end and least at the noise end.
-
-    A verbatim copy of the reference formula gives the noise end the largest
-    weight. That is the opposite of the intent.
-
-    The mode names state the ENDPOINTS in the order t=0 to t=1. So
-    ``linear_0.1_to_1`` rises from 0.1 at the noise end to 1.0 at the action
-    end. An earlier name read ``1_to_0.1``, which stated the opposite direction.
-
-    ``t`` has the shape ``[..., 1]``. The weight therefore broadcasts over the
-    action dimensions without a change.
-    """
+    """Per-token CFM loss weight (broadcasts over action dims). Time direction is reversed vs. reference: weight rises to 1.0 at action end (t=1)."""
     mode = cfg.cfm_loss_weight_from_t
     if mode == "constant":
         return torch.ones_like(t)
@@ -359,25 +258,7 @@ def cfm_loss_weight(t: torch.Tensor, cfg: SJFPOConfig) -> torch.Tensor:
 def velocity_to_target_param(
     v: torch.Tensor, x_t: torch.Tensor, t: torch.Tensor, cfg: SJFPOConfig
 ) -> torch.Tensor:
-    """Re-express a velocity in the space ``cfg.cfm_loss_target`` compares.
-
-    The network always predicts the velocity. Only the loss changes.
-
-    On the straight path ``x_t = (1 - t) * eps + t * a`` and ``v = a - eps``.
-    At the true velocity, every mode below returns its own target exactly.
-    ``x_t + (1 - t) * v == a`` and ``x_t - t * v == eps``. That identity is
-    what the test checks.
-
-    FPO++ reaches the same three endpoints by also changing what the network
-    predicts (``flow_network_output_param``). Holding that at ``u`` here is the
-    smaller change. It also leaves ``transported_clip_value`` clipping one
-    thing.
-
-    The function was named ``velocity_to_target_param``. It predicts nothing. It takes a
-    prediction the network already made and maps it. FPO++ names the parameter
-    this map targets ``flow_network_output_param``, so the new name says which
-    parameter of the flow network the value stands in for.
-    """
+    """Map velocity into the target space of ``cfg.cfm_loss_target``. Only the loss compares; network predicts velocity."""
     mode = cfg.cfm_loss_target
     if mode == "velocity":
         return v
@@ -434,21 +315,7 @@ def clamp_saturation(
     cfm_loss_new: torch.Tensor,
     cfg: SJFPOConfig,
 ) -> torch.Tensor:
-    """The share of elements whose two losses both sit above ``cfm_clamp``.
-
-    ``compute_policy_ratio`` clamps both losses at ``cfm_clamp``. When both
-    exceed it, both clamp to the same bound. The delta becomes zero. The ratio
-    becomes exactly 1.0. The surrogate returns the advantage, so the policy
-    receives no gradient. The critic keeps training.
-
-    This function reports that share. It is the direct cause, not the level.
-    A run can sit above ``cfm_clamp`` and still keep a gradient, when the old
-    loss is below it. So ``cfm_above_clamp_frac`` alone does not show the
-    failure.
-
-    The input shapes must match ``compute_policy_ratio``'s, so that a caller
-    measures the pair that the ratio clamps.
-    """
+    """Share of elements where both old and new losses exceed ``cfm_clamp`` (ratio pinned to 1, zero gradient)."""
     if cfm_loss_old.shape != cfm_loss_new.shape:
         raise ValueError(
             f"cfm_loss_old shape {tuple(cfm_loss_old.shape)} != "
@@ -465,19 +332,7 @@ def compute_policy_ratio(
     cfg: SJFPOConfig,
     advantage: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Return exp(cfm_loss_old - cfm_loss_new). This ratio takes the place of a
-    log-probability ratio.
-
-    The function runs on each element. So the caller sets the granularity
-    through the shape it passes in. Per-chunk granularity passes the MC means,
-    so one ratio covers a whole chunk. Per-pair granularity passes one loss per
-    pair. Per-token granularity passes one loss per token.
-
-    The function clamps both losses. It then clamps ``cfm_loss_new`` harder on
-    A<0, if the configuration asks for it. Then it caps the log-ratio on one
-    side with a straight-through estimator. The forward pass sees the cap. The
-    backward pass sees the original value.
-    """
+    """Return ``exp(cfm_loss_old - cfm_loss_new)``, with clamping and straight-through cap on delta."""
     old = torch.clamp(cfm_loss_old, max=cfg.cfm_clamp)
     new = torch.clamp(cfm_loss_new, max=cfg.cfm_clamp)
     if cfg.cfm_loss_clamp_negative_advantages and advantage is not None:
@@ -500,18 +355,7 @@ def sample_action(
     eps: torch.Tensor,
     device: torch.device | str | None,
 ):
-    """Euler-sample the flow from t=0 (noise) to t=1 (data). The caller draws
-    ``eps``.
-
-    The argument ``num_steps`` is the only integrator this module offers. It was
-    named ``num_inference_steps``, which suggested a second integrator next to
-    ``num_euler_steps``. There is one.
-
-    ``device`` has no default, on purpose. The function rejects ``None`` below.
-    It does not treat ``None`` as a request for the CPU. The sampler runs on the
-    rollout path. There, the device is the device the policy runs on. It is not
-    something to infer.
-    """
+    """Euler-sample flow from t=0 (noise) to t=1 (data). ``device`` is required explicitly (no default)."""
     if device is None:
         raise ValueError("device must be provided explicitly")
     if tuple(eps.shape) != tuple(shape):
