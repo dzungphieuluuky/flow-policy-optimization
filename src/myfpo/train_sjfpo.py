@@ -488,7 +488,6 @@ def train_sjfpo_run(
     next_eval = eval_steps
     next_save = save_steps
 
-    eval_state[2] = 0
     above_clamp_updates = 0
     both_clamped_updates = 0
     best_return: float | None = None
