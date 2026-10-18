@@ -10,27 +10,9 @@ from lerobot.optim import AdamWConfig
 
 __all__ = ["ACTOR_ARCHITECTURES", "FLOW_STARTS", "SJFPOConfig"]
 
-# The actor networks this repo ships. Each takes the same first three
-# arguments, so ``actor_arch`` swaps the trunk and nothing else.
-#
-# The value "mlp" used to be here. It flattened the chunk into one vector, so a
-# per-token timestep could not modulate per token. It also had three hidden
-# layers, Mish, and no residual and no normalisation. Both reference networks
-# for chunked action prediction mix across action steps: Diffusion Policy with a
-# temporal Conv1d (kernel_size=5), ACT with self-attention over the chunk.
 ACTOR_ARCHITECTURES = ("dit", "resmlp")
 
-# ``dit_heads`` serves both actors. The resmlp block uses the same self-attention
-# as the DiT block, so one head count keeps the two comparable and keeps the
-# config surface one field smaller.
 
-# The two values a flow start may take. They cover the config fields, the
-# tracker keys, and _EvalPolicy in train_sjfpo. One vocabulary, so a reader does
-# not meet "zero", "stochastic", "noise", and "zero_sampling" for the same two
-# choices.
-#
-# The value "zero_start" means the Euler chain starts at eps=0.
-# The value "noise_start" means the chain starts at a drawn eps.
 FLOW_STARTS = ("zero_start", "noise_start")
 
 
@@ -66,19 +48,10 @@ class SJFPOConfig(PreTrainedConfig):
 
     num_steps_zero_start: int = 10
     num_steps_noise_start: int = 10
-    # The bounds of the TRAINING draw only. The flow itself always runs over the
-    # full [0, 1]: ``sample_action`` builds its grid with ``linspace(0, 1, ...)``
-    # and never reads these. The fields were named ``min_timestep`` and
-    # ``max_timestep``, which read as the range of the flow.
     min_sampled_timestep: float = 0.005
     max_sampled_timestep: float = 0.995
     timestep_sampling_mode: str = "fpo_beta"
     noise_sampling_mode: str = "normal"
-    # The inverse-CDF exponent for ``fpo_beta``. At 1.0 the branch reduces to
-    # ``lo + (hi - lo) * u``, which is ``uniform`` bit for bit, so the default
-    # used to name a law it did not sample. The value is 2.0, so the default now
-    # draws the skewed law the mode asks for. Set it back to 1.0 to get uniform
-    # on purpose, and the constructor warning says so.
     timestep_inverse_cdf_beta: float = 2.0
     timestep_beta_alpha: float = 2.0
     timestep_beta_beta: float = 2.0
@@ -104,10 +77,6 @@ class SJFPOConfig(PreTrainedConfig):
     critic_hidden_dim: int | None = None
     critic_num_layers: int = 2
     normalize_advantage: bool = True
-    # The advantage clamp, split by sign. The code applies
-    # ``clamp(-advantage_clamp_neg, advantage_clamp_pos)``. The field was a
-    # 2-tuple named ``advantage_clamp``, so the order lived only in a comment on
-    # the unpack and in an error string. Two named fields cannot be transposed.
     advantage_clamp_neg: float = 100.0
     advantage_clamp_pos: float = 100.0
     value_loss_coef: float = 1.0
@@ -125,8 +94,6 @@ class SJFPOConfig(PreTrainedConfig):
     dit_depth: int = 3
     dit_heads: int = 2
     dit_mlp_ratio: float = 2.0
-    # The resmlp actor. The block count and the unit count are separate, because
-    # Wang et al. (2025) count depth in Dense layers and fix the unit at four.
     resmlp_blocks: int = 2
     resmlp_units: int = 4
     resmlp_hidden_mult: float = 2.0
@@ -143,25 +110,7 @@ class SJFPOConfig(PreTrainedConfig):
     ema_warmup_steps: int = 500
 
     eval_max_episodes: int = 50
-    # Which flow start the reported score uses. "zero_start" starts the Euler
-    # chain at eps=0, so the flow runs from the origin. "noise_start" starts it
-    # at a drawn eps, so the flow runs from the prior that training collects
-    # from.
-    #
-    # Training collects with the noise start. The critic bootstraps from the
-    # noise start. So "noise_start" is the number that answers "what does the
-    # policy that training produced return". "zero_start" is the deployment
-    # number.
-    #
-    # The value "noise_start" is the default. It is the distribution the run
-    # optimizes. A reported score from the other distribution measures a policy
-    # that training never optimized.
     eval_sampling: str = "noise_start"
-    # Which flow start decides the best checkpoint. It must name a value the
-    # evaluator produces. The stopper needs the distribution that training
-    # optimizes, so this default is "noise_start" too. A run can report
-    # "zero_start" and keep its best on "noise_start", which separates the two
-    # questions.
     stop_eval_sampling: str = "noise_start"
 
     log_drift_diagnostics: bool = True
@@ -346,9 +295,6 @@ class SJFPOConfig(PreTrainedConfig):
         if self.timestep_inverse_cdf_beta <= 0:
             raise ValueError("timestep_inverse_cdf_beta must be > 0")
         if self.timestep_inverse_cdf_beta == 1.0 and self.timestep_sampling_mode == "fpo_beta":
-            # The closed form is lo + (hi - lo) * (1 - (1 - u) ** (1 / 1.0)).
-            # That reduces to lo + (hi - lo) * u. So this mode draws the same
-            # law as "uniform". The name promises a non-uniform draw.
             warnings.warn(
                 "timestep_inverse_cdf_beta=1.0 makes timestep_sampling_mode="
                 "'fpo_beta' draw the same law as 'uniform'. Choose a beta "
