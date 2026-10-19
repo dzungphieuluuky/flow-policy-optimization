@@ -230,7 +230,7 @@ def test_above_clamp_frac_reads_the_tensor_the_ratio_actually_clamps(monkeypatch
     for bound in (2.0, 1.0, 0.8, 0.6, 0.5):
         policy, batch, _ = _policy_and_batch(bound)
         clamped.clear()
-        policy(batch, compute_info=True)
+        policy.loss_with_info(batch)
         reported = float(policy.cfm_above_clamp_frac)
         truth = [
             float((new > bound).float().mean()) for new in clamped
@@ -271,7 +271,7 @@ def test_both_clamped_frac_and_above_clamp_frac_read_the_same_pair():
     """
     for bound in (2.0, 1.0, 0.8, 0.6, 0.5, 20.0):
         policy, batch, _ = _policy_and_batch(bound)
-        policy(batch, compute_info=True)
+        policy.loss_with_info(batch)
         above = float(policy.cfm_above_clamp_frac)
         both = float(policy.cfm_both_clamped_frac)
         assert above >= both, (

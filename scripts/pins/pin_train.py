@@ -53,7 +53,7 @@ def run_one(cfg) -> dict:
     """One forward pass and one backward pass, flattened to plain numbers."""
     policy = build(cfg)
     batch = fixed_batch(policy)
-    loss, info = policy(batch, compute_info=True)
+    loss, info = policy.loss_with_info(batch)
     loss.backward()
 
     out = {"loss": float(loss.detach())}

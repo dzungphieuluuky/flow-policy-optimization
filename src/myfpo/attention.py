@@ -71,7 +71,7 @@ class SelfAttention(nn.Module):
 
 
 class DiTBlock(nn.Module):
-    """Pre-norm DiT block, adaLN-Zero. ``return_stats=True`` adds a diagnostics dict."""
+    """Pre-norm DiT block, adaLN-Zero. ``forward_with_stats`` adds a diagnostics dict."""
 
     def __init__(self, hidden_dim: int, n_heads: int, mlp_ratio: float):
         super().__init__()
@@ -89,11 +89,32 @@ class DiTBlock(nn.Module):
         nn.init.constant_(self.adaLN.fc2.bias, 0.0)
 
     def forward(
-        self, x: torch.Tensor, c: torch.Tensor, return_stats: bool = False
-    ) -> torch.Tensor | tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        self, x: torch.Tensor, c: torch.Tensor
+    ) -> torch.Tensor:
         """``[B, K, H]`` action tokens, with adaLN conditioning on ``c``. ``c`` is
         ``[B, H]`` for a whole chunk or ``[B, K, H]`` for per-token time.
         """
+        out, _ = self._forward(x, c)
+        return out
+
+    def forward_with_stats(
+        self, x: torch.Tensor, c: torch.Tensor
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        """The same block, plus the adaLN gate and scale diagnostics."""
+        out, (gate_msa, gate_mlp, scale_msa, scale_mlp) = self._forward(x, c)
+        with torch.inference_mode():
+            stats = {
+                "gate_msa": rms(gate_msa),
+                "gate_mlp": rms(gate_mlp),
+                "scale_msa": rms(1.0 + scale_msa),
+                "scale_mlp": rms(1.0 + scale_mlp),
+            }
+        return out, stats
+
+    def _forward(
+        self, x: torch.Tensor, c: torch.Tensor
+    ) -> tuple[torch.Tensor, tuple[torch.Tensor, ...]]:
+        """The block itself, with the adaLN parts the diagnostics read."""
         if x.dim() != 3:
             raise ValueError(f"x must have shape [B, K, H], got {tuple(x.shape)}")
         b = x.shape[0]
@@ -118,16 +139,5 @@ class DiTBlock(nn.Module):
         out = x + gate_mlp * self.mlp(
             modulate(self.norm2(x), shift_mlp, scale_mlp)
         )
-
-        if not return_stats:
-            return out
-
-        with torch.inference_mode():
-            stats = {
-                "gate_msa": rms(gate_msa),
-                "gate_mlp": rms(gate_mlp),
-                "scale_msa": rms(1.0 + scale_msa),
-                "scale_mlp": rms(1.0 + scale_mlp),
-            }
-        return out, stats
+        return out, (gate_msa, gate_mlp, scale_msa, scale_mlp)
 

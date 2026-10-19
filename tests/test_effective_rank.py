@@ -45,11 +45,10 @@ def test_weight_magnitude_is_the_mean_absolute_value_not_the_sum():
 def test_the_stats_forward_returns_both_probes_on_one_device():
     """weight_magnitude is the only reduction not coming from h, so it is the only one that can disagree."""
     model = _flow_model(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
-    _, stats = model(
+    _, stats = model.forward_with_stats(
         torch.randn(8, 16, 3),
         torch.rand(8),
         torch.randn(8, HIDDEN),
-        return_stats=True,
     )
     devices = {v.device.type for v in stats.values()}
     assert len(devices) == 1, f"stats span {devices}"

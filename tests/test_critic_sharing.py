@@ -89,7 +89,7 @@ def test_both_settings_pass_a_rollout_and_a_forward():
         batch["behavior_cfm_loss"] = old
         batch["behavior_cfm_loss_token"] = old_tok
 
-        loss, _ = policy(batch, compute_info=False, check_finite=False)
+        loss = policy(batch, check_finite=False)
         loss.backward()  # already unpacked: forward returns (loss, info).
         assert torch.isfinite(loss), share
         assert policy.critic.condition_dim == (HIDDEN if share else None), share
@@ -114,7 +114,7 @@ def test_the_encoder_gets_gradient_from_the_critic_too():
     batch["behavior_cfm_loss"] = old
     batch["behavior_cfm_loss_token"] = old_tok
 
-    policy(batch, compute_info=False, check_finite=False)[0].backward()
+    policy(batch, check_finite=False).backward()
     grads = [p.grad for p in policy.encoder.parameters() if p.grad is not None]
     assert grads, "no encoder gradient at all"
     assert any(float(g.abs().sum()) > 0 for g in grads), "encoder gradient is all zero"

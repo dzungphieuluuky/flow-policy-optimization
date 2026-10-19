@@ -507,13 +507,9 @@ class MyfpoPolicy(PreTrainedPolicy):
         self,
         batch: dict[str, torch.Tensor],
         reduction: str = "mean",
-        compute_info: bool = True,
         check_finite: bool = True,
-    ) -> tuple[torch.Tensor, dict | None]:
+    ) -> torch.Tensor:
         """Compute the ASPO policy loss and the MSE value loss.
-
-        Return ``(loss, info)``. ``info`` is ``None`` when ``compute_info`` is
-        false; the loss is identical either way.
 
         Seven phases, in order:
           1. load and shape-check the batch
@@ -523,7 +519,36 @@ class MyfpoPolicy(PreTrainedPolicy):
           5. ratio, ASPO surrogate, chunk-masked policy loss
           6. the critic and the value loss
           7. assemble, then optionally raise on a non-finite loss
+
+        Use :meth:`loss_with_info` for the diagnostics; they cost a second
+        forward pass, so they are not computed here.
         """
+        loss, _ = self._loss_and_info(
+            batch, reduction, check_finite, compute_info=False
+        )
+        return loss
+
+    def loss_with_info(
+        self,
+        batch: dict[str, torch.Tensor],
+        reduction: str = "mean",
+        check_finite: bool = True,
+    ) -> tuple[torch.Tensor, dict[str, float]]:
+        """The loss and the metric dict. The loss is identical to :meth:`forward`."""
+        loss, info = self._loss_and_info(
+            batch, reduction, check_finite, compute_info=True
+        )
+        return loss, info
+
+    def _loss_and_info(
+        self,
+        batch: dict[str, torch.Tensor],
+        reduction: str,
+        check_finite: bool,
+        *,
+        compute_info: bool,
+    ) -> tuple[torch.Tensor, dict[str, float] | None]:
+        """The shared body. ``compute_info`` picks the metrics pass."""
         cfg = self.config
         device = next(self.parameters()).device
         storage_dtype = resolve_storage_dtype(device)
@@ -612,11 +637,10 @@ class MyfpoPolicy(PreTrainedPolicy):
         if compute_info:
             with torch.inference_mode(), autocast_context(device):
                 probe = max(1, cfg.hidden_dim // cfg.action_horizon)
-                _, cond_stats = self.actor(
+                _, cond_stats = self.actor.forward_with_stats(
                     x_t_flat[:probe],
                     actor_t[:probe],
                     cond_flat[:probe],
-                    return_stats=True,
                 )
 
         with torch.autocast(device_type=device.type, enabled=False):

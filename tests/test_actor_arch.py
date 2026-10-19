@@ -133,13 +133,13 @@ def test_the_policy_builds_the_configured_actor():
 
 
 def test_a_tracked_run_works():
-    """``compute_info=True`` unpacks actor stats, so the actor must honour it."""
+    """``loss_with_info`` unpacks actor stats, so the actor must honour it."""
     policy = build_policy(
         OBS, ACT, _cfg(actor_arch="dit", compile=False), device="cpu",
         action_low=[-1.0] * ACT, action_high=[1.0] * ACT,
     )
     batch = make_batch(policy, obs_dim=OBS, action_dim=ACT, horizon=HORIZON)
-    loss, info = policy(batch, compute_info=True)
+    loss, info = policy.loss_with_info(batch)
     assert torch.isfinite(loss).all()
     assert "mean_log_ratio" in info
     assert any(k.startswith("cond_") for k in info)

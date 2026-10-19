@@ -71,7 +71,7 @@ def test_same_weights_and_same_pairs_give_ratio_one():
     states = torch.randn(n, policy.config.n_obs_steps, OBS)
     actions = torch.randn(n, HORIZON, ACT)
     t, eps = _pairs(policy, n)
-    _, info = policy(_batch(policy, states, actions, t, eps), compute_info=True)
+    _, info = policy.loss_with_info(_batch(policy, states, actions, t, eps))
     assert info["mean_log_ratio"] == 0.0
     assert info["log_ratio_max"] == 0.0
 
@@ -87,7 +87,7 @@ def test_swapped_pairs_move_the_ratio():
     batch = _batch(policy, states, actions, t, eps)
     batch["mc_t"] = torch.rand_like(t)
     batch["mc_eps"] = torch.randn_like(eps)
-    _, info = policy(batch, compute_info=True)
+    _, info = policy.loss_with_info(batch)
     assert info["log_ratio_max"] > 0.0
 
 
@@ -101,7 +101,7 @@ def test_a_misshapen_stored_timestep_raises():
     batch = _batch(policy, states, actions, t, eps)
     batch["mc_t"] = torch.ones(n, MC, HORIZON + 1, 1)
     with pytest.raises(ValueError, match="mc_t shape"):
-        policy(batch, compute_info=False)
+        policy(batch)
 
 
 def test_the_frozen_pass_is_deterministic():

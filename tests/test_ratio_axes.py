@@ -103,8 +103,8 @@ def _recorded(cfg):
 
     M.compute_policy_ratio, M.compute_aspo_surrogate = ratio_spy, surrogate_spy
     try:
-        # compute_info=True: the metric pass reads the same delta, so a branch.
-        policy(batch, compute_info=True, check_finite=False)
+        # loss_with_info: the metric pass reads the same delta, so a branch.
+        policy.loss_with_info(batch, check_finite=False)
     finally:
         M.compute_policy_ratio = real_ratio
         M.compute_aspo_surrogate = real_surrogate
@@ -169,7 +169,7 @@ def _per_sample_surrogate(policy, batch):
 
     M.compute_aspo_surrogate = spy
     try:
-        losses, _ = policy(batch, reduction="none", compute_info=False, check_finite=False)
+        losses = policy(batch, reduction="none", check_finite=False)
     finally:
         M.compute_aspo_surrogate = real
     return losses, captured[-1]
@@ -217,8 +217,8 @@ def test_per_chunk_and_per_action_disagree_once_the_actor_moves():
     losses = []
     for make_cfg in (per_chunk, per_action):
         policy, batch = _policy_and_batch(make_cfg())
-        per_chunk_loss, _ = policy(
-            batch, reduction="none", compute_info=False, check_finite=False
+        per_chunk_loss = policy(
+            batch, reduction="none", check_finite=False
         )
         losses.append(per_chunk_loss)
     assert not torch.allclose(losses[0], losses[1])

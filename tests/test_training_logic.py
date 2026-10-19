@@ -26,7 +26,7 @@ def test_training_logic():
         "behavior_cfm_loss_token": torch.ones(1, cfg.num_mc_samples, cfg.action_horizon),
         "normalizer_observations": torch.zeros(10, 5),
     }
-    loss, _ = policy(batch, compute_info=True)
+    loss = policy(batch)
     assert loss.dim() == 0, f"loss must be scalar, got {loss.shape}"
     assert torch.isfinite(loss).all(), "loss must be finite"
     loss.backward()

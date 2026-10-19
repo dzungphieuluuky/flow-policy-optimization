@@ -323,7 +323,11 @@ def train_update(policy, optimizer, batch, tracker, cfg, grad_groups):
     for micro_step, mb_idx in enumerate(microbatches):
         group_size = group_sizes[micro_step // accumulation_steps]
         minibatch = sample_minibatch(batch, mb_idx, minibatch)
-        loss, epoch_info = policy(minibatch, compute_info=tracker.enabled, check_finite=False)
+        if tracker.enabled:
+            loss, epoch_info = policy.loss_with_info(minibatch, check_finite=False)
+        else:
+            loss = policy(minibatch, check_finite=False)
+            epoch_info = None
         finite_error |= ~torch.isfinite(loss)
         if loss.dim() != 0:
             raise ValueError(f"Loss must be scalar before backward; got {tuple(loss.shape)}.")

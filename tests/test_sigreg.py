@@ -93,10 +93,10 @@ def test_zero_coef_adds_nothing():
     policy = _policy(sigreg_mode="weak", sigreg_coef=0.0)
     torch.manual_seed(0)
     batch = _policy_batch(policy)
-    loss_on, info_on = policy(batch, compute_info=True)
+    loss_on, info_on = policy.loss_with_info(batch)
     assert torch.isfinite(loss_on).all()
     policy.config = dataclasses.replace(policy.config, sigreg_mode="none")
-    loss_off, info_off = policy(batch, compute_info=True)
+    loss_off, info_off = policy.loss_with_info(batch)
     assert float(loss_on) == float(loss_off)
     assert info_off["sigreg_raw"] == 0.0
     assert math.isfinite(info_on["sigreg_raw"])
@@ -106,7 +106,7 @@ def test_positive_coef_runs_and_reports():
     """A live coef keeps the loss finite and the raw term visible."""
     policy = _policy(sigreg_mode="weak", sigreg_coef=1e-3)
     torch.manual_seed(0)
-    loss, info = policy(_policy_batch(policy), compute_info=True)
+    loss, info = policy.loss_with_info(_policy_batch(policy))
     assert torch.isfinite(loss).all()
     assert math.isfinite(info["sigreg_raw"])
 
@@ -115,6 +115,6 @@ def test_penalty_reaches_the_encoder():
     """The gradient lands in encoder weights, which is the whole point."""
     policy = _policy(sigreg_mode="weak", sigreg_coef=1.0)
     torch.manual_seed(0)
-    loss, _ = policy(_policy_batch(policy), compute_info=True)
+    loss = policy(_policy_batch(policy))
     loss.backward()
     assert policy.encoder.net.fc1.weight.grad is not None

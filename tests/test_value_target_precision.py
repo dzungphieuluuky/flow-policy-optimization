@@ -25,7 +25,7 @@ def test_source_does_not_cast_the_value_target_to_storage_dtype():
     """Guard the fix itself."""
     import inspect
 
-    src = inspect.getsource(MyfpoPolicy.forward)
+    src = inspect.getsource(MyfpoPolicy._loss_and_info)
     value_block = src[src.index("raw_value_pred = self.critic") :]
     value_block = value_block[: value_block.index("if reduction ==")]
     assert "storage_dtype" not in value_block, (

@@ -75,9 +75,28 @@ class _FlowActorBase(nn.Module):
         x_t: torch.Tensor,
         t: torch.Tensor | float,
         condition: torch.Tensor,
-        return_stats: bool = False,
-    ) -> torch.Tensor | tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    ) -> torch.Tensor:
         """Predict the velocity from the token actions and the per-token times."""
+        out, _ = self._forward(x_t, t, condition, collect_stats=False)
+        return out
+
+    def forward_with_stats(
+        self,
+        x_t: torch.Tensor,
+        t: torch.Tensor | float,
+        condition: torch.Tensor,
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        """The same forward, plus the per-block and conditioning diagnostics."""
+        return self._forward(x_t, t, condition, collect_stats=True)
+
+    def _forward(
+        self,
+        x_t: torch.Tensor,
+        t: torch.Tensor | float,
+        condition: torch.Tensor,
+        *,
+        collect_stats: bool,
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor] | None]:
         if x_t.dim() != 3 or x_t.shape[2] != self.action_dim:
             raise ValueError(f"x_t must have shape [B, K, {self.action_dim}], got {tuple(x_t.shape)}")
         if condition.dim() != 2 or condition.shape[0] != x_t.shape[0] or condition.shape[1] != self.hidden_dim:
@@ -117,14 +136,14 @@ class _FlowActorBase(nn.Module):
                 shift, scale = shift[:, None, :], scale[:, None, :]
             return self.out(modulate(self.norm_out(hidden), shift, scale))
 
-        if not return_stats:
+        if not collect_stats:
             for block in self.blocks:
                 h = block(h, c)
-            return decode(h)
+            return decode(h), None
 
         block_stats: list[dict[str, torch.Tensor]] = []
         for block in self.blocks:
-            h, s = block(h, c, return_stats=True)
+            h, s = block.forward_with_stats(h, c)
             block_stats.append(s)
         stats = self._collect_stats(temb, condition, c, h, block_stats)
         return decode(h), stats
@@ -242,9 +261,30 @@ class ResMLPBlock(nn.Module):
         nn.init.constant_(self.adaLN.fc2.bias, 0.0)
 
     def forward(
-        self, x: torch.Tensor, c: torch.Tensor, return_stats: bool = False
-    ) -> torch.Tensor | tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        self, x: torch.Tensor, c: torch.Tensor
+    ) -> torch.Tensor:
         """``[B, K, H]`` in, ``[B, K, H]`` out. ``c`` is ``[B, H]`` or ``[B, K, H]``."""
+        out, _ = self._forward(x, c)
+        return out
+
+    def forward_with_stats(
+        self, x: torch.Tensor, c: torch.Tensor
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        """The same block, plus the adaLN gate and scale diagnostics."""
+        out, (gate_msa, gate_mlp, scale_msa, scale_mlp) = self._forward(x, c)
+        with torch.inference_mode():
+            stats = {
+                "gate_msa": rms(gate_msa),
+                "gate_mlp": rms(gate_mlp),
+                "scale_msa": rms(1.0 + scale_msa),
+                "scale_mlp": rms(1.0 + scale_mlp),
+            }
+        return out, stats
+
+    def _forward(
+        self, x: torch.Tensor, c: torch.Tensor
+    ) -> tuple[torch.Tensor, tuple[torch.Tensor, ...]]:
+        """The block itself, with the adaLN parts the diagnostics read."""
         if x.dim() != 3:
             raise ValueError(f"x must have shape [B, K, H], got {tuple(x.shape)}")
         b = x.shape[0]
@@ -271,16 +311,7 @@ class ResMLPBlock(nn.Module):
         x = x + gate_msa * self.attn(h)
         out = x + gate_mlp * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
 
-        if not return_stats:
-            return out
-        with torch.inference_mode():
-            stats = {
-                "gate_msa": rms(gate_msa),
-                "gate_mlp": rms(gate_mlp),
-                "scale_msa": rms(1.0 + scale_msa),
-                "scale_mlp": rms(1.0 + scale_mlp),
-            }
-        return out, stats
+        return out, (gate_msa, gate_mlp, scale_msa, scale_mlp)
 
 
 class MyfpoFlowResMLP(_FlowActorBase):
