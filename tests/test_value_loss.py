@@ -2,7 +2,7 @@
 
 import torch
 
-from myfpo.modeling_sjfpo import compute_value_loss
+from myfpo.modeling import compute_value_loss
 
 
 def test_it_is_the_squared_error():
@@ -37,7 +37,7 @@ def test_there_is_no_clipped_value_branch():
     """Deliberate: the release reports value clipping adds instability here."""
     import inspect
 
-    import myfpo.modeling_sjfpo as m
+    import myfpo.modeling as m
 
     src = inspect.getsource(m.compute_value_loss)
     assert "clamp" not in src, "a clipped branch crept back into the value loss"

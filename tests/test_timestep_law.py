@@ -10,7 +10,7 @@ import math
 
 import torch
 
-from myfpo.configuration_sjfpo import SJFPOConfig
+from myfpo.configuration import SJFPOConfig
 from myfpo.fpo_core import sample_timesteps
 
 # Enough draws that the sampling error sits far below the shape differences

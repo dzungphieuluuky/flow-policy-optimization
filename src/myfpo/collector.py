@@ -11,7 +11,7 @@ from collections.abc import Callable
 import numpy as np
 import torch
 
-from myfpo.configuration_sjfpo import SJFPOConfig
+from myfpo.configuration import SJFPOConfig
 
 __all__ = ["RolloutBuffer", "collect_chunks_vec"]
 

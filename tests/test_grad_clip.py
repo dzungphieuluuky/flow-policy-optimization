@@ -14,9 +14,9 @@ import torch
 from lerobot.configs.policies import PolicyFeature
 from lerobot.configs.types import FeatureType
 
-from myfpo.configuration_sjfpo import SJFPOConfig
-from myfpo.modeling_sjfpo import SJFPOPolicy
-from myfpo.train_sjfpo import split_grad_params
+from myfpo.configuration import SJFPOConfig
+from myfpo.modeling import SJFPOPolicy
+from myfpo.training import split_grad_params
 
 OBS, ACT, HORIZON, STEPS = 6, 3, 8, 4
 

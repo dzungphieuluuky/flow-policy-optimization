@@ -8,8 +8,8 @@ import torch
 from lerobot.configs.policies import PolicyFeature
 from lerobot.configs.types import FeatureType
 
-from myfpo.configuration_sjfpo import SJFPOConfig
-from myfpo.train_sjfpo import build_policy
+from myfpo.configuration import SJFPOConfig
+from myfpo.training import build_policy
 from test_collector_batch_equivalence import FakeVecEnv
 
 OBS, ACT, HORIZON, EXECUTE = 5, 3, 8, 4

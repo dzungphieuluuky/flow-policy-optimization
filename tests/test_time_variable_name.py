@@ -40,7 +40,7 @@ def test_no_module_binds_or_names_tau_anymore():
 
 def test_the_batch_key_pairs_with_eps():
     """``mc_t`` next to ``mc_eps``, so the pair reads as one draw."""
-    src = (SRC / "modeling_sjfpo.py").read_text()
+    src = (SRC / "modeling.py").read_text()
     assert '"mc_t"' in src and '"mc_eps"' in src
     assert "mc_t" in src and "mc_eps" in src and "Mandatory paired reuse" in src
 
@@ -73,7 +73,7 @@ def test_the_two_sampling_helpers_are_named_for_what_they_return():
     assert sample_mc_timesteps.__name__ == "sample_mc_timesteps"
     # The wrapper adds the trailing axis and the MC axes.
     out = sample_mc_timesteps(
-        __import__("myfpo.configuration_sjfpo", fromlist=["SJFPOConfig"]).SJFPOConfig(),
+        __import__("myfpo.configuration", fromlist=["SJFPOConfig"]).SJFPOConfig(),
         2,
         "cpu",
     )

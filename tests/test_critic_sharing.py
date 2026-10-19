@@ -8,9 +8,9 @@ import torch
 from lerobot.configs.policies import PolicyFeature
 from lerobot.configs.types import FeatureType
 
-from myfpo.configuration_sjfpo import SJFPOConfig
+from myfpo.configuration import SJFPOConfig
 from myfpo.critic import Critic
-from myfpo.train_sjfpo import build_policy
+from myfpo.training import build_policy
 
 OBS, ACT, HORIZON, HIDDEN = 6, 3, 8, 32
 

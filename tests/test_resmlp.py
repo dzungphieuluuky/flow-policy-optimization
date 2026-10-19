@@ -27,14 +27,14 @@ from lerobot.configs.policies import PolicyFeature
 from lerobot.configs.types import FeatureType
 from fixtures import make_batch
 
-from myfpo.configuration_sjfpo import ACTOR_ARCHITECTURES, SJFPOConfig
+from myfpo.configuration import ACTOR_ARCHITECTURES, SJFPOConfig
 from myfpo.flow import (
     ResidualMLP,
     ResMLPBlock,
     SJFPOFlowModel,
     SJFPOFlowResMLP,
 )
-from myfpo.train_sjfpo import build_policy
+from myfpo.training import build_policy
 
 OBS, ACT, HORIZON, HIDDEN, TIME_EMBED = 6, 3, 8, 32, 16
 HEADS = 2

@@ -5,13 +5,13 @@ import collections
 import dataclasses
 from pathlib import Path
 
-from myfpo.configuration_sjfpo import SJFPOConfig
+from myfpo.configuration import SJFPOConfig
 
 CONFIG_PATH = (
     Path(__file__).resolve().parents[1]
     / "src"
     / "myfpo"
-    / "configuration_sjfpo.py"
+    / "configuration.py"
 )
 
 
@@ -71,4 +71,4 @@ def test_no_spectral_survives_in_the_config():
     """The prior is gone: no field, no validator, no comment inviting it back."""
     text = CONFIG_PATH.read_text()
     for gone in ("noise_scaling_mode", "noise_scaling_beta", "freq_weighted", "DCT"):
-        assert gone not in text, f"{gone} still in configuration_sjfpo.py"
+        assert gone not in text, f"{gone} still in configuration.py"

@@ -37,7 +37,7 @@ import numpy as np
 import draccus
 
 from myfpo.config import KNOWN_ENVS
-from myfpo.configuration_sjfpo import SJFPOConfig
+from myfpo.configuration import SJFPOConfig
 from myfpo.evaluator import bootstrap_interval, median_of
 
 from train import (

@@ -5,7 +5,7 @@ import dataclasses
 import pytest
 import torch
 
-from myfpo.configuration_sjfpo import SJFPOConfig
+from myfpo.configuration import SJFPOConfig
 from myfpo.fpo_core import cfm_loss_weight, compute_cfm_loss
 
 ACTION_END, NOISE_END = 1.0, 0.0

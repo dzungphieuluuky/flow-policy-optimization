@@ -41,7 +41,7 @@ class _FixedPolicy:
 
 
 def _measure(policy, batch):
-    from myfpo.train_sjfpo import measure_value_drift
+    from myfpo.training import measure_value_drift
 
     return measure_value_drift(policy, batch, "cpu")
 

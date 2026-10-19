@@ -25,7 +25,7 @@ from lerobot.utils.random_utils import set_seed
 
 from myfpo.checkpointing import load_policy_checkpoint
 from myfpo.evaluator import Evaluator
-from myfpo.train_sjfpo import _EvalPolicy
+from myfpo.training import _EvalPolicy
 from myfpo.utils import resolve_device
 
 
@@ -58,8 +58,8 @@ def main() -> int:
     high = np.atleast_1d(np.asarray(env.action_space.high, dtype=np.float32))
 
     if args.checkpoint is None:
-        from myfpo.configuration_sjfpo import SJFPOConfig
-        from myfpo.train_sjfpo import build_policy
+        from myfpo.configuration import SJFPOConfig
+        from myfpo.training import build_policy
 
         obs_dim = int(np.prod(env.observation_space.shape))
         act_dim = int(np.prod(env.action_space.shape))

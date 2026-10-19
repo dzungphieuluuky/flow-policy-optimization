@@ -1,8 +1,8 @@
-"""Tests for the batched rollout diagnostics (``myfpo.train_sjfpo``)."""
+"""Tests for the batched rollout diagnostics (``myfpo.training``)."""
 import pytest
 import torch
 
-from myfpo.train_sjfpo import compute_rollout_diagnostics
+from myfpo.training import compute_rollout_diagnostics
 
 N, H, D = 8, 4, 3
 

@@ -1,6 +1,6 @@
 """The config defaults must equal FPO++'s released manipulation values."""
 
-from myfpo.configuration_sjfpo import SJFPOConfig
+from myfpo.configuration import SJFPOConfig
 
 # name -> (dataclass default, released value, where it comes from).
 RELEASED = {

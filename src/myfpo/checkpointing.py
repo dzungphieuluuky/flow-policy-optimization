@@ -101,7 +101,7 @@ def save_policy_checkpoint(
 
 def load_optimizer(policy, d: Path) -> torch.optim.Optimizer:
     """Rebuild the optimizer from the policy, then load its state."""
-    from myfpo.modeling_sjfpo import build_optimizer
+    from myfpo.modeling import build_optimizer
 
     optimizer = build_optimizer(policy)
 
@@ -167,7 +167,7 @@ def load_policy_checkpoint(
     """Load a checkpoint from :func:`save_policy_checkpoint`. Restores the policy,
     the optimizer, the EMA shadow, and the counters.
     """
-    from myfpo.modeling_sjfpo import SJFPOPolicy
+    from myfpo.modeling import SJFPOPolicy
 
     d = Path(dir_path)
     missing = [

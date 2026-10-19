@@ -14,7 +14,7 @@ import numpy as np
 import pytest
 import torch
 
-from myfpo.configuration_sjfpo import SJFPOConfig
+from myfpo.configuration import SJFPOConfig
 from myfpo.fpo_core import clamp_saturation, compute_aspo_surrogate, compute_policy_ratio
 
 N, MC, ACT = 6, 4, 2
@@ -111,7 +111,7 @@ def test_the_reduction_decides_whether_the_default_clamp_bites():
 
 def test_the_abort_threshold_fires_on_the_stricter_signal():
     """The trainer must prefer the both-clamped signal over the level signal."""
-    from myfpo.train_sjfpo import BOTH_CLAMPED_ABORT_FRAC
+    from myfpo.training import BOTH_CLAMPED_ABORT_FRAC
 
     assert BOTH_CLAMPED_ABORT_FRAC == 0.5
     cfg = _cfg(cfm_clamp=20.0)
@@ -168,7 +168,7 @@ def _policy_and_batch(cfm_clamp):
     from lerobot.configs.types import FeatureType
 
     from myfpo.fpo_core import sample_timesteps
-    from myfpo.train_sjfpo import build_policy
+    from myfpo.training import build_policy
 
     obs, act, horizon, mc = 6, 3, 4, 4
     cfg = dataclasses.replace(
@@ -213,7 +213,7 @@ def test_above_clamp_frac_reads_the_tensor_the_ratio_actually_clamps(monkeypatch
     so the reading was wrong in both directions: it under-reported at a high
     bound and over-reported at a low one.
     """
-    import myfpo.modeling_sjfpo as modeling
+    import myfpo.modeling as modeling
 
     real = modeling.compute_policy_ratio
     clamped = []

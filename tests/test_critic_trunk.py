@@ -15,10 +15,10 @@ from lerobot.configs.policies import PolicyFeature
 from lerobot.configs.types import FeatureType
 from torch import nn
 
-from myfpo.configuration_sjfpo import SJFPOConfig
+from myfpo.configuration import SJFPOConfig
 from myfpo.critic import Critic, CriticMember
 from myfpo.metrics import compute_value_metrics
-from myfpo.modeling_sjfpo import SJFPOPolicy
+from myfpo.modeling import SJFPOPolicy
 
 OBS, HIDDEN, STEPS, ACT, H = 11, 32, 8, 3, 6
 

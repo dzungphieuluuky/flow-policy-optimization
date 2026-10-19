@@ -5,7 +5,7 @@ import dataclasses
 import pytest
 import torch
 
-from myfpo.configuration_sjfpo import SJFPOConfig
+from myfpo.configuration import SJFPOConfig
 from myfpo.fpo_core import velocity_to_target_param, cfm_target, compute_cfm_loss
 
 MODES = ("velocity", "action", "noise")

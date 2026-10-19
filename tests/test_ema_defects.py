@@ -7,7 +7,7 @@ import warnings
 import torch
 
 from fixtures import make_policy
-from myfpo.modeling_sjfpo import SJFPOPolicy
+from myfpo.modeling import SJFPOPolicy
 
 
 def _warm(p: SJFPOPolicy) -> SJFPOPolicy:

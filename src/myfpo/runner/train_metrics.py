@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from myfpo.configuration_sjfpo import SJFPOConfig
+from myfpo.configuration import SJFPOConfig
 
 __all__ = ["build_train_metrics"]
 

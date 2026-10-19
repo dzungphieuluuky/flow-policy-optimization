@@ -2,7 +2,7 @@
 import pytest
 import torch
 
-from myfpo.configuration_sjfpo import SJFPOConfig
+from myfpo.configuration import SJFPOConfig
 from myfpo.fpo_core import sample_noise
 
 

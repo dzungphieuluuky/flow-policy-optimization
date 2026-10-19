@@ -19,7 +19,7 @@ import torch
 from lerobot.configs.policies import PolicyFeature
 from lerobot.configs.types import FeatureType
 
-from myfpo.configuration_sjfpo import SJFPOConfig
+from myfpo.configuration import SJFPOConfig
 
 # The shape of the pin problem. Small on purpose: a pin must run in seconds so
 # it can be the gate on every commit.
@@ -64,7 +64,7 @@ def build(cfg: SJFPOConfig, seed: int = 0):
     order fixes the random stream. Moving one ``nn.Module`` to a different
     position in ``__init__`` changes every later draw. The pin catches that.
     """
-    from myfpo.train_sjfpo import build_policy
+    from myfpo.training import build_policy
 
     torch.manual_seed(seed)
     return build_policy(

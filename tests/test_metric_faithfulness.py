@@ -6,9 +6,9 @@ import warnings
 import pytest
 import torch
 
-from myfpo.configuration_sjfpo import SJFPOConfig
+from myfpo.configuration import SJFPOConfig
 from myfpo.metrics import compute_gae_diagnostics
-from myfpo.train_sjfpo import compute_rollout_diagnostics
+from myfpo.training import compute_rollout_diagnostics
 
 
 def _gae(n=8, **kw):
@@ -120,7 +120,7 @@ def test_the_spectral_energy_key_is_gone_from_the_batch():
     """d0f97c2 removed its source. A passthrough slot for it is dead weight."""
     import inspect
 
-    import myfpo.train_sjfpo as T
+    import myfpo.training as T
 
     src = inspect.getsource(T)
     assert "compute_spectral_energy_retained" not in src
@@ -131,7 +131,7 @@ def test_trainer_emits_no_key_it_cannot_compute():
     import ast
     import inspect
 
-    import myfpo.train_sjfpo as T
+    import myfpo.training as T
 
     tree = ast.parse(inspect.getsource(T))
     dead = []

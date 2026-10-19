@@ -5,7 +5,7 @@ from __future__ import annotations
 import einx
 import torch
 
-from myfpo.configuration_sjfpo import SJFPOConfig
+from myfpo.configuration import SJFPOConfig
 from myfpo.fpo_core import (
     broadcast_over_mc_axis,
     sample_noise,

@@ -14,7 +14,7 @@ import dataclasses
 import numpy as np
 import pytest
 
-from myfpo.configuration_sjfpo import SJFPOConfig
+from myfpo.configuration import SJFPOConfig
 
 SAMPLINGS = ("zero_start", "noise_start")
 
@@ -76,7 +76,7 @@ def test_the_released_defaults_table_is_untouched():
 
 
 def test_the_adapter_maps_the_config_value_to_the_start_point():
-    from myfpo.train_sjfpo import _EvalPolicy
+    from myfpo.training import _EvalPolicy
 
     class _P:
         pass
@@ -89,9 +89,9 @@ def test_the_two_adapters_give_different_returns():
     """The whole point: the two starts must not be interchangeable."""
     import gymnasium as gym
 
-    from myfpo.configuration_sjfpo import SJFPOConfig
+    from myfpo.configuration import SJFPOConfig
     from myfpo.evaluator import Evaluator
-    from myfpo.train_sjfpo import _EvalPolicy, build_policy
+    from myfpo.training import _EvalPolicy, build_policy
 
     env = gym.make("Hopper-v5")
     try:
@@ -127,7 +127,7 @@ def test_the_two_adapters_give_different_returns():
 def test_the_trainer_builds_both_adapters_once():
     import inspect
 
-    from myfpo.train_sjfpo import train_sjfpo_run
+    from myfpo.training import train_sjfpo_run
 
     src = inspect.getsource(train_sjfpo_run)
     assert '"zero_start": _EvalPolicy(policy, start_from_zero=True)' in src
@@ -137,7 +137,7 @@ def test_the_trainer_builds_both_adapters_once():
 def test_the_trainer_reads_both_names_from_the_config():
     import inspect
 
-    from myfpo.train_sjfpo import evaluate_policy, train_sjfpo_run
+    from myfpo.training import evaluate_policy, train_sjfpo_run
 
     src = inspect.getsource(train_sjfpo_run)
     assert 'runtime["eval_sampling"] = cfg.eval_sampling' in src
@@ -151,7 +151,7 @@ def test_each_start_is_evaluated_once():
     """The reported start writes the history. A second pass would double the cost."""
     import inspect
 
-    from myfpo.train_sjfpo import evaluate_policy
+    from myfpo.training import evaluate_policy
 
     src = inspect.getsource(evaluate_policy)
     assert src.count("evaluator.evaluate(") == 1, (
@@ -166,7 +166,7 @@ def test_each_start_is_evaluated_once():
 def test_both_returns_are_logged_under_their_own_names():
     import inspect
 
-    from myfpo.train_sjfpo import train_sjfpo_run
+    from myfpo.training import train_sjfpo_run
 
     src = inspect.getsource(train_sjfpo_run)
     assert 'f"eval/{name}_return_mean"' in src
@@ -179,7 +179,7 @@ def test_the_names_go_to_the_run_metadata_instead():
     """A string constant cannot be a per-step scalar. It belongs in the metadata."""
     import inspect
 
-    from myfpo.train_sjfpo import train_sjfpo_run
+    from myfpo.training import train_sjfpo_run
 
     src = inspect.getsource(train_sjfpo_run)
     assert 'runtime["eval_sampling"] = cfg.eval_sampling' in src
@@ -191,7 +191,7 @@ def test_the_tracker_rejects_no_key_after_this_change():
     calls ``float(value)``, so one string aborts the run."""
     import inspect
 
-    from myfpo.train_sjfpo import train_sjfpo_run
+    from myfpo.training import train_sjfpo_run
 
     src = inspect.getsource(train_sjfpo_run)
     # The one remaining string-valued value is the EMA flag, which is already
@@ -226,7 +226,7 @@ def test_the_stochastic_mean_return_key_is_gone():
     """The old key named one distribution and hid the other."""
     import inspect
 
-    from myfpo.train_sjfpo import train_sjfpo_run
+    from myfpo.training import train_sjfpo_run
 
     src = inspect.getsource(train_sjfpo_run)
     assert "stochastic_mean_return" not in src, (
@@ -245,7 +245,7 @@ def test_the_stopper_reads_the_stop_distribution():
     import inspect
 
     from myfpo.runner import summarise_window
-    from myfpo.train_sjfpo import evaluate_policy, train_sjfpo_run
+    from myfpo.training import evaluate_policy, train_sjfpo_run
 
     src = inspect.getsource(evaluate_policy)
     # The runner reads both names back off the window, and the peak is written

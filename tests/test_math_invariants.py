@@ -37,7 +37,7 @@ class TestGAEChunkAdvantageInvariant:
 class TestFPORatioInvariant:
     def test_fpo_policy_ratio_pessimistic(self):
         """PPO ratio: min(ratio*A, clip(ratio)*A) must be <= ratio*A for A>0."""
-        from myfpo.configuration_sjfpo import SJFPOConfig
+        from myfpo.configuration import SJFPOConfig
         from myfpo.fpo_core import compute_aspo_surrogate
 
         cfg = SJFPOConfig(trust_region_mode="ppo")
@@ -58,7 +58,7 @@ class TestFPORatioInvariant:
 class TestCFMLossMaskShape:
     def test_fpo_cfm_loss_mask_shape(self):
         """CFM: an all-False pad mask must leave the loss bit-identical to unmasked."""
-        from myfpo.configuration_sjfpo import SJFPOConfig
+        from myfpo.configuration import SJFPOConfig
         from myfpo.fpo_core import compute_cfm_loss
 
         n, mc, horizon, dim = 2, 4, 4, 2
@@ -77,7 +77,7 @@ class TestFPOCoreRemaining:
     def test_fpo_aspo_surrogate_shape(self):
         """ASPO: for A>0 returns PPO. A<0 returns SPO. Elementwise."""
         from myfpo.fpo_core import compute_aspo_surrogate
-        from myfpo.configuration_sjfpo import SJFPOConfig
+        from myfpo.configuration import SJFPOConfig
         import torch
 
         cfg = SJFPOConfig()
@@ -92,7 +92,7 @@ class TestFPOCoreRemaining:
 
         import torch
 
-        from myfpo.configuration_sjfpo import SJFPOConfig
+        from myfpo.configuration import SJFPOConfig
         from myfpo.fpo_core import compute_aspo_surrogate
 
         cfg = dataclasses.replace(
@@ -111,7 +111,7 @@ class TestFPOCoreRemaining:
     def test_fpo_policy_ratio_clip_invariant(self):
         """Policy ratio: exp(delta_st) with clamped delta. Backward through delta."""
         from myfpo.fpo_core import compute_policy_ratio
-        from myfpo.configuration_sjfpo import SJFPOConfig
+        from myfpo.configuration import SJFPOConfig
         import torch
 
         cfg = SJFPOConfig()
@@ -136,7 +136,7 @@ class TestSamplingFunctions:
     def test_sample_timesteps_bounds(self):
         """Sampled timesteps within [min, max]."""
         from myfpo.fpo_core import sample_timesteps
-        from myfpo.configuration_sjfpo import SJFPOConfig
+        from myfpo.configuration import SJFPOConfig
         import torch
 
         cfg = SJFPOConfig()
@@ -147,7 +147,7 @@ class TestSamplingFunctions:
     def test_sample_noise_shape(self):
         """Noise shape matches request."""
         from myfpo.fpo_core import sample_noise
-        from myfpo.configuration_sjfpo import SJFPOConfig
+        from myfpo.configuration import SJFPOConfig
         import torch
 
         cfg = SJFPOConfig()

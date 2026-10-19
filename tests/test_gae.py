@@ -104,7 +104,7 @@ def test_trace_inputs_are_absent_from_the_qc_backup():
     assert params["chunk_env_id"].default is None
 
     # Default is the standard trace, and both defaults agree with the config.
-    from myfpo.configuration_sjfpo import SJFPOConfig
+    from myfpo.configuration import SJFPOConfig
 
     assert params["gae_lambda"].default == SJFPOConfig().gae_lambda == 0.95
 
@@ -431,14 +431,14 @@ def test_trace_handles_an_empty_rollout():
 
 def test_config_default_runs_the_standard_trace():
     """Config and function default are both 0.95."""
-    from myfpo.configuration_sjfpo import SJFPOConfig
+    from myfpo.configuration import SJFPOConfig
 
     assert SJFPOConfig().gae_lambda == 0.95
     assert SJFPOConfig(gae_lambda=0.0).gae_lambda == 0.0
 
 
 def test_config_rejects_an_out_of_range_lambda():
-    from myfpo.configuration_sjfpo import SJFPOConfig
+    from myfpo.configuration import SJFPOConfig
 
     with pytest.raises(ValueError, match="gae_lambda"):
         SJFPOConfig(gae_lambda=2.0).validate()

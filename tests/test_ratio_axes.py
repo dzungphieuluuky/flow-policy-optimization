@@ -10,9 +10,9 @@ import torch
 from lerobot.configs.types import FeatureType
 from lerobot.configs.policies import PolicyFeature
 
-import myfpo.modeling_sjfpo as M
-from myfpo.configuration_sjfpo import SJFPOConfig
-from myfpo.train_sjfpo import build_policy
+import myfpo.modeling as M
+from myfpo.configuration import SJFPOConfig
+from myfpo.training import build_policy
 
 OBS, ACT, N, MC, HORIZON = 11, 2, 6, 4, 16
 ROOT = Path(__file__).resolve().parents[1]

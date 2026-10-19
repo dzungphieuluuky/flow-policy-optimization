@@ -123,7 +123,7 @@ def test_the_return_mean_key_matches_the_summarizer():
     assert out["eval/return_mean"] == pytest.approx(mean)
     # The other series still exists, and it is built from an f-string over the
     # two flow starts, so the literal key is not in the source.
-    src = (Path(__file__).resolve().parents[1] / "src" / "myfpo" / "train_sjfpo.py").read_text()
+    src = (Path(__file__).resolve().parents[1] / "src" / "myfpo" / "training.py").read_text()
     assert 'f"eval/{name}_return_mean"' in src
     assert "_return_mean" in src, "the per-start series must still exist"
 

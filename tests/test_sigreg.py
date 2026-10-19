@@ -8,10 +8,10 @@ import torch
 from lerobot.configs.policies import PolicyFeature
 from lerobot.configs.types import FeatureType
 
-from myfpo.configuration_sjfpo import SJFPOConfig
+from myfpo.configuration import SJFPOConfig
 from myfpo.fpo_core import sigreg_decorr_loss, sigreg_weak_loss
 from fixtures import make_batch
-from myfpo.train_sjfpo import build_policy
+from myfpo.training import build_policy
 
 OBS, ACT, HORIZON, MC = 6, 3, 4, 4
 

@@ -18,13 +18,13 @@ from lerobot.configs.types import FeatureType, PolicyFeature
 from lerobot.utils.random_utils import set_seed
 
 from myfpo.checkpointing import load_policy_checkpoint, save_policy_checkpoint
-from myfpo.configuration_sjfpo import SJFPOConfig
+from myfpo.configuration import SJFPOConfig
 from myfpo.evaluator import (
     Evaluator,
     compute_mean_chunk_jerk,
     compute_seam_jerk,
 )
-from myfpo.modeling_sjfpo import SJFPOAborted, SJFPOPolicy, build_optimizer
+from myfpo.modeling import SJFPOAborted, SJFPOPolicy, build_optimizer
 from myfpo.metrics import subsampled_min
 from lerobot.utils.constants import CHECKPOINTS_DIR
 from myfpo.utils import resolve_device, rms, to_numpy_1d

@@ -13,7 +13,7 @@ import pytest
 import torch
 
 from myfpo.attention import SelfAttention
-from myfpo.configuration_sjfpo import SJFPOConfig
+from myfpo.configuration import SJFPOConfig
 
 
 def test_a_later_token_cannot_change_an_earlier_one():

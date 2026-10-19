@@ -29,7 +29,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from myfpo.configuration_sjfpo import SJFPOConfig
+from myfpo.configuration import SJFPOConfig
 
 CLIP_SERIES = "train/action_clip_frac"
 CORR_SERIES = "train/l_old_new_corr"
@@ -134,7 +134,7 @@ def projection_measurement(
 
     from myfpo.checkpointing import load_policy_checkpoint
     from myfpo.fpo_core import clip_velocity, sample_action, sample_noise
-    from myfpo.train_sjfpo import build_policy
+    from myfpo.training import build_policy
 
     rows: list[dict] = []
     for scale in scales:
@@ -220,7 +220,7 @@ def main() -> int:
 
     import gymnasium as gym
 
-    from myfpo.train_sjfpo import train_sjfpo_run
+    from myfpo.training import train_sjfpo_run
 
     scales = [float(s) for s in args.scales.split(",") if s.strip()]
     curve = projection_measurement(

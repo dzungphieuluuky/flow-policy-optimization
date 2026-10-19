@@ -16,15 +16,15 @@ import numpy as np
 import pytest
 import torch
 
-from myfpo.configuration_sjfpo import SJFPOConfig
+from myfpo.configuration import SJFPOConfig
 from lerobot.utils.constants import ACTION
-from myfpo.processor_sjfpo import SJFPOActionPostprocessorStep
+from myfpo.processor import SJFPOActionPostprocessorStep
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def _policy(action_dim: int = 3, **over):
-    from myfpo.train_sjfpo import build_policy
+    from myfpo.training import build_policy
 
     cfg = dataclasses.replace(SJFPOConfig(), compile=False, **over)
     return build_policy(
@@ -137,7 +137,7 @@ def test_the_perturbation_is_bounded_by_the_squash():
 
 def test_the_policy_no_longer_clamps_the_action():
     """No clamp survives in the policy path. The squash is in the processor."""
-    src = (ROOT / "src" / "myfpo" / "modeling_sjfpo.py").read_text()
+    src = (ROOT / "src" / "myfpo" / "modeling.py").read_text()
     body = src.split("def predict_action_chunk", 1)[1].split("\n    def ", 1)[0]
     assert ".clamp(" not in body, "predict_action_chunk still clamps"
     assert "torch.tanh" not in body, "the squash belongs in the postprocessor"

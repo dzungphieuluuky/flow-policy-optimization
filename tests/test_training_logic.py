@@ -1,7 +1,7 @@
 """Unit test: training logic produces expected losses and updates."""
 import torch
-from myfpo.train_sjfpo import build_policy
-from myfpo.configuration_sjfpo import SJFPOConfig
+from myfpo.training import build_policy
+from myfpo.configuration import SJFPOConfig
 from lerobot.configs.types import FeatureType, PolicyFeature
 
 def test_training_logic():

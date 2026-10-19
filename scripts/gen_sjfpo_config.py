@@ -178,7 +178,7 @@ def _yaml_value(value):
 
 
 def render() -> str:
-    from myfpo.configuration_sjfpo import SJFPOConfig
+    from myfpo.configuration import SJFPOConfig
 
     cfg = SJFPOConfig()
     lines = [HEADER]

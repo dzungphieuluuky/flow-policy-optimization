@@ -17,7 +17,7 @@ from lerobot.policies import PreTrainedPolicy
 from lerobot.processor.converters import to_tensor
 from lerobot.utils.constants import ACTION, OBS_STATE
 
-from myfpo.configuration_sjfpo import SJFPOConfig
+from myfpo.configuration import SJFPOConfig
 from myfpo.fpo_core import (
     cfm_loss_weight,
     group_cfm_loss,
@@ -42,7 +42,7 @@ from myfpo.metrics import (
 from myfpo.critic import Critic
 from myfpo.encoder import RunningMeanStd, StateEncoder
 from myfpo.flow import SJFPOFlowModel, SJFPOFlowResMLP
-from myfpo.processor_sjfpo import make_sjfpo_pre_post_processors
+from myfpo.processor import make_sjfpo_pre_post_processors
 from myfpo.rollout import RolloutBuffers, run_rollout
 from myfpo.utils import (
     autocast_context,

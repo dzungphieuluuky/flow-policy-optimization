@@ -4,9 +4,9 @@ import torch
 
 from fixtures import make_policy
 from myfpo.metrics import subsampled_min
-from myfpo.modeling_sjfpo import SJFPOPolicy
+from myfpo.modeling import SJFPOPolicy
 from myfpo.rollout import run_rollout
-from myfpo.train_sjfpo import (
+from myfpo.training import (
     measure_value_drift,
 )
 from myfpo.utils import resolve_storage_dtype

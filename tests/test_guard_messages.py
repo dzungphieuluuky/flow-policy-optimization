@@ -32,8 +32,8 @@ def _raises(thunk) -> str:
     raise AssertionError("expected ValueError, nothing was raised")
 
 
-# --- configuration_sjfpo.SJFPOConfig -----------------------------------------.
-from myfpo.configuration_sjfpo import SJFPOConfig  # noqa: E402
+# --- configuration.SJFPOConfig -----------------------------------------.
+from myfpo.configuration import SJFPOConfig  # noqa: E402
 
 _BAD_CONFIG = {
     "action_perturb_std": -1.0,

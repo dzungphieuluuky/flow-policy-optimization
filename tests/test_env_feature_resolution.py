@@ -13,7 +13,7 @@ from myfpo.config import (  # noqa: E402
     KNOWN_ENVS,
     get_observation_action_dim,
 )
-from myfpo.configuration_sjfpo import SJFPOConfig  # noqa: E402
+from myfpo.configuration import SJFPOConfig  # noqa: E402
 
 # Tier "smoke": pure gymnasium, no mujoco, so these run anywhere.
 SMOKE_ENVS = ("Pendulum-v1", "Reacher-v5")
@@ -65,7 +65,7 @@ def test_registry_dims_match_the_live_env_space(env_id):
 @pytest.mark.parametrize("env_id", SMOKE_ENVS)
 def test_build_policy_attaches_features_from_dims_alone(env_id):
     """The runner's only inputs: an env name and its resolved dims."""
-    from myfpo.train_sjfpo import build_policy
+    from myfpo.training import build_policy
 
     obs_dim, action_dim = get_observation_action_dim(env_id)
     cfg = SJFPOConfig()

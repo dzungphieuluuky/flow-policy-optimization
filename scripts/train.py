@@ -45,7 +45,7 @@ from myfpo.config import (
     KNOWN_ENVS,
     get_observation_action_dim,
 )
-from myfpo.configuration_sjfpo import SJFPOConfig
+from myfpo.configuration import SJFPOConfig
 
 
 def configure_torch_cuda() -> bool:
@@ -303,7 +303,7 @@ def run_single(
                 f"{(live_obs, live_act)}"
             )
 
-        from myfpo.train_sjfpo import train_sjfpo_run
+        from myfpo.training import train_sjfpo_run
 
         return train_sjfpo_run(
             env=env,

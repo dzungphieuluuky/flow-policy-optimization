@@ -15,7 +15,7 @@ import inspect
 
 import torch
 
-from myfpo.configuration_sjfpo import SJFPOConfig
+from myfpo.configuration import SJFPOConfig
 from myfpo.encoder import StateEncoder
 from myfpo.flow import SJFPOFlowModel
 
@@ -53,7 +53,7 @@ def test_no_actor_names_an_argument_condition_dim():
     The check is scoped to ``flow.py``, which holds the actors.
     ``Critic.condition_dim`` is a different thing and stays: it selects the
     shared-encoder mode, where the critic is fed one vector instead of a window.
-    ``modeling_sjfpo`` still passes it to the Critic, so that file is out of
+    ``modeling`` still passes it to the Critic, so that file is out of
     scope here.
     """
     src = (SRC / "flow.py").read_text()
