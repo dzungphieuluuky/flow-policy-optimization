@@ -66,7 +66,7 @@ def test_the_default_critic_still_takes_the_window():
     out = policy.critic(
         torch.randn(4, 2, OBS), torch.randn(4, HORIZON, ACT), torch.full((4,), 0.5)
     )
-    assert out.shape == (2, 4)
+    assert out.shape == (policy.config.num_critics, 4)
 
 
 def test_both_settings_pass_a_rollout_and_a_forward():

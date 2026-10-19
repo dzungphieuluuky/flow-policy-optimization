@@ -20,7 +20,13 @@ def _rope(x: torch.Tensor, inv_freq: torch.Tensor) -> torch.Tensor:
 
 
 class SelfAttention(nn.Module):
-    """SDPA self-attention. The attention is maskless. The action tokens are the"""
+    """SDPA self-attention over the action tokens, causally masked.
+
+    Token ``k`` sees only tokens ``0..k``. This is a deliberate deviation from
+    ACT and Diffusion Policy, which attend bidirectionally over the chunk. It
+    buys prefix consistency: the first ``n_action_steps`` tokens a chunk will
+    execute do not depend on the tail that will be discarded.
+    """
 
     def __init__(self, hidden_dim: int, n_heads: int):
         super().__init__()
@@ -30,8 +36,13 @@ class SelfAttention(nn.Module):
             raise ValueError(f"n_heads must be positive, got {n_heads}")
         if hidden_dim % n_heads != 0:
             raise ValueError(f"hidden_dim={hidden_dim} must split over {n_heads} heads")
+        head_dim = hidden_dim // n_heads
+        if head_dim % 2 != 0:
+            # RoPE rotates (even, odd) pairs. An odd head_dim leaves a trailing
+            # element unpaired and the broadcast fails deep inside the forward.
+            raise ValueError(f"head_dim={head_dim} must be even for RoPE")
         self.n_heads = n_heads
-        self.head_dim = hidden_dim // n_heads
+        self.head_dim = head_dim
         self.register_buffer(
             "inv_freq",
             1.0 / (10000 ** (torch.arange(hidden_dim // (2 * n_heads)).float() / (hidden_dim // (2 * n_heads)))),

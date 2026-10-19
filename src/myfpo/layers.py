@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -58,16 +60,22 @@ class CondMLP(nn.Module):
 class SinusoidalEncoding(nn.Module):
     """Fixed sinusoidal codes. The module holds one freq table as a buffer."""
 
-    def __init__(self, dim: int):
+    def __init__(self, dim: int, max_period: float = 10000.0):
         super().__init__()
         if dim < 2:
             raise ValueError(f"SinusoidalEncoding dim must be >= 2, got {dim}")
+        if max_period <= 0:
+            raise ValueError(f"max_period must be > 0, got {max_period}")
         self.dim = dim
         self.half = dim // 2
+        # Log-spaced, decaying. This is the DDPM/DiT table. A linear 2**i table
+        # would run to 32768 rad over t in [0, 1] and code noise, not smoothness.
         self.register_buffer(
             "freqs",
-            torch.pow(
-                torch.tensor(2.0), torch.arange(self.half, dtype=torch.float32)
+            torch.exp(
+                -math.log(max_period)
+                * torch.arange(self.half, dtype=torch.float32)
+                / self.half
             ),
             persistent=False,
         )

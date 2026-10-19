@@ -50,7 +50,7 @@ log_ratio_cap: 10.0
 normalize_advantage: True
 
 # -- Critic and value targets ----------------------------------
-num_critics: 2
+num_critics: 5
 critic_share_encoder: False
 critic_condition_on_exec_length: True
 critic_hidden_dim: null

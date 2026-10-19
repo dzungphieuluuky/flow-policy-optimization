@@ -5,7 +5,8 @@ a per-token timestep could not modulate per token. It also had three hidden
 layers, Mish, and no residual and no normalisation. Both reference networks for
 chunked action prediction mix across action steps: Diffusion Policy with a
 temporal ``Conv1d`` (``kernel_size=5``), ACT with self-attention over the chunk.
-The flattened trunk was the odd one out on both counts.
+The flattened trunk was the odd one out on both counts. The attention here is
+causal, unlike ACT; ``SelfAttention`` records why.
 """
 
 import dataclasses

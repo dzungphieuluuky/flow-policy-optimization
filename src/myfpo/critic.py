@@ -8,7 +8,13 @@ from torch import nn
 
 
 class CriticMember(nn.Module):
-    """One Q(s, a_{t:t+h}) head. The network is a concat MLP. It has no FiLM"""
+    """One Q(s, a_{t:t+h}) head. The network is a concat MLP. It has no FiLM
+
+    Every hidden layer is ``Linear -> LayerNorm -> Mish``, following TD-MPC2
+    (arXiv:2310.16828). The norm is the part that matters: that paper reports
+    that scaling an unnormalised critic does not improve performance while
+    LayerNorm does. The output layer stays linear.
+    """
 
     def __init__(
         self,
@@ -49,9 +55,13 @@ class CriticMember(nn.Module):
             1 if condition_on_exec_length else 0
         )
         in_dim = self.input_dim
-        layers: list[nn.Module] = [nn.Linear(in_dim, hidden_dim), nn.ReLU()]
-        for _ in range(num_layers - 1):
-            layers += [nn.Linear(hidden_dim, hidden_dim), nn.ReLU()]
+        layers: list[nn.Module] = []
+        for i in range(num_layers):
+            layers += [
+                nn.Linear(in_dim if i == 0 else hidden_dim, hidden_dim),
+                nn.LayerNorm(hidden_dim),
+                nn.Mish(),
+            ]
         layers.append(nn.Linear(hidden_dim, 1))
         self.mlp = nn.Sequential(*layers)
 
@@ -88,7 +98,7 @@ class Critic(nn.Module):
         action_dim: int,
         n_obs_steps: int,
         action_horizon: int,
-        num_critics: int = 2,
+        num_critics: int = 5,
         *,
         condition_on_exec_length: bool = True,
         num_layers: int = 2,

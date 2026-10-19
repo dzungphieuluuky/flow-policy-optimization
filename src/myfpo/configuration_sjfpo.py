@@ -60,7 +60,7 @@ class SJFPOConfig(PreTrainedConfig):
     cfm_loss_clamp_negative_advantages_max: float = 20.0
     log_ratio_cap: float = 10.0
 
-    num_critics: int = 2
+    num_critics: int = 5
     critic_condition_on_exec_length: bool = True
     critic_share_encoder: bool = False
     critic_hidden_dim: int | None = None
@@ -77,7 +77,7 @@ class SJFPOConfig(PreTrainedConfig):
     cfm_loss_huber_delta: float = 0.5
     transported_clip_value: float | None = None
 
-    compile: bool = True
+    compile: bool = False
 
     actor_arch: str = "dit"
     dit_depth: int = 3
@@ -145,6 +145,11 @@ class SJFPOConfig(PreTrainedConfig):
             raise ValueError(
                 f"hidden_dim={self.hidden_dim} must be divisible by "
                 f"dit_heads={self.dit_heads}"
+            )
+        if self.hidden_dim % (2 * self.dit_heads) != 0:
+            raise ValueError(
+                f"head_dim=hidden_dim//dit_heads={self.hidden_dim // self.dit_heads} "
+                "must be even for RoPE, which rotates (even, odd) pairs"
             )
         if self.actor_arch not in ACTOR_ARCHITECTURES:
             raise ValueError(
