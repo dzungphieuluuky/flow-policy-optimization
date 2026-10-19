@@ -134,35 +134,6 @@ def compute_mean_chunk_jerk(actions: np.ndarray, action_is_pad: np.ndarray) -> f
 
 
 
-
-def render_episode_frames(
-    env_id: str,
-    policy: Callable[[np.ndarray], np.ndarray],
-    seed: int = 0,
-    max_steps: int = 1000,
-) -> tuple[list[np.ndarray], float]:
-    """Roll out one episode, collect rendered frames."""
-    import gymnasium as gym
-
-    env = gym.make(env_id, render_mode="rgb_array")
-    try:
-        obs, _ = env.reset(seed=seed)
-        if hasattr(policy, "reset"):
-            policy.reset()
-        frames: list[np.ndarray] = []
-        ret = 0.0
-        for _ in range(max_steps):
-            action = policy(obs)
-            obs, reward, terminated, truncated, _ = env.step(action)
-            ret += float(reward)
-            frames.append(np.asarray(env.render(), dtype=np.uint8))
-            if terminated or truncated:
-                break
-        return frames, ret
-    finally:
-        env.close()
-
-
 class Evaluator:
     """Deterministic evaluator for flat-obs (MuJoCo) envs."""
 

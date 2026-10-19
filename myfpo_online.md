@@ -78,57 +78,21 @@ print(f"Cloning from: {repo_url.replace(GITHUB_TOKEN or '', '<TOKEN>') if GITHUB
 ```python
 %%writefile requirements-colab.txt
 torch
-torchvision
-torchaudio
-torchcodec
-jax
-jaxlib
-accelerate
-diffusers
-datasets
-huggingface-hub
-safetensors
-bitsandbytes
-einops
+numpy
 einx
+draccus
 gymnasium
 gymnasium-robotics
-pettingzoo
-mujoco
-mujoco-mjx
-mujoco-warp
-skrl
+huggingface-hub
 lerobot
-jax[cuda13]
-flax
-jaxlib
-optax
-orbax-checkpoint
-numpy
-scipy
-pandas
-matplotlib
-scikit-learn
-scikit-image
-opencv-python-headless
-pillow
-imageio
-imageio-ffmpeg
-av
-moviepy
-pyarrow
-wandb
+mujoco
+pyyaml
 tensorboard
-draccus
-tqdm
+wandb
 ```
 
 ```python
 !uv pip install -r requirements-colab.txt
-
-!uv pip uninstall av
-
-!uv pip install "av<15.0.0" --only-binary=:all:
 ```
 
 ```python
@@ -143,21 +107,13 @@ else:
 import subprocess
 import sys
 
-from pathlib import Path
-
-from IPython.display import Video, display
-
-PLAY_ENV = {**os.environ, "MUJOCO_GL": "egl"}
-
 def play(run_dir, env_id="Reacher-v5", ckpt="best", **flags):
-    mp4 = Path(run_dir) / f"play_{ckpt}.mp4"
+    """Evaluate a checkpoint and print the per-episode metrics."""
     cmd = [sys.executable, "scripts/play.py", "--env", env_id,
-           "--checkpoint", f"{run_dir}/checkpoints/{ckpt}", "--video_out", str(mp4)]
+           "--checkpoint", f"{run_dir}/checkpoints/{ckpt}"]
     for k, v in flags.items():
         cmd += [f"--{k}", str(v)]
-    subprocess.run(cmd, env=PLAY_ENV, check=True)
-    display(Video(str(mp4), embed=True))
-    return mp4
+    subprocess.run(cmd, check=True)
 ```
 
 ```python
