@@ -14,7 +14,7 @@ Two variants behind `config.actor_arch`; `dit` is the default.
 
 | Element | Choice | Reference |
 |---|---|---|
-| Block | adaLN-Zero DiT block | Peebles & Xie, DiT (`arXiv:2212.09748`) |
+| Block | adaLN-Zero DiT block, shared by both actors | Peebles & Xie, DiT (`arXiv:2212.09748`) |
 | Norm | RMSNorm, pre-norm | |
 | FFN | SwiGLU, 4x expansion | Shazeer, GLU Variants (`arXiv:2002.05202`) |
 | Output init | zero on `adaLN_out` and `out` | DiT |
@@ -24,6 +24,11 @@ Two variants behind `config.actor_arch`; `dit` is the default.
 | Depth / width | `dit_depth=8`, `hidden_dim=128` | see Depth and width |
 
 Defaults: **2.36M parameters**, 8 blocks of 280k each.
+
+The block is one class (`attention.AdaLNBlock`) with the MLP as the only
+difference: `DiTBlock` supplies a SwiGLU, `ResMLPBlock` the paper's residual
+MLP. The counts and the checkpoint keys are pinned in
+`tests/test_block_contract.py`.
 
 ### Verified, not assumed
 - **adaLN-Zero is real.** All-zero `adaLN.fc2` makes the block an exact identity at

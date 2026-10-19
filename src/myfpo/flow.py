@@ -8,7 +8,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from myfpo.attention import DiTBlock, SelfAttention
+from myfpo.attention import AdaLNBlock, DiTBlock
 from myfpo.layers import MIN_WIDTH, CondMLP, SinusoidalEncoding, build_rms_norm, modulate
 from myfpo.utils import rms
 
@@ -241,8 +241,8 @@ class ResidualMLP(nn.Module):
         return x + self.out(self.out_norm(h))
 
 
-class ResMLPBlock(nn.Module):
-    """One ``resmlp`` block: attention, then the paper's residual MLP."""
+class ResMLPBlock(AdaLNBlock):
+    """The ``resmlp`` block: attention, then the paper's residual MLP."""
 
     def __init__(
         self,
@@ -251,67 +251,11 @@ class ResMLPBlock(nn.Module):
         hidden_mult: float,
         num_units: int,
     ):
-        super().__init__()
-        self.norm1 = build_rms_norm(hidden_dim)
-        self.attn = SelfAttention(hidden_dim, n_heads)
-        self.norm2 = build_rms_norm(hidden_dim)
-        self.mlp = ResidualMLP(hidden_dim, hidden_mult, num_units)
-        self.adaLN = CondMLP(hidden_dim, hidden_dim, 6 * hidden_dim)
-        nn.init.constant_(self.adaLN.fc2.weight, 0.0)
-        nn.init.constant_(self.adaLN.fc2.bias, 0.0)
-
-    def forward(
-        self, x: torch.Tensor, c: torch.Tensor
-    ) -> torch.Tensor:
-        """``[B, K, H]`` in, ``[B, K, H]`` out. ``c`` is ``[B, H]`` or ``[B, K, H]``."""
-        out, _ = self._forward(x, c)
-        return out
-
-    def forward_with_stats(
-        self, x: torch.Tensor, c: torch.Tensor
-    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-        """The same block, plus the adaLN gate and scale diagnostics."""
-        out, (gate_msa, gate_mlp, scale_msa, scale_mlp) = self._forward(x, c)
-        with torch.inference_mode():
-            stats = {
-                "gate_msa": rms(gate_msa),
-                "gate_mlp": rms(gate_mlp),
-                "scale_msa": rms(1.0 + scale_msa),
-                "scale_mlp": rms(1.0 + scale_mlp),
-            }
-        return out, stats
-
-    def _forward(
-        self, x: torch.Tensor, c: torch.Tensor
-    ) -> tuple[torch.Tensor, tuple[torch.Tensor, ...]]:
-        """The block itself, with the adaLN parts the diagnostics read."""
-        if x.dim() != 3:
-            raise ValueError(f"x must have shape [B, K, H], got {tuple(x.shape)}")
-        b = x.shape[0]
-        if c.shape[0] != b:
-            raise ValueError(f"c has batch {c.shape[0]} but x has {b}")
-        if c.dim() == 3:
-            if c.shape[1] != x.shape[1]:
-                raise ValueError(
-                    f"c has {c.shape[1]} conditioning tokens but x has {x.shape[1]}"
-                )
-        else:
-            if c.dim() != 2 or c.shape[1] != self.adaLN.fc1.in_features:
-                raise ValueError(
-                    f"c must have shape [{b}, {self.adaLN.fc1.in_features}], "
-                    f"got {tuple(c.shape)}"
-                )
-            c = c[:, None, :]
-
-        parts = self.adaLN(c).view(b, c.shape[1], 6, -1)
-        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = parts.unbind(
-            dim=2
+        super().__init__(
+            hidden_dim,
+            n_heads,
+            ResidualMLP(hidden_dim, hidden_mult, num_units),
         )
-        h = modulate(self.norm1(x), shift_msa, scale_msa)
-        x = x + gate_msa * self.attn(h)
-        out = x + gate_mlp * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
-
-        return out, (gate_msa, gate_mlp, scale_msa, scale_mlp)
 
 
 class MyfpoFlowResMLP(_FlowActorBase):

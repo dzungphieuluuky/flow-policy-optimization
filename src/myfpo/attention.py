@@ -70,20 +70,21 @@ class SelfAttention(nn.Module):
         return self.out(y)
 
 
-class DiTBlock(nn.Module):
-    """Pre-norm DiT block, adaLN-Zero. ``forward_with_stats`` adds a diagnostics dict."""
+class AdaLNBlock(nn.Module):
+    """Pre-norm adaLN-Zero block: self-attention and one MLP, conditioned on ``c``.
 
-    def __init__(self, hidden_dim: int, n_heads: int, mlp_ratio: float):
+    ``DiTBlock`` and ``ResMLPBlock`` are this block with a different MLP. The
+    block lives here once, so a fix to the adaLN path reaches both actors.
+    """
+
+    def __init__(self, hidden_dim: int, n_heads: int, mlp: nn.Module):
         super().__init__()
         if hidden_dim < MIN_WIDTH:
             raise ValueError("hidden_dim must be at least 2")
-        if not math.isfinite(mlp_ratio) or mlp_ratio <= 0 or int(hidden_dim * mlp_ratio) < 1:
-            raise ValueError("mlp_ratio must produce a positive hidden width")
         self.norm1 = build_rms_norm(hidden_dim)
         self.attn = SelfAttention(hidden_dim, n_heads)
         self.norm2 = build_rms_norm(hidden_dim)
-        mlp_hidden = int(hidden_dim * mlp_ratio)
-        self.mlp = SwiGLU(hidden_dim, mlp_hidden, hidden_dim)
+        self.mlp = mlp
         self.adaLN = CondMLP(hidden_dim, hidden_dim, 6 * hidden_dim)
         nn.init.constant_(self.adaLN.fc2.weight, 0.0)
         nn.init.constant_(self.adaLN.fc2.bias, 0.0)
@@ -140,4 +141,17 @@ class DiTBlock(nn.Module):
             modulate(self.norm2(x), shift_mlp, scale_mlp)
         )
         return out, (gate_msa, gate_mlp, scale_msa, scale_mlp)
+
+
+class DiTBlock(AdaLNBlock):
+    """The DiT block: attention, one SwiGLU, adaLN."""
+
+    def __init__(self, hidden_dim: int, n_heads: int, mlp_ratio: float):
+        if not math.isfinite(mlp_ratio) or mlp_ratio <= 0 or int(hidden_dim * mlp_ratio) < 1:
+            raise ValueError("mlp_ratio must produce a positive hidden width")
+        super().__init__(
+            hidden_dim,
+            n_heads,
+            SwiGLU(hidden_dim, int(hidden_dim * mlp_ratio), hidden_dim),
+        )
 
