@@ -273,7 +273,7 @@ def test_both_fields_reach_the_generated_yaml():
     import yaml
 
     root = Path(__file__).resolve().parents[1]
-    data = yaml.safe_load((root / "configs" / "sjfpo.yaml").read_text())
+    data = yaml.safe_load((root / "configs" / "myfpo.yaml").read_text())
     cfg = MyfpoConfig()
     assert data["eval_sampling"] == cfg.eval_sampling
     assert data["stop_eval_sampling"] == cfg.stop_eval_sampling
@@ -284,7 +284,7 @@ def test_the_generator_emits_both_fields():
 
     root = __import__("pathlib").Path(__file__).resolve().parents[1]
     spec = importlib.util.spec_from_file_location(
-        "gen_cfg", root / "scripts" / "gen_sjfpo_config.py"
+        "gen_cfg", root / "scripts" / "gen_config.py"
     )
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)

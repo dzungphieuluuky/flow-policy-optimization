@@ -10,7 +10,7 @@ Trains expressive, multimodal flow-based robot policies using online reinforceme
 - Chunked rollout (`rollout.py`) with boundary diagnostics (`rollout_seam_jerk`)
 - AdaLN-Zero DiT actor with causal attention, RoPE, and a log-spaced time embedding (`flow.py`)
 - TD-MPC2-style critic: 5 members, LayerNorm + Mish, 1% dropout, REDQ min-of-2 targets (`critic.py`)
-- Independent actor and critic gradient clipping (`train_sjfpo.py`)
+- Independent actor and critic gradient clipping (`training.py`)
 - Config parity (`tests/test_config_yaml_parity.py`) and metric faithfulness (`tests/test_metric_faithfulness.py`)
 - Full diagnostic suite (`tests/test_guard_messages.py`: 76 guard-message snapshots)
 
@@ -18,7 +18,7 @@ Trains expressive, multimodal flow-based robot policies using online reinforceme
 ```bash
 uv sync                                              # installs myfpo editable + deps
 .venv/bin/python scripts/train.py --env Hopper-v5 --seed 0 --total_steps 2000
-.venv/bin/python scripts/gen_sjfpo_config.py
+.venv/bin/python scripts/gen_config.py
 ```
 
 ## Gates

@@ -8,9 +8,9 @@ One call runs one run. So call the script once per env and seed combination that
 you want.
 
     python scripts/train.py --env Hopper-v5 --seed 0 --total_steps 2000
-    python scripts/train.py --method sjfpo --env Hopper-v5 --sjfpo.policy_lr 3e-4
-    python scripts/train.py --method sjfpo --env Hopper-v5 --seed 0 \
-        --resume outputs/sjfpo_Hopper-v5_seed0/checkpoint_1000 \
+    python scripts/train.py --method myfpo --env Hopper-v5 --myfpo.policy_lr 3e-4
+    python scripts/train.py --method myfpo --env Hopper-v5 --seed 0 \
+        --resume outputs/myfpo_Hopper-v5_seed0/checkpoint_1000 \
         --total_steps 4000
 
 Flags use underscores (draccus convention, same as lerobot-train).
@@ -112,7 +112,7 @@ def apply_runtime_settings() -> dict:
 class TrainConfig:
     """Run one training job (single values only)."""
 
-    method: Literal["sjfpo"] = "sjfpo"
+    method: Literal["myfpo"] = "myfpo"
     env: str | None = None
     seed: int = 3407
     total_steps: int | None = None
@@ -122,12 +122,12 @@ class TrainConfig:
     action_dim: int | None = None
     out_dir: str = "outputs/"
     config: str | None = None  # Legacy flat YAML overlay for the method config
-    # Resume an sjfpo checkpoint dir (checkpoint_<step>/ or checkpoint_final/).
+    # Resume a myfpo checkpoint dir (checkpoint_<step>/ or checkpoint_final/).
     # The run continues the policy, the optimizer and the counters into a FRESH
     # run dir (<base>_resume[/2...]). total_steps stays an absolute env-step
     # budget.
     resume: str | None = None
-    sjfpo: MyfpoConfig = field(default_factory=MyfpoConfig)
+    myfpo: MyfpoConfig = field(default_factory=MyfpoConfig)
 
 
 def load_yaml_dict(path: str | Path) -> dict:
@@ -189,10 +189,10 @@ def apply_flat_yaml(
     return dataclasses.replace(method_cfg, **overrides) if overrides else method_cfg
 
 
-def _sjfpo_cli_fields(argv: list[str]) -> set[str]:
+def _myfpo_cli_fields(argv: list[str]) -> set[str]:
     """Return myfpo config fields explicitly present on the command line."""
     fields: set[str] = set()
-    prefix = "--sjfpo."
+    prefix = "--myfpo."
     for _index, token in enumerate(argv):
         if not token.startswith(prefix):
             continue
@@ -343,11 +343,11 @@ def main(argv: list[str] | None = None) -> int:
 
     eval_s = default_intervals(total, args.eval_steps, yaml_dict, "eval_steps", 1000)
     ckpt_i = default_intervals(total, args.save_steps, yaml_dict, "save_steps", 1000)
-    cfg = apply_flat_yaml(args.sjfpo, yaml_dict, cli_fields=_sjfpo_cli_fields(argv))
+    cfg = apply_flat_yaml(args.myfpo, yaml_dict, cli_fields=_myfpo_cli_fields(argv))
 
-    if args.resume and args.method != "sjfpo":
+    if args.resume and args.method != "myfpo":
         print(
-            f"ERROR: --resume is sjfpo-only, got --method {args.method!r}",
+            f"ERROR: --resume is myfpo-only, got --method {args.method!r}",
             file=sys.stderr,
         )
         return 1

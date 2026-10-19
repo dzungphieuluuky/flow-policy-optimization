@@ -162,7 +162,7 @@ def play(run_dir, env_id="Reacher-v5", ckpt="best", **flags):
 
 ```python
 !MPLBACKEND=Agg MUJOCO_GL=egl python scripts/train.py \
-    --method sjfpo \
+    --method myfpo \
     --env Reacher-v5 \
     --seed 3407 \
     --total_steps 1000000 \
@@ -171,7 +171,7 @@ def play(run_dir, env_id="Reacher-v5", ckpt="best", **flags):
 ```
 
 ```python
-play("outputs/sjfpo_Reacher-v5_seed3407")
+play("outputs/myfpo_Reacher-v5_seed3407")
 ```
 
 ```python
@@ -186,13 +186,13 @@ os.environ.setdefault("MPLBACKEND", "Agg")
 os.environ.setdefault("MUJOCO_GL", "egl")
 
 BASE = [
-    "--method", "sjfpo",
+    "--method", "myfpo",
     "--seed", str(SEED),
     "--total_steps", str(TOTAL_STEPS),
     "--eval_steps", str(EVAL_STEPS),
     "--save_steps", str(SAVE_STEPS),
-    "--sjfpo.report_to", "all",
-    "--sjfpo.compile", COMPILE,
+    "--myfpo.report_to", "all",
+    "--myfpo.compile", COMPILE,
 ]
 
 def run_arm(tag, extra=()):
@@ -204,30 +204,30 @@ def run_arm(tag, extra=()):
     return rc
 
 def arm_dir(tag):
-    return f"outputs/sweep_{tag}/sjfpo_{ENV}_seed{SEED}"
+    return f"outputs/sweep_{tag}/myfpo_{ENV}_seed{SEED}"
 ```
 
 ```python
 for n in ("2", "4", "8"):
-    run_arm(f"exec{n}", ["--sjfpo.n_action_steps", n])
+    run_arm(f"exec{n}", ["--myfpo.n_action_steps", n])
 
 for n in ("2", "4", "8"):
     play(arm_dir(f"exec{n}"), ENV, max_steps=300)
 ```
 
 ```python
-run_arm("clip020", ["--sjfpo.clip_param", "0.2"])
-run_arm("spo020", ["--sjfpo.spo_clip_param", "0.2"])
-run_arm("lr1e3", ["--sjfpo.policy_lr", "1e-3", "--sjfpo.critic_lr", "1e-3"])
+run_arm("clip020", ["--myfpo.clip_param", "0.2"])
+run_arm("spo020", ["--myfpo.spo_clip_param", "0.2"])
+run_arm("lr1e3", ["--myfpo.policy_lr", "1e-3", "--myfpo.critic_lr", "1e-3"])
 
 for tag in ("clip020", "spo020", "lr1e3"):
     play(arm_dir(tag), ENV, max_steps=300)
 ```
 
 ```python
-run_arm("sigreg_logonly", ["--sjfpo.sigreg_mode", "weak", "--sjfpo.sigreg_coef", "0.0"])
-run_arm("sigreg_w1e4", ["--sjfpo.sigreg_mode", "weak", "--sjfpo.sigreg_coef", "1e-4"])
-run_arm("sigreg_w1e3", ["--sjfpo.sigreg_mode", "weak", "--sjfpo.sigreg_coef", "1e-3"])
+run_arm("sigreg_logonly", ["--myfpo.sigreg_mode", "weak", "--myfpo.sigreg_coef", "0.0"])
+run_arm("sigreg_w1e4", ["--myfpo.sigreg_mode", "weak", "--myfpo.sigreg_coef", "1e-4"])
+run_arm("sigreg_w1e3", ["--myfpo.sigreg_mode", "weak", "--myfpo.sigreg_coef", "1e-3"])
 
 for tag in ("sigreg_logonly", "sigreg_w1e4", "sigreg_w1e3"):
     play(arm_dir(tag), ENV, max_steps=300)
@@ -284,11 +284,11 @@ FORGET_STEPS = TOTAL_STEPS
 
 FORGET_ARMS = {
     "ctrl": [],
-    "actor": ["--sjfpo.actor_lr", "5e-6"],
-    "critic": ["--sjfpo.critic_lr", "5e-5"],
-    "mc": ["--sjfpo.num_mc_samples", "32"],
+    "actor": ["--myfpo.actor_lr", "5e-6"],
+    "critic": ["--myfpo.critic_lr", "5e-5"],
+    "mc": ["--myfpo.num_mc_samples", "32"],
 }
-FORGET_ARMS["critics"] = ["--sjfpo.num_critics", "3"]
+FORGET_ARMS["critics"] = ["--myfpo.num_critics", "3"]
 
 TB_SNAPSHOT = {}
 
@@ -308,8 +308,8 @@ def run_forget_arm(arm, seed):
         "--total_steps", str(FORGET_STEPS),
         "--eval_steps", str(EVAL_STEPS),
         "--save_steps", str(SAVE_STEPS),
-        "--sjfpo.report_to", "all",
-        "--sjfpo.compile", COMPILE,
+        "--myfpo.report_to", "all",
+        "--myfpo.compile", COMPILE,
         *FORGET_ARMS[arm],
     ]
     before = tb_dirs()
@@ -475,14 +475,14 @@ subprocess.call([
     "--total_steps", str(FORGET_STEPS),
     "--eval_steps", str(EVAL_STEPS),
     "--save_steps", str(SAVE_STEPS),
-    "--sjfpo.report_to", "all",
-    "--sjfpo.compile", COMPILE,
+    "--myfpo.report_to", "all",
+    "--myfpo.compile", COMPILE,
     "--resume", CKPT,
 ])
 ```
 
 ```python
-from myfpo.flow import SJFPOFlowModel, SJFPOFlowResMLP
+from myfpo.flow import MyfpoFlowModel, MyfpoFlowResMLP
 
 OBS_DIM, ACT_DIM = 11, 3
 HIDDEN, HEADS, TIME_EMBED = 128, 2, 32
@@ -492,10 +492,10 @@ def n_params(module):
     return sum(p.numel() for p in module.parameters())
 
 def dit_actor(depth):
-    return SJFPOFlowModel(ACT_DIM, 8, HIDDEN, depth, HEADS, MULT, TIME_EMBED)
+    return MyfpoFlowModel(ACT_DIM, 8, HIDDEN, depth, HEADS, MULT, TIME_EMBED)
 
 def resmlp_actor(blocks, units=UNITS, mult=MULT):
-    return SJFPOFlowResMLP(ACT_DIM, 8, HIDDEN, blocks, units, mult, HEADS, TIME_EMBED)
+    return MyfpoFlowResMLP(ACT_DIM, 8, HIDDEN, blocks, units, mult, HEADS, TIME_EMBED)
 
 print(f"{'actor':>8} {'blocks':>7} {'Dense':>7} {'params':>12} {'x dit_d3':>9}")
 base = n_params(dit_actor(3))
@@ -518,9 +518,9 @@ ARCH_ENV = ENV
 ARCH_STEPS = TOTAL_STEPS
 
 ARCH_ARMS = {
-    "dit_d3":    ("dit",    "--sjfpo.dit_depth",     3),
-    "resmlp_b2": ("resmlp", "--sjfpo.resmlp_blocks", 2),
-    "resmlp_b4": ("resmlp", "--sjfpo.resmlp_blocks", 4),
+    "dit_d3":    ("dit",    "--myfpo.dit_depth",     3),
+    "resmlp_b2": ("resmlp", "--myfpo.resmlp_blocks", 2),
+    "resmlp_b4": ("resmlp", "--myfpo.resmlp_blocks", 4),
 }
 
 ARCH_TB = {}
@@ -542,9 +542,9 @@ def run_arch_arm(arm, seed):
         "--total_steps", str(ARCH_STEPS),
         "--eval_steps", str(EVAL_STEPS),
         "--save_steps", str(SAVE_STEPS),
-        "--sjfpo.report_to", "all",
-        "--sjfpo.compile", COMPILE,
-        "--sjfpo.actor_arch", arch, flag, str(value),
+        "--myfpo.report_to", "all",
+        "--myfpo.compile", COMPILE,
+        "--myfpo.actor_arch", arch, flag, str(value),
     ]
     print(f"\n=== {tag} ===\n{' '.join(cmd)}\n", flush=True)
     rc = subprocess.call(cmd)

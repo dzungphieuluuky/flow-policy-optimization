@@ -165,7 +165,7 @@ where `r = π_θ_new(ε|s) / π_θ_old(ε|s)` (tractable, since `ε` is low-dime
 ## 6. Experimental Landscape
 
 ### Datasets / Benchmarks
-- `LeRobot` (MuJoCo-based, humanoid, manipulation) — used in `myfpo` (`sjfpo.yaml`, `envs.yaml`).
+- `LeRobot` (MuJoCo-based, humanoid, manipulation) — used in `myfpo` (`myfpo.yaml`, `envs.yaml`).
 - Continuous control: `Hopper`, `Ant`, `Humanoid` (OpenAI Gym / MuJoCo).
 - Manipulation: single-arm, bimanual tasks in simulation and real hardware.
 - Metrics: success rate, episode return, convergence speed (steps to threshold), entropy of action distribution (to measure exploration collapse), value drift (`measure_value_drift` in `myfpo`).
@@ -177,7 +177,7 @@ where `r = π_θ_new(ε|s) / π_θ_old(ε|s)` (tractable, since `ε` is low-dime
 - `scripts/AGENTS.md` notes deleted tests lost 19 (`test_eval_interval`), 4 (`test_tracking`), 1 (`test_metric_audit`), 1 (`test_fpo_parity`). These covered removed guard conditions (`check_divergence`, `check_regression`), tracking keys, metric audit, and paper config mapping.
 
 ### Reproducibility
-- `myfpo` uses deterministic seeding (`seed` in config), `jupytext`-generated notebooks (`sjfpo_online.md` → `.ipynb`), and fixed `pytest -n 4` distributed runs.
+- `myfpo` uses deterministic seeding (`seed` in config), `jupytext`-generated notebooks (`myfpo_online.md` → `.ipynb`), and fixed `pytest -n 4` distributed runs.
 - `verify_deps.sh` was deleted; dependency verification relies on `pyproject.toml` and manual inspection.
 
 ---
@@ -215,7 +215,7 @@ One-step methods (`OGPO`, `DBPO`) trade expressivity for latency. Open: adaptive
 `GPC` requires accurate action-conditioned dynamics. Open: learning robust world models from sparse robot interaction without expert data; handling contact dynamics and non-smooth transitions.
 
 ### 8.6 Scaling Laws for Flow-Based RL
-Unknown: how does sample complexity scale with action dimension `D`, chunk length `H`, and MC samples `M`? `myfpo` provides a benchmark (`sjfpo.yaml`), but systematic scaling studies are missing.
+Unknown: how does sample complexity scale with action dimension `D`, chunk length `H`, and MC samples `M`? `myfpo` provides a benchmark (`myfpo.yaml`), but systematic scaling studies are missing.
 
 ---
 
@@ -254,7 +254,7 @@ FPO/ASPO extends PPO (`Schulman et al.`) and SPO (`Wang et al.`) to implicit pol
 
 ### Underexplored Directions
 - **Adaptive chunking**: Vary chunk length based on state (e.g., longer chunks in open space, shorter near obstacles).
-- **Multi-task flow policies**: Can one flow model represent policies for multiple robot tasks? `myfpo` uses a single `SJFPOConfig`; multi-task extensions are untested.
+- **Multi-task flow policies**: Can one flow model represent policies for multiple robot tasks? `myfpo` uses a single `MyfpoConfig`; multi-task extensions are untested.
 - **Real-world deployment**: Most results are simulation (`LeRobot`, MuJoCo); real-world transfer (`sim-to-real`) is mentioned in `FPO++` but not extensively validated.
 
 ---

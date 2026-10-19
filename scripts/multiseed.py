@@ -11,7 +11,7 @@ reads several summary CSVs and writes the comparison table.
     python scripts/multiseed.py run --env Hopper-v5 --seeds 3407,1,2,3,4 \
         --total_steps 20000 --out outputs/sweep_mean
     python scripts/multiseed.py run --env Hopper-v5 --seeds 3407,1,2,3,4 \
-        --sjfpo.cfm_loss_reduction mean --out outputs/sweep_mean
+        --myfpo.cfm_loss_reduction mean --out outputs/sweep_mean
     python scripts/multiseed.py compare \
         outputs/sweep_mean/sweep_summary.csv outputs/sweep_sum/sweep_summary.csv
 
@@ -41,7 +41,7 @@ from myfpo.configuration import MyfpoConfig
 from myfpo.evaluator import bootstrap_interval, median_of
 
 from train import (
-    _sjfpo_cli_fields,
+    _myfpo_cli_fields,
     apply_flat_yaml,
     apply_runtime_settings,
     configure_torch_cuda,
@@ -80,7 +80,7 @@ class RunArgs:
     eval_steps: int | None = None
     save_steps: int | None = None
     out: str = "outputs/multiseed"
-    sjfpo: MyfpoConfig = dataclasses.field(default_factory=MyfpoConfig)
+    myfpo: MyfpoConfig = dataclasses.field(default_factory=MyfpoConfig)
 
 
 def parse_seeds(raw: str | None, count: int, start: int) -> list[int]:
@@ -263,15 +263,15 @@ def run_mode(args) -> int:
     eval_s = default_intervals(total, args.eval_steps, {}, "eval_steps", 1000)
     ckpt_i = default_intervals(total, args.save_steps, {}, "save_steps", 1000)
     argv = list(sys.argv[1:])
-    cfg = apply_flat_yaml(args.sjfpo, {}, cli_fields=_sjfpo_cli_fields(argv))
+    cfg = apply_flat_yaml(args.myfpo, {}, cli_fields=_myfpo_cli_fields(argv))
     seeds = parse_seeds(args.seeds, args.seed_count, args.seed_start)
-    label = args.label or f"sjfpo_{args.env}"
+    label = args.label or f"myfpo_{args.env}"
 
     out_root = Path(args.out)
     rows: list[dict] = []
     failures: list[dict] = []
     for seed in seeds:
-        run_dir = resolve_run_dir(out_root, "sjfpo", args.env, seed, None)
+        run_dir = resolve_run_dir(out_root, "myfpo", args.env, seed, None)
         run_dir.mkdir(parents=True, exist_ok=True)
         print(f"=== seed {seed} -> {run_dir} ===", flush=True)
         try:

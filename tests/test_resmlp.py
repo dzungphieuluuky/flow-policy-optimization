@@ -249,7 +249,7 @@ def test_the_config_names_the_three_resmlp_knobs_and_validates_them():
 def test_the_generated_config_carries_the_knobs():
     from pathlib import Path
 
-    yaml = (Path(__file__).resolve().parents[1] / "configs" / "sjfpo.yaml").read_text()
+    yaml = (Path(__file__).resolve().parents[1] / "configs" / "myfpo.yaml").read_text()
     for key in ("resmlp_blocks:", "resmlp_units:", "resmlp_hidden_mult:"):
         assert key in yaml, key
 

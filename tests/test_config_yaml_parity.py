@@ -1,4 +1,4 @@
-"""``configs/sjfpo.yaml`` must equal the dataclass defaults."""
+"""``configs/myfpo.yaml`` must equal the dataclass defaults."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ import yaml
 from myfpo.configuration import MyfpoConfig
 
 ROOT = Path(__file__).resolve().parents[1]
-YAML_PATH = ROOT / "configs" / "sjfpo.yaml"
+YAML_PATH = ROOT / "configs" / "myfpo.yaml"
 
 
 @pytest.fixture(scope="module")
@@ -39,8 +39,8 @@ def test_yaml_matches_the_dataclass_defaults(loaded: dict):
         if default != value:
             drift[key] = (value, default)
     assert not drift, (
-        "configs/sjfpo.yaml has drifted from the dataclass. Regenerate with "
-        f".venv/bin/python scripts/gen_sjfpo_config.py\ndrifted: {drift}"
+        "configs/myfpo.yaml has drifted from the dataclass. Regenerate with "
+        f".venv/bin/python scripts/gen_config.py\ndrifted: {drift}"
     )
 
 
@@ -49,7 +49,7 @@ def test_generator_is_deterministic(loaded: dict):
     import importlib.util
 
     spec = importlib.util.spec_from_file_location(
-        "gen_sjfpo_config", ROOT / "scripts" / "gen_sjfpo_config.py"
+        "gen_config", ROOT / "scripts" / "gen_config.py"
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

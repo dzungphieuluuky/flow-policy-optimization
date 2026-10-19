@@ -131,7 +131,7 @@ baseline cannot be thresholded honestly. Watch it against
 
 ---
 
-## Gradient clipping — `src/myfpo/train_sjfpo.py`
+## Gradient clipping — `src/myfpo/training.py`
 
 Actor and critic are clipped **independently**, each to `max_grad_norm=1.0`,
 sharing one `optimizer.step()`. One joint clip lets whichever side has the larger
@@ -168,8 +168,8 @@ attention, encoder, critic, gae, evaluator ──► (leaf or near-leaf networks
 flow ───────────────► attention, layers
 metrics ────────────► fpo_core (sampling + broadcasting)
 rollout ────────────► collector, gae, metrics
-modeling_sjfpo ─────► flow, critic, encoder, fpo_core, metrics, rollout
-train_sjfpo ────────► everything above, plus tracking, runner, checkpointing
+modeling ────────────► flow, critic, encoder, fpo_core, metrics, rollout
+training ────────────► everything above, plus tracking, runner, checkpointing
 ```
 
 No cycles, including deferred imports. `rollout` depends on nine members of the

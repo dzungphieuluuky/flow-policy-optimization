@@ -255,7 +255,7 @@ def main() -> int:
         env.close()
 
     run_dir = Path(args.out_dir) / f"seed{args.seed}"
-    tb_dir = tensorboard_dir(cfg, "sjfpo", args.env, args.seed)
+    tb_dir = tensorboard_dir(cfg, "myfpo", args.env, args.seed)
     series = read_scalars(tb_dir)
     if CLIP_SERIES not in series:
         print(

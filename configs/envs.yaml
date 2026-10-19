@@ -8,7 +8,7 @@
 # Dims below MEASURED with gymnasium 1.x + mujoco on 2026-09-14.
 #
 # Continuous-action envs only. CartPole-v1 and MountainCar-v0 were removed:
-# both have Discrete action spaces, and SJFPO is a continuous flow policy that
+# both have Discrete action spaces, and myfpo is a continuous flow policy that
 # emits float action vectors with no argmax/discrete conversion anywhere in the
 # rollout. Their true action_dim (2 and 3, i.e. Discrete.n) also disagrees with
 # math.prod(action_space.shape) == 1, so they tripped the startup live-space

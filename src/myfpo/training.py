@@ -515,7 +515,7 @@ def run_training(
     tracker = build_tracker(
         cfg,
         out_dir=out_dir,
-        method="sjfpo",
+        method="myfpo",
         env_name=env_name,
         seed=seed,
         total_steps=total_steps,
@@ -710,7 +710,7 @@ def run_training(
         artifacts.append(str(csv_path))
 
     return {
-        "method": "sjfpo",
+        "method": "myfpo",
         "env_name": env_name,
         "seed": seed,
         "reward_mean_last10": (
