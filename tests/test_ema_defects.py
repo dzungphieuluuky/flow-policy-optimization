@@ -2,24 +2,12 @@
 
 Found from a Humanoid run that peaked at 131k and decayed 46%."""
 
-import dataclasses
 import warnings
 
 import torch
-from lerobot.configs.policies import PolicyFeature
-from lerobot.configs.types import FeatureType
 
-from myfpo.configuration_sjfpo import SJFPOConfig
+from fixtures import make_policy
 from myfpo.modeling_sjfpo import SJFPOPolicy
-
-
-def _policy(**kw) -> SJFPOPolicy:
-    cfg = dataclasses.replace(
-        SJFPOConfig(**kw),
-        input_features={"observation.state": PolicyFeature(FeatureType.STATE, (5,))},
-        output_features={"action": PolicyFeature(FeatureType.ACTION, (2,))},
-    )
-    return SJFPOPolicy(cfg)
 
 
 def _warm(p: SJFPOPolicy) -> SJFPOPolicy:
@@ -32,7 +20,7 @@ def _warm(p: SJFPOPolicy) -> SJFPOPolicy:
 
 
 def test_ema_shadow_covers_the_encoder():
-    p = _warm(_policy())
+    p = _warm(make_policy())
     enc = {f"encoder.{n}" for n, _ in p.encoder.named_parameters()}
     actor = {f"actor.{n}" for n, _ in p.actor.named_parameters()}
     assert enc, "the encoder has no parameters, test is vacuous"
@@ -41,13 +29,13 @@ def test_ema_shadow_covers_the_encoder():
 
 
 def test_ema_names_are_namespaced_so_the_two_modules_cannot_collide():
-    p = _warm(_policy())
+    p = _warm(make_policy())
     for name in p._ema_shadow:
         assert name.startswith(("actor.", "encoder.")), name
 
 
 def test_swap_round_trips_actor_and_encoder_together():
-    p = _warm(_policy())
+    p = _warm(make_policy())
     before = {n: q.detach().clone() for n, q in p._ema_named_params().items()}
     shadow = {n: t.clone() for n, t in p._ema_shadow.items()}
 
@@ -63,7 +51,7 @@ def test_swap_round_trips_actor_and_encoder_together():
 
 def test_swap_in_actually_moves_the_encoder():
     """The old bug: only self.actor moved, so the encoder stayed live."""
-    p = _warm(_policy())
+    p = _warm(make_policy())
     with torch.no_grad():
         for q in p.encoder.parameters():
             q.add_(100.0)
@@ -77,7 +65,7 @@ def test_swap_in_actually_moves_the_encoder():
 
 
 def test_an_actor_only_shadow_is_reseeded_not_half_applied():
-    p = _warm(_policy())
+    p = _warm(make_policy())
     legacy = {"initialised": True, "shadow_params": {
         n: torch.zeros_like(q) for n, q in p.actor.named_parameters()
     }}
@@ -89,9 +77,9 @@ def test_an_actor_only_shadow_is_reseeded_not_half_applied():
 
 
 def test_a_matching_shadow_is_restored():
-    p = _warm(_policy())
+    p = _warm(make_policy())
     state = p.ema_state_dict()
-    fresh = _policy()
+    fresh = make_policy()
     assert fresh.load_ema_state_dict(state) is True
     assert set(fresh._ema_shadow) == set(p._ema_shadow)
 
@@ -100,6 +88,6 @@ def test_a_matching_shadow_is_restored():
 
 
 def test_the_ema_state_dict_carries_the_encoder():
-    p = _warm(_policy())
+    p = _warm(make_policy())
     state = p.ema_state_dict()
     assert any(k.startswith("encoder.") for k in state["shadow_params"])

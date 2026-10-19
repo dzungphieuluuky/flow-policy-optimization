@@ -25,9 +25,9 @@ def _pendulum_vec(n: int = NUM_ENVS):
     return gym.vector.SyncVectorEnv([make(i) for i in range(n)])
 
 
-def _collect(total_steps: int = 240, n: int = NUM_ENVS):
-    envs = _pendulum_vec(n)
-    buffer = RolloutBuffer(
+def _buffer() -> RolloutBuffer:
+    """A buffer big enough for any rollout in this file."""
+    return RolloutBuffer(
         max_chunks=1000,
         max_steps=4000,
         obs_steps=OBS_STEPS,
@@ -35,6 +35,11 @@ def _collect(total_steps: int = 240, n: int = NUM_ENVS):
         action_horizon=HORIZON,
         action_dim=ACT_DIM,
     )
+
+
+def _collect(total_steps: int = 240, n: int = NUM_ENVS):
+    envs = _pendulum_vec(n)
+    buffer = _buffer()
     collect_chunks_vec(
         envs,
         lambda s: torch.zeros(s.shape[0], HORIZON, ACT_DIM),
@@ -72,14 +77,7 @@ def test_chunk_state_is_the_window_the_policy_saw():
     """A recording policy captures what it was handed. The buffer must match."""
     pytest.importorskip("gymnasium")
     envs = _pendulum_vec()
-    buffer = RolloutBuffer(
-        max_chunks=1000,
-        max_steps=4000,
-        obs_steps=OBS_STEPS,
-        obs_dim=OBS_DIM,
-        action_horizon=HORIZON,
-        action_dim=ACT_DIM,
-    )
+    buffer = _buffer()
     seen: list[torch.Tensor] = []
 
     def recording_policy(states: torch.Tensor) -> torch.Tensor:

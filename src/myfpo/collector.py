@@ -453,8 +453,8 @@ def collect_chunks_vec(
         for i in range(n):
             if prev_close_reason[i] == _CLOSE_CONTINUE and prev_chunk_indices[i] is not None:
                 buffer.assert_budget_cut_is_not_a_timeout(prev_chunk_indices[i])
-        return buffer
-
     except (ValueError, RuntimeError, KeyError):
         flush_on_collection_error(on_error_flush)
         raise
+    else:
+        return buffer

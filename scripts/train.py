@@ -221,13 +221,13 @@ def resumed_cfg_overrides(cfg) -> list[str]:
     """
     try:
         fresh = type(cfg)()
-    except Exception:
+    except TypeError:
         return []
     touched = []
     for f in dataclasses.fields(cfg):
         try:
             cur, default = getattr(cfg, f.name), getattr(fresh, f.name)
-        except Exception:
+        except AttributeError:
             continue
         if (
             (isinstance(cur, (bool, int, float, str)) or cur is None)
@@ -384,7 +384,7 @@ def main(argv: list[str] | None = None) -> int:
             args.resume,
             runtime,
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - a run can fail any way; the traceback is printed
         traceback.print_exc(file=sys.stderr)
         print(
             json.dumps(

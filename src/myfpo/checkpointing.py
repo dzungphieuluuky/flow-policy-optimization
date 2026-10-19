@@ -5,8 +5,9 @@ from __future__ import annotations
 import contextlib
 import json
 import os
-import warnings
+import pickle
 import tempfile
+import warnings
 from pathlib import Path
 
 import torch
@@ -143,8 +144,13 @@ def load_rng(d: Path) -> None:
         return
     try:
         rng = torch.load(path, map_location="cpu", weights_only=True)
-    except Exception:
-        return  # A corrupt RNG file must not block a resume.
+    except (OSError, RuntimeError, ValueError, EOFError, pickle.UnpicklingError):
+        warnings.warn(
+            f"{path} is unreadable; the run resumes without the saved RNG state",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return
     if "torch" in rng:
         torch.set_rng_state(rng["torch"])
     if "cuda" in rng and torch.cuda.is_available():

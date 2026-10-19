@@ -279,7 +279,7 @@ def run_mode(args) -> int:
                 args.env, seed, run_dir, cfg, total, eval_s, ckpt_i,
                 None, None, None, None,
             )
-        except Exception as exc:  # one bad seed must not stop the rest
+        except Exception as exc:  # noqa: BLE001 - one bad seed must not stop the rest
             traceback.print_exc(file=sys.stderr)
             failures.append({"seed": seed, "error": str(exc)})
             continue

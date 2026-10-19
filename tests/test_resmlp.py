@@ -25,6 +25,7 @@ from torch import nn
 
 from lerobot.configs.policies import PolicyFeature
 from lerobot.configs.types import FeatureType
+from fixtures import make_batch
 
 from myfpo.configuration_sjfpo import ACTOR_ARCHITECTURES, SJFPOConfig
 from myfpo.flow import (
@@ -260,18 +261,7 @@ def test_a_tracked_run_works_for_every_actor():
             OBS, ACT, _cfg(actor_arch=arch, compile=False), device="cpu",
             action_low=[-1.0] * ACT, action_high=[1.0] * ACT,
         )
-        n, mc = 2, policy.config.num_mc_samples
-        batch = {
-            "observation.state": torch.zeros(n, policy.config.n_obs_steps, OBS),
-            "action": torch.zeros(n, HORIZON, ACT),
-            "action_is_pad": torch.zeros(n, HORIZON, dtype=torch.bool),
-            "normalised_advantages": torch.ones(n),
-            "raw_returns": torch.ones(n),
-            "mc_t": torch.ones(n, mc, HORIZON, 1),
-            "mc_eps": torch.randn(n, mc, HORIZON, ACT),
-            "behavior_cfm_loss": torch.ones(n, mc),
-            "behavior_cfm_loss_token": torch.ones(n, mc, HORIZON),
-        }
+        batch = make_batch(policy, obs_dim=OBS, action_dim=ACT, horizon=HORIZON)
         loss, info = policy(batch, compute_info=True)
         assert torch.isfinite(loss).all(), arch
         assert "mean_log_ratio" in info, arch

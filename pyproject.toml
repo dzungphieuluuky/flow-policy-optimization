@@ -75,7 +75,12 @@ extend-exclude = ["*.ipynb"]
 # B: bugbear (unused loop variables, zip without strict)
 # PTH: pathlib (open() and os.path calls go through Path)
 # PLW: pylint warnings (global statements, redefined loop names)
-select = ["F", "E4", "E7", "E9", "ARG", "RUF", "SIM", "RET", "B", "PTH", "PLW"]
+# BLE: blind excepts. The three that remain say why in a noqa.
+# TRY300: a `return` at the end of a `try` belongs in its `else`.
+select = [
+    "F", "E4", "E7", "E9", "ARG", "RUF", "SIM", "RET", "B", "PTH", "PLW", "BLE",
+    "TRY300",
+]
 # E501 is not enforced: the file style is long lines, and a separate formatter
 # owns line width.
 # B905: `zip()` is used on equal-length pairs on purpose.

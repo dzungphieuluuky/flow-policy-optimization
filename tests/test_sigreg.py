@@ -10,6 +10,7 @@ from lerobot.configs.types import FeatureType
 
 from myfpo.configuration_sjfpo import SJFPOConfig
 from myfpo.fpo_core import sigreg_decorr_loss, sigreg_weak_loss
+from fixtures import make_batch
 from myfpo.train_sjfpo import build_policy
 
 OBS, ACT, HORIZON, MC = 6, 3, 4, 4
@@ -38,18 +39,9 @@ def _policy_cfg(**kw):
 
 
 def _policy_batch(policy, n=2):
-    mc = policy.config.num_mc_samples
-    return {
-        "observation.state": torch.zeros(n, policy.config.n_obs_steps, OBS),
-        "action": torch.zeros(n, HORIZON, ACT),
-        "action_is_pad": torch.zeros(n, HORIZON, dtype=torch.bool),
-        "normalised_advantages": torch.ones(n),
-        "raw_returns": torch.ones(n),
-        "mc_t": torch.ones(n, mc, HORIZON, 1),
-        "mc_eps": torch.randn(n, mc, HORIZON, ACT),
-        "behavior_cfm_loss": torch.ones(n, mc),
-        "behavior_cfm_loss_token": torch.ones(n, mc, HORIZON),
-    }
+    return make_batch(
+        policy, obs_dim=OBS, action_dim=ACT, horizon=HORIZON, n=n
+    )
 
 
 def _policy(**kw):

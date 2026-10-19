@@ -1,12 +1,8 @@
 """The critic's regression target must survive the rollout buffer in fp32."""
 
-import dataclasses
-
 import torch
-from lerobot.configs.policies import PolicyFeature
-from lerobot.configs.types import FeatureType
 
-from myfpo.configuration_sjfpo import SJFPOConfig
+from fixtures import make_policy
 from myfpo.metrics import subsampled_min
 from myfpo.modeling_sjfpo import SJFPOPolicy
 from myfpo.rollout import run_rollout
@@ -14,15 +10,6 @@ from myfpo.train_sjfpo import (
     measure_value_drift,
 )
 from myfpo.utils import resolve_storage_dtype
-
-
-def _policy(**kw) -> SJFPOPolicy:
-    cfg = dataclasses.replace(
-        SJFPOConfig(**kw),
-        input_features={"observation.state": PolicyFeature(FeatureType.STATE, (5,))},
-        output_features={"action": PolicyFeature(FeatureType.ACTION, (2,))},
-    )
-    return SJFPOPolicy(cfg)
 
 
 def test_bf16_actually_destroys_a_large_target():
@@ -84,7 +71,7 @@ def test_generate_rollout_does_not_cast_the_value_target():
 
 def test_drift_diagnostics_take_the_bf16_observations_they_stored():
     """generate_rollout stores boot_observations/boot_actions in storage_dtype."""
-    policy = _policy()
+    policy = make_policy()
     obs = torch.randn(3, policy.config.n_obs_steps, 5)
     actions = torch.randn(3, policy.config.action_horizon, 2)
     # Same fraction generate_rollout bootstrapped with: a full-horizon proposal that only runs for n_action_steps.

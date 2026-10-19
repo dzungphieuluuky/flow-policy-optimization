@@ -85,7 +85,7 @@ def test_no_discrete_action_envs_are_registered():
             continue  # optional extra, not installed in every environment.
         try:
             env = gym.make(env_id)
-        except Exception as exc:  # mujoco / robotics wheels may be absent.
+        except Exception as exc:  # noqa: BLE001 - mujoco / robotics wheels may be absent
             pytest.skip(f"{env_id} unavailable: {exc}")
         try:
             space = env.action_space

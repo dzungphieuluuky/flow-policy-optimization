@@ -265,7 +265,6 @@ def make_vec_env(env_name: str, num_envs: int, record: dict | None = None):
         env = gym.vector.AsyncVectorEnv(env_fns, context="forkserver")
         if record is not None:
             record["vector_env"] = "forkserver"
-        return env
     except (ValueError, RuntimeError, ImportError) as exc:
         warnings.warn(
             f"AsyncVectorEnv(env_name={env_name!r}, num_envs={num_envs}, "
@@ -278,6 +277,8 @@ def make_vec_env(env_name: str, num_envs: int, record: dict | None = None):
         if record is not None:
             record["vector_env"] = "sync"
         return gym.vector.SyncVectorEnv(env_fns)
+    else:
+        return env
 
 
 def collect_rollouts(policy, train_env, cfg, action_low, action_high, steps_to_go):

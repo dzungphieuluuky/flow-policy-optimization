@@ -2,7 +2,7 @@
 
 Entry: `scripts/train.py` (CLI > flat YAML `--config` > `SJFPOConfig` defaults). `uv sync` installs the project editable, so `import myfpo` works from any directory; no `sys.path` juggling in the scripts.
 
-Convention: exit codes `0/1/2/4`. Gates: `pytest -q tests` (`pyproject.toml:59`) and `ruff check .` (`pyproject.toml:61`). No CI (`AGENTS.md:40`). `tests/test_config_yaml_parity.py` enforces `configs/sjfpo.yaml` parity (`tests/test_config_yaml_parity.py`). Notebook pair: `sjfpo_online.md` / `.ipynb` (`jupytext --sync` idempotent; `cell_metadata_filter: -all`).
+Convention: exit codes `0/1/2/4` (0 = ok, 1 = bad command line or a stale generator table, 2 = the run failed, 4 = an artifact is missing). Gates: `pytest -q tests` (`pyproject.toml:59`) and `ruff check .` (`pyproject.toml:61`). No CI (`AGENTS.md:40`). `tests/test_config_yaml_parity.py` enforces `configs/sjfpo.yaml` parity (`tests/test_config_yaml_parity.py`). Notebook pair: `sjfpo_online.md` / `.ipynb` (`jupytext --sync` idempotent; `cell_metadata_filter: -all`).
 
 Anti-patterns:
 - Do not add runner scalars (`total_steps`, `eval_steps`, `save_steps`, `obs_dim`, `action_dim`) to `SJFPOConfig`. Bypass config by design (`train_sjfpo.py`).
