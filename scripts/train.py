@@ -44,11 +44,11 @@ import draccus
 # Import src/.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from myfpo.config import (  # noqa: E402
+from myfpo.config import (
     KNOWN_ENVS,
     get_observation_action_dim,
 )
-from myfpo.configuration_sjfpo import SJFPOConfig  # noqa: E402
+from myfpo.configuration_sjfpo import SJFPOConfig
 
 
 def configure_torch_cuda() -> bool:
@@ -58,7 +58,7 @@ def configure_torch_cuda() -> bool:
     environment still reaches the import error further down with context.
     """
     try:
-        import torch  # noqa: F401
+        import torch
     except ImportError:
         return False
     if not torch.cuda.is_available():
@@ -196,7 +196,7 @@ def _sjfpo_cli_fields(argv: list[str]) -> set[str]:
     """Return SJFPO config fields explicitly present on the command line."""
     fields: set[str] = set()
     prefix = "--sjfpo."
-    for index, token in enumerate(argv):
+    for _index, token in enumerate(argv):
         if not token.startswith(prefix):
             continue
         name = token[len(prefix) :].split("=", 1)[0]
@@ -232,10 +232,12 @@ def resumed_cfg_overrides(cfg) -> list[str]:
             cur, default = getattr(cfg, f.name), getattr(fresh, f.name)
         except Exception:
             continue
-        if isinstance(cur, (bool, int, float, str)) or cur is None:
-            if isinstance(default, (bool, int, float, str)) or default is None:
-                if cur != default:
-                    touched.append(f.name)
+        if (
+            (isinstance(cur, (bool, int, float, str)) or cur is None)
+            and (isinstance(default, (bool, int, float, str)) or default is None)
+            and cur != default
+        ):
+            touched.append(f.name)
     return sorted(touched)
 
 
@@ -278,11 +280,11 @@ def run_single(
 
     if env_id.startswith("AdroitHand"):
         try:
-            import gymnasium_robotics  # noqa: F401 (registers Adroit env ids)
-        except ImportError:
+            import gymnasium_robotics  # noqa: F401 - registers the Adroit env ids
+        except ImportError as exc:
             raise RuntimeError(
                 f"{env_id} needs gymnasium-robotics (pip install gymnasium-robotics)"
-            )
+            ) from exc
 
     env = gym.make(env_id)
     try:

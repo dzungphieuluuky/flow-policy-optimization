@@ -25,7 +25,7 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from _shared import compare, flatten  # noqa: E402
+from _shared import compare, flatten
 
 BASELINE = Path(__file__).with_name("eval_old.pt")
 

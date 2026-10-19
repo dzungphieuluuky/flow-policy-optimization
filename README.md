@@ -20,6 +20,12 @@ Trains expressive, multimodal flow-based robot policies using online reinforceme
 .venv/bin/python scripts/gen_sjfpo_config.py
 ```
 
+## Gates
+```bash
+PYTHONPATH=src .venv/bin/python -m pytest -q   # behaviour
+uv run ruff check .                            # dead code, unused names
+```
+
 ## Key papers
 - FPO: `arXiv:2507.21053` (ICLR 2026)
 - FPO++: `arXiv:2602.02481`

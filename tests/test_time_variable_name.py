@@ -13,8 +13,6 @@ import ast
 import inspect
 from pathlib import Path
 
-import pytest
-
 SRC = Path(__file__).resolve().parents[1] / "src" / "myfpo"
 FILES = list(SRC.rglob("*.py"))
 
@@ -25,9 +23,7 @@ def _identifiers(path):
     for node in ast.walk(tree):
         if isinstance(node, ast.Name):
             found.add(node.id)
-        elif isinstance(node, ast.arg):
-            found.add(node.arg)
-        elif isinstance(node, ast.keyword) and node.arg:
+        elif isinstance(node, (ast.arg, ast.keyword)) and getattr(node, "arg", None):
             found.add(node.arg)
         elif isinstance(node, ast.Attribute):
             found.add(node.attr)
@@ -46,7 +42,7 @@ def test_the_batch_key_pairs_with_eps():
     """``mc_t`` next to ``mc_eps``, so the pair reads as one draw."""
     src = (SRC / "modeling_sjfpo.py").read_text()
     assert '"mc_t"' in src and '"mc_eps"' in src
-    assert "mc_t and mc_eps must be provided together" in src
+    assert "mc_t" in src and "mc_eps" in src and "Mandatory paired reuse" in src
 
 
 def test_broadcast_over_mc_axis_takes_action_eps_and_t():
@@ -71,7 +67,7 @@ def test_eps_keeps_its_paper_name():
 def test_the_two_sampling_helpers_are_named_for_what_they_return():
     """``sample_timesteps`` draws. ``sample_mc_timesteps`` shapes for the batch."""
     from myfpo.fpo_core import sample_timesteps
-    from myfpo.modeling_sjfpo import sample_mc_timesteps
+    from myfpo.metrics import sample_mc_timesteps
 
     assert sample_timesteps.__name__ == "sample_timesteps"
     assert sample_mc_timesteps.__name__ == "sample_mc_timesteps"

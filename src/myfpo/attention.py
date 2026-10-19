@@ -53,20 +53,20 @@ class SelfAttention(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Self-attention over the ``L`` action tokens. The shape is preserved."""
-        b, l, _ = x.shape
+        b, seq, _ = x.shape
         h = self.n_heads
         d = self.head_dim
 
         qkv = self.qkv(x)
         q, k, v = qkv.chunk(3, dim=-1)
-        q = q.view(b, l, h, d).transpose(1, 2)
-        k = k.view(b, l, h, d).transpose(1, 2)
-        v = v.view(b, l, h, d).transpose(1, 2)
+        q = q.view(b, seq, h, d).transpose(1, 2)
+        k = k.view(b, seq, h, d).transpose(1, 2)
+        v = v.view(b, seq, h, d).transpose(1, 2)
 
         q = _rope(q, self.inv_freq)
         k = _rope(k, self.inv_freq)
         y = F.scaled_dot_product_attention(q, k, v, is_causal=True)
-        y = y.transpose(1, 2).reshape(b, l, h * d)
+        y = y.transpose(1, 2).reshape(b, seq, h * d)
         return self.out(y)
 
 

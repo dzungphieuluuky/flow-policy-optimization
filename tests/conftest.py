@@ -42,7 +42,7 @@ def _discard_mujoco_log() -> None:
         print(f"\nleft {MUJOCO_LOG} in place: {exc}")
 
 
-def pytest_sessionfinish(session, exitstatus):
+def pytest_sessionfinish(session, exitstatus):  # noqa: ARG001 - pytest names the hook
     """Clear the MuJoCo log, then honour ``--snapshot-regen``.
 
     The cleanup runs first and does not return early, so the snapshot rewrite

@@ -137,11 +137,14 @@ def test_the_trainer_builds_both_adapters_once():
 def test_the_trainer_reads_both_names_from_the_config():
     import inspect
 
-    from myfpo.train_sjfpo import train_sjfpo_run
+    from myfpo.train_sjfpo import evaluate_policy, train_sjfpo_run
 
     src = inspect.getsource(train_sjfpo_run)
-    assert "reported_name = cfg.eval_sampling" in src
-    assert "stop_name = cfg.stop_eval_sampling" in src
+    assert 'runtime["eval_sampling"] = cfg.eval_sampling' in src
+    assert 'runtime["stop_eval_sampling"] = cfg.stop_eval_sampling' in src
+    eval_src = inspect.getsource(evaluate_policy)
+    assert "reported_name=cfg.eval_sampling" in eval_src
+    assert "stop_name=cfg.stop_eval_sampling" in eval_src
 
 
 def test_each_start_is_evaluated_once():

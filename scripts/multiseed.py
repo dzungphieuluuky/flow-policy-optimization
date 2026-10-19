@@ -36,19 +36,18 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-import draccus  # noqa: E402
+import draccus
 
-from myfpo.config import KNOWN_ENVS  # noqa: E402
-from myfpo.configuration_sjfpo import SJFPOConfig  # noqa: E402
-from myfpo.evaluator import bootstrap_interval, median_of  # noqa: E402
+from myfpo.config import KNOWN_ENVS
+from myfpo.configuration_sjfpo import SJFPOConfig
+from myfpo.evaluator import bootstrap_interval, median_of
 
-from train import (  # noqa: E402
+from train import (
     _sjfpo_cli_fields,
     apply_flat_yaml,
     apply_runtime_settings,
     configure_torch_cuda,
     default_intervals,
-    load_yaml_dict,
     resolve_run_dir,
     run_single,
 )
@@ -90,14 +89,14 @@ def parse_seeds(raw: str | None, count: int, start: int) -> list[int]:
     """Read a seed list, or build ``count`` seeds starting at ``start``."""
     if raw:
         out: list[int] = []
-        for token in raw.split(","):
-            token = token.strip()
+        for raw_token in raw.split(","):
+            token = raw_token.strip()
             if not token:
                 continue
             try:
                 out.append(int(token))
-            except ValueError:
-                raise SystemExit(f"ERROR: --seeds holds a non-integer: {token!r}")
+            except ValueError as exc:
+                raise SystemExit(f"ERROR: --seeds holds a non-integer: {token!r}") from exc
         if not out:
             raise SystemExit("ERROR: --seeds holds no integer")
         return out
@@ -282,7 +281,7 @@ def run_mode(args) -> int:
                 args.env, seed, run_dir, cfg, total, eval_s, ckpt_i,
                 None, None, None, None,
             )
-        except Exception as exc:  # noqa: BLE001 - one bad seed must not stop the rest
+        except Exception as exc:  # one bad seed must not stop the rest
             traceback.print_exc(file=sys.stderr)
             failures.append({"seed": seed, "error": str(exc)})
             continue

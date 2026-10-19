@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import json
 import sys
@@ -17,7 +18,7 @@ from lerobot.configs.types import FeatureType, PolicyFeature
 from lerobot.utils.random_utils import set_seed
 
 from myfpo.checkpointing import load_policy_checkpoint, save_policy_checkpoint
-from myfpo.configuration_sjfpo import FLOW_STARTS, SJFPOConfig
+from myfpo.configuration_sjfpo import SJFPOConfig
 from myfpo.evaluator import (
     Evaluator,
     compute_mean_chunk_jerk,
@@ -32,15 +33,24 @@ from myfpo.runner import build_train_metrics, summarise_window
 
 
 class _EvalPolicy:
-    def __init__(self, policy, start_from_zero=True): self.policy=policy; self.start=start_from_zero
+    def __init__(self, policy, start_from_zero=True):
+        self.policy = policy
+        self.start = start_from_zero
+
     @classmethod
     def for_sampling(cls, policy, sampling):
-        return cls(policy, start_from_zero=(sampling=="zero_start"))
-    def reset(self): self.policy.reset()
+        return cls(policy, start_from_zero=(sampling == "zero_start"))
+
+    def reset(self):
+        self.policy.reset()
+
     def __call__(self, obs):
-        was=self.policy.training; self.policy.eval()
-        try: r=self.policy.select_action({"observation.state":obs}, start_from_zero=self.start)
-        finally: self.policy.train(was)
+        was = self.policy.training
+        self.policy.eval()
+        try:
+            r = self.policy.select_action({"observation.state": obs}, start_from_zero=self.start)
+        finally:
+            self.policy.train(was)
         return to_numpy_1d(r)
 
 ABOVE_CLAMP_ABORT_UPDATES = 5
@@ -89,7 +99,7 @@ def build_policy(
         policy.set_action_bounds(action_low, action_high)
     if getattr(cfg, "compile", False):
         mode = "default"
-        try:
+        with contextlib.suppress(Exception):
             if device.type == "cuda":
                 idx = int(device.index or 0)
                 props = torch.cuda.get_device_properties(idx)
@@ -97,8 +107,6 @@ def build_policy(
                     mode = "max-autotune"
                 elif props.major >= 7:
                     mode = "reduce-overhead"
-        except Exception:
-            pass
         policy.actor = torch.compile(policy.actor, dynamic=True, mode=mode, fullgraph=True)
         policy.encoder = torch.compile(policy.encoder, dynamic=True, mode=mode, fullgraph=True)
         policy.critic = torch.compile(policy.critic, dynamic=True, mode=mode, fullgraph=True)
@@ -231,7 +239,7 @@ def sample_random_baseline(
         max_steps=evaluator.max_steps,
     )
     results = baseline_evaluator.evaluate(
-        lambda obs: env.action_space.sample(), out_dir=None
+        lambda _obs: env.action_space.sample(), out_dir=None
     )
     if not results:
         return 0.0
@@ -272,7 +280,7 @@ def make_vec_env(env_name: str, num_envs: int, record: dict | None = None):
         return gym.vector.SyncVectorEnv(env_fns)
 
 
-def collect_rollouts(policy, train_env, total_steps, cfg, action_low, action_high, steps_to_go):
+def collect_rollouts(policy, train_env, cfg, action_low, action_high, steps_to_go):
     collect_steps = min(cfg.chunks_per_update * cfg.action_horizon, steps_to_go)
     batch = policy.generate_rollout(
         train_env, collect_steps, action_low=action_low, action_high=action_high,
@@ -288,7 +296,7 @@ def collect_rollouts(policy, train_env, total_steps, cfg, action_low, action_hig
     return batch, rollout, steps_this_rollout, rollout_jerk, rollout_seam_jerk
 
 
-def train_update(policy, optimizer, batch, tracker, cfg, device, grad_groups):
+def train_update(policy, optimizer, batch, tracker, cfg, grad_groups):
     policy.train()
     epoch_infos: list[dict[str, float]] = []
     grad_norms_pre: list[dict[str, torch.Tensor]] = []
@@ -350,7 +358,7 @@ def train_update(policy, optimizer, batch, tracker, cfg, device, grad_groups):
     return epoch_infos, grad_norms_pre, above_clamp_fracs, both_clamped_fracs
 
 
-def evaluate_policy(policy, global_step, out_dir, evaluator, eval_policies, cfg, tracker, window=None, best_return=None, steps_to_best=None, best_artifact_ref=None, artifacts_ref=None):
+def evaluate_policy(policy, global_step, out_dir, evaluator, eval_policies, cfg, best_return=None):
     displaced = policy.swap_in_ema(global_step)
     try:
         results_by_sampling = {
@@ -368,7 +376,6 @@ def evaluate_policy(policy, global_step, out_dir, evaluator, eval_policies, cfg,
         best_return=best_return,
     )
     summaries = window_obj.summaries
-    eval_summary = summaries.get(cfg.eval_sampling, {})
     eval_results = window_obj.reported_results
     mean_return = window_obj.mean_return
     stop_return = window_obj.stop_return
@@ -503,8 +510,6 @@ def train_sjfpo_run(
         "zero_start": _EvalPolicy(policy, start_from_zero=True),
         "noise_start": _EvalPolicy(policy, start_from_zero=False),
     }
-    reported_name = cfg.eval_sampling
-    stop_name = cfg.stop_eval_sampling
     r_rand = sample_random_baseline(evaluator, env, seed=seed)
     tracker = build_tracker(
         cfg,
@@ -522,7 +527,7 @@ def train_sjfpo_run(
     both_clamped_updates = 0
     best_return: float | None = None
     steps_to_best: int | None = None
-    eval_state = (best_return, steps_to_best, 0)  # (best_return, steps_to_best, eval_state[2])
+    eval_count = 0
     recent_eval_returns: deque[float] = deque(maxlen=10)
     all_eval_returns: list[float] = []
     artifacts: list[str] = []
@@ -537,7 +542,7 @@ def train_sjfpo_run(
         while global_step < total_steps:
             steps_to_go = total_steps - global_step
             batch, rollout, steps_this_rollout, rollout_jerk, rollout_seam_jerk = collect_rollouts(
-                policy, train_env, total_steps, cfg, action_low, action_high, steps_to_go
+                policy, train_env, cfg, action_low, action_high, steps_to_go
             )
             global_step += steps_this_rollout
             action_abs_max = rollout["action_abs_max"]
@@ -547,7 +552,7 @@ def train_sjfpo_run(
                 )
 
             epoch_infos, grad_norms_pre, above_clamp_fracs, both_clamped_fracs = train_update(
-                policy, optimizer, batch, tracker, cfg, device, grad_groups
+                policy, optimizer, batch, tracker, cfg, grad_groups
             )
 
             drift = None
@@ -631,15 +636,13 @@ def train_sjfpo_run(
 
             if global_step >= next_eval or global_step >= total_steps:
                 result, summaries = evaluate_policy(
-                    policy, global_step, out_dir, evaluator, eval_policies, cfg, tracker, window=None, best_return=best_return
+                    policy, global_step, out_dir, evaluator, eval_policies, cfg, best_return=best_return
                 )
                 mean_return = result.get("mean_return", 0.0)
                 stop_return = result.get("stop_return", mean_return)
                 all_eval_returns.append(mean_return)
                 recent_eval_returns.append(mean_return)
-                eval_state = (stop_return if result.get("improved", False) else eval_state[0],
-                             global_step if result.get("improved", False) else eval_state[1],
-                             eval_state[2] + 1)
+                eval_count += 1
                 if result.get("improved", False):
                     best_return, steps_to_best = stop_return, global_step
                     best_artifact_path, _ = save_checkpoint(out_dir, policy, optimizer, global_step, "best")
@@ -670,10 +673,10 @@ def train_sjfpo_run(
                             mean_return,
                             result.get("eval_results", []),
                             all_eval_returns,
-                            eval_state[2],
+                            eval_count,
                             r_rand=r_rand,
                             best_return=best_return,
-                            steps_to_best=eval_state[1],
+                            steps_to_best=steps_to_best,
                         ) if result.get("eval_results") else {},
                         step=global_step,
                     )

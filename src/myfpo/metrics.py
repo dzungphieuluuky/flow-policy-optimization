@@ -15,13 +15,13 @@ from myfpo.utils import rms
 
 __all__ = [
     "broadcast_condition",
+    "compute_cfm_metrics",
     "compute_gae_diagnostics",
     "compute_mc_xt",
+    "compute_policy_info",
     "compute_ratio_metrics",
     "compute_value_loss",
     "compute_value_metrics",
-    "compute_cfm_metrics",
-    "compute_policy_info",
     "mc_draws",
     "sample_eps",
     "sample_mc_timesteps",
@@ -227,7 +227,7 @@ def compute_cfm_metrics(
     cfm_loss_old_std = cfm_loss_old.std(correction=0)
     cfm_loss_new_std = cfm_loss_new.std(correction=0)
     corr_denom = cfm_loss_old_std * cfm_loss_new_std + 1e-8
-    out = {
+    return {
         "flow_v_star_rms": rms(v_star_f),
         "l_old_mean": cfm_loss_old.mean(),
         "l_new_mean": cfm_loss_new.mean(),
@@ -238,7 +238,6 @@ def compute_cfm_metrics(
         "l_old_new_corr": ((cfm_loss_old - cfm_loss_old.mean()) * (cfm_loss_new - cfm_loss_new.mean())).mean()
         / corr_denom,
     }
-    return out
 
 
 @torch.inference_mode()

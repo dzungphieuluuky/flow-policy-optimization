@@ -45,10 +45,10 @@ dependencies = [
     "wandb",
 ]
 
-# pytest is the only gate (scripts/AGENTS.md: no CI). It has to be declared or
-# `uv sync` prunes it and `pytest -q` stops working.
+# The gates: pytest for behaviour, ruff for dead code. Both must be declared
+# or `uv sync` prunes them and the checks stop working.
 [dependency-groups]
-dev = ["pytest"]
+dev = ["pytest", "ruff>=0.16"]
 
 # The suite runs in ONE process by default. Each xdist worker takes a thread
 # pool, so a distributed run forks several process trees that contend for the
@@ -57,6 +57,28 @@ dev = ["pytest"]
 # `-n 4` only when you want raw throughput and are not diagnosing.
 [tool.pytest.ini_options]
 addopts = "-n 0"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+# F: pyflakes (unused imports/variables, redefinitions)
+# ARG: unused function arguments
+# RUF: ruff-specific (unused unpacked values, stale noqa)
+# SIM: simplifications (collapsible ifs, suppressible exceptions)
+# RET: return simplifications
+# B: bugbear (unused loop variables, zip without strict)
+select = ["F", "E4", "E7", "E9", "ARG", "RUF", "SIM", "RET", "B"]
+# E501 is not enforced: the file style is long lines, and a separate formatter
+# owns line width. E402 stays enabled because the scripts import after
+# `sys.path.insert`, and those imports carry an explicit noqa.
+ignore = ["E501", "B905", "RUF012"]
+
+[tool.ruff.lint.flake8-unused-arguments]
+# Fakes that match a called signature (`*args, **kwargs`) keep their parameter
+# names on purpose.
+ignore-variadic-names = true
 
 [build-system]
 requires = ["uv_build>=0.12.13,<0.13.0"]

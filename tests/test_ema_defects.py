@@ -5,7 +5,6 @@ Found from a Humanoid run that peaked at 131k and decayed 46%."""
 import dataclasses
 import warnings
 
-import pytest
 import torch
 from lerobot.configs.policies import PolicyFeature
 from lerobot.configs.types import FeatureType

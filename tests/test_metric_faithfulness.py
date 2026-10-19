@@ -57,8 +57,6 @@ def test_the_key_states_the_denominator_it_divides_by():
     return standard deviation, and that fact decides how a reader compares two
     runs: it is not a fraction of anything on the advantage side.
     """
-    import dataclasses
-
     from myfpo.metrics import _GAE_DIAGNOSTIC_KEYS, compute_gae_diagnostics
 
     assert "advantage_std_fraction" not in _GAE_DIAGNOSTIC_KEYS

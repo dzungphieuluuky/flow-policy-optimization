@@ -10,12 +10,12 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from myfpo.config import (  # noqa: E402.
+from myfpo.config import (  # noqa: E402
     ENV_REGISTRY_PATH,
     KNOWN_ENVS,
     get_observation_action_dim,
 )
-from myfpo.configuration_sjfpo import SJFPOConfig  # noqa: E402.
+from myfpo.configuration_sjfpo import SJFPOConfig  # noqa: E402
 
 # Tier "smoke": pure gymnasium, no mujoco, so these run anywhere.
 SMOKE_ENVS = ("Pendulum-v1", "Reacher-v5")
@@ -32,7 +32,7 @@ def test_a_bare_config_constructs_without_features():
     assert cfg.input_features == {}
     assert cfg.output_features == {}
     # Feature requirement is still enforced, just later -- see the two tests below.
-    with pytest.raises(ValueError, match="observation.state"):
+    with pytest.raises(ValueError, match=r"observation\.state"):
         cfg.validate_features()
 
 

@@ -32,7 +32,7 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from myfpo.configuration_sjfpo import SJFPOConfig  # noqa: E402
+from myfpo.configuration_sjfpo import SJFPOConfig
 
 CLIP_SERIES = "train/action_clip_frac"
 CORR_SERIES = "train/l_old_new_corr"
@@ -99,62 +99,6 @@ def _align(series: dict[str, list[float]], a: str, b: str) -> tuple[list, list]:
     xs, ys = series.get(a, []), series.get(b, [])
     n = min(len(xs), len(ys))
     return xs[:n], ys[:n]
-
-
-def saturation_curve(
-    env_name: str, scales: list[float], steps: int, seed: int
-) -> list[dict]:
-    """The clip fraction against the actor output magnitude.
-
-    This is the decisive part of the probe. It does not wait for a training run
-    to reach a saturated policy. It scales the actor output layer and reads the
-    clip count straight out of ``generate_rollout``, which is the production
-    rollout path. So the number is the one the trainer would log.
-
-    The actor output layer is zero at init, so a fresh policy proposes almost
-    nothing and never clips. Scaling it walks the policy toward and past the
-    bounds. The curve says how much headroom the projection has before it
-    starts to dominate the objective.
-    """
-    import gymnasium as gym
-
-    from myfpo.train_sjfpo import build_policy
-
-    rows: list[dict] = []
-    for scale in scales:
-        env = gym.make(env_name)
-        try:
-            low = np.atleast_1d(np.asarray(env.action_space.low, dtype=np.float32))
-            high = np.atleast_1d(np.asarray(env.action_space.high, dtype=np.float32))
-            obs_dim = int(np.prod(env.observation_space.shape))
-            act_dim = int(np.prod(env.action_space.shape))
-            cfg = dataclasses.replace(
-                SJFPOConfig(), compile=False, num_envs=1, chunks_per_update=16, batch_size=16
-            )
-            torch.manual_seed(seed)
-            policy = build_policy(
-                obs_dim, act_dim, cfg, device="cpu", action_low=low, action_high=high
-            )
-            with torch.no_grad():
-                policy.actor.out.weight.mul_(scale)
-                policy.actor.out.bias.mul_(scale)
-            batch = policy.generate_rollout(
-                env, steps, action_low=low, action_high=high
-            )
-            counts = batch["chunk_clip_counts"].float()
-            horizon = int(batch["action"].shape[1])
-            total = float(counts.sum())
-            rows.append(
-                {
-                    "actor_out_scale": scale,
-                    "clip_frac": total / max(1, counts.numel() * horizon),
-                    "clipped_coordinates": total,
-                    "chunks_with_any_clip": float((counts > 0).float().mean()),
-                }
-            )
-        finally:
-            env.close()
-    return rows
 
 
 def projection_measurement(
@@ -239,7 +183,7 @@ def projection_measurement(
                 condition = policy.encoder(normalised)
                 eps = sample_noise(shape, cfg, "cpu", None)
                 x0 = sample_action(
-                    lambda x, t, c: clip_velocity(
+                    lambda x, t, c, policy=policy, cfg=cfg: clip_velocity(
                         policy.actor(x, t, c), cfg.transported_clip_value
                     ),
                     shape,

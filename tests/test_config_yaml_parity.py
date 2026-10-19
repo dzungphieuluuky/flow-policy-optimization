@@ -30,8 +30,9 @@ def test_every_yaml_key_is_a_real_config_field(loaded: dict):
 def test_yaml_matches_the_dataclass_defaults(loaded: dict):
     fresh = dataclasses.replace(SJFPOConfig())
     drift = {}
-    for key, value in loaded.items():
+    for key, raw_value in loaded.items():
         default = getattr(fresh, key, None)
+        value = raw_value
         # YAML has no tuple type. Adam_betas arrives as a list.
         if isinstance(default, tuple) and isinstance(value, list):
             value = tuple(value)

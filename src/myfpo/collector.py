@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+
 from typing import NamedTuple
 
 from collections.abc import Callable
@@ -39,7 +41,6 @@ _INDEX_DTYPE = torch.int64
 class InFlightChunk(NamedTuple):
     """What one env is executing right now, while it holds a chunk."""
 
-    actions_env: torch.Tensor
     actions_scaled: torch.Tensor
     start_state: torch.Tensor
     step_limit: int
@@ -282,10 +283,8 @@ def flush_on_collection_error(
 ) -> None:
     """Call the error flush hook, swallowing any raise."""
     if on_error_flush is not None:
-        try:
+        with contextlib.suppress(ValueError, RuntimeError):
             on_error_flush()
-        except (ValueError, RuntimeError):
-            pass
 
 
 _CLOSE_CONTINUE = "continue"
@@ -389,7 +388,6 @@ def collect_chunks_vec(
                 pos_t[wavefront] = 0
                 for k, i in enumerate(envs_needing_a_chunk):
                     in_flight[i] = InFlightChunk(
-                        actions_env=executed_all[k],
                         actions_scaled=scaled_all[k],
                         start_state=states[k],
                         step_limit=min(n_action_steps,

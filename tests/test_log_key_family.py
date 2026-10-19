@@ -118,7 +118,7 @@ def test_the_return_mean_key_matches_the_summarizer():
     """
     from myfpo.evaluator import bootstrap_interval
 
-    mean, low, high = bootstrap_interval([1.0, 2.0, 3.0], resamples=64)
+    mean, _low, _high = bootstrap_interval([1.0, 2.0, 3.0], resamples=64)
     out = _summary(mean_return=mean)
     assert out["eval/return_mean"] == pytest.approx(mean)
     # The other series still exists, and it is built from an f-string over the

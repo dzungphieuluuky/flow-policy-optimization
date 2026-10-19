@@ -317,8 +317,8 @@ def test_truncation_stops_the_trace_but_keeps_the_bootstrap():
 
 def test_termination_still_zeroes_the_bootstrap_and_the_trace():
     lengths = [H] * 3
-    adv, ret = _traced(lengths, terminated=[False, True, False],
-                       lam=0.9, q_next_state=2.0)
+    _, ret = _traced(lengths, terminated=[False, True, False],
+                     lam=0.9, q_next_state=2.0)
     r = sum(GAMMA**k for k in range(H))
     # No bootstrap, and nothing to propagate: the advantage is the reward sum.
     assert ret[1].item() == pytest.approx(r, abs=1e-5)

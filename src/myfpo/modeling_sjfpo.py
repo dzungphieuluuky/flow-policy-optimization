@@ -38,8 +38,6 @@ from myfpo.metrics import (
     compute_policy_info,
     compute_value_loss,
     mc_draws,
-    sample_eps,
-    sample_mc_timesteps,
 )
 from myfpo.critic import Critic
 from myfpo.encoder import RunningMeanStd, StateEncoder

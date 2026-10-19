@@ -78,7 +78,7 @@ def test_the_map_names_the_flow_network_parameter_it_stands_in_for():
 
     # The map is not a prediction: it is invertible on the straight path, so the
     # same velocity always lands on the same parameter value.
-    a, eps, t, x_t, v = _path()
+    _, _, t, x_t, v = _path()
     cfg = _cfg()
     first = velocity_to_target_param(v, x_t, t, cfg)
     second = velocity_to_target_param(v.clone(), x_t.clone(), t.clone(), cfg)

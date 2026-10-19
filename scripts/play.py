@@ -31,8 +31,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import numpy as np
 
-from myfpo.checkpointing import load_policy_checkpoint  # noqa: E402
-from myfpo.evaluator import Evaluator, render_episode_frames  # noqa: E402
+from myfpo.checkpointing import load_policy_checkpoint
+from myfpo.evaluator import Evaluator, render_episode_frames
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -89,7 +89,7 @@ def main(argv: list[str] | None = None) -> int:
     policy.eval()
     print(f"Checkpoint loaded (global_step={counters.get('global_step', '?')})")
 
-    import gymnasium as gym  # noqa: E402
+    import gymnasium as gym
 
     # There is no render_mode here. The Evaluator only steps the env. The video
     # pass builds its own rgb_array env inside render_episode_frames.

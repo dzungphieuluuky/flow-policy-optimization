@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-import numpy as np
 import torch
 
 from myfpo.collector import (
@@ -26,7 +25,6 @@ from myfpo.utils import (
     autocast_context,
     resolve_storage_dtype,
     to_device_async,
-    to_numpy_1d,
 )
 
 __all__ = ["RolloutBuffers", "run_rollout"]
@@ -39,12 +37,6 @@ class RolloutBuffers:
     host: RolloutBuffer | None = None
     device: RolloutBuffer | None = None
     h2d_event: torch.cuda.Event | None = None
-
-    def wait_for_copy(self) -> None:
-        """Block until the recorded copy has landed, then release the event."""
-        if self.h2d_event is not None:
-            self.h2d_event.synchronize()
-            self.h2d_event = None
 
 
 def run_rollout(
@@ -139,7 +131,6 @@ def run_rollout(
     else:
         active = buffer.active()
     n_chunks = buffer.n_chunks
-    horizon = cfg.action_horizon
 
     lengths = active["chunk_lengths"]
     chunk_starts = active["chunk_starts"]
@@ -168,7 +159,7 @@ def run_rollout(
         normalised_next_states = all_chunk_normalised_states[n_chunks:]
         exec_length_frac = policy.exec_length_frac(lengths)
         fitted_steps = (lengths.float().mean() if lengths.numel() > 0 else torch.tensor(float(cfg.action_horizon), device=lengths.device, dtype=torch.float32))
-        boot_exec_frac = policy.exec_length_frac(torch.full_like(lengths, int(round(fitted_steps.item()))))
+        boot_exec_frac = policy.exec_length_frac(torch.full_like(lengths, round(fitted_steps.item())))
         critic_cond = (
             policy.encoder(all_chunk_normalised_states)
             if cfg.critic_share_encoder

@@ -13,5 +13,5 @@ class TensorboardBackend:
                 continue
             self.writer.add_scalar(key, float(value), step)
 
-    def finish(self, exit_code: int) -> None:
+    def finish(self, _exit_code: int) -> None:
         self.writer.close()

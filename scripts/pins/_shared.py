@@ -29,8 +29,8 @@ HIDDEN, TIME_EMBED, HEADS, DEPTH = 32, 16, 2, 1
 PIN_DIR = Path(__file__).resolve().parent
 
 __all__ = [
-    "OBS", "ACT", "HORIZON", "MC", "N_OBS",
-    "PIN_DIR", "pin_config", "build", "fixed_batch", "flatten", "compare",
+    "ACT", "HORIZON", "MC", "N_OBS", "OBS", "PIN_DIR",
+    "build", "compare", "fixed_batch", "flatten", "pin_config",
 ]
 
 
@@ -67,11 +67,10 @@ def build(cfg: SJFPOConfig, seed: int = 0):
     from myfpo.train_sjfpo import build_policy
 
     torch.manual_seed(seed)
-    policy = build_policy(
+    return build_policy(
         OBS, ACT, cfg, device="cpu",
         action_low=[-1.0] * ACT, action_high=[1.0] * ACT,
     )
-    return policy
 
 
 def fixed_batch(policy, n: int = 3, seed: int = 1) -> dict:
@@ -150,7 +149,7 @@ def _walk_equal(a, b, path: str, bad: list):
             _walk_equal(x, y, f"{path}[{i}]", bad)
         return
     if isinstance(a, float) and isinstance(b, float):
-        if a != b:  # noqa: PLR0124 - atol=0 is the point of this module
+        if a != b:  # atol=0 is the point of this module
             bad.append(f"{path}: {a!r} != {b!r}")
         return
     if a != b:

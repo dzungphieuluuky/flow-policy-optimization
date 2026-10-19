@@ -5,9 +5,9 @@ for every mode, and pins the one value where ``fpo_beta`` loses its shape.
 """
 
 import dataclasses
+import itertools
 import math
 
-import pytest
 import torch
 
 from myfpo.configuration_sjfpo import SJFPOConfig
@@ -46,7 +46,7 @@ def test_the_draw_bounds_are_not_the_range_of_the_flow():
 
     seen = []
 
-    def predict_velocity(x, t, condition):
+    def predict_velocity(x, t, _condition):
         seen.append(float(t.reshape(-1)[0]))
         return torch.zeros_like(x)
 
@@ -129,7 +129,7 @@ def test_fpo_beta_beta_sweep_is_monotone_in_the_mean():
         )
         for beta in (0.5, 1.0, 2.0, 4.0, 8.0)
     ]
-    for earlier, later in zip(means, means[1:]):
+    for earlier, later in itertools.pairwise(means):
         assert earlier > later, f"means did not decrease: {means}"
 
 

@@ -23,7 +23,7 @@ class _FixedCritic:
     def __init__(self, value):
         self.value = value
 
-    def __call__(self, obs, actions, exec_length_frac):
+    def __call__(self, obs, _actions, _exec_length_frac):
         return torch.full((2, obs.shape[0]), float(self.value))
 
 

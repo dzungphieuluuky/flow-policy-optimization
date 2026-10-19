@@ -24,15 +24,15 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from lerobot.utils.random_utils import set_seed  # noqa: E402
+from lerobot.utils.random_utils import set_seed
 
-from myfpo.checkpointing import load_policy_checkpoint  # noqa: E402
-from myfpo.evaluator import Evaluator, bootstrap_interval, median_of  # noqa: E402
-from myfpo.train_sjfpo import _EvalPolicy  # noqa: E402
-from myfpo.utils import resolve_device  # noqa: E402
+from myfpo.checkpointing import load_policy_checkpoint
+from myfpo.evaluator import Evaluator
+from myfpo.train_sjfpo import _EvalPolicy
+from myfpo.utils import resolve_device
 
 
-def run_once(env, policy, evaluator, eval_seed: int) -> dict[str, float]:
+def run_once(policy, evaluator, eval_seed: int) -> dict[str, float]:
     """One full eval pass, summarized."""
     results = evaluator.evaluate(_EvalPolicy(policy), out_dir=None)
     summary = evaluator.summarize(results, seed=eval_seed)
@@ -81,7 +81,7 @@ def main() -> int:
 
     means, medians, widths, n_ep = [], [], [], []
     for _ in range(max(1, args.repeats)):
-        s = run_once(env, policy, evaluator, args.eval_seed)
+        s = run_once(policy, evaluator, args.eval_seed)
         means.append(s["return_mean"])
         medians.append(s["return_median"])
         widths.append(s["return_ci_high"] - s["return_ci_low"])

@@ -40,7 +40,7 @@ class FakeVecEnv:
             (self.num_envs, self.observation_space.shape[0])
         ).astype(np.float32)
 
-    def reset(self, seed=None):
+    def reset(self, seed=None):  # noqa: ARG002 - gym calls reset(seed=...)
         self.t[:] = 0
         return self._obs(), {}
 
@@ -127,7 +127,7 @@ def test_ring_wraps_and_still_yields_the_right_window():
     buf, _ = collect(1)
     a, groups = _per_env_chunks(buf)
     for e, idxs in groups.items():
-        for k, i in enumerate(idxs):
+        for _k, i in enumerate(idxs):
             w = a["chunk_state"][i]
             assert w.shape == (N_OBS, OBS_DIM) and torch.isfinite(w).all()
             n_exec = int(a["chunk_lengths"][i])

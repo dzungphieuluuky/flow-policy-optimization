@@ -31,8 +31,7 @@ def _policy():
 def batch():
     policy = _policy()
     env = FakeVecEnv(n=N_ENVS, obs_dim=OBS, act_dim=ACT, episode=1000)
-    out = policy.generate_rollout(env, TOTAL_STEPS, action_low=LOW, action_high=HIGH)
-    return out
+    return policy.generate_rollout(env, TOTAL_STEPS, action_low=LOW, action_high=HIGH)
 
 
 def test_chunk_actions_are_stored_scaled(batch):
@@ -58,7 +57,7 @@ def test_every_row_carries_a_chunk(batch):
     assert tuple(batch["boot_actions"].shape) == tuple(batch["action"].shape)
 
 
-def test_terminated_rows_keep_their_own_chunk_not_a_proposal(batch):
+def test_terminated_rows_keep_their_own_chunk_not_a_proposal(batch):  # noqa: ARG001 - pytest fixture
     """A terminated chunk's bootstrap keeps its own chunk actions."""
     # a rollout of live chunks only is the case where the filter matters most.
     policy = _policy()

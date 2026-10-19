@@ -32,21 +32,5 @@ class WandbBackend:
     def log(self, data: dict[str, float], step: int) -> None:
         wandb.log(data, step=step)
 
-    def log_eval_table(self, eval_results: list[dict], step: int) -> None:
-        if not eval_results:
-            return
-        wandb.log(
-            {
-                "eval/episodes": wandb.Table(
-                    columns=["episode", "return", "length", "success", "jerk"],
-                    data=[
-                        [r["episode"], r["return"], r["length"], r.get("success"), r.get("jerk")]
-                        for r in eval_results
-                    ],
-                )
-            },
-            step=step,
-        )
-
     def finish(self, exit_code: int) -> None:
         wandb.finish(exit_code=exit_code)

@@ -33,7 +33,7 @@ def _raises(thunk) -> str:
 
 
 # --- configuration_sjfpo.SJFPOConfig -----------------------------------------.
-from myfpo.configuration_sjfpo import SJFPOConfig
+from myfpo.configuration_sjfpo import SJFPOConfig  # noqa: E402
 
 _BAD_CONFIG = {
     "action_perturb_std": -1.0,
@@ -87,11 +87,11 @@ def _missing_input_features() -> None:
 
 
 # --- network constructors ----------------------------------------------------.
-from myfpo.attention import DiTBlock, SelfAttention
-from myfpo.critic import Critic, CriticMember
-from myfpo.encoder import RunningMeanStd, StateEncoder
-from myfpo.flow import SJFPOFlowModel
-from myfpo.layers import CondMLP, SinusoidalEncoding, SwiGLU
+from myfpo.attention import DiTBlock, SelfAttention  # noqa: E402
+from myfpo.critic import Critic, CriticMember  # noqa: E402
+from myfpo.encoder import RunningMeanStd, StateEncoder  # noqa: E402
+from myfpo.flow import SJFPOFlowModel  # noqa: E402
+from myfpo.layers import CondMLP, SinusoidalEncoding, SwiGLU  # noqa: E402
 
 case("layers:SwiGLU:zero-dims")(lambda: SwiGLU(0, 4, 4))
 case("layers:CondMLP:zero-dims")(lambda: CondMLP(0, 4, 4))
@@ -125,13 +125,13 @@ case("attention:DiTBlock:forward:cond-batch")(
 )
 
 # --- pure functions ----------------------------------------------------------.
-from myfpo.fpo_core import (
+from myfpo.fpo_core import (  # noqa: E402
     compute_cfm_loss,
     broadcast_over_mc_axis,
     sample_action,
     sample_timesteps,
 )
-from myfpo.gae import compute_chunk_advantages
+from myfpo.gae import compute_chunk_advantages  # noqa: E402
 
 
 def _gae(**kw):
@@ -178,12 +178,12 @@ case("fpo_core:cfm:reduce-mode")(
 )
 case("fpo_core:sample_action:device")(
     lambda: sample_action(
-        lambda x, t, c: x, (2, 4, 3), None, 2, torch.zeros(2, 4, 3), None
+        lambda x, _t, _c: x, (2, 4, 3), None, 2, torch.zeros(2, 4, 3), None
     )
 )
 case("fpo_core:sample_action:shape")(
     lambda: sample_action(
-        lambda x, t, c: x, (2, 4, 3), None, 2, torch.zeros(2, 1, 3), "cpu"
+        lambda x, _t, _c: x, (2, 4, 3), None, 2, torch.zeros(2, 1, 3), "cpu"
     )
 )
 case("fpo_core:sample_timesteps:mode")(

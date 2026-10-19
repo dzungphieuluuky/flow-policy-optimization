@@ -228,7 +228,7 @@ def test_above_clamp_frac_reads_the_tensor_the_ratio_actually_clamps(monkeypatch
     # the error rather than one lucky bound.
     crossings = {}
     for bound in (2.0, 1.0, 0.8, 0.6, 0.5):
-        policy, batch, cfg = _policy_and_batch(bound)
+        policy, batch, _ = _policy_and_batch(bound)
         clamped.clear()
         policy(batch, compute_info=True)
         reported = float(policy.cfm_above_clamp_frac)
@@ -254,7 +254,7 @@ def test_above_clamp_frac_reads_the_tensor_the_ratio_actually_clamps(monkeypatch
     # leave a share strictly inside (0, 1). A bound that saturates the figure
     # cannot distinguish a correct reading from a wrong one, because both axes
     # read 1.0 there.
-    for bound, (reported, truth) in crossings.items():
+    for bound, (_reported, truth) in crossings.items():
         assert 0.0 < truth < 1.0, (
             f"cfm_clamp={bound}: share {truth} is saturated, so this bound "
             "cannot discriminate between the two axes"
