@@ -6,7 +6,7 @@ import warnings
 import pytest
 import torch
 
-from myfpo.configuration import SJFPOConfig
+from myfpo.configuration import MyfpoConfig
 from myfpo.metrics import compute_gae_diagnostics
 from myfpo.training import compute_rollout_diagnostics
 
@@ -109,7 +109,7 @@ def test_the_action_abs_family_is_named_consistently():
 
 def test_linked_frac_is_live_under_the_default_trace():
     """The default lambda is 0.95, so the trace runs and this has a consumer."""
-    assert SJFPOConfig().gae_lambda == 0.95
+    assert MyfpoConfig().gae_lambda == 0.95
     assert 0.0 <= _gae()["linked_frac"] <= 1.0
 
 

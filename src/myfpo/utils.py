@@ -55,13 +55,13 @@ def detect_gpu() -> dict | None:
 
 
 def resolve_device() -> torch.device:
-    """Execution device from ``SJFPO_DEVICE``."""
-    want = os.environ.get("SJFPO_DEVICE", "auto").lower()
+    """Execution device from ``MYFPO_DEVICE``."""
+    want = os.environ.get("MYFPO_DEVICE", "auto").lower()
     if want == "cpu":
         return torch.device("cpu")
     if want not in {"auto", "cuda"}:
         raise ValueError(
-            f"SJFPO_DEVICE={want!r} unknown; expected 'auto', 'cpu', or 'cuda'"
+            f"MYFPO_DEVICE={want!r} unknown; expected 'auto', 'cpu', or 'cuda'"
         )
     return torch.device("cuda") if cuda_available() else torch.device("cpu")
 
@@ -76,11 +76,11 @@ def resolve_storage_dtype(
 
 
 def resolve_compute_dtype() -> torch.dtype:
-    """Matmul and autocast dtype, from ``SJFPO_DTYPE``. BF16 needs CUDA."""
-    want = os.environ.get("SJFPO_DTYPE", "auto").lower()
+    """Matmul and autocast dtype, from ``MYFPO_DTYPE``. BF16 needs CUDA."""
+    want = os.environ.get("MYFPO_DTYPE", "auto").lower()
     if want not in {"auto", "fp32", "bf16"}:
         raise ValueError(
-            f"SJFPO_DTYPE={want!r} unknown; expected 'auto', 'fp32', or 'bf16'"
+            f"MYFPO_DTYPE={want!r} unknown; expected 'auto', 'fp32', or 'bf16'"
         )
     if want == "fp32" or not cuda_available():
         return torch.float32

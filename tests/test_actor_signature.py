@@ -1,6 +1,6 @@
 """The actor classes must agree at every argument position.
 
-``actor_arch`` swaps one trunk for another. ``SJFPOPolicy`` builds them with
+``actor_arch`` swaps one trunk for another. ``MyfpoPolicy`` builds them with
 positional arguments. So a name that differs at the same index means one class
 is called with a value the other would call something else.
 
@@ -15,9 +15,9 @@ import inspect
 
 import torch
 
-from myfpo.configuration import SJFPOConfig
+from myfpo.configuration import MyfpoConfig
 from myfpo.encoder import StateEncoder
-from myfpo.flow import SJFPOFlowModel
+from myfpo.flow import MyfpoFlowModel
 
 SRC = __import__("pathlib").Path(__file__).resolve().parents[1] / "src" / "myfpo"
 
@@ -28,14 +28,14 @@ def _params(cls):
 
 def test_the_dit_prefix_is_the_contract():
     """action_dim, action_horizon, hidden_dim, in that order."""
-    assert _params(SJFPOFlowModel)[:3] == [
+    assert _params(MyfpoFlowModel)[:3] == [
         "action_dim", "action_horizon", "hidden_dim",
     ]
 
 
 def test_the_third_argument_is_the_encoder_output_width():
     """cfg.hidden_dim is the value at that position, and the encoder matches."""
-    cfg = SJFPOConfig()
+    cfg = MyfpoConfig()
     encoder = StateEncoder(3, cfg.hidden_dim, cfg.n_obs_steps)
     out = encoder(torch.zeros(1, cfg.n_obs_steps, 3))
     assert out.shape[-1] == cfg.hidden_dim, (
@@ -44,7 +44,7 @@ def test_the_third_argument_is_the_encoder_output_width():
 
 
 def test_the_time_embedding_argument_is_present():
-    assert "time_embed_dim" in _params(SJFPOFlowModel)
+    assert "time_embed_dim" in _params(MyfpoFlowModel)
 
 
 def test_no_actor_names_an_argument_condition_dim():
@@ -62,8 +62,8 @@ def test_no_actor_names_an_argument_condition_dim():
 
 def test_the_comparison_reads_the_live_signature():
     """Guard: this file must not pin a copy of the signature."""
-    live = _params(SJFPOFlowModel)
+    live = _params(MyfpoFlowModel)
     assert live is not None
-    assert live == _params(SJFPOFlowModel)
+    assert live == _params(MyfpoFlowModel)
     # A wrong expectation must fail, so the assertion above is doing work.
     assert live[:3] != ["action_dim", "action_horizon", "nope"]

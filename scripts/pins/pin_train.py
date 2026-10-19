@@ -1,7 +1,7 @@
 """Pin the training step: every metric, every gradient, at ``atol=0``.
 
 What this covers
-    One forward pass of ``SJFPOPolicy`` on a fixed batch, the full ``info``
+    One forward pass of ``MyfpoPolicy`` on a fixed batch, the full ``info``
     dict it returns, and the gradient of every named parameter. It runs three
     configurations: the ``dit`` actor, the ``resmlp`` actor, and ``dit`` at a
     clamp low enough to saturate. A change in one actor cannot pass unnoticed

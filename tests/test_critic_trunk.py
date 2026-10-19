@@ -15,17 +15,17 @@ from lerobot.configs.policies import PolicyFeature
 from lerobot.configs.types import FeatureType
 from torch import nn
 
-from myfpo.configuration import SJFPOConfig
+from myfpo.configuration import MyfpoConfig
 from myfpo.critic import Critic, CriticMember
 from myfpo.metrics import compute_value_metrics
-from myfpo.modeling import SJFPOPolicy
+from myfpo.modeling import MyfpoPolicy
 
 OBS, HIDDEN, STEPS, ACT, H = 11, 32, 8, 3, 6
 
 
-def _cfg(**kw) -> SJFPOConfig:
+def _cfg(**kw) -> MyfpoConfig:
     return dataclasses.replace(
-        SJFPOConfig(
+        MyfpoConfig(
             action_horizon=H,
             hidden_dim=HIDDEN,
             n_obs_steps=STEPS,
@@ -82,7 +82,7 @@ def test_the_first_linear_takes_the_concatenated_input():
 
 
 def test_the_default_ensemble_is_five():
-    assert SJFPOConfig().num_critics == 5
+    assert MyfpoConfig().num_critics == 5
     assert Critic(OBS, HIDDEN, ACT, STEPS, H).num_critics == 5
 
 
@@ -96,7 +96,7 @@ def test_the_members_stay_independent():
 
 
 def test_a_saved_config_round_trips_with_the_new_ensemble():
-    cfg = dataclasses.replace(SJFPOConfig(), num_critics=5)
+    cfg = dataclasses.replace(MyfpoConfig(), num_critics=5)
     assert cfg.num_critics == 5
     cfg.validate()
 
@@ -129,13 +129,13 @@ def test_zero_dropout_leaves_no_dropout_module():
 
 
 def test_the_default_config_carries_the_reference_rate():
-    assert SJFPOConfig().critic_dropout == 0.01
+    assert MyfpoConfig().critic_dropout == 0.01
 
 
 def test_the_constructors_default_to_off_so_a_bare_critic_is_deterministic():
-    assert SJFPOConfig().critic_dropout == 0.01
+    assert MyfpoConfig().critic_dropout == 0.01
     assert Critic(OBS, HIDDEN, ACT, STEPS, H).dropout == 0.0
-    assert SJFPOPolicy(_cfg()).critic.dropout == 0.01
+    assert MyfpoPolicy(_cfg()).critic.dropout == 0.01
 
 
 def test_dropout_is_active_in_train_mode_and_off_in_eval():
@@ -169,7 +169,7 @@ def test_dropout_must_be_a_probability(bad):
 
 def test_the_config_rejects_a_dropout_outside_the_unit_interval():
     with pytest.raises(ValueError, match=r"critic_dropout=.* must be in \[0, 1\)"):
-        dataclasses.replace(SJFPOConfig(), critic_dropout=1.0)
+        dataclasses.replace(MyfpoConfig(), critic_dropout=1.0)
 
 
 def test_dropout_adds_no_parameters():

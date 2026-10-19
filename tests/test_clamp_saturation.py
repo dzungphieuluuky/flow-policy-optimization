@@ -14,14 +14,14 @@ import numpy as np
 import pytest
 import torch
 
-from myfpo.configuration import SJFPOConfig
+from myfpo.configuration import MyfpoConfig
 from myfpo.fpo_core import clamp_saturation, compute_aspo_surrogate, compute_policy_ratio
 
 N, MC, ACT = 6, 4, 2
 
 
 def _cfg(**overrides):
-    return dataclasses.replace(SJFPOConfig(), **overrides)
+    return dataclasses.replace(MyfpoConfig(), **overrides)
 
 
 def test_both_losses_above_the_clamp_pin_the_ratio_at_one():
@@ -172,7 +172,7 @@ def _policy_and_batch(cfm_clamp):
 
     obs, act, horizon, mc = 6, 3, 4, 4
     cfg = dataclasses.replace(
-        SJFPOConfig(
+        MyfpoConfig(
             action_horizon=horizon, num_mc_samples=mc, hidden_dim=32,
             time_embed_dim=16, dit_depth=1, dit_heads=2, n_obs_steps=2,
             compile=False, report_to="none", cfm_clamp=cfm_clamp,

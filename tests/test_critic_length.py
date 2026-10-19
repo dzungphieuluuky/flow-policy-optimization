@@ -3,26 +3,26 @@
 import pytest
 import torch
 
-from myfpo.configuration import SJFPOConfig
+from myfpo.configuration import MyfpoConfig
 from myfpo.critic import Critic
 
 
-def _cfg(**kw) -> SJFPOConfig:
+def _cfg(**kw) -> MyfpoConfig:
     base = dict(
         action_horizon=8,
         n_action_steps=4,
         n_obs_steps=4,
     )
     base.update(kw)
-    cfg = SJFPOConfig(**base)
+    cfg = MyfpoConfig(**base)
     cfg.validate()
     return cfg
 
 
-def _policy_with_critic(cfg: SJFPOConfig):
-    from myfpo.modeling import SJFPOPolicy
+def _policy_with_critic(cfg: MyfpoConfig):
+    from myfpo.modeling import MyfpoPolicy
 
-    policy = SJFPOPolicy.__new__(SJFPOPolicy)
+    policy = MyfpoPolicy.__new__(MyfpoPolicy)
     # nn.Module.__setattr__ refuses submodule assignment before __init__ ran.
     torch.nn.Module.__init__(policy)
     policy.config = cfg

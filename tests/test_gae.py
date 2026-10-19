@@ -104,9 +104,9 @@ def test_trace_inputs_are_absent_from_the_qc_backup():
     assert params["chunk_env_id"].default is None
 
     # Default is the standard trace, and both defaults agree with the config.
-    from myfpo.configuration import SJFPOConfig
+    from myfpo.configuration import MyfpoConfig
 
-    assert params["gae_lambda"].default == SJFPOConfig().gae_lambda == 0.95
+    assert params["gae_lambda"].default == MyfpoConfig().gae_lambda == 0.95
 
     # Supplying a truncated chunk must not change a QC backup, even mid-trace.
     lengths = [H] * 3
@@ -431,17 +431,17 @@ def test_trace_handles_an_empty_rollout():
 
 def test_config_default_runs_the_standard_trace():
     """Config and function default are both 0.95."""
-    from myfpo.configuration import SJFPOConfig
+    from myfpo.configuration import MyfpoConfig
 
-    assert SJFPOConfig().gae_lambda == 0.95
-    assert SJFPOConfig(gae_lambda=0.0).gae_lambda == 0.0
+    assert MyfpoConfig().gae_lambda == 0.95
+    assert MyfpoConfig(gae_lambda=0.0).gae_lambda == 0.0
 
 
 def test_config_rejects_an_out_of_range_lambda():
-    from myfpo.configuration import SJFPOConfig
+    from myfpo.configuration import MyfpoConfig
 
     with pytest.raises(ValueError, match="gae_lambda"):
-        SJFPOConfig(gae_lambda=2.0).validate()
+        MyfpoConfig(gae_lambda=2.0).validate()
 
 
 # Validation.

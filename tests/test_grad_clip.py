@@ -14,16 +14,16 @@ import torch
 from lerobot.configs.policies import PolicyFeature
 from lerobot.configs.types import FeatureType
 
-from myfpo.configuration import SJFPOConfig
-from myfpo.modeling import SJFPOPolicy
+from myfpo.configuration import MyfpoConfig
+from myfpo.modeling import MyfpoPolicy
 from myfpo.training import split_grad_params
 
 OBS, ACT, HORIZON, STEPS = 6, 3, 8, 4
 
 
-def _policy(**kw) -> SJFPOPolicy:
+def _policy(**kw) -> MyfpoPolicy:
     cfg = dataclasses.replace(
-        SJFPOConfig(
+        MyfpoConfig(
             action_horizon=HORIZON,
             hidden_dim=32,
             n_obs_steps=STEPS,
@@ -36,7 +36,7 @@ def _policy(**kw) -> SJFPOPolicy:
         **kw,
     )
     torch.manual_seed(0)
-    return SJFPOPolicy(cfg)
+    return MyfpoPolicy(cfg)
 
 
 def _set_grad(params, norm: float) -> None:

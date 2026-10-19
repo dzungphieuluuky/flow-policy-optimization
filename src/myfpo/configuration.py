@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from lerobot.configs import PreTrainedConfig
 from lerobot.optim import AdamWConfig
 
-__all__ = ["ACTOR_ARCHITECTURES", "FLOW_STARTS", "SJFPOConfig"]
+__all__ = ["ACTOR_ARCHITECTURES", "FLOW_STARTS", "MyfpoConfig"]
 
 ACTOR_ARCHITECTURES = ("dit", "resmlp")
 
@@ -16,10 +16,10 @@ ACTOR_ARCHITECTURES = ("dit", "resmlp")
 FLOW_STARTS = ("zero_start", "noise_start")
 
 
-@PreTrainedConfig.register_subclass("sjfpo")
+@PreTrainedConfig.register_subclass("myfpo")
 @dataclass
-class SJFPOConfig(PreTrainedConfig):
-    """SJFPO hyperparameters."""
+class MyfpoConfig(PreTrainedConfig):
+    """myfpo hyperparameters."""
 
     report_to: str = "all"
     n_obs_steps: int = 16
@@ -376,11 +376,11 @@ class SJFPOConfig(PreTrainedConfig):
                 )
 
     def validate_features(self) -> None:
-        """Require the run-time features. ``SJFPOPolicy.__init__`` calls this."""
+        """Require the run-time features. ``MyfpoPolicy.__init__`` calls this."""
         if self.robot_state_feature is None:
-            raise ValueError("SJFPO requires 'observation.state' in input_features.")
+            raise ValueError("myfpo requires 'observation.state' in input_features.")
         if self.action_feature is None:
-            raise ValueError("SJFPO requires 'action' in output_features.")
+            raise ValueError("myfpo requires 'action' in output_features.")
 
     def get_optimizer_preset(self) -> "AdamWConfig":
         kwargs = dict(

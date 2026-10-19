@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Play / evaluate a loaded SJFPO policy, writing the rollout to an mp4.
+"""Play / evaluate a loaded myfpo policy, writing the rollout to an mp4.
 
 Prints the per-episode metrics and the video path. Notebook callers pass
 ``--video_out`` and embed the result with ``IPython.display.Video``.
@@ -35,7 +35,7 @@ from myfpo.evaluator import Evaluator, render_episode_frames
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Evaluate a saved SJFPO policy and write the rollout to an mp4."
+        description="Evaluate a saved myfpo policy and write the rollout to an mp4."
     )
     parser.add_argument(
         "--env",

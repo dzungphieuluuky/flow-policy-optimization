@@ -1,4 +1,4 @@
-"""SJFPO policy. The class holds the flow head, the state conditioner, and the
+"""myfpo policy. The class holds the flow head, the state conditioner, and the
 EMA shadow used for evaluation.
 """
 
@@ -17,7 +17,7 @@ from lerobot.policies import PreTrainedPolicy
 from lerobot.processor.converters import to_tensor
 from lerobot.utils.constants import ACTION, OBS_STATE
 
-from myfpo.configuration import SJFPOConfig
+from myfpo.configuration import MyfpoConfig
 from myfpo.fpo_core import (
     cfm_loss_weight,
     group_cfm_loss,
@@ -41,8 +41,8 @@ from myfpo.metrics import (
 )
 from myfpo.critic import Critic
 from myfpo.encoder import RunningMeanStd, StateEncoder
-from myfpo.flow import SJFPOFlowModel, SJFPOFlowResMLP
-from myfpo.processor import make_sjfpo_pre_post_processors
+from myfpo.flow import MyfpoFlowModel, MyfpoFlowResMLP
+from myfpo.processor import make_pre_post_processors
 from myfpo.rollout import RolloutBuffers, run_rollout
 from myfpo.utils import (
     autocast_context,
@@ -51,13 +51,13 @@ from myfpo.utils import (
     to_tensor_1d,
 )
 
-class SJFPOAborted(RuntimeError):
+class MyfpoAborted(RuntimeError):
     """Non-finite training loss. The message names the offending term."""
 
 
 
 
-def build_optimizer(policy: SJFPOPolicy) -> torch.optim.Optimizer:
+def build_optimizer(policy: MyfpoPolicy) -> torch.optim.Optimizer:
     """Build one AdamW. Split the actor and the critic into separate groups."""
     cfg = policy.config
     kwargs = dataclasses.asdict(policy.config.get_optimizer_preset())
@@ -83,12 +83,12 @@ def build_optimizer(policy: SJFPOPolicy) -> torch.optim.Optimizer:
 
 
 
-class SJFPOPolicy(PreTrainedPolicy):
-    config_class = SJFPOConfig
-    name = "sjfpo"
+class MyfpoPolicy(PreTrainedPolicy):
+    config_class = MyfpoConfig
+    name = "myfpo"
 
     def __init__(
-        self, config: SJFPOConfig, dataset_stats: dict[str, Any] | None = None
+        self, config: MyfpoConfig, dataset_stats: dict[str, Any] | None = None
     ):
         super().__init__(config, dataset_stats)
         config.validate_features()
@@ -96,7 +96,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         action_dim = int(config.action_feature.shape[0])
 
         if config.actor_arch == "resmlp":
-            self.actor = SJFPOFlowResMLP(
+            self.actor = MyfpoFlowResMLP(
                 action_dim,
                 config.action_horizon,
                 config.hidden_dim,
@@ -107,7 +107,7 @@ class SJFPOPolicy(PreTrainedPolicy):
                 config.time_embed_dim,
             )
         else:
-            self.actor = SJFPOFlowModel(
+            self.actor = MyfpoFlowModel(
                 action_dim,
                 config.action_horizon,
                 config.hidden_dim,
@@ -153,7 +153,7 @@ class SJFPOPolicy(PreTrainedPolicy):
         self._frame_buffer: deque[torch.Tensor] = deque(maxlen=config.n_obs_steps)
         self._action_buffer: deque[torch.Tensor] = deque()
         self.step_count = 0
-        self.preprocessor, self.postprocessor = make_sjfpo_pre_post_processors(self)
+        self.preprocessor, self.postprocessor = make_pre_post_processors(self)
         del dataset_stats
 
     def reset(self):
@@ -703,7 +703,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             raise ValueError(f"reduction={reduction!r} must be 'mean' or 'none'")
 
         if check_finite and not bool(torch.isfinite(loss).all()):
-            raise SJFPOAborted(
+            raise MyfpoAborted(
                 f"Non-finite loss: "
                 f"policy_loss={float(policy_per_chunk.mean().detach())}, "
                 f"value_loss={float(value_loss_per_chunk.mean().detach())}"

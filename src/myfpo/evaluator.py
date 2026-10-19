@@ -1,4 +1,4 @@
-"""SJFPO evaluator. The module runs deterministic rollouts and writes a per-eval
+"""myfpo evaluator. The module runs deterministic rollouts and writes a per-eval
 CSV, and computes the jerk diagnostics that expose chunk-boundary artifacts.
 """
 

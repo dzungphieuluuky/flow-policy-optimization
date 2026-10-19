@@ -19,7 +19,7 @@ import torch
 from lerobot.configs.policies import PolicyFeature
 from lerobot.configs.types import FeatureType
 
-from myfpo.configuration import SJFPOConfig
+from myfpo.configuration import MyfpoConfig
 
 # The shape of the pin problem. Small on purpose: a pin must run in seconds so
 # it can be the gate on every commit.
@@ -34,7 +34,7 @@ __all__ = [
 ]
 
 
-def pin_config(**kw) -> SJFPOConfig:
+def pin_config(**kw) -> MyfpoConfig:
     """The one config every pin uses.
 
     ``compile`` stays off. A compiled module is not reproducible across
@@ -54,10 +54,10 @@ def pin_config(**kw) -> SJFPOConfig:
         output_features={"action": PolicyFeature(FeatureType.ACTION, (ACT,))},
     )
     base.update(kw)
-    return SJFPOConfig(**base)
+    return MyfpoConfig(**base)
 
 
-def build(cfg: SJFPOConfig, seed: int = 0):
+def build(cfg: MyfpoConfig, seed: int = 0):
     """Build the policy and the batch together, under one seed.
 
     The seed is set before the policy is built, because parameter construction

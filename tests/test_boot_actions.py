@@ -6,7 +6,7 @@ import pytest
 from lerobot.configs.policies import PolicyFeature
 from lerobot.configs.types import FeatureType
 
-from myfpo.configuration import SJFPOConfig
+from myfpo.configuration import MyfpoConfig
 from myfpo.training import build_policy
 from test_collector_batch_equivalence import FakeVecEnv
 
@@ -18,7 +18,7 @@ TOTAL_STEPS = 256
 
 def _policy():
     cfg = dataclasses.replace(
-        SJFPOConfig(),
+        MyfpoConfig(),
         input_features={"observation.state": PolicyFeature(FeatureType.STATE, (OBS,))},
         output_features={"action": PolicyFeature(FeatureType.ACTION, (ACT,))},
     )

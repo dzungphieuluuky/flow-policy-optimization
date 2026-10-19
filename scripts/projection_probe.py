@@ -29,7 +29,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from myfpo.configuration import SJFPOConfig
+from myfpo.configuration import MyfpoConfig
 
 CLIP_SERIES = "train/action_clip_frac"
 CORR_SERIES = "train/l_old_new_corr"
@@ -108,7 +108,7 @@ def projection_measurement(
     """How often the real projection fires, against the actor output magnitude.
 
     The projection that matters is ``x0.clamp(-1.0, 1.0)`` in
-    ``SJFPOPolicy.predict_action_chunk``. That clamp is the last step before the
+    ``MyfpoPolicy.predict_action_chunk``. That clamp is the last step before the
     action leaves the policy, and the CFM target is built from the clamped
     chunk. So it enters the objective.
 
@@ -151,7 +151,7 @@ def projection_measurement(
                 )
                 cfg = policy.config
             else:
-                cfg = dataclasses.replace(SJFPOConfig(), compile=False)
+                cfg = dataclasses.replace(MyfpoConfig(), compile=False)
                 policy = build_policy(
                     obs_dim,
                     act_dim,
@@ -220,7 +220,7 @@ def main() -> int:
 
     import gymnasium as gym
 
-    from myfpo.training import train_sjfpo_run
+    from myfpo.training import run_training
 
     scales = [float(s) for s in args.scales.split(",") if s.strip()]
     curve = projection_measurement(
@@ -233,7 +233,7 @@ def main() -> int:
 
     env = gym.make(args.env)
     # Four workers. The default of 64 forkserver processes exhausts a CPU box.
-    cfg = SJFPOConfig(
+    cfg = MyfpoConfig(
         report_to="tensorboard",
         compile=False,
         num_envs=4,
@@ -242,7 +242,7 @@ def main() -> int:
         eval_max_episodes=10,
     )
     try:
-        result = train_sjfpo_run(
+        result = run_training(
             env=env,
             out_dir=Path(args.out_dir) / f"seed{args.seed}",
             cfg=cfg,

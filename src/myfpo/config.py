@@ -1,4 +1,4 @@
-"""Environment registry and run-matrix helpers for the SJFPO benchmark."""
+"""Environment registry and run-matrix helpers for the myfpo benchmark."""
 
 from __future__ import annotations
 

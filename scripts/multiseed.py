@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Multi-seed driver and comparison for SJFPO (PyTorch).
+"""Multi-seed driver and comparison for myfpo (PyTorch).
 
 ``train.py`` runs one seed per invocation. One seed cannot separate a method
 from the noise. This script runs a list of seeds, then compares the arms with
@@ -37,7 +37,7 @@ import numpy as np
 import draccus
 
 from myfpo.config import KNOWN_ENVS
-from myfpo.configuration import SJFPOConfig
+from myfpo.configuration import MyfpoConfig
 from myfpo.evaluator import bootstrap_interval, median_of
 
 from train import (
@@ -80,7 +80,7 @@ class RunArgs:
     eval_steps: int | None = None
     save_steps: int | None = None
     out: str = "outputs/multiseed"
-    sjfpo: SJFPOConfig = dataclasses.field(default_factory=SJFPOConfig)
+    sjfpo: MyfpoConfig = dataclasses.field(default_factory=MyfpoConfig)
 
 
 def parse_seeds(raw: str | None, count: int, start: int) -> list[int]:

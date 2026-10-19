@@ -14,7 +14,7 @@ import dataclasses
 import numpy as np
 import pytest
 
-from myfpo.configuration import SJFPOConfig
+from myfpo.configuration import MyfpoConfig
 
 SAMPLINGS = ("zero_start", "noise_start")
 
@@ -23,7 +23,7 @@ SAMPLINGS = ("zero_start", "noise_start")
 
 
 def test_both_fields_default_to_the_trained_distribution():
-    cfg = SJFPOConfig()
+    cfg = MyfpoConfig()
     assert cfg.eval_sampling == "noise_start", (
         "the reported score must read the distribution training optimizes"
     )
@@ -35,7 +35,7 @@ def test_both_fields_default_to_the_trained_distribution():
 def test_the_two_fields_are_independent():
     """Reporting one start and stopping on the other is a valid request."""
     cfg = dataclasses.replace(
-        SJFPOConfig(), eval_sampling="zero_start", stop_eval_sampling="noise_start"
+        MyfpoConfig(), eval_sampling="zero_start", stop_eval_sampling="noise_start"
     )
     cfg.validate()
     assert cfg.eval_sampling == "zero_start"
@@ -45,13 +45,13 @@ def test_the_two_fields_are_independent():
 @pytest.mark.parametrize("field", ["eval_sampling", "stop_eval_sampling"])
 def test_an_unknown_sampling_is_rejected(field):
     with pytest.raises(ValueError, match=field):
-        dataclasses.replace(SJFPOConfig(), **{field: "noise"}).validate()
+        dataclasses.replace(MyfpoConfig(), **{field: "noise"}).validate()
 
 
 @pytest.mark.parametrize("field", ["eval_sampling", "stop_eval_sampling"])
 @pytest.mark.parametrize("value", SAMPLINGS)
 def test_both_named_values_are_accepted(field, value):
-    dataclasses.replace(SJFPOConfig(), **{field: value}).validate()
+    dataclasses.replace(MyfpoConfig(), **{field: value}).validate()
 
 
 def test_the_released_defaults_table_is_untouched():
@@ -65,7 +65,7 @@ def test_the_released_defaults_table_is_untouched():
     )
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    cfg = SJFPOConfig()
+    cfg = MyfpoConfig()
     for name, (want, _where) in mod.RELEASED.items():
         if name == "spo_clip_param_is_separate":
             continue
@@ -89,7 +89,7 @@ def test_the_two_adapters_give_different_returns():
     """The whole point: the two starts must not be interchangeable."""
     import gymnasium as gym
 
-    from myfpo.configuration import SJFPOConfig
+    from myfpo.configuration import MyfpoConfig
     from myfpo.evaluator import Evaluator
     from myfpo.training import _EvalPolicy, build_policy
 
@@ -102,7 +102,7 @@ def test_the_two_adapters_give_different_returns():
         policy = build_policy(
             obs_dim,
             act_dim,
-            dataclasses.replace(SJFPOConfig(), compile=False),
+            dataclasses.replace(MyfpoConfig(), compile=False),
             device="cpu",
             action_low=low,
             action_high=high,
@@ -127,9 +127,9 @@ def test_the_two_adapters_give_different_returns():
 def test_the_trainer_builds_both_adapters_once():
     import inspect
 
-    from myfpo.training import train_sjfpo_run
+    from myfpo.training import run_training
 
-    src = inspect.getsource(train_sjfpo_run)
+    src = inspect.getsource(run_training)
     assert '"zero_start": _EvalPolicy(policy, start_from_zero=True)' in src
     assert '"noise_start": _EvalPolicy(policy, start_from_zero=False)' in src
 
@@ -137,9 +137,9 @@ def test_the_trainer_builds_both_adapters_once():
 def test_the_trainer_reads_both_names_from_the_config():
     import inspect
 
-    from myfpo.training import evaluate_policy, train_sjfpo_run
+    from myfpo.training import evaluate_policy, run_training
 
-    src = inspect.getsource(train_sjfpo_run)
+    src = inspect.getsource(run_training)
     assert 'runtime["eval_sampling"] = cfg.eval_sampling' in src
     assert 'runtime["stop_eval_sampling"] = cfg.stop_eval_sampling' in src
     eval_src = inspect.getsource(evaluate_policy)
@@ -166,9 +166,9 @@ def test_each_start_is_evaluated_once():
 def test_both_returns_are_logged_under_their_own_names():
     import inspect
 
-    from myfpo.training import train_sjfpo_run
+    from myfpo.training import run_training
 
-    src = inspect.getsource(train_sjfpo_run)
+    src = inspect.getsource(run_training)
     assert 'f"eval/{name}_return_mean"' in src
     # The tracker takes floats only, so the two names must not be scalars.
     assert '"eval/reported_sampling"' not in src
@@ -179,9 +179,9 @@ def test_the_names_go_to_the_run_metadata_instead():
     """A string constant cannot be a per-step scalar. It belongs in the metadata."""
     import inspect
 
-    from myfpo.training import train_sjfpo_run
+    from myfpo.training import run_training
 
-    src = inspect.getsource(train_sjfpo_run)
+    src = inspect.getsource(run_training)
     assert 'runtime["eval_sampling"] = cfg.eval_sampling' in src
     assert 'runtime["stop_eval_sampling"] = cfg.stop_eval_sampling' in src
 
@@ -191,9 +191,9 @@ def test_the_tracker_rejects_no_key_after_this_change():
     calls ``float(value)``, so one string aborts the run."""
     import inspect
 
-    from myfpo.training import train_sjfpo_run
+    from myfpo.training import run_training
 
-    src = inspect.getsource(train_sjfpo_run)
+    src = inspect.getsource(run_training)
     # The one remaining string-valued value is the EMA flag, which is already
     # wrapped in float(). Every literal string in a logged dict is a key, not a
     # value, so this asserts there is no bare string assigned as a value.
@@ -226,9 +226,9 @@ def test_the_stochastic_mean_return_key_is_gone():
     """The old key named one distribution and hid the other."""
     import inspect
 
-    from myfpo.training import train_sjfpo_run
+    from myfpo.training import run_training
 
-    src = inspect.getsource(train_sjfpo_run)
+    src = inspect.getsource(run_training)
     assert "stochastic_mean_return" not in src, (
         "the single-adapter key is replaced by one key per named start"
     )
@@ -245,14 +245,14 @@ def test_the_stopper_reads_the_stop_distribution():
     import inspect
 
     from myfpo.runner import summarise_window
-    from myfpo.training import evaluate_policy, train_sjfpo_run
+    from myfpo.training import evaluate_policy, run_training
 
     src = inspect.getsource(evaluate_policy)
     # The runner reads both names back off the window, and the peak is written
     # from the stop one.
     assert "stop_return = window_obj.stop_return" in src
 
-    src = inspect.getsource(train_sjfpo_run)
+    src = inspect.getsource(run_training)
 
     # The rule itself lives in summarise_window now. The peak compares against
     # stop_name, never against reported_name.
@@ -274,7 +274,7 @@ def test_both_fields_reach_the_generated_yaml():
 
     root = Path(__file__).resolve().parents[1]
     data = yaml.safe_load((root / "configs" / "sjfpo.yaml").read_text())
-    cfg = SJFPOConfig()
+    cfg = MyfpoConfig()
     assert data["eval_sampling"] == cfg.eval_sampling
     assert data["stop_eval_sampling"] == cfg.stop_eval_sampling
 

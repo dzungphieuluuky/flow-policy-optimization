@@ -11,15 +11,15 @@ from collections.abc import Callable
 import numpy as np
 import torch
 
-from myfpo.configuration import SJFPOConfig
+from myfpo.configuration import MyfpoConfig
 
 __all__ = ["RolloutBuffer", "collect_chunks_vec"]
 
 
-def get_default_config() -> SJFPOConfig:
+def get_default_config() -> MyfpoConfig:
     """The default config, with feature specs for smoke and training."""
     from lerobot.configs.types import FeatureType, PolicyFeature
-    return SJFPOConfig(
+    return MyfpoConfig(
         input_features={
             "observation.state": PolicyFeature(type=FeatureType.STATE, shape=(4,))
         },

@@ -8,7 +8,7 @@ import torch
 from lerobot.configs.policies import PolicyFeature
 from lerobot.configs.types import FeatureType
 
-from myfpo.configuration import SJFPOConfig
+from myfpo.configuration import MyfpoConfig
 from myfpo.training import build_policy
 from test_collector_batch_equivalence import FakeVecEnv
 
@@ -19,7 +19,7 @@ HIGH = [1.0] * ACT
 
 def _cfg(**overrides):
     return dataclasses.replace(
-        SJFPOConfig(
+        MyfpoConfig(
             action_horizon=HORIZON,
             n_action_steps=EXECUTE,
             hidden_dim=16,

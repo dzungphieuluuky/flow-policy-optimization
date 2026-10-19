@@ -3,14 +3,14 @@
 import pytest
 import torch
 
-from myfpo.flow import SJFPOFlowModel, effective_rank
+from myfpo.flow import MyfpoFlowModel, effective_rank
 
 N, HIDDEN = 128, 128
 
 
-def _flow_model(device: torch.device) -> SJFPOFlowModel:
+def _flow_model(device: torch.device) -> MyfpoFlowModel:
     torch.manual_seed(0)
-    return SJFPOFlowModel(
+    return MyfpoFlowModel(
         action_dim=3,
         action_horizon=16,
         hidden_dim=HIDDEN,

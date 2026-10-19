@@ -73,7 +73,7 @@ def test_the_two_sampling_helpers_are_named_for_what_they_return():
     assert sample_mc_timesteps.__name__ == "sample_mc_timesteps"
     # The wrapper adds the trailing axis and the MC axes.
     out = sample_mc_timesteps(
-        __import__("myfpo.configuration", fromlist=["SJFPOConfig"]).SJFPOConfig(),
+        __import__("myfpo.configuration", fromlist=["MyfpoConfig"]).MyfpoConfig(),
         2,
         "cpu",
     )

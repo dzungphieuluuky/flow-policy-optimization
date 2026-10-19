@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from myfpo.configuration import SJFPOConfig
+from myfpo.configuration import MyfpoConfig
 
 ROOT = Path(__file__).resolve().parents[1]
 YAML_PATH = ROOT / "configs" / "sjfpo.yaml"
@@ -23,12 +23,12 @@ def loaded() -> dict:
 
 def test_every_yaml_key_is_a_real_config_field(loaded: dict):
     """A typo'd key used to be dropped with a warning and the run looked configured."""
-    known = {f.name for f in dataclasses.fields(SJFPOConfig)}
+    known = {f.name for f in dataclasses.fields(MyfpoConfig)}
     assert not set(loaded) - known, f"unknown keys: {sorted(set(loaded) - known)}"
 
 
 def test_yaml_matches_the_dataclass_defaults(loaded: dict):
-    fresh = dataclasses.replace(SJFPOConfig())
+    fresh = dataclasses.replace(MyfpoConfig())
     drift = {}
     for key, raw_value in loaded.items():
         default = getattr(fresh, key, None)

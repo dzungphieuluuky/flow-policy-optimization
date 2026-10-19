@@ -1,4 +1,4 @@
-"""SJFPO pre/post processors (LeRobot style). The pair normalises the obs and
+"""myfpo pre/post processors (LeRobot style). The pair normalises the obs and
 squashes the policy output into the env's action bounds.
 """
 
@@ -13,7 +13,7 @@ from lerobot.utils.constants import ACTION, OBS_STATE
 from myfpo.encoder import RunningMeanStd
 
 
-class SJFPOObservationProcessorStep(ProcessorStep):
+class MyfpoObservationProcessorStep(ProcessorStep):
     """Hold a reference to the ``RunningMeanStd`` of the policy, not a copy."""
 
     def __init__(self, normalizer: RunningMeanStd):
@@ -32,7 +32,7 @@ class SJFPOObservationProcessorStep(ProcessorStep):
         return features
 
 
-class SJFPOActionPostprocessorStep(ProcessorStep):
+class MyfpoActionPostprocessorStep(ProcessorStep):
     """Map the actor's raw output into the env's action bounds with ``tanh``."""
 
     def __init__(self, action_low: torch.Tensor, action_high: torch.Tensor):
@@ -77,11 +77,11 @@ class SJFPOActionPostprocessorStep(ProcessorStep):
         return features
 
 
-def make_sjfpo_pre_post_processors(
+def make_pre_post_processors(
     policy,
-) -> tuple[SJFPOObservationProcessorStep, SJFPOActionPostprocessorStep]:
+) -> tuple[MyfpoObservationProcessorStep, MyfpoActionPostprocessorStep]:
     """Build the pre/post pair. The policy setter syncs action bounds."""
     return (
-        SJFPOObservationProcessorStep(policy.obs_normalizer),
-        SJFPOActionPostprocessorStep(policy.action_low, policy.action_high),
+        MyfpoObservationProcessorStep(policy.obs_normalizer),
+        MyfpoActionPostprocessorStep(policy.action_low, policy.action_high),
     )

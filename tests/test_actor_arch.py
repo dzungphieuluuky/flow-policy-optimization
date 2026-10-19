@@ -19,8 +19,8 @@ from lerobot.configs.policies import PolicyFeature
 from lerobot.configs.types import FeatureType
 from fixtures import make_batch
 
-from myfpo.configuration import ACTOR_ARCHITECTURES, SJFPOConfig
-from myfpo.flow import SJFPOFlowModel
+from myfpo.configuration import ACTOR_ARCHITECTURES, MyfpoConfig
+from myfpo.flow import MyfpoFlowModel
 from myfpo.training import build_policy
 
 OBS, ACT, HORIZON, HIDDEN, TIME_EMBED = 6, 3, 8, 32, 16
@@ -28,7 +28,7 @@ OBS, ACT, HORIZON, HIDDEN, TIME_EMBED = 6, 3, 8, 32, 16
 
 def _cfg(**kw):
     return dataclasses.replace(
-        SJFPOConfig(
+        MyfpoConfig(
             action_horizon=HORIZON,
             hidden_dim=HIDDEN,
             time_embed_dim=TIME_EMBED,
@@ -43,7 +43,7 @@ def _cfg(**kw):
 
 
 def _dit():
-    return SJFPOFlowModel(ACT, HORIZON, HIDDEN, 1, 2, 2.0, TIME_EMBED)
+    return MyfpoFlowModel(ACT, HORIZON, HIDDEN, 1, 2, 2.0, TIME_EMBED)
 
 
 def test_the_dit_first_layer_projects_the_action_only():
@@ -129,7 +129,7 @@ def test_the_policy_builds_the_configured_actor():
         OBS, ACT, _cfg(actor_arch="dit", compile=False), device="cpu",
         action_low=[-1.0] * ACT, action_high=[1.0] * ACT,
     )
-    assert isinstance(policy.actor, SJFPOFlowModel)
+    assert isinstance(policy.actor, MyfpoFlowModel)
 
 
 def test_a_tracked_run_works():
@@ -172,7 +172,7 @@ def test_the_removed_arch_is_rejected():
 def test_no_actor_field_remains_for_the_removed_arch():
     """``mlp_hidden_dims`` had no meaning left, so the field is gone too."""
     assert "mlp_hidden_dims" not in {f.name for f in
-                                     dataclasses.fields(SJFPOConfig)}
+                                     dataclasses.fields(MyfpoConfig)}
     assert "mlp" not in ACTOR_ARCHITECTURES
     with Path("configs/sjfpo.yaml").open(encoding="utf-8") as handle:
         assert "mlp_hidden_dims" not in handle.read()

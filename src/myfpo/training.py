@@ -1,4 +1,4 @@
-"""SJFPO online training entry (LeRobot-native, MuJoCo-only)."""
+"""myfpo online training entry (LeRobot-native, MuJoCo-only)."""
 
 from __future__ import annotations
 
@@ -18,13 +18,13 @@ from lerobot.configs.types import FeatureType, PolicyFeature
 from lerobot.utils.random_utils import set_seed
 
 from myfpo.checkpointing import load_policy_checkpoint, save_policy_checkpoint
-from myfpo.configuration import SJFPOConfig
+from myfpo.configuration import MyfpoConfig
 from myfpo.evaluator import (
     Evaluator,
     compute_mean_chunk_jerk,
     compute_seam_jerk,
 )
-from myfpo.modeling import SJFPOAborted, SJFPOPolicy, build_optimizer
+from myfpo.modeling import MyfpoAborted, MyfpoPolicy, build_optimizer
 from myfpo.metrics import subsampled_min
 from lerobot.utils.constants import CHECKPOINTS_DIR
 from myfpo.utils import resolve_device, rms, to_numpy_1d
@@ -80,11 +80,11 @@ def generate_mini_batch_indices(
 def build_policy(
     obs_dim: int,
     action_dim: int,
-    cfg: SJFPOConfig,
+    cfg: MyfpoConfig,
     device=None,
     action_low: np.ndarray | None = None,
     action_high: np.ndarray | None = None,
-) -> SJFPOPolicy:
+) -> MyfpoPolicy:
     """Attach runtime features, then build the policy."""
     device = torch.device(device) if device is not None else resolve_device()
     policy_cfg = dataclasses.replace(
@@ -94,7 +94,7 @@ def build_policy(
         },
         output_features={"action": PolicyFeature(FeatureType.ACTION, (action_dim,))},
     )
-    policy = SJFPOPolicy(policy_cfg).to(device)
+    policy = MyfpoPolicy(policy_cfg).to(device)
     if action_low is not None and action_high is not None:
         policy.set_action_bounds(action_low, action_high)
     if getattr(cfg, "compile", False):
@@ -328,7 +328,7 @@ def train_update(policy, optimizer, batch, tracker, cfg, grad_groups):
         if loss.dim() != 0:
             raise ValueError(f"Loss must be scalar before backward; got {tuple(loss.shape)}.")
         if not bool(torch.isfinite(loss).all()):
-            raise SJFPOAborted(f"Non-finite loss at step {micro_step}: {loss}")
+            raise MyfpoAborted(f"Non-finite loss at step {micro_step}: {loss}")
         (loss / group_size).backward()
         is_boundary = (
             (micro_step + 1) % accumulation_steps == 0 or micro_step + 1 == len(microbatches)
@@ -355,7 +355,7 @@ def train_update(policy, optimizer, batch, tracker, cfg, grad_groups):
         if epoch_info is not None:
             epoch_infos.append(epoch_info)
     if bool(finite_error):
-        raise SJFPOAborted("Non-finite loss detected during gradient accumulation")
+        raise MyfpoAborted("Non-finite loss detected during gradient accumulation")
     return epoch_infos, grad_norms_pre, above_clamp_fracs, both_clamped_fracs
 
 
@@ -402,10 +402,10 @@ def save_checkpoint(out_dir, policy, optimizer, global_step, name):
     return str(ckpt_dir / "model.safetensors"), ckpt_dir
 
 
-def train_sjfpo_run(
+def run_training(
     env: Any,
     out_dir: str | Path,
-    cfg: SJFPOConfig | None = None,
+    cfg: MyfpoConfig | None = None,
     *,
     seed: int = 3407,
     total_steps: int = 2000,
@@ -416,10 +416,10 @@ def train_sjfpo_run(
     resume_from_checkpoint: str | Path | None = None,
     runtime: dict | None = None,
 ) -> dict[str, Any]:
-    """One SJFPO training run. Env builds before any CUDA init, so forked
+    """One myfpo training run. Env builds before any CUDA init, so forked
     vector-env workers inherit the right device state.
     """
-    cfg = cfg or SJFPOConfig()
+    cfg = cfg or MyfpoConfig()
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -499,7 +499,7 @@ def train_sjfpo_run(
         f"obs normalizer warmed on {warmed} frames", file=sys.stderr
     )
     print(
-        f"SJFPO policy: actor_depth={cfg.dit_depth} hidden={cfg.hidden_dim} "
+        f"myfpo policy: actor_depth={cfg.dit_depth} hidden={cfg.hidden_dim} "
         f"params={sum(p.numel() for p in policy.parameters()):,}",
         file=sys.stderr,
     )
@@ -608,7 +608,7 @@ def train_sjfpo_run(
             if both_clamped_frac > BOTH_CLAMPED_ABORT_FRAC:
                 both_clamped_updates += 1
                 if both_clamped_updates >= ABOVE_CLAMP_ABORT_UPDATES:
-                    raise SJFPOAborted(
+                    raise MyfpoAborted(
                         f"{ABOVE_CLAMP_ABORT_UPDATES} consecutive updates with >"
                         f"{BOTH_CLAMPED_ABORT_FRAC:.0%} of ratio elements whose two "
                         f"CFM losses both sit above cfm_clamp={cfg.cfm_clamp} "
@@ -623,7 +623,7 @@ def train_sjfpo_run(
                 above_clamp_updates += 1
                 both_clamped_updates = 0
                 if above_clamp_updates >= ABOVE_CLAMP_ABORT_UPDATES:
-                    raise SJFPOAborted(
+                    raise MyfpoAborted(
                         f"{ABOVE_CLAMP_ABORT_UPDATES} consecutive updates with >50% "
                         f"of CFM samples above cfm_clamp={cfg.cfm_clamp} "
                         f"(frac={above_clamp_frac:.2f}, "

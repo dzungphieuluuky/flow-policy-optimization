@@ -4,7 +4,7 @@ import torch
 
 from fixtures import make_policy
 from myfpo.metrics import subsampled_min
-from myfpo.modeling import SJFPOPolicy
+from myfpo.modeling import MyfpoPolicy
 from myfpo.rollout import run_rollout
 from myfpo.training import (
     measure_value_drift,
@@ -25,7 +25,7 @@ def test_source_does_not_cast_the_value_target_to_storage_dtype():
     """Guard the fix itself."""
     import inspect
 
-    src = inspect.getsource(SJFPOPolicy.forward)
+    src = inspect.getsource(MyfpoPolicy.forward)
     value_block = src[src.index("raw_value_pred = self.critic") :]
     value_block = value_block[: value_block.index("if reduction ==")]
     assert "storage_dtype" not in value_block, (

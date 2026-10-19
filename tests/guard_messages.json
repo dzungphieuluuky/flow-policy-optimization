@@ -28,7 +28,7 @@
   "config:log_ratio_cap": "log_ratio_cap=0.0 must be > 0",
   "config:max_grad_norm": "max_grad_norm=0.0 must be > 0",
   "config:min_sampled_timestep": "require 0 <= min_sampled_timestep < max_sampled_timestep <= 1, got (-1.0, 0.9)",
-  "config:missing-input-features": "SJFPO requires 'observation.state' in input_features.",
+  "config:missing-input-features": "myfpo requires 'observation.state' in input_features.",
   "config:noise_sampling_mode": "noise_sampling_mode must be 'normal' or 'uniform'",
   "config:num_critics": "num_critics=0 must be >= 1",
   "config:num_envs": "num_envs=0 must be >= 1",

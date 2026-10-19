@@ -5,7 +5,7 @@ import collections
 import dataclasses
 from pathlib import Path
 
-from myfpo.configuration import SJFPOConfig
+from myfpo.configuration import MyfpoConfig
 
 CONFIG_PATH = (
     Path(__file__).resolve().parents[1]
@@ -21,7 +21,7 @@ def _annotated_assignments() -> list[tuple[str, int, str]]:
     cls = next(
         n
         for n in tree.body
-        if isinstance(n, ast.ClassDef) and n.name == "SJFPOConfig"
+        if isinstance(n, ast.ClassDef) and n.name == "MyfpoConfig"
     )
     out = []
     for node in cls.body:
@@ -40,7 +40,7 @@ def test_no_config_field_is_declared_twice():
     """The defect this file exists for: a bad merge can duplicate a field."""
     names = [name for name, _, _ in _annotated_assignments()]
     dupes = [n for n, c in collections.Counter(names).items() if c > 1]
-    assert not dupes, f"declared more than once in SJFPOConfig: {sorted(dupes)}"
+    assert not dupes, f"declared more than once in MyfpoConfig: {sorted(dupes)}"
 
 
 def test_every_declared_field_exists_on_the_dataclass():
@@ -48,7 +48,7 @@ def test_every_declared_field_exists_on_the_dataclass():
     from lerobot.configs import PreTrainedConfig
 
     declared = {name for name, _, _ in _annotated_assignments()}
-    actual = {f.name for f in dataclasses.fields(SJFPOConfig)}
+    actual = {f.name for f in dataclasses.fields(MyfpoConfig)}
     inherited = {f.name for f in dataclasses.fields(PreTrainedConfig)}
 
     assert declared <= actual, (
@@ -61,7 +61,7 @@ def test_every_declared_field_exists_on_the_dataclass():
 
 def test_the_noise_marginal_is_normal_and_uniform_only():
     """One knob left: which distribution, not its spectrum."""
-    cfg = SJFPOConfig()
+    cfg = MyfpoConfig()
     assert cfg.noise_sampling_mode == "normal"
     flipped = dataclasses.replace(cfg, noise_sampling_mode="uniform")
     assert flipped.noise_sampling_mode == "uniform"

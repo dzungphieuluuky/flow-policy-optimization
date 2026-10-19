@@ -27,12 +27,12 @@ from lerobot.configs.policies import PolicyFeature
 from lerobot.configs.types import FeatureType
 from fixtures import make_batch
 
-from myfpo.configuration import ACTOR_ARCHITECTURES, SJFPOConfig
+from myfpo.configuration import ACTOR_ARCHITECTURES, MyfpoConfig
 from myfpo.flow import (
     ResidualMLP,
     ResMLPBlock,
-    SJFPOFlowModel,
-    SJFPOFlowResMLP,
+    MyfpoFlowModel,
+    MyfpoFlowResMLP,
 )
 from myfpo.training import build_policy
 
@@ -42,7 +42,7 @@ HEADS = 2
 
 def _cfg(**kw):
     return dataclasses.replace(
-        SJFPOConfig(
+        MyfpoConfig(
             action_horizon=HORIZON,
             hidden_dim=HIDDEN,
             time_embed_dim=TIME_EMBED,
@@ -57,7 +57,7 @@ def _cfg(**kw):
 
 
 def _resmlp(blocks=2, units=4, mult=2.0):
-    return SJFPOFlowResMLP(
+    return MyfpoFlowResMLP(
         ACT, HORIZON, HIDDEN, blocks, units, mult, HEADS, TIME_EMBED
     )
 
@@ -165,8 +165,8 @@ def test_the_adaln_head_still_zero_inits():
 
 
 def test_resmlp_shares_the_actor_prefix_with_the_dit_actor():
-    assert inspect.signature(SJFPOFlowResMLP.__init__).parameters
-    for cls in (SJFPOFlowModel, SJFPOFlowResMLP):
+    assert inspect.signature(MyfpoFlowResMLP.__init__).parameters
+    for cls in (MyfpoFlowModel, MyfpoFlowResMLP):
         params = list(inspect.signature(cls.__init__).parameters)[1:]
         assert params[:3] == ["action_dim", "action_horizon", "hidden_dim"], (
             f"{cls.__name__} prefix is {params[:3]}"
@@ -269,7 +269,7 @@ def test_a_tracked_run_works_for_every_actor():
 
 
 def test_the_policy_builds_the_configured_actor():
-    for arch, cls in (("dit", SJFPOFlowModel), ("resmlp", SJFPOFlowResMLP)):
+    for arch, cls in (("dit", MyfpoFlowModel), ("resmlp", MyfpoFlowResMLP)):
         policy = build_policy(
             OBS, ACT, _cfg(actor_arch=arch, compile=False), device="cpu",
             action_low=[-1.0] * ACT, action_high=[1.0] * ACT,
@@ -286,23 +286,23 @@ def test_the_dit_path_is_untouched_by_the_resmlp_actor():
     so a later refactor cannot repeat it silently.
     """
     torch.manual_seed(0)
-    a = SJFPOFlowModel(ACT, HORIZON, HIDDEN, 3, HEADS, 2.0, TIME_EMBED)
+    a = MyfpoFlowModel(ACT, HORIZON, HIDDEN, 3, HEADS, 2.0, TIME_EMBED)
     first = {
         k: v.clone() for k, v in a.state_dict().items()
         if k.startswith(("in_proj", "token_pos", "time_mlp"))
     }
     torch.manual_seed(0)
-    b = SJFPOFlowModel(ACT, HORIZON, HIDDEN, 3, HEADS, 2.0, TIME_EMBED)
+    b = MyfpoFlowModel(ACT, HORIZON, HIDDEN, 3, HEADS, 2.0, TIME_EMBED)
     for k, v in first.items():
         assert torch.equal(v, b.state_dict()[k]), k
 
     # The block weights are drawn after the stem, so consuming the same number
     # of values from a fresh stream must reproduce them.
     torch.manual_seed(0)
-    _ = SJFPOFlowModel(ACT, HORIZON, HIDDEN, 3, HEADS, 2.0, TIME_EMBED)
+    _ = MyfpoFlowModel(ACT, HORIZON, HIDDEN, 3, HEADS, 2.0, TIME_EMBED)
     after = torch.randn(3)
     torch.manual_seed(0)
-    _ = SJFPOFlowModel(ACT, HORIZON, HIDDEN, 3, HEADS, 2.0, TIME_EMBED)
+    _ = MyfpoFlowModel(ACT, HORIZON, HIDDEN, 3, HEADS, 2.0, TIME_EMBED)
     assert torch.equal(after, torch.randn(3))
 
 

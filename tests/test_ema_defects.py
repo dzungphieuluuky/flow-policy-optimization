@@ -7,10 +7,10 @@ import warnings
 import torch
 
 from fixtures import make_policy
-from myfpo.modeling import SJFPOPolicy
+from myfpo.modeling import MyfpoPolicy
 
 
-def _warm(p: SJFPOPolicy) -> SJFPOPolicy:
+def _warm(p: MyfpoPolicy) -> MyfpoPolicy:
     p.update_ema(0)
     p.update_ema(1000)
     return p

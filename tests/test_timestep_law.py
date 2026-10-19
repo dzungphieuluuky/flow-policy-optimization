@@ -10,7 +10,7 @@ import math
 
 import torch
 
-from myfpo.configuration import SJFPOConfig
+from myfpo.configuration import MyfpoConfig
 from myfpo.fpo_core import sample_timesteps
 
 # Enough draws that the sampling error sits far below the shape differences
@@ -20,8 +20,8 @@ N = 200_000
 TOL = 5e-3
 
 
-def _cfg(**kwargs) -> SJFPOConfig:
-    return SJFPOConfig(**kwargs)
+def _cfg(**kwargs) -> MyfpoConfig:
+    return MyfpoConfig(**kwargs)
 
 
 def _draw(**kwargs) -> torch.Tensor:
@@ -35,7 +35,7 @@ def test_the_draw_bounds_are_not_the_range_of_the_flow():
     ``sample_action`` integrates over ``[0, 1]`` on every call and never reads
     the config. The two fields bound the training draw only.
     """
-    cfg = SJFPOConfig()
+    cfg = MyfpoConfig()
     # The property, not the literal: the draw must exclude both endpoints of
     # the flow without being told the flow range.
     assert cfg.min_sampled_timestep > 0.0, "the draw must not sit exactly on t=0"
@@ -73,7 +73,7 @@ def test_the_draw_bounds_are_not_the_range_of_the_flow():
 
 def test_fpo_beta_at_one_equals_uniform():
     """The defect this file exists for: the default beta is the null case."""
-    lo, hi = SJFPOConfig().min_sampled_timestep, SJFPOConfig().max_sampled_timestep
+    lo, hi = MyfpoConfig().min_sampled_timestep, MyfpoConfig().max_sampled_timestep
     fpo = _draw(timestep_sampling_mode="fpo_beta", timestep_inverse_cdf_beta=1.0)
     uni = _draw(timestep_sampling_mode="uniform")
 
@@ -93,7 +93,7 @@ def test_fpo_beta_away_from_one_differs_from_uniform():
 
 def test_fpo_beta_leans_toward_the_lower_bound():
     """beta > 1 puts more mass near ``min_sampled_timestep`` than a uniform draw."""
-    lo, hi = SJFPOConfig().min_sampled_timestep, SJFPOConfig().max_sampled_timestep
+    lo, hi = MyfpoConfig().min_sampled_timestep, MyfpoConfig().max_sampled_timestep
     mid = (lo + hi) / 2
     for beta in (0.5, 2.0, 4.0, 8.0):
         draw = _draw(timestep_sampling_mode="fpo_beta", timestep_inverse_cdf_beta=beta)
@@ -140,11 +140,11 @@ def test_a_beta_away_from_one_does_not_warn():
 
     with warnings.catch_warnings():
         warnings.simplefilter("error", RuntimeWarning)
-        SJFPOConfig(
+        MyfpoConfig(
             timestep_sampling_mode="fpo_beta", timestep_inverse_cdf_beta=2.0
         )
-        SJFPOConfig(timestep_sampling_mode="uniform")
-        SJFPOConfig(timestep_sampling_mode="beta")
+        MyfpoConfig(timestep_sampling_mode="uniform")
+        MyfpoConfig(timestep_sampling_mode="beta")
 
 
 
@@ -152,10 +152,10 @@ def test_beta_one_is_the_null_case():
     """At 1.0 the fpo_beta transform is the identity, so it draws uniform.
 
     The identity is kept here so nobody re-picks 1.0 without seeing this. The
-    shipped default is ``uniform``, not ``fpo_beta``: ``SJFPOConfig`` no longer
+    shipped default is ``uniform``, not ``fpo_beta``: ``MyfpoConfig`` no longer
     names a law it does not draw, so the default needs no guard against this.
     """
-    cfg = dataclasses.replace(SJFPOConfig(), timestep_inverse_cdf_beta=1.0)
+    cfg = dataclasses.replace(MyfpoConfig(), timestep_inverse_cdf_beta=1.0)
     assert cfg.timestep_inverse_cdf_beta == 1.0
     # 1.0 ** (1.0 / 1.0) == 1.0, so the transform is the identity.
     assert math.isclose(1.0 - (1.0 - 0.5) ** (1.0 / 1.0), 0.5)
@@ -178,11 +178,11 @@ def test_only_an_explicit_one_warns():
 
     with warnings.catch_warnings():
         warnings.simplefilter("error", RuntimeWarning)
-        SJFPOConfig()
+        MyfpoConfig()
 
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        SJFPOConfig(timestep_sampling_mode="fpo_beta", timestep_inverse_cdf_beta=1.0)
+        MyfpoConfig(timestep_sampling_mode="fpo_beta", timestep_inverse_cdf_beta=1.0)
     assert any(issubclass(w.category, RuntimeWarning) for w in caught), (
         "an explicit beta=1.0 must still warn"
     )

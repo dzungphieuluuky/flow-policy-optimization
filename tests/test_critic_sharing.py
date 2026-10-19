@@ -8,7 +8,7 @@ import torch
 from lerobot.configs.policies import PolicyFeature
 from lerobot.configs.types import FeatureType
 
-from myfpo.configuration import SJFPOConfig
+from myfpo.configuration import MyfpoConfig
 from myfpo.critic import Critic
 from myfpo.training import build_policy
 
@@ -17,7 +17,7 @@ OBS, ACT, HORIZON, HIDDEN = 6, 3, 8, 32
 
 def _cfg(**kw):
     return dataclasses.replace(
-        SJFPOConfig(
+        MyfpoConfig(
             action_horizon=HORIZON,
             hidden_dim=HIDDEN,
             critic_hidden_dim=None,

@@ -13,7 +13,7 @@ import pytest
 import torch
 
 from myfpo.attention import SelfAttention
-from myfpo.configuration import SJFPOConfig
+from myfpo.configuration import MyfpoConfig
 
 
 def test_a_later_token_cannot_change_an_earlier_one():
@@ -48,15 +48,15 @@ def test_even_head_dim_is_accepted():
 def test_config_rejects_an_odd_head_dim():
     # 6 splits evenly over 2 heads, but head_dim=3 is odd.
     with pytest.raises(ValueError, match="must be even for RoPE"):
-        dataclasses.replace(SJFPOConfig(), hidden_dim=6, dit_heads=2)
+        dataclasses.replace(MyfpoConfig(), hidden_dim=6, dit_heads=2)
 
 
 def test_config_accepts_an_even_head_dim():
-    cfg = dataclasses.replace(SJFPOConfig(), hidden_dim=128, dit_heads=4)
+    cfg = dataclasses.replace(MyfpoConfig(), hidden_dim=128, dit_heads=4)
     cfg.validate()
     assert cfg.hidden_dim // cfg.dit_heads == 32
 
 
 def test_config_still_rejects_hidden_dim_that_does_not_split_over_heads():
     with pytest.raises(ValueError, match="must be divisible by"):
-        dataclasses.replace(SJFPOConfig(), hidden_dim=128, dit_heads=5).validate()
+        dataclasses.replace(MyfpoConfig(), hidden_dim=128, dit_heads=5).validate()

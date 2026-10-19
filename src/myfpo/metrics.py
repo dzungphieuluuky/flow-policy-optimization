@@ -5,7 +5,7 @@ from __future__ import annotations
 import einx
 import torch
 
-from myfpo.configuration import SJFPOConfig
+from myfpo.configuration import MyfpoConfig
 from myfpo.fpo_core import (
     broadcast_over_mc_axis,
     sample_noise,
@@ -86,7 +86,7 @@ def compute_gae_diagnostics(
 
 
 def sample_eps(
-    cfg: SJFPOConfig,
+    cfg: MyfpoConfig,
     n: int,
     action_dim: int,
     device: torch.device,
@@ -126,7 +126,7 @@ def broadcast_condition(condition: torch.Tensor, num_mc: int) -> torch.Tensor:
     return einx.id("n m d -> (n m) d", einx.id("n d -> n m d", condition, m=num_mc))
 
 
-def sample_mc_timesteps(cfg: SJFPOConfig, n: int, device: torch.device) -> torch.Tensor:
+def sample_mc_timesteps(cfg: MyfpoConfig, n: int, device: torch.device) -> torch.Tensor:
     """MC timesteps, one trailing axis: ``[n, M, horizon, 1]``."""
     return sample_timesteps(
         (n, cfg.num_mc_samples, cfg.action_horizon), cfg, device, None
@@ -139,7 +139,7 @@ def compute_ratio_metrics(
     ratio_token: torch.Tensor,
     delta: torch.Tensor,
     action_is_pad: torch.Tensor,
-    cfg: SJFPOConfig,
+    cfg: MyfpoConfig,
 ) -> dict[str, torch.Tensor]:
     """Trust-region diagnostics, with a per-token axis split."""
     log_ratio_abs = delta.abs()
@@ -257,7 +257,7 @@ def compute_policy_info(
     cond_stats,
     above_clamp_frac,
     both_clamped_frac,
-    cfg: SJFPOConfig,
+    cfg: MyfpoConfig,
 ) -> dict[str, float]:
     """Merge the metric groups into one device transfer."""
     scalars = {

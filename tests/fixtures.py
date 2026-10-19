@@ -13,25 +13,25 @@ import torch
 from lerobot.configs.policies import PolicyFeature
 from lerobot.configs.types import FeatureType
 
-from myfpo.configuration import SJFPOConfig
-from myfpo.modeling import SJFPOPolicy
+from myfpo.configuration import MyfpoConfig
+from myfpo.modeling import MyfpoPolicy
 
 OBS_DIM = 5
 ACT_DIM = 2
 
 
-def make_policy(**kw) -> SJFPOPolicy:
+def make_policy(**kw) -> MyfpoPolicy:
     """A policy with the feature specs the suite uses. ``kw`` goes to the config."""
     cfg = dataclasses.replace(
-        SJFPOConfig(**kw),
+        MyfpoConfig(**kw),
         input_features={"observation.state": PolicyFeature(FeatureType.STATE, (OBS_DIM,))},
         output_features={"action": PolicyFeature(FeatureType.ACTION, (ACT_DIM,))},
     )
-    return SJFPOPolicy(cfg)
+    return MyfpoPolicy(cfg)
 
 
 def make_batch(
-    policy: SJFPOPolicy,
+    policy: MyfpoPolicy,
     *,
     obs_dim: int,
     action_dim: int,

@@ -5,14 +5,14 @@ import dataclasses
 import pytest
 import torch
 
-from myfpo.configuration import SJFPOConfig
+from myfpo.configuration import MyfpoConfig
 from myfpo.fpo_core import velocity_to_target_param, cfm_target, compute_cfm_loss
 
 MODES = ("velocity", "action", "noise")
 
 
 def _cfg(**kw):
-    return dataclasses.replace(SJFPOConfig(), cfm_loss_use_huber=False, **kw)
+    return dataclasses.replace(MyfpoConfig(), cfm_loss_use_huber=False, **kw)
 
 
 def _path(n=3, m=4, k=5, d=2, seed=0):
@@ -52,7 +52,7 @@ def test_a_wrong_velocity_is_caught_in_every_mode(mode):
 
 def test_velocity_is_the_default_and_is_the_identity_map():
     """Parity default: the mode the release runs, and the pre-existing path."""
-    assert SJFPOConfig().cfm_loss_target == "velocity"
+    assert MyfpoConfig().cfm_loss_target == "velocity"
     a, eps, t, x_t, v = _path()
     cfg = _cfg()
     assert torch.equal(velocity_to_target_param(v, x_t, t, cfg), v)

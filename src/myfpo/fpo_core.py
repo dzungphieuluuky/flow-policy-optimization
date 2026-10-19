@@ -10,13 +10,13 @@ from typing import Any
 
 import torch
 
-from myfpo.configuration import SJFPOConfig
+from myfpo.configuration import MyfpoConfig
 from myfpo.utils import resolve_storage_dtype
 
 
 def sample_timesteps(
     num_samples: int,
-    cfg: SJFPOConfig,
+    cfg: MyfpoConfig,
     device: torch.device | str,
     generator: torch.Generator | None,
 ):
@@ -56,7 +56,7 @@ def sample_timesteps(
 
 def sample_noise(
     shape,
-    cfg: SJFPOConfig,
+    cfg: MyfpoConfig,
     device: torch.device | str,
     generator: torch.Generator | None,
 ):
@@ -112,7 +112,7 @@ def clip_velocity(velocity: torch.Tensor, bound: float | None) -> torch.Tensor:
 def compute_cfm_loss(
     v_hat: torch.Tensor,
     v_star: torch.Tensor,
-    cfg: SJFPOConfig,
+    cfg: MyfpoConfig,
     reduce_mode: str,
     action_is_pad: torch.Tensor | None = None,
     weight: torch.Tensor | None = None,
@@ -226,7 +226,7 @@ def sigreg_decorr_loss(z: torch.Tensor, sketch_dim: int = 64) -> torch.Tensor:
     return torch.norm(off, p="fro")
 
 
-def cfm_loss_weight(t: torch.Tensor, cfg: SJFPOConfig) -> torch.Tensor:
+def cfm_loss_weight(t: torch.Tensor, cfg: MyfpoConfig) -> torch.Tensor:
     """Per-token CFM loss weight (broadcasts over action dims). Weight rises linearly to 1.0 at t=1 (0.01 + 0.99*t); no verified 'reversed vs reference' claim."""
     mode = cfg.cfm_loss_weight_from_t
     if mode == "constant":
@@ -237,7 +237,7 @@ def cfm_loss_weight(t: torch.Tensor, cfg: SJFPOConfig) -> torch.Tensor:
 
 
 def velocity_to_target_param(
-    v: torch.Tensor, x_t: torch.Tensor, t: torch.Tensor, cfg: SJFPOConfig
+    v: torch.Tensor, x_t: torch.Tensor, t: torch.Tensor, cfg: MyfpoConfig
 ) -> torch.Tensor:
     """Map velocity into the target space of ``cfg.cfm_loss_target``. Only the loss compares; network predicts velocity."""
     mode = cfg.cfm_loss_target
@@ -249,7 +249,7 @@ def velocity_to_target_param(
 
 
 def cfm_target(
-    a: torch.Tensor, eps: torch.Tensor, cfg: SJFPOConfig
+    a: torch.Tensor, eps: torch.Tensor, cfg: MyfpoConfig
 ) -> torch.Tensor:
     """The regression target for ``cfg.cfm_loss_target``. ``[B, *flow]``."""
     mode = cfg.cfm_loss_target
@@ -263,7 +263,7 @@ def cfm_target(
 def compute_aspo_surrogate(
     ratio: torch.Tensor,
     advantage: torch.Tensor,
-    cfg: SJFPOConfig,
+    cfg: MyfpoConfig,
 ) -> torch.Tensor:
     """FPO++ trust region. ASPO is PPO for A>0 and SPO for A<0. It runs on each
     ratio element independently, so both branches are always computed.
@@ -285,7 +285,7 @@ def compute_aspo_surrogate(
 def clamp_saturation(
     cfm_loss_old: torch.Tensor,
     cfm_loss_new: torch.Tensor,
-    cfg: SJFPOConfig,
+    cfg: MyfpoConfig,
 ) -> torch.Tensor:
     """Share of elements where both old and new losses exceed ``cfm_clamp`` (ratio pinned to 1, zero gradient)."""
     if cfm_loss_old.shape != cfm_loss_new.shape:
@@ -304,7 +304,7 @@ def clamp_saturation(
 def compute_policy_ratio(
     cfm_loss_old: torch.Tensor,
     cfm_loss_new: torch.Tensor,
-    cfg: SJFPOConfig,
+    cfg: MyfpoConfig,
     advantage: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Return ``exp(cfm_loss_old - cfm_loss_new)``, with clamping and straight-through cap on delta."""

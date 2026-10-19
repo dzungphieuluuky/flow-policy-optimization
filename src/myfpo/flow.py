@@ -154,7 +154,7 @@ class _FlowActorBase(nn.Module):
 
 
 
-class SJFPOFlowModel(_FlowActorBase):
+class MyfpoFlowModel(_FlowActorBase):
     """The DiT actor. One block is self-attention, one SwiGLU, and adaLN."""
 
     def __init__(
@@ -283,7 +283,7 @@ class ResMLPBlock(nn.Module):
         return out, stats
 
 
-class SJFPOFlowResMLP(_FlowActorBase):
+class MyfpoFlowResMLP(_FlowActorBase):
     """The ``resmlp`` actor. DiT's attention and adaLN, the paper's MLP unit."""
 
     def __init__(

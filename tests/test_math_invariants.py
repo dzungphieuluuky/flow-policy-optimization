@@ -37,10 +37,10 @@ class TestGAEChunkAdvantageInvariant:
 class TestFPORatioInvariant:
     def test_fpo_policy_ratio_pessimistic(self):
         """PPO ratio: min(ratio*A, clip(ratio)*A) must be <= ratio*A for A>0."""
-        from myfpo.configuration import SJFPOConfig
+        from myfpo.configuration import MyfpoConfig
         from myfpo.fpo_core import compute_aspo_surrogate
 
-        cfg = SJFPOConfig(trust_region_mode="ppo")
+        cfg = MyfpoConfig(trust_region_mode="ppo")
         ratio = torch.tensor([[0.5, 1.0, 1.5, 2.0, 4.0]], dtype=torch.float32)
         adv = torch.tensor([[1.0]], dtype=torch.float32)
         surrogate = compute_aspo_surrogate(ratio, adv, cfg)
@@ -58,7 +58,7 @@ class TestFPORatioInvariant:
 class TestCFMLossMaskShape:
     def test_fpo_cfm_loss_mask_shape(self):
         """CFM: an all-False pad mask must leave the loss bit-identical to unmasked."""
-        from myfpo.configuration import SJFPOConfig
+        from myfpo.configuration import MyfpoConfig
         from myfpo.fpo_core import compute_cfm_loss
 
         n, mc, horizon, dim = 2, 4, 4, 2
@@ -67,8 +67,8 @@ class TestCFMLossMaskShape:
         v_star = torch.randn(n, mc, horizon, dim, generator=g, dtype=torch.float64)
         no_pad = torch.zeros(n, horizon, dtype=torch.bool)
 
-        masked = compute_cfm_loss(v_hat, v_star, SJFPOConfig(), "sample_and_token", no_pad)
-        unmasked = compute_cfm_loss(v_hat, v_star, SJFPOConfig(), "sample_and_token", None)
+        masked = compute_cfm_loss(v_hat, v_star, MyfpoConfig(), "sample_and_token", no_pad)
+        unmasked = compute_cfm_loss(v_hat, v_star, MyfpoConfig(), "sample_and_token", None)
         for got, want in zip(masked, unmasked):
             assert torch.equal(got, want)
 
@@ -77,10 +77,10 @@ class TestFPOCoreRemaining:
     def test_fpo_aspo_surrogate_shape(self):
         """ASPO: for A>0 returns PPO. A<0 returns SPO. Elementwise."""
         from myfpo.fpo_core import compute_aspo_surrogate
-        from myfpo.configuration import SJFPOConfig
+        from myfpo.configuration import MyfpoConfig
         import torch
 
-        cfg = SJFPOConfig()
+        cfg = MyfpoConfig()
         ratio = torch.ones(4, 4)
         adv = torch.ones(4, 4) * 0.5
         result = compute_aspo_surrogate(ratio, adv, cfg)
@@ -92,11 +92,11 @@ class TestFPOCoreRemaining:
 
         import torch
 
-        from myfpo.configuration import SJFPOConfig
+        from myfpo.configuration import MyfpoConfig
         from myfpo.fpo_core import compute_aspo_surrogate
 
         cfg = dataclasses.replace(
-            SJFPOConfig(), clip_param=0.05, spo_clip_param=0.01
+            MyfpoConfig(), clip_param=0.05, spo_clip_param=0.01
         )
         ratio = torch.tensor([1.5, 1.5])
         adv = torch.tensor([-2.0, 2.0])
@@ -111,10 +111,10 @@ class TestFPOCoreRemaining:
     def test_fpo_policy_ratio_clip_invariant(self):
         """Policy ratio: exp(delta_st) with clamped delta. Backward through delta."""
         from myfpo.fpo_core import compute_policy_ratio
-        from myfpo.configuration import SJFPOConfig
+        from myfpo.configuration import MyfpoConfig
         import torch
 
-        cfg = SJFPOConfig()
+        cfg = MyfpoConfig()
         cfm_loss_old = torch.ones(2, 2)
         cfm_loss_new = torch.ones(2, 2) * 0.9
         ratio = compute_policy_ratio(cfm_loss_old, cfm_loss_new, cfg)
@@ -136,10 +136,10 @@ class TestSamplingFunctions:
     def test_sample_timesteps_bounds(self):
         """Sampled timesteps within [min, max]."""
         from myfpo.fpo_core import sample_timesteps
-        from myfpo.configuration import SJFPOConfig
+        from myfpo.configuration import MyfpoConfig
         import torch
 
-        cfg = SJFPOConfig()
+        cfg = MyfpoConfig()
         t = sample_timesteps(10, cfg, device=torch.device("cpu"), generator=None)
         assert (t >= cfg.min_sampled_timestep - 1e-5).all()
         assert (t <= cfg.max_sampled_timestep + 1e-5).all()
@@ -147,9 +147,9 @@ class TestSamplingFunctions:
     def test_sample_noise_shape(self):
         """Noise shape matches request."""
         from myfpo.fpo_core import sample_noise
-        from myfpo.configuration import SJFPOConfig
+        from myfpo.configuration import MyfpoConfig
         import torch
 
-        cfg = SJFPOConfig()
+        cfg = MyfpoConfig()
         eps = sample_noise((4, 2), cfg, device=torch.device("cpu"), generator=None)
         assert eps.shape == (4, 2)

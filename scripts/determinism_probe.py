@@ -58,12 +58,12 @@ def main() -> int:
     high = np.atleast_1d(np.asarray(env.action_space.high, dtype=np.float32))
 
     if args.checkpoint is None:
-        from myfpo.configuration import SJFPOConfig
+        from myfpo.configuration import MyfpoConfig
         from myfpo.training import build_policy
 
         obs_dim = int(np.prod(env.observation_space.shape))
         act_dim = int(np.prod(env.action_space.shape))
-        cfg = SJFPOConfig(compile=False)
+        cfg = MyfpoConfig(compile=False)
         policy = build_policy(
             obs_dim, act_dim, cfg, device=device, action_low=low, action_high=high
         )

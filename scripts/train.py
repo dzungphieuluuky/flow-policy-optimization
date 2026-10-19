@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Single-run training CLI for SJFPO (PyTorch).
+"""Single-run training CLI for myfpo (PyTorch).
 
 One run per invocation. Draccus builds the run config. The config takes
 singular values only.
@@ -45,7 +45,7 @@ from myfpo.config import (
     KNOWN_ENVS,
     get_observation_action_dim,
 )
-from myfpo.configuration import SJFPOConfig
+from myfpo.configuration import MyfpoConfig
 
 
 def configure_torch_cuda() -> bool:
@@ -127,7 +127,7 @@ class TrainConfig:
     # run dir (<base>_resume[/2...]). total_steps stays an absolute env-step
     # budget.
     resume: str | None = None
-    sjfpo: SJFPOConfig = field(default_factory=SJFPOConfig)
+    sjfpo: MyfpoConfig = field(default_factory=MyfpoConfig)
 
 
 def load_yaml_dict(path: str | Path) -> dict:
@@ -190,7 +190,7 @@ def apply_flat_yaml(
 
 
 def _sjfpo_cli_fields(argv: list[str]) -> set[str]:
-    """Return SJFPO config fields explicitly present on the command line."""
+    """Return myfpo config fields explicitly present on the command line."""
     fields: set[str] = set()
     prefix = "--sjfpo."
     for _index, token in enumerate(argv):
@@ -303,9 +303,9 @@ def run_single(
                 f"{(live_obs, live_act)}"
             )
 
-        from myfpo.training import train_sjfpo_run
+        from myfpo.training import run_training
 
-        return train_sjfpo_run(
+        return run_training(
             env=env,
             out_dir=out_dir,
             cfg=cfg,

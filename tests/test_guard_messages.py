@@ -32,8 +32,8 @@ def _raises(thunk) -> str:
     raise AssertionError("expected ValueError, nothing was raised")
 
 
-# --- configuration.SJFPOConfig -----------------------------------------.
-from myfpo.configuration import SJFPOConfig  # noqa: E402
+# --- configuration.MyfpoConfig -----------------------------------------.
+from myfpo.configuration import MyfpoConfig  # noqa: E402
 
 _BAD_CONFIG = {
     "action_perturb_std": -1.0,
@@ -78,19 +78,19 @@ _BAD_CONFIG = {
     "value_loss_coef": -1.0,
 }
 for _field, _bad in sorted(_BAD_CONFIG.items()):
-    case(f"config:{_field}")(lambda f=_field, b=_bad: SJFPOConfig(**{f: b}))
+    case(f"config:{_field}")(lambda f=_field, b=_bad: MyfpoConfig(**{f: b}))
 
 
 @case("config:missing-input-features")
 def _missing_input_features() -> None:
-    SJFPOConfig().validate_features()
+    MyfpoConfig().validate_features()
 
 
 # --- network constructors ----------------------------------------------------.
 from myfpo.attention import DiTBlock, SelfAttention  # noqa: E402
 from myfpo.critic import Critic, CriticMember  # noqa: E402
 from myfpo.encoder import RunningMeanStd, StateEncoder  # noqa: E402
-from myfpo.flow import SJFPOFlowModel  # noqa: E402
+from myfpo.flow import MyfpoFlowModel  # noqa: E402
 from myfpo.layers import CondMLP, SinusoidalEncoding, SwiGLU  # noqa: E402
 
 case("layers:SwiGLU:zero-dims")(lambda: SwiGLU(0, 4, 4))
@@ -104,10 +104,10 @@ case("attention:SelfAttention:heads")(lambda: SelfAttention(8, 0))
 case("attention:SelfAttention:split")(lambda: SelfAttention(8, 3))
 case("attention:DiTBlock:hidden")(lambda: DiTBlock(1, 2, 2.0))
 case("attention:DiTBlock:ratio")(lambda: DiTBlock(8, 2, 0.0))
-case("flow:actor:action_dim")(lambda: SJFPOFlowModel(0, 8, 128, 3, 2, 2.0, 64))
-case("flow:actor:horizon")(lambda: SJFPOFlowModel(3, 0, 128, 3, 2, 2.0, 64))
-case("flow:actor:depth")(lambda: SJFPOFlowModel(3, 8, 128, 0, 2, 2.0, 64))
-case("flow:actor:mlp_ratio")(lambda: SJFPOFlowModel(3, 8, 128, 3, 2, 0.0, 64))
+case("flow:actor:action_dim")(lambda: MyfpoFlowModel(0, 8, 128, 3, 2, 2.0, 64))
+case("flow:actor:horizon")(lambda: MyfpoFlowModel(3, 0, 128, 3, 2, 2.0, 64))
+case("flow:actor:depth")(lambda: MyfpoFlowModel(3, 8, 128, 0, 2, 2.0, 64))
+case("flow:actor:mlp_ratio")(lambda: MyfpoFlowModel(3, 8, 128, 3, 2, 0.0, 64))
 case("critic:member:action_dim")(lambda: CriticMember(3, 0, 8, 4, 8, num_layers=2))
 case("critic:member:horizon")(lambda: CriticMember(3, 2, 8, 4, 0, num_layers=2))
 case("critic:member:hidden")(lambda: CriticMember(3, 2, 0, 4, 8, num_layers=2))
@@ -168,12 +168,12 @@ case("fpo_core:mc:eps-shape")(lambda: _mc_t(eps=torch.zeros(2, 2, 4, 2)))
 case("fpo_core:mc:t-shape")(lambda: _mc_t(t=torch.zeros(2, 2)))
 case("fpo_core:cfm:vhat-mismatch")(
     lambda: compute_cfm_loss(
-        torch.zeros(2, 4, 3), torch.zeros(2, 5, 3), SJFPOConfig(), "sample"
+        torch.zeros(2, 4, 3), torch.zeros(2, 5, 3), MyfpoConfig(), "sample"
     )
 )
 case("fpo_core:cfm:reduce-mode")(
     lambda: compute_cfm_loss(
-        torch.zeros(2, 4, 3), torch.zeros(2, 4, 3), SJFPOConfig(), "mean"
+        torch.zeros(2, 4, 3), torch.zeros(2, 4, 3), MyfpoConfig(), "mean"
     )
 )
 case("fpo_core:sample_action:device")(
@@ -188,7 +188,7 @@ case("fpo_core:sample_action:shape")(
 )
 case("fpo_core:sample_timesteps:mode")(
     lambda: sample_timesteps(
-        4, SJFPOConfig(timestep_sampling_mode="cosine"), "cpu", None
+        4, MyfpoConfig(timestep_sampling_mode="cosine"), "cpu", None
     )
 )
 

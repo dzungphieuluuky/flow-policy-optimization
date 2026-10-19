@@ -2,12 +2,12 @@
 import pytest
 import torch
 
-from myfpo.configuration import SJFPOConfig
+from myfpo.configuration import MyfpoConfig
 from myfpo.fpo_core import sample_noise
 
 
 def _cfg(**kw):
-    return SJFPOConfig(report_to="none", **kw)
+    return MyfpoConfig(report_to="none", **kw)
 
 
 def test_normal_mode_is_plain_randn():

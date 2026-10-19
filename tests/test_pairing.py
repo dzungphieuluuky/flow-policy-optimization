@@ -7,7 +7,7 @@ import torch
 from lerobot.configs.policies import PolicyFeature
 from lerobot.configs.types import FeatureType
 
-from myfpo.configuration import SJFPOConfig
+from myfpo.configuration import MyfpoConfig
 from myfpo.fpo_core import sample_timesteps
 from myfpo.training import build_policy
 
@@ -16,7 +16,7 @@ OBS, ACT, HORIZON, MC = 6, 3, 4, 4
 
 def _cfg(**kw):
     return dataclasses.replace(
-        SJFPOConfig(
+        MyfpoConfig(
             action_horizon=HORIZON,
             num_mc_samples=MC,
             hidden_dim=32,

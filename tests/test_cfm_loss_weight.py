@@ -5,14 +5,14 @@ import dataclasses
 import pytest
 import torch
 
-from myfpo.configuration import SJFPOConfig
+from myfpo.configuration import MyfpoConfig
 from myfpo.fpo_core import cfm_loss_weight, compute_cfm_loss
 
 ACTION_END, NOISE_END = 1.0, 0.0
 
 
 def _cfg(**kw):
-    return dataclasses.replace(SJFPOConfig(), cfm_loss_use_huber=False, **kw)
+    return dataclasses.replace(MyfpoConfig(), cfm_loss_use_huber=False, **kw)
 
 
 def test_constant_is_ones_everywhere():

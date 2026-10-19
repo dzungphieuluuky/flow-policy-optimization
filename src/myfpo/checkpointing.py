@@ -167,7 +167,7 @@ def load_policy_checkpoint(
     """Load a checkpoint from :func:`save_policy_checkpoint`. Restores the policy,
     the optimizer, the EMA shadow, and the counters.
     """
-    from myfpo.modeling import SJFPOPolicy
+    from myfpo.modeling import MyfpoPolicy
 
     d = Path(dir_path)
     missing = [
@@ -180,7 +180,7 @@ def load_policy_checkpoint(
 
     _reject_legacy_critic_checkpoint(d)
 
-    policy = SJFPOPolicy.from_pretrained(d)
+    policy = MyfpoPolicy.from_pretrained(d)
     if device is not None:
         policy.to(device)
     if (action_low is None) != (action_high is None):

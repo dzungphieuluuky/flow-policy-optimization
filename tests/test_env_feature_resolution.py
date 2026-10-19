@@ -13,7 +13,7 @@ from myfpo.config import (  # noqa: E402
     KNOWN_ENVS,
     get_observation_action_dim,
 )
-from myfpo.configuration import SJFPOConfig  # noqa: E402
+from myfpo.configuration import MyfpoConfig  # noqa: E402
 
 # Tier "smoke": pure gymnasium, no mujoco, so these run anywhere.
 SMOKE_ENVS = ("Pendulum-v1", "Reacher-v5")
@@ -26,7 +26,7 @@ def _gym_env(env_id):
 
 def test_a_bare_config_constructs_without_features():
     """The regression: this used to raise, breaking every CLI parse."""
-    cfg = SJFPOConfig()
+    cfg = MyfpoConfig()
     assert cfg.input_features == {}
     assert cfg.output_features == {}
     # Feature requirement is still enforced, just later -- see the two tests below.
@@ -36,7 +36,7 @@ def test_a_bare_config_constructs_without_features():
 
 def test_the_env_name_is_not_a_config_field():
     """Auto-detection keyed on this never had a value to key on."""
-    assert not hasattr(SJFPOConfig(), "env_name")
+    assert not hasattr(MyfpoConfig(), "env_name")
 
 
 @pytest.mark.parametrize("env_id", SMOKE_ENVS)
@@ -68,7 +68,7 @@ def test_build_policy_attaches_features_from_dims_alone(env_id):
     from myfpo.training import build_policy
 
     obs_dim, action_dim = get_observation_action_dim(env_id)
-    cfg = SJFPOConfig()
+    cfg = MyfpoConfig()
     policy = build_policy(obs_dim=obs_dim, action_dim=action_dim, cfg=cfg, device="cpu")
     assert tuple(policy.config.robot_state_feature.shape) == (obs_dim,)
     assert tuple(policy.config.action_feature.shape) == (action_dim,)
@@ -93,7 +93,7 @@ def test_no_discrete_action_envs_are_registered():
             env.close()
         assert not isinstance(
             space, gym.spaces.Discrete
-        ), f"{env_id} has a Discrete action space; SJFPO needs continuous actions"
+        ), f"{env_id} has a Discrete action space; myfpo needs continuous actions"
         assert int(math.prod(space.shape)) == entry["action_dim"], (
             f"{env_id} action_dim={entry['action_dim']} != live "
             f"{int(math.prod(space.shape))}"

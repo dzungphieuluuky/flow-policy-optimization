@@ -11,7 +11,7 @@ from lerobot.configs.types import FeatureType
 from lerobot.configs.policies import PolicyFeature
 
 import myfpo.modeling as M
-from myfpo.configuration import SJFPOConfig
+from myfpo.configuration import MyfpoConfig
 from myfpo.training import build_policy
 
 OBS, ACT, N, MC, HORIZON = 11, 2, 6, 4, 16
@@ -22,7 +22,7 @@ HIGH = np.array([2.0, 2.0], dtype=np.float32)
 
 def _cfg(**overrides):
     return dataclasses.replace(
-        SJFPOConfig(
+        MyfpoConfig(
             num_mc_samples=MC,
             action_horizon=HORIZON,
             value_loss_coef=0.0,
@@ -241,7 +241,7 @@ def test_the_paper_configs_select_the_trust_regions_they_name():
     }
     for name, (mode, token_avg, group, reduction) in expected.items():
         cfg = dataclasses.replace(
-            SJFPOConfig(),
+            MyfpoConfig(),
             trust_region_mode=mode,
             do_average_cfm_loss_in_chunk=token_avg,
             cfm_average_group_size=group,

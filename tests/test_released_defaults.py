@@ -1,6 +1,6 @@
 """The config defaults must equal FPO++'s released manipulation values."""
 
-from myfpo.configuration import SJFPOConfig
+from myfpo.configuration import MyfpoConfig
 
 # name -> (dataclass default, released value, where it comes from).
 RELEASED = {
@@ -33,7 +33,7 @@ RELEASED = {
 
 
 def test_the_defaults_are_the_released_ones():
-    cfg = SJFPOConfig()
+    cfg = MyfpoConfig()
     wrong = {
         name: (getattr(cfg, name), want)
         for name, (want, _) in RELEASED.items()
@@ -45,4 +45,4 @@ def test_the_defaults_are_the_released_ones():
 
 def test_spo_keeps_its_own_coefficient():
     """FPO++ does not share one clip between PPO and SPO."""
-    assert SJFPOConfig().spo_clip_param == 0.01
+    assert MyfpoConfig().spo_clip_param == 0.01

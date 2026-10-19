@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from myfpo.configuration import SJFPOConfig
+from myfpo.configuration import MyfpoConfig
 
 __all__ = ["build_train_metrics"]
 
@@ -23,7 +23,7 @@ _ROLLOUT_ABS_KEYS = (
 
 def build_train_metrics(
     *,
-    cfg: SJFPOConfig,
+    cfg: MyfpoConfig,
     info: dict,
     batch: dict,
     rollout: dict,
