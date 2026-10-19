@@ -15,12 +15,9 @@ you want.
 
 Flags use underscores (draccus convention, same as lerobot-train).
 
-The precedence is this. CLI flags come first. Then the flat, legacy ``--config``
-YAML. Then the dataclass defaults.
+The config is the ``MyfpoConfig`` dataclass. Every field is a CLI flag under
+``--myfpo.``, so the command line is the only override.
 
-The flat YAML only fills the method fields that the CLI left at their defaults.
-Tuple and dict fields, such as ``hidden``, come from the YAML only. Draccus
-takes one token for each of them.
 
 The exit codes are these. 0 means success. 1 means a usage error. 2 means a
 runtime or divergence abort. 4 means a required artifact is missing. A parse
@@ -121,7 +118,7 @@ class TrainConfig:
     obs_dim: int | None = None
     action_dim: int | None = None
     out_dir: str = "outputs/"
-    config: str | None = None  # Legacy flat YAML overlay for the method config
+
     # Resume a myfpo checkpoint dir (checkpoint_<step>/ or checkpoint_final/).
     # The run continues the policy, the optimizer and the counters into a FRESH
     # run dir (<base>_resume[/2...]). total_steps stays an absolute env-step
@@ -130,86 +127,15 @@ class TrainConfig:
     myfpo: MyfpoConfig = field(default_factory=MyfpoConfig)
 
 
-def load_yaml_dict(path: str | Path) -> dict:
-    """Load the YAML through safe_load only. Raise a friendly error when pyyaml
-    is missing.
+def default_intervals(total: int, args_val: int | None, cap: int) -> int:
+    """Resolve an interval: the CLI value, else a capped default.
+
+    The cap keeps smoke runs sane.
     """
-    try:
-        import yaml
-    except ImportError as exc:
-        raise SystemExit(
-            "ERROR: pyyaml is required for --config (pip install pyyaml)"
-        ) from exc
-    with Path(path).open(encoding="utf-8") as fh:
-        data = yaml.safe_load(fh)
-    if data is None:
-        return {}
-    if not isinstance(data, dict):
-        raise SystemExit(f"ERROR: config {path} must be a YAML mapping")
-    return data
-
-
-def coerce_value(cfg_cls: type, raw: dict) -> dict:
-    """Keep only the fields that the target dataclass knows. Turn a list into a
-    tuple.
-
-    Unknown keys are dropped with a warning. Silently dropping them made a
-    typo'd baseline file run the defaults while looking configured.
-    """
-    fields = {f.name for f in dataclasses.fields(cfg_cls)}
-    unknown = sorted(set(raw) - fields)
-    if unknown:
-        print(
-            f"WARNING: config keys not in {cfg_cls.__name__}, ignored: "
-            f"{', '.join(unknown)}",
-            file=sys.stderr,
-        )
-    out = {k: v for k, v in raw.items() if k in fields}
-    for key in ("hidden",):
-        if isinstance(out.get(key), list):
-            out[key] = tuple(out[key])
-    return out
-
-
-def apply_flat_yaml(
-    method_cfg, yaml_dict: dict, cli_fields: set[str] | None = None
-):
-    """Apply flat YAML after the dataclass defaults and before CLI overrides."""
-    raw = coerce_value(type(method_cfg), yaml_dict)
-    if not raw:
-        return method_cfg
-    fresh = type(method_cfg)()
-    cli_touched = {
-        f.name
-        for f in dataclasses.fields(method_cfg)
-        if getattr(method_cfg, f.name) != getattr(fresh, f.name)
-    }
-    cli_touched.update(cli_fields or ())
-    overrides = {k: v for k, v in raw.items() if k not in cli_touched}
-    return dataclasses.replace(method_cfg, **overrides) if overrides else method_cfg
-
-
-def _myfpo_cli_fields(argv: list[str]) -> set[str]:
-    """Return myfpo config fields explicitly present on the command line."""
-    fields: set[str] = set()
-    prefix = "--myfpo."
-    for _index, token in enumerate(argv):
-        if not token.startswith(prefix):
-            continue
-        name = token[len(prefix) :].split("=", 1)[0]
-        if name:
-            fields.add(name)
-    return fields
-
-
-def default_intervals(
-    total: int, args_val: int | None, yaml_dict: dict, key: str, cap: int
-) -> int:
-    """Resolve an interval: CLI first, then YAML, then a capped default. The cap
-    keeps smoke runs sane."""
     if args_val:
         return args_val
-    return int(yaml_dict.get(key, min(cap, total)))
+    return min(cap, total)
+
 
 
 def resumed_cfg_overrides(cfg) -> list[str]:
@@ -338,12 +264,11 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
-    yaml_dict: dict = load_yaml_dict(args.config) if args.config else {}
-    total = args.total_steps or int(yaml_dict.get("total_steps", 2000))
+    total = args.total_steps or 2000
 
-    eval_s = default_intervals(total, args.eval_steps, yaml_dict, "eval_steps", 1000)
-    ckpt_i = default_intervals(total, args.save_steps, yaml_dict, "save_steps", 1000)
-    cfg = apply_flat_yaml(args.myfpo, yaml_dict, cli_fields=_myfpo_cli_fields(argv))
+    eval_s = default_intervals(total, args.eval_steps, 1000)
+    ckpt_i = default_intervals(total, args.save_steps, 1000)
+    cfg = args.myfpo
 
     if args.resume and args.method != "myfpo":
         print(

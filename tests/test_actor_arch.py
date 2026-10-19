@@ -10,7 +10,6 @@ causal, unlike ACT; ``SelfAttention`` records why.
 """
 
 import dataclasses
-from pathlib import Path
 
 import pytest
 import torch
@@ -174,5 +173,3 @@ def test_no_actor_field_remains_for_the_removed_arch():
     assert "mlp_hidden_dims" not in {f.name for f in
                                      dataclasses.fields(MyfpoConfig)}
     assert "mlp" not in ACTOR_ARCHITECTURES
-    with Path("configs/myfpo.yaml").open(encoding="utf-8") as handle:
-        assert "mlp_hidden_dims" not in handle.read()

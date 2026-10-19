@@ -63,7 +63,7 @@ defaults. DiT-1/2 for images uses 12 blocks at width 768. Depth 3 is defensible
 for 8-token low-dimensional actions and probably was not the bottleneck;
 8 blocks cost ~2.7x the actor FLOPs and the full test suite went 57s → 126s.
 
-**These two numbers went in unmeasured.** `configs/ablations/` has no shallow-actor
+**These two numbers went in unmeasured.** There is no shallow-actor
 config, so going back means passing `dit_depth` on the CLI. Run names encode the
 value (`tracking.py` emits `d128x8`), so a depth-3 run opens a separate
 series rather than continuing this one.
@@ -132,7 +132,7 @@ target critic network would provide, so there is none.
 the highest and lowest member. A trend to zero means the 5 members have converged
 onto one function. There is no abort on it: an unsupervised statistic with no
 baseline cannot be thresholded honestly. Watch it against
-`configs/ablations/critic_no_dropout.yaml`.
+`--myfpo.critic_dropout 0`.
 
 ---
 

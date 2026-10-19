@@ -19,4 +19,25 @@ Based on `literature_review.md` (Sections 2, 5, 11.4) and repo implementation (`
 - **Per-sample ratios** (`FPO++`): Improves scratch training. Cost: doubles MC-sample compute.
 - **Asymmetric clipping** (`ASPO`): Preserves entropy for `A < 0`. Cost: requires separate clipping thresholds (`cfm_loss_clamp_negative_advantages_max`).
 
+## Ready-made ablations
+
+The config is the `MyfpoConfig` dataclass, so every knob is a `--myfpo.` flag.
+
+**No critic dropout.** TD-MPC2 puts 1% after the first linear to stop the
+ensemble converging onto one function. Every member here regresses onto the
+same scalar target, so initialisation is the only thing separating them. Watch
+`train/value_pred_member_gap_p95` against the default.
+
+```bash
+.venv/bin/python scripts/train.py --env Hopper-v5 --myfpo.critic_dropout 0.0
+```
+
+**One critic instead of the 5-member ensemble.** `subsampled_min` falls back to
+a full min when the ensemble is no wider than the draw, so the backup becomes a
+single Q. Matches QC, which runs a single Q.
+
+```bash
+.venv/bin/python scripts/train.py --env Hopper-v5 --myfpo.num_critics 1
+```
+
 See `literature_review.md` Section 5 (table) and Section 11.4 (detailed comparison) for full citations and mathematical formulations.

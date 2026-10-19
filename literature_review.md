@@ -165,14 +165,13 @@ where `r = π_θ_new(ε|s) / π_θ_old(ε|s)` (tractable, since `ε` is low-dime
 ## 6. Experimental Landscape
 
 ### Datasets / Benchmarks
-- `LeRobot` (MuJoCo-based, humanoid, manipulation) — used in `myfpo` (`myfpo.yaml`, `envs.yaml`).
+- `LeRobot` (MuJoCo-based, humanoid, manipulation) — used in `myfpo` (`configs/envs.yaml`).
 - Continuous control: `Hopper`, `Ant`, `Humanoid` (OpenAI Gym / MuJoCo).
 - Manipulation: single-arm, bimanual tasks in simulation and real hardware.
 - Metrics: success rate, episode return, convergence speed (steps to threshold), entropy of action distribution (to measure exploration collapse), value drift (`measure_value_drift` in `myfpo`).
 
 ### Key Experimental Protocols
 - `pytest -q` as only gate (`scripts/AGENTS.md`).
-- Config parity (`tests/test_config_yaml_parity.py`, 3 tests: keys are real, defaults match, generator is deterministic).
 - Rollout diagnostics (`test_rollout_diagnostics.py`) verifies batched scalar computation; `test_metric_faithfulness.py` verifies metric names and NaN semantics.
 - `scripts/AGENTS.md` notes deleted tests lost 19 (`test_eval_interval`), 4 (`test_tracking`), 1 (`test_metric_audit`), 1 (`test_fpo_parity`). These covered removed guard conditions (`check_divergence`, `check_regression`), tracking keys, metric audit, and paper config mapping.
 
@@ -215,7 +214,7 @@ One-step methods (`OGPO`, `DBPO`) trade expressivity for latency. Open: adaptive
 `GPC` requires accurate action-conditioned dynamics. Open: learning robust world models from sparse robot interaction without expert data; handling contact dynamics and non-smooth transitions.
 
 ### 8.6 Scaling Laws for Flow-Based RL
-Unknown: how does sample complexity scale with action dimension `D`, chunk length `H`, and MC samples `M`? `myfpo` provides a benchmark (`myfpo.yaml`), but systematic scaling studies are missing.
+Unknown: how does sample complexity scale with action dimension `D`, chunk length `H`, and MC samples `M`? `myfpo` provides a benchmark (`configs/envs.yaml`), but systematic scaling studies are missing.
 
 ---
 

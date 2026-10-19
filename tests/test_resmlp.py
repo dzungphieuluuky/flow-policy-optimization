@@ -246,12 +246,11 @@ def test_the_config_names_the_three_resmlp_knobs_and_validates_them():
             _cfg(**{field: value}).validate()
 
 
-def test_the_generated_config_carries_the_knobs():
-    from pathlib import Path
-
-    yaml = (Path(__file__).resolve().parents[1] / "configs" / "myfpo.yaml").read_text()
-    for key in ("resmlp_blocks:", "resmlp_units:", "resmlp_hidden_mult:"):
-        assert key in yaml, key
+def test_the_resmlp_knobs_are_config_fields():
+    """The three knobs are config fields, so the CLI can set them."""
+    cfg = _cfg()
+    for field in ("resmlp_blocks", "resmlp_units", "resmlp_hidden_mult"):
+        assert hasattr(cfg, field), field
 
 
 def test_a_tracked_run_works_for_every_actor():
