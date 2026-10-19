@@ -4,51 +4,27 @@ version = "0.1.0"
 description = "Flow-matching policy optimization (FPO++) with open-loop action chunking, on LeRobot and PyTorch"
 requires-python = ">=3.12"
 dependencies = [
-    "accelerate>=1.15.0",
-    "av<15.0.0",  # lerobot imports av.option at module scope (gone in av
-    # 17.1.0); 14.3+ is sdist-only, so the cap keeps a manylinux wheel
-    "datasets>=5.0.1",
-    "diffusers",
+    # Everything the code imports directly.
     "draccus>=0.11.6",
-    "einops>=0.7.0",
     "einx>=0.4.3",
-    "flax>=0.10.6",
     "gymnasium>=1.3.0",
     "gymnasium-robotics>=1.4.2",
     "huggingface-hub>=1.32.0",
-    "imageio>=2.37.4",
-    "imageio-ffmpeg>=0.6.0",
-    "jax[cuda13]>=0.5.3",
-    "jaxlib>=0.5.3",
     "lerobot>=0.6.1",
-    "moviepy>=1.0.3",
-    "mujoco>=3.13.0",
-    "mujoco-warp>=3.14.0",
     "numpy>=1.26.4",
-    "opencv-python-headless>=4.11.0.86",
-    "optax>=0.2.8",
-    "orbax-checkpoint>=0.11.24",
-    "pandas>=2.3.3",
-    "pettingzoo>=1.27.0",
-    "pillow>=12.3.0",
-    "pyarrow>=25.0.1",
-    "pytest-xdist>=3.8.0",
-    "safetensors>=0.8.0",
-    "scikit-image>=0.22.0",
-    "scikit-learn>=1.9.1",
-    "scipy>=1.17.1",
+    "pyyaml>=6.0",
     "tensorboard>=2.20.0",
     "torch>=2.2.2",
-    "torchaudio>=2.11.0",
-    "torchcodec>=0.16.0",
-    "torchvision>=0.17.2",
     "wandb",
+    # The simulator version decides the physics, so it is pinned here instead
+    # of being inherited from gymnasium-robotics.
+    "mujoco>=3.13.0",
 ]
 
-# The gates: pytest for behaviour, ruff for dead code. Both must be declared
-# or `uv sync` prunes them and the checks stop working.
+# The gates and the notebook tools. They must be declared or `uv sync` prunes
+# them and the checks stop working.
 [dependency-groups]
-dev = ["pytest", "ruff>=0.16"]
+dev = ["jupytext>=1.19", "pytest", "pytest-xdist>=3.8.0", "ruff>=0.16"]
 
 # The suite runs in ONE process by default. Each xdist worker takes a thread
 # pool, so a distributed run forks several process trees that contend for the
