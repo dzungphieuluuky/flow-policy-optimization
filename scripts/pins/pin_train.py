@@ -9,7 +9,7 @@ What this covers
     bound hides every clamp diagnostic at 0.0.
 
 What this does not cover
-    Rollout collection, the eval loop, or anything in ``denoising_mdp.py``.
+    Rollout collection, or the eval loop.
 
 Usage
     PYTHONPATH=src .venv/bin/python scripts/pins/pin_train.py --write

@@ -171,14 +171,14 @@ where `r = π_θ_new(ε|s) / π_θ_old(ε|s)` (tractable, since `ε` is low-dime
 - Metrics: success rate, episode return, convergence speed (steps to threshold), entropy of action distribution (to measure exploration collapse), value drift (`measure_value_drift` in `myfpo`).
 
 ### Key Experimental Protocols
-- `pytest -q` as only gate (`AGENTS.md`).
-- Config parity (`test_config_yaml_parity.py` deleted; `tests/test_config_surface.py` remains? Not deleted by user, but `tests/test_config_yaml_parity.py` exists — user didn't delete it).
+- `pytest -q` as only gate (`scripts/AGENTS.md`).
+- Config parity (`tests/test_config_yaml_parity.py`, 3 tests: keys are real, defaults match, generator is deterministic).
 - Rollout diagnostics (`test_rollout_diagnostics.py`) verifies batched scalar computation; `test_metric_faithfulness.py` verifies metric names and NaN semantics.
-- `AGENTS.md` notes deleted tests lost 19 (`test_eval_interval`), 4 (`test_tracking`), 1 (`test_metric_audit`), 1 (`test_fpo_parity`). These covered removed guard conditions (`check_divergence`, `check_regression`), tracking keys, metric audit, and paper config mapping.
+- `scripts/AGENTS.md` notes deleted tests lost 19 (`test_eval_interval`), 4 (`test_tracking`), 1 (`test_metric_audit`), 1 (`test_fpo_parity`). These covered removed guard conditions (`check_divergence`, `check_regression`), tracking keys, metric audit, and paper config mapping.
 
 ### Reproducibility
 - `myfpo` uses deterministic seeding (`seed` in config), `jupytext`-generated notebooks (`sjfpo_online.md` → `.ipynb`), and fixed `pytest -n 4` distributed runs.
-- `verify_deps.sh` is broken (`AGENTS.md`), so dependency verification relies on `pyproject.toml` and manual inspection.
+- `verify_deps.sh` was deleted; dependency verification relies on `pyproject.toml` and manual inspection.
 
 ---
 

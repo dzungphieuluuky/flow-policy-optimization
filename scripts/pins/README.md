@@ -61,7 +61,6 @@ needs it and record the key counts in the commit message.
 ## What the pins do not cover
 
 - Rollout collection and environment stepping. No pin runs an environment.
-- `denoising_mdp.py`.
 - Anything under `compute_info=False`. The trainer turns the stats path off when
   the tracker is off, so the metric set depends on the tracking mode. The pins
   pin the full `compute_info=True` set.
