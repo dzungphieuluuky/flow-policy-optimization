@@ -12,7 +12,7 @@ Trains expressive, multimodal flow-based robot policies using online reinforceme
 - TD-MPC2-style critic: 5 members, LayerNorm + Mish, 1% dropout, REDQ min-of-2 targets (`critic.py`)
 - Independent actor and critic gradient clipping (`training.py`)
 - Config parity (`tests/test_config_yaml_parity.py`) and metric faithfulness (`tests/test_metric_faithfulness.py`)
-- Full diagnostic suite (`tests/test_guard_messages.py`: 76 guard-message snapshots)
+- Full diagnostic suite (`tests/test_guard_messages.py`: 76 guarded conditions)
 
 ## Quick start
 ```bash

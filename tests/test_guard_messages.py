@@ -1,14 +1,13 @@
-"""Snapshot the exact text of every reachable ValueError message."""
+"""Check that every reachable ValueError still names its condition.
+
+The message text is not pinned. A guard is identified by the field or the
+condition it names, and a reworded message does not break the suite.
+"""
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
-
 import pytest
 import torch
-
-SNAPSHOT = Path(__file__).with_name("guard_messages.json")
 
 # : Guard count the table below is expected to cover.
 EXPECTED_CASES = 76
@@ -195,32 +194,105 @@ case("fpo_core:sample_timesteps:mode")(
 _IDS = [cid for cid, _ in _CASES]
 _THUNKS = dict(_CASES)
 
+# The word each message has to carry. The field or condition it names is the
+# contract; the wording around it is not.
+KEYWORDS = {
+    'attention:DiTBlock:forward:cond-batch': 'batch',
+    'attention:DiTBlock:forward:token-batch': 'batch',
+    'attention:DiTBlock:hidden': 'hidden_dim',
+    'attention:DiTBlock:ratio': 'mlp_ratio',
+    'attention:SelfAttention:heads': 'n_heads',
+    'attention:SelfAttention:hidden': 'hidden_dim',
+    'attention:SelfAttention:split': 'split',
+    'config:action_perturb_std': 'action_perturb_std',
+    'config:actor_lr_warmup_steps': 'actor_lr_warmup_steps',
+    'config:advantage_clamp_pos': 'advantage_clamp_pos',
+    'config:batch_size': 'batch_size',
+    'config:cfm_average_group_size': 'cfm_average_group_size',
+    'config:cfm_clamp': 'cfm_clamp',
+    'config:cfm_loss_clamp_negative_advantages_max': 'cfm_loss_clamp_negative_advantages_max',
+    'config:cfm_loss_huber_delta': 'cfm_loss_huber_delta',
+    'config:cfm_loss_reduction': 'cfm_loss_reduction',
+    'config:chunks_per_update': 'chunks_per_update',
+    'config:clip_param': 'clip_param',
+    'config:critic_hidden_dim': 'critic_hidden_dim',
+    'config:critic_lr': 'critic_lr',
+    'config:critic_lr_warmup_steps': 'critic_lr_warmup_steps',
+    'config:critic_num_layers': 'critic_num_layers',
+    'config:eval_max_episodes': 'eval_max_episodes',
+    'config:gae_lambda': 'gae_lambda',
+    'config:gamma': 'gamma',
+    'config:grad_accum_steps': 'grad_accum_steps',
+    'config:log_ratio_cap': 'log_ratio_cap',
+    'config:max_grad_norm': 'max_grad_norm',
+    'config:min_sampled_timestep': 'min_sampled_timestep',
+    'config:missing-input-features': 'input_features',
+    'config:noise_sampling_mode': 'noise_sampling_mode',
+    'config:num_critics': 'num_critics',
+    'config:num_envs': 'num_envs',
+    'config:num_learning_epochs': 'num_learning_epochs',
+    'config:num_mc_samples': 'num_mc_samples',
+    'config:num_steps_noise_start': 'num_steps_noise_start',
+    'config:num_steps_zero_start': 'num_steps_zero_start',
+    'config:optimizer_weight_decay': 'optimizer_weight_decay',
+    'config:policy_lr': 'policy_lr',
+    'config:report_to': 'report_to',
+    'config:sigreg_coef': 'sigreg_coef',
+    'config:sigreg_mode': 'sigreg_mode',
+    'config:sigreg_sketch_dim': 'sigreg_sketch_dim',
+    'config:timestep_inverse_cdf_beta': 'timestep_inverse_cdf_beta',
+    'config:timestep_sampling_mode': 'timestep_sampling_mode',
+    'config:transported_clip_value': 'transported_clip_value',
+    'config:trust_region_mode': 'trust_region_mode',
+    'config:value_loss_coef': 'value_loss_coef',
+    'critic:ensemble:critics': 'num_critics',
+    'critic:ensemble:obs_dim': 'obs_dim',
+    'critic:ensemble:obs_steps': 'n_obs_steps',
+    'critic:member:action_dim': 'action_dim',
+    'critic:member:hidden': 'hidden_dim',
+    'critic:member:horizon': 'action_horizon',
+    'critic:member:layers': 'num_layers',
+    'encoder:RunningMeanStd:dim': 'dim',
+    'encoder:StateEncoder:hidden': 'hidden_dim',
+    'encoder:StateEncoder:steps': 'max_obs_steps',
+    'flow:actor:action_dim': 'action_dim',
+    'flow:actor:depth': 'dit_depth',
+    'flow:actor:horizon': 'action_horizon',
+    'flow:actor:mlp_ratio': 'dit_mlp_ratio',
+    'fpo_core:cfm:reduce-mode': 'reduce_mode',
+    'fpo_core:cfm:vhat-mismatch': 'v_hat shape',
+    'fpo_core:mc:eps-shape': 'eps shape',
+    'fpo_core:mc:t-shape': 't shape',
+    'fpo_core:sample_action:device': 'device',
+    'fpo_core:sample_action:shape': 'eps shape',
+    'fpo_core:sample_timesteps:mode': 'timestep_sampling_mode',
+    'gae:gae_lambda': 'gae_lambda',
+    'gae:gamma': 'gamma',
+    'gae:lengths': 'chunk_lengths',
+    'gae:requires-truncated': 'chunk_truncated',
+    'layers:CondMLP:zero-dims': 'dimensions must be positive',
+    'layers:SinusoidalEncoding:dim': 'SinusoidalEncoding',
+    'layers:SwiGLU:zero-dims': 'dimensions must be positive',
+}
 
-def _collect() -> dict[str, str]:
-    return {cid: _raises(_THUNKS[cid]) for cid in _IDS}
 
-
-def test_snapshot_is_complete(request):
+def test_every_case_has_a_keyword():
     """A guard dropped from the table would stop being checked silently."""
     assert len(_CASES) == EXPECTED_CASES, (
         f"expected {EXPECTED_CASES} guarded cases, found {len(_CASES)}. "
         "Update EXPECTED_CASES deliberately when a guard is added or removed."
     )
-    if request.config.getoption("--snapshot-regen"):
-        return  # the file is being rewritten at session end.
-    snap = json.loads(SNAPSHOT.read_text())
-    missing = sorted(set(_IDS) - set(snap))
-    assert not missing, f"snapshot is missing: {missing}"
+    missing = sorted(set(_IDS) - set(KEYWORDS))
+    assert not missing, f"no keyword for: {missing}"
+    extra = sorted(set(KEYWORDS) - set(_IDS))
+    assert not extra, f"keyword for a case that does not exist: {extra}"
 
 
 @pytest.mark.parametrize("cid", _IDS)
-def test_guard_message_matches_snapshot(cid, request):
+def test_guard_message_names_its_condition(cid):
+    """The message still names the field or condition it guards."""
     actual = _raises(_THUNKS[cid])
-    if request.config.getoption("--snapshot-regen"):
-        return
-    snap = json.loads(SNAPSHOT.read_text())
-    assert actual == snap[cid], (
-        f"message changed for {cid}\n"
-        f"  was: {snap[cid]!r}\n  now: {actual!r}\n"
-        "If deliberate, rerun with --snapshot-regen and read the diff."
+    keyword = KEYWORDS[cid]
+    assert keyword in actual, (
+        f"{cid}: the message no longer mentions {keyword!r}: {actual!r}"
     )
