@@ -93,7 +93,7 @@ def apply_runtime_settings() -> dict:
     # rollout varies every run, so the default of 8 is reached quickly.
     torch._dynamo.config.cache_size_limit = 32
 
-    settings = {
+    return {
         "gpu": gpu,
         "tf32_enabled": tf32,
         "tf32_matmul_precision": torch.get_float32_matmul_precision(),
@@ -101,8 +101,6 @@ def apply_runtime_settings() -> dict:
         "storage_dtype": str(resolve_storage_dtype()),
         "compute_dtype": str(resolve_compute_dtype()),
     }
-    print(f"runtime settings: {json.dumps(settings, sort_keys=True)}", flush=True)
-    return settings
 
 
 @dataclass

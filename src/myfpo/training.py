@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
 import dataclasses
 import json
 import sys
@@ -98,18 +97,9 @@ def build_policy(
     if action_low is not None and action_high is not None:
         policy.set_action_bounds(action_low, action_high)
     if getattr(cfg, "compile", False):
-        mode = "default"
-        with contextlib.suppress(Exception):
-            if device.type == "cuda":
-                idx = int(device.index or 0)
-                props = torch.cuda.get_device_properties(idx)
-                if (props.major, props.minor) >= (8, 9):
-                    mode = "max-autotune"
-                elif props.major >= 7:
-                    mode = "reduce-overhead"
-        policy.actor = torch.compile(policy.actor, dynamic=True, mode=mode, fullgraph=True)
-        policy.encoder = torch.compile(policy.encoder, dynamic=True, mode=mode, fullgraph=True)
-        policy.critic = torch.compile(policy.critic, dynamic=True, mode=mode, fullgraph=True)
+        policy.actor = torch.compile(policy.actor, dynamic=True, fullgraph=True)
+        policy.encoder = torch.compile(policy.encoder, dynamic=True, fullgraph=True)
+        policy.critic = torch.compile(policy.critic, dynamic=True, fullgraph=True)
     return policy
 
 
@@ -472,16 +462,6 @@ def run_training(
         )
         global_step = int(counters["global_step"])
         policy.train()
-        (out_dir / "resume_info.json").write_text(
-            json.dumps(
-                {
-                    "resume_from_checkpoint": str(resume_from_checkpoint),
-                    "restored_global_step": global_step,
-                },
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
     else:
         policy = build_policy(
             obs_dim,
