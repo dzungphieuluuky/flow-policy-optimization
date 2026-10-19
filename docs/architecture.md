@@ -65,7 +65,7 @@ for 8-token low-dimensional actions and probably was not the bottleneck;
 
 **These two numbers went in unmeasured.** `configs/ablations/` has no shallow-actor
 config, so going back means passing `dit_depth` on the CLI. Run names encode the
-value (`tracking/base.py:43` emits `d128x8`), so a depth-3 run opens a separate
+value (`tracking.py` emits `d128x8`), so a depth-3 run opens a separate
 series rather than continuing this one.
 
 ### Known, not fixed

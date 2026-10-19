@@ -25,10 +25,10 @@ from myfpo.evaluator import (
     compute_seam_jerk,
 )
 from myfpo.modeling import MyfpoAborted, MyfpoPolicy, build_optimizer
-from myfpo.metrics import subsampled_min
+from myfpo.metrics import compute_eval_summary_metrics, subsampled_min
 from lerobot.utils.constants import CHECKPOINTS_DIR
 from myfpo.utils import resolve_device, rms, to_numpy_1d
-from myfpo.tracking import build_tracker, compute_eval_summary_metrics
+from myfpo.tracking import build_backends, finish_backends, log_metrics
 from myfpo.runner import build_train_metrics, summarise_window
 
 
@@ -297,7 +297,7 @@ def collect_rollouts(policy, train_env, cfg, action_low, action_high, steps_to_g
     return batch, rollout, steps_this_rollout, rollout_jerk, rollout_seam_jerk
 
 
-def train_update(policy, optimizer, batch, tracker, cfg, grad_groups):
+def train_update(policy, optimizer, batch, backends, cfg, grad_groups):
     policy.train()
     epoch_infos: list[dict[str, float]] = []
     grad_norms_pre: list[dict[str, torch.Tensor]] = []
@@ -323,7 +323,7 @@ def train_update(policy, optimizer, batch, tracker, cfg, grad_groups):
     for micro_step, mb_idx in enumerate(microbatches):
         group_size = group_sizes[micro_step // accumulation_steps]
         minibatch = sample_minibatch(batch, mb_idx, minibatch)
-        if tracker.enabled:
+        if backends:
             loss, epoch_info = policy.loss_with_info(minibatch, check_finite=False)
         else:
             loss = policy(minibatch, check_finite=False)
@@ -516,7 +516,7 @@ def run_training(
         "noise_start": _EvalPolicy(policy, start_from_zero=False),
     }
     r_rand = sample_random_baseline(evaluator, env, seed=seed)
-    tracker = build_tracker(
+    backends = build_backends(
         cfg,
         out_dir=out_dir,
         method="myfpo",
@@ -557,11 +557,11 @@ def run_training(
                 )
 
             epoch_infos, grad_norms_pre, above_clamp_fracs, both_clamped_fracs = train_update(
-                policy, optimizer, batch, tracker, cfg, grad_groups
+                policy, optimizer, batch, backends, cfg, grad_groups
             )
 
             drift = None
-            if cfg.log_drift_diagnostics and tracker.enabled:
+            if cfg.log_drift_diagnostics and backends:
                 drift = measure_value_drift(policy, batch, device)
 
             policy.update_ema(global_step)
@@ -591,8 +591,9 @@ def run_training(
                 for k in ("total", "actor", "critic")
             }
 
-            if tracker.enabled and info is not None:
-                tracker.log(
+            if backends and info is not None:
+                log_metrics(
+                    backends,
                     build_train_metrics(
                         cfg=cfg,
                         info=info,
@@ -652,9 +653,10 @@ def run_training(
                     best_return, steps_to_best = stop_return, global_step
                     best_artifact_path, _ = save_checkpoint(out_dir, policy, optimizer, global_step, "best")
                     best_artifact = best_artifact_path
-                if tracker.enabled:
+                if backends:
                     eval_summary = summaries.get(cfg.eval_sampling, {})
-                    tracker.log(
+                    log_metrics(
+                        backends,
                         {
                             "eval/ema_active": float(bool(result.get("displaced", False))),
                             "eval/return_ci_low": eval_summary.get("return_ci_low", 0.0),
@@ -673,7 +675,8 @@ def run_training(
                         },
                         step=global_step,
                     )
-                    tracker.log(
+                    log_metrics(
+                        backends,
                         compute_eval_summary_metrics(
                             mean_return,
                             result.get("eval_results", []),
@@ -694,15 +697,16 @@ def run_training(
 
         elapsed = time.time() - t_start
         fps = global_step / max(elapsed, 1e-6)
-        if tracker.enabled:
-            tracker.log(
+        if backends:
+            log_metrics(
+                backends,
                 {"timing/fps": fps, "timing/elapsed_s": elapsed},
                 step=global_step,
             )
     finally:
         if train_env is not env:
             train_env.close()
-        tracker.finish()
+        finish_backends(backends)
 
     final_path, _ = save_checkpoint(out_dir, policy, optimizer, global_step, "final")
     artifacts.append(final_path)

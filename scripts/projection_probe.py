@@ -44,7 +44,7 @@ def tensorboard_dir(cfg, method: str, env_name: str, seed: int) -> Path:
     not relative to ``out_dir``. So the event file lands under the repository
     ``tensorboard/`` directory, beside the run directory and not inside it.
     """
-    from myfpo.tracking.base import build_run_name
+    from myfpo.tracking import build_run_name
 
     name = build_run_name(
         method, env_name, seed, dataclasses.asdict(cfg)

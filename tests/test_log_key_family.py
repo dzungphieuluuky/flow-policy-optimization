@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 import torch
 
-from myfpo.tracking.base import compute_eval_summary_metrics
+from myfpo.metrics import compute_eval_summary_metrics
 
 SRC = Path(__file__).resolve().parents[1] / "src" / "myfpo"
 

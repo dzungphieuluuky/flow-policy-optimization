@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import einx
+import numpy as np
 import torch
 
 from myfpo.configuration import MyfpoConfig
@@ -16,6 +17,7 @@ from myfpo.utils import rms
 __all__ = [
     "broadcast_condition",
     "compute_cfm_metrics",
+    "compute_eval_summary_metrics",
     "compute_gae_diagnostics",
     "compute_mc_xt",
     "compute_policy_info",
@@ -213,6 +215,59 @@ def compute_value_metrics(
         "value_pred_member_gap": member_gap.mean(),
         "value_pred_member_gap_p95": torch.quantile(member_gap.float(), 0.95),
     }
+
+
+def compute_eval_summary_metrics(
+    mean_return: float,
+    eval_results: list[dict],
+    all_eval_returns: list[float],
+    eval_count: int,
+    *,
+    r_rand: float | None = None,
+    best_return: float | None = None,
+    steps_to_best: int | None = None,
+) -> dict:
+    """Return the eval scalars for one eval window."""
+    returns = [r["return"] for r in eval_results]
+    lengths = [r["length"] for r in eval_results]
+    successes = [r["success"] for r in eval_results if r.get("success") is not None]
+    jerks = [r["jerk"] for r in eval_results if r.get("jerk") is not None]
+
+    def stat(values, fn):
+        return float(fn(values)) if values else float("nan")
+
+    data = {
+        "eval/return_mean": float(mean_return),
+        "eval/return_min": stat(returns, np.min),
+        "eval/return_max": stat(returns, np.max),
+        "eval/return_std": stat(returns, np.std),
+    }
+    if best_return is not None:
+        data["eval/return_best"] = float(best_return)
+    if steps_to_best is not None:
+        data["eval/steps_to_best"] = int(steps_to_best)
+    if r_rand is not None:
+        data["eval/random_policy_return"] = float(r_rand)
+    if len(all_eval_returns) >= 2 and all_eval_returns[-1] == mean_return:
+        prev = all_eval_returns[-2]
+        data["eval/return_improvement"] = float(mean_return - prev)
+        data["eval/return_improvement_frac"] = float(
+            (mean_return - prev) / max(abs(prev), 1e-8)
+        )
+    data.update(
+        {
+            "eval/mean_length": stat(lengths, np.mean),
+            "eval/max_length": stat(lengths, np.max),
+            "eval/std_length": stat(lengths, np.std),
+            "eval/episode_count": int(eval_count),
+        }
+    )
+    if successes:
+        data["eval/success_rate"] = float(np.mean(successes))
+    if jerks:
+        data["eval/mean_jerk"] = float(np.mean(jerks))
+        data["eval/max_jerk"] = float(np.max(jerks))
+    return data
 
 
 def compute_cfm_metrics(
