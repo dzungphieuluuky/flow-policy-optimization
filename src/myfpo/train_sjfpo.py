@@ -24,6 +24,7 @@ from myfpo.evaluator import (
     compute_seam_jerk,
 )
 from myfpo.modeling_sjfpo import SJFPOAborted, SJFPOPolicy, build_optimizer
+from myfpo.metrics import subsampled_min
 from lerobot.utils.constants import CHECKPOINTS_DIR
 from myfpo.utils import resolve_device, rms, to_numpy_1d
 from myfpo.tracking import build_tracker, compute_eval_summary_metrics
@@ -133,6 +134,21 @@ def apply_lr_schedule(optimizer, step_count: int) -> None:
         group["lr"] = base * ramp
 
 
+def split_grad_params(policy) -> dict[str, list[torch.nn.Parameter]]:
+    """Split the trainable weights into the groups that clip independently.
+
+    The actor's CFM surrogate and the critic's MSE have different gradient
+    scales, so one shared clip lets whichever dominates shrink the other.
+    """
+    return {
+        role: [p for g in params["params"] for p in g["params"]]
+        for role, params in (
+            ("actor", policy.get_actor_optim_params()),
+            ("critic", policy.get_critic_optim_params()),
+        )
+    }
+
+
 def warm_observation_stats(policy, env, *, obs_dim: int, seed: int) -> int:
     """Fold random-policy frames into the running obs stats."""
     env.action_space.seed(seed)
@@ -192,7 +208,7 @@ def measure_value_drift(policy, batch, device) -> tuple[torch.Tensor, torch.Tens
         )
     )
     delta = (
-        policy.critic(boot_obs, boot_actions, boot_exec_frac).float().amin(dim=0)
+        subsampled_min(policy.critic(boot_obs, boot_actions, boot_exec_frac).float())
         - start
     )
     drift_rms = rms(delta)
@@ -272,10 +288,10 @@ def collect_rollouts(policy, train_env, total_steps, cfg, action_low, action_hig
     return batch, rollout, steps_this_rollout, rollout_jerk, rollout_seam_jerk
 
 
-def train_update(policy, optimizer, batch, tracker, cfg, device, clip_params):
+def train_update(policy, optimizer, batch, tracker, cfg, device, grad_groups):
     policy.train()
     epoch_infos: list[dict[str, float]] = []
-    grad_norms_pre: list[torch.Tensor] = []
+    grad_norms_pre: list[dict[str, torch.Tensor]] = []
     above_clamp_fracs: list[torch.Tensor] = []
     both_clamped_fracs: list[torch.Tensor] = []
     n_chunks = batch["raw_advantages"].shape[0]
@@ -309,8 +325,18 @@ def train_update(policy, optimizer, batch, tracker, cfg, device, clip_params):
             (micro_step + 1) % accumulation_steps == 0 or micro_step + 1 == len(microbatches)
         )
         if is_boundary:
-            pre_clip_total = torch.nn.utils.clip_grad_norm_(clip_params, cfg.max_grad_norm)
-            grad_norms_pre.append(pre_clip_total.detach())
+            norms = {
+                role: torch.nn.utils.clip_grad_norm_(
+                    params, cfg.max_grad_norm
+                ).detach()
+                for role, params in grad_groups.items()
+            }
+            # The groups partition the parameters, so this is the joint pre-clip
+            # norm. It keeps train/grad_norm_before_clip comparable with history.
+            norms["total"] = torch.linalg.vector_norm(
+                torch.stack([n.reshape(()) for n in norms.values()])
+            )
+            grad_norms_pre.append(norms)
             above_clamp_fracs.append(policy.cfm_above_clamp_frac)
             both_clamped_fracs.append(policy.cfm_both_clamped_frac)
             optimizer.step()
@@ -382,7 +408,9 @@ def train_sjfpo_run(
     resume_from_checkpoint: str | Path | None = None,
     runtime: dict | None = None,
 ) -> dict[str, Any]:
-    """One SJFPO training run. Env builds before any CUDA init, so forked"""
+    """One SJFPO training run. Env builds before any CUDA init, so forked
+    vector-env workers inherit the right device state.
+    """
     cfg = cfg or SJFPOConfig()
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -503,7 +531,7 @@ def train_sjfpo_run(
     fps = 0.0
     t_start = time.time()
 
-    clip_params = [p for group in optimizer.param_groups for p in group["params"]]
+    grad_groups = split_grad_params(policy)
 
     try:
         while global_step < total_steps:
@@ -519,7 +547,7 @@ def train_sjfpo_run(
                 )
 
             epoch_infos, grad_norms_pre, above_clamp_fracs, both_clamped_fracs = train_update(
-                policy, optimizer, batch, tracker, cfg, device, clip_params
+                policy, optimizer, batch, tracker, cfg, device, grad_groups
             )
 
             drift = None
@@ -538,18 +566,20 @@ def train_sjfpo_run(
             else:
                 info = None
             scalars = [
-                torch.stack(grad_norms_pre).mean(),
                 torch.stack(above_clamp_fracs).mean(),
                 torch.stack(both_clamped_fracs).mean(),
             ]
             if drift is not None:
                 scalars.extend(drift)
             (
-                grad_norm_mean_pre,
                 above_clamp_frac,
                 both_clamped_frac,
                 *drift_means,
             ) = torch.stack(scalars).tolist()
+            grad_norms = {
+                k: float(torch.stack([n[k] for n in grad_norms_pre]).mean())
+                for k in ("total", "actor", "critic")
+            }
 
             if tracker.enabled and info is not None:
                 tracker.log(
@@ -558,7 +588,7 @@ def train_sjfpo_run(
                         info=info,
                         batch=batch,
                         rollout=rollout,
-                        grad_norm_mean_pre=grad_norm_mean_pre,
+                        grad_norms=grad_norms,
                         above_clamp_frac=above_clamp_frac,
                         both_clamped_frac=both_clamped_frac,
                         drift_means=drift_means,

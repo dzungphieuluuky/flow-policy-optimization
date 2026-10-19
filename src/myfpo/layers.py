@@ -9,7 +9,7 @@ import torch.nn.functional as F
 from torch import nn
 
 class _RMSNorm(nn.RMSNorm):
-    """RMSNorm. The compute runs in fp32. The stored weight follows the model"""
+    """RMSNorm. The compute runs in fp32; the stored weight keeps the model dtype."""
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Normalise the trailing dimensions with the learned scale."""
@@ -87,7 +87,7 @@ class SinusoidalEncoding(nn.Module):
         return self.freqs.to(torch.device(device))
 
     def encode_times(self, t: torch.Tensor) -> torch.Tensor:
-        """Embed continuous times with a sinusoid. Accept ``[N]``, and return"""
+        """Embed continuous times with a sinusoid. Accept ``[N]``, return ``[N, dim]``."""
         t = t.to(dtype=torch.float32)
         freqs = self.compute_freqs(t.device).to(torch.float32)
         ang = t.unsqueeze(-1) * freqs

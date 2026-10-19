@@ -7,6 +7,7 @@ from lerobot.configs.policies import PolicyFeature
 from lerobot.configs.types import FeatureType
 
 from myfpo.configuration_sjfpo import SJFPOConfig
+from myfpo.metrics import subsampled_min
 from myfpo.modeling_sjfpo import SJFPOPolicy
 from myfpo.rollout import run_rollout
 from myfpo.train_sjfpo import (
@@ -93,9 +94,9 @@ def test_drift_diagnostics_take_the_bf16_observations_they_stored():
     batch = {
         "boot_observations": obs.to(torch.bfloat16),
         "boot_actions": actions.to(torch.bfloat16),
-        "boot_values_start": policy.critic(obs, actions, boot_frac)
-        .amin(dim=0)
-        .unsqueeze(1),
+        "boot_values_start": subsampled_min(
+            policy.critic(obs, actions, boot_frac).float()
+        ).unsqueeze(1),
         "raw_returns": torch.randn(3),
     }
     boot_delta, target_drift = measure_value_drift(

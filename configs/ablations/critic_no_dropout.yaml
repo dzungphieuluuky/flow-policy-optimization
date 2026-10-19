@@ -1,0 +1,7 @@
+# Dropout off in the critic. TD-MPC2 puts 1% after the first linear to stop
+# the ensemble converging onto one function; every member here regresses onto
+# the same scalar target, so initialisation is the only thing separating them.
+# Watch train/value_pred_member_gap_p95 against the default.
+#
+#   .venv/bin/python scripts/train.py --env Hopper-v5 --config configs/ablations/critic_no_dropout.yaml
+critic_dropout: 0.0

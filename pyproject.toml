@@ -50,12 +50,13 @@ dependencies = [
 [dependency-groups]
 dev = ["pytest"]
 
-# The suite runs distributed by default rather than needing -n on every
-# invocation's command line. 4, not -n auto: each worker takes a thread pool, so
-# oversubscribing the cores costs more than it saves. Override with -n 0 to
-# serialise when a failure needs a readable single-thread trace.
+# The suite runs in ONE process by default. Each xdist worker takes a thread
+# pool, so a distributed run forks several process trees that contend for the
+# same cores, the same MUJOCO_LOG.TXT, and the same global torch RNG. Serial is
+# also what makes a failure trace readable and reproducible. Override with
+# `-n 4` only when you want raw throughput and are not diagnosing.
 [tool.pytest.ini_options]
-addopts = "-n 4"
+addopts = "-n 0"
 
 [build-system]
 requires = ["uv_build>=0.12.13,<0.13.0"]

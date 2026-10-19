@@ -20,6 +20,7 @@ from myfpo.metrics import (
     compute_gae_diagnostics,
     sample_eps,
     sample_mc_timesteps,
+    subsampled_min,
 )
 from myfpo.utils import (
     autocast_context,
@@ -176,17 +177,21 @@ def run_rollout(
         chunk_cond = critic_cond[:n_chunks] if critic_cond is not None else None
         next_cond = critic_cond[n_chunks:] if critic_cond is not None else None
         with autocast_context(device):
-            q_current_chunk = policy.critic(
-                policy.critic_inputs(normalised_states, chunk_cond),
-                actions,
-                exec_length_frac,
-            ).float().amin(dim=0)
+            q_current_chunk = subsampled_min(
+                policy.critic(
+                    policy.critic_inputs(normalised_states, chunk_cond),
+                    actions,
+                    exec_length_frac,
+                ).float()
+            )
         with autocast_context(device):
-            q_bootstrap = policy.critic(
-                policy.critic_inputs(normalised_next_states, next_cond),
-                boot_actions,
-                boot_exec_frac,
-            ).float().amin(dim=0)
+            q_bootstrap = subsampled_min(
+                policy.critic(
+                    policy.critic_inputs(normalised_next_states, next_cond),
+                    boot_actions,
+                    boot_exec_frac,
+                ).float()
+            )
 
     raw_advantages, raw_returns = compute_chunk_advantages(
         all_rewards,

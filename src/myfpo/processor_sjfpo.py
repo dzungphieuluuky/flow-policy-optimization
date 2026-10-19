@@ -1,4 +1,6 @@
-"""SJFPO pre/post processors (LeRobot style). The pair norms the obs and"""
+"""SJFPO pre/post processors (LeRobot style). The pair normalises the obs and
+squashes the policy output into the env's action bounds.
+"""
 
 from __future__ import annotations
 
@@ -26,7 +28,7 @@ class SJFPOObservationProcessorStep(ProcessorStep):
     def transform_features(
         self, features: dict[PipelineFeatureType, dict[str, PolicyFeature]]
     ) -> dict[PipelineFeatureType, dict[str, PolicyFeature]]:
-        """Pass the pipeline features through. The function does not change the"""
+        """Pass the pipeline features through. The schema is unchanged."""
         return features
 
 
@@ -41,7 +43,7 @@ class SJFPOActionPostprocessorStep(ProcessorStep):
         action_low: torch.Tensor,
         action_high: torch.Tensor,
     ) -> None:
-        """Set the action bounds. The function recomputes the scale and bias"""
+        """Set the action bounds. Recomputes the cached scale and bias."""
         low = torch.as_tensor(action_low, dtype=torch.float32).reshape(-1).clone()
         high = torch.as_tensor(action_high, dtype=torch.float32).reshape(-1).clone()
         if low.shape != high.shape:

@@ -1,4 +1,6 @@
-"""FPO++ core maths. The module holds the CFM loss, the ratio, the ASPO trust"""
+"""FPO++ core maths. The module holds the CFM loss, the ratio, the ASPO trust
+region, the timestep and noise laws, and the flow sampler.
+"""
 
 from __future__ import annotations
 
@@ -206,7 +208,9 @@ def sigreg_weak_loss(z: torch.Tensor, sketch_dim: int = 64) -> torch.Tensor:
 
 
 def sigreg_decorr_loss(z: torch.Tensor, sketch_dim: int = 64) -> torch.Tensor:
-    """Decorrelation-only SIGReg. The function standardises the columns, then"""
+    """Decorrelation-only SIGReg. Standardises the columns, then penalises the
+    off-diagonal correlation. No match to the identity is enforced.
+    """
     z = z.float()
     if z.shape[0] < 2:
         return torch.zeros((), device=z.device)
@@ -257,7 +261,9 @@ def compute_aspo_surrogate(
     advantage: torch.Tensor,
     cfg: SJFPOConfig,
 ) -> torch.Tensor:
-    """FPO++ trust region. ASPO is PPO for A>0 and SPO for A<0. It runs on each"""
+    """FPO++ trust region. ASPO is PPO for A>0 and SPO for A<0. It runs on each
+    ratio element independently, so both branches are always computed.
+    """
     ratio_adv = ratio * advantage
     ratio_clipped = torch.clamp(ratio, 1.0 - cfg.clip_param, 1.0 + cfg.clip_param)
     ppo = torch.min(ratio_adv, ratio_clipped * advantage)

@@ -13,7 +13,7 @@ from myfpo.layers import CondMLP, SinusoidalEncoding, build_rms_norm, modulate
 from myfpo.utils import rms
 
 def effective_rank(features: torch.Tensor) -> torch.Tensor:
-    """``exp`` spectral entropy of ``[n, hidden]``. This is the collapse probe"""
+    """``exp`` spectral entropy of ``[n, hidden]``. The collapse probe."""
     matrix = features.contiguous().reshape(-1, features.shape[-1]).float()
     sigma = torch.linalg.svdvals(matrix)
     p = sigma / sigma.sum().clamp_min(1e-12)
@@ -61,7 +61,7 @@ class _FlowActorBase(nn.Module):
 
     @torch.inference_mode()
     def weight_magnitude(self) -> torch.Tensor:
-        """Mean absolute weight. This is the correlate of Dohare. The magnitudes"""
+        """Mean absolute weight. The correlate of Dohare. One scalar per module."""
         total = None
         count = 0
         for param in self.parameters():
@@ -208,17 +208,18 @@ class ResidualMLP(nn.Module):
             for i in range(num_units)
         )
         self.norms = nn.ModuleList(build_rms_norm(inner) for _ in range(num_units))
+        self.out_norm = build_rms_norm(inner)
         self.out = nn.Linear(inner, hidden_dim)
         nn.init.zeros_(self.out.weight)
         nn.init.zeros_(self.out.bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """``x + residual(x)``. The residual is zero at init, so this is the"""
+        """``x + residual(x)``. The residual is zero at init, so this is the identity."""
         h = x
         for dense, norm in zip(self.denses, self.norms, strict=True):
             h = norm(dense(h))
             h = F.silu(h)
-        return x + self.out(h)
+        return x + self.out(self.out_norm(h))
 
 
 class ResMLPBlock(nn.Module):
@@ -243,7 +244,7 @@ class ResMLPBlock(nn.Module):
     def forward(
         self, x: torch.Tensor, c: torch.Tensor, return_stats: bool = False
     ) -> torch.Tensor | tuple[torch.Tensor, dict[str, torch.Tensor]]:
-        """``[B, K, H]`` in, ``[B, K, H]`` out. ``c`` is ``[B, H]`` or"""
+        """``[B, K, H]`` in, ``[B, K, H]`` out. ``c`` is ``[B, H]`` or ``[B, K, H]``."""
         if x.dim() != 3:
             raise ValueError(f"x must have shape [B, K, H], got {tuple(x.shape)}")
         b = x.shape[0]

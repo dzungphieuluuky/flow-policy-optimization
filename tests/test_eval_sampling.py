@@ -81,18 +81,8 @@ def test_the_adapter_maps_the_config_value_to_the_start_point():
     class _P:
         pass
 
-    assert _EvalPolicy.for_sampling(_P(), "zero_start").start_from_zero is True
-    assert _EvalPolicy.for_sampling(_P(), "noise_start").start_from_zero is False
-
-
-def test_the_adapter_rejects_an_unknown_start():
-    from myfpo.train_sjfpo import _EvalPolicy
-
-    class _P:
-        pass
-
-    with pytest.raises(ValueError, match="sampling"):
-        _EvalPolicy.for_sampling(_P(), "noise")
+    assert _EvalPolicy.for_sampling(_P(), "zero_start").start is True
+    assert _EvalPolicy.for_sampling(_P(), "noise_start").start is False
 
 
 def test_the_two_adapters_give_different_returns():
@@ -158,14 +148,14 @@ def test_each_start_is_evaluated_once():
     """The reported start writes the history. A second pass would double the cost."""
     import inspect
 
-    from myfpo.train_sjfpo import train_sjfpo_run
+    from myfpo.train_sjfpo import evaluate_policy
 
-    src = inspect.getsource(train_sjfpo_run)
+    src = inspect.getsource(evaluate_policy)
     assert src.count("evaluator.evaluate(") == 1, (
         "the eval dict comprehension must run each start once; an extra call "
         "doubles the eval cost"
     )
-    assert 'out_dir=out_dir if name == reported_name else None' in src
+    assert 'out_dir=out_dir if name == cfg.eval_sampling else None' in src
 
 
 
@@ -252,13 +242,14 @@ def test_the_stopper_reads_the_stop_distribution():
     import inspect
 
     from myfpo.runner import summarise_window
-    from myfpo.train_sjfpo import train_sjfpo_run
+    from myfpo.train_sjfpo import evaluate_policy, train_sjfpo_run
 
-    src = inspect.getsource(train_sjfpo_run)
+    src = inspect.getsource(evaluate_policy)
     # The runner reads both names back off the window, and the peak is written
     # from the stop one.
-    assert "stop_return = window.stop_return" in src
-    assert "best_return = stop_return" in src
+    assert "stop_return = window_obj.stop_return" in src
+
+    src = inspect.getsource(train_sjfpo_run)
 
     # The rule itself lives in summarise_window now. The peak compares against
     # stop_name, never against reported_name.

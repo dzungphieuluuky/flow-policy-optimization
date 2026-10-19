@@ -1,4 +1,6 @@
-"""Shared stateless utilities. The module imports no ``sjfpo.*`` name, so it"""
+"""Shared stateless utilities. The module imports no ``myfpo.*`` name, so it
+stays importable from any layer without a cycle.
+"""
 
 from __future__ import annotations
 
@@ -15,7 +17,7 @@ from lerobot.processor.converters import from_tensor_to_numpy, to_tensor
 
 @lru_cache(maxsize=1)
 def cuda_available() -> bool:
-    """Report whether CUDA is usable. The result is cached. The first call"""
+    """Report whether CUDA is usable. The result is cached on first call."""
     return torch.cuda.is_available()
 
 
@@ -33,7 +35,7 @@ def is_rtx_1000_pro_blackwell() -> bool:
 
 @lru_cache(maxsize=1)
 def detect_gpu() -> dict | None:
-    """Return the device name, the compute capability, and what that"""
+    """Device name, compute capability, and the precision flags they imply."""
     if not cuda_available():
         return None
     try:
@@ -74,7 +76,7 @@ def resolve_storage_dtype(
 
 
 def resolve_compute_dtype() -> torch.dtype:
-    """Matmul and autocast dtype, from ``SJFPO_DTYPE``. BF16 only if CUDA"""
+    """Matmul and autocast dtype, from ``SJFPO_DTYPE``. BF16 needs CUDA."""
     want = os.environ.get("SJFPO_DTYPE", "auto").lower()
     if want not in {"auto", "fp32", "bf16"}:
         raise ValueError(
@@ -111,7 +113,7 @@ def to_device_async(x: torch.Tensor, device) -> torch.Tensor:
 
 
 def to_numpy_1d(x: torch.Tensor | np.ndarray | float) -> np.ndarray:
-    """Convert to numpy, always at least 1-D. A singleton stays ``[1]``, not"""
+    """To numpy, always at least 1-D. A singleton stays ``[1]``, never ``()``."""
     return np.atleast_1d(from_tensor_to_numpy(x))
 
 
@@ -120,5 +122,5 @@ def to_tensor_1d(
     dtype: torch.dtype | None = torch.float32,
     device: torch.device | str | None = None,
 ) -> torch.Tensor:
-    """Convert to a tensor, always at least 1-D. A singleton stays ``[1]``, not"""
+    """To a tensor, always at least 1-D. A singleton stays ``[1]``, never ``()``."""
     return torch.atleast_1d(to_tensor(x, dtype=dtype, device=device))

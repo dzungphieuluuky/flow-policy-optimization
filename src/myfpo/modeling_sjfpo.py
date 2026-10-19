@@ -1,4 +1,6 @@
-"""SJFPO policy. The class holds the flow head, the state conditioner, and the"""
+"""SJFPO policy. The class holds the flow head, the state conditioner, and the
+EMA shadow used for evaluation.
+"""
 
 from __future__ import annotations
 
@@ -61,7 +63,7 @@ def build_optimizer(policy: SJFPOPolicy) -> torch.optim.Optimizer:
     """Build one AdamW. Split the actor and the critic into separate groups."""
     cfg = policy.config
     kwargs = dataclasses.asdict(policy.config.get_optimizer_preset())
-    kwargs.pop("grad_clip_norm", None)  # Clipping is joint. The caller applies it.
+    kwargs.pop("grad_clip_norm", None)  # AdamW would clip all groups as one. See split_grad_params.
     kwargs["betas"] = policy.config.adam_betas
     if next(policy.parameters()).is_cuda:
         kwargs["fused"] = True
@@ -132,6 +134,7 @@ class SJFPOPolicy(PreTrainedPolicy):
             condition_on_exec_length=config.critic_condition_on_exec_length,
             num_layers=config.critic_num_layers,
             condition_dim=config.hidden_dim if config.critic_share_encoder else None,
+            dropout=config.critic_dropout,
         )
         self.obs_normalizer = RunningMeanStd(obs_dim)
 
@@ -202,7 +205,11 @@ class SJFPOPolicy(PreTrainedPolicy):
         self.postprocessor.set_action_bounds(self.action_low, self.action_high)
 
     def _ema_named_params(self) -> dict[str, torch.nn.Parameter]:
-        """List every parameter that the EMA shadow covers. The names carry the"""
+        """List every parameter that the EMA shadow covers.
+
+        The names carry the module prefix, so the shadow can be matched back to
+        a live parameter without holding a second reference to the modules.
+        """
         out: dict[str, torch.nn.Parameter] = {}
         for prefix, module in (("actor", self.actor), ("encoder", self.encoder)):
             for name, param in module.named_parameters():
@@ -321,17 +328,15 @@ class SJFPOPolicy(PreTrainedPolicy):
         }
 
     def get_optim_params(self) -> dict:
-        """Return one group over all the trainable weights."""
-        params = [p for p in self.parameters() if p.requires_grad]
-        return {
-            "params": [
-                {
-                    "params": params,
-                    "lr": self.config.policy_lr,
-                    "weight_decay": self.config.optimizer_weight_decay,
-                }
-            ]
-        }
+        """Required by ``PreTrainedPolicy``. Returns what the optimizer actually uses.
+
+        The split is delegated rather than restated, so it cannot drift away
+        from :meth:`build_optimizer`.
+        """
+        return {"params": [
+            *self.get_actor_optim_params()["params"],
+            *self.get_critic_optim_params()["params"],
+        ]}
 
 
     def compute_predicted_velocity(
@@ -438,7 +443,12 @@ class SJFPOPolicy(PreTrainedPolicy):
         eps: torch.Tensor,
         action_is_pad: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """The CFM loss of the behavior policy. That is the ``cfm_loss_old`` of"""
+        """The CFM loss of the behavior policy.
+
+        That is the ``cfm_loss_old`` of the FPO ratio, evaluated against the
+        frozen snapshot at rollout time. It is computed once per rollout and
+        must not be recomputed here.
+        """
         cfg = self.config
         x_t, actor_t, flow_shape, num_mc = mc_draws(actions, eps, t)
         with torch.inference_mode(), autocast_context(actions.device):
@@ -502,7 +512,20 @@ class SJFPOPolicy(PreTrainedPolicy):
         compute_info: bool = True,
         check_finite: bool = True,
     ) -> tuple[torch.Tensor, dict | None]:
-        """Compute the ASPO policy loss and the MSE value loss. Return"""
+        """Compute the ASPO policy loss and the MSE value loss.
+
+        Return ``(loss, info)``. ``info`` is ``None`` when ``compute_info`` is
+        false; the loss is identical either way.
+
+        Seven phases, in order:
+          1. load and shape-check the batch
+          2. encode the observation window, apply SIGReg
+          3. load the frozen behavior CFM loss from the rollout
+          4. the new velocity, and the flow targets under no autocast
+          5. ratio, ASPO surrogate, chunk-masked policy loss
+          6. the critic and the value loss
+          7. assemble, then optionally raise on a non-finite loss
+        """
         cfg = self.config
         device = next(self.parameters()).device
         storage_dtype = resolve_storage_dtype(device)

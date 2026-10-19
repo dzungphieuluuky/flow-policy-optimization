@@ -27,7 +27,7 @@ def build_train_metrics(
     info: dict,
     batch: dict,
     rollout: dict,
-    grad_norm_mean_pre: float,
+    grad_norms: dict[str, float],
     above_clamp_frac: float,
     both_clamped_frac: float,
     drift_means: list[float],
@@ -36,7 +36,9 @@ def build_train_metrics(
 ) -> dict:
     """Return the ``train/*`` rows for one optimiser step."""
     data = {f"train/{k}": v for k, v in info.items()}
-    data["train/grad_norm_before_clip"] = grad_norm_mean_pre
+    data["train/grad_norm_before_clip"] = grad_norms["total"]
+    data["train/grad_norm_actor_before_clip"] = grad_norms["actor"]
+    data["train/grad_norm_critic_before_clip"] = grad_norms["critic"]
     data["train/cfm_above_clamp_frac"] = above_clamp_frac
     data["train/cfm_both_clamped_frac"] = both_clamped_frac
     if cfg.log_drift_diagnostics and drift_means:

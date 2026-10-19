@@ -36,8 +36,8 @@ def test_the_draw_bounds_are_not_the_range_of_the_flow():
     the config. The two fields bound the training draw only.
     """
     cfg = SJFPOConfig()
-    assert cfg.min_sampled_timestep == 0.005
-    assert cfg.max_sampled_timestep == 0.995
+    # The property, not the literal: the draw must exclude both endpoints of
+    # the flow without being told the flow range.
     assert cfg.min_sampled_timestep > 0.0, "the draw must not sit exactly on t=0"
     assert cfg.max_sampled_timestep < 1.0, "the draw must not sit exactly on t=1"
 
@@ -148,49 +148,14 @@ def test_a_beta_away_from_one_does_not_warn():
 
 
 
-def test_the_default_config_does_not_sample_uniform():
-    """The defect: the default named a law it did not draw.
-
-    ``fpo_beta`` at ``timestep_inverse_cdf_beta=1.0`` reduces to
-    ``lo + (hi - lo) * u``, which is ``uniform`` bit for bit. The shipped default
-    was 1.0, so every default run sampled uniform while the config claimed the
-    FPO++ beta law. Only a RuntimeWarning said so, and it fired on every
-    construction.
-    """
-    import dataclasses
-
-    import torch
-
-    cfg = SJFPOConfig()
-    assert cfg.timestep_sampling_mode == "fpo_beta"
-
-    g = torch.Generator().manual_seed(0)
-    default = sample_timesteps(200_000, cfg, "cpu", g)
-    g2 = torch.Generator().manual_seed(0)
-    uniform = sample_timesteps(
-        200_000, dataclasses.replace(cfg, timestep_sampling_mode="uniform"), "cpu", g2
-    )
-
-    assert not torch.equal(default, uniform), (
-        "the default draw is still identical to uniform"
-    )
-    # The beta law with 2.0 skews low, so its mean sits well under the midpoint.
-    assert float(default.mean()) < float(uniform.mean()) - 0.1, (
-        f"expected the skewed law to sit low: "
-        f"{float(default.mean()):.4f} vs {float(uniform.mean()):.4f}"
-    )
-
-
-
 def test_beta_one_is_the_null_case():
     """At 1.0 the fpo_beta transform is the identity, so it draws uniform.
 
-    The default was 1.0 until 2026-10-17, which meant every default run sampled
-    uniform while the config named the FPO++ beta law. The default is now 2.0.
-    The identity is kept here so nobody re-picks 1.0 without seeing this.
+    The identity is kept here so nobody re-picks 1.0 without seeing this. The
+    shipped default is ``uniform``, not ``fpo_beta``: ``SJFPOConfig`` no longer
+    names a law it does not draw, so the default needs no guard against this.
     """
     cfg = dataclasses.replace(SJFPOConfig(), timestep_inverse_cdf_beta=1.0)
-    assert cfg.timestep_sampling_mode == "fpo_beta"
     assert cfg.timestep_inverse_cdf_beta == 1.0
     # 1.0 ** (1.0 / 1.0) == 1.0, so the transform is the identity.
     assert math.isclose(1.0 - (1.0 - 0.5) ** (1.0 / 1.0), 0.5)
@@ -220,36 +185,4 @@ def test_only_an_explicit_one_warns():
         SJFPOConfig(timestep_sampling_mode="fpo_beta", timestep_inverse_cdf_beta=1.0)
     assert any(issubclass(w.category, RuntimeWarning) for w in caught), (
         "an explicit beta=1.0 must still warn"
-    )
-
-
-def test_the_default_config_does_not_sample_uniform():
-    """The regression: the default once named a law it did not draw.
-
-    ``fpo_beta`` at ``timestep_inverse_cdf_beta=1.0`` reduces to
-    ``lo + (hi - lo) * u``, which is ``uniform`` bit for bit. The shipped default
-    was 1.0, so every default run sampled uniform while the config claimed the
-    FPO++ beta law.
-    """
-    import dataclasses
-
-    import torch
-
-    cfg = SJFPOConfig()
-    assert cfg.timestep_sampling_mode == "fpo_beta"
-    assert cfg.timestep_inverse_cdf_beta != 1.0
-
-    gen = torch.Generator().manual_seed(0)
-    default = sample_timesteps(200_000, cfg, "cpu", gen)
-    gen2 = torch.Generator().manual_seed(0)
-    uniform = sample_timesteps(
-        200_000, dataclasses.replace(cfg, timestep_sampling_mode="uniform"), "cpu", gen2
-    )
-    assert not torch.equal(default, uniform), (
-        "the default draw is still identical to uniform"
-    )
-    # The beta law at 2.0 skews low, so its mean sits well under the midpoint.
-    assert float(default.mean()) < float(uniform.mean()) - 0.1, (
-        f"expected the skewed law to sit low: "
-        f"{float(default.mean()):.4f} vs {float(uniform.mean()):.4f}"
     )

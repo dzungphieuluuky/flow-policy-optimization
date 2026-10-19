@@ -7,7 +7,7 @@ import warnings
 import torch
 from torch import nn
 
-from myfpo.layers import CondMLP
+from myfpo.layers import CondMLP, build_rms_norm
 
 class RunningMeanStd(nn.Module):
     """Per-dimension running mean and variance over raw obs frames."""
@@ -71,7 +71,13 @@ class RunningMeanStd(nn.Module):
         return norm.clamp(-self.clip, self.clip).to(x.dtype)
 
 class StateEncoder(nn.Module):
-    """Flatten the window. Pass it to one SiLU MLP. Return the conditioning"""
+    """Flatten the window. Pass it to one SiLU MLP. Normalise. Return it.
+
+    The norm is the point. This was the only unnormalised path in the stack:
+    every observation reaches the actor through here and then through an
+    unnormalised adaLN projection. RMSNorm over LayerNorm, because it does not
+    subtract the mean and it matches the actor's norm1/norm2/norm_out.
+    """
 
     def __init__(self, obs_dim: int, hidden_dim: int, max_obs_steps: int):
         super().__init__()
@@ -82,12 +88,15 @@ class StateEncoder(nn.Module):
         self.obs_dim = obs_dim
         self.max_obs_steps = max_obs_steps
         self.net = CondMLP(max_obs_steps * obs_dim, hidden_dim, hidden_dim)
+        self.out_norm = build_rms_norm(hidden_dim)
 
     def forward(self, states: torch.Tensor) -> torch.Tensor:
-        """Accept the window ``[B, T, obs]``. Return one conditioning vector of"""
+        """Accept the window ``[B, T, obs]``. Return one normalised conditioning
+        vector of width ``hidden_dim``.
+        """
         if states.dim() != 3 or states.shape[2] != self.obs_dim:
             raise ValueError(f"states must have shape [B, {self.max_obs_steps}, {self.obs_dim}], got {tuple(states.shape)}")
         if states.shape[1] != self.max_obs_steps:
             raise ValueError(f"states has {states.shape[1]} frames, built for max_obs_steps={self.max_obs_steps}")
-        return self.net(states.flatten(1))
+        return self.out_norm(self.net(states.flatten(1)))
 

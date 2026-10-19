@@ -25,14 +25,30 @@ __all__ = [
     "mc_draws",
     "sample_eps",
     "sample_mc_timesteps",
+    "subsampled_min",
 ]
 
 
 def compute_value_loss(
     pred: torch.Tensor, target: torch.Tensor
 ) -> torch.Tensor:
-    """Squared error against the return. The function broadcasts ``target`` over"""
+    """Squared error against the return. ``target`` broadcasts over the members."""
     return torch.square(pred - target.expand_as(pred))
+
+
+def subsampled_min(q: torch.Tensor, size: int = 2) -> torch.Tensor:
+    """Min over ``size`` randomly drawn members of ``[num_critics, N]``, per column.
+
+    REDQ (Chen et al. 2021) and TD-MPC2 (arXiv:2310.16828). A full min over every
+    member is more pessimistic than either.
+    """
+    if q.dim() != 2:
+        raise ValueError(f"q must be [num_critics, N], got {tuple(q.shape)}")
+    members = q.shape[0]
+    if members <= size:
+        return q.amin(dim=0)
+    idx = torch.rand(members, q.shape[1], device=q.device).argsort(dim=0)[:size]
+    return q.gather(0, idx).amin(dim=0)
 
 
 _GAE_DIAGNOSTIC_KEYS = (
@@ -178,6 +194,10 @@ def compute_value_metrics(
     mean_value_pred = raw_value_pred.mean(dim=0)
     min_value_pred = raw_value_pred.amin(dim=0)
     returns_var = raw_returns_flat.var(correction=0).clamp_min(1e-8)
+    # Every member regresses onto the same scalar target, so a gap trending to
+    # zero means the ensemble has collapsed onto one function. Logged, not
+    # gated: there is no baseline to pick a threshold against.
+    member_gap = raw_value_pred.amax(dim=0) - raw_value_pred.amin(dim=0)
     return {
         "policy_loss": policy_per_chunk.mean(),
         "value_loss": value_loss_per_chunk.mean(),
@@ -190,9 +210,8 @@ def compute_value_metrics(
         "value_target_std": raw_returns_flat.std(correction=0),
         "value_pred_std": raw_value_pred.std(correction=0),
         "value_pred_std_member_mean": raw_value_pred.std(dim=1, correction=0).mean(),
-        "value_pred_member_gap": (
-            raw_value_pred.amax(dim=0) - raw_value_pred.amin(dim=0)
-        ).mean(),
+        "value_pred_member_gap": member_gap.mean(),
+        "value_pred_member_gap_p95": torch.quantile(member_gap.float(), 0.95),
     }
 
 

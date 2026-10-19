@@ -92,8 +92,18 @@ def test_the_skip_is_added_once_after_the_final_unit_not_per_unit():
         expected_inner = x
         for dense, norm in zip(mlp.denses, mlp.norms):
             expected_inner = torch.nn.functional.silu(norm(dense(expected_inner)))
-        expected = x + mlp.out(expected_inner)
+        expected = x + mlp.out(mlp.out_norm(expected_inner))
     torch.testing.assert_close(mlp(x), expected, rtol=0, atol=0)
+
+
+def test_the_final_norm_sits_between_the_last_unit_and_the_output_projection():
+    """A separate ``out_norm``, so ``norms`` stays one-per-unit for the paper."""
+    mlp = ResidualMLP(HIDDEN, 2.0, 4)
+    assert len(mlp.norms) == 4
+    assert isinstance(mlp.out_norm, torch.nn.RMSNorm)
+    assert mlp.out_norm.normalized_shape == (int(HIDDEN * 2.0),)
+    names = [n for n, _ in mlp.named_children()]
+    assert names == ["denses", "norms", "out_norm", "out"]
 
 
 def test_a_fresh_residual_mlp_is_the_identity():

@@ -1,5 +1,6 @@
-# One critic instead of the 2-member ensemble, which makes the backup's amin a
-# no-op. Matches QC, which runs a single Q.
+# One critic instead of the 5-member ensemble. subsampled_min falls back to a
+# full min when the ensemble is no wider than the draw, so the backup becomes a
+# single Q. Matches QC, which runs a single Q.
 #
 #   .venv/bin/python scripts/train.py --env Hopper-v5 --config configs/ablations/single_critic.yaml
 num_critics: 1

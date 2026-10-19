@@ -129,7 +129,7 @@ class TestValueDiagnostics:
         """Diagnostics dict keys match expected tuple."""
         from myfpo.metrics import _GAE_DIAGNOSTIC_KEYS
         assert isinstance(_GAE_DIAGNOSTIC_KEYS, tuple)
-        assert len(_GAE_DIAGNOSTIC_KEYS) == 5
+        assert len(_GAE_DIAGNOSTIC_KEYS) == 4
 
 
 class TestSamplingFunctions:

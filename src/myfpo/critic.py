@@ -9,11 +9,18 @@ from torch import nn
 
 class CriticMember(nn.Module):
     """One Q(s, a_{t:t+h}) head. The network is a concat MLP. It has no FiLM
+    conditioning; the executed-chunk fraction is concatenated instead.
 
     Every hidden layer is ``Linear -> LayerNorm -> Mish``, following TD-MPC2
     (arXiv:2310.16828). The norm is the part that matters: that paper reports
     that scaling an unnormalised critic does not improve performance while
     LayerNorm does. The output layer stays linear.
+
+    ``dropout`` sits directly after the first ``Linear``, the only placement
+    TD-MPC2 specifies ("1% Dropout after the first linear layer in each
+    Q-function"). Its purpose here is to keep the ensemble from converging onto
+    one function: every member regresses onto the same scalar target, so
+    without a mask the only thing distinguishing them is initialisation.
     """
 
     def __init__(
@@ -27,6 +34,7 @@ class CriticMember(nn.Module):
         condition_on_exec_length: bool = True,
         num_layers: int = 2,
         condition_dim: int | None = None,
+        dropout: float = 0.0,
     ):
         super().__init__()
         if action_dim < 1:
@@ -37,6 +45,8 @@ class CriticMember(nn.Module):
             raise ValueError("hidden_dim must be positive")
         if num_layers < 1:
             raise ValueError(f"num_layers must be >= 1, got {num_layers}")
+        if not 0.0 <= dropout < 1.0:
+            raise ValueError(f"dropout must be in [0, 1), got {dropout}")
         self.obs_dim = obs_dim
         self.action_dim = action_dim
         self.n_obs_steps = n_obs_steps
@@ -54,14 +64,21 @@ class CriticMember(nn.Module):
         self.input_dim = state_dim + action_horizon * action_dim + (
             1 if condition_on_exec_length else 0
         )
+        # Normalise state and action separately. One LayerNorm over the whole
+        # concat would couple state dims to action dims, and they are unrelated
+        # quantities. The state norm is skipped when the shared encoder already
+        # produced a normalised vector, so critic_share_encoder keeps meaning
+        # "raw shared-encoder vector".
+        if condition_dim is None:
+            self.norm_state = nn.LayerNorm(n_obs_steps * obs_dim)
+        self.norm_action = nn.LayerNorm(action_horizon * action_dim)
         in_dim = self.input_dim
         layers: list[nn.Module] = []
         for i in range(num_layers):
-            layers += [
-                nn.Linear(in_dim if i == 0 else hidden_dim, hidden_dim),
-                nn.LayerNorm(hidden_dim),
-                nn.Mish(),
-            ]
+            layers.append(nn.Linear(in_dim if i == 0 else hidden_dim, hidden_dim))
+            if i == 0 and dropout > 0.0:
+                layers.append(nn.Dropout(dropout))
+            layers += [nn.LayerNorm(hidden_dim), nn.Mish()]
         layers.append(nn.Linear(hidden_dim, 1))
         self.mlp = nn.Sequential(*layers)
 
@@ -71,8 +88,13 @@ class CriticMember(nn.Module):
         actions: torch.Tensor,
         exec_length_frac: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """Accept ``[B, T, obs]`` or ``[B, condition_dim]``, plus ``[B, H,"""
+        """Accept ``[B, T, obs]`` or ``[B, condition_dim]``, plus ``[B, H,
+        action_dim]`` and the scalar exec length. Returns ``[B]``.
+        """
         parts = [states.flatten(1), actions.flatten(1)]
+        if self.condition_dim is None:
+            parts[0] = self.norm_state(parts[0])
+        parts[1] = self.norm_action(parts[1])
         if self.condition_on_exec_length:
             if exec_length_frac is None:
                 raise ValueError(
@@ -89,7 +111,9 @@ class CriticMember(nn.Module):
 
 
 class Critic(nn.Module):
-    """Q(s_t, a_{t:t+h}) over the full window. The chunk is the executed action"""
+    """Q(s_t, a_{t:t+h}) over the full window. The chunk is the executed action
+    sequence, and the executed-length fraction says how much of it ran.
+    """
 
     def __init__(
         self,
@@ -103,6 +127,7 @@ class Critic(nn.Module):
         condition_on_exec_length: bool = True,
         num_layers: int = 2,
         condition_dim: int | None = None,
+        dropout: float = 0.0,
     ):
         super().__init__()
         if condition_dim is not None and condition_dim < 1:
@@ -117,6 +142,8 @@ class Critic(nn.Module):
             raise ValueError(f"num_critics must be >= 1, got {num_critics}")
         if num_layers < 1:
             raise ValueError(f"num_layers must be >= 1, got {num_layers}")
+        if not 0.0 <= dropout < 1.0:
+            raise ValueError(f"dropout must be in [0, 1), got {dropout}")
         self.obs_dim = obs_dim
         self.action_dim = action_dim
         self.n_obs_steps = n_obs_steps
@@ -124,6 +151,7 @@ class Critic(nn.Module):
         self.num_critics = num_critics
         self.condition_on_exec_length = condition_on_exec_length
         self.condition_dim = condition_dim
+        self.dropout = dropout
         self.networks = nn.ModuleList(
             [
                 CriticMember(
@@ -135,6 +163,7 @@ class Critic(nn.Module):
                     condition_on_exec_length=condition_on_exec_length,
                     num_layers=num_layers,
                     condition_dim=condition_dim,
+                    dropout=dropout,
                 )
                 for _ in range(num_critics)
             ]
@@ -142,7 +171,7 @@ class Critic(nn.Module):
 
     @property
     def input_dim(self) -> int:
-        """First-layer input width. The width shifts by 1 when the length"""
+        """First-layer input width. Shifts by 1 with the exec-length input."""
         return self.networks[0].input_dim
 
     def forward(
@@ -151,7 +180,9 @@ class Critic(nn.Module):
         actions: torch.Tensor,
         exec_length_frac: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """Accept ``[B, T, obs]`` or ``[B, condition_dim]``, plus ``[B, H,"""
+        """Accept ``[B, T, obs]`` or ``[B, condition_dim]``, plus ``[B, H,
+        action_dim]`` and the scalar exec length. Returns ``[B]``.
+        """
         if self.condition_dim is not None:
             if states.dim() != 2 or states.shape[1] != self.condition_dim:
                 raise ValueError(

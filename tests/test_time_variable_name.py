@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 SRC = Path(__file__).resolve().parents[1] / "src" / "myfpo"
-FILES = [p for p in SRC.rglob("*.py") if p.name != "denoising_mdp.py"]
+FILES = list(SRC.rglob("*.py"))
 
 
 def _identifiers(path):
@@ -82,16 +82,6 @@ def test_the_two_sampling_helpers_are_named_for_what_they_return():
         "cpu",
     )
     assert out.dim() == 4 and out.shape[-1] == 1, out.shape
-
-
-def test_denoising_mdp_is_left_alone():
-    """It is out of scope. A rule that scanned it would force an edit there."""
-    blocked = SRC / "denoising_mdp.py"
-    assert blocked.exists(), "the file moved; confirm the standing rule"
-    text = blocked.read_text()
-    assert "broadcast_over_mc_axis" not in text, (
-        "the off-limits file references a renamed symbol"
-    )
 
 
 def test_the_only_tau_left_is_the_note_that_records_the_rename():

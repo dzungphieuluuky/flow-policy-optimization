@@ -22,7 +22,7 @@ class ResumeError(RuntimeError):
 
 
 def _reject_legacy_critic_checkpoint(d: Path) -> None:
-    """Fail before construction if the checkpoint predates the exec-length input"""
+    """Fail before construction if the checkpoint predates the exec-length input."""
     raw = (d / CONFIG_NAME).read_text(encoding="utf-8")
     cfg_keys = json.loads(raw).keys()
     if "critic_condition_on_exec_length" in cfg_keys:
@@ -68,7 +68,9 @@ def save_policy_checkpoint(
     global_step: int,
     ema_state: dict | None = None,
 ) -> None:
-    """Save through the LeRobot ``HubMixin``. Then save ``optimizer.pt`` and"""
+    """Save through the LeRobot ``HubMixin``. Then save ``optimizer.pt``, the EMA
+    shadow, the counters, and the RNG state.
+    """
     d = Path(dir_path)
     d.mkdir(parents=True, exist_ok=True)
 
@@ -156,7 +158,9 @@ def load_policy_checkpoint(
     action_low=None,
     action_high=None,
 ):
-    """Load a checkpoint from :func:`save_policy_checkpoint` ->"""
+    """Load a checkpoint from :func:`save_policy_checkpoint`. Restores the policy,
+    the optimizer, the EMA shadow, and the counters.
+    """
     from myfpo.modeling_sjfpo import SJFPOPolicy
 
     d = Path(dir_path)

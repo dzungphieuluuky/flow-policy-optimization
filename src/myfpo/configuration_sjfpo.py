@@ -63,8 +63,9 @@ class SJFPOConfig(PreTrainedConfig):
     num_critics: int = 5
     critic_condition_on_exec_length: bool = True
     critic_share_encoder: bool = False
-    critic_hidden_dim: int | None = None
+    critic_hidden_dim: int = 512
     critic_num_layers: int = 2
+    critic_dropout: float = 0.01
     normalize_advantage: bool = True
     advantage_clamp_neg: float = 100.0
     advantage_clamp_pos: float = 100.0
@@ -80,7 +81,7 @@ class SJFPOConfig(PreTrainedConfig):
     compile: bool = False
 
     actor_arch: str = "dit"
-    dit_depth: int = 3
+    dit_depth: int = 8
     dit_heads: int = 2
     dit_mlp_ratio: float = 2.0
     resmlp_blocks: int = 2
@@ -111,21 +112,19 @@ class SJFPOConfig(PreTrainedConfig):
         self.validate()
 
     def validate(self) -> None:
-        """Run every check inline. The function calls no other check method."""
+        """Run every check. Each group is a method; the groups are independent."""
+        self._validate_shape()
+        self._validate_actor()
+        self._validate_critic()
+        self._validate_trust_region()
+        self._validate_sampling()
+        self._validate_optim_and_batching()
+        self._validate_eval()
+
+    def _validate_shape(self) -> None:
+        """Window, chunk, and width."""
         if self.n_obs_steps < 1:
             raise ValueError(f"n_obs_steps={self.n_obs_steps} must be >= 1")
-        if self.report_to not in ("wandb", "tensorboard", "all", "none"):
-            raise ValueError(
-                f"report_to={self.report_to!r} must be wandb, tensorboard, all or none"
-            )
-        if self.num_critics < 1:
-            raise ValueError(f"num_critics={self.num_critics} must be >= 1")
-        if self.critic_hidden_dim is not None and self.critic_hidden_dim < 1:
-            raise ValueError(
-                f"critic_hidden_dim={self.critic_hidden_dim} must be >= 1"
-            )
-        if self.critic_num_layers < 1:
-            raise ValueError(f"critic_num_layers={self.critic_num_layers} must be >= 1")
         if self.action_horizon < 1:
             raise ValueError(f"action_horizon={self.action_horizon} must be >= 1")
         if not 0 < self.n_action_steps <= self.action_horizon:
@@ -137,10 +136,9 @@ class SJFPOConfig(PreTrainedConfig):
             raise ValueError(f"hidden_dim={self.hidden_dim} must be >= 1")
         if self.action_perturb_std < 0:
             raise ValueError("action_perturb_std must be >= 0")
-        if not 0.0 <= self.ema_decay < 1.0:
-            raise ValueError("ema_decay must be in [0, 1)")
-        if self.ema_warmup_steps < 0:
-            raise ValueError("ema_warmup_steps must be >= 0")
+
+    def _validate_actor(self) -> None:
+        """Actor widths, depths, the resmlp variant, and the EMA."""
         if self.hidden_dim % self.dit_heads != 0:
             raise ValueError(
                 f"hidden_dim={self.hidden_dim} must be divisible by "
@@ -185,23 +183,34 @@ class SJFPOConfig(PreTrainedConfig):
             raise ValueError(
                 f"transported_clip_value={self.transported_clip_value} must be > 0"
             )
-        for name, value in (
-            ("advantage_clamp_neg", self.advantage_clamp_neg),
-            ("advantage_clamp_pos", self.advantage_clamp_pos),
-        ):
-            if value <= 0:
-                raise ValueError(f"{name}={value} must be > 0")
-        if self.eval_max_episodes < 1:
-            raise ValueError(f"eval_max_episodes={self.eval_max_episodes} must be >= 1")
-        for name, value in (
-            ("eval_sampling", self.eval_sampling),
-            ("stop_eval_sampling", self.stop_eval_sampling),
-        ):
-            if value not in FLOW_STARTS:
-                raise ValueError(
-                    f"{name}={value!r} must be one of "
-                    f"{', '.join(repr(k) for k in FLOW_STARTS)}"
-                )
+        if not 0.0 <= self.ema_decay < 1.0:
+            raise ValueError("ema_decay must be in [0, 1)")
+        if self.ema_warmup_steps < 0:
+            raise ValueError("ema_warmup_steps must be >= 0")
+
+    def _validate_critic(self) -> None:
+        """Ensemble width, depth, dropout, and the critic learning rate."""
+        if self.num_critics < 1:
+            raise ValueError(f"num_critics={self.num_critics} must be >= 1")
+        if self.critic_hidden_dim is not None and self.critic_hidden_dim < 1:
+            raise ValueError(
+                f"critic_hidden_dim={self.critic_hidden_dim} must be >= 1"
+            )
+        if self.critic_num_layers < 1:
+            raise ValueError(f"critic_num_layers={self.critic_num_layers} must be >= 1")
+        if not 0.0 <= self.critic_dropout < 1.0:
+            raise ValueError(
+                f"critic_dropout={self.critic_dropout} must be in [0, 1)"
+            )
+        if self.critic_lr <= 0:
+            raise ValueError(f"critic_lr={self.critic_lr} must be > 0")
+        if self.critic_lr_warmup_steps < 0:
+            raise ValueError(
+                f"critic_lr_warmup_steps={self.critic_lr_warmup_steps} must be >= 0"
+            )
+
+    def _validate_trust_region(self) -> None:
+        """Discounts, clipping, the ASPO mode, and the CFM ratio terms."""
         if not 0.0 < self.gamma <= 1.0:
             raise ValueError(f"gamma={self.gamma} must satisfy 0 < gamma <= 1")
         if not 0.0 <= self.gae_lambda <= 1.0:
@@ -254,6 +263,15 @@ class SJFPOConfig(PreTrainedConfig):
             raise ValueError("cfm_loss_clamp_negative_advantages_max must be > 0")
         if self.log_ratio_cap <= 0:
             raise ValueError(f"log_ratio_cap={self.log_ratio_cap} must be > 0")
+        for name, value in (
+            ("advantage_clamp_neg", self.advantage_clamp_neg),
+            ("advantage_clamp_pos", self.advantage_clamp_pos),
+        ):
+            if value <= 0:
+                raise ValueError(f"{name}={value} must be > 0")
+
+    def _validate_sampling(self) -> None:
+        """The timestep law, the noise law, and the integration step counts."""
         if not (
             0.0
             <= self.min_sampled_timestep
@@ -273,30 +291,29 @@ class SJFPOConfig(PreTrainedConfig):
         if self.timestep_inverse_cdf_beta <= 0:
             raise ValueError("timestep_inverse_cdf_beta must be > 0")
         if self.timestep_inverse_cdf_beta == 1.0 and self.timestep_sampling_mode == "fpo_beta":
+            # stacklevel=3: 2 would now land inside validate() itself.
             warnings.warn(
                 "timestep_inverse_cdf_beta=1.0 makes timestep_sampling_mode="
                 "'fpo_beta' draw the same law as 'uniform'. Choose a beta "
                 "other than 1.0 to sample a non-uniform timestep law.",
                 RuntimeWarning,
-                stacklevel=2,
+                stacklevel=3,
             )
         if self.timestep_beta_alpha <= 0 or self.timestep_beta_beta <= 0:
             raise ValueError("timestep beta alpha/beta must be > 0")
-        if self.value_loss_coef < 0:
-            raise ValueError(f"value_loss_coef={self.value_loss_coef} must be >= 0")
-        if self.sigreg_mode not in {"none", "weak", "decorr"}:
-            raise ValueError("sigreg_mode must be 'none', 'weak', or 'decorr'")
-        if self.sigreg_coef < 0:
-            raise ValueError(f"sigreg_coef={self.sigreg_coef} must be >= 0")
-        if self.sigreg_sketch_dim < 2:
+        if self.num_steps_zero_start < 1:
             raise ValueError(
-                f"sigreg_sketch_dim={self.sigreg_sketch_dim} must be >= 2: "
-                "a covariance from one row is undefined"
+                f"num_steps_zero_start={self.num_steps_zero_start} must be >= 1"
             )
+        if self.num_steps_noise_start < 1:
+            raise ValueError(
+                f"num_steps_noise_start={self.num_steps_noise_start} must be >= 1"
+            )
+
+    def _validate_optim_and_batching(self) -> None:
+        """Learning rates, the optimiser, the regularisers, and the batch shape."""
         if self.policy_lr <= 0:
             raise ValueError(f"policy_lr={self.policy_lr} must be > 0")
-        if self.critic_lr <= 0:
-            raise ValueError(f"critic_lr={self.critic_lr} must be > 0")
         if self.optimizer_weight_decay < 0:
             raise ValueError(
                 f"optimizer_weight_decay={self.optimizer_weight_decay} must be >= 0"
@@ -308,10 +325,6 @@ class SJFPOConfig(PreTrainedConfig):
         if self.actor_lr_warmup_steps < 0:
             raise ValueError(
                 f"actor_lr_warmup_steps={self.actor_lr_warmup_steps} must be >= 0"
-            )
-        if self.critic_lr_warmup_steps < 0:
-            raise ValueError(
-                f"critic_lr_warmup_steps={self.critic_lr_warmup_steps} must be >= 0"
             )
         if self.grad_accum_steps < 1:
             raise ValueError(f"grad_accum_steps={self.grad_accum_steps} must be >= 1")
@@ -332,26 +345,46 @@ class SJFPOConfig(PreTrainedConfig):
             raise ValueError(f"num_envs={self.num_envs} must be >= 1")
         if self.num_mc_samples < 1:
             raise ValueError(f"num_mc_samples={self.num_mc_samples} must be >= 1")
-        if self.num_steps_zero_start < 1:
+        if self.value_loss_coef < 0:
+            raise ValueError(f"value_loss_coef={self.value_loss_coef} must be >= 0")
+        if self.sigreg_mode not in {"none", "weak", "decorr"}:
+            raise ValueError("sigreg_mode must be 'none', 'weak', or 'decorr'")
+        if self.sigreg_coef < 0:
+            raise ValueError(f"sigreg_coef={self.sigreg_coef} must be >= 0")
+        if self.sigreg_sketch_dim < 2:
             raise ValueError(
-                f"num_steps_zero_start={self.num_steps_zero_start} must be >= 1"
-            )
-        if self.num_steps_noise_start < 1:
-            raise ValueError(
-                f"num_steps_noise_start={self.num_steps_noise_start} must be >= 1"
+                f"sigreg_sketch_dim={self.sigreg_sketch_dim} must be >= 2: "
+                "a covariance from one row is undefined"
             )
 
+    def _validate_eval(self) -> None:
+        """The tracking backend and the two named flow starts."""
+        if self.report_to not in ("wandb", "tensorboard", "all", "none"):
+            raise ValueError(
+                f"report_to={self.report_to!r} must be wandb, tensorboard, all or none"
+            )
+        if self.eval_max_episodes < 1:
+            raise ValueError(f"eval_max_episodes={self.eval_max_episodes} must be >= 1")
+        for name, value in (
+            ("eval_sampling", self.eval_sampling),
+            ("stop_eval_sampling", self.stop_eval_sampling),
+        ):
+            if value not in FLOW_STARTS:
+                raise ValueError(
+                    f"{name}={value!r} must be one of "
+                    f"{', '.join(repr(k) for k in FLOW_STARTS)}"
+                )
+
     def validate_features(self) -> None:
-        """Require the run-time features. ``SJFPOPolicy.__init__`` calls this"""
+        """Require the run-time features. ``SJFPOPolicy.__init__`` calls this."""
         if self.robot_state_feature is None:
             raise ValueError("SJFPO requires 'observation.state' in input_features.")
         if self.action_feature is None:
             raise ValueError("SJFPO requires 'action' in output_features.")
 
-    def get_optimizer_preset(self, lr: float | None = None) -> "AdamWConfig":
-        from lerobot.optim import AdamWConfig
+    def get_optimizer_preset(self) -> "AdamWConfig":
         kwargs = dict(
-            lr=self.policy_lr if lr is None else float(lr),
+            lr=self.policy_lr,
             weight_decay=self.optimizer_weight_decay,
             grad_clip_norm=self.max_grad_norm,
         )

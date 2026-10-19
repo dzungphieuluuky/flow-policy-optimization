@@ -11,17 +11,40 @@ import dataclasses
 
 import pytest
 import torch
+from lerobot.configs.policies import PolicyFeature
+from lerobot.configs.types import FeatureType
 from torch import nn
 
 from myfpo.configuration_sjfpo import SJFPOConfig
 from myfpo.critic import Critic, CriticMember
+from myfpo.metrics import compute_value_metrics
+from myfpo.modeling_sjfpo import SJFPOPolicy
 
 OBS, HIDDEN, STEPS, ACT, H = 11, 32, 8, 3, 6
 
 
-def _member(num_layers: int = 2) -> CriticMember:
+def _cfg(**kw) -> SJFPOConfig:
+    return dataclasses.replace(
+        SJFPOConfig(
+            action_horizon=H,
+            hidden_dim=HIDDEN,
+            n_obs_steps=STEPS,
+            dit_depth=1,
+            dit_heads=2,
+            input_features={
+                "observation.state": PolicyFeature(FeatureType.STATE, (OBS,))
+            },
+            output_features={"action": PolicyFeature(FeatureType.ACTION, (ACT,))},
+        ),
+        **kw,
+    )
+
+
+def _member(num_layers: int = 2, dropout: float = 0.0) -> CriticMember:
     torch.manual_seed(0)
-    return CriticMember(OBS, ACT, HIDDEN, STEPS, H, num_layers=num_layers)
+    return CriticMember(
+        OBS, ACT, HIDDEN, STEPS, H, num_layers=num_layers, dropout=dropout
+    )
 
 
 @pytest.mark.parametrize("num_layers", [1, 2, 3, 4])
@@ -81,3 +104,145 @@ def test_a_saved_config_round_trips_with_the_new_ensemble():
 def test_num_critics_must_be_positive():
     with pytest.raises(ValueError, match="num_critics must be >= 1"):
         Critic(OBS, HIDDEN, ACT, STEPS, H, num_critics=0)
+
+
+# --- dropout (TD-MPC2: 1% after the first linear) ------------------------------
+
+
+def test_the_dropout_sits_directly_after_the_first_linear():
+    mods = list(_member(2, dropout=0.1).mlp)
+    kinds = [type(m).__name__ for m in mods]
+    assert kinds == [
+        "Linear", "Dropout", "LayerNorm", "Mish",
+        "Linear", "LayerNorm", "Mish",
+        "Linear",
+    ]
+
+
+@pytest.mark.parametrize("num_layers", [1, 2, 3])
+def test_there_is_exactly_one_dropout(num_layers):
+    assert sum(isinstance(m, nn.Dropout) for m in _member(num_layers, 0.1).mlp) == 1
+
+
+def test_zero_dropout_leaves_no_dropout_module():
+    assert not any(isinstance(m, nn.Dropout) for m in _member(3).mlp)
+
+
+def test_the_default_config_carries_the_reference_rate():
+    assert SJFPOConfig().critic_dropout == 0.01
+
+
+def test_the_constructors_default_to_off_so_a_bare_critic_is_deterministic():
+    assert SJFPOConfig().critic_dropout == 0.01
+    assert Critic(OBS, HIDDEN, ACT, STEPS, H).dropout == 0.0
+    assert SJFPOPolicy(_cfg()).critic.dropout == 0.01
+
+
+def test_dropout_is_active_in_train_mode_and_off_in_eval():
+    net = _member(2, dropout=0.5)
+    x = torch.randn(8, net.input_dim)
+    net.train()
+    a, b = net.mlp(x), net.mlp(x)
+    net.eval()
+    c, d = net.mlp(x), net.mlp(x)
+    assert not torch.equal(a, b)
+    assert torch.equal(c, d)
+
+
+def test_the_members_get_independent_masks_in_one_pass():
+    torch.manual_seed(0)
+    critic = Critic(OBS, HIDDEN, ACT, STEPS, H, num_critics=5, dropout=0.5).train()
+    out = critic(
+        torch.randn(4, STEPS, OBS),
+        torch.randn(4, H, ACT),
+        torch.full((4,), 0.5),
+    )
+    assert out.shape == (5, 4)
+    assert not torch.equal(out[0], out[1])
+
+
+@pytest.mark.parametrize("bad", [-0.1, 1.0, 1.5])
+def test_dropout_must_be_a_probability(bad):
+    with pytest.raises(ValueError, match=r"dropout must be in \[0, 1\)"):
+        _member(2, dropout=bad)
+
+
+def test_the_config_rejects_a_dropout_outside_the_unit_interval():
+    with pytest.raises(ValueError, match=r"critic_dropout=.* must be in \[0, 1\)"):
+        dataclasses.replace(SJFPOConfig(), critic_dropout=1.0)
+
+
+def test_dropout_adds_no_parameters():
+    torch.manual_seed(0)
+    a = sum(p.numel() for p in Critic(OBS, HIDDEN, ACT, STEPS, H, 5).parameters())
+    b = sum(
+        p.numel() for p in Critic(OBS, HIDDEN, ACT, STEPS, H, 5, dropout=0.5).parameters()
+    )
+    assert a == b
+
+
+# --- per-part input norms ------------------------------------------------------
+
+
+def test_the_state_and_action_are_normalised_separately():
+    m = _member()
+    assert isinstance(m.norm_state, nn.LayerNorm)
+    assert isinstance(m.norm_action, nn.LayerNorm)
+    assert m.norm_state.normalized_shape == (STEPS * OBS,)
+    assert m.norm_action.normalized_shape == (H * ACT,)
+
+
+def test_the_output_is_invariant_to_a_global_affine_on_the_observation():
+    """The property the input norms buy. False before this change."""
+    torch.manual_seed(1)
+    m = _member().eval()
+    obs = torch.randn(4, STEPS, OBS)
+    act = torch.randn(4, H, ACT)
+    frac = torch.full((4,), 0.5)
+    base = m(obs, act, frac)
+    assert torch.allclose(m(2.0 * obs, act, frac), base, atol=1e-5)
+    assert torch.allclose(m(obs + 3.0, act, frac), base, atol=1e-5)
+    assert torch.allclose(m(obs, 0.5 * act, frac), base, atol=1e-5)
+
+
+def test_the_input_norms_add_exactly_their_two_widths():
+    with_norms = sum(p.numel() for p in _member().parameters())
+    trunk = sum(p.numel() for p in _member().mlp.parameters())
+    assert with_norms == trunk + 2 * (STEPS * OBS) + 2 * (H * ACT)
+
+
+def test_the_shared_encoder_branch_skips_the_state_norm():
+    torch.manual_seed(0)
+    m = CriticMember(OBS, ACT, HIDDEN, 1, H, condition_dim=HIDDEN)
+    assert not hasattr(m, "norm_state")
+    assert isinstance(m.norm_action, nn.LayerNorm)
+    assert m.input_dim == HIDDEN + H * ACT + 1
+
+
+def test_the_state_norm_receives_the_flattened_window_not_the_chunk():
+    m = _member()
+    seen = {}
+    original = m.norm_state.forward
+    m.norm_state.forward = lambda x: (seen.setdefault("shape", tuple(x.shape)), original(x))[1]
+    m(torch.randn(3, STEPS, OBS), torch.randn(3, H, ACT), torch.full((3,), 0.5))
+    assert seen["shape"] == (3, STEPS * OBS)
+
+
+def test_the_member_gap_p95_flags_a_collapsed_ensemble():
+    """The gap is the only signal that the ensemble has not collapsed onto one function."""
+    n = 64
+    collapsed = torch.zeros(5, n)
+    healthy = torch.arange(5, dtype=torch.float32).unsqueeze(1).expand(5, n).clone()
+    assert _gap_p95(collapsed) == pytest.approx(0.0)
+    assert _gap_p95(healthy) == pytest.approx(4.0)
+    assert _gap_p95(healthy) > _gap_p95(collapsed)
+
+
+def _gap_p95(pred: torch.Tensor) -> float:
+    out = compute_value_metrics(
+        raw_value_pred=pred,
+        raw_returns_flat=torch.zeros(pred.shape[1]),
+        policy_per_chunk=torch.zeros(pred.shape[1]),
+        value_loss_per_chunk=torch.zeros(pred.shape[1]),
+    )
+    return float(out["value_pred_member_gap_p95"])

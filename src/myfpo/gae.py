@@ -19,7 +19,13 @@ def compute_chunk_advantages(
     chunk_env_id: torch.Tensor | None = None,
     gae_lambda: float = 0.95,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Return the ``[n]`` advantages and the regression target. The target is"""
+    """Return the ``[n]`` advantages and the ``[n]`` regression target.
+
+    The target is ``advantage + q_current_chunk``: a TD(lambda) backup over the
+    macro-transitions defined by ``chunk_starts`` / ``chunk_lengths``. Chunks
+    from different envs interleave in the buffer, so adjacency is resolved
+    through ``chunk_env_id`` rather than by buffer position.
+    """
     if not 0.0 <= gamma <= 1.0:
         raise ValueError(f"gamma must be in [0, 1], got {gamma}")
     if not 0.0 <= gae_lambda <= 1.0:

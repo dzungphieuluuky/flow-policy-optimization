@@ -291,9 +291,10 @@ def test_parameter_count_is_proportionate():
         for p in Critic(11, 128, 17, 16, 16, 2).parameters()
     )
     # in_dim = 16*11 + 16*17 + 1 = 449. Per member:
-    # Linear(449,128)=57600, LayerNorm(128)=256, Linear(128,128)=16512,
-    # LayerNorm(128)=256, Linear(128,1)=129 -> 74753, times 2 members.
-    assert n == pytest.approx(149_506, abs=50), f"critic is {n} params"
+    # norm_state(176)=352, norm_action(272)=544, Linear(449,128)=57600,
+    # LayerNorm(128)=256, Linear(128,128)=16512, LayerNorm(128)=256,
+    # Linear(128,1)=129 -> 75649, times 2 members.
+    assert n == pytest.approx(151_298, abs=50), f"critic is {n} params"
 
 
 def test_n_obs_steps_must_be_positive():

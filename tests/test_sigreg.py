@@ -26,6 +26,10 @@ def _policy_cfg(**kw):
             dit_heads=2,
             n_obs_steps=2,
             compile=False,
+            # These tests compare two forwards bit-for-bit. The critic's dropout
+            # and the sigreg sketch both draw from the global RNG, so no two
+            # train-mode passes are comparable with it switched on.
+            critic_dropout=0.0,
             input_features={"observation.state": PolicyFeature(FeatureType.STATE, (OBS,))},
             output_features={"action": PolicyFeature(FeatureType.ACTION, (ACT,))},
         ),

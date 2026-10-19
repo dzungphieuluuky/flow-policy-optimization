@@ -52,7 +52,7 @@ class SelfAttention(nn.Module):
         self.out = nn.Linear(hidden_dim, hidden_dim)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Self-attention over the ``L`` action tokens. The shape stays"""
+        """Self-attention over the ``L`` action tokens. The shape is preserved."""
         b, l, _ = x.shape
         h = self.n_heads
         d = self.head_dim
@@ -71,7 +71,7 @@ class SelfAttention(nn.Module):
 
 
 class DiTBlock(nn.Module):
-    """Pre-norm DiT block, adaLN-Zero. The flag ``return_stats=True`` adds"""
+    """Pre-norm DiT block, adaLN-Zero. ``return_stats=True`` adds a diagnostics dict."""
 
     def __init__(self, hidden_dim: int, n_heads: int, mlp_ratio: float):
         super().__init__()
@@ -91,7 +91,9 @@ class DiTBlock(nn.Module):
     def forward(
         self, x: torch.Tensor, c: torch.Tensor, return_stats: bool = False
     ) -> torch.Tensor | tuple[torch.Tensor, dict[str, torch.Tensor]]:
-        """``[B, K, H]`` action tokens, with adaLN conditioning on ``c``. ``c``"""
+        """``[B, K, H]`` action tokens, with adaLN conditioning on ``c``. ``c`` is
+        ``[B, H]`` for a whole chunk or ``[B, K, H]`` for per-token time.
+        """
         if x.dim() != 3:
             raise ValueError(f"x must have shape [B, K, H], got {tuple(x.shape)}")
         b = x.shape[0]

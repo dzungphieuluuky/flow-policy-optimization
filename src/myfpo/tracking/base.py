@@ -25,7 +25,7 @@ def compact_value(v) -> str:
 
 
 def config_hash(cfg_dict: dict) -> str:
-    """Six hex characters over every config value. Two configs cannot then"""
+    """Six hex characters over every config value. Two configs cannot then collide."""
     items = [
         (key, compact_value(value))
         for key, value in sorted(cfg_dict.items())
@@ -35,7 +35,7 @@ def config_hash(cfg_dict: dict) -> str:
 
 
 def build_run_name(method: str, env_name: str, seed: int, cfg_dict: dict) -> str:
-    """Build the wandb run name. The name holds the method, the env, the seed,"""
+    """Build the wandb run name. Holds method, env, seed, and the config hash."""
     tags: list[str] = []
     get = cfg_dict.get
     if (v := get("action_horizon")) is not None:

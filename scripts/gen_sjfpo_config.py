@@ -87,6 +87,7 @@ SECTIONS: list[tuple[str, list[str]]] = [
             "critic_condition_on_exec_length",
             "critic_hidden_dim",
             "critic_num_layers",
+            "critic_dropout",
             "value_loss_coef",
             "advantage_clamp_neg",
             "advantage_clamp_pos",

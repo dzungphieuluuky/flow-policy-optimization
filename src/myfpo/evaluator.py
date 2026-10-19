@@ -1,4 +1,6 @@
-"""SJFPO evaluator. The module runs deterministic rollouts and writes"""
+"""SJFPO evaluator. The module runs deterministic rollouts and writes a per-eval
+CSV, and computes the jerk diagnostics that expose chunk-boundary artifacts.
+"""
 
 from __future__ import annotations
 
@@ -117,7 +119,9 @@ def extract_success(info: dict) -> float | None:
 
 
 def compute_mean_chunk_jerk(actions: np.ndarray, action_is_pad: np.ndarray) -> float | None:
-    """Average :func:`compute_action_jerk` over the executed prefixes of the"""
+    """Average :func:`compute_action_jerk` over the executed prefixes of the chunks.
+    Returns ``None`` when no chunk executed at least three steps.
+    """
     a, pad = _jerk_inputs(actions, action_is_pad)
     jerks: list[float] = []
     for chunk, mask in zip(a, pad):
