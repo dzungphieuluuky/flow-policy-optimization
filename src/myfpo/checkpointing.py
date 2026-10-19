@@ -8,6 +8,7 @@ import os
 import pickle
 import tempfile
 import warnings
+from collections.abc import Callable
 from pathlib import Path
 
 import torch
@@ -22,38 +23,16 @@ class ResumeError(RuntimeError):
     """Unresumable checkpoint: missing or corrupt files."""
 
 
-def _reject_legacy_critic_checkpoint(d: Path) -> None:
-    """Fail before construction if the checkpoint predates the exec-length input."""
-    raw = (d / CONFIG_NAME).read_text(encoding="utf-8")
-    cfg_keys = json.loads(raw).keys()
-    if "critic_condition_on_exec_length" in cfg_keys:
-        return
-    raise ResumeError(
-        f"checkpoint in {d} was written before critic_condition_on_exec_length "
-        "existed, so its critic lacks the exec-length input and cannot be "
-        "resumed into the current critic. Start a fresh run, or set "
-        "critic_condition_on_exec_length: false to rebuild the old critic shape."
-    )
+def save_atomically(path: Path, write: Callable[[str], None]) -> None:
+    """Write through a temp file beside the target, then replace it.
 
-
-def write_bytes_atomically(path: Path, data: bytes) -> None:
-    """Write bytes to a path atomically, durable across a crash."""
-    with tempfile.NamedTemporaryFile(
-        mode="wb", dir=path.parent, prefix=f".{path.name}.", delete=False
-    ) as tmp:
-        tmp.write(data)
-        tmp.flush()
-        os.fsync(tmp.fileno())
-        tmp_name = tmp.name
-    Path(tmp_name).replace(path)
-
-
-def save_torch_atomically(path: Path, obj) -> None:
-    """Pickle to a path atomically, cleaning up on failure."""
+    A crash leaves the previous file intact: the target is only replaced once
+    the write has finished.
+    """
     fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
     os.close(fd)
     try:
-        torch.save(obj, tmp_name)
+        write(tmp_name)
         Path(tmp_name).replace(path)
     except Exception:
         with contextlib.suppress(FileNotFoundError):
@@ -77,10 +56,12 @@ def save_policy_checkpoint(
 
     policy.save_pretrained(d, state_dict=policy.state_dict())
     if ema_state is not None:
-        save_torch_atomically(d / "ema.pt", ema_state)
+        save_atomically(d / "ema.pt", lambda name: torch.save(ema_state, name))
 
     if optimizer is not None:
-        save_torch_atomically(d / OPTIMIZER_FILE, optimizer.state_dict())
+        save_atomically(
+            d / OPTIMIZER_FILE, lambda name: torch.save(optimizer.state_dict(), name)
+        )
     else:
         raise ValueError("optimizer is required for checkpoint save")
 
@@ -88,15 +69,17 @@ def save_policy_checkpoint(
         "global_step": int(global_step),
         "step_count": int(getattr(policy, "step_count", 0)),
     }
-    write_bytes_atomically(
+    save_atomically(
         d / COUNTERS_FILE,
-        json.dumps(counters, indent=2).encode("utf-8"),
+        lambda name: Path(name).write_bytes(
+            json.dumps(counters, indent=2).encode("utf-8")
+        ),
     )
 
     rng = {"torch": torch.get_rng_state()}
     if torch.cuda.is_available():
         rng["cuda"] = torch.cuda.get_rng_state_all()
-    save_torch_atomically(d / RNG_FILE, rng)
+    save_atomically(d / RNG_FILE, lambda name: torch.save(rng, name))
 
 
 def load_optimizer(policy, d: Path) -> torch.optim.Optimizer:
@@ -178,7 +161,7 @@ def load_policy_checkpoint(
     if missing:
         raise ResumeError(f"incomplete policy checkpoint in {d}: missing {missing}")
 
-    _reject_legacy_critic_checkpoint(d)
+
 
     policy = MyfpoPolicy.from_pretrained(d)
     if device is not None:
