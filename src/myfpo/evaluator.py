@@ -67,7 +67,7 @@ def write_eval_csv(
     csv_path = out_path / "eval_history.csv"
     file_exists = csv_path.is_file()
     mode = "a" if append and file_exists else "w"
-    with open(csv_path, mode, newline="", encoding="utf-8") as f:
+    with csv_path.open(mode, newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
         if not (append and file_exists):
             writer.writeheader()

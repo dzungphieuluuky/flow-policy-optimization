@@ -16,7 +16,6 @@ disagree again.
 from __future__ import annotations
 
 import dataclasses
-import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -179,7 +178,6 @@ def _yaml_value(value):
 
 
 def render() -> str:
-    sys.path.insert(0, str(ROOT / "src"))
     from myfpo.configuration_sjfpo import SJFPOConfig
 
     cfg = SJFPOConfig()

@@ -8,7 +8,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from myfpo.layers import CondMLP, SwiGLU, build_rms_norm, modulate
+from myfpo.layers import MIN_WIDTH, CondMLP, SwiGLU, build_rms_norm, modulate
 from myfpo.utils import rms
 
 def _rope(x: torch.Tensor, inv_freq: torch.Tensor) -> torch.Tensor:
@@ -75,7 +75,7 @@ class DiTBlock(nn.Module):
 
     def __init__(self, hidden_dim: int, n_heads: int, mlp_ratio: float):
         super().__init__()
-        if hidden_dim < 2:
+        if hidden_dim < MIN_WIDTH:
             raise ValueError("hidden_dim must be at least 2")
         if not math.isfinite(mlp_ratio) or mlp_ratio <= 0 or int(hidden_dim * mlp_ratio) < 1:
             raise ValueError("mlp_ratio must produce a positive hidden width")

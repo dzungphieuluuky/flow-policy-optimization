@@ -41,9 +41,6 @@ from typing import Literal
 
 import draccus
 
-# Import src/.
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
 from myfpo.config import (
     KNOWN_ENVS,
     get_observation_action_dim,
@@ -143,7 +140,7 @@ def load_yaml_dict(path: str | Path) -> dict:
         raise SystemExit(
             "ERROR: pyyaml is required for --config (pip install pyyaml)"
         ) from exc
-    with open(path, encoding="utf-8") as fh:
+    with Path(path).open(encoding="utf-8") as fh:
         data = yaml.safe_load(fh)
     if data is None:
         return {}

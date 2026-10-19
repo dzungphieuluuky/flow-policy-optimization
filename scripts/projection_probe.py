@@ -24,13 +24,10 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import json
-import sys
 from pathlib import Path
 
 import numpy as np
 import torch
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from myfpo.configuration_sjfpo import SJFPOConfig
 

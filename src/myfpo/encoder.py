@@ -7,7 +7,7 @@ import warnings
 import torch
 from torch import nn
 
-from myfpo.layers import CondMLP, build_rms_norm
+from myfpo.layers import MIN_WIDTH, CondMLP, build_rms_norm
 
 class RunningMeanStd(nn.Module):
     """Per-dimension running mean and variance over raw obs frames."""
@@ -81,7 +81,7 @@ class StateEncoder(nn.Module):
 
     def __init__(self, obs_dim: int, hidden_dim: int, max_obs_steps: int):
         super().__init__()
-        if hidden_dim < 2:
+        if hidden_dim < MIN_WIDTH:
             raise ValueError("hidden_dim must be at least 2")
         if max_obs_steps < 1:
             raise ValueError(f"max_obs_steps must be >= 1, got {max_obs_steps}")

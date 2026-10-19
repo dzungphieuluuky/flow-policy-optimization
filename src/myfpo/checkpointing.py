@@ -44,7 +44,7 @@ def write_bytes_atomically(path: Path, data: bytes) -> None:
         tmp.flush()
         os.fsync(tmp.fileno())
         tmp_name = tmp.name
-    os.replace(tmp_name, path)
+    Path(tmp_name).replace(path)
 
 
 def save_torch_atomically(path: Path, obj) -> None:
@@ -53,10 +53,10 @@ def save_torch_atomically(path: Path, obj) -> None:
     os.close(fd)
     try:
         torch.save(obj, tmp_name)
-        os.replace(tmp_name, path)
+        Path(tmp_name).replace(path)
     except Exception:
         with contextlib.suppress(FileNotFoundError):
-            os.unlink(tmp_name)
+            Path(tmp_name).unlink()
         raise
 
 

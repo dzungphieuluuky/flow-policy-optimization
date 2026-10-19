@@ -195,10 +195,14 @@ def _sigreg_sketch(z: torch.Tensor, sketch_dim: int) -> torch.Tensor:
     return z @ mat.T
 
 
+
+# A covariance needs two samples to divide by (n - 1). Below that the loss is
+# undefined, so it returns zero instead.
+_MIN_SIGREG_SAMPLES = 2
 def sigreg_weak_loss(z: torch.Tensor, sketch_dim: int = 64) -> torch.Tensor:
     """Weak SIGReg. Minimizes ||cov - eye||_F (distance to identity), not a match."""
     z = z.float()
-    if z.shape[0] < 2:
+    if z.shape[0] < _MIN_SIGREG_SAMPLES:
         return torch.zeros((), device=z.device)
     z = _sigreg_sketch(z, sketch_dim)
     z = z - z.mean(dim=0, keepdim=True)
@@ -212,7 +216,7 @@ def sigreg_decorr_loss(z: torch.Tensor, sketch_dim: int = 64) -> torch.Tensor:
     off-diagonal correlation. No match to the identity is enforced.
     """
     z = z.float()
-    if z.shape[0] < 2:
+    if z.shape[0] < _MIN_SIGREG_SAMPLES:
         return torch.zeros((), device=z.device)
     z = _sigreg_sketch(z, sketch_dim)
     z = z - z.mean(dim=0, keepdim=True)

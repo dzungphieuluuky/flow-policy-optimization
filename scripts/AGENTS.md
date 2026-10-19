@@ -1,8 +1,8 @@
 # AGENTS — scripts (ASD-STE 100)
 
-Entry: `scripts/train.py` (CLI > flat YAML `--config` > `SJFPOConfig` defaults). `sys.path.insert(0, "src")` (line 44) makes `src/` importable; `PYTHONPATH=src` alt.
+Entry: `scripts/train.py` (CLI > flat YAML `--config` > `SJFPOConfig` defaults). `uv sync` installs the project editable, so `import myfpo` works from any directory; no `sys.path` juggling in the scripts.
 
-Convention: exit codes `0/1/2/4`. Gates: `pytest -q tests` (`pyproject.toml:61`) and `ruff check .` (`pyproject.toml:63`). No CI (`AGENTS.md:40`). `tests/test_config_yaml_parity.py` enforces `configs/sjfpo.yaml` parity (`tests/test_config_yaml_parity.py`). Notebook pair: `sjfpo_online.md` / `.ipynb` (`jupytext --sync` idempotent; `cell_metadata_filter: -all`).
+Convention: exit codes `0/1/2/4`. Gates: `pytest -q tests` (`pyproject.toml:59`) and `ruff check .` (`pyproject.toml:61`). No CI (`AGENTS.md:40`). `tests/test_config_yaml_parity.py` enforces `configs/sjfpo.yaml` parity (`tests/test_config_yaml_parity.py`). Notebook pair: `sjfpo_online.md` / `.ipynb` (`jupytext --sync` idempotent; `cell_metadata_filter: -all`).
 
 Anti-patterns:
 - Do not add runner scalars (`total_steps`, `eval_steps`, `save_steps`, `obs_dim`, `action_dim`) to `SJFPOConfig`. Bypass config by design (`train_sjfpo.py`).
@@ -39,7 +39,7 @@ New artifacts (added 2026-10-18):
 Fixed bugs (`5d28f05`): `fpo_core.py`: restored `cfm_loss_weight` / `sigreg_weak_loss` definitions accidentally removed during docstring fix; corrected `cfm_loss_weight` docstring (`reversed vs. reference` removed); added proof-reference note (`fpo_core.py:288`) citing `arXiv:2507.21053`, `arXiv:2602.02481`, `literature_review.md` Sec 4.2. `train_sjfpo.py`: removed premature `eval_state[2] = 0` (`line 491`) before definition (`line 495`) — `UnboundLocalError` fixed (`5d28f05`).
 
 Known open issues:
-- `.venv/bin/python -c "import myfpo"`: `ModuleNotFoundError` (`PYTHONPATH=src` or `pip install -e .` needed).
+- `scripts/`: no `sys.path.insert` left; the package is installed editable by `uv sync`. A fresh clone needs `uv sync` before `pytest` or the scripts run.
 - `rollout.py`: `rollout_seam_jerk` / `rollout_jerk` measured; no chunk-boundary mitigation implemented.
 - `metrics.py`: `budget_truncated_chunk_frac` emitted; feature removed.
 - `experiments/`: 10 PNG screenshots (`2026-09-26`); no quantitative tables / CSV.

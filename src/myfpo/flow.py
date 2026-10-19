@@ -9,7 +9,7 @@ import torch.nn.functional as F
 from torch import nn
 
 from myfpo.attention import DiTBlock, SelfAttention
-from myfpo.layers import CondMLP, SinusoidalEncoding, build_rms_norm, modulate
+from myfpo.layers import MIN_WIDTH, CondMLP, SinusoidalEncoding, build_rms_norm, modulate
 from myfpo.utils import rms
 
 def effective_rank(features: torch.Tensor) -> torch.Tensor:
@@ -33,11 +33,11 @@ class _FlowActorBase(nn.Module):
         block_kwargs: dict,
     ):
         super().__init__()
-        if action_dim < 1 or hidden_dim < 2:
+        if action_dim < 1 or hidden_dim < MIN_WIDTH:
             raise ValueError("action_dim must be positive and hidden_dim at least 2")
         if action_horizon < 1:
             raise ValueError("action_horizon must be positive")
-        if time_embed_dim < 2:
+        if time_embed_dim < MIN_WIDTH:
             raise ValueError(f"time_embed_dim={time_embed_dim} must be at least 2")
         if self.num_blocks < 1:
             raise ValueError(f"an actor needs >= 1 block, got {self.num_blocks}")
@@ -194,7 +194,7 @@ class ResidualMLP(nn.Module):
 
     def __init__(self, hidden_dim: int, hidden_mult: float, num_units: int):
         super().__init__()
-        if hidden_dim < 2:
+        if hidden_dim < MIN_WIDTH:
             raise ValueError("hidden_dim must be at least 2")
         if num_units < 1:
             raise ValueError(f"num_units={num_units} must be >= 1")

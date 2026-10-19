@@ -61,6 +61,10 @@ addopts = "-n 0"
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+# The notebook pair is managed by jupytext: edit the .md, then
+# `jupytext --sync`. Ruff would lint the generated .ipynb and flag the
+# teaching-style code in it, so the notebooks stay out of the gate.
+extend-exclude = ["*.ipynb"]
 
 [tool.ruff.lint]
 # F: pyflakes (unused imports/variables, redefinitions)
@@ -69,10 +73,17 @@ target-version = "py312"
 # SIM: simplifications (collapsible ifs, suppressible exceptions)
 # RET: return simplifications
 # B: bugbear (unused loop variables, zip without strict)
-select = ["F", "E4", "E7", "E9", "ARG", "RUF", "SIM", "RET", "B"]
+# PTH: pathlib (open() and os.path calls go through Path)
+# PLW: pylint warnings (global statements, redefined loop names)
+select = ["F", "E4", "E7", "E9", "ARG", "RUF", "SIM", "RET", "B", "PTH", "PLW"]
 # E501 is not enforced: the file style is long lines, and a separate formatter
-# owns line width. E402 stays enabled because the scripts import after
-# `sys.path.insert`, and those imports carry an explicit noqa.
+# owns line width.
+# B905: `zip()` is used on equal-length pairs on purpose.
+# RUF012: the mutable class attributes are config tables, not state.
+# Deliberately not enabled: PLR2004 (dimension literals are idiomatic here),
+# C4 (`dict(...)` reads better than a literal for config-shaped mappings),
+# N (`import torch.nn.functional as F` is the ecosystem convention), and
+# COM/Q (trailing commas and quote style belong to a formatter).
 ignore = ["E501", "B905", "RUF012"]
 
 [tool.ruff.lint.flake8-unused-arguments]

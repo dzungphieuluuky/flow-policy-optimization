@@ -8,7 +8,7 @@ import yaml
 
 ENV_REGISTRY_PATH = Path(__file__).resolve().parents[2] / "configs" / "envs.yaml"
 
-with open(ENV_REGISTRY_PATH) as f:
+with ENV_REGISTRY_PATH.open() as f:
     _ENV_REGISTRY = yaml.safe_load(f) or {}
 
 KNOWN_ENVS = tuple(_ENV_REGISTRY.keys())

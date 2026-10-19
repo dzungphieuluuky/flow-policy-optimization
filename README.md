@@ -16,14 +16,15 @@ Trains expressive, multimodal flow-based robot policies using online reinforceme
 
 ## Quick start
 ```bash
+uv sync                                              # installs myfpo editable + deps
 .venv/bin/python scripts/train.py --env Hopper-v5 --seed 0 --total_steps 2000
 .venv/bin/python scripts/gen_sjfpo_config.py
 ```
 
 ## Gates
 ```bash
-PYTHONPATH=src .venv/bin/python -m pytest -q   # behaviour
-uv run ruff check .                            # dead code, unused names
+.venv/bin/python -m pytest -q   # behaviour
+uv run ruff check .            # dead code, unused names
 ```
 
 ## Key papers

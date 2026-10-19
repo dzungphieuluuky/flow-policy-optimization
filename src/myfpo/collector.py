@@ -16,21 +16,15 @@ from myfpo.configuration_sjfpo import SJFPOConfig
 __all__ = ["RolloutBuffer", "collect_chunks_vec"]
 
 
-_DEFAULT_CFG: SJFPOConfig | None = None
-
-
 def get_default_config() -> SJFPOConfig:
-    """Default config singleton, with feature specs for smoke and training."""
-    global _DEFAULT_CFG
-    if _DEFAULT_CFG is None:
-        from lerobot.configs.types import FeatureType, PolicyFeature
-        _DEFAULT_CFG = SJFPOConfig(
-            input_features={
-                "observation.state": PolicyFeature(type=FeatureType.STATE, shape=(4,))
-            },
-            output_features={"action": PolicyFeature(type=FeatureType.ACTION, shape=(2,))},
-        )
-    return _DEFAULT_CFG
+    """The default config, with feature specs for smoke and training."""
+    from lerobot.configs.types import FeatureType, PolicyFeature
+    return SJFPOConfig(
+        input_features={
+            "observation.state": PolicyFeature(type=FeatureType.STATE, shape=(4,))
+        },
+        output_features={"action": PolicyFeature(type=FeatureType.ACTION, shape=(2,))},
+    )
 
 
 _OBS_DTYPE = torch.float32

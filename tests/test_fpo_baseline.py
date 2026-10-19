@@ -1,11 +1,6 @@
 """Spectral prior removed."""
-import sys
-from pathlib import Path
-
 import pytest
 import torch
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from myfpo.configuration_sjfpo import SJFPOConfig
 from myfpo.fpo_core import sample_noise

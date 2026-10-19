@@ -8,6 +8,10 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
+# A width of 1 gives the norm nothing to normalise, so every hidden width in
+# the model has to clear this. One constant keeps the five checks in step.
+MIN_WIDTH = 2
+
 class _RMSNorm(nn.RMSNorm):
     """RMSNorm. The compute runs in fp32; the stored weight keeps the model dtype."""
 
@@ -62,7 +66,7 @@ class SinusoidalEncoding(nn.Module):
 
     def __init__(self, dim: int, max_period: float = 10000.0):
         super().__init__()
-        if dim < 2:
+        if dim < MIN_WIDTH:
             raise ValueError(f"SinusoidalEncoding dim must be >= 2, got {dim}")
         if max_period <= 0:
             raise ValueError(f"max_period must be > 0, got {max_period}")

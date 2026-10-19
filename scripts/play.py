@@ -27,8 +27,6 @@ if torch.cuda.is_available():
         "max_split_size_mb:128,expandable_segments:True"
     )
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
 import numpy as np
 
 from myfpo.checkpointing import load_policy_checkpoint

@@ -34,8 +34,6 @@ from pathlib import Path
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
 import draccus
 
 from myfpo.config import KNOWN_ENVS
@@ -108,7 +106,7 @@ def parse_seeds(raw: str | None, count: int, start: int) -> list[int]:
 def write_summary(path: Path, rows: list[dict]) -> Path:
     """Write one summary CSV. A fresh file replaces the old one."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", newline="", encoding="utf-8") as fh:
+    with path.open("w", newline="", encoding="utf-8") as fh:
         writer = csv.DictWriter(fh, fieldnames=SUMMARY_FIELDS)
         writer.writeheader()
         for row in rows:
@@ -121,7 +119,7 @@ def read_summary(path: str | Path) -> list[dict]:
     p = Path(path)
     if not p.is_file():
         raise SystemExit(f"ERROR: summary CSV not found: {p}")
-    with open(p, newline="", encoding="utf-8") as fh:
+    with p.open(newline="", encoding="utf-8") as fh:
         rows = list(csv.DictReader(fh))
     if not rows:
         raise SystemExit(f"ERROR: summary CSV holds no row: {p}")
@@ -239,7 +237,7 @@ def compare(paths: list[str], field: str, out: Path) -> int:
         "ci_high",
         "separated",
     ]
-    with open(out, "w", newline="", encoding="utf-8") as fh:
+    with out.open("w", newline="", encoding="utf-8") as fh:
         writer = csv.DictWriter(fh, fieldnames=fields)
         writer.writeheader()
         for row in rows_out:
