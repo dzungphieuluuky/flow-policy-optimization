@@ -22,10 +22,10 @@ Deleted features (`debd7e8`): `check_divergence`, `check_regression`, `interval_
 
 Verified non-issues:
 - `wandb` under numpy 2 fine. Default `report_to` = `"all"`, not `"wandb"`.
-- `requirements-linux.txt` deleted (`747c67c`). `requirements.txt` unpinned.
+- Dependency pins live in `pyproject.toml` only. `requirements.txt` deleted.
 - `.gitignore` does not ignore `*.ipynb`.
 - `configs/shared.yaml` unreferenced; absence costs nothing.
-- `requirements.txt`: `jax[cuda13]` (not cuda12); `myfpo_online.md` install cell matches.
+- `myfpo_online.md` writes its own `requirements-colab.txt` for the notebook.
 
 New artifacts (added 2026-10-18):
 - `README.md`: abstract, arXiv refs (`arXiv:2507.21053`, `arXiv:2602.02481`), quick start.
@@ -51,7 +51,7 @@ Fixed bugs (2026-10-20): `modeling.py` `load_ema_state_dict` restored the EMA sh
 Known open issues:
 - `scripts/`: no `sys.path.insert` left; the package is installed editable by `uv sync`. A fresh clone needs `uv sync` before `pytest` or the scripts run.
 - `rollout.py`: `rollout_seam_jerk` / `rollout_jerk` measured; no chunk-boundary mitigation implemented.
-- `experiments/`: 11 PNG screenshots (`2026-09-26`); no quantitative tables / CSV.
+- No experiment results are tracked in git. A run's numbers live in its wandb run.
 - No statistical significance tests for metrics (naming/NaN only).
 - No `torch.utils.checkpoint` applied (`flow.py` / `rollout.py`).
 - No CI. Gates are `pytest -q tests` and `ruff check .`.
