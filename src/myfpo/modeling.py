@@ -30,8 +30,6 @@ from myfpo.fpo_core import (
     compute_policy_ratio,
     sample_action,
     sample_noise,
-    sigreg_decorr_loss,
-    sigreg_weak_loss,
 )
 from myfpo.metrics import (
     broadcast_condition,
@@ -630,11 +628,6 @@ class MyfpoPolicy(PreTrainedPolicy):
         with autocast_context(device):
             cond = cudagraph_safe(self.encoder(states))
             cond_flat = broadcast_condition(cond, num_mc)
-        sigreg_raw = torch.zeros((), device=device)
-        if cfg.sigreg_mode == "weak":
-            sigreg_raw = sigreg_weak_loss(cond.float(), cfg.sigreg_sketch_dim)
-        elif cfg.sigreg_mode == "decorr":
-            sigreg_raw = sigreg_decorr_loss(cond.float(), cfg.sigreg_sketch_dim)
         if "behavior_cfm_loss" not in batch or "behavior_cfm_loss_token" not in batch:
             raise KeyError(
                 "forward requires 'behavior_cfm_loss' and 'behavior_cfm_loss_token' "
@@ -742,17 +735,9 @@ class MyfpoPolicy(PreTrainedPolicy):
         if reduction == "mean":
             policy_loss = policy_per_chunk.mean()
             value_loss = value_loss_per_chunk.mean()
-            loss = (
-                policy_loss
-                + cfg.value_loss_coef * value_loss
-                + cfg.sigreg_coef * sigreg_raw
-            )
+            loss = policy_loss + cfg.value_loss_coef * value_loss
         elif reduction == "none":
-            loss = (
-                policy_per_chunk
-                + cfg.value_loss_coef * value_loss_per_chunk
-                + cfg.sigreg_coef * sigreg_raw
-            )
+            loss = policy_per_chunk + cfg.value_loss_coef * value_loss_per_chunk
         else:
             raise ValueError(f"reduction={reduction!r} must be 'mean' or 'none'")
 
@@ -783,7 +768,6 @@ class MyfpoPolicy(PreTrainedPolicy):
             cond_stats=cond_stats,
             cfg=cfg,
         )
-        info["sigreg_raw"] = float(sigreg_raw.detach())
         return loss, info
 
 

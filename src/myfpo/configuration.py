@@ -68,9 +68,6 @@ class MyfpoConfig(PreTrainedConfig):
     advantage_clamp_neg: float = 100.0
     advantage_clamp_pos: float = 100.0
     value_loss_coef: float = 1.0
-    sigreg_mode: str = "none"
-    sigreg_coef: float = 0.0
-    sigreg_sketch_dim: int = 64
 
     cfm_loss_use_huber: bool = True
     cfm_loss_huber_delta: float = 0.5
@@ -343,15 +340,6 @@ class MyfpoConfig(PreTrainedConfig):
             raise ValueError(f"num_mc_samples={self.num_mc_samples} must be >= 1")
         if self.value_loss_coef < 0:
             raise ValueError(f"value_loss_coef={self.value_loss_coef} must be >= 0")
-        if self.sigreg_mode not in {"none", "weak", "decorr"}:
-            raise ValueError("sigreg_mode must be 'none', 'weak', or 'decorr'")
-        if self.sigreg_coef < 0:
-            raise ValueError(f"sigreg_coef={self.sigreg_coef} must be >= 0")
-        if self.sigreg_sketch_dim < 2:
-            raise ValueError(
-                f"sigreg_sketch_dim={self.sigreg_sketch_dim} must be >= 2: "
-                "a covariance from one row is undefined"
-            )
 
     def _validate_eval(self) -> None:
         """The tracking backend and the two named flow starts."""

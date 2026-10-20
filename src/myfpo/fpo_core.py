@@ -159,47 +159,6 @@ def group_cfm_loss(loss: torch.Tensor, group_size: int) -> torch.Tensor:
     return loss.reshape(n, num_mc // size, size, *loss.shape[2:]).mean(dim=2)
 
 
-def _sigreg_sketch(z: torch.Tensor, sketch_dim: int) -> torch.Tensor:
-    """Project rows to at most ``sketch_dim`` columns with a random map."""
-    n, c = z.shape
-    s = min(sketch_dim, n, c)
-    if c <= s:
-        return z
-    mat = torch.randn(s, c, device=z.device, dtype=z.dtype) / (c**0.5)
-    return z @ mat.T
-
-
-
-# A covariance needs two samples to divide by (n - 1). Below that the loss is
-# undefined, so it returns zero instead.
-_MIN_SIGREG_SAMPLES = 2
-def sigreg_weak_loss(z: torch.Tensor, sketch_dim: int = 64) -> torch.Tensor:
-    """Weak SIGReg. Minimizes ||cov - eye||_F (distance to identity), not a match."""
-    z = z.float()
-    if z.shape[0] < _MIN_SIGREG_SAMPLES:
-        return torch.zeros((), device=z.device)
-    z = _sigreg_sketch(z, sketch_dim)
-    z = z - z.mean(dim=0, keepdim=True)
-    cov = (z.T @ z) / (z.shape[0] - 1)
-    eye = torch.eye(z.shape[1], device=z.device, dtype=z.dtype)
-    return torch.norm(cov - eye, p="fro")
-
-
-def sigreg_decorr_loss(z: torch.Tensor, sketch_dim: int = 64) -> torch.Tensor:
-    """Decorrelation-only SIGReg. Standardises the columns, then penalises the
-    off-diagonal correlation. No match to the identity is enforced.
-    """
-    z = z.float()
-    if z.shape[0] < _MIN_SIGREG_SAMPLES:
-        return torch.zeros((), device=z.device)
-    z = _sigreg_sketch(z, sketch_dim)
-    z = z - z.mean(dim=0, keepdim=True)
-    std = z.std(dim=0, keepdim=True).clamp_min(1e-6)
-    corr = ((z / std).T @ (z / std)) / (z.shape[0] - 1)
-    off = corr - torch.diag(torch.diag(corr))
-    return torch.norm(off, p="fro")
-
-
 def cfm_loss_weight(t: torch.Tensor, cfg: MyfpoConfig) -> torch.Tensor:
     """Per-token CFM loss weight (broadcasts over action dims). Weight rises linearly to 1.0 at t=1 (0.01 + 0.99*t); no verified 'reversed vs reference' claim."""
     mode = cfg.cfm_loss_weight_from_t

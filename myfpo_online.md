@@ -181,15 +181,6 @@ for tag in ("clip020", "spo020", "lr1e3"):
 ```
 
 ```python
-run_arm("sigreg_logonly", ["--myfpo.sigreg_mode", "weak", "--myfpo.sigreg_coef", "0.0"])
-run_arm("sigreg_w1e4", ["--myfpo.sigreg_mode", "weak", "--myfpo.sigreg_coef", "1e-4"])
-run_arm("sigreg_w1e3", ["--myfpo.sigreg_mode", "weak", "--myfpo.sigreg_coef", "1e-3"])
-
-for tag in ("sigreg_logonly", "sigreg_w1e4", "sigreg_w1e3"):
-    play(arm_dir(tag), ENV, max_steps=300)
-```
-
-```python
 import csv
 import glob
 import statistics
