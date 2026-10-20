@@ -32,12 +32,20 @@ same scalar target, so initialisation is the only thing separating them. Watch
 .venv/bin/python scripts/train.py --env Hopper-v5 --myfpo.critic_dropout 0.0
 ```
 
-**One critic instead of the 5-member ensemble.** `subsampled_min` falls back to
+**One critic instead of the 2-member ensemble.** `subsampled_min` falls back to
 a full min when the ensemble is no wider than the draw, so the backup becomes a
 single Q. Matches QC, which runs a single Q.
 
 ```bash
 .venv/bin/python scripts/train.py --env Hopper-v5 --myfpo.num_critics 1
+```
+
+**The released 5-member ensemble.** The repo's default is 2 members; TD-MPC2
+ships 5. `train/value_pred_member_gap_p95` is the diagnostic that says whether
+the wider ensemble is worth its parameters.
+
+```bash
+.venv/bin/python scripts/train.py --env Hopper-v5 --myfpo.num_critics 5
 ```
 
 See `literature_review.md` Section 5 (table) and Section 11.4 (detailed comparison) for full citations and mathematical formulations.

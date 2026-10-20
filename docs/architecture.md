@@ -21,9 +21,9 @@ Two variants behind `config.actor_arch`; `dit` is the default.
 | Position | RoPE on q/k | Su et al. (`arXiv:2104.09864`) |
 | Timestep | per-token, not per-sample | SD-DiT / rectified-flow training |
 | Time embedding | log-spaced DDPM table | Ho et al. (`arXiv:2006.11239`) |
-| Depth / width | `dit_depth=8`, `hidden_dim=128` | see Depth and width |
+| Depth / width | `dit_depth=4`, `hidden_dim=128` | see Depth and width |
 
-Defaults: **2.36M parameters**, 8 blocks of 280k each.
+Defaults: **1.24M parameters**, 4 blocks of 281k each.
 
 The block is one class (`attention.AdaLNBlock`) with the MLP as the only
 difference: `DiTBlock` supplies a SwiGLU, `ResMLPBlock` the paper's residual
@@ -58,14 +58,15 @@ rather than smooth (0.9999 with the current table). A continuous velocity
 field is regressed against these codes, so smoothness is not cosmetic.
 
 ### Depth and width
-`dit_depth` 3 → 8 and `hidden_dim` 128 are capacity ceilings, not literature
+`dit_depth` 3 → 4 and `hidden_dim` 128 are capacity ceilings, not literature
 defaults. DiT-1/2 for images uses 12 blocks at width 768. Depth 3 is defensible
-for 8-token low-dimensional actions and probably was not the bottleneck;
-8 blocks cost ~2.7x the actor FLOPs and the full test suite went 57s → 126s.
+for 8-token low-dimensional actions and probably was not the bottleneck; the
+8-block variant cost ~2x the actor FLOPs and the full test suite went 57s →
+126s.
 
 **These two numbers went in unmeasured.** There is no shallow-actor
 config, so going back means passing `dit_depth` on the CLI. Run names encode the
-value (`tracking.py` emits `d128x8`), so a depth-3 run opens a separate
+value (`tracking.py` emits `d128x4`), so a depth-3 run opens a separate
 series rather than continuing this one.
 
 ### Known, not fixed
@@ -95,22 +96,58 @@ magnitude regardless of observation scale, which matters because
 
 ## Critic — `src/myfpo/critic.py`
 
-Ensemble of 5 `Q(s_t, a_{t:t+h})` heads over the full window. Trunk follows
+Ensemble of 2 `Q(s_t, a_{t:t+h})` heads over the full window. Trunk follows
 **TD-MPC2** (`arXiv:2310.16828`) throughout.
 
 | Element | Choice | Why |
 |---|---|---|
 | Hidden layers | `Linear → LayerNorm → Mish` | TD-MPC2. Its stated result: scaling an *unnormalised* critic does not improve performance, while adding LayerNorm does. The norm is the load-bearing part. |
 | Dropout | 1% after the first `Linear` | TD-MPC2. Every member regresses onto the same scalar target, so initialisation is the only thing separating them. |
-| Ensemble | 5 | TD-MPC2 default |
+| Ensemble | 2 | the repo's default; TD-MPC2 ships 5 (`--myfpo.num_critics 5` restores it) |
 | Output layer | bare `Linear` | no activation or norm on the scalar head |
 | Width | `critic_hidden_dim=512` | matches TD-MPC2 |
 | Input norms | `LayerNorm` on state and action **separately** | one norm over the concat would couple state dims to action dims, which are unrelated quantities |
 
-Defaults: **1.45M parameters**, 5 members of 291k.
+Defaults: **631k parameters**, 2 members of 316k.
 
 `norm_state` is skipped when `critic_share_encoder=True`, so that flag keeps
 meaning "raw shared-encoder vector" rather than double-normalising.
+
+---
+
+## Action space — `src/myfpo/processor.py`, `src/myfpo/collector.py`
+
+The flow's output is the **raw** action, unbounded, and that raw value is what
+the policy is trained on. The squash happens on the way to the env.
+
+```
+flow output r  ──►  stored chunk (raw)  ──►  CFM target, critic input
+                └─►  squash_to_env(r) ──►  the action the env steps with
+```
+
+`bias + scale · tanh(r)`, with `scale = (high - low) / 2` and
+`bias = (high + low) / 2` from the env's bounds. One implementation
+(`processor.squash_to_env`) serves the postprocessor and the collector, so the
+two cannot drift.
+
+**Why the raw value is what is stored.** The CFM regression target is built
+from the stored chunk. If the buffer kept the squashed value, the flow would be
+trained on the squash of its own output: the action the policy is trained on
+would not be the action the policy produces, and the env would receive a
+second squash of a value that was already squashed. The invariant is pinned by
+`tests/test_raw_action_space.py`.
+
+The consequence for the reader: **the stored action is not the action the env
+received.** `train/raw_action_abs_mean` is the stored chunk, and
+`train/executed_action_abs_mean` is the env-facing one; the ratio between them
+is the squash, and it is a property of the distribution, not a constant.
+
+The action stays in fp32 in the batch: it is the regression target, the raw
+values are unbounded, and a bf16 rounding would put a 0.4% error on it.
+
+Checkpoints record the action space (`action_space.json`). A checkpoint without
+it was trained with the critic reading the squashed chunk, which is a different
+quantity, and the loader refuses it.
 
 ---
 
@@ -119,7 +156,7 @@ meaning "raw shared-encoder vector" rather than double-normalising.
 `subsampled_min(q, size=2)` — the min of **2 randomly drawn members, per column**.
 REDQ (Chen et al. 2021) and TD-MPC2.
 
-A full `amin` over all 5 members is strictly more pessimistic than either, and
+A full `amin` over all members is strictly more pessimistic than either, and
 `measure_value_drift` uses the same reduction so both sides of its subtraction
 are comparable.
 
@@ -129,7 +166,7 @@ target critic network would provide, so there is none.
 
 ### Ensemble collapse is logged, not gated
 `train/value_pred_member_gap_p95` is the tail of the per-chunk spread between
-the highest and lowest member. A trend to zero means the 5 members have converged
+the highest and lowest member. A trend to zero means the members have converged
 onto one function. There is no abort on it: an unsupervised statistic with no
 baseline cannot be thresholded honestly. Watch it against
 `--myfpo.critic_dropout 0`.
@@ -169,9 +206,12 @@ because it tracks the online distribution.
 utils ──────────────► (leaf: device, dtype, tensor helpers)
 layers ─────────────► (leaf: RMSNorm, SwiGLU, CondMLP, sinusoidal)
 attention, encoder, critic, gae, evaluator ──► (leaf or near-leaf networks)
+processor ───────────► encoder (the squash, shared by the postprocessor and
+                       the collector)
 
 flow ───────────────► attention, layers
 metrics ────────────► fpo_core (sampling + broadcasting)
+collector ──────────► configuration, processor
 rollout ────────────► collector, gae, metrics
 modeling ────────────► flow, critic, encoder, fpo_core, metrics, rollout
 training ────────────► everything above, plus tracking, runner, checkpointing

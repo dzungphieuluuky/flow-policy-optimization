@@ -27,6 +27,7 @@ def _cfg(**kw) -> MyfpoConfig:
     return dataclasses.replace(
         MyfpoConfig(
             action_horizon=H,
+            n_action_steps=H,
             hidden_dim=HIDDEN,
             n_obs_steps=STEPS,
             dit_depth=1,

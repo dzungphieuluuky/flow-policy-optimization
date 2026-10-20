@@ -13,6 +13,23 @@ from lerobot.utils.constants import ACTION, OBS_STATE
 from myfpo.encoder import RunningMeanStd
 
 
+def squash_to_env(
+    raw: torch.Tensor, scale: torch.Tensor, bias: torch.Tensor
+) -> torch.Tensor:
+    """Map a raw policy output into the env's action bounds.
+
+    ``bias + scale * tanh(raw)``. The ``tanh`` is the only thing that bounds
+    the action, and it is applied exactly once, on the way to the env: the
+    flow is trained on the raw value, not on the squash of its own output.
+
+    ``scale`` and ``bias`` are the affine terms of the env's bounds, i.e.
+    ``scale = (high - low) / 2`` and ``bias = (high + low) / 2``.
+    """
+    scale = scale.to(device=raw.device, dtype=raw.dtype)
+    bias = bias.to(device=raw.device, dtype=raw.dtype)
+    return torch.addcmul(bias, scale, torch.tanh(raw))
+
+
 class MyfpoObservationProcessorStep(ProcessorStep):
     """Hold a reference to the ``RunningMeanStd`` of the policy, not a copy."""
 
@@ -63,11 +80,8 @@ class MyfpoActionPostprocessorStep(ProcessorStep):
     @torch.inference_mode()
     def __call__(self, batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
         raw = batch[ACTION]
-        squashed = torch.tanh(raw)
-        scale = self._scale_cpu.to(device=squashed.device, dtype=squashed.dtype)
-        bias = self._bias_cpu.to(device=squashed.device, dtype=squashed.dtype)
         out = dict(batch)
-        out[ACTION] = torch.addcmul(bias, scale, squashed)
+        out[ACTION] = squash_to_env(raw, self._scale_cpu, self._bias_cpu)
         return out
 
     def transform_features(

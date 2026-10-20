@@ -10,6 +10,7 @@ a second clamp and a clip counter.
 """
 
 import dataclasses
+import math
 from pathlib import Path
 
 import numpy as np
@@ -125,14 +126,18 @@ def test_the_perturbation_is_bounded_by_the_squash():
 
     It used to be added after a clamp, with unbounded noise, which is why the
     collector needed a second clamp.
+
+    The policy returns the raw chunk, so the bound is a property of the
+    squash, not of the returned value.
     """
     policy = _policy(action_perturb_std=50.0)
     policy.train()
     states = {"observation.state": torch.randn(64, 16, 11) * 3.0}
     for _ in range(8):
-        out = policy.predict_action_chunk(states, start_from_zero=False)
+        raw = policy.predict_action_chunk(states, start_from_zero=False)
         # Env bounds for this fixture are [-2, 2].
-        assert float(out.abs().max()) <= 2.0, float(out.abs().max())
+        executed = policy.postprocessor({ACTION: raw})[ACTION]
+        assert float(executed.abs().max()) <= 2.0, float(executed.abs().max())
 
 
 def test_the_policy_no_longer_clamps_the_action():
@@ -142,20 +147,22 @@ def test_the_policy_no_longer_clamps_the_action():
     assert ".clamp(" not in body, "predict_action_chunk still clamps"
     assert "torch.tanh" not in body, "the squash belongs in the postprocessor"
 def test_the_collector_no_longer_clamps():
-    """scale_action_chunk rescales. It does not clamp, and does not count.
+    """The collector squashes, it does not clamp, and it does not count.
 
     The clamp and the clip count were removed because the squash upstream makes
     them unreachable. This test fails if either comes back.
     """
-    from myfpo.collector import resolve_action_bounds, scale_action_chunk
+    from myfpo.collector import resolve_action_bounds
+    from myfpo.processor import squash_to_env
 
     lo, rng = resolve_action_bounds([-2.0, -1.0, -0.3], [2.0, 1.0, 0.3])
-    out = scale_action_chunk(torch.tensor([[9.0, -9.0, 5.0]]), lo, rng)
-    assert len(out) == 2, f"expected two returns, got {len(out)}"
-    executed, scaled = out
-    # A proposal outside the bounds passes through untouched now.
-    assert float(executed.abs().max()) == pytest.approx(9.0)
-    assert float(scaled.abs().max()) > 1.0, "the value was clamped somewhere"
+    raw = torch.tensor([[9.0, -9.0, 5.0]])
+    executed = squash_to_env(raw, rng * 0.5, lo + rng * 0.5)
+    # A proposal outside the bounds is squashed into them, not clamped.
+    assert float(executed[0, 0]) == pytest.approx(2.0 * math.tanh(9.0), abs=1e-6)
+    assert float(executed[0, 1]) == pytest.approx(-1.0 * math.tanh(9.0), abs=1e-6)
+    assert float(executed[0, 2]) == pytest.approx(0.3 * math.tanh(5.0), abs=1e-6)
+    assert float(executed.abs().max()) < 2.0, "the value was clamped to the bound"
 
 
 def test_the_stored_action_is_bounded_because_of_the_squash():
@@ -163,14 +170,18 @@ def test_the_stored_action_is_bounded_because_of_the_squash():
 
     This is the guarantee the removed clip count used to be argued about. It now
     holds because tanh maps into the env range, not because a clamp enforces it.
+
+    The policy returns the raw chunk, so the bound is a property of the
+    squash on the way to the env.
     """
     policy = _policy(action_perturb_std=5.0)
     policy.train()
     states = {"observation.state": torch.randn(64, 16, 11) * 3.0}
     for _ in range(8):
-        out = policy.predict_action_chunk(states, start_from_zero=False)
-        assert float(out.min()) >= -2.0 - 1e-6, float(out.min())
-        assert float(out.max()) <= 2.0 + 1e-6, float(out.max())
+        raw = policy.predict_action_chunk(states, start_from_zero=False)
+        executed = policy.postprocessor({ACTION: raw})[ACTION]
+        assert float(executed.min()) >= -2.0 - 1e-6, float(executed.min())
+        assert float(executed.max()) <= 2.0 + 1e-6, float(executed.max())
 
 
 def test_no_clamp_survives_on_the_collector_path():
@@ -178,6 +189,9 @@ def test_no_clamp_survives_on_the_collector_path():
 
     The function's own docstring explains that the clamp was removed, so a search
     for the word finds prose. This walks the parsed body and fails on a call.
+
+    Only the action-carrying assignments are checked: the collector clamps
+    indices, which has nothing to do with the action's range.
     """
     import ast
     from pathlib import Path
@@ -187,14 +201,29 @@ def test_no_clamp_survives_on_the_collector_path():
     tree = ast.parse(src)
 
     fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef)
-              and n.name == "scale_action_chunk")
-    calls = [
+              and n.name == "collect_chunks_vec")
+    action_names = {"plan", "raw_all", "executed_all", "actions_t"}
+    clamps = []
+    for node in ast.walk(fn):
+        if not isinstance(node, ast.Assign):
+            continue
+        targets = {
+            t.id for t in node.targets if isinstance(t, ast.Name)
+        }
+        if not targets & action_names:
+            continue
+        for inner in ast.walk(node.value):
+            if isinstance(inner, ast.Call) and "clamp" in ast.unparse(inner.func).lower():
+                clamps.append(ast.unparse(inner))
+    assert not clamps, f"the collector clamps an action again: {clamps}"
+
+    # The squash is what bounds the action, and it is there.
+    squashes = [
         ast.unparse(n.func)
         for n in ast.walk(fn)
-        if isinstance(n, ast.Call)
-        and "clamp" in ast.unparse(n.func).lower()
+        if isinstance(n, ast.Call) and "squash" in ast.unparse(n.func).lower()
     ]
-    assert not calls, f"the collector clamps again: {calls}"
+    assert squashes, "the collector lost the squash"
 
     # The clip counter must be gone from the code, though the docstring still
     # names it while explaining the removal.

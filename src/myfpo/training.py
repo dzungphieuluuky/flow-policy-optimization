@@ -17,6 +17,7 @@ from lerobot.configs.types import FeatureType, PolicyFeature
 from lerobot.utils.random_utils import set_seed
 
 from myfpo.checkpointing import load_policy_checkpoint, save_policy_checkpoint
+from myfpo.collector import resolve_action_bounds
 from myfpo.configuration import MyfpoConfig
 from myfpo.evaluator import (
     Evaluator,
@@ -25,8 +26,9 @@ from myfpo.evaluator import (
 )
 from myfpo.modeling import MyfpoAborted, MyfpoPolicy, build_optimizer
 from myfpo.metrics import compute_eval_summary_metrics, subsampled_min
+from myfpo.processor import squash_to_env
 from lerobot.utils.constants import CHECKPOINTS_DIR
-from myfpo.utils import resolve_device, rms, to_numpy_1d
+from myfpo.utils import cudagraph_step_begin, resolve_device, rms, to_numpy_1d
 from myfpo.tracking import build_backends, finish_backends, log_metrics
 from myfpo.runner import build_train_metrics, summarise_window
 
@@ -97,9 +99,9 @@ def build_policy(
     if action_low is not None and action_high is not None:
         policy.set_action_bounds(action_low, action_high)
     if getattr(cfg, "compile", False):
-        policy.actor = torch.compile(policy.actor, dynamic=True, fullgraph=True)
-        policy.encoder = torch.compile(policy.encoder, dynamic=True, fullgraph=True)
-        policy.critic = torch.compile(policy.critic, dynamic=True, fullgraph=True)
+        policy.actor = torch.compile(policy.actor, mode="reduce-overhead")
+        policy.encoder = torch.compile(policy.encoder, mode="reduce-overhead")
+        policy.critic = torch.compile(policy.critic, mode="reduce-overhead")
     return policy
 
 
@@ -165,13 +167,38 @@ def warm_observation_stats(policy, env, *, obs_dim: int, seed: int) -> int:
     return int(stacked.shape[0])
 
 
+def executed_chunk(
+    batch: dict[str, torch.Tensor], action_low, action_high
+) -> torch.Tensor:
+    """The env-facing action of a stored raw chunk.
+
+    The batch holds the flow's raw output, which is what the policy was
+    trained on. The env received the squash of it.
+    """
+    low, rng = resolve_action_bounds(action_low, action_high)
+    action = batch["action"]
+    device = action.device
+    return squash_to_env(
+        action.float(),
+        (rng * 0.5).to(device=device, dtype=torch.float32),
+        (low + rng * 0.5).to(device=device, dtype=torch.float32),
+    )
+
+
 @torch.no_grad()
-def compute_rollout_diagnostics(batch: dict[str, torch.Tensor]) -> dict[str, float]:
-    """Read the post-rollout scalars with one device-to-host transfer."""
+def compute_rollout_diagnostics(
+    batch: dict[str, torch.Tensor], *, action_low, action_high
+) -> dict[str, float]:
+    """Read the post-rollout scalars with one device-to-host transfer.
+
+    Two action spaces are reported: the raw chunk the flow produced, which
+    is what the policy is trained on, and the chunk the env received.
+    """
     action = batch["action"].float()
     is_pad = batch["action_is_pad"]
-    executed = (~is_pad)
-    exec_action = action[executed]
+    executed = ~is_pad
+    env_action = executed_chunk(batch, action_low, action_high)
+    exec_action = env_action[executed]
     scalars = [
         executed.sum(),
         action.abs().max(),
@@ -181,10 +208,10 @@ def compute_rollout_diagnostics(batch: dict[str, torch.Tensor]) -> dict[str, flo
     ]
     keys = [
         "executed_action_steps",
-        "action_abs_max",
-        "action_abs_mean",
-        "action_abs_mean_executed",
-        "action_abs_max_executed",
+        "raw_action_abs_max",
+        "raw_action_abs_mean",
+        "executed_action_abs_mean",
+        "executed_action_abs_max",
     ]
     return dict(zip(keys, torch.stack(scalars).tolist()))
 
@@ -276,11 +303,17 @@ def collect_rollouts(policy, train_env, cfg, action_low, action_high, steps_to_g
     batch = policy.generate_rollout(
         train_env, collect_steps, action_low=action_low, action_high=action_high,
     )
-    rollout = compute_rollout_diagnostics(batch)
+    rollout = compute_rollout_diagnostics(
+        batch, action_low=action_low, action_high=action_high
+    )
     steps_this_rollout = int(rollout["executed_action_steps"])
     if steps_this_rollout <= 0:
         raise RuntimeError("rollout returned zero executed steps; aborting.")
-    jerk_action = batch["action"].detach().cpu().numpy()
+    # The jerk is a property of the trajectory the env saw, so it is measured
+    # on the env-facing action, not on the raw chunk.
+    jerk_action = (
+        executed_chunk(batch, action_low, action_high).detach().cpu().numpy()
+    )
     jerk_pad = batch["action_is_pad"].detach().cpu().numpy()
     rollout_jerk = compute_mean_chunk_jerk(jerk_action, jerk_pad)
     rollout_seam_jerk = compute_seam_jerk(jerk_action, jerk_pad)
@@ -313,6 +346,9 @@ def train_update(policy, optimizer, batch, backends, cfg, grad_groups):
     for micro_step, mb_idx in enumerate(microbatches):
         group_size = group_sizes[micro_step // accumulation_steps]
         minibatch = sample_minibatch(batch, mb_idx, minibatch)
+        # One minibatch is one cudagraph step. Its backward runs before the
+        # next forward, so the manager may recycle the step's memory.
+        cudagraph_step_begin()
         if backends:
             loss, epoch_info = policy.loss_with_info(minibatch, check_finite=False)
         else:
@@ -487,6 +523,7 @@ def run_training(
         f"params={sum(p.numel() for p in policy.parameters()):,}",
         file=sys.stderr,
     )
+    print(policy, file=sys.stderr)
     eval_seed = 10000 + seed
     evaluator = Evaluator(
         env, eval_seed=eval_seed, max_episodes=cfg.eval_max_episodes
@@ -530,10 +567,16 @@ def run_training(
                 policy, train_env, cfg, action_low, action_high, steps_to_go
             )
             global_step += steps_this_rollout
-            action_abs_max = rollout["action_abs_max"]
-            if action_abs_max > 1.0 + 1e-3:
+            # The guard is on the action the env receives, which the squash
+            # bounds. The stored chunk is the raw one and is unbounded.
+            env_abs_max = rollout["executed_action_abs_max"]
+            env_bound = float(
+                np.abs(np.concatenate([action_low, action_high])).max()
+            )
+            if env_abs_max > env_bound + 1e-3:
                 raise ValueError(
-                    f"Post-clip action magnitude exceeded 1: max_abs={action_abs_max:.3f}."
+                    f"Post-squash action magnitude exceeded the env bound: "
+                    f"max_abs={env_abs_max:.3f} > {env_bound:.3f}."
                 )
 
             epoch_infos, grad_norms_pre, above_clamp_fracs, both_clamped_fracs = train_update(
@@ -585,6 +628,8 @@ def run_training(
                         drift_means=drift_means,
                         rollout_jerk=rollout_jerk,
                         rollout_seam_jerk=rollout_seam_jerk,
+                        policy_lr=optimizer.param_groups[0]["lr"],
+                        critic_lr=optimizer.param_groups[-1]["lr"],
                     ),
                     step=global_step,
                 )
@@ -646,8 +691,8 @@ def run_training(
                             ),
                             "eval/return_median": eval_summary.get("return_median", 0.0),
                             "eval/return_n": eval_summary.get("return_n", 0),
-                            "train/policy_lr": optimizer.param_groups[0]["lr"],
-                            "train/critic_lr": optimizer.param_groups[-1]["lr"],
+                            # The learning rate rides the train/* rows, which
+                            # land on every update, not only on the eval steps.
                             **{
                                 f"eval/{name}_return_mean": summaries.get(name, {}).get("return_mean", 0.0)
                                 for name in eval_policies

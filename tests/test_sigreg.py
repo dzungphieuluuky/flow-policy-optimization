@@ -20,6 +20,7 @@ def _policy_cfg(**kw):
     return dataclasses.replace(
         MyfpoConfig(
             action_horizon=HORIZON,
+            n_action_steps=HORIZON,
             num_mc_samples=MC,
             hidden_dim=32,
             time_embed_dim=16,

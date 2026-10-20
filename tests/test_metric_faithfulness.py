@@ -86,10 +86,10 @@ def test_action_abs_mean_is_mean_absolute_value_not_an_l2_norm():
         "action": torch.tensor([[[3.0, 4.0]]]),
         "action_is_pad": torch.zeros(1, 1, dtype=torch.bool),
     }
-    out = compute_rollout_diagnostics(batch)
-    assert out["action_abs_mean"] == pytest.approx(3.5)          # mean|a|
-    assert out["action_abs_mean"] != pytest.approx(5.0)          # not L2.
-    assert out["action_abs_max"] == pytest.approx(4.0)
+    out = compute_rollout_diagnostics(batch, action_low=[-1.0], action_high=[1.0])
+    assert out["raw_action_abs_mean"] == pytest.approx(3.5)      # mean|a|
+    assert out["raw_action_abs_mean"] != pytest.approx(5.0)      # not L2.
+    assert out["raw_action_abs_max"] == pytest.approx(4.0)
 
 
 def test_the_action_abs_family_is_named_consistently():
@@ -97,13 +97,15 @@ def test_the_action_abs_family_is_named_consistently():
         {
             "action": torch.ones(2, 2, 3),
             "action_is_pad": torch.zeros(2, 2, dtype=torch.bool),
-        }
+        },
+        action_low=[-1.0] * 3,
+        action_high=[1.0] * 3,
     )
     assert {
-        "action_abs_max",
-        "action_abs_max_executed",
-        "action_abs_mean",
-        "action_abs_mean_executed",
+        "raw_action_abs_max",
+        "raw_action_abs_mean",
+        "executed_action_abs_max",
+        "executed_action_abs_mean",
     } <= set(out)
 
 

@@ -33,7 +33,20 @@ New artifacts (added 2026-10-18):
 - `literature_review.md`: full synthesis (FPO, FPO++, GoRL, GORL, GenPO, OGPO, DBPO, GPC, PSS), comparison table (`Section 11.4`), reading roadmap (`Section 11.5`), dependency graph (`11.2`), timeline (`11.1`).
 - `AGENTS.md` updated (`49`).
 
+New artifacts (added 2026-10-20):
+- `docs/token_advantage_design_a.md`: the plan for a per-token advantage for action chunks (RLinf-VLA's action-level arm, adapted to the CFM-loss ratio). Plan only; not implemented.
+- `docs/architecture.md`: the action-space section (the raw chunk, the squash on the way to the env) and the layer map with `processor`.
+- `tests/test_raw_action_space.py`: the six tests that pin "the action the flow is trained on is the action the flow produces".
+
 Fixed bugs (`5d28f05`): `fpo_core.py`: restored `cfm_loss_weight` / `sigreg_weak_loss` definitions accidentally removed during docstring fix; corrected `cfm_loss_weight` docstring (`reversed vs. reference` removed); added proof-reference note (`fpo_core.py:288`) citing `arXiv:2507.21053`, `arXiv:2602.02481`, `literature_review.md` Sec 4.2. `training.py`: removed premature `eval_state[2] = 0` (`line 491`) before definition (`line 495`) — `UnboundLocalError` fixed (`5d28f05`).
+
+Action space (2026-10-20): the flow's output is the **raw** action, and that raw value is what the policy is trained on; the `tanh` squash happens on the way to the env. Before this, the buffer stored the squashed chunk, so the flow was trained on the squash of its own output, and the env received a second squash of a value that was already squashed. `processor.squash_to_env` is the one implementation: `predict_action_chunk` returns the raw chunk, `select_action` and the collector squash it, and the collector stores the raw. Consequences:
+- The stored action is **not** the action the env received. `train/raw_action_abs_mean` is the stored chunk, `train/executed_action_abs_mean` the env-facing one, and the ratio between them is the squash. The old `train/action_abs_*` keys are retired.
+- The action rides fp32 in the batch: it is the CFM target, and the raw values are unbounded.
+- Checkpoints carry `action_space.json`. A checkpoint without it has a critic that read the squashed chunk, so `load_policy_checkpoint` refuses it with the reason named. **Every checkpoint written before 2026-10-20 is void.**
+- The jerk metrics (`rollout_jerk`, `rollout_seam_jerk`) are measured on the env-facing action, since that is the trajectory the env saw.
+
+Fixed bugs (2026-10-20): `modeling.py` `load_ema_state_dict` restored the EMA shadow on the CPU while the live parameters were on the GPU, so every resume died in `update_ema` with a device mismatch. The shadow now follows the parameters onto their device. `training.py`'s post-clip magnitude guard now checks the env-facing action against the env's bounds, not the stored chunk against 1.
 
 Known open issues:
 - `scripts/`: no `sys.path.insert` left; the package is installed editable by `uv sync`. A fresh clone needs `uv sync` before `pytest` or the scripts run.
@@ -45,3 +58,5 @@ Known open issues:
 - No CI. Gates are `pytest -q tests` and `ruff check .`.
 - `fpo_core.py`: approximate ratio (`ρ̂`) approximation bias unquantified in tests.
 - `metrics.py`: `broadcast_condition` dense (`einx.id`); `rollout.py` chunk grouping logic sparse comments.
+- `num_critics` defaults to 2, not TD-MPC2's 5; the docs follow the code. `tests/test_critic_trunk.py::test_the_default_ensemble_is_five` still asserts 5.
+- The raw action has no clip. `train/raw_action_abs_max` is the monitor: a drifting raw magnitude would make `cfm_clamp` bind and pin the ratio at 1.

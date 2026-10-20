@@ -24,7 +24,7 @@ class MyfpoConfig(PreTrainedConfig):
     report_to: str = "all"
     n_obs_steps: int = 16
     action_horizon: int = 8
-    n_action_steps: int = 4
+    n_action_steps: int = 8
     action_perturb_std: float = 0.0
     hidden_dim: int = 128
 
@@ -35,8 +35,8 @@ class MyfpoConfig(PreTrainedConfig):
     batch_size: int = 128
     grad_accum_steps: int = 1
 
-    num_steps_zero_start: int = 10
-    num_steps_noise_start: int = 10
+    num_steps_zero_start: int = 4
+    num_steps_noise_start: int = 4
     min_sampled_timestep: float = 0.1
     max_sampled_timestep: float = 0.9
     timestep_sampling_mode: str = "uniform"
@@ -51,7 +51,7 @@ class MyfpoConfig(PreTrainedConfig):
     cfm_average_group_size: int = 1
     clip_param: float = 0.01
     spo_clip_param: float = 0.01
-    trust_region_mode: str = "aspo"
+    trust_region_mode: str = "aspo" 
     cfm_loss_reduction: str = "mean"
     cfm_loss_target: str = "velocity"
     cfm_loss_weight_from_t: str = "constant"
@@ -60,7 +60,7 @@ class MyfpoConfig(PreTrainedConfig):
     cfm_loss_clamp_negative_advantages_max: float = 20.0
     log_ratio_cap: float = 10.0
 
-    num_critics: int = 5
+    num_critics: int = 2
     critic_condition_on_exec_length: bool = True
     critic_share_encoder: bool = False
     critic_hidden_dim: int = 512
@@ -81,7 +81,7 @@ class MyfpoConfig(PreTrainedConfig):
     compile: bool = False
 
     actor_arch: str = "dit"
-    dit_depth: int = 8
+    dit_depth: int = 4
     dit_heads: int = 2
     dit_mlp_ratio: float = 2.0
     resmlp_blocks: int = 2

@@ -1,8 +1,10 @@
 """``select_action`` must hand out a chunk in the order it planned it."""
 
 import dataclasses
+import math
 
 import numpy as np
+import pytest
 import torch
 
 from lerobot.configs.policies import PolicyFeature
@@ -50,6 +52,15 @@ def _window(cfg):
     return {"observation.state": torch.zeros(cfg.n_obs_steps, OBS)}
 
 
+def _squashed(chunk: torch.Tensor) -> torch.Tensor:
+    """The env-facing action of a raw chunk: the raw chunk squashed."""
+    from myfpo.processor import squash_to_env
+
+    low = torch.tensor(LOW)
+    high = torch.tensor(HIGH)
+    return squash_to_env(chunk, (high - low) / 2, (high + low) / 2)
+
+
 def test_the_chunk_comes_back_in_plan_order():
     """The bug: a deque fills right and pops left, so reverse-filling inverts it."""
     policy, cfg = _policy()
@@ -57,7 +68,7 @@ def test_the_chunk_comes_back_in_plan_order():
     policy.predict_action_chunk = lambda *a, **k: chunk
 
     got = [policy.select_action(_window(cfg)).tolist() for _ in range(EXECUTE)]
-    want = [chunk[0, i].tolist() for i in range(EXECUTE)]
+    want = [_squashed(chunk)[0, i].tolist() for i in range(EXECUTE)]
     assert got == want, f"executed {got}, planned {want}"
 
 
@@ -82,11 +93,11 @@ def test_replans_once_the_cached_prefix_is_spent():
     policy.predict_action_chunk = fake_predict
 
     first = [policy.select_action(_window(cfg))[0].item() for _ in range(EXECUTE)]
-    assert first == [1.0] * EXECUTE, first
+    assert first == pytest.approx([math.tanh(1.0)] * EXECUTE), first
     assert len(calls) == 1, "replanned before the cached prefix ran out"
 
     second = [policy.select_action(_window(cfg))[0].item() for _ in range(EXECUTE)]
-    assert second == [2.0] * EXECUTE, second
+    assert second == pytest.approx([math.tanh(2.0)] * EXECUTE), second
     assert len(calls) == 2, "did not replan after the prefix ran out"
 
 
@@ -105,7 +116,9 @@ def test_reset_drops_an_unfinished_chunk():
     assert len(policy._action_buffer) == EXECUTE - 1
     policy.reset()
     assert not policy._action_buffer
-    assert policy.select_action(_window(cfg))[0].item() == 2.0, "drained the old chunk"
+    assert policy.select_action(_window(cfg))[0].item() == pytest.approx(
+        math.tanh(2.0)
+    ), "drained the old chunk"
 
 
 def test_executes_no_more_than_the_chunk_holds():
@@ -116,7 +129,8 @@ def test_executes_no_more_than_the_chunk_holds():
     policy.predict_action_chunk = lambda *a, **k: chunk
 
     got = [policy.select_action(_window(cfg)).tolist() for _ in range(2)]
-    assert got == [chunk[0, 0].tolist(), chunk[0, 1].tolist()], got
+    want = [_squashed(chunk)[0, i].tolist() for i in range(2)]
+    assert got == want, got
 
 
 def test_the_collector_executes_the_same_order():
@@ -131,7 +145,7 @@ def test_the_collector_executes_the_same_order():
     policy.generate_rollout(env, 8, action_low=LOW, action_high=HIGH)
 
     seen = np.stack(env.actions_seen[:4])          # [4 steps, 2 envs, ACT].
-    want = chunk[0, :, 0].numpy()                  # [4 steps].
+    want = _squashed(chunk)[0, :, 0].numpy()       # [4 steps].
     for step in range(4):
         assert np.allclose(seen[step, :, 0], want[step]), (
             f"step {step}: env saw {seen[step, :, 0]}, plan said {want[step]}"

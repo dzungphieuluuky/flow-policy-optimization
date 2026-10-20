@@ -17,6 +17,13 @@ from huggingface_hub.constants import CONFIG_NAME, SAFETENSORS_SINGLE_FILE
 OPTIMIZER_FILE = "optimizer.pt"
 COUNTERS_FILE = "counters.json"
 RNG_FILE = "rng.pt"
+ACTION_SPACE_FILE = "action_space.json"
+
+# The action space the policy is trained in. "raw" means the flow's own output
+# is the training target and the squash is applied on the way to the env.
+# A checkpoint written before this change has a critic that was fit on the
+# squashed actions, so its action space is a different quantity.
+ACTION_SPACE_VERSION = "raw"
 
 
 class ResumeError(RuntimeError):
@@ -81,6 +88,14 @@ def save_policy_checkpoint(
         rng["cuda"] = torch.cuda.get_rng_state_all()
     save_atomically(d / RNG_FILE, lambda name: torch.save(rng, name))
 
+    save_atomically(
+        d / ACTION_SPACE_FILE,
+        lambda name: Path(name).write_text(
+            json.dumps({"version": ACTION_SPACE_VERSION}, indent=2),
+            encoding="utf-8",
+        ),
+    )
+
 
 def load_optimizer(policy, d: Path) -> torch.optim.Optimizer:
     """Rebuild the optimizer from the policy, then load its state."""
@@ -140,6 +155,38 @@ def load_rng(d: Path) -> None:
         torch.cuda.set_rng_state_all(rng["cuda"])
 
 
+def check_action_space(d: Path) -> None:
+    """Refuse a checkpoint whose action space is not this one.
+
+    The critic reads the action chunk. A checkpoint written before the action
+    space changed has a critic that was fit on the squashed chunk, and that
+    is a different quantity from the raw chunk the critic reads now. Loading
+    it would evaluate a policy against a value function that never saw its
+    actions, so the load fails with the reason named.
+    """
+    path = d / ACTION_SPACE_FILE
+    if not path.is_file():
+        raise ResumeError(
+            f"{d} has no {ACTION_SPACE_FILE}, so its action space is not "
+            f"recorded. Checkpoints written before the action space changed "
+            "were trained with the critic reading the squashed chunk, and "
+            "the current critic reads the raw chunk; they are not "
+            "interchangeable. Train a new run."
+        )
+    try:
+        recorded = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as e:
+        raise ResumeError(f"corrupt {path}: {e}") from e
+    version = recorded.get("version")
+    if version != ACTION_SPACE_VERSION:
+        raise ResumeError(
+            f"{d} was written with action space {version!r}; this code trains "
+            f"with {ACTION_SPACE_VERSION!r}. The critic's action input is a "
+            "different quantity in the two, so the checkpoint cannot be "
+            "resumed or evaluated."
+        )
+
+
 def load_policy_checkpoint(
     dir_path: str | os.PathLike,
     *,
@@ -161,7 +208,7 @@ def load_policy_checkpoint(
     if missing:
         raise ResumeError(f"incomplete policy checkpoint in {d}: missing {missing}")
 
-
+    check_action_space(d)
 
     policy = MyfpoPolicy.from_pretrained(d)
     if device is not None:

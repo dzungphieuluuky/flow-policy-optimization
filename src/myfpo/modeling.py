@@ -46,6 +46,7 @@ from myfpo.processor import make_pre_post_processors
 from myfpo.rollout import RolloutBuffers, run_rollout
 from myfpo.utils import (
     autocast_context,
+    cudagraph_safe,
     resolve_storage_dtype,
     to_device_async,
     to_tensor_1d,
@@ -285,12 +286,16 @@ class MyfpoPolicy(PreTrainedPolicy):
     def load_ema_state_dict(self, state: dict) -> bool:
         """Restore the shadow. Return False if the function re-seeded it instead."""
         stored = state.get("shadow_params", {})
-        if set(stored) != set(self._ema_named_params()):
+        current = self._ema_named_params()
+        if set(stored) != set(current):
             self._ema_shadow = {}
             self._ema_initialised = False
             return False
+        # The state is loaded onto the CPU, so the shadow has to follow the
+        # live parameters onto their device, or the EMA update mixes them.
         self._ema_shadow = {
-            name: value.detach().clone() for name, value in stored.items()
+            name: value.detach().clone().to(current[name].device)
+            for name, value in stored.items()
         }
         self._ema_initialised = bool(state.get("initialised", True))
         return True
@@ -351,7 +356,12 @@ class MyfpoPolicy(PreTrainedPolicy):
     def predict_action_chunk(
         self, batch: dict[str, torch.Tensor], **kwargs
     ) -> torch.Tensor:
-        """Predict ``[B, H, action_dim]``."""
+        """Predict ``[B, H, action_dim]``, in the policy's raw action space.
+
+        The values are unbounded: they are what the flow was trained to
+        produce. The env-facing action is the squash of this chunk, applied
+        by the collector on the way to the env.
+        """
         start_from_zero = kwargs.get("start_from_zero", True)
         cfg = self.config
         device = next(self.actor.parameters()).device
@@ -374,7 +384,7 @@ class MyfpoPolicy(PreTrainedPolicy):
         actor = self.actor
 
         with torch.inference_mode(), autocast_context(device):
-            condition = self.encoder(states)
+            condition = cudagraph_safe(self.encoder(states))
             shape = (states.shape[0], horizon, action_dim)
             if start_from_zero:
                 eps = torch.zeros(*shape, device=device)
@@ -396,10 +406,17 @@ class MyfpoPolicy(PreTrainedPolicy):
         proposal = action_chunk
         if self.training and cfg.action_perturb_std > 0:
             proposal = proposal + cfg.action_perturb_std * torch.randn_like(proposal)
-        return self.postprocessor({ACTION: proposal})[ACTION]
+        # The raw chunk, in the policy's own action space. The env-facing
+        # action is the squash of this, and the squash is applied on the way
+        # to the env, not here: the flow is trained on the raw value.
+        return proposal
 
     def select_action(self, batch: dict[str, torch.Tensor], **kwargs) -> torch.Tensor:
-        """Next action, receding through a cached chunk."""
+        """Next action, receding through a cached chunk.
+
+        The action handed out is the env-facing one: the raw chunk the policy
+        planned, squashed into the env's bounds.
+        """
         obs = to_tensor(batch[OBS_STATE])
         obs = obs.to(dtype=resolve_storage_dtype(obs.device))
         if obs.dim() == 1:
@@ -418,8 +435,9 @@ class MyfpoPolicy(PreTrainedPolicy):
         if not self._action_buffer:
             chunk = self.predict_action_chunk({OBS_STATE: window}, **kwargs)
             n_execute = max(1, min(self.config.n_action_steps, chunk.shape[1]))
+            squashed = self.postprocessor({ACTION: chunk})[ACTION]
             for i in range(n_execute):
-                self._action_buffer.append(chunk[0, i])
+                self._action_buffer.append(squashed[0, i])
         return self._action_buffer.popleft()
 
 
@@ -448,6 +466,15 @@ class MyfpoPolicy(PreTrainedPolicy):
         must not be recomputed here.
         """
         cfg = self.config
+        # The behavior loss and the training loss are two readings of the same
+        # flow point, so they must see the same numbers. The rollout samples
+        # the noise and the timestep in fp32, while the training pass reloads
+        # them in the storage dtype, so the triple is aligned here, in the
+        # storage dtype, before anything is computed from it.
+        storage_dtype = resolve_storage_dtype(actions.device)
+        actions = actions.to(storage_dtype)
+        eps = eps.to(storage_dtype)
+        t = t.to(storage_dtype)
         x_t, actor_t, flow_shape, num_mc = mc_draws(actions, eps, t)
         with torch.inference_mode(), autocast_context(actions.device):
             condition = self.encoder(normalised_states)
@@ -554,7 +581,10 @@ class MyfpoPolicy(PreTrainedPolicy):
         storage_dtype = resolve_storage_dtype(device)
 
         states = self._load(batch, OBS_STATE, device, storage_dtype, async_=True)
-        actions = self._load(batch, ACTION, device, storage_dtype, async_=True)
+        # The action is the flow's raw output, and it is the CFM regression
+        # target. It stays fp32: the raw values are unbounded, so a bf16
+        # rounding would put a 0.4% error on the target the flow is fit to.
+        actions = self._load(batch, ACTION, device, torch.float32, async_=True)
         normalised_advantages = self._load(
             batch, "normalised_advantages", device, storage_dtype
         )
@@ -598,7 +628,7 @@ class MyfpoPolicy(PreTrainedPolicy):
         x_t_flat, actor_t, flow_shape, num_mc = mc_draws(actions, eps, t)
 
         with autocast_context(device):
-            cond = self.encoder(states)
+            cond = cudagraph_safe(self.encoder(states))
             cond_flat = broadcast_condition(cond, num_mc)
         sigreg_raw = torch.zeros((), device=device)
         if cfg.sigreg_mode == "weak":

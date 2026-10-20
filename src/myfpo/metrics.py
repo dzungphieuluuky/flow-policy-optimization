@@ -109,7 +109,13 @@ def compute_mc_xt(
     t = flatten_mc_timestep.expand(-1, -1, flow_shape[-1])
     noise = flatten_mc_noise.reshape(-1, *flow_shape)
     action = flatten_mc_action.reshape(-1, *flow_shape)
-    return torch.lerp(noise, action, t)
+    # torch.lerp wants one dtype for all three operands: the weight has to
+    # match the flow tensors, so a mixed fp32/bf16 triple raises instead of
+    # interpolating. The common type is the promotion of the three.
+    dtype = torch.promote_types(
+        torch.promote_types(noise.dtype, action.dtype), t.dtype
+    )
+    return torch.lerp(noise.to(dtype), action.to(dtype), t.to(dtype))
 
 
 def mc_draws(

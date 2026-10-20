@@ -12,6 +12,7 @@ import numpy as np
 import torch
 
 from myfpo.configuration import MyfpoConfig
+from myfpo.processor import squash_to_env
 
 __all__ = ["RolloutBuffer", "collect_chunks_vec"]
 
@@ -33,9 +34,13 @@ _INDEX_DTYPE = torch.int64
 
 
 class InFlightChunk(NamedTuple):
-    """What one env is executing right now, while it holds a chunk."""
+    """What one env is executing right now, while it holds a chunk.
 
-    actions_scaled: torch.Tensor
+    ``actions_raw`` is the chunk the flow produced, in the policy's own action
+    space. The env received its squash.
+    """
+
+    actions_raw: torch.Tensor
     start_state: torch.Tensor
     step_limit: int
 
@@ -248,14 +253,6 @@ def resolve_action_bounds(
     return lo, rng
 
 
-def scale_action_chunk(
-    proposed: torch.Tensor, low: torch.Tensor, range_: torch.Tensor
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Rescale an in-bounds chunk to ``[-1, 1]``."""
-    scaled = 2.0 * (proposed - low) / range_ - 1.0
-    return proposed, scaled
-
-
 def resolve_chunk_args(
     n_obs_steps: int | None,
     n_action_steps: int,
@@ -373,16 +370,17 @@ def collect_chunks_vec(
             ]
             if envs_needing_a_chunk:
                 states = windows[envs_needing_a_chunk]
-                proposed = as_float_tensor(policy(states))
-                executed_all, scaled_all = scale_action_chunk(
-                    proposed, low, range_
-                )
+                # The policy returns the raw chunk. The env receives the squash
+                # of it, and the buffer keeps the raw chunk: the flow is
+                # trained on what it produced, not on the squash of it.
+                raw_all = as_float_tensor(policy(states))
+                executed_all = squash_to_env(raw_all, range_ * 0.5, low + range_ * 0.5)
                 wavefront = torch.as_tensor(envs_needing_a_chunk)
                 plan[wavefront] = executed_all
                 pos_t[wavefront] = 0
                 for k, i in enumerate(envs_needing_a_chunk):
                     in_flight[i] = InFlightChunk(
-                        actions_scaled=scaled_all[k],
+                        actions_raw=raw_all[k],
                         start_state=states[k],
                         step_limit=min(n_action_steps,
                                        targets[i] - executed_total[i]),
@@ -424,7 +422,7 @@ def collect_chunks_vec(
                 n_exec = int(pos_t[i])
                 held = in_flight[i]
                 if done_np[i] or n_exec >= held.step_limit:
-                    scaled = held.actions_scaled
+                    raw = held.actions_raw
                     start_state = held.start_state
                     windows[i].copy_(
                         windows[i][roll_table[int(pos_t[i]) % n_obs_steps]]
@@ -434,7 +432,7 @@ def collect_chunks_vec(
                     prev_chunk_indices[i] = buffer.add_chunk(
                         state=start_state,
                         next_state=windows[i],
-                        action=scaled,
+                        action=raw,
                         rewards=reward_windows[i, :n_exec],
                         step_frames=step_frames[i, :n_exec],
                         terminated=bool(term_np[i]),

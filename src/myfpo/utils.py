@@ -102,6 +102,37 @@ def rms(x: torch.Tensor) -> torch.Tensor:
     return torch.linalg.vector_norm(x) / math.sqrt(x.numel())
 
 
+def cudagraph_safe(x: torch.Tensor) -> torch.Tensor:
+    """A copy of a tensor that a cudagraph may still own.
+
+    A module compiled with ``mode="reduce-overhead"`` runs on a cudagraph, and
+    the tensor it returns is memory the cudagraph pool owns: the next
+    invocation of that module can overwrite it, and the pool can retire the
+    tensor while another compiled region is still holding it. Reading it then
+    raises "accessing tensor output of CUDAGraphs that has been overwritten by
+    a subsequent run".
+
+    The copy leaves the pool, so the consumer of the tensor reads a stable
+    value. Call it on the way out of a compiled module, before the tensor
+    crosses into another one.
+    """
+    return x.clone()
+
+
+def cudagraph_step_begin() -> None:
+    """Tell the cudagraph manager that a new step starts here.
+
+    A module compiled with ``mode="reduce-overhead"`` runs on a cudagraph, and
+    the manager holds the memory of the finished step until it is told that
+    the step is over. Marking the step lets it recycle that memory, and it
+    keeps the manager from warning that it cannot hit the fast path.
+
+    It is a no-op when nothing is compiled, so it can be called
+    unconditionally.
+    """
+    torch.compiler.cudagraph_mark_step_begin()
+
+
 def to_device_async(x: torch.Tensor, device) -> torch.Tensor:
     """Move a tensor to the device. On CUDA the copy overlaps CPU work."""
     device = torch.device(device)

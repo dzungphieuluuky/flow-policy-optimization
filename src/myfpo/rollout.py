@@ -9,8 +9,6 @@ import torch
 from myfpo.collector import (
     RolloutBuffer,
     collect_chunks_vec,
-    resolve_action_bounds,
-    scale_action_chunk,
 )
 from lerobot.utils.constants import ACTION, OBS_STATE
 
@@ -23,6 +21,8 @@ from myfpo.metrics import (
 )
 from myfpo.utils import (
     autocast_context,
+    cudagraph_safe,
+    cudagraph_step_begin,
     resolve_storage_dtype,
     to_device_async,
 )
@@ -57,6 +57,9 @@ def run_rollout(
     storage_dtype = resolve_storage_dtype(device)
 
     def propose_batch(states: torch.Tensor) -> torch.Tensor:
+        # One chunk is one cudagraph step: the previous chunk's graphs are
+        # dead here, so the manager may recycle their memory.
+        cudagraph_step_begin()
         chunk = policy.predict_action_chunk(
             {OBS_STATE: to_device_async(states, device)}, start_from_zero=not noisy
         )
@@ -147,13 +150,17 @@ def run_rollout(
                 {OBS_STATE: to_device_async(next_states[needs_proposal], device)},
                 start_from_zero=False,
             )
-            low_t, range_t = resolve_action_bounds(action_low, action_high)
-            boot_actions[needs_proposal] = scale_action_chunk(
-                proposed, low_t.to(proposed.device), range_t.to(proposed.device)
-            )[1]
+            # The backup's action lives in the same space as the stored
+            # chunks: the policy's raw action space.
+            boot_actions[needs_proposal] = proposed
 
+        # The training pass reloads the batch in the storage dtype before it
+        # normalises, so the rollout normalises the same values it will train
+        # on. Normalising the fp32 buffer states here would give the rollout
+        # and the training pass two different conditions, and the behavior
+        # loss would not be the loss the training pass recomputes.
         all_chunk_normalised_states = policy.preprocessor(
-            {OBS_STATE: torch.cat([states, next_states], dim=0)}
+            {OBS_STATE: torch.cat([states, next_states], dim=0).to(storage_dtype)}
         )[OBS_STATE]
         normalised_states = all_chunk_normalised_states[:n_chunks]
         normalised_next_states = all_chunk_normalised_states[n_chunks:]
@@ -161,7 +168,7 @@ def run_rollout(
         fitted_steps = (lengths.float().mean() if lengths.numel() > 0 else torch.tensor(float(cfg.action_horizon), device=lengths.device, dtype=torch.float32))
         boot_exec_frac = policy.exec_length_frac(torch.full_like(lengths, round(fitted_steps.item())))
         critic_cond = (
-            policy.encoder(all_chunk_normalised_states)
+            cudagraph_safe(policy.encoder(all_chunk_normalised_states))
             if cfg.critic_share_encoder
             else None
         )

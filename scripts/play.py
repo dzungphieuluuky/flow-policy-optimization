@@ -84,6 +84,13 @@ def main(argv: list[str] | None = None) -> int:
     # The evaluator steps the env itself. No render_mode is needed.
     env = gym.make(args.env)
     try:
+        # The policy's output is the raw action; the squash into the env's
+        # bounds happens on the way to the env, so the policy needs this
+        # env's bounds. The checkpoint does not carry them.
+        policy.set_action_bounds(
+            np.asarray(env.action_space.low, dtype=np.float32),
+            np.asarray(env.action_space.high, dtype=np.float32),
+        )
         evaluator = Evaluator(
             env=env,
             eval_seed=args.seed,

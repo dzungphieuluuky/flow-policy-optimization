@@ -173,7 +173,8 @@ def _policy_and_batch(cfm_clamp):
     obs, act, horizon, mc = 6, 3, 4, 4
     cfg = dataclasses.replace(
         MyfpoConfig(
-            action_horizon=horizon, num_mc_samples=mc, hidden_dim=32,
+            action_horizon=horizon, n_action_steps=horizon,
+            num_mc_samples=mc, hidden_dim=32,
             time_embed_dim=16, dit_depth=1, dit_heads=2, n_obs_steps=2,
             compile=False, report_to="none", cfm_clamp=cfm_clamp,
             input_features={"observation.state": PolicyFeature(FeatureType.STATE, (obs,))},

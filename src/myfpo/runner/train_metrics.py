@@ -15,9 +15,10 @@ _GAE_DIAG_LOG_KEYS = {
 }
 
 _ROLLOUT_ABS_KEYS = (
-    "action_abs_mean",
-    "action_abs_mean_executed",
-    "action_abs_max_executed",
+    "raw_action_abs_mean",
+    "raw_action_abs_max",
+    "executed_action_abs_mean",
+    "executed_action_abs_max",
 )
 
 
@@ -33,6 +34,8 @@ def build_train_metrics(
     drift_means: list[float],
     rollout_jerk: float | None,
     rollout_seam_jerk: float | None,
+    policy_lr: float,
+    critic_lr: float,
 ) -> dict:
     """Return the ``train/*`` rows for one optimiser step."""
     data = {f"train/{k}": v for k, v in info.items()}
@@ -41,6 +44,11 @@ def build_train_metrics(
     data["train/grad_norm_critic_before_clip"] = grad_norms["critic"]
     data["train/cfm_above_clamp_frac"] = above_clamp_frac
     data["train/cfm_both_clamped_frac"] = both_clamped_frac
+    # The learning rate of the step that is about to run. It is logged here,
+    # on every update, so the curve has one point per update and not one per
+    # evaluation.
+    data["train/policy_lr"] = policy_lr
+    data["train/critic_lr"] = critic_lr
     if cfg.log_drift_diagnostics and drift_means:
         data["train/boot_value_relative_drift"] = drift_means[0]
         data["train/value_target_drift"] = drift_means[1]

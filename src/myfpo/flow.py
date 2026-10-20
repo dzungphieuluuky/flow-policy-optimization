@@ -17,7 +17,15 @@ def effective_rank(features: torch.Tensor) -> torch.Tensor:
     matrix = features.contiguous().reshape(-1, features.shape[-1]).float()
     sigma = torch.linalg.svdvals(matrix)
     p = sigma / sigma.sum().clamp_min(1e-12)
-    return torch.exp(torch.special.entr(p).sum())
+    # A zero component contributes nothing to the entropy. Dropping it keeps
+    # the logarithm finite, which is the whole point of not using
+    # torch.special.entr.
+    p = p[p > 0]
+    if p.numel() == 0:
+        # A zero spectrum has zero entropy, and exp of zero is one.
+        return torch.ones((), device=features.device, dtype=torch.float32)
+    entropy = -(p * torch.log(p)).sum()
+    return torch.exp(entropy)
 
 
 class _FlowActorBase(nn.Module):

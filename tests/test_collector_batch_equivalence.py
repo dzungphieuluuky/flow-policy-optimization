@@ -169,7 +169,11 @@ def test_autoreset_refills_the_window_with_the_reset_observation():
 
 
 def test_actions_sent_to_the_env_match_the_stored_chunks():
-    """Guards the batched actions_t gather."""
+    """Guards the batched actions_t gather.
+
+    The env receives the squash of the stored chunk: the stored chunk is the
+    flow's raw output, and the squash is applied on the way to the env.
+    """
     buf, env = collect(50)
     a, groups = _per_env_chunks(buf)
     sent = torch.from_numpy(np.stack(env.actions_seen))  # [vec_steps, n_envs, A].
@@ -179,6 +183,9 @@ def test_actions_sent_to_the_env_match_the_stored_chunks():
             [a["chunk_actions"][i, : int(a["chunk_lengths"][i])] for i in idxs],
             dim=0,
         )
+        # The bounds are [-1, 1], so the affine map is the identity and the
+        # squash is the tanh.
+        expected = torch.tanh(expected)
         got = sent[:, e, :]
         nonzero = got.abs().sum(dim=1) > 0
         assert torch.allclose(got[nonzero], expected, atol=1e-6), e
