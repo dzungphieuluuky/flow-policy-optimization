@@ -13,6 +13,19 @@ from lerobot.utils.constants import ACTION, OBS_STATE
 from myfpo.encoder import RunningMeanStd
 
 
+def env_squash_terms(
+    low: torch.Tensor, high: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """The scale and bias of the env's action bounds.
+
+    ``scale = (high - low) / 2`` and ``bias = low + scale``. The bias is
+    the low end plus the half width, so the two terms come from one
+    difference and cannot drift apart.
+    """
+    scale = 0.5 * (high - low)
+    return scale, low + scale
+
+
 def squash_to_env(
     raw: torch.Tensor, scale: torch.Tensor, bias: torch.Tensor
 ) -> torch.Tensor:
@@ -22,12 +35,24 @@ def squash_to_env(
     the action, and it is applied exactly once, on the way to the env: the
     flow is trained on the raw value, not on the squash of its own output.
 
-    ``scale`` and ``bias`` are the affine terms of the env's bounds, i.e.
-    ``scale = (high - low) / 2`` and ``bias = (high + low) / 2``.
+    ``scale`` and ``bias`` are the affine terms of the env's bounds, from
+    :func:`env_squash_terms`.
     """
     scale = scale.to(device=raw.device, dtype=raw.dtype)
     bias = bias.to(device=raw.device, dtype=raw.dtype)
     return torch.addcmul(bias, scale, torch.tanh(raw))
+
+
+def squash_to_env_bounds(
+    raw: torch.Tensor, low: torch.Tensor, high: torch.Tensor
+) -> torch.Tensor:
+    """Map a raw policy output into the env's action bounds.
+
+    One place computes the affine terms, so the collector, the training
+    diagnostics and the postprocessor cannot drift apart.
+    """
+    scale, bias = env_squash_terms(low, high)
+    return squash_to_env(raw, scale, bias)
 
 
 class MyfpoObservationProcessorStep(ProcessorStep):
@@ -74,8 +99,7 @@ class MyfpoActionPostprocessorStep(ProcessorStep):
         self.action_low = low
         self.action_high = high
 
-        self._scale_cpu = 0.5 * (high - low)
-        self._bias_cpu = 0.5 * (high + low)
+        self._scale_cpu, self._bias_cpu = env_squash_terms(low, high)
 
     @torch.inference_mode()
     def __call__(self, batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:

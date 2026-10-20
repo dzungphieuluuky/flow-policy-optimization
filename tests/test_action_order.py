@@ -54,11 +54,11 @@ def _window(cfg):
 
 def _squashed(chunk: torch.Tensor) -> torch.Tensor:
     """The env-facing action of a raw chunk: the raw chunk squashed."""
-    from myfpo.processor import squash_to_env
+    from myfpo.processor import squash_to_env_bounds
 
     low = torch.tensor(LOW)
     high = torch.tensor(HIGH)
-    return squash_to_env(chunk, (high - low) / 2, (high + low) / 2)
+    return squash_to_env_bounds(chunk, low, high)
 
 
 def test_the_chunk_comes_back_in_plan_order():

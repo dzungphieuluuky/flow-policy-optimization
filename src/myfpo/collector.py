@@ -12,7 +12,7 @@ import numpy as np
 import torch
 
 from myfpo.configuration import MyfpoConfig
-from myfpo.processor import squash_to_env
+from myfpo.processor import squash_to_env_bounds
 
 __all__ = ["RolloutBuffer", "collect_chunks_vec"]
 
@@ -247,10 +247,9 @@ def resolve_action_bounds(
         raise ValueError(
             f"action_low shape {tuple(lo.shape)} != action_high shape {tuple(hi.shape)}"
         )
-    rng = hi - lo
-    if not bool((rng > 0).all()):
+    if not bool(((hi - lo) > 0).all()):
         raise ValueError("action bounds must satisfy high > low in every dim")
-    return lo, rng
+    return lo, hi
 
 
 def resolve_chunk_args(
@@ -322,7 +321,7 @@ def collect_chunks_vec(
     base_target, remainder = divmod(total_steps, n)
     targets = [base_target + int(i < remainder) for i in range(n)]
 
-    low, range_ = resolve_action_bounds(action_low, action_high)
+    low, high = resolve_action_bounds(action_low, action_high)
 
     if n_action_steps > n_obs_steps:
         raise ValueError(
@@ -374,7 +373,7 @@ def collect_chunks_vec(
                 # of it, and the buffer keeps the raw chunk: the flow is
                 # trained on what it produced, not on the squash of it.
                 raw_all = as_float_tensor(policy(states))
-                executed_all = squash_to_env(raw_all, range_ * 0.5, low + range_ * 0.5)
+                executed_all = squash_to_env_bounds(raw_all, low, high)
                 wavefront = torch.as_tensor(envs_needing_a_chunk)
                 plan[wavefront] = executed_all
                 pos_t[wavefront] = 0

@@ -20,7 +20,7 @@ from lerobot.configs.types import FeatureType
 from lerobot.utils.constants import OBS_STATE
 
 from myfpo.configuration import MyfpoConfig
-from myfpo.processor import squash_to_env
+from myfpo.processor import squash_to_env_bounds
 from myfpo.training import build_policy
 from test_collector_batch_equivalence import FakeVecEnv
 
@@ -59,7 +59,7 @@ def _fake_predict(horizon: int, value: float = 3.0):
 def _expected_executed(raw: torch.Tensor) -> torch.Tensor:
     low = torch.tensor(LOW)
     high = torch.tensor(HIGH)
-    return squash_to_env(raw, (high - low) / 2, (high + low) / 2)
+    return squash_to_env_bounds(raw, low, high)
 
 
 def test_predict_action_chunk_returns_the_raw_chunk():
@@ -99,6 +99,33 @@ def test_the_squash_is_applied_exactly_once():
     assert torch.allclose(action, squashed, atol=1e-6), (
         "the raw chunk was squashed twice, or not at all"
     )
+
+
+def test_every_squash_site_computes_the_same_terms():
+    """One formula, three call sites. They must agree bit for bit.
+
+    The collector, the training diagnostic and the postprocessor each turn a
+    raw chunk into the action the env receives. If one of them spells the
+    affine terms differently, the action the env saw and the action the
+    diagnostics report drift apart.
+    """
+    from myfpo.collector import resolve_action_bounds
+    from myfpo.processor import MyfpoActionPostprocessorStep
+    from myfpo.training import executed_chunk
+
+    low, high = resolve_action_bounds(LOW, HIGH)
+    raw = torch.randn(3, 4, ACT)
+
+    post = MyfpoActionPostprocessorStep(torch.tensor(LOW), torch.tensor(HIGH))
+    from_post = post({"action": raw})["action"]
+
+    from_diag = executed_chunk({"action": raw}, LOW, HIGH)
+
+    assert torch.equal(from_post, from_diag), (
+        "the postprocessor and the training diagnostic disagree on the "
+        f"env-facing action: {from_post[0, 0]} vs {from_diag[0, 0]}"
+    )
+    assert torch.equal(from_diag, squash_to_env_bounds(raw, low, high))
 
 
 def test_the_stored_chunk_is_the_flow_sample():

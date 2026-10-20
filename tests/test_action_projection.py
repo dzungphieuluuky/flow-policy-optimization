@@ -153,11 +153,11 @@ def test_the_collector_no_longer_clamps():
     them unreachable. This test fails if either comes back.
     """
     from myfpo.collector import resolve_action_bounds
-    from myfpo.processor import squash_to_env
+    from myfpo.processor import squash_to_env_bounds
 
-    lo, rng = resolve_action_bounds([-2.0, -1.0, -0.3], [2.0, 1.0, 0.3])
+    lo, hi = resolve_action_bounds([-2.0, -1.0, -0.3], [2.0, 1.0, 0.3])
     raw = torch.tensor([[9.0, -9.0, 5.0]])
-    executed = squash_to_env(raw, rng * 0.5, lo + rng * 0.5)
+    executed = squash_to_env_bounds(raw, lo, hi)
     # A proposal outside the bounds is squashed into them, not clamped.
     assert float(executed[0, 0]) == pytest.approx(2.0 * math.tanh(9.0), abs=1e-6)
     assert float(executed[0, 1]) == pytest.approx(-1.0 * math.tanh(9.0), abs=1e-6)

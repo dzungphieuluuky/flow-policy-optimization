@@ -26,7 +26,7 @@ from myfpo.evaluator import (
 )
 from myfpo.modeling import MyfpoAborted, MyfpoPolicy, build_optimizer
 from myfpo.metrics import compute_eval_summary_metrics, subsampled_min
-from myfpo.processor import squash_to_env
+from myfpo.processor import squash_to_env_bounds
 from lerobot.utils.constants import CHECKPOINTS_DIR
 from myfpo.utils import cudagraph_step_begin, resolve_device, rms, to_numpy_1d
 from myfpo.tracking import build_backends, finish_backends, log_metrics
@@ -175,13 +175,13 @@ def executed_chunk(
     The batch holds the flow's raw output, which is what the policy was
     trained on. The env received the squash of it.
     """
-    low, rng = resolve_action_bounds(action_low, action_high)
+    low, high = resolve_action_bounds(action_low, action_high)
     action = batch["action"]
     device = action.device
-    return squash_to_env(
+    return squash_to_env_bounds(
         action.float(),
-        (rng * 0.5).to(device=device, dtype=torch.float32),
-        (low + rng * 0.5).to(device=device, dtype=torch.float32),
+        low.to(device=device, dtype=torch.float32),
+        high.to(device=device, dtype=torch.float32),
     )
 
 
