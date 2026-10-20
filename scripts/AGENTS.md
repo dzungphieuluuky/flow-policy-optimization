@@ -2,11 +2,11 @@
 
 Entry: `scripts/train.py` (CLI > `MyfpoConfig` defaults; every field is a `--myfpo.` flag). `uv sync` installs the project editable, so `import myfpo` works from any directory; no `sys.path` juggling in the scripts.
 
-Convention: exit codes `0/1/2/4` (0 = ok, 1 = bad command line, 2 = the run failed, 4 = an artifact is missing). Gates: `pytest -q tests` (`pyproject.toml:59`) and `ruff check .` (`pyproject.toml:61`). No CI (`AGENTS.md:40`). `tests/test_config_yaml_parity.py` enforces `configs/myfpo.yaml` parity (`tests/test_config_yaml_parity.py`). Notebook pair: `myfpo_online.md` / `.ipynb` (`jupytext --sync` idempotent; `cell_metadata_filter: -all`).
+Convention: exit codes `0/1/2/4` (0 = ok, 1 = bad command line, 2 = the run failed, 4 = an artifact is missing). Gates: `pytest -q tests` (`pyproject.toml:35`) and `ruff check .` (`pyproject.toml:37`). No CI. Notebook pair: `myfpo_online.md` / `.ipynb` (`jupytext --sync` idempotent; `cell_metadata_filter: -all`).
 
 Anti-patterns:
 - Do not add runner scalars (`total_steps`, `eval_steps`, `save_steps`, `obs_dim`, `action_dim`) to `MyfpoConfig`. Bypass config by design (`training.py`).
-- Dependency pins live in `pyproject.toml` only. `scripts/verify_deps.sh` was deleted; it had drifted three ways from the environment.
+- Dependency pins live in `pyproject.toml` only.
 - Do not hand-edit `.ipynb`. Edit `.md`, run `jupytext --sync`.
 
 Commands:
@@ -16,7 +16,7 @@ Commands:
 uv run ruff check .
 ```
 
-Deleted artifacts (stale): `run_sweeps.sh` (passed removed flags `critic_max_grad_norm`, `critic_ema_decay`); `cuda_probe.py` (read never-emitted metric keys); `build_notebook.py` (installed deleted `requirements-linux.txt`); deleted `4bd45db`. `src/myfpo/baselines.py` + `--baseline` flag removed (`debd7e8`). Config mapping pinned by `tests/test_ratio_axes.py`.
+Deleted artifacts (stale): `run_sweeps.sh` (passed removed flags `critic_max_grad_norm`, `critic_ema_decay`); `cuda_probe.py` (read never-emitted metric keys); `build_notebook.py` (installed deleted `requirements-linux.txt`); `verify_deps.sh` (drifted three ways from the environment); `src/myfpo/baselines.py` + `--baseline` flag. Config mapping pinned by `tests/test_ratio_axes.py`.
 
 Deleted features (`debd7e8`): `check_divergence`, `check_regression`, `interval_straddles` removed from `evaluator.py`. `lr_decays` / `max_lr_decays` fields gone from `MyfpoConfig` / generator. No early exit: run ends at `total_steps` or non-finite loss (`MyfpoAborted`). `stop_eval_sampling` stayed (selects `checkpoints/best` distribution, not stopper). Deleted tests: `test_eval_interval.py` (19), `test_tracking.py` (4), `test_metric_audit.py` (1), `test_fpo_parity.py` (1). Interval/bootstrap tests stayed.
 
@@ -51,12 +51,10 @@ Fixed bugs (2026-10-20): `modeling.py` `load_ema_state_dict` restored the EMA sh
 Known open issues:
 - `scripts/`: no `sys.path.insert` left; the package is installed editable by `uv sync`. A fresh clone needs `uv sync` before `pytest` or the scripts run.
 - `rollout.py`: `rollout_seam_jerk` / `rollout_jerk` measured; no chunk-boundary mitigation implemented.
-- `metrics.py`: `budget_truncated_chunk_frac` emitted; feature removed.
-- `experiments/`: 10 PNG screenshots (`2026-09-26`); no quantitative tables / CSV.
+- `experiments/`: 11 PNG screenshots (`2026-09-26`); no quantitative tables / CSV.
 - No statistical significance tests for metrics (naming/NaN only).
 - No `torch.utils.checkpoint` applied (`flow.py` / `rollout.py`).
 - No CI. Gates are `pytest -q tests` and `ruff check .`.
 - `fpo_core.py`: approximate ratio (`ρ̂`) approximation bias unquantified in tests.
 - `metrics.py`: `broadcast_condition` dense (`einx.id`); `rollout.py` chunk grouping logic sparse comments.
-- `num_critics` defaults to 2, not TD-MPC2's 5; the docs follow the code. `tests/test_critic_trunk.py::test_the_default_ensemble_is_five` still asserts 5.
 - The raw action has no clip. `train/raw_action_abs_max` is the monitor: a drifting raw magnitude would make `cfm_clamp` bind and pin the ratio at 1.

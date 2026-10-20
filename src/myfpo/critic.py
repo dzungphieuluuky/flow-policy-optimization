@@ -122,7 +122,7 @@ class Critic(nn.Module):
         action_dim: int,
         n_obs_steps: int,
         action_horizon: int,
-        num_critics: int = 5,
+        num_critics: int,
         *,
         condition_on_exec_length: bool = True,
         num_layers: int = 2,

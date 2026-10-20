@@ -240,7 +240,7 @@ FORGET_STEPS = TOTAL_STEPS
 
 FORGET_ARMS = {
     "ctrl": [],
-    "actor": ["--myfpo.actor_lr", "5e-6"],
+    "actor": ["--myfpo.policy_lr", "5e-6"],
     "critic": ["--myfpo.critic_lr", "5e-5"],
     "mc": ["--myfpo.num_mc_samples", "32"],
 }

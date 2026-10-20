@@ -42,6 +42,7 @@ def pin_config(**kw) -> MyfpoConfig:
     """
     base = dict(
         action_horizon=HORIZON,
+        n_action_steps=HORIZON,
         num_mc_samples=MC,
         hidden_dim=HIDDEN,
         time_embed_dim=TIME_EMBED,

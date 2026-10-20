@@ -1,8 +1,9 @@
-"""Critic trunk: LayerNorm + Mish, and a five-member ensemble by default.
+"""Critic trunk: LayerNorm + Mish, and a two-member ensemble by default.
 
 Follows TD-MPC2 (arXiv:2310.16828): every hidden layer is Linear -> LayerNorm
--> Mish, and the ensemble is 5 wide. The old trunk was bare Linear -> ReLU with
-no normalisation at all.
+-> Mish. The old trunk was bare Linear -> ReLU with no normalisation at all.
+TD-MPC2 ships 5 ensemble members; this repo runs 2, and
+``--myfpo.num_critics 5`` restores the paper's width.
 """
 
 from __future__ import annotations
@@ -82,9 +83,10 @@ def test_the_first_linear_takes_the_concatenated_input():
     assert first.in_features == STEPS * OBS + H * ACT + 1
 
 
-def test_the_default_ensemble_is_five():
-    assert MyfpoConfig().num_critics == 5
-    assert Critic(OBS, HIDDEN, ACT, STEPS, H).num_critics == 5
+def test_the_default_ensemble_is_two():
+    """The repo default is 2, not TD-MPC2's 5. The paper's width is a flag."""
+    assert MyfpoConfig().num_critics == 2
+    assert Critic(OBS, HIDDEN, ACT, STEPS, H, 2).num_critics == 2
 
 
 def test_the_members_stay_independent():
@@ -135,7 +137,7 @@ def test_the_default_config_carries_the_reference_rate():
 
 def test_the_constructors_default_to_off_so_a_bare_critic_is_deterministic():
     assert MyfpoConfig().critic_dropout == 0.01
-    assert Critic(OBS, HIDDEN, ACT, STEPS, H).dropout == 0.0
+    assert Critic(OBS, HIDDEN, ACT, STEPS, H, 2).dropout == 0.0
     assert MyfpoPolicy(_cfg()).critic.dropout == 0.01
 
 
