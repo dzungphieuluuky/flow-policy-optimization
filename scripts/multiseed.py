@@ -41,8 +41,6 @@ from myfpo.configuration import MyfpoConfig
 from myfpo.evaluator import bootstrap_interval, median_of
 
 from train import (
-    _myfpo_cli_fields,
-    apply_flat_yaml,
     apply_runtime_settings,
     configure_torch_cuda,
     default_intervals,
@@ -257,13 +255,12 @@ def compare(paths: list[str], field: str, out: Path) -> int:
     return 0
 
 
-def run_mode(args) -> int:
+def run_mode(args, runtime: dict | None = None) -> int:
     """Train every seed, then write the summary CSV."""
     total = args.total_steps or 2000
-    eval_s = default_intervals(total, args.eval_steps, {}, "eval_steps", 1000)
-    ckpt_i = default_intervals(total, args.save_steps, {}, "save_steps", 1000)
-    argv = list(sys.argv[1:])
-    cfg = apply_flat_yaml(args.myfpo, {}, cli_fields=_myfpo_cli_fields(argv))
+    eval_s = default_intervals(total, args.eval_steps, 1000)
+    ckpt_i = default_intervals(total, args.save_steps, 1000)
+    cfg = args.myfpo
     seeds = parse_seeds(args.seeds, args.seed_count, args.seed_start)
     label = args.label or f"myfpo_{args.env}"
 
@@ -277,7 +274,7 @@ def run_mode(args) -> int:
         try:
             result = run_single(
                 args.env, seed, run_dir, cfg, total, eval_s, ckpt_i,
-                None, None, None, None,
+                None, None, None, runtime,
             )
         except Exception as exc:  # noqa: BLE001 - one bad seed must not stop the rest
             traceback.print_exc(file=sys.stderr)
@@ -370,9 +367,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.env not in KNOWN_ENVS:
         print(f"ERROR: unknown env {args.env!r}; choices: {', '.join(KNOWN_ENVS)}", file=sys.stderr)
         return 1
-    out = run_mode(args)
-    del runtime
-    return out
+    return run_mode(args, runtime)
 
 
 if __name__ == "__main__":

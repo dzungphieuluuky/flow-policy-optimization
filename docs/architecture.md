@@ -126,9 +126,11 @@ flow output r  ──►  stored chunk (raw)  ──►  CFM target, critic inpu
 ```
 
 `bias + scale · tanh(r)`, with `scale = (high - low) / 2` and
-`bias = (high + low) / 2` from the env's bounds. One implementation
-(`processor.squash_to_env`) serves the postprocessor and the collector, so the
-two cannot drift.
+`bias = low + scale` from the env's bounds. The bias is the low end plus the
+half width, so both terms come from one difference.
+`processor.env_squash_terms` owns the terms and
+`processor.squash_to_env` owns the map. The postprocessor, the collector and
+the training diagnostics all call them, so the three cannot drift.
 
 **Why the raw value is what is stored.** The CFM regression target is built
 from the stored chunk. If the buffer kept the squashed value, the flow would be
