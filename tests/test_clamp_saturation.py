@@ -88,15 +88,14 @@ def test_saturation_rejects_a_mismatched_pair():
 
 
 def test_the_reduction_decides_whether_the_default_clamp_bites():
-    """The reason the metric exists: one clamp value, three different levels."""
+    """The reason the metric exists: one clamp value, two different levels."""
     horizon, width = 8, ACT
     elements = horizon * width
-    # compute_cfm_loss divides by the element count under "mean", by its square
-    # root under "sqrt", and by nothing under "sum". A random actor leaves a
-    # squared error of 2.0 per element, so the summed error is 2.0 * elements.
+    # compute_cfm_loss divides by the element count under "mean" and by
+    # nothing under "sum". A random actor leaves a squared error of 2.0 per
+    # element, so the summed error is 2.0 * elements.
     divisors = {
         "mean": float(elements),
-        "sqrt": float(elements) ** 0.5,
         "sum": 1.0,
     }
     cfg = _cfg(cfm_clamp=20.0)

@@ -27,30 +27,14 @@ def sample_timesteps(
         return (
             torch.rand(num_samples, device=device, generator=generator) * (hi - lo) + lo
         )
-    if mode == "normal":
-        mid = 0.5 * (lo + hi)
-        std = 0.25 * (hi - lo)
-        z = torch.randn(num_samples, device=device, generator=generator)
-        return (z * std + mid).clamp(lo, hi)
     if mode == "fpo_beta":
         u = torch.rand(num_samples, device=device, generator=generator)
         beta = cfg.timestep_inverse_cdf_beta
         return lo + (hi - lo) * (
             1.0 - torch.pow(1.0 - u, 1.0 / beta)
         )
-    if mode == "beta":
-        from lerobot.policies.common.flow_matching import sample_time_beta
-
-        return sample_time_beta(
-            num_samples,
-            device,
-            alpha=cfg.timestep_beta_alpha,
-            beta=cfg.timestep_beta_beta,
-            scale=hi - lo,
-            offset=lo,
-        )
     raise ValueError(
-        f"mode={mode!r} unknown; expected 'uniform', 'normal', 'beta', or 'fpo_beta'"
+        f"mode={mode!r} unknown; expected 'uniform' or 'fpo_beta'"
     )
 
 
@@ -150,25 +134,15 @@ def compute_cfm_loss(
 
     if reduce_mode in ("sample", "sample_and_token"):
         flat = sq.flatten(2)
-        if cfg.cfm_loss_reduction == "mean":
-            sample = flat.mean(dim=-1) if n_valid is None else flat.sum(dim=-1) / n_valid
-        elif cfg.cfm_loss_reduction == "sum":
+        if cfg.cfm_loss_reduction == "sum":
             sample = flat.sum(dim=-1)
         else:
-            total = flat.sum(dim=-1)
-            sample = (
-                total / math.sqrt(flat.shape[-1])
-                if n_valid is None
-                else total / n_valid.sqrt()
-            )
+            sample = flat.mean(dim=-1) if n_valid is None else flat.sum(dim=-1) / n_valid
         if reduce_mode == "sample":
             return sample
         return sample, sq.mean(dim=-1)
-    if reduce_mode == "token_mean":
-        return sq.mean(dim=-1)
     raise ValueError(
-        f"reduce_mode={reduce_mode!r} must be 'scalar', 'sample', "
-        "'sample_and_token', or 'token_mean'"
+        f"reduce_mode={reduce_mode!r} must be 'scalar', 'sample', or 'sample_and_token'"
     )
 
 

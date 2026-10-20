@@ -112,7 +112,7 @@ def test_every_mode_draws_inside_its_range():
     # test compares against the fp32 value, not the Python value.
     lo = torch.tensor(cfg.min_sampled_timestep, dtype=torch.float32)
     hi = torch.tensor(cfg.max_sampled_timestep, dtype=torch.float32)
-    for mode in ("uniform", "normal", "beta", "fpo_beta"):
+    for mode in ("uniform", "fpo_beta"):
         draw = _draw(timestep_sampling_mode=mode)
         assert float(draw.min()) >= float(lo), f"{mode} went below lo"
         assert float(draw.max()) <= float(hi), f"{mode} went above hi"
@@ -144,7 +144,6 @@ def test_a_beta_away_from_one_does_not_warn():
             timestep_sampling_mode="fpo_beta", timestep_inverse_cdf_beta=2.0
         )
         MyfpoConfig(timestep_sampling_mode="uniform")
-        MyfpoConfig(timestep_sampling_mode="beta")
 
 
 

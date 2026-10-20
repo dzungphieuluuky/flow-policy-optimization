@@ -98,7 +98,7 @@ def build_policy(
     policy = MyfpoPolicy(policy_cfg).to(device)
     if action_low is not None and action_high is not None:
         policy.set_action_bounds(action_low, action_high)
-    if getattr(cfg, "compile", False):
+    if cfg.compile:
         policy.actor = torch.compile(policy.actor, mode="reduce-overhead")
         policy.encoder = torch.compile(policy.encoder, mode="reduce-overhead")
         policy.critic = torch.compile(policy.critic, mode="reduce-overhead")

@@ -105,7 +105,7 @@ def build_backends(
     total_steps: int,
 ) -> list:
     """The backends a run logs to. An empty list means no logging."""
-    report_to = getattr(cfg, "report_to", "none")
+    report_to = cfg.report_to
     if report_to not in _REPORT_TO:
         raise ValueError(
             f"report_to={report_to!r} must be one of {', '.join(_REPORT_TO)}"

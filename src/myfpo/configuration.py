@@ -42,8 +42,6 @@ class MyfpoConfig(PreTrainedConfig):
     timestep_sampling_mode: str = "uniform"
     noise_sampling_mode: str = "normal"
     timestep_inverse_cdf_beta: float = 2.0
-    timestep_beta_alpha: float = 2.0
-    timestep_beta_beta: float = 2.0
 
     gamma: float = 0.99
     gae_lambda: float = 0.95
@@ -239,8 +237,8 @@ class MyfpoConfig(PreTrainedConfig):
                 f"num_mc_samples={self.num_mc_samples} must divide evenly by "
                 f"cfm_average_group_size={self.cfm_average_group_size}"
             )
-        if self.cfm_loss_reduction not in {"mean", "sum", "sqrt"}:
-            raise ValueError("cfm_loss_reduction must be 'mean', 'sum', or 'sqrt'")
+        if self.cfm_loss_reduction not in {"mean", "sum"}:
+            raise ValueError("cfm_loss_reduction must be 'mean' or 'sum'")
         if self.cfm_loss_target not in {"velocity", "action", "noise"}:
             raise ValueError(
                 "cfm_loss_target must be 'velocity' (FPO++'s cfm_loss_mode='u'), "
@@ -282,9 +280,9 @@ class MyfpoConfig(PreTrainedConfig):
                 "require 0 <= min_sampled_timestep < max_sampled_timestep <= 1, got "
                 f"({self.min_sampled_timestep}, {self.max_sampled_timestep})"
             )
-        if self.timestep_sampling_mode not in {"uniform", "normal", "beta", "fpo_beta"}:
+        if self.timestep_sampling_mode not in {"uniform", "fpo_beta"}:
             raise ValueError(
-                "timestep_sampling_mode must be 'uniform', 'normal', 'beta', or 'fpo_beta'"
+                "timestep_sampling_mode must be 'uniform' or 'fpo_beta'"
             )
         if self.noise_sampling_mode not in {"normal", "uniform"}:
             raise ValueError("noise_sampling_mode must be 'normal' or 'uniform'")
@@ -299,8 +297,6 @@ class MyfpoConfig(PreTrainedConfig):
                 RuntimeWarning,
                 stacklevel=3,
             )
-        if self.timestep_beta_alpha <= 0 or self.timestep_beta_beta <= 0:
-            raise ValueError("timestep beta alpha/beta must be > 0")
         if self.num_steps_zero_start < 1:
             raise ValueError(
                 f"num_steps_zero_start={self.num_steps_zero_start} must be >= 1"
