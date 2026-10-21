@@ -15,7 +15,7 @@ A fresh clone has no `.venv`. Run `uv sync` before `pytest` or any script. `uv.l
 ## Gates
 
 ```bash
-.venv/bin/python -m pytest -q    # 505 tests, about 8 s, CPU only
+.venv/bin/python -m pytest -q    # 510 tests, about 60 to 80 s on an idle machine
 uv run ruff check .              # dead code and unused names
 ```
 
@@ -72,12 +72,19 @@ Two files have similar names. `src/myfpo/configuration.py` is the dataclass. `sr
 ## Layout
 
 ```
-src/myfpo/          the package. utils, layers, attention, encoder, critic,
-                     gae, evaluator, processor are leaves. flow builds on
-                     attention and layers. metrics builds on fpo_core.
-                     collector builds on processor. rollout builds on
-                     collector, gae, metrics. modeling builds on all of
-                     those. training builds on everything.
+src/myfpo/          the package. The leaves are utils, layers, config,
+                     configuration, critic, gae, evaluator, tracking.
+                     attention builds on layers and utils. encoder builds on
+                     layers. processor builds on encoder. flow builds on
+                     attention, layers and utils. metrics builds on
+                     configuration, fpo_core and utils. fpo_core builds on
+                     configuration and utils. collector builds on
+                     configuration and processor. rollout builds on
+                     collector, gae, metrics and utils. modeling builds on
+                     flow, critic, encoder, metrics, processor, rollout,
+                     configuration, fpo_core and utils. checkpointing builds
+                     on modeling. training builds on everything above, plus
+                     tracking, runner and collector.
 scripts/            train.py is the entry. pins/ holds the behaviour gates.
 tests/              47 files. test_guard_messages.py pins 73 guard
                      messages. test_ratio_axes.py pins the paper configs.
@@ -99,11 +106,13 @@ No cycles, including the deferred imports. `docs/architecture.md` has the layer 
 
 **The ratio is per token, the advantage is per chunk.** `ratio_token` has shape `[n, M, H]`. `normalised_advantages` has shape `[n]`. One scalar covers all 8 tokens of a chunk. This mismatch is the open problem in `docs/token_advantage_design_a.md`. Do not change the granularity in either direction without reading that file.
 
-**The chunk reward is discounted per environment step.** `gae.py` sums `gamma**offsets * r` over the 8 steps and bootstraps with `gamma**H`. The discount clock is per step, not per chunk. Do not re-discount on top of that.
+**The chunk reward is discounted per environment step.** `gae.py` sums `gamma**offsets * r` over the 8 steps and bootstraps with `gamma**length`. `length` is 8 for a full chunk and smaller when the episode ended first. The discount clock is per step, not per chunk. Do not re-discount on top of that.
 
 **Causal attention.** `attention.py` uses `is_causal=True`. Token `i` depends on the prefix only. The actor is factorised over the chunk. This is what makes a per-token advantage well posed.
 
 **The actor outputs zero at init.** `out` and `adaLN_out` are zero-initialised. A fresh actor predicts zero velocity.
+
+**The critic reads the action chunk without a norm.** `critic._ActionScale` is a learned affine. It computes no statistics from the chunk. A `LayerNorm` there would subtract the chunk's mean, so a chunk of all +5 and a chunk of all 0 would reach the critic as the same input. Do not put a norm back on the action.
 
 **The critic ensemble default is 2, not 5.** TD-MPC2 ships 5. `--myfpo.num_critics 5` restores the paper width. The docs follow the code.
 
