@@ -5,6 +5,8 @@ from __future__ import annotations
 import torch
 from torch import nn
 
+from myfpo.layers import TemporalConv
+
 
 class ActionAffine(nn.Module):
     """A learned per-element affine over the flattened action chunk.
@@ -60,6 +62,9 @@ class CriticMember(nn.Module):
         num_layers: int = 2,
         condition_dim: int | None = None,
         dropout: float = 0.0,
+        state_temporal_kernel: int = 0,
+        chunk_temporal_kernel: int = 0,
+        chunk_temporal_causal: bool = False,
     ):
         super().__init__()
         if action_dim < 1:
@@ -101,6 +106,20 @@ class CriticMember(nn.Module):
         # chunk of all 0 would reach the critic as the same input. The affine
         # keeps the name and the state dict of the LayerNorm it replaces.
         self.norm_action = ActionAffine(action_horizon * action_dim)
+        # The filters sit before the flatten. They keep the width, so the
+        # first layer sees the same input size as before. The state filter
+        # needs the frames, so it only exists when the critic reads the
+        # window and not the shared encoder's vector.
+        self.frame_conv = (
+            TemporalConv(obs_dim, state_temporal_kernel)
+            if state_temporal_kernel and condition_dim is None
+            else None
+        )
+        self.chunk_conv = (
+            TemporalConv(action_dim, chunk_temporal_kernel, causal=chunk_temporal_causal)
+            if chunk_temporal_kernel
+            else None
+        )
         in_dim = self.input_dim
         layers: list[nn.Module] = []
         for i in range(num_layers):
@@ -120,7 +139,17 @@ class CriticMember(nn.Module):
         """Accept ``[B, T, obs]`` or ``[B, condition_dim]``, plus ``[B, H,
         action_dim]`` and the scalar exec length. Returns ``[B]``.
         """
-        parts = [states.flatten(1), actions.flatten(1)]
+        if self.condition_dim is None:
+            frames = states.transpose(1, 2)
+            if self.frame_conv is not None:
+                frames = self.frame_conv(frames)
+            state_part = frames.transpose(1, 2).flatten(1)
+        else:
+            state_part = states
+        chunk = actions.transpose(1, 2)
+        if self.chunk_conv is not None:
+            chunk = self.chunk_conv(chunk)
+        parts = [state_part, chunk.transpose(1, 2).flatten(1)]
         if self.condition_dim is None:
             parts[0] = self.norm_state(parts[0])
         parts[1] = self.norm_action(parts[1])
@@ -157,6 +186,9 @@ class Critic(nn.Module):
         num_layers: int = 2,
         condition_dim: int | None = None,
         dropout: float = 0.0,
+        state_temporal_kernel: int = 0,
+        chunk_temporal_kernel: int = 0,
+        chunk_temporal_causal: bool = False,
     ):
         super().__init__()
         if condition_dim is not None and condition_dim < 1:
@@ -193,6 +225,9 @@ class Critic(nn.Module):
                     num_layers=num_layers,
                     condition_dim=condition_dim,
                     dropout=dropout,
+                    state_temporal_kernel=state_temporal_kernel,
+                    chunk_temporal_kernel=chunk_temporal_kernel,
+                    chunk_temporal_causal=chunk_temporal_causal,
                 )
                 for _ in range(num_critics)
             ]

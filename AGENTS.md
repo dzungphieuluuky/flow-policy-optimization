@@ -15,7 +15,7 @@ A fresh clone has no `.venv`. Run `uv sync` before `pytest` or any script. `uv.l
 ## Gates
 
 ```bash
-.venv/bin/python -m pytest -q    # 516 tests, about 10 s
+.venv/bin/python -m pytest -q    # 518 tests, about 10 s
 uv run ruff check .              # dead code and unused names
 ```
 
@@ -88,7 +88,7 @@ src/myfpo/          the package. The leaves are utils, layers, config,
                      checkpointing, collector, configuration, evaluator,
                      metrics, modeling, processor, runner, tracking and utils.
 scripts/            train.py is the entry. pins/ holds the behaviour gates.
-tests/              49 files. test_guard_messages.py pins 75 guard
+tests/              49 files. test_guard_messages.py pins 77 guard
                      messages. test_ratio_axes.py pins the paper configs.
 docs/               architecture.md explains the networks and why.
                      ablation_reference.md lists ready-made ablations.

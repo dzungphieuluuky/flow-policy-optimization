@@ -106,6 +106,11 @@ class MyfpoConfig(PreTrainedConfig):
     # The temporal filter on the obs window in the actor encoder. 0 = off.
     obs_temporal_kernel: int = 0
 
+    # The temporal filters in the critic. 0 = off.
+    critic_obs_temporal_kernel: int = 0
+    critic_chunk_temporal_kernel: int = 0
+    critic_chunk_temporal_causal: bool = False
+
     def __post_init__(self) -> None:
         super().__post_init__()
         if self.n_action_steps is None:
@@ -128,13 +133,15 @@ class MyfpoConfig(PreTrainedConfig):
             raise ValueError(
                 f"temporal_probe_every={self.temporal_probe_every} must be >= 0"
             )
-        if self.obs_temporal_kernel < 0 or (
-            self.obs_temporal_kernel and self.obs_temporal_kernel % 2 == 0
+        for name, value in (
+            ("obs_temporal_kernel", self.obs_temporal_kernel),
+            ("critic_obs_temporal_kernel", self.critic_obs_temporal_kernel),
+            ("critic_chunk_temporal_kernel", self.critic_chunk_temporal_kernel),
         ):
-            raise ValueError(
-                f"obs_temporal_kernel={self.obs_temporal_kernel} must be 0 or a "
-                "positive odd number"
-            )
+            if value < 0 or (value and value % 2 == 0):
+                raise ValueError(
+                    f"{name}={value} must be 0 or a positive odd number"
+                )
         if self.n_obs_steps < 1:
             raise ValueError(f"n_obs_steps={self.n_obs_steps} must be >= 1")
         if self.action_horizon < 1:
