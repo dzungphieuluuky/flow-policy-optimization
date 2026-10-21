@@ -95,7 +95,6 @@ def test_the_random_baseline_key_names_the_policy():
 
 
 
-
 def test_no_two_keys_carry_the_same_number():
     """Two keys with the same value usually mean one quantity logged twice."""
     out = _summary(best_return=10.0, r_rand=10.0)
@@ -126,7 +125,6 @@ def test_the_return_mean_key_matches_the_summarizer():
     src = (Path(__file__).resolve().parents[1] / "src" / "myfpo" / "training.py").read_text()
     assert 'f"eval/{name}_return_mean"' in src
     assert "_return_mean" in src, "the per-start series must still exist"
-
 
 
 
