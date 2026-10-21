@@ -1,16 +1,13 @@
 """``select_action`` must hand out a chunk in the order it planned it."""
 
-import dataclasses
 import math
 
 import numpy as np
 import pytest
 import torch
 
-from lerobot.configs.policies import PolicyFeature
-from lerobot.configs.types import FeatureType
+from fixtures import cfg
 
-from myfpo.configuration import MyfpoConfig
 from myfpo.training import build_policy
 from test_collector_batch_equivalence import FakeVecEnv
 
@@ -20,20 +17,15 @@ HIGH = [1.0] * ACT
 
 
 def _cfg(**overrides):
-    return dataclasses.replace(
-        MyfpoConfig(
-            action_horizon=HORIZON,
-            n_action_steps=EXECUTE,
-            hidden_dim=16,
-            dit_depth=1,
-            dit_heads=2,
-            n_obs_steps=EXECUTE,
-            num_mc_samples=2,
-            input_features={"observation.state": PolicyFeature(FeatureType.STATE, (OBS,))},
-            output_features={"action": PolicyFeature(FeatureType.ACTION, (ACT,))},
-        ),
-        **overrides,
+    base = dict(
+        obs_dim=OBS, act_dim=ACT,
+        action_horizon=HORIZON, n_action_steps=EXECUTE,
+        hidden_dim=16, dit_depth=1, dit_heads=2,
+        n_obs_steps=EXECUTE, num_mc_samples=2,
     )
+    base.update(overrides)
+    return cfg(**base)
+
 
 
 def _policy(cfg=None):

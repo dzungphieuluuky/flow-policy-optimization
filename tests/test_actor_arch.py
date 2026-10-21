@@ -14,8 +14,7 @@ import dataclasses
 import pytest
 import torch
 
-from lerobot.configs.policies import PolicyFeature
-from lerobot.configs.types import FeatureType
+from fixtures import cfg
 from fixtures import make_batch
 
 from myfpo.configuration import ACTOR_ARCHITECTURES, MyfpoConfig
@@ -26,19 +25,14 @@ OBS, ACT, HORIZON, HIDDEN, TIME_EMBED = 6, 3, 8, 32, 16
 
 
 def _cfg(**kw):
-    return dataclasses.replace(
-        MyfpoConfig(
-            action_horizon=HORIZON,
-            hidden_dim=HIDDEN,
-            time_embed_dim=TIME_EMBED,
-            dit_depth=1,
-            dit_heads=2,
-            n_obs_steps=2,
-            input_features={"observation.state": PolicyFeature(FeatureType.STATE, (OBS,))},
-            output_features={"action": PolicyFeature(FeatureType.ACTION, (ACT,))},
-        ),
-        **kw,
+    base = dict(
+        obs_dim=OBS, act_dim=ACT,
+        action_horizon=HORIZON, hidden_dim=HIDDEN, time_embed_dim=TIME_EMBED,
+        dit_depth=1, dit_heads=2, n_obs_steps=2,
     )
+    base.update(kw)
+    return cfg(**base)
+
 
 
 def _dit():

@@ -1,13 +1,9 @@
 """Old and new CFM losses must share one (t, eps) pair batch."""
 
-import dataclasses
-
 import pytest
 import torch
-from lerobot.configs.policies import PolicyFeature
-from lerobot.configs.types import FeatureType
+from fixtures import cfg
 
-from myfpo.configuration import MyfpoConfig
 from myfpo.fpo_core import sample_timesteps
 from myfpo.training import build_policy
 
@@ -15,22 +11,15 @@ OBS, ACT, HORIZON, MC = 6, 3, 4, 4
 
 
 def _cfg(**kw):
-    return dataclasses.replace(
-        MyfpoConfig(
-            action_horizon=HORIZON,
-            n_action_steps=HORIZON,
-            num_mc_samples=MC,
-            hidden_dim=32,
-            time_embed_dim=16,
-            dit_depth=1,
-            dit_heads=2,
-            n_obs_steps=2,
-            compile=False,
-            input_features={"observation.state": PolicyFeature(FeatureType.STATE, (OBS,))},
-            output_features={"action": PolicyFeature(FeatureType.ACTION, (ACT,))},
-        ),
-        **kw,
+    base = dict(
+        obs_dim=OBS, act_dim=ACT,
+        action_horizon=HORIZON, n_action_steps=HORIZON, num_mc_samples=MC,
+        hidden_dim=32, time_embed_dim=16, dit_depth=1, dit_heads=2, n_obs_steps=2,
+        compile=False,
     )
+    base.update(kw)
+    return cfg(**base)
+
 
 
 def _policy():
