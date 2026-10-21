@@ -132,10 +132,14 @@ Two kinds of name keep the underscore. Python and the frameworks force them:
 Check the package with one command. It must print the `nn.Module` hook and nothing else.
 
 ```bash
-grep -rn "def _\|class _" src/myfpo/
+grep -rn "def _[^_]\|class _" src/myfpo/
 ```
 
-A function does one job. Keep it under 100 lines. Split a longer one into named steps.
+A function does one job. Keep it under 100 lines. Split a longer one into named steps. The next command must print nothing.
+
+```bash
+.venv/bin/python -c "import ast,pathlib;[print(p,n.name) for p in pathlib.Path('src/myfpo').rglob('*.py') for n in ast.walk(ast.parse(p.read_text())) if isinstance(n,ast.FunctionDef) and n.end_lineno-n.lineno+1>100]"
+```
 
 A helper with one caller and a short body is inlined. The name goes.
 
