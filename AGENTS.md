@@ -15,7 +15,7 @@ A fresh clone has no `.venv`. Run `uv sync` before `pytest` or any script. `uv.l
 ## Gates
 
 ```bash
-.venv/bin/python -m pytest -q    # 510 tests, about 60 to 80 s on an idle machine
+.venv/bin/python -m pytest -q    # 509 tests, about 10 s
 uv run ruff check .              # dead code and unused names
 ```
 
@@ -37,6 +37,8 @@ Exit code 0 means no difference. Any other value means at least one.
 The baselines are binary and are not tracked. A fresh clone has the scripts and no baseline. The first run fails with "no baseline. Run with --write first." Use `--write` only when the change is meant to move the numbers. Record the key count in the commit message.
 
 `pytest` is not this gate. On 2026-10-17 the suite passed 588 tests while a change to the parameter construction order silently changed every actor weight. The pins caught it.
+
+A pin that fails at HEAD, before any change, has a stale baseline. Regenerate it with `--write` and say so in the commit.
 
 Do not import from `src` into `scripts/pins/_shared.py` beyond what it already builds. A pin that shares code with the code it checks cannot catch a defect in the shared part.
 
@@ -78,13 +80,13 @@ src/myfpo/          the package. The leaves are utils, layers, config,
                      layers. processor builds on encoder. flow builds on
                      attention, layers and utils. metrics builds on
                      configuration, fpo_core and utils. fpo_core builds on
-                     configuration and utils. collector builds on
-                     configuration and processor. rollout builds on
-                     collector, gae, metrics and utils. modeling builds on
-                     flow, critic, encoder, metrics, processor, rollout,
-                     configuration, fpo_core and utils. checkpointing builds
-                     on modeling. training builds on everything above, plus
-                     tracking, runner and collector.
+                     configuration and utils. collector builds on processor.
+                     rollout builds on collector, gae, metrics and utils.
+                     modeling builds on flow, critic, encoder, metrics,
+                     processor, rollout, configuration, fpo_core and utils.
+                     checkpointing builds on modeling. training builds on
+                     checkpointing, collector, configuration, evaluator,
+                     metrics, modeling, processor, runner, tracking and utils.
 scripts/            train.py is the entry. pins/ holds the behaviour gates.
 tests/              47 files. test_guard_messages.py pins 73 guard
                      messages. test_ratio_axes.py pins the paper configs.
@@ -112,11 +114,36 @@ No cycles, including the deferred imports. `docs/architecture.md` has the layer 
 
 **The actor outputs zero at init.** `out` and `adaLN_out` are zero-initialised. A fresh actor predicts zero velocity.
 
-**The critic reads the action chunk without a norm.** `critic._ActionScale` is a learned affine. It computes no statistics from the chunk. A `LayerNorm` there would subtract the chunk's mean, so a chunk of all +5 and a chunk of all 0 would reach the critic as the same input. Do not put a norm back on the action.
+**The critic reads the action chunk without a norm.** `critic.ActionAffine` is a learned affine. It computes no statistics from the chunk. A `LayerNorm` there would subtract the chunk's mean, so a chunk of all +5 and a chunk of all 0 would reach the critic as the same input. Do not put a norm back on the action.
 
 **The critic ensemble default is 2, not 5.** TD-MPC2 ships 5. `--myfpo.num_critics 5` restores the paper width. The docs follow the code.
 
 **Storage dtype follows the GPU model.** `utils.resolve_storage_dtype` returns bf16 on an RTX PRO 1000 Blackwell and fp32 elsewhere. The same code then gives different numbers on different machines. This is a known hazard. It is not fixed.
+
+## Names and functions
+
+Every name in `src/myfpo` is public. Do not write a leading underscore on a function, a class, a method, an attribute, or a constant.
+
+Two kinds of name keep the underscore. Python and the frameworks force them:
+
+- the dunders, `__init__` and `__call__`.
+- `RunningMeanStd._load_from_state_dict`, the `nn.Module` hook. Rename it and the normaliser latch never resets on load.
+
+Check the package with one command. It must print the `nn.Module` hook and nothing else.
+
+```bash
+grep -rn "def _\|class _" src/myfpo/
+```
+
+A function does one job. Keep it under 100 lines. Split a longer one into named steps.
+
+A helper with one caller and a short body is inlined. The name goes.
+
+A helper that is a real step keeps its name. The name is plain.
+
+A public name is part of the package API. Add one only when it names a step of the algorithm or when it replaces two or more old names.
+
+The test helpers and the script helpers keep their underscore. They are local to their file and no other file imports them.
 
 ## Adding a guard
 
