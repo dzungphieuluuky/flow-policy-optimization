@@ -8,15 +8,15 @@ Based on `literature_review.md` (Sections 2, 5, 11.4) and repo implementation (`
 |---|---|---|---|---|
 | Gaussian RL | PPO / TRPO | Tractable likelihood | Unimodal, diagonal cov | Low-D, real-time |
 | Offline Diffusion | Diffusion Policy (`arXiv:2303.04137`) | Multimodal BC | No online RL | Expert demo available |
-| End-to-end Flow RL | FPO (`arXiv:2507.21053`), FPO++ (`arXiv:2602.02481`), `myfpo` | CFM surrogate ratio, ASPO | Approximate ratio (see `fpo_core.py:291`) | Multimodal online robot RL |
+| End-to-end Flow RL | FPO (`arXiv:2507.21053`), FPO++ (`arXiv:2602.02481`), `myfpo` | CFM surrogate ratio, ASPO | Approximate ratio (see `fpo_core.py:234`) | Multimodal online robot RL |
 | Latent-Decoder | GoRL / GORL (`arXiv:2512.02581v1`) | Decoupled optimization | Two-timescale tuning | Stable generative RL |
 | One-Step / Drift | OGPO / DBPO (`arXiv:2604.03540`) | Real-time inference (`1-NFE`) | Reduced expressivity | Latency-critical control |
 | Inference Planning | GPC (`IEEE LRA 2026`) | Frozen policy + world model | No policy improvement | Test-time adaptation |
 
 ## Design trade-offs in `myfpo`
-- **Approximate ratio** (`compute_policy_ratio`): Enables end-to-end flow policy without invertible architecture. Cost: biased proxy (documented at `fpo_core.py:291`).
+- **Approximate ratio** (`compute_policy_ratio`): Enables end-to-end flow policy without invertible architecture. Cost: biased proxy (documented at `fpo_core.py:234`).
 - **Open-loop chunking** (`rollout.py`): Amortizes inference over `action_horizon`. Cost: chunk boundary artifacts (`rollout_seam_jerk`).
-- **Per-sample ratios** (`FPO++`): Improves scratch training. Cost: doubles MC-sample compute.
+- **Per-token ratios** (`FPO++`): Improves scratch training. The repo default is per token (`do_average_cfm_loss_in_chunk=False`). Cost: doubles MC-sample compute.
 - **Asymmetric clipping** (`ASPO`): Preserves entropy for `A < 0`. Cost: requires separate clipping thresholds (`cfm_loss_clamp_negative_advantages_max`).
 
 ## Ready-made ablations

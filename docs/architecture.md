@@ -16,12 +16,16 @@ Two variants behind `config.actor_arch`; `dit` is the default.
 |---|---|---|
 | Block | adaLN-Zero DiT block, shared by both actors | Peebles & Xie, DiT (`arXiv:2212.09748`) |
 | Norm | RMSNorm, pre-norm | |
-| FFN | SwiGLU, 4x expansion | Shazeer, GLU Variants (`arXiv:2002.05202`) |
+| FFN | SwiGLU, `dit_mlp_ratio=2` | Shazeer, GLU Variants (`arXiv:2002.05202`) |
 | Output init | zero on `adaLN_out` and `out` | DiT |
 | Position | RoPE on q/k | Su et al. (`arXiv:2104.09864`) |
 | Timestep | per-token, not per-sample | SD-DiT / rectified-flow training |
 | Time embedding | log-spaced DDPM table | Ho et al. (`arXiv:2006.11239`) |
 | Depth / width | `dit_depth=4`, `hidden_dim=128` | see Depth and width |
+
+`dit_mlp_ratio=2` means the SwiGLU hidden width is twice the model width. Its
+parameter count equals that of a 4x GELU MLP, because SwiGLU keeps two
+matrices of that width.
 
 Defaults: **1.24M parameters**, 4 blocks of 281k each.
 
@@ -32,11 +36,34 @@ MLP. The counts and the checkpoint keys are pinned in
 
 ### Verified, not assumed
 - **adaLN-Zero is real.** All-zero `adaLN.fc2` makes the block an exact identity at
-  init; perturbing any of its six outputs changes the velocity by exactly 0.
-- **All four conditioning paths are live.** With the gates held open, perturbing
-  `shift_msa` / `scale_msa` / `shift_mlp` / `scale_mlp` changes the output by
-  1.08 / 1.15 / 1.21 / 1.20 relative.
-- **RoPE is correct** — translation invariance holds to 3.6e-7.
+  init: `max(abs(out - x)) = 0.0`.
+- **All six conditioning paths are live.** Add `+1.0` to one of the six adaLN
+  outputs and read `norm(out - base) / norm(base)`. The recipe below is
+  deterministic, so the numbers are reproducible.
+
+  ```python
+  torch.manual_seed(0)
+  m = MyfpoFlowModel(3, 8, 128, 2, 2, 2.0, 32)
+  for p in (m.out.weight, m.out.bias, m.adaLN_out.weight, m.adaLN_out.bias):
+      torch.nn.init.normal_(p, std=0.2)
+  b = m.blocks[0]
+  torch.nn.init.normal_(b.adaLN.fc2.weight, std=0.1)
+  torch.nn.init.normal_(b.adaLN.fc2.bias, std=0.1)
+  x = torch.randn(2, 8, 128)
+  c = torch.randn(2, 8, 128)
+  ```
+
+  The four conditioning paths give `0.128 / 0.114 / 0.079 / 0.153` for
+  `shift_msa` / `scale_msa` / `shift_mlp` / `scale_mlp`. The two gates give
+  `0.236` and `0.150`.
+- **RoPE is correct.** The attention score depends on the relative offset only.
+  Shifting q and k by the same `+5` positions leaves the score matrix unchanged
+  to `3.3e-06` at the default width (`hidden_dim=128`, `dit_heads=2`,
+  `action_horizon=8`). Over five seeds the figure stays below `3.9e-06`. This
+  is fp32 roundoff, not a drift.
+- **The attention matches an independent reference.** A naive implementation with
+  explicit per-head loops, an explicit causal mask and an explicit RoPE gives the
+  same output to `1.2e-07`.
 
 ### Causal attention — a deliberate deviation
 `SelfAttention` passes `is_causal=True`. ACT and Diffusion Policy attend
@@ -60,9 +87,8 @@ field is regressed against these codes, so smoothness is not cosmetic.
 ### Depth and width
 `dit_depth` 3 → 4 and `hidden_dim` 128 are capacity ceilings, not literature
 defaults. DiT-1/2 for images uses 12 blocks at width 768. Depth 3 is defensible
-for 8-token low-dimensional actions and probably was not the bottleneck; the
-8-block variant cost ~2x the actor FLOPs and the full test suite went 57s →
-126s.
+for 8-token low-dimensional actions and probably was not the bottleneck. The
+8-block variant cost about twice the actor FLOPs.
 
 **These two numbers went in unmeasured.** There is no shallow-actor
 config, so going back means passing `dit_depth` on the CLI. Run names encode the
@@ -103,14 +129,21 @@ Ensemble of 2 `Q(s_t, a_{t:t+h})` heads over the full window. Trunk follows
 |---|---|---|
 | Hidden layers | `Linear → LayerNorm → Mish` | TD-MPC2. Its stated result: scaling an *unnormalised* critic does not improve performance, while adding LayerNorm does. The norm is the load-bearing part. |
 | Dropout | 1% after the first `Linear` | TD-MPC2. Every member regresses onto the same scalar target, so initialisation is the only thing separating them. |
+| Activation | `Mish` | TD-MPC2 uses GELU. `Mish` is the swap. |
 | Ensemble | 2 | the repo's default; TD-MPC2 ships 5 (`--myfpo.num_critics 5` restores it) |
 | Output layer | bare `Linear` | no activation or norm on the scalar head |
 | Width | `critic_hidden_dim=512` | matches TD-MPC2 |
 | State input | `LayerNorm` over the flattened window | one norm over the concat would couple state dims to action dims, which are unrelated quantities |
 | Action input | learned affine, **not** a norm | a `LayerNorm` over the chunk subtracts the chunk's mean, so a chunk of all +5 and a chunk of all 0 reach the critic as the same input. The critic was blind to a sustained push, and blind to the drifting raw magnitude that `train/raw_action_abs_max` monitors. |
 
+Two places depart from the reference implementation, not from the paper.
+The official tdmpc2 `mlp.py` puts dropout **after** the LayerNorm and applies
+it after **every** hidden layer. The repo follows the paper's wording, which
+says "1% Dropout after the first linear layer in each Q-function".
+
 Defaults for Hopper (`obs_dim=11`, `action_dim=3`): **738k parameters**, 2
-members of 369k. The figure scales with `n_obs_steps * obs_dim`.
+members of 369k. The figure scales with `n_obs_steps * obs_dim`. The actor is
+1.24M, so the critic is 0.60x the actor for Hopper and 5.14x for Humanoid.
 
 `norm_state` is skipped when `critic_share_encoder=True`, so that flag keeps
 meaning "raw shared-encoder vector" rather than double-normalising. The two
@@ -209,19 +242,27 @@ because it tracks the online distribution.
 
 ## Layer map
 
-```
-utils ──────────────► (leaf: device, dtype, tensor helpers)
-layers ─────────────► (leaf: RMSNorm, SwiGLU, CondMLP, sinusoidal)
-attention, encoder, critic, gae, evaluator ──► (leaf or near-leaf networks)
-processor ───────────► encoder (the squash, shared by the postprocessor and
-                       the collector)
+Every import edge in the package. Read it as "X builds on Y".
 
-flow ───────────────► attention, layers
-metrics ────────────► fpo_core (sampling + broadcasting)
-collector ──────────► configuration, processor
-rollout ────────────► collector, gae, metrics
-modeling ────────────► flow, critic, encoder, fpo_core, metrics, rollout
-training ────────────► everything above, plus tracking, runner, checkpointing
+```
+config, configuration ──► (leaves)
+utils ─────────────────► (leaf: device, dtype, tensor helpers)
+layers ────────────────► (leaf: RMSNorm, SwiGLU, CondMLP, sinusoidal)
+critic, gae, evaluator, tracking ──► (leaves)
+
+attention ─────────────► layers, utils
+encoder ───────────────► layers
+processor ─────────────► encoder (the squash, shared by the postprocessor and
+                         the collector)
+fpo_core ──────────────► configuration, utils
+flow ──────────────────► attention, layers, utils
+metrics ───────────────► configuration, fpo_core, utils
+collector ─────────────► configuration, processor
+rollout ───────────────► collector, gae, metrics, utils
+modeling ──────────────► flow, critic, encoder, fpo_core, metrics, processor,
+                         rollout, configuration, utils
+checkpointing ─────────► modeling
+training ──────────────► everything above, plus tracking, runner and collector
 ```
 
 No cycles, including deferred imports. `rollout` depends on nine members of the

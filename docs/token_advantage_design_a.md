@@ -14,9 +14,9 @@ The current surrogate multiplies a **per-token** ratio by a **per-chunk**
 advantage. The two granularities do not match.
 
 - `ratio_token` is `[n, M, H]`: every token of the chunk has its own CFM loss,
-  hence its own ratio (`src/myfpo/modeling.py:672`).
+  hence its own ratio (`src/myfpo/modeling.py:685-688`).
 - `adv` is `[n]` — one scalar per chunk, broadcast over all `H` tokens
-  (`src/myfpo/modeling.py:666-667`, `adv_mc.unsqueeze(-1)` at `:674`).
+  (`src/myfpo/modeling.py:679-680`, `adv_mc.unsqueeze(-1)` at `:680`).
 
 The policy is a **factorised** one, so the mismatch is not benign. Causal
 attention (`src/myfpo/attention.py:68`, `is_causal=True`) means token `i` is a
@@ -84,8 +84,9 @@ rescaled, `gamma_chunk = gamma_action^(1/c)`; they used `0.99^(1/8) = 0.904`,
 and using `gamma_chunk = 0.99` directly is "substantially worse".
 
 **We are already safe.** Our chunk reward is `sum_j gamma^j r_{t+j}` with a
-`gamma^H` bootstrap (`src/myfpo/gae.py:80-91`): the discount clock is per
-environment step, not per chunk. The per-token construction below must
+`gamma^length` bootstrap (`src/myfpo/gae.py:80-91`): the discount clock is per
+environment step, not per chunk. `length` is 8 for a full chunk and smaller
+when the episode ended first. The per-token construction below must
 **not** re-discount on top of that. The per-token suffix restarts its own
 clock at the token (`gamma^{j-i}`), and the chunk's absolute position stays in
 the outer GAE trace. This is the most likely place for a silent bug; it has a
@@ -179,18 +180,19 @@ bookkeeping, the masks, or the trust region.
 
 Two things become per token, and both are deliberate:
 
-- `compute_policy_ratio` (`src/myfpo/fpo_core.py:304-322`) clamps the loss
+- `compute_policy_ratio` (`src/myfpo/fpo_core.py:237-255`) clamps the loss
   for negative advantages. With per-token advantages, the *sign* is per token:
   a token can be "good" inside a bad chunk. This is the point of per-token
   credit, and it is also the biggest behavioural change from today's run.
-- `compute_aspo_surrogate` (`src/myfpo/fpo_core.py:263-282`) selects the PPO
+- `compute_aspo_surrogate` (`src/myfpo/fpo_core.py:196-215`) selects the PPO
   branch for `A > 0` and the SPO branch for `A < 0`. The selection becomes per
   token.
 
-The **ratio** stays exactly as it is: per token, clipped per token
-(`clip_granularity="token"`, the current behaviour). The alternative —
-clipping the *joint* chunk ratio, as ACPPO does — is a separate knob and a
-separate experiment; it is not part of this design.
+The **ratio** stays exactly as it is: per token, clipped per token. The
+alternative — clipping the *joint* chunk ratio, as ACPPO does — is a separate
+knob and a separate experiment; it is not part of this design. The flag that
+selects the granularity today is `do_average_cfm_loss_in_chunk`, which is
+`False` by default, so the token path is the one that runs.
 
 ---
 
@@ -198,18 +200,23 @@ separate experiment; it is not part of this design.
 
 ### 3.1 Two heads, one trunk, masked inputs
 
-`CriticMember` (`src/myfpo/critic.py:10-110`) currently flattens the chunk
+`CriticMember` (`src/myfpo/critic.py:32-139`) currently flattens the chunk
 (`parts[1] = self.norm_action(actions.flatten(1))`) and mixes it with the
 state. For the prefix semantics to hold, the head that produces `v_i` must not
 see `a_i` or anything after it.
+
+`norm_action` is a learned affine, not a norm. It computes no statistics from
+the chunk, so the chunk's offset survives to the critic. A plan that masks the
+tail must decide whether the mask is applied before or after this affine. The
+affine has no statistics, so the order does not change the result. A norm
+would have made the order matter.
 
 Implementation:
 
 1. The action input keeps its width (`H * action_dim`) but is **masked per
    head**: for `v_i`, the dims of tokens `>= i` are zeroed; for `q_i`, the dims
-   of tokens `> i` are zeroed. The mask is applied to the *normalised* action
-   (or before the norm — the choice must be fixed and tested, because the
-   normaliser's statistics would otherwise see zeros).
+   of tokens `> i` are zeroed. The mask is applied to the chunk before the
+   affine. The affine has no statistics, so the order does not matter.
 2. The output head becomes `Linear(hidden_dim, 2H)`: `v_0..v_{H-1}` then
    `q_0..q_{H-1}`.
 3. `Critic.forward` returns `[num_critics, B, 2H]` in action-level mode and
@@ -218,8 +225,8 @@ Implementation:
 ### 3.2 Cost
 
 A masked input per head means `2H` forward passes per member per call
-(`2 * 8 = 16` masks, times `num_critics = 2`). The critic is 1.45M
-parameters against the actor's 2.36M, and it runs once per minibatch, so this
+(`2 * 8 = 16` masks, times `num_critics = 2`). The critic is 738k parameters
+against the actor's 1.24M for Hopper, and it runs once per minibatch, so this
 is affordable — but it must be **measured**, not assumed. Log the critic
 step time before and after (the repo already has a `timing/*` family).
 
@@ -252,9 +259,10 @@ validation rule and a test in `tests/test_config_surface.py`:
 | `token_advantage_clamp` | `100.0` | float | reuse `advantage_clamp_pos/neg` or add a per-token clamp; decide once |
 | `critic_prefix_mask` | `True` | bool | mask the future action dims in the prefix heads; `False` is the (weaker) unmasked variant, kept only as an ablation |
 
-Deliberately **not** in this design: `clip_granularity` (per-token vs joint
-chunk ratio) and the within-chunk-GAE variant. Both are separate
-experiments (Section 9).
+Deliberately **not** in this design: a `clip_granularity` flag (per-token vs
+joint chunk ratio) and the within-chunk-GAE variant. Both are separate
+experiments (Section 9). The granularity that exists today is
+`do_average_cfm_loss_in_chunk`, and it is not renamed.
 
 ---
 
@@ -266,7 +274,7 @@ experiments (Section 9).
   `Linear(hidden_dim, value_head_size)` with `value_head_size in {1, 2H}`.
 - `CriticMember.forward`: accept an optional `prefix_masks` argument
   `[B, H, H]` (or `2H` masks) and apply them to the action part before the
-  norm. Return `[B, value_head_size]` instead of `[B]`.
+  affine. Return `[B, value_head_size]` instead of `[B]`.
 - `Critic.forward`: stack over the members, keep the chunk-mode shape
   `[num_critics, B]` when `value_head_size == 1`.
 
@@ -417,7 +425,7 @@ positive screen should be followed by more seeds before it is claimed.
 1. **The proxy is unvalidated per token.** The per-token CFM-loss difference
    is a proxy for a *single token's* density change, not the chunk's. The
    chunk-level proxy already carries this caveat
-   (`src/myfpo/fpo_core.py:301`); the token-level version inherits it and
+   (`src/myfpo/fpo_core.py:234`); the token-level version inherits it and
    amplifies it, because `H` proxies are multiplied by `H` advantages.
 2. **The sign flip.** Per-token advantages change the ASPO branch per token.
    If the per-token signal is mostly noise, the branch selection becomes
