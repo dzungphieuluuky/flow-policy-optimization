@@ -6,6 +6,28 @@ import torch
 from torch import nn
 
 
+class _ActionScale(nn.Module):
+    """A learned per-element affine over the flattened action chunk.
+
+    It computes no statistics from the chunk. A ``LayerNorm`` would subtract
+    the chunk's mean and divide by its standard deviation, so every chunk
+    would reach the critic with the same offset removed and the same scale.
+    The critic would then be blind to a sustained push, and blind to the
+    drifting raw magnitude that ``train/raw_action_abs_max`` monitors.
+
+    The state dict matches ``nn.LayerNorm`` exactly: ``weight`` and ``bias``,
+    the same shapes, the same initial values. A checkpoint written before this
+    change loads into this module unchanged.
+    """
+
+    def __init__(self, dim: int):
+        super().__init__()
+        self.weight = nn.Parameter(torch.ones(dim))
+        self.bias = nn.Parameter(torch.zeros(dim))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return x * self.weight + self.bias
+
 
 class CriticMember(nn.Module):
     """One Q(s, a_{t:t+h}) head. The network is a concat MLP. It has no FiLM
@@ -21,6 +43,9 @@ class CriticMember(nn.Module):
     Q-function"). Its purpose here is to keep the ensemble from converging onto
     one function: every member regresses onto the same scalar target, so
     without a mask the only thing distinguishing them is initialisation.
+
+    The action input is a learned affine, not a LayerNorm. See
+    :class:`_ActionScale` for why the chunk's offset has to survive.
     """
 
     def __init__(
@@ -71,7 +96,11 @@ class CriticMember(nn.Module):
         # "raw shared-encoder vector".
         if condition_dim is None:
             self.norm_state = nn.LayerNorm(n_obs_steps * obs_dim)
-        self.norm_action = nn.LayerNorm(action_horizon * action_dim)
+        # The action gets a learned affine, not a LayerNorm. A LayerNorm over
+        # the chunk subtracts the chunk's mean, so a chunk of all +5 and a
+        # chunk of all 0 would reach the critic as the same input. The affine
+        # keeps the name and the state dict of the LayerNorm it replaces.
+        self.norm_action = _ActionScale(action_horizon * action_dim)
         in_dim = self.input_dim
         layers: list[nn.Module] = []
         for i in range(num_layers):
