@@ -42,12 +42,14 @@ def test_resolve_storage_dtype_is_fp32_on_cpu():
 
 
 def test_generate_rollout_does_not_cast_the_value_target():
-    """Write-side guard: the two fp32 tensors must not be cast on the way in."""
     import inspect
 
     # The body moved to myfpo.rollout. The method on the policy is a wrapper,
     # so reading its source would find none of the casts and pass vacuously.
-    src = inspect.getsource(run_rollout)
+    # The casts live in the advantage step, so the guard reads both.
+    from myfpo.rollout import _chunk_advantages
+
+    src = inspect.getsource(run_rollout) + inspect.getsource(_chunk_advantages)
     for name in ("raw_returns", "raw_values"):
         # Both spellings matter. The batch is built as a dict, so the cast would
         # appear as "raw_returns": raw_returns.to(storage_dtype). A test that
@@ -64,8 +66,8 @@ def test_generate_rollout_does_not_cast_the_value_target():
             f"{name} must not pass through the storage dtype in any form"
         )
     # The tensors that ride storage_dtype legitimately must still do so.
-    assert "raw_advantages = raw_advantages.to(storage_dtype)" in src
-    assert "normalised_advantages = normalised_advantages.to(storage_dtype)" in src
+    assert "raw_advantages.to(storage_dtype)" in src
+    assert "normalised_advantages.to(storage_dtype)" in src
 
 
 def test_drift_diagnostics_take_the_bf16_observations_they_stored():
