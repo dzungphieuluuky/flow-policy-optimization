@@ -2,7 +2,7 @@
 import pytest
 import torch
 
-from myfpo.gae import compute_chunk_advantages
+from myfpo.rollout import compute_chunk_advantages
 
 GAMMA, H = 0.99, 4
 

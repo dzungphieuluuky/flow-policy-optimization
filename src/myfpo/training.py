@@ -17,7 +17,7 @@ from lerobot.configs.types import FeatureType, PolicyFeature
 from lerobot.utils.random_utils import set_seed
 
 from myfpo.checkpointing import load_policy_checkpoint, save_policy_checkpoint
-from myfpo.collector import resolve_action_bounds
+from myfpo.rollout import resolve_action_bounds
 from myfpo.configuration import MyfpoConfig
 from myfpo.evaluator import (
     Evaluator,
@@ -25,10 +25,10 @@ from myfpo.evaluator import (
     compute_seam_jerk,
 )
 from myfpo.modeling import MyfpoAborted, MyfpoPolicy, build_optimizer
-from myfpo.metrics import compute_eval_summary_metrics, subsampled_min
+from myfpo.fpo_core import compute_eval_summary_metrics, subsampled_min
 from myfpo.processor import squash_to_env_bounds
 from lerobot.utils.constants import CHECKPOINTS_DIR
-from myfpo.utils import cudagraph_step_begin, resolve_device, rms
+from myfpo.layers import cudagraph_step_begin, resolve_device, rms
 from myfpo.tracking import build_backends, finish_backends, log_metrics
 from myfpo.runner import build_train_metrics, summarise_window
 

@@ -187,7 +187,7 @@ where `r = π_θ_new(ε|s) / π_θ_old(ε|s)` (tractable, since `ε` is low-dime
 ### Complexity Analysis (per update)
 - **Gaussian**: `O(B · D)` (forward + backward).
 - **FPO / Diffusion**: `O(B · M · H · D · NFE)` where `M` = MC samples, `H` = action horizon (chunk length), `NFE` = number of flow steps, `D` = action dim. Per-token ratios (`FPO++`) multiply `M` compute by a small constant (independent ratios vs single group average).
-- **Memory**: `O(B · M · H · D)` for chunked rollouts; `RolloutBuffer` (`collector.py`) manages the host/device split with `torch.cuda.Event`.
+- **Memory**: `O(B · M · H · D)` for chunked rollouts; `RolloutBuffer` (`rollout.py`, the collector section) manages the host/device split with `torch.cuda.Event`.
 - **Parallelism**: the test suite is serial (`-n 0`); `torch.compile` is disabled for diagnostic collection (`_collect_stats` in `flow.py`).
 
 ### Practical Trade-offs

@@ -8,7 +8,7 @@ counts and the state_dict keys are pinned here: the counts are the ones
 
 import pytest
 
-from myfpo.attention import AdaLNBlock, DiTBlock
+from myfpo.layers import AdaLNBlock, DiTBlock
 from myfpo.configuration import MyfpoConfig
 from myfpo.flow import ResMLPBlock
 

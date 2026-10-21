@@ -38,7 +38,7 @@ from typing import Literal
 
 import draccus
 
-from myfpo.config import (
+from myfpo.configuration import (
     KNOWN_ENVS,
     get_observation_action_dim,
 )
@@ -76,7 +76,7 @@ def apply_runtime_settings() -> dict:
     """
     import torch
 
-    from myfpo.utils import (
+    from myfpo.layers import (
         detect_gpu,
         resolve_compute_dtype,
         resolve_storage_dtype,

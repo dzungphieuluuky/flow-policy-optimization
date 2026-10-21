@@ -7,7 +7,7 @@ Written so the next reader does not have to reverse it out of `git log`.
 
 ---
 
-## Actor — `src/myfpo/flow.py`, `src/myfpo/attention.py`
+## Actor — `src/myfpo/flow.py`, `src/myfpo/layers.py` (the attention section)
 
 Conditional flow-matching velocity model over `action_horizon` action tokens.
 Two variants behind `config.actor_arch`; `dit` is the default.
@@ -29,7 +29,7 @@ matrices of that width.
 
 Defaults: **1.24M parameters**, 4 blocks of 281k each.
 
-The block is one class (`attention.AdaLNBlock`) with the MLP as the only
+The block is one class (`layers.AdaLNBlock`) with the MLP as the only
 difference: `DiTBlock` supplies a SwiGLU, `ResMLPBlock` the paper's residual
 MLP. The counts and the checkpoint keys are pinned in
 `tests/test_block_contract.py`.
@@ -104,7 +104,7 @@ requires a retrain. Revisit if depth and width both grow.
 
 ---
 
-## State encoder — `src/myfpo/encoder.py`
+## State encoder — `src/myfpo/processor.py` (the absorbed `encoder.py` section)
 
 `CondMLP(n_obs_steps * obs_dim → hidden → hidden)`, then **RMSNorm**.
 
@@ -153,7 +153,7 @@ default critic is not.
 
 ---
 
-## Action space — `src/myfpo/processor.py`, `src/myfpo/collector.py`
+## Action space — `src/myfpo/processor.py` and the collector in `src/myfpo/rollout.py`
 
 The flow's output is the **raw** action, unbounded, and that raw value is what
 the policy is trained on. The squash happens on the way to the env.
@@ -191,7 +191,7 @@ quantity, and the loader refuses it.
 
 ---
 
-## Value targets and advantages — `src/myfpo/metrics.py`, `src/myfpo/rollout.py`
+## Value targets and advantages — `src/myfpo/fpo_core.py` (the metrics section), `src/myfpo/rollout.py`
 
 `subsampled_min(q, size=2)` — the min of **2 randomly drawn members, per column**.
 REDQ (Chen et al. 2021) and TD-MPC2.
@@ -201,7 +201,7 @@ A full `amin` over all members is strictly more pessimistic than either, and
 are comparable.
 
 This is a PPO loop, not a TD loop: `raw_returns` is computed once per rollout
-(`gae.py`) and reused frozen across all 10 epochs. That is already the property a
+(`rollout.py`, the absorbed `gae.py` section) and reused frozen across all 10 epochs. That is already the property a
 target critic network would provide, so there is none.
 
 ### Ensemble collapse is logged, not gated
@@ -231,7 +231,7 @@ history; `..._actor_before_clip` and `..._critic_before_clip` are additive.
 
 ---
 
-## Observation normalisation — `src/myfpo/encoder.py`
+## Observation normalisation — `src/myfpo/processor.py` (the absorbed `encoder.py` section)
 
 `RunningMeanStd` uses a parallel (Chan) batch update with a float64 counter,
 registered as buffers, and the **same object** is shared between training and
@@ -244,26 +244,27 @@ because it tracks the online distribution.
 
 Every import edge in the package. Read it as "X builds on Y".
 
-```
-config, configuration ──► (leaves)
-utils ─────────────────► (leaf: device, dtype, tensor helpers)
-layers ────────────────► (leaf: RMSNorm, SwiGLU, CondMLP, sinusoidal)
-critic, gae, evaluator, tracking ──► (leaves)
+Every import edge in the package. Read it as "X builds on Y".
 
-attention ─────────────► layers, utils
-encoder ───────────────► layers
-processor ─────────────► encoder (the squash, shared by the postprocessor and
-                         the collector)
-fpo_core ──────────────► configuration, utils
-flow ──────────────────► attention, layers, utils
-metrics ───────────────► configuration, fpo_core, utils
-collector ─────────────► configuration, processor
-rollout ───────────────► collector, gae, metrics, utils
-modeling ──────────────► flow, critic, encoder, fpo_core, metrics, processor,
-                         rollout, configuration, utils
-checkpointing ─────────► modeling
-training ──────────────► everything above, plus tracking, runner and collector
 ```
+layers, configuration, critic, evaluator, tracking ──► (leaves; layers holds
+                         utils and attention)
+
+processor ─────────────► layers (encoder + running obs norm + the squash)
+fpo_core ──────────────► configuration, layers (the metrics live inside)
+flow ──────────────────► layers
+rollout ───────────────► processor, fpo_core, layers (collector and gae
+                         live inside)
+modeling ──────────────► flow, critic, processor, rollout, fpo_core,
+                         configuration, layers
+checkpointing ─────────► modeling
+training ──────────────► checkpointing, rollout, configuration, evaluator,
+                         fpo_core, modeling, processor, runner, tracking,
+                         layers
+```
+
+No cycles, including the deferred imports. All absorbed-section notes name
+the former single-job module.
 
 No cycles, including deferred imports. `rollout` depends on nine members of the
 policy object without a declared interface — a known inversion, not yet fixed.

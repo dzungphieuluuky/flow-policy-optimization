@@ -1,6 +1,6 @@
 # Ablation / Comparison Reference
 
-Based on `literature_review.md` (Sections 2, 5, 11.4) and repo implementation (`fpo_core.py`, `rollout.py`, `metrics.py`).
+Based on `literature_review.md` (Sections 2, 5, 11.4) and repo implementation (`fpo_core.py` with the metrics, `rollout.py` with the collector and gae).
 
 ## Method taxonomy (repo-relevant)
 

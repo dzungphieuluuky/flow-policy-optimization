@@ -3,13 +3,13 @@
 import torch
 
 from fixtures import make_policy
-from myfpo.metrics import subsampled_min
+from myfpo.fpo_core import subsampled_min
 from myfpo.modeling import MyfpoPolicy
 from myfpo.rollout import run_rollout
 from myfpo.training import (
     measure_value_drift,
 )
-from myfpo.utils import resolve_storage_dtype
+from myfpo.layers import resolve_storage_dtype
 
 
 def test_bf16_actually_destroys_a_large_target():

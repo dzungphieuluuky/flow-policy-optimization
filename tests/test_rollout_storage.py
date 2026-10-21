@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 import torch
 
-from myfpo.collector import RolloutBuffer, collect_chunks_vec
+from myfpo.rollout import RolloutBuffer, collect_chunks_vec
 
 OBS_STEPS, OBS_DIM, HORIZON, ACT_DIM = 4, 3, 4, 1
 NUM_ENVS = 3
@@ -194,7 +194,7 @@ def test_the_buffer_is_the_only_source_of_the_row_width():
     """
     import inspect
 
-    from myfpo.collector import resolve_chunk_args
+    from myfpo.rollout import resolve_chunk_args
 
     params = inspect.signature(collect_chunks_vec).parameters
     assert "chunk_size" not in params, (

@@ -33,16 +33,16 @@ from myfpo.fpo_core import (
     sample_noise,
     velocity_to_target_param,
 )
-from myfpo.metrics import (
+from myfpo.fpo_core import (
     compute_policy_info,
     compute_value_loss,
 )
 from myfpo.critic import Critic
-from myfpo.encoder import RunningMeanStd, StateEncoder
+from myfpo.processor import RunningMeanStd, StateEncoder
 from myfpo.flow import MyfpoFlowModel, MyfpoFlowResMLP
 from myfpo.processor import make_pre_post_processors
 from myfpo.rollout import RolloutBuffers, run_rollout
-from myfpo.utils import (
+from myfpo.layers import (
     autocast_context,
     cudagraph_safe,
     resolve_storage_dtype,

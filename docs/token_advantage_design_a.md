@@ -19,7 +19,7 @@ advantage. The two granularities do not match.
   (`src/myfpo/modeling.py:727-728`, `adv_mc.unsqueeze(-1)` at `:735`).
 
 The policy is a **factorised** one, so the mismatch is not benign. Causal
-attention (`src/myfpo/attention.py:68`, `is_causal=True`) means token `i` is a
+causal attention (`src/myfpo/layers.py`, the attention section, `is_causal=True`)
 function of the prefix only, so the chunk density factorises as
 
 ```
@@ -84,7 +84,7 @@ rescaled, `gamma_chunk = gamma_action^(1/c)`; they used `0.99^(1/8) = 0.904`,
 and using `gamma_chunk = 0.99` directly is "substantially worse".
 
 **We are already safe.** Our chunk reward is `sum_j gamma^j r_{t+j}` with a
-`gamma^length` bootstrap (`src/myfpo/gae.py:80-91`): the discount clock is per
+`gamma^length` bootstrap (`src/myfpo/rollout.py`, the gae section, lines 80-91): the discount clock is per
 environment step, not per chunk. `length` is 8 for a full chunk and smaller
 when the episode ended first. The per-token construction below must
 **not** re-discount on top of that. The per-token suffix restarts its own
@@ -110,7 +110,7 @@ A chunk starts at environment step `T` and covers `H` steps
 
 The chunk is the macro-action. The critic is currently a **chunk-Q**:
 `Q_phi(s_T, a_{T:T+H-1}, f) -> R`, and the chunk-level advantage is the
-multi-step residual of the macro-transition (`src/myfpo/gae.py:86-113`).
+multi-step residual of the macro-transition (`src/myfpo/rollout.py`, the gae section, lines 86-113).
 
 ### 2.2 The policy gradient for a factorised chunk
 
@@ -156,7 +156,7 @@ R_i := sum_{j=i}^{H-1} gamma^{j-i} r_{T+j}  +  gamma^{H-i} * B
 
 where `B` is the bootstrap (`V(s_{T+H})`, injected on truncation, zero on
 termination) exactly as the chunk-level path does today
-(`src/myfpo/gae.py:86-91`).
+(`src/myfpo/rollout.py`, the gae section, lines 86-91).
 
 The per-token advantage is then
 
@@ -278,7 +278,7 @@ experiments (Section 9). The granularity that exists today is
 - `Critic.forward`: stack over the members, keep the chunk-mode shape
   `[num_critics, B]` when `value_head_size == 1`.
 
-### 5.2 `src/myfpo/gae.py`
+### 5.2 `src/myfpo/rollout.py` (the gae section)
 
 - Keep `compute_chunk_advantages` untouched — it is the chunk mode.
 - Add `compute_token_targets(...)` returning `[n, H]`: the per-position
@@ -306,7 +306,7 @@ experiments (Section 9). The granularity that exists today is
 - `compute_behavior_cfm_losses` is unaffected: the behaviour CFM loss does not
   depend on the advantage.
 
-### 5.4 `src/myfpo/metrics.py`
+### 5.4 `src/myfpo/fpo_core.py` (the metrics section)
 
 - `compute_value_metrics`: in action-level mode, add the per-token explained
   variance and keep the chunk-level series (both are different quantities and
@@ -323,7 +323,8 @@ experiments (Section 9). The granularity that exists today is
 - No change. The batch already carries `action`, `action_is_pad`,
   `raw_advantages`, `raw_returns` and the per-step rewards are inside the
   chunk bookkeeping. The per-token targets are computed from the same data in
-  `gae.py`.
+  the chunk bookkeeping. The per-token targets are computed from the same data in
+  `rollout.py`.
 
 ---
 
@@ -352,7 +353,7 @@ noise, not credit assignment.
 
 - `src/myfpo/fpo_core.py` — the ratio, the ASPO surrogate, the CFM loss. The
   granularity change is upstream of them.
-- `src/myfpo/attention.py` — the causal mask is the licence for the
+- `src/myfpo/layers.py` (the attention section) — the causal mask is the licence for the
   factorisation and is already pinned by `tests/test_causal_attention.py`.
 - `src/myfpo/flow.py` — the actor.
 

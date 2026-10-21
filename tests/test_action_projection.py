@@ -125,7 +125,7 @@ def test_the_collector_no_longer_clamps():
     The clamp and the clip count were removed because the squash upstream makes
     them unreachable. This test fails if either comes back.
     """
-    from myfpo.collector import resolve_action_bounds
+    from myfpo.rollout import resolve_action_bounds
     from myfpo.processor import squash_to_env_bounds
 
     lo, hi = resolve_action_bounds([-2.0, -1.0, -0.3], [2.0, 1.0, 0.3])
@@ -170,7 +170,7 @@ def test_no_clamp_survives_on_the_collector_path():
     from pathlib import Path
 
     root = Path(__file__).resolve().parents[1]
-    src = (root / "src" / "myfpo" / "collector.py").read_text()
+    src = (root / "src" / "myfpo" / "rollout.py").read_text()
     tree = ast.parse(src)
     # The action path now lives in its own step function, so the check walks
     # the whole module instead of one function body.

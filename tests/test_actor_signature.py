@@ -16,7 +16,7 @@ import inspect
 import torch
 
 from myfpo.configuration import MyfpoConfig
-from myfpo.encoder import StateEncoder
+from myfpo.processor import StateEncoder
 from myfpo.flow import MyfpoFlowModel
 
 SRC = __import__("pathlib").Path(__file__).resolve().parents[1] / "src" / "myfpo"

@@ -1,14 +1,33 @@
 """Single home for every hyperparameter (LeRobot ``PreTrainedConfig``)."""
 
 from __future__ import annotations
-
+from pathlib import Path
+import yaml
 import warnings
 from dataclasses import dataclass
-
 from lerobot.configs import PreTrainedConfig
 from lerobot.optim import AdamWConfig
 
 __all__ = ["ACTOR_ARCHITECTURES", "FLOW_STARTS", "MyfpoConfig"]
+
+# ---- from config.py ----
+ENV_REGISTRY_PATH = Path(__file__).resolve().parents[2] / "configs" / "envs.yaml"
+
+with ENV_REGISTRY_PATH.open() as f:
+    _ENV_REGISTRY = yaml.safe_load(f) or {}
+
+KNOWN_ENVS = tuple(_ENV_REGISTRY.keys())
+
+
+def get_observation_action_dim(env_id: str) -> tuple[int, int]:
+    """Obs and action dims for ``env_id``, from ``configs/envs.yaml``."""
+    if not _ENV_REGISTRY:
+        raise KeyError(f"registry empty at {ENV_REGISTRY_PATH}")
+    entry = _ENV_REGISTRY.get(env_id)
+    if entry is None:
+        raise KeyError(f"unknown env {env_id!r}; add it to {ENV_REGISTRY_PATH}")
+    return int(entry["obs_dim"]), int(entry["action_dim"])
+
 
 ACTOR_ARCHITECTURES = ("dit", "resmlp")
 
@@ -416,4 +435,3 @@ class MyfpoConfig(PreTrainedConfig):
     @property
     def reward_delta_indices(self) -> None:
         return None
-

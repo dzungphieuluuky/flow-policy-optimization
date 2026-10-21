@@ -8,7 +8,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 
-from myfpo.config import (  # noqa: E402
+from myfpo.configuration import (  # noqa: E402
     ENV_REGISTRY_PATH,
     KNOWN_ENVS,
     get_observation_action_dim,

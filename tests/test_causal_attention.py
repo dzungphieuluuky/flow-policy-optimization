@@ -12,7 +12,7 @@ import dataclasses
 import pytest
 import torch
 
-from myfpo.attention import SelfAttention
+from myfpo.layers import SelfAttention
 from myfpo.configuration import MyfpoConfig
 
 

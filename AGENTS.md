@@ -65,7 +65,7 @@ One run writes to `outputs/myfpo_<env>_seed<seed>/`. The checkpoints sit in `che
 
 Do not add runner scalars (`total_steps`, `eval_steps`, `save_steps`, `obs_dim`, `action_dim`) to `MyfpoConfig`. The runner bypasses the config for them, by design.
 
-Two files have similar names. `src/myfpo/configuration.py` is the dataclass. `src/myfpo/config.py` is the environment registry, read from `configs/envs.yaml`. Do not mix them.
+One file holds both. The top of `src/myfpo/configuration.py` is the dataclass; the environment registry read from `configs/envs.yaml` sits below it.
 
 `configs/envs.yaml` is the source of truth for `obs_dim` and `action_dim`. The runner checks the live env space against it at startup. A mismatch is a loud error. It usually means a gym version change. Re-measure and update the file. Do not pass dims for a normal run.
 
@@ -74,19 +74,19 @@ Two files have similar names. `src/myfpo/configuration.py` is the dataclass. `sr
 ## Layout
 
 ```
-src/myfpo/          the package. The leaves are utils, layers, config,
-                     configuration, critic, gae, evaluator, tracking.
-                     attention builds on layers and utils. encoder builds on
-                     layers. processor builds on encoder. flow builds on
-                     attention, layers and utils. metrics builds on
-                     configuration, fpo_core and utils. fpo_core builds on
-                     configuration and utils. collector builds on processor.
-                     rollout builds on collector, gae, metrics and utils.
-                     modeling builds on flow, critic, encoder, metrics,
-                     processor, rollout, configuration, fpo_core and utils.
-                     checkpointing builds on modeling. training builds on
-                     checkpointing, collector, configuration, evaluator,
-                     metrics, modeling, processor, runner, tracking and utils.
+src/myfpo/          the package, 13 modules. The leaves are layers,
+                     configuration, critic, evaluator and tracking.
+                     processor builds on layers (the obs encoder and the
+                     running normaliser live there). flow builds on layers.
+                     fpo_core builds on configuration (the training metric
+                     functions live there). rollout builds on processor,
+                     fpo_core and layers (the collector, the chunk GAE and
+                     the rollout procedure live there). modeling builds on
+                     flow, critic, processor, rollout, fpo_core,
+                     configuration and layers. checkpointing builds on
+                     modeling. training builds on checkpointing, rollout,
+                     configuration, evaluator, fpo_core, modeling,
+                     processor, runner, tracking and layers.
 scripts/            train.py is the entry. pins/ holds the behaviour gates.
 tests/              49 files. test_guard_messages.py pins 77 guard
                      messages. test_ratio_axes.py pins the paper configs.
@@ -108,9 +108,9 @@ No cycles, including the deferred imports. `docs/architecture.md` has the layer 
 
 **The ratio is per token, the advantage is per chunk.** `ratio_token` has shape `[n, M, H]`. `normalised_advantages` has shape `[n]`. One scalar covers all 8 tokens of a chunk. This mismatch is the open problem in `docs/token_advantage_design_a.md`. Do not change the granularity in either direction without reading that file.
 
-**The chunk reward is discounted per environment step.** `gae.py` sums `gamma**offsets * r` over the 8 steps and bootstraps with `gamma**length`. `length` is 8 for a full chunk and smaller when the episode ended first. The discount clock is per step, not per chunk. Do not re-discount on top of that.
+**The chunk reward is discounted per environment step.** `rollout.py` (the absorbed `gae.py` section) sums `gamma**offsets * r` over the 8 steps and bootstraps with `gamma**length`. `length` is 8 for a full chunk and smaller when the episode ended first. The discount clock is per step, not per chunk. Do not re-discount on top of that.
 
-**Causal attention.** `attention.py` uses `is_causal=True`. Token `i` depends on the prefix only. The actor is factorised over the chunk. This is what makes a per-token advantage well posed.
+**Causal attention.** `layers.py` (the absorbed `attention.py` section) uses `is_causal=True`. Token `i` depends on the prefix only. The actor is factorised over the chunk. This is what makes a per-token advantage well posed.
 
 **The actor outputs zero at init.** `out` and `adaLN_out` are zero-initialised. A fresh actor predicts zero velocity.
 

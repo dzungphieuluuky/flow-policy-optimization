@@ -6,7 +6,7 @@ import torch
 class TestGAEChunkAdvantageInvariant:
     def test_gae_chunk_advantage_invariant(self):
         """GAE: advantages + q_current_chunk == target. Gamma^h scales bootstrap."""
-        from myfpo.gae import compute_chunk_advantages
+        from myfpo.rollout import compute_chunk_advantages
 
         # Minimal synthetic chunk: 2 chunks, length 3, gamma=1.0. (no discount) Then target = R + 1*(1-0)*next_q = R + next_q. Advantage = target - q.
         q_current_chunk = torch.ones(2, dtype=torch.float32)
@@ -127,7 +127,7 @@ class TestFPOCoreRemaining:
 class TestValueDiagnostics:
     def test_gae_diagnostics_shape(self):
         """Diagnostics dict keys match expected tuple."""
-        from myfpo.metrics import GAE_DIAGNOSTIC_KEYS
+        from myfpo.fpo_core import GAE_DIAGNOSTIC_KEYS
         assert isinstance(GAE_DIAGNOSTIC_KEYS, tuple)
         assert len(GAE_DIAGNOSTIC_KEYS) == 4
 

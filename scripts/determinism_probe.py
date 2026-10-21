@@ -26,7 +26,7 @@ from lerobot.utils.random_utils import set_seed
 from myfpo.checkpointing import load_policy_checkpoint
 from myfpo.evaluator import Evaluator
 from myfpo.training import EvalPolicy
-from myfpo.utils import resolve_device
+from myfpo.layers import resolve_device
 
 
 def run_once(policy, evaluator, eval_seed: int) -> dict[str, float]:

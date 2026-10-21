@@ -22,7 +22,7 @@ from torch import nn
 
 from myfpo.configuration import MyfpoConfig
 from myfpo.critic import Critic, CriticMember, ActionAffine
-from myfpo.metrics import compute_value_metrics
+from myfpo.fpo_core import compute_value_metrics
 from myfpo.modeling import MyfpoPolicy
 
 OBS, HIDDEN, STEPS, ACT, H = 11, 32, 8, 3, 6

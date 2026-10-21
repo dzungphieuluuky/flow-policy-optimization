@@ -8,9 +8,9 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from myfpo.attention import AdaLNBlock, DiTBlock
+from myfpo.layers import AdaLNBlock, DiTBlock
 from myfpo.layers import MIN_WIDTH, CondMLP, SinusoidalEncoding, build_rms_norm, modulate
-from myfpo.utils import rms
+from myfpo.layers import rms
 
 def effective_rank(features: torch.Tensor) -> torch.Tensor:
     """``exp`` spectral entropy of ``[n, hidden]``. The collapse probe."""

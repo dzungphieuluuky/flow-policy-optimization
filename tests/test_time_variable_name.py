@@ -67,7 +67,7 @@ def test_eps_keeps_its_paper_name():
 def test_the_two_sampling_helpers_are_named_for_what_they_return():
     """``sample_timesteps`` draws. ``sample_mc_timesteps`` shapes for the batch."""
     from myfpo.fpo_core import sample_timesteps
-    from myfpo.metrics import sample_mc_timesteps
+    from myfpo.fpo_core import sample_mc_timesteps
 
     assert sample_timesteps.__name__ == "sample_timesteps"
     assert sample_mc_timesteps.__name__ == "sample_mc_timesteps"

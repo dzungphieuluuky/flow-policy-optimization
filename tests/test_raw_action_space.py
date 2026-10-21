@@ -109,7 +109,7 @@ def test_every_squash_site_computes_the_same_terms():
     affine terms differently, the action the env saw and the action the
     diagnostics report drift apart.
     """
-    from myfpo.collector import resolve_action_bounds
+    from myfpo.rollout import resolve_action_bounds
     from myfpo.processor import MyfpoActionPostprocessorStep
     from myfpo.training import executed_chunk
 

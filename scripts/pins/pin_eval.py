@@ -71,7 +71,7 @@ def collect() -> dict:
         compute_mean_chunk_jerk,
         compute_seam_jerk,
     )
-    from myfpo.metrics import compute_eval_summary_metrics
+    from myfpo.fpo_core import compute_eval_summary_metrics
 
     out: dict = {}
     for index, (mean, episodes, all_returns, count) in enumerate(_windows()):

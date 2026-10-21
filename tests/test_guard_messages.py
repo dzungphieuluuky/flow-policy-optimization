@@ -88,9 +88,9 @@ def _missing_input_features() -> None:
 
 
 # --- network constructors ----------------------------------------------------.
-from myfpo.attention import DiTBlock, SelfAttention  # noqa: E402
+from myfpo.layers import DiTBlock, SelfAttention  # noqa: E402
 from myfpo.critic import Critic, CriticMember  # noqa: E402
-from myfpo.encoder import RunningMeanStd, StateEncoder  # noqa: E402
+from myfpo.processor import RunningMeanStd, StateEncoder  # noqa: E402
 from myfpo.flow import MyfpoFlowModel  # noqa: E402
 from myfpo.layers import CondMLP, SinusoidalEncoding, SwiGLU  # noqa: E402
 
@@ -132,7 +132,7 @@ from myfpo.fpo_core import (  # noqa: E402
     sample_action,
     sample_timesteps,
 )
-from myfpo.gae import compute_chunk_advantages  # noqa: E402
+from myfpo.rollout import compute_chunk_advantages  # noqa: E402
 
 
 def _gae(**kw):
