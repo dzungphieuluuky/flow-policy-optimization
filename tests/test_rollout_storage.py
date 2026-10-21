@@ -143,14 +143,7 @@ def test_next_state_frames_agree_across_chunks():
 
 def test_single_step_chunk():
     """n_exec == 1: chunk_next_state[c] is the one and only step window."""
-    buf = RolloutBuffer(
-        max_chunks=4,
-        max_steps=8,
-        obs_steps=OBS_STEPS,
-        obs_dim=OBS_DIM,
-        action_horizon=HORIZON,
-        action_dim=ACT_DIM,
-    )
+    buf = _buffer()
     window = torch.full((OBS_STEPS, OBS_DIM), 0.25)
     next_window = torch.full((OBS_STEPS, OBS_DIM), 0.75)
     buf.add_chunk(
@@ -182,14 +175,7 @@ def test_reset_keeps_storage_and_clears_cursors():
 def test_copy_to_matches_the_active_prefix():
     """The H2D transfer must carry every field, at the right length."""
     buf = _collect(total_steps=120)
-    gpu = RolloutBuffer(
-        max_chunks=buf.max_chunks,
-        max_steps=buf.max_steps,
-        obs_steps=OBS_STEPS,
-        obs_dim=OBS_DIM,
-        action_horizon=HORIZON,
-        action_dim=ACT_DIM,
-    )
+    gpu = _buffer()
     buf.copy_to(gpu)
     active, mirrored = buf.active(), gpu.active()
     assert set(active) == set(mirrored)
