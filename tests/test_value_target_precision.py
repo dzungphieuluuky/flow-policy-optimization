@@ -25,15 +25,14 @@ def test_source_does_not_cast_the_value_target_to_storage_dtype():
     """Guard the fix itself."""
     import inspect
 
-    src = inspect.getsource(MyfpoPolicy._loss_and_info)
-    value_block = src[src.index("raw_value_pred = self.critic") :]
-    value_block = value_block[: value_block.index("if reduction ==")]
-    assert "storage_dtype" not in value_block, (
+    # The value path lives in its own method now, so the guard reads it there.
+    src = inspect.getsource(MyfpoPolicy._value_loss)
+    assert "storage_dtype" not in src, (
         "the critic's value path must stay fp32; it regresses on raw returns"
     )
     # The promotion to fp32 must sit on the critic's own output line.
     critic_line = next(
-        line for line in value_block.splitlines() if "raw_value_pred = " in line
+        line for line in src.splitlines() if "raw_value_pred = " in line
     )
     assert critic_line.rstrip().endswith(".float()  # [num_critics, n]"), critic_line
 

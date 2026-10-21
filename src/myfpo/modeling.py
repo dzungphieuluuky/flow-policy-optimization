@@ -78,7 +78,38 @@ def build_optimizer(policy: MyfpoPolicy) -> torch.optim.Optimizer:
         group["base_lr"] = float(group["lr"])
     return optimizer
 
+@dataclasses.dataclass
+class _Batch:
+    """The tensors one training step reads. Loaded and shape-checked."""
 
+    states: torch.Tensor
+    actions: torch.Tensor
+    advantages: torch.Tensor
+    returns: torch.Tensor
+    action_is_pad: torch.Tensor
+    t: torch.Tensor
+    eps: torch.Tensor
+    x_t: torch.Tensor
+    actor_t: torch.Tensor
+    flow_shape: tuple[int, ...]
+    n: int
+    num_mc: int
+    condition: torch.Tensor
+    condition_flat: torch.Tensor
+    cfm_loss_old: torch.Tensor
+    cfm_loss_old_token: torch.Tensor
+
+
+@dataclasses.dataclass
+class _PolicyTerms:
+    """The policy loss, and the terms the metrics read."""
+
+    policy_per_chunk: torch.Tensor
+    cfm_loss_new: torch.Tensor
+    ratio: torch.Tensor
+    ratio_token: torch.Tensor
+    delta: torch.Tensor
+    v_star_f: torch.Tensor
 
 
 class MyfpoPolicy(PreTrainedPolicy):
@@ -564,28 +595,23 @@ class MyfpoPolicy(PreTrainedPolicy):
         )
         return loss, info
 
-    def _loss_and_info(
+    def _load_batch(
         self,
         batch: dict[str, torch.Tensor],
-        reduction: str,
-        check_finite: bool,
-        *,
-        compute_info: bool,
-    ) -> tuple[torch.Tensor, dict[str, float] | None]:
-        """The shared body. ``compute_info`` picks the metrics pass."""
+        device,
+        storage_dtype: torch.dtype,
+    ) -> _Batch:
+        """Load the batch, check its shapes, and draw the MC flow points."""
         cfg = self.config
-        device = next(self.parameters()).device
-        storage_dtype = resolve_storage_dtype(device)
-
         states = self._load(batch, OBS_STATE, device, storage_dtype, async_=True)
         # The action is the flow's raw output, and it is the CFM regression
         # target. It stays fp32: the raw values are unbounded, so a bf16
         # rounding would put a 0.4% error on the target the flow is fit to.
         actions = self._load(batch, ACTION, device, torch.float32, async_=True)
-        normalised_advantages = self._load(
+        advantages = self._load(
             batch, "normalised_advantages", device, storage_dtype
         )
-        raw_returns = self._load(batch, "raw_returns", device, torch.float32)
+        returns = self._load(batch, "raw_returns", device, torch.float32)
         action_is_pad = self._load(
             batch, "action_is_pad", device, torch.bool
         )
@@ -622,11 +648,44 @@ class MyfpoPolicy(PreTrainedPolicy):
         if tuple(eps.shape) != expected_eps:
             raise ValueError(f"stored MC noise shape {tuple(eps.shape)} != {expected_eps}")
 
-        x_t_flat, actor_t, flow_shape, num_mc = mc_draws(actions, eps, t)
+        x_t, actor_t, flow_shape, num_mc = mc_draws(actions, eps, t)
 
         with autocast_context(device):
-            cond = cudagraph_safe(self.encoder(states))
-            cond_flat = broadcast_condition(cond, num_mc)
+            condition = cudagraph_safe(self.encoder(states))
+            condition_flat = broadcast_condition(condition, num_mc)
+
+        cfm_loss_old, cfm_loss_old_token = self._load_behavior_losses(
+            batch, device, n, num_mc
+        )
+
+        return _Batch(
+            states=states,
+            actions=actions,
+            advantages=advantages,
+            returns=returns,
+            action_is_pad=action_is_pad,
+            t=t,
+            eps=eps,
+            x_t=x_t,
+            actor_t=actor_t,
+            flow_shape=flow_shape,
+            n=n,
+            num_mc=num_mc,
+            condition=condition,
+            condition_flat=condition_flat,
+            cfm_loss_old=cfm_loss_old,
+            cfm_loss_old_token=cfm_loss_old_token,
+        )
+
+    def _load_behavior_losses(
+        self,
+        batch: dict[str, torch.Tensor],
+        device,
+        n: int,
+        num_mc: int,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """The frozen behavior CFM losses, computed once per rollout."""
+        cfg = self.config
         if "behavior_cfm_loss" not in batch or "behavior_cfm_loss_token" not in batch:
             raise KeyError(
                 "forward requires 'behavior_cfm_loss' and 'behavior_cfm_loss_token' "
@@ -649,47 +708,37 @@ class MyfpoPolicy(PreTrainedPolicy):
                 f"behavior_cfm_loss_token shape {tuple(cfm_loss_old_token.shape)} != "
                 f"{(n, num_mc, expected_tokens)}"
             )
+        return cfm_loss_old, cfm_loss_old_token
 
-        with autocast_context(device):
-            v_new = self.compute_predicted_velocity(
-                x_t_flat, actor_t, cond_flat
-            ).float()
-
-        cond_stats = None
-        if compute_info:
-            with torch.inference_mode(), autocast_context(device):
-                probe = max(1, cfg.hidden_dim // cfg.action_horizon)
-                _, cond_stats = self.actor.forward_with_stats(
-                    x_t_flat[:probe],
-                    actor_t[:probe],
-                    cond_flat[:probe],
-                )
-
+    def _policy_loss(self, b: _Batch, v_new: torch.Tensor, device) -> _PolicyTerms:
+        """The ASPO surrogate loss, one value per chunk."""
+        cfg = self.config
+        n, num_mc, flow_shape = b.n, b.num_mc, b.flow_shape
         with torch.autocast(device_type=device.type, enabled=False):
             v_new_r_f = velocity_to_target_param(
                 v_new.reshape(n, num_mc, *flow_shape),
-                x_t_flat.reshape(n, num_mc, *flow_shape),
-                t,
+                b.x_t.reshape(n, num_mc, *flow_shape),
+                b.t,
                 cfg,
             )
-            v_star_f = cfm_target(actions, eps, cfg).float()
-            loss_mask = action_is_pad
+            v_star_f = cfm_target(b.actions, b.eps, cfg).float()
+            loss_mask = b.action_is_pad
 
-            adv = normalised_advantages.float()
+            adv = b.advantages.float()
             adv_mc = adv.unsqueeze(1)
             cfm_loss_new, cfm_loss_new_token = compute_cfm_loss(
                 v_new_r_f, v_star_f, cfg, "sample_and_token", loss_mask,
-                cfm_loss_weight(t, cfg),
+                cfm_loss_weight(b.t, cfg),
             )
             ratio_token = compute_policy_ratio(
-                cfm_loss_old_token, cfm_loss_new_token, cfg,
+                b.cfm_loss_old_token, cfm_loss_new_token, cfg,
                 advantage=adv_mc.unsqueeze(-1),
             )
 
             if cfg.do_average_cfm_loss_in_chunk:
-                loss_old, loss_new = cfm_loss_old, cfm_loss_new
+                loss_old, loss_new = b.cfm_loss_old, cfm_loss_new
             else:
-                loss_old, loss_new = cfm_loss_old_token, cfm_loss_new_token
+                loss_old, loss_new = b.cfm_loss_old_token, cfm_loss_new_token
             loss_old = group_cfm_loss(loss_old, cfg.cfm_average_group_size)
             loss_new = group_cfm_loss(loss_new, cfg.cfm_average_group_size)
             self.cfm_above_clamp_frac = (
@@ -702,12 +751,12 @@ class MyfpoPolicy(PreTrainedPolicy):
             adv_ratio = adv.reshape(-1, *([1] * (delta.dim() - 1)))
             ratio = (
                 ratio_token
-                if loss_old is cfm_loss_old_token
+                if loss_old is b.cfm_loss_old_token
                 else compute_policy_ratio(loss_old, loss_new, cfg, advantage=adv_ratio)
             )
             surrogate = compute_aspo_surrogate(ratio, adv_ratio, cfg)
             if surrogate.dim() == 3:
-                keep = (~action_is_pad).to(surrogate.dtype)
+                keep = (~b.action_is_pad).to(surrogate.dtype)
                 surrogate = surrogate * keep[:, None, :]
                 n_executed = keep.sum(dim=-1).clamp_min(1.0)
                 policy_per_chunk = -(
@@ -716,11 +765,23 @@ class MyfpoPolicy(PreTrainedPolicy):
             else:
                 policy_per_chunk = -surrogate.flatten(1).mean(dim=1)
 
+        return _PolicyTerms(
+            policy_per_chunk=policy_per_chunk,
+            cfm_loss_new=cfm_loss_new,
+            ratio=ratio,
+            ratio_token=ratio_token,
+            delta=delta,
+            v_star_f=v_star_f,
+        )
+
+    def _value_loss(
+        self, b: _Batch, device
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         with autocast_context(device):
-            chunk_exec_frac = self.exec_length_frac((~action_is_pad).sum(dim=-1))
-            critic_in = self.critic_inputs(states, cond)
-            raw_value_pred = self.critic(critic_in, actions, chunk_exec_frac).float()  # [num_critics, n]
-        raw_returns_flat = raw_returns.reshape(-1)
+            chunk_exec_frac = self.exec_length_frac((~b.action_is_pad).sum(dim=-1))
+            critic_in = self.critic_inputs(b.states, b.condition)
+            raw_value_pred = self.critic(critic_in, b.actions, chunk_exec_frac).float()  # [num_critics, n]
+        raw_returns_flat = b.returns.reshape(-1)
         if raw_value_pred.shape[-1] != raw_returns_flat.shape[0]:
             raise ValueError(
                 f"value/return shape mismatch: raw_value_pred="
@@ -730,20 +791,56 @@ class MyfpoPolicy(PreTrainedPolicy):
         value_loss_per_chunk = compute_value_loss(
             raw_value_pred, raw_returns_flat
         ).mean(dim=0)
+        return value_loss_per_chunk, raw_value_pred, raw_returns_flat
+
+    def _loss_and_info(
+        self,
+        batch: dict[str, torch.Tensor],
+        reduction: str,
+        check_finite: bool,
+        *,
+        compute_info: bool,
+    ) -> tuple[torch.Tensor, dict[str, float] | None]:
+        """The shared body. ``compute_info`` picks the metrics pass."""
+        cfg = self.config
+        device = next(self.parameters()).device
+        storage_dtype = resolve_storage_dtype(device)
+
+        b = self._load_batch(batch, device, storage_dtype)
+
+        with autocast_context(device):
+            v_new = self.compute_predicted_velocity(
+                b.x_t, b.actor_t, b.condition_flat
+            ).float()
+
+        cond_stats = None
+        if compute_info:
+            with torch.inference_mode(), autocast_context(device):
+                probe = max(1, cfg.hidden_dim // cfg.action_horizon)
+                _, cond_stats = self.actor.forward_with_stats(
+                    b.x_t[:probe],
+                    b.actor_t[:probe],
+                    b.condition_flat[:probe],
+                )
+
+        terms = self._policy_loss(b, v_new, device)
+        value_loss_per_chunk, raw_value_pred, raw_returns_flat = self._value_loss(
+            b, device
+        )
 
         if reduction == "mean":
-            policy_loss = policy_per_chunk.mean()
+            policy_loss = terms.policy_per_chunk.mean()
             value_loss = value_loss_per_chunk.mean()
             loss = policy_loss + cfg.value_loss_coef * value_loss
         elif reduction == "none":
-            loss = policy_per_chunk + cfg.value_loss_coef * value_loss_per_chunk
+            loss = terms.policy_per_chunk + cfg.value_loss_coef * value_loss_per_chunk
         else:
             raise ValueError(f"reduction={reduction!r} must be 'mean' or 'none'")
 
         if check_finite and not bool(torch.isfinite(loss).all()):
             raise MyfpoAborted(
                 f"Non-finite loss: "
-                f"policy_loss={float(policy_per_chunk.mean().detach())}, "
+                f"policy_loss={float(terms.policy_per_chunk.mean().detach())}, "
                 f"value_loss={float(value_loss_per_chunk.mean().detach())}"
             )
 
@@ -753,16 +850,16 @@ class MyfpoPolicy(PreTrainedPolicy):
         info = compute_policy_info(
             above_clamp_frac=self.cfm_above_clamp_frac,
             both_clamped_frac=self.cfm_both_clamped_frac,
-            cfm_loss_old=cfm_loss_old,
-            cfm_loss_new=cfm_loss_new,
-            ratio=ratio,
-            ratio_token=ratio_token,
-            delta=delta,
-            action_is_pad=action_is_pad,
-            v_star_f=v_star_f,
+            cfm_loss_old=b.cfm_loss_old,
+            cfm_loss_new=terms.cfm_loss_new,
+            ratio=terms.ratio,
+            ratio_token=terms.ratio_token,
+            delta=terms.delta,
+            action_is_pad=b.action_is_pad,
+            v_star_f=terms.v_star_f,
             raw_value_pred=raw_value_pred,
             raw_returns_flat=raw_returns_flat,
-            policy_per_chunk=policy_per_chunk,
+            policy_per_chunk=terms.policy_per_chunk,
             value_loss_per_chunk=value_loss_per_chunk,
             cond_stats=cond_stats,
             cfg=cfg,
