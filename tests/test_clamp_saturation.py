@@ -8,11 +8,11 @@ keeps training.
 This file pins that failure and the measurement that reports it.
 """
 
-import dataclasses
-
-import numpy as np
 import pytest
+import numpy as np
 import torch
+
+from fixtures import cfg
 
 from myfpo.configuration import MyfpoConfig
 from myfpo.fpo_core import clamp_saturation, compute_aspo_surrogate, compute_policy_ratio
@@ -21,7 +21,7 @@ N, MC, ACT = 6, 4, 2
 
 
 def _cfg(**overrides):
-    return dataclasses.replace(MyfpoConfig(), **overrides)
+    return MyfpoConfig(**overrides)
 
 
 def test_both_losses_above_the_clamp_pin_the_ratio_at_one():
@@ -163,33 +163,26 @@ def _policy_and_batch(cfm_clamp):
     The bound 2.0 matters. At the default 20.0 both readings are 0.0, so a
     wrong axis looks correct. The sweep below shows where the two axes cross.
     """
-    from lerobot.configs.policies import PolicyFeature
-    from lerobot.configs.types import FeatureType
-
     from myfpo.fpo_core import sample_timesteps
     from myfpo.training import build_policy
 
     obs, act, horizon, mc = 6, 3, 4, 4
-    cfg = dataclasses.replace(
-        MyfpoConfig(
-            action_horizon=horizon, n_action_steps=horizon,
-            num_mc_samples=mc, hidden_dim=32,
-            time_embed_dim=16, dit_depth=1, dit_heads=2, n_obs_steps=2,
-            compile=False, report_to="none", cfm_clamp=cfm_clamp,
-            input_features={"observation.state": PolicyFeature(FeatureType.STATE, (obs,))},
-            output_features={"action": PolicyFeature(FeatureType.ACTION, (act,))},
-        )
+    pcfg = cfg(
+        obs_dim=obs, act_dim=act,
+        action_horizon=horizon, n_action_steps=horizon, num_mc_samples=mc,
+        hidden_dim=32, time_embed_dim=16, dit_depth=1, dit_heads=2, n_obs_steps=2,
+        compile=False, report_to="none", cfm_clamp=cfm_clamp,
     )
     torch.manual_seed(0)
     policy = build_policy(
-        obs, act, cfg, device="cpu",
+        obs, act, pcfg, device="cpu",
         action_low=[-1.0] * act, action_high=[1.0] * act,
     )
     n = 3
     torch.manual_seed(1)
-    states = torch.randn(n, cfg.n_obs_steps, obs)
+    states = torch.randn(n, pcfg.n_obs_steps, obs)
     actions = torch.randn(n, horizon, act)
-    t = sample_timesteps((n, mc, horizon), cfg, "cpu", None).unsqueeze(-1)
+    t = sample_timesteps((n, mc, horizon), pcfg, "cpu", None).unsqueeze(-1)
     eps = torch.randn(n, mc, horizon, act)
     pad = torch.zeros(n, horizon, dtype=torch.bool)
     pre = policy.preprocessor({"observation.state": states})["observation.state"]
@@ -201,6 +194,7 @@ def _policy_and_batch(cfm_clamp):
         "mc_t": t, "mc_eps": eps,
         "behavior_cfm_loss": old, "behavior_cfm_loss_token": old_token,
     }
+    return policy, batch, pcfg
     return policy, batch, cfg
 
 
