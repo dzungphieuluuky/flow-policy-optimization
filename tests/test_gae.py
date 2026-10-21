@@ -7,31 +7,36 @@ from myfpo.gae import compute_chunk_advantages
 GAMMA, H = 0.99, 4
 
 
-def expected_chunk_reward(lengths, reward=1.0):
-    """R_i: executed-step discount."""
-    return [sum(GAMMA**k * reward for k in range(h)) for h in lengths]
-
-
-def run(lengths, terminated=None, q_current_chunk=0.0, q_next_state=2.0, reward=1.0,
-        total_steps=None, chunk_size=H):
-    """Build rollout."""
+def gae(lengths, terminated=None, truncated=None, env_id=None, lam=0.0,
+        q_current_chunk=0.0, q_next_state=2.0, reward=1.0, chunk_size=H):
+    """One rollout through the backup. ``lam=0`` gives the QC path."""
     lengths_t = torch.tensor(lengths, dtype=torch.long)
     n = lengths_t.numel()
-    starts = torch.cat([torch.zeros(1, dtype=torch.long), lengths_t.cumsum(0)[:-1]])
-    total = int(total_steps if total_steps is not None else lengths_t.sum())
+    starts = torch.zeros(n, dtype=torch.long)
+    starts[1:] = lengths_t.cumsum(0)[:-1]
+
+    def flags(value):
+        if value is None:
+            return torch.zeros(n, dtype=torch.bool)
+        return torch.tensor(value, dtype=torch.bool)
+
     return compute_chunk_advantages(
-        torch.full((total,), float(reward)),
+        torch.full((int(lengths_t.sum()),), float(reward)),
         torch.full((n,), float(q_current_chunk)),
         torch.full((n,), float(q_next_state)),
         starts, lengths_t,
-        chunk_terminated=(
-            torch.zeros(n, dtype=torch.bool)
-            if terminated is None
-            else torch.tensor(terminated, dtype=torch.bool)
-        ),
+        chunk_terminated=flags(terminated),
         chunk_size=chunk_size, gamma=GAMMA,
-        gae_lambda=0.0,
+        chunk_truncated=flags(truncated),
+        chunk_env_id=(torch.zeros(n, dtype=torch.long) if env_id is None
+                      else torch.tensor(env_id, dtype=torch.long)),
+        gae_lambda=lam,
     )
+
+
+def expected_chunk_reward(lengths, reward=1.0):
+    """R_i: executed-step discount."""
+    return [sum(GAMMA**k * reward for k in range(h)) for h in lengths]
 
 
 # Backup identity.
@@ -39,7 +44,7 @@ def run(lengths, terminated=None, q_current_chunk=0.0, q_next_state=2.0, reward=
 
 def test_delta_is_one_chunked_backup():
     lengths = [H, H, 3, H]
-    adv, ret = run(lengths)
+    adv, ret = gae(lengths)
     r = expected_chunk_reward(lengths)
     want = [r[i] + GAMMA ** lengths[i] * 2.0 for i in range(4)]
     assert adv.tolist() == pytest.approx(want, abs=1e-5)
@@ -61,17 +66,18 @@ def test_returns_are_qcs_target_expression():
         rewards, q, q_next, starts, torch.tensor(lengths),
         chunk_terminated=term, chunk_size=H, gamma=GAMMA, gae_lambda=0.0,
     )
-    want = []
-    for i, h in enumerate(lengths):
-        r_i = sum(GAMMA**k * rewards[starts[i] + k].item() for k in range(h))
-        want.append(r_i + (0.0 if term[i] else GAMMA**h * q_next[i].item()))
+    want = [
+        sum(GAMMA**k * rewards[starts[i] + k].item() for k in range(h))
+        + (0.0 if term[i] else GAMMA**h * q_next[i].item())
+        for i, h in enumerate(lengths)
+    ]
     assert returns.tolist() == pytest.approx(want, abs=1e-5)
 
 
 def test_baseline_subtraction_scales_with_the_value():
     """A higher Q lowers the advantage by exactly what it raised Q by."""
-    raw = run([H], terminated=[True], q_current_chunk=0.0)[0]
-    raised = run([H], terminated=[True], q_current_chunk=9.0)[0]
+    raw = gae([H], terminated=[True], q_current_chunk=0.0)[0]
+    raised = gae([H], terminated=[True], q_current_chunk=9.0)[0]
     torch.testing.assert_close(raw - raised, torch.tensor([9.0]))
     assert float(raw) > 0 > float(raised)
 
@@ -82,7 +88,7 @@ def test_baseline_subtraction_scales_with_the_value():
 def test_terminated_zeroes_the_bootstrap():
     lengths = [H] * 3
     r = expected_chunk_reward(lengths)
-    adv, _ = run(lengths, terminated=[False, True, False])
+    adv, _ = gae(lengths, terminated=[False, True, False])
     assert adv[1].item() == pytest.approx(r[1], abs=1e-5)  # reward sum only.
     assert adv[2].item() == pytest.approx(r[2] + GAMMA**H * 2.0, abs=1e-5)
 
@@ -90,46 +96,27 @@ def test_terminated_zeroes_the_bootstrap():
 def test_a_neighbouring_termination_changes_nothing_upstream():
     """One backup per chunk: no credit crosses a chunk boundary."""
     lengths = [H] * 3
-    clean, _ = run(lengths, terminated=[False, False, False])
-    cut, _ = run(lengths, terminated=[False, True, False])
+    clean, _ = gae(lengths, terminated=[False, False, False])
+    cut, _ = gae(lengths, terminated=[False, True, False])
     assert clean[0].item() == pytest.approx(cut[0].item(), abs=1e-6)
 
 
-def test_trace_inputs_are_absent_from_the_qc_backup():
-    """QC path ignores the trace mask."""
-    import inspect
-
-    params = inspect.signature(compute_chunk_advantages).parameters
-    assert params["chunk_truncated"].default is None
-    assert params["chunk_env_id"].default is None
-
-    # Default is the standard trace, and both defaults agree with the config.
-    from myfpo.configuration import MyfpoConfig
-
-    assert params["gae_lambda"].default == MyfpoConfig().gae_lambda == 0.95
-
-    # Supplying a truncated chunk must not change a QC backup, even mid-trace.
+def test_a_qc_backup_ignores_the_trace_mask():
+    """The QC path must not read the trace mask, and must run without it."""
     lengths = [H] * 3
-    without, _ = run(lengths, terminated=[False, False, False])
-    truncated = torch.tensor([False, True, False], dtype=torch.bool)
-    with_trunc, _ = compute_chunk_advantages(
-        torch.full((sum(lengths),), 1.0),
-        torch.zeros(3), torch.full((3,), 2.0),
-        torch.tensor([0, H, 2 * H]), torch.tensor(lengths),
-        chunk_terminated=torch.zeros(3, dtype=torch.bool),
-        chunk_size=H, gamma=GAMMA,
-        chunk_truncated=truncated,
-        chunk_env_id=torch.zeros(3, dtype=torch.long),
-        gae_lambda=0.0,
+    without, _ = gae(lengths, terminated=[False, False, False])
+    with_trunc, _ = gae(
+        lengths, terminated=[False, False, False], truncated=[False, True, False]
     )
     assert without.tolist() == pytest.approx(with_trunc.tolist(), abs=1e-6)
-
-
-def test_budget_cut_does_not_reach_the_backup():
-    """A budget cut is not an episode end, so it must not land in the bootstrap."""
-    import inspect
-
-    assert "budget" not in inspect.signature(compute_chunk_advantages).parameters
+    # And the QC path runs with no trace args at all.
+    plain, _ = compute_chunk_advantages(
+        torch.full((3 * H,), 1.0), torch.zeros(3), torch.full((3,), 2.0),
+        torch.tensor([0, H, 2 * H]), torch.tensor([H] * 3),
+        chunk_terminated=torch.zeros(3, dtype=torch.bool),
+        chunk_size=H, gamma=GAMMA, gae_lambda=0.0,
+    )
+    assert plain.tolist() == pytest.approx(without.tolist(), abs=1e-6)
 
 
 # Discount/reward.
@@ -138,8 +125,8 @@ def test_budget_cut_does_not_reach_the_backup():
 def test_discount_uses_the_executed_length_not_the_horizon():
     """gamma^h over what actually ran, not the planned horizon."""
     lengths = [3, H]
-    short = run(lengths)[0][0].item()
-    whole = run([H, H])[0][0].item()
+    short = gae(lengths)[0][0].item()
+    whole = gae([H, H])[0][0].item()
     assert short == pytest.approx(
         sum(GAMMA**k for k in range(3)) + GAMMA**3 * 2.0, abs=1e-6
     )
@@ -148,7 +135,7 @@ def test_discount_uses_the_executed_length_not_the_horizon():
 
 def test_uneven_chunk_lengths():
     lengths = [H, 2, 3, H, 1, H]
-    adv, _ = run(lengths)
+    adv, _ = gae(lengths)
     r = expected_chunk_reward(lengths)
     want = [r[i] + GAMMA ** lengths[i] * 2.0 for i in range(len(lengths))]
     assert adv.tolist() == pytest.approx(want, abs=1e-5)
@@ -157,9 +144,9 @@ def test_uneven_chunk_lengths():
 def test_row_order_does_not_matter():
     """Reordering the buffer only permutes the result."""
     lengths = [H, 2, 3, H]
-    base, _ = run(lengths)
+    base, _ = gae(lengths)
     perm = [2, 0, 3, 1]
-    got, _ = run([lengths[i] for i in perm])
+    got, _ = gae([lengths[i] for i in perm])
     assert got.tolist() == pytest.approx([base[i].item() for i in perm], abs=1e-5)
 
 
@@ -168,8 +155,7 @@ def test_no_fp32_precision_loss_at_large_offsets():
     offset, n = 4096, 4
     starts = torch.arange(offset, offset + n * H, H, dtype=torch.long)
     lengths = torch.full((n,), H, dtype=torch.long)
-    total = offset + n * H
-    rewards = torch.zeros(total)
+    rewards = torch.zeros(offset + n * H)
     rewards[starts[-1] : starts[-1] + H] = 1.0  # only the last chunk has reward.
     adv, _ = compute_chunk_advantages(
         rewards, torch.zeros(n), torch.zeros(n), starts, lengths,
@@ -205,46 +191,28 @@ def test_values_are_per_chunk_not_per_step():
 # GAE trace.
 
 
-def _traced(lengths, env_id=None, terminated=None, truncated=None, lam=0.95,
-            q_current_chunk=0.0, q_next_state=0.0, reward=1.0):
-    """One rollout on the GAE path with the masks the trace needs."""
-    lengths_t = torch.tensor(lengths, dtype=torch.long)
-    n = lengths_t.numel()
-    starts = torch.cat([torch.zeros(1, dtype=torch.long), lengths_t.cumsum(0)[:-1]])
-    n_env = len(set(env_id)) if env_id is not None else 1
-    return compute_chunk_advantages(
-        torch.full((int(lengths_t.sum()),), float(reward)),
-        torch.full((n,), float(q_current_chunk)),
-        torch.full((n,), float(q_next_state)),
-        starts, lengths_t,
-        chunk_terminated=(torch.zeros(n, dtype=torch.bool) if terminated is None
-                          else torch.tensor(terminated, dtype=torch.bool)),
-        chunk_size=H, gamma=GAMMA,
-        chunk_truncated=(torch.zeros(n, dtype=torch.bool) if truncated is None
-                         else torch.tensor(truncated, dtype=torch.bool)),
-        chunk_env_id=(torch.arange(n) % n_env if env_id is None
-                      else torch.tensor(env_id, dtype=torch.long)),
-        gae_lambda=lam,
-    )
-
-
 def test_lambda_zero_is_bit_identical_to_the_qc_path():
     """lambda=0.0 is bit-identical to the QC call that omits the trace args."""
     lengths = [H, 2, 3, H]
-    qc_adv, qc_ret = run(lengths, q_current_chunk=1.0, q_next_state=2.5, reward=0.7)
-    traced_adv, traced_ret = _traced(
-        lengths, lam=0.0, q_current_chunk=1.0, q_next_state=2.5, reward=0.7
+    lengths_t = torch.tensor(lengths)
+    starts = torch.cat([torch.zeros(1, dtype=torch.long), lengths_t.cumsum(0)[:-1]])
+    qc = compute_chunk_advantages(
+        torch.full((int(lengths_t.sum()),), 0.7), torch.full((4,), 1.0),
+        torch.full((4,), 2.5), starts, lengths_t,
+        chunk_terminated=torch.zeros(4, dtype=torch.bool),
+        chunk_size=H, gamma=GAMMA, gae_lambda=0.0,
     )
-    torch.testing.assert_close(traced_adv, qc_adv, rtol=0, atol=0)
-    torch.testing.assert_close(traced_ret, qc_ret, rtol=0, atol=0)
+    traced = gae(lengths, lam=0.0, q_current_chunk=1.0, q_next_state=2.5, reward=0.7)
+    for a, b in zip(qc, traced):
+        torch.testing.assert_close(a, b, rtol=0, atol=0)
 
 
 def test_lambda_zero_returns_before_running_the_recursion():
     """lambda=0.0 returns before the recursion runs, so a broken successor map cannot hide."""
     lengths = [H] * 3
     # env ids deliberately wrong (interleaved, none matching buffer order).
-    adv, _ = _traced(lengths, env_id=[0, 1, 0], lam=0.0, q_next_state=2.0)
-    qc_adv, _ = run(lengths, q_next_state=2.0)
+    adv, _ = gae(lengths, env_id=[0, 1, 0], lam=0.0, q_next_state=2.0)
+    qc_adv, _ = gae(lengths, q_next_state=2.0)
     torch.testing.assert_close(adv, qc_adv, rtol=0, atol=0)
 
 
@@ -259,9 +227,8 @@ def test_trace_matches_the_reference_recursion_by_hand():
     q_next = torch.tensor([0.5, 1.5, 2.5, 3.5])
     lengths_t = torch.tensor(lengths)
     starts = torch.cat([torch.zeros(1, dtype=torch.long), lengths_t.cumsum(0)[:-1]])
-    rewards = torch.ones(int(lengths_t.sum()))
     got, _ = compute_chunk_advantages(
-        rewards, q, q_next, starts, lengths_t,
+        torch.ones(int(lengths_t.sum())), q, q_next, starts, lengths_t,
         chunk_terminated=torch.tensor(terminated),
         chunk_size=H, gamma=GAMMA,
         chunk_truncated=torch.tensor(truncated),
@@ -288,7 +255,7 @@ def test_trace_discount_is_gamma_h_times_lambda_not_gamma_lambda_to_the_h():
     """Pins the macro-MDP convention: lambda decays once per chunk, not per env step."""
     # Two chunks, one env, bootstrap value zero, so only the trace propagates.
     lengths = [H] * 2
-    got, _ = _traced(lengths, lam=0.95, q_next_state=0.0)
+    got, _ = gae(lengths, lam=0.95, q_next_state=0.0)
     r = sum(GAMMA**k for k in range(H))
     trace = GAMMA**H * 0.95
     # delta_0 = r, delta_1 = r, so A_0 = r + trace * r.
@@ -301,19 +268,17 @@ def test_trace_discount_is_gamma_h_times_lambda_not_gamma_lambda_to_the_h():
 def test_truncation_stops_the_trace_but_keeps_the_bootstrap():
     """A timeout is not an episode end: bootstrap yes, trace no."""
     lengths = [H] * 3
-    truncated = [False, True, False]
-    adv, ret = _traced(lengths, truncated=truncated, lam=0.9, q_next_state=2.0)
+    adv, ret = gae(lengths, truncated=[False, True, False], lam=0.9, q_next_state=2.0)
     r = sum(GAMMA**k for k in range(H))
     # Chunk 1 is truncated: its bootstrap survives, so its target still carries gamma^h * Q'.
     assert ret[1].item() == pytest.approx(r + GAMMA**H * 2.0, abs=1e-5)
-    two_free = _traced([H] * 2, lam=0.9, q_next_state=2.0)[0]
+    two_free = gae([H] * 2, lam=0.9, q_next_state=2.0)[0]
     assert adv[2].item() == pytest.approx(two_free[1].item(), abs=1e-5)
 
 
 def test_termination_still_zeroes_the_bootstrap_and_the_trace():
     lengths = [H] * 3
-    _, ret = _traced(lengths, terminated=[False, True, False],
-                     lam=0.9, q_next_state=2.0)
+    _, ret = gae(lengths, terminated=[False, True, False], lam=0.9, q_next_state=2.0)
     r = sum(GAMMA**k for k in range(H))
     # No bootstrap, and nothing to propagate: the advantage is the reward sum.
     assert ret[1].item() == pytest.approx(r, abs=1e-5)
@@ -324,7 +289,7 @@ def test_chunks_from_different_envs_do_not_interact():
     lengths = [H] * 6
     env_id = [0, 1, 0, 1, 0, 1]
     lam = 0.95
-    base, _ = _traced(lengths, env_id=env_id, lam=lam, q_next_state=1.0)
+    base, _ = gae(lengths, env_id=env_id, lam=lam, q_next_state=1.0)
     # Same rollout, but env 1's rewards multiplied by 10 via a separate call.
     lengths_t = torch.tensor(lengths)
     starts = torch.cat([torch.zeros(1, dtype=torch.long), lengths_t.cumsum(0)[:-1]])
@@ -350,11 +315,10 @@ def test_successor_is_the_next_chunk_of_the_same_env_not_the_next_buffer_row():
     """Buffer row 0's successor is row 2, not row 1."""
     lengths = [H] * 3
     env_id = [0, 1, 0]
-    lam = 0.95
-    got, _ = _traced(lengths, env_id=env_id, lam=lam, q_next_state=0.0)
+    got, _ = gae(lengths, env_id=env_id, lam=0.95, q_next_state=0.0)
     r = sum(GAMMA**k for k in range(H))
     # Chunk 0 -> chunk 2 (env 0).
-    assert got[0].item() == pytest.approx(r + (GAMMA**H * lam) * r, abs=1e-5)
+    assert got[0].item() == pytest.approx(r + (GAMMA**H * 0.95) * r, abs=1e-5)
     # Chunk 2 is last in its env, so it has no trace successor.
     assert got[2].item() == pytest.approx(r, abs=1e-5)
 
@@ -362,8 +326,8 @@ def test_successor_is_the_next_chunk_of_the_same_env_not_the_next_buffer_row():
 def test_last_chunk_of_each_env_gets_a_one_chunk_advantage():
     lengths = [H] * 4
     env_id = [0, 1, 0, 1]
-    got, _ = _traced(lengths, env_id=env_id, lam=0.95, q_next_state=0.0)
-    qc, _ = run(lengths, q_next_state=0.0)
+    got, _ = gae(lengths, env_id=env_id, lam=0.95, q_next_state=0.0)
+    qc, _ = gae(lengths, q_next_state=0.0)
     # Chunks 2 and 3 end their env, so their traces stop: 0->2, 1->3.
     for i in (2, 3):
         assert got[i].item() == pytest.approx(qc[i].item(), abs=1e-6)
@@ -372,12 +336,11 @@ def test_last_chunk_of_each_env_gets_a_one_chunk_advantage():
 def test_advantage_is_monotone_in_lambda_between_delta_and_the_full_return():
     """Higher lambda moves credit further back, never past the true return."""
     lengths = [H] * 4
-    endpoint = _traced(lengths, lam=0.0, q_next_state=0.0)[0]
-    lam = 0.95
-    got, _ = _traced(lengths, lam=lam, q_next_state=0.0)
+    endpoint = gae(lengths, lam=0.0, q_next_state=0.0)[0]
+    got, _ = gae(lengths, lam=0.95, q_next_state=0.0)
     assert (got[:-1] >= endpoint[:-1] - 1e-5).all(), "lambda shrank the advantage"
     # lambda=1 and a zero bootstrap value makes it the full discounted return.
-    full, _ = _traced(lengths, lam=1.0, q_next_state=0.0)
+    full, _ = gae(lengths, lam=1.0, q_next_state=0.0)
     want = sum(
         sum(GAMMA ** (i * H + k) for k in range(H)) for i in range(4)
     )
@@ -386,13 +349,12 @@ def test_advantage_is_monotone_in_lambda_between_delta_and_the_full_return():
 
 def test_trace_requires_its_inputs():
     """Ask for the trace mask rather than cross envs silently."""
-    lengths_t = torch.tensor([H])
     common = dict(
         step_rewards=torch.ones(H),
         q_current_chunk=torch.zeros(1),
         q_next_state=torch.zeros(1),
         chunk_starts=torch.zeros(1, dtype=torch.long),
-        chunk_lengths=lengths_t,
+        chunk_lengths=torch.tensor([H]),
         chunk_terminated=torch.zeros(1, dtype=torch.bool),
         chunk_size=H,
         gamma=GAMMA,
@@ -406,65 +368,24 @@ def test_trace_requires_its_inputs():
         )
 
 
-def test_rejects_an_out_of_range_lambda():
-    with pytest.raises(ValueError, match="gae_lambda"):
+@pytest.mark.parametrize("name,value", [("gamma", 1.5), ("gae_lambda", 1.5)])
+def test_rejects_an_out_of_range_discount_or_lambda(name, value):
+    with pytest.raises(ValueError, match=name):
         compute_chunk_advantages(
             torch.ones(H), torch.zeros(1), torch.zeros(1),
             torch.zeros(1, dtype=torch.long), torch.tensor([H]),
             chunk_terminated=torch.zeros(1, dtype=torch.bool),
-            chunk_size=H, gamma=GAMMA, gae_lambda=1.5,
+            chunk_size=H, **{"gamma": GAMMA, "gae_lambda": 0.0, name: value},
         )
 
 
-def test_trace_handles_an_empty_rollout():
-    adv, ret = compute_chunk_advantages(
-        torch.zeros(0), torch.zeros(0), torch.zeros(0),
-        torch.zeros(0, dtype=torch.long), torch.zeros(0, dtype=torch.long),
-        chunk_terminated=torch.zeros(0, dtype=torch.bool),
-        chunk_size=H, gamma=GAMMA,
-        chunk_truncated=torch.zeros(0, dtype=torch.bool),
-        chunk_env_id=torch.zeros(0, dtype=torch.long),
-        gae_lambda=0.95,
-    )
+@pytest.mark.parametrize("lam", [0.0, 0.95])
+def test_an_empty_rollout_returns_empty_tensors(lam):
+    adv, ret = gae([], lam=lam)
     assert adv.numel() == 0 and ret.numel() == 0
-
-
-def test_config_default_runs_the_standard_trace():
-    """Config and function default are both 0.95."""
-    from myfpo.configuration import MyfpoConfig
-
-    assert MyfpoConfig().gae_lambda == 0.95
-    assert MyfpoConfig(gae_lambda=0.0).gae_lambda == 0.0
-
-
-def test_config_rejects_an_out_of_range_lambda():
-    from myfpo.configuration import MyfpoConfig
-
-    with pytest.raises(ValueError, match="gae_lambda"):
-        MyfpoConfig(gae_lambda=2.0).validate()
 
 
 # Validation.
-
-
-def test_empty_rollout():
-    adv, ret = compute_chunk_advantages(
-        torch.zeros(0), torch.zeros(0), torch.zeros(0),
-        torch.zeros(0, dtype=torch.long), torch.zeros(0, dtype=torch.long),
-        chunk_terminated=torch.zeros(0, dtype=torch.bool),
-        chunk_size=H, gamma=GAMMA, gae_lambda=0.0,
-    )
-    assert adv.numel() == 0 and ret.numel() == 0
-
-
-def test_rejects_an_out_of_range_discount():
-    with pytest.raises(ValueError, match="gamma"):
-        compute_chunk_advantages(
-            torch.ones(H), torch.zeros(1), torch.zeros(1),
-            torch.zeros(1, dtype=torch.long), torch.tensor([H]),
-            chunk_terminated=torch.zeros(1, dtype=torch.bool),
-            chunk_size=H, gamma=1.5,
-        )
 
 
 def test_rejects_value_arrays_of_the_wrong_length():

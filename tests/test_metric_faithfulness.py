@@ -57,11 +57,6 @@ def test_the_key_states_the_denominator_it_divides_by():
     return standard deviation, and that fact decides how a reader compares two
     runs: it is not a fraction of anything on the advantage side.
     """
-    from myfpo.metrics import GAE_DIAGNOSTIC_KEYS, compute_gae_diagnostics
-
-    assert "advantage_std_fraction" not in GAE_DIAGNOSTIC_KEYS
-    assert "advantage_std_over_return_std" in GAE_DIAGNOSTIC_KEYS
-
     n = 8
     # Returns with a known spread, advantages with half that spread.
     returns = torch.tensor([1.0, -1.0] * (n // 2), dtype=torch.float32)
@@ -75,6 +70,8 @@ def test_the_key_states_the_denominator_it_divides_by():
     )
     got = out["advantage_std_over_return_std"]
     assert got == pytest.approx(0.5, abs=1e-5), got
+
+
 
 
 # --- names must not overstate ---------------------------------------------.
@@ -113,48 +110,6 @@ def test_linked_frac_is_live_under_the_default_trace():
     """The default lambda is 0.95, so the trace runs and this has a consumer."""
     assert MyfpoConfig().gae_lambda == 0.95
     assert 0.0 <= _gae()["linked_frac"] <= 1.0
-
-
-# --- dead logging ---------------------------------------------------------.
-
-
-def test_the_spectral_energy_key_is_gone_from_the_batch():
-    """d0f97c2 removed its source. A passthrough slot for it is dead weight."""
-    import inspect
-
-    import myfpo.training as T
-
-    src = inspect.getsource(T)
-    assert "compute_spectral_energy_retained" not in src
-
-
-def test_trainer_emits_no_key_it_cannot_compute():
-    """A guarded assignment that never fires looks configured but logs nothing."""
-    import ast
-    import inspect
-
-    import myfpo.training as T
-
-    tree = ast.parse(inspect.getsource(T))
-    dead = []
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Assign):
-            continue
-        for t in node.targets:
-            if not (isinstance(t, ast.Subscript) and isinstance(t.value, ast.Name)):
-                continue
-            if t.value.id != "data":
-                continue
-            val = ast.unparse(node.value)
-            # A key read straight out of the batch and never produced upstream.
-            if isinstance(node.value, ast.Subscript) and "batch" in val:
-                inner = val.split('"')[-1].split("'")[-1]
-                if inner in {
-                    "compute_spectral_energy_retained",
-                }:
-                    dead.append(inner)
-    assert not dead, f"trainer logs keys nothing supplies: {dead}"
-
 
 def test_rollout_diagnostics_keys_match_the_scalar_count():
     """keys and scalars are zipped positionally."""

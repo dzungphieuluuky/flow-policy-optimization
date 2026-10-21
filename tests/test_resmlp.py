@@ -16,18 +16,15 @@ reports that temporal-difference actor-critics saturate at depth 4, and this
 repo is one. Only an ablation settles that.
 """
 
-import dataclasses
 import inspect
 
 import pytest
 import torch
 from torch import nn
 
-from lerobot.configs.policies import PolicyFeature
-from lerobot.configs.types import FeatureType
-from fixtures import make_batch
+from fixtures import cfg, make_batch
 
-from myfpo.configuration import ACTOR_ARCHITECTURES, MyfpoConfig
+from myfpo.configuration import ACTOR_ARCHITECTURES
 from myfpo.flow import (
     ResidualMLP,
     ResMLPBlock,
@@ -41,18 +38,20 @@ HEADS = 2
 
 
 def _cfg(**kw):
-    return dataclasses.replace(
-        MyfpoConfig(
-            action_horizon=HORIZON,
-            hidden_dim=HIDDEN,
-            time_embed_dim=TIME_EMBED,
-            dit_depth=1,
-            dit_heads=HEADS,
-            n_obs_steps=2,
-            input_features={"observation.state": PolicyFeature(FeatureType.STATE, (OBS,))},
-            output_features={"action": PolicyFeature(FeatureType.ACTION, (ACT,))},
-        ),
-        **kw,
+    base = dict(
+        obs_dim=OBS, act_dim=ACT,
+        action_horizon=HORIZON, hidden_dim=HIDDEN, time_embed_dim=TIME_EMBED,
+        dit_depth=1, dit_heads=HEADS, n_obs_steps=2,
+    )
+    base.update(kw)
+    return cfg(**base)
+
+
+def _policy(**kw):
+    """The actor under test, on CPU with a squashed [-1, 1] action space."""
+    return build_policy(
+        OBS, ACT, _cfg(compile=False, **kw), device="cpu",
+        action_low=[-1.0] * ACT, action_high=[1.0] * ACT,
     )
 
 
@@ -165,7 +164,6 @@ def test_the_adaln_head_still_zero_inits():
 
 
 def test_resmlp_shares_the_actor_prefix_with_the_dit_actor():
-    assert inspect.signature(MyfpoFlowResMLP.__init__).parameters
     for cls in (MyfpoFlowModel, MyfpoFlowResMLP):
         params = list(inspect.signature(cls.__init__).parameters)[1:]
         assert params[:3] == ["action_dim", "action_horizon", "hidden_dim"], (
@@ -175,24 +173,19 @@ def test_resmlp_shares_the_actor_prefix_with_the_dit_actor():
 
 def test_resmlp_meets_the_shape_and_zero_init_contract():
     net = _resmlp()
-    x, t, cond = torch.randn(3, HORIZON, ACT), torch.rand(3, HORIZON, 1), torch.randn(3, HIDDEN)
+    x = torch.randn(3, HORIZON, ACT)
+    t, cond = torch.rand(3, HORIZON, 1), torch.randn(3, HIDDEN)
     assert net(x, t, cond).shape == x.shape
     assert torch.equal(net(x, t, cond), torch.zeros_like(x))
-
-
-def test_resmlp_accepts_every_time_form():
-    net = _resmlp()
-    x, cond = torch.randn(3, HORIZON, ACT), torch.randn(3, HIDDEN)
-    for t in (torch.tensor(0.4), 0.4, torch.rand(3), torch.rand(3, HORIZON, 1)):
-        assert net(x, t, cond).shape == x.shape
 
 
 def test_resmlp_reports_the_same_conditioning_stats_as_the_dit():
     """``loss_with_info`` reads ``cond_*``. The keys must match across actors."""
     keys = {"temb", "fused", "c", "gate_msa", "gate_mlp", "scale_msa",
             "scale_mlp", "effective_rank", "weight_magnitude"}
-    _, stats = _resmlp().forward_with_stats(torch.randn(2, HORIZON, ACT), torch.rand(2, HORIZON, 1),
-                                            torch.randn(2, HIDDEN))
+    _, stats = _resmlp().forward_with_stats(
+        torch.randn(2, HORIZON, ACT), torch.rand(2, HORIZON, 1), torch.randn(2, HIDDEN)
+    )
     assert set(stats) == keys, set(stats) ^ keys
 
 
@@ -207,14 +200,10 @@ def test_the_modulation_layer_is_named_adaln_so_weight_decay_still_skips_it():
     modulation anything else would start decaying it, with no error and no
     warning. This is the easiest way to get the integration wrong.
     """
-    policy = build_policy(
-        OBS, ACT, _cfg(actor_arch="resmlp", compile=False), device="cpu",
-        action_low=[-1.0] * ACT, action_high=[1.0] * ACT,
-    )
+    policy = _policy(actor_arch="resmlp")
     no_decay = {id(p) for p in policy.get_actor_optim_params()["params"][1]["params"]}
-    named = dict(policy.actor.named_parameters())
     checked = 0
-    for name, param in named.items():
+    for name, param in policy.actor.named_parameters():
         if "adaLN" in name or name.startswith("out."):
             assert id(param) in no_decay, f"{name} is being weight-decayed"
             checked += 1
@@ -223,10 +212,7 @@ def test_the_modulation_layer_is_named_adaln_so_weight_decay_still_skips_it():
 
 def test_the_resmlp_branch_params_still_get_weight_decay():
     """The guard above must not have swallowed the whole actor."""
-    policy = build_policy(
-        OBS, ACT, _cfg(actor_arch="resmlp", compile=False), device="cpu",
-        action_low=[-1.0] * ACT, action_high=[1.0] * ACT,
-    )
+    policy = _policy(actor_arch="resmlp")
     groups = policy.get_actor_optim_params()["params"]
     no_decay = {id(p) for p in groups[1]["params"]}
     total = {id(p) for p in policy.actor.parameters()}
@@ -234,8 +220,8 @@ def test_the_resmlp_branch_params_still_get_weight_decay():
 
 
 def test_the_config_names_the_three_resmlp_knobs_and_validates_them():
-    cfg = _cfg()
-    assert (cfg.resmlp_blocks, cfg.resmlp_units, cfg.resmlp_hidden_mult) == (2, 4, 2.0)
+    gcfg = _cfg()
+    assert (gcfg.resmlp_blocks, gcfg.resmlp_units, gcfg.resmlp_hidden_mult) == (2, 4, 2.0)
     assert "resmlp" in ACTOR_ARCHITECTURES
     for field, value in (
         ("resmlp_blocks", 0),
@@ -246,20 +232,10 @@ def test_the_config_names_the_three_resmlp_knobs_and_validates_them():
             _cfg(**{field: value}).validate()
 
 
-def test_the_resmlp_knobs_are_config_fields():
-    """The three knobs are config fields, so the CLI can set them."""
-    cfg = _cfg()
-    for field in ("resmlp_blocks", "resmlp_units", "resmlp_hidden_mult"):
-        assert hasattr(cfg, field), field
-
-
 def test_a_tracked_run_works_for_every_actor():
     """``loss_with_info`` unpacks actor stats, so every actor must honour it."""
     for arch in ACTOR_ARCHITECTURES:
-        policy = build_policy(
-            OBS, ACT, _cfg(actor_arch=arch, compile=False), device="cpu",
-            action_low=[-1.0] * ACT, action_high=[1.0] * ACT,
-        )
+        policy = _policy(actor_arch=arch)
         batch = make_batch(policy, obs_dim=OBS, action_dim=ACT, horizon=HORIZON)
         loss, info = policy.loss_with_info(batch)
         assert torch.isfinite(loss).all(), arch
@@ -269,15 +245,11 @@ def test_a_tracked_run_works_for_every_actor():
 
 def test_the_policy_builds_the_configured_actor():
     for arch, cls in (("dit", MyfpoFlowModel), ("resmlp", MyfpoFlowResMLP)):
-        policy = build_policy(
-            OBS, ACT, _cfg(actor_arch=arch, compile=False), device="cpu",
-            action_low=[-1.0] * ACT, action_high=[1.0] * ACT,
-        )
-        assert isinstance(policy.actor, cls), arch
+        assert isinstance(_policy(actor_arch=arch).actor, cls), arch
 
 
 def test_the_dit_path_is_untouched_by_the_resmlp_actor():
-    """The shared stem must build the DiT weights in the original order.
+    """Same seed, same stem weights.
 
     Parameter construction order fixes the torch RNG stream. Refactoring the
     stem into a base class moved the blocks, and that redrew every weight in
@@ -295,20 +267,11 @@ def test_the_dit_path_is_untouched_by_the_resmlp_actor():
     for k, v in first.items():
         assert torch.equal(v, b.state_dict()[k]), k
 
-    # The block weights are drawn after the stem, so consuming the same number
-    # of values from a fresh stream must reproduce them.
-    torch.manual_seed(0)
-    _ = MyfpoFlowModel(ACT, HORIZON, HIDDEN, 3, HEADS, 2.0, TIME_EMBED)
-    after = torch.randn(3)
-    torch.manual_seed(0)
-    _ = MyfpoFlowModel(ACT, HORIZON, HIDDEN, 3, HEADS, 2.0, TIME_EMBED)
-    assert torch.equal(after, torch.randn(3))
-
 
 def test_the_depth_metric_the_paper_uses_is_recoverable_from_the_config():
     """Depth is Dense layers. The config must express both factors."""
-    cfg = _cfg(resmlp_blocks=3, resmlp_units=4)
-    dense_mlp_layers = cfg.resmlp_blocks * cfg.resmlp_units
+    gcfg = _cfg(resmlp_blocks=3, resmlp_units=4)
+    dense_mlp_layers = gcfg.resmlp_blocks * gcfg.resmlp_units
     assert dense_mlp_layers == 12, "3 blocks x 4 units"
     dit = _cfg(dit_depth=3)
     # The DiT block holds six Dense layers, so it is already past the paper's

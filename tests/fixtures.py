@@ -20,15 +20,20 @@ OBS_DIM = 5
 ACT_DIM = 2
 
 
+def cfg(
+    *, obs_dim: int = OBS_DIM, act_dim: int = ACT_DIM, **kw
+) -> MyfpoConfig:
+    """A config with the feature specs the suite uses. ``kw`` goes to the fields."""
+    return dataclasses.replace(
+        MyfpoConfig(**kw),
+        input_features={"observation.state": PolicyFeature(FeatureType.STATE, (obs_dim,))},
+        output_features={"action": PolicyFeature(FeatureType.ACTION, (act_dim,))},
+    )
+
+
 def make_policy(**kw) -> MyfpoPolicy:
     """A policy with the feature specs the suite uses. ``kw`` goes to the config."""
-    cfg = dataclasses.replace(
-        MyfpoConfig(**kw),
-        input_features={"observation.state": PolicyFeature(FeatureType.STATE, (OBS_DIM,))},
-        output_features={"action": PolicyFeature(FeatureType.ACTION, (ACT_DIM,))},
-    )
-    return MyfpoPolicy(cfg)
-
+    return MyfpoPolicy(cfg(**kw))
 
 def make_batch(
     policy: MyfpoPolicy,
