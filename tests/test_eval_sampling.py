@@ -134,6 +134,7 @@ def _trainer_source() -> str:
         inspect.getsource(fn)
         for fn in (
             training.run_training,
+            training._setup_run,
             training._eval_window,
             training._log_eval_window,
         )

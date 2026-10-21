@@ -693,33 +693,39 @@ def _finalize_run(out_dir, policy, optimizer, state: _RunState, env_name, seed, 
     }
 
 
-def run_training(
-    env: Any,
-    out_dir: str | Path,
-    cfg: MyfpoConfig | None = None,
-    *,
-    seed: int = 3407,
-    total_steps: int = 2000,
-    eval_steps: int = 1000,
-    save_steps: int = 1000,
-    obs_dim: int | None = None,
-    action_dim: int | None = None,
-    resume_from_checkpoint: str | Path | None = None,
-    runtime: dict | None = None,
-) -> dict[str, Any]:
-    """One myfpo training run. Env builds before any CUDA init, so forked
-    vector-env workers inherit the right device state.
-    """
-    cfg = cfg or MyfpoConfig()
-    out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
+@dataclasses.dataclass
+class _RunSetup:
+    """What one run needs before the training loop starts."""
 
+    policy: Any
+    optimizer: Any
+    train_env: Any
+    device: torch.device
+    action_low: np.ndarray
+    action_high: np.ndarray
+    evaluator: Evaluator
+    eval_policies: dict
+    r_rand: float
+    backends: list
+    env_name: str
+    global_step: int
+
+def _setup_run(
+    env,
+    out_dir: Path,
+    cfg: MyfpoConfig,
+    *,
+    seed: int,
+    total_steps: int,
+    obs_dim: int,
+    action_dim: int,
+    resume_from_checkpoint,
+    runtime: dict | None,
+) -> _RunSetup:
+    """The env, the policy, the evaluator, and the log backends."""
     unwrapped = getattr(env, "unwrapped", env)
     spec = getattr(unwrapped, "spec", None)
     env_name = getattr(spec, "id", "unknown") if spec is not None else "unknown"
-    if obs_dim is None or action_dim is None:
-        obs_dim = int(np.prod(env.observation_space.shape))
-        action_dim = int(np.prod(env.action_space.shape))
 
     set_seed(seed)
     device = resolve_device()
@@ -737,7 +743,7 @@ def run_training(
                 "and the run uses a single env. Expect a large throughput drop; "
                 "the run is otherwise correct.",
                 RuntimeWarning,
-                stacklevel=2,
+                stacklevel=3,
             )
     if runtime is not None:
         runtime["eval_sampling"] = cfg.eval_sampling
@@ -774,6 +780,7 @@ def run_training(
         file=sys.stderr,
     )
     print(policy, file=sys.stderr)
+
     eval_seed = 10000 + seed
     evaluator = Evaluator(
         env, eval_seed=eval_seed, max_episodes=cfg.eval_max_episodes
@@ -791,9 +798,72 @@ def run_training(
         seed=seed,
         total_steps=total_steps,
     )
+    return _RunSetup(
+        policy=policy,
+        optimizer=optimizer,
+        train_env=train_env,
+        device=device,
+        action_low=action_low,
+        action_high=action_high,
+        evaluator=evaluator,
+        eval_policies=eval_policies,
+        r_rand=r_rand,
+        backends=backends,
+        env_name=env_name,
+        global_step=global_step,
+    )
+
+
+def run_training(
+    env: Any,
+    out_dir: str | Path,
+    cfg: MyfpoConfig | None = None,
+    *,
+    seed: int = 3407,
+    total_steps: int = 2000,
+    eval_steps: int = 1000,
+    save_steps: int = 1000,
+    obs_dim: int | None = None,
+    action_dim: int | None = None,
+    resume_from_checkpoint: str | Path | None = None,
+    runtime: dict | None = None,
+) -> dict[str, Any]:
+    """One myfpo training run. Env builds before any CUDA init, so forked
+    vector-env workers inherit the right device state.
+    """
+    cfg = cfg or MyfpoConfig()
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    if obs_dim is None or action_dim is None:
+        obs_dim = int(np.prod(env.observation_space.shape))
+        action_dim = int(np.prod(env.action_space.shape))
+
+    setup = _setup_run(
+        env,
+        out_dir,
+        cfg,
+        seed=seed,
+        total_steps=total_steps,
+        obs_dim=obs_dim,
+        action_dim=action_dim,
+        resume_from_checkpoint=resume_from_checkpoint,
+        runtime=runtime,
+    )
+    policy = setup.policy
+    optimizer = setup.optimizer
+    train_env = setup.train_env
+    action_low = setup.action_low
+    action_high = setup.action_high
+    evaluator = setup.evaluator
+    eval_policies = setup.eval_policies
+    r_rand = setup.r_rand
+    backends = setup.backends
+    env_name = setup.env_name
+    device = setup.device
 
     state = _RunState(
-        global_step=global_step, next_eval=eval_steps, next_save=save_steps
+        global_step=setup.global_step, next_eval=eval_steps, next_save=save_steps
     )
     grad_groups = split_grad_params(policy)
     t_start = time.time()
