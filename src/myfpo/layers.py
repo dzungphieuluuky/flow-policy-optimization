@@ -100,6 +100,40 @@ class SinusoidalEncoding(nn.Module):
             emb = F.pad(emb, (0, 1))
         return emb
 
+class TemporalConv(nn.Module):
+    """A learned local filter along a time axis. It computes no statistics.
+
+    The input is ``[B, C, T]`` and the output is ``[B, C, T]``. The width
+    never changes, so every shape after the flatten stays the same.
+
+    ``causal=True`` pads on the left only, so the output at position i reads
+    positions <= i and never the future.
+    """
+
+    def __init__(self, channels: int, kernel_size: int, causal: bool = False):
+        super().__init__()
+        if channels < 1:
+            raise ValueError(f"channels must be positive, got {channels}")
+        if kernel_size < 1 or kernel_size % 2 == 0:
+            raise ValueError(
+                f"kernel_size must be a positive odd number, got {kernel_size}"
+            )
+        self.causal = causal
+        self.left_pad = kernel_size - 1 if causal else 0
+        self.conv = nn.Conv1d(
+            channels,
+            channels,
+            kernel_size,
+            padding=0 if causal else kernel_size // 2,
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """``[B, C, T]`` in, ``[B, C, T]`` out."""
+        if self.causal:
+            x = F.pad(x, (self.left_pad, 0))
+        return self.conv(x)
+
+
 def modulate(x: torch.Tensor, shift: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
     """adaLN. Compute ``x * (1 + scale) + shift``."""
     return torch.addcmul(shift, x, 1.0 + scale)
