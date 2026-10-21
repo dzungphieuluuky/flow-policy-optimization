@@ -9,7 +9,6 @@ from typing import Any
 
 import dataclasses
 
-import einx
 import numpy as np
 import torch
 
@@ -367,7 +366,7 @@ class MyfpoPolicy(PreTrainedPolicy):
         states = to_tensor(batch[OBS_STATE])
         states = states.to(dtype=resolve_storage_dtype(states.device))
         if states.dim() == 2 and states.shape[0] == cfg.n_obs_steps:
-            states = einx.id("t d -> 1 t d", states)
+            states = states.unsqueeze(0)
         elif states.dim() != 3:
             raise ValueError(
                 f"observation.state must be [B, T, obs] or [T, obs]; "
@@ -538,7 +537,7 @@ class MyfpoPolicy(PreTrainedPolicy):
 
         Seven phases, in order:
           1. load and shape-check the batch
-          2. encode the observation window, apply SIGReg
+          2. encode the observation window
           3. load the frozen behavior CFM loss from the rollout
           4. the new velocity, and the flow targets under no autocast
           5. ratio, ASPO surrogate, chunk-masked policy loss

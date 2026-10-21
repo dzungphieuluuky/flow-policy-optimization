@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import einx
 import numpy as np
 import torch
 
@@ -131,7 +130,8 @@ def mc_draws(
 
 def broadcast_condition(condition: torch.Tensor, num_mc: int) -> torch.Tensor:
     """Repeat each row ``m`` times, row-major: ``flat[i * m + j] = condition[i]``."""
-    return einx.id("n m d -> (n m) d", einx.id("n d -> n m d", condition, m=num_mc))
+    n, d = condition.shape
+    return condition.unsqueeze(1).expand(n, num_mc, d).reshape(n * num_mc, d)
 
 
 def sample_mc_timesteps(cfg: MyfpoConfig, n: int, device: torch.device) -> torch.Tensor:

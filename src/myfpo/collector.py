@@ -11,21 +11,9 @@ from collections.abc import Callable
 import numpy as np
 import torch
 
-from myfpo.configuration import MyfpoConfig
 from myfpo.processor import squash_to_env_bounds
 
 __all__ = ["RolloutBuffer", "collect_chunks_vec"]
-
-
-def get_default_config() -> MyfpoConfig:
-    """The default config, with feature specs for smoke and training."""
-    from lerobot.configs.types import FeatureType, PolicyFeature
-    return MyfpoConfig(
-        input_features={
-            "observation.state": PolicyFeature(type=FeatureType.STATE, shape=(4,))
-        },
-        output_features={"action": PolicyFeature(type=FeatureType.ACTION, shape=(2,))},
-    )
 
 
 _OBS_DTYPE = torch.float32
@@ -203,11 +191,6 @@ class RolloutBuffer:
             non_blocking=non_blocking,
         )
 
-    def assert_budget_cut_is_not_a_timeout(self, chunk_index: int) -> None:
-        """Check the bounds of a budget-cut chunk, and deliberately record nothing."""
-        if not 0 <= chunk_index < self.n_chunks:
-            raise IndexError(f"chunk index {chunk_index} out of range")
-
     def active(self) -> dict[str, torch.Tensor]:
         """Contiguous views of the populated prefix."""
         n_chunks, n_steps = self.n_chunks, self.n_steps
@@ -253,13 +236,11 @@ def resolve_action_bounds(
 
 
 def resolve_chunk_args(
-    n_obs_steps: int | None,
+    n_obs_steps: int,
     n_action_steps: int,
     action_horizon: int,
 ) -> tuple[int, int]:
-    """Fill the obs-step default, then check the execution span."""
-    cfg = get_default_config()
-    n_obs_steps = cfg.n_obs_steps if n_obs_steps is None else n_obs_steps
+    """Check the window width and the execution span."""
     if not 1 <= n_action_steps <= action_horizon:
         raise ValueError(
             f"n_action_steps={n_action_steps} must satisfy "
@@ -275,11 +256,6 @@ def flush_on_collection_error(
     if on_error_flush is not None:
         with contextlib.suppress(ValueError, RuntimeError):
             on_error_flush()
-
-
-_CLOSE_CONTINUE = "continue"
-_CLOSE_TERMINATED = "terminated"
-_CLOSE_TRUNCATED = "truncated"
 
 
 def validate_autoreset_mode(envs) -> None:
@@ -304,7 +280,7 @@ def collect_chunks_vec(
     action_low: float | np.ndarray,
     action_high: float | np.ndarray,
     *,
-    n_obs_steps: int | None = None,
+    n_obs_steps: int,
     n_action_steps: int,
     seed: int | None = None,
     on_error_flush: Callable[[], None] | None = None,
@@ -352,8 +328,6 @@ def collect_chunks_vec(
         ) % n_obs_steps
         executed_total = [0] * n
         awaiting = [False] * n
-        prev_close_reason = [_CLOSE_CONTINUE] * n
-        prev_chunk_indices: list[int | None] = [None] * n
 
         actions_t = torch.zeros((n, act_dim), dtype=torch.float32)
         remaining = sum(targets)
@@ -428,7 +402,7 @@ def collect_chunks_vec(
                     )
                     executed_total[i] += n_exec
                     remaining -= n_exec
-                    prev_chunk_indices[i] = buffer.add_chunk(
+                    buffer.add_chunk(
                         state=start_state,
                         next_state=windows[i],
                         action=raw,
@@ -438,18 +412,11 @@ def collect_chunks_vec(
                         truncated=bool(trunc_np[i]),
                         env_id=i,
                     )
-                    prev_close_reason[i] = (
-                        _CLOSE_TERMINATED if term_np[i]
-                        else _CLOSE_TRUNCATED if trunc_np[i]
-                        else _CLOSE_CONTINUE
-                    )
+
                     in_flight[i] = None
                     if done_np[i]:
                         awaiting[i] = True
 
-        for i in range(n):
-            if prev_close_reason[i] == _CLOSE_CONTINUE and prev_chunk_indices[i] is not None:
-                buffer.assert_budget_cut_is_not_a_timeout(prev_chunk_indices[i])
     except (ValueError, RuntimeError, KeyError):
         flush_on_collection_error(on_error_flush)
         raise
