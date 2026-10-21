@@ -199,18 +199,24 @@ def test_no_clamp_survives_on_the_collector_path():
     root = Path(__file__).resolve().parents[1]
     src = (root / "src" / "myfpo" / "collector.py").read_text()
     tree = ast.parse(src)
-
-    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef)
-              and n.name == "collect_chunks_vec")
+    # The action path now lives in its own step function, so the check walks
+    # the whole module instead of one function body.
     action_names = {"plan", "raw_all", "executed_all", "actions_t"}
+
+    def assigned_names(node):
+        names = set()
+        for target in node.targets:
+            if isinstance(target, ast.Name):
+                names.add(target.id)
+            elif isinstance(target, ast.Attribute):
+                names.add(target.attr)
+        return names
+
     clamps = []
-    for node in ast.walk(fn):
+    for node in ast.walk(tree):
         if not isinstance(node, ast.Assign):
             continue
-        targets = {
-            t.id for t in node.targets if isinstance(t, ast.Name)
-        }
-        if not targets & action_names:
+        if not assigned_names(node) & action_names:
             continue
         for inner in ast.walk(node.value):
             if isinstance(inner, ast.Call) and "clamp" in ast.unparse(inner.func).lower():
@@ -220,7 +226,7 @@ def test_no_clamp_survives_on_the_collector_path():
     # The squash is what bounds the action, and it is there.
     squashes = [
         ast.unparse(n.func)
-        for n in ast.walk(fn)
+        for n in ast.walk(tree)
         if isinstance(n, ast.Call) and "squash" in ast.unparse(n.func).lower()
     ]
     assert squashes, "the collector lost the squash"

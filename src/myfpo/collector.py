@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import contextlib
-
+import dataclasses
 from typing import NamedTuple
 
 from collections.abc import Callable
@@ -273,6 +273,156 @@ def validate_autoreset_mode(envs) -> None:
         )
 
 
+@dataclasses.dataclass
+class _VecState:
+    """The per-env state of the collection loop."""
+
+    windows: torch.Tensor
+    reward_windows: torch.Tensor
+    step_frames: torch.Tensor
+    in_flight: list[InFlightChunk | None]
+    pos_t: torch.Tensor
+    plan: torch.Tensor
+    actions_t: torch.Tensor
+    executed_total: list[int]
+    awaiting: list[bool]
+    remaining: int
+    env_rows: torch.Tensor
+    idle_row: torch.Tensor
+    roll_table: torch.Tensor
+
+
+def _make_state(
+    n: int,
+    n_obs_steps: int,
+    obs_dim: int,
+    action_horizon: int,
+    act_dim: int,
+    obs0: torch.Tensor,
+    remaining: int,
+) -> _VecState:
+    """The state the collection loop starts with."""
+    windows = torch.zeros(n, n_obs_steps, obs_dim, dtype=_OBS_DTYPE)
+    windows.copy_(obs0[:, None, :].expand_as(windows))
+    env_rows = torch.arange(n)
+    return _VecState(
+        windows=windows,
+        reward_windows=torch.zeros(n, action_horizon, dtype=_REWARD_DTYPE),
+        step_frames=torch.zeros(n, action_horizon, obs_dim, dtype=_OBS_DTYPE),
+        in_flight=[None] * n,
+        pos_t=torch.zeros(n, dtype=torch.long),
+        plan=torch.zeros(n + 1, action_horizon, act_dim, dtype=torch.float32),
+        actions_t=torch.zeros((n, act_dim), dtype=torch.float32),
+        executed_total=[0] * n,
+        awaiting=[False] * n,
+        remaining=remaining,
+        env_rows=env_rows,
+        idle_row=torch.full_like(env_rows, n),
+        roll_table=(
+            torch.arange(n_obs_steps)[:, None]
+            + torch.arange(n_obs_steps)[None, :]
+        )
+        % n_obs_steps,
+    )
+
+
+def _plan_chunks(
+    state: _VecState,
+    envs_needing_a_chunk: list[int],
+    policy: Callable[[torch.Tensor], torch.Tensor],
+    low: torch.Tensor,
+    high: torch.Tensor,
+    targets: list[int],
+    n_action_steps: int,
+) -> None:
+    """Give every idle env a new chunk, and hold it until it runs out."""
+    states = state.windows[envs_needing_a_chunk]
+    # The policy returns the raw chunk. The env receives the squash
+    # of it, and the buffer keeps the raw chunk: the flow is
+    # trained on what it produced, not on the squash of it.
+    raw_all = as_float_tensor(policy(states))
+    executed_all = squash_to_env_bounds(raw_all, low, high)
+    wavefront = torch.as_tensor(envs_needing_a_chunk)
+    state.plan[wavefront] = executed_all
+    state.pos_t[wavefront] = 0
+    for k, i in enumerate(envs_needing_a_chunk):
+        state.in_flight[i] = InFlightChunk(
+            actions_raw=raw_all[k],
+            start_state=states[k],
+            step_limit=min(n_action_steps, targets[i] - state.executed_total[i]),
+        )
+
+
+def _step_envs(state: _VecState, envs, action_horizon: int):
+    """Send the next action of every env, and record what came back."""
+    stepping = torch.tensor(
+        [held is not None for held in state.in_flight], dtype=torch.bool
+    )
+    live_idx = state.env_rows[stepping]
+    state.actions_t.copy_(
+        state.plan[
+            torch.where(stepping, state.env_rows, state.idle_row),
+            state.pos_t.clamp(max=action_horizon - 1),
+        ]
+    )
+    obs, rew, term, trunc, _ = envs.step(state.actions_t.cpu().numpy())
+    term_np = np.asarray(term, dtype=bool)
+    trunc_np = np.asarray(trunc, dtype=bool)
+    done_np = term_np | trunc_np
+    rew_np = np.asarray(rew, dtype=np.float32)
+    obs_t = torch.from_numpy(np.asarray(obs, dtype=np.float32))
+
+    if live_idx.numel():
+        p = state.pos_t[live_idx]
+        state.reward_windows[live_idx, p] = torch.from_numpy(rew_np)[live_idx]
+        state.step_frames[live_idx, p] = obs_t[live_idx]
+        state.windows[live_idx, p] = obs_t[live_idx]
+        state.pos_t[live_idx] = p + 1
+    return obs_t, term_np, trunc_np, done_np
+
+
+def _close_chunks(
+    state: _VecState,
+    obs_t: torch.Tensor,
+    term_np: np.ndarray,
+    trunc_np: np.ndarray,
+    done_np: np.ndarray,
+    buffer: RolloutBuffer,
+    n_obs_steps: int,
+) -> None:
+    """Close every chunk that ran to its limit or hit a terminal."""
+    for i in range(len(state.in_flight)):
+        if state.awaiting[i]:
+            state.windows[i].copy_(obs_t[i].expand_as(state.windows[i]))
+            state.awaiting[i] = False
+            continue
+        if state.in_flight[i] is None:
+            continue
+        n_exec = int(state.pos_t[i])
+        held = state.in_flight[i]
+        if done_np[i] or n_exec >= held.step_limit:
+            raw = held.actions_raw
+            start_state = held.start_state
+            state.windows[i].copy_(
+                state.windows[i][state.roll_table[int(state.pos_t[i]) % n_obs_steps]]
+            )
+            state.executed_total[i] += n_exec
+            state.remaining -= n_exec
+            buffer.add_chunk(
+                state=start_state,
+                next_state=state.windows[i],
+                action=raw,
+                rewards=state.reward_windows[i, :n_exec],
+                step_frames=state.step_frames[i, :n_exec],
+                terminated=bool(term_np[i]),
+                truncated=bool(trunc_np[i]),
+                env_id=i,
+            )
+            state.in_flight[i] = None
+            if done_np[i]:
+                state.awaiting[i] = True
+
+
 def collect_chunks_vec(
     envs,
     policy: Callable[[torch.Tensor], torch.Tensor],
@@ -313,109 +463,49 @@ def collect_chunks_vec(
         obs, _ = envs.reset(seed=[seed + i for i in range(n)])
         obs_dim = int(obs.shape[-1])
         obs0 = torch.from_numpy(np.asarray(obs, dtype=np.float32))
-        windows = torch.zeros(n, n_obs_steps, obs_dim, dtype=_OBS_DTYPE)
-        windows.copy_(obs0[:, None, :].expand_as(windows))
-        reward_windows = torch.zeros(n, action_horizon, dtype=_REWARD_DTYPE)
-        step_frames = torch.zeros(n, action_horizon, obs_dim, dtype=_OBS_DTYPE)
-        in_flight: list[InFlightChunk | None] = [None] * n
-        pos_t = torch.zeros(n, dtype=torch.long)
-        plan = torch.zeros(n + 1, action_horizon, act_dim, dtype=torch.float32)
-        env_rows = torch.arange(n)
-        idle_row = torch.full_like(env_rows, n)
-        roll_table = (
-            torch.arange(n_obs_steps)[:, None]
-            + torch.arange(n_obs_steps)[None, :]
-        ) % n_obs_steps
-        executed_total = [0] * n
-        awaiting = [False] * n
-
-        actions_t = torch.zeros((n, act_dim), dtype=torch.float32)
-        remaining = sum(targets)
-        while remaining:
+        state = _make_state(
+            n,
+            n_obs_steps,
+            obs_dim,
+            action_horizon,
+            act_dim,
+            obs0,
+            remaining=sum(targets),
+        )
+        while state.remaining:
             envs_needing_a_chunk = [
                 i
                 for i in range(n)
                 if (
-                    in_flight[i] is None
-                    and not awaiting[i]
-                    and executed_total[i] < targets[i]
+                    state.in_flight[i] is None
+                    and not state.awaiting[i]
+                    and state.executed_total[i] < targets[i]
                 )
             ]
             if envs_needing_a_chunk:
-                states = windows[envs_needing_a_chunk]
-                # The policy returns the raw chunk. The env receives the squash
-                # of it, and the buffer keeps the raw chunk: the flow is
-                # trained on what it produced, not on the squash of it.
-                raw_all = as_float_tensor(policy(states))
-                executed_all = squash_to_env_bounds(raw_all, low, high)
-                wavefront = torch.as_tensor(envs_needing_a_chunk)
-                plan[wavefront] = executed_all
-                pos_t[wavefront] = 0
-                for k, i in enumerate(envs_needing_a_chunk):
-                    in_flight[i] = InFlightChunk(
-                        actions_raw=raw_all[k],
-                        start_state=states[k],
-                        step_limit=min(n_action_steps,
-                                       targets[i] - executed_total[i]),
-                    )
+                _plan_chunks(
+                    state,
+                    envs_needing_a_chunk,
+                    policy,
+                    low,
+                    high,
+                    targets,
+                    n_action_steps,
+                )
 
-            stepping = torch.tensor(
-                [held is not None for held in in_flight], dtype=torch.bool
+            obs_t, term_np, trunc_np, done_np = _step_envs(
+                state, envs, action_horizon
             )
-            live_idx = env_rows[stepping]
-            actions_t.copy_(
-                plan[
-                    torch.where(stepping, env_rows, idle_row),
-                    pos_t.clamp(max=action_horizon - 1),
-                ]
+
+            _close_chunks(
+                state,
+                obs_t,
+                term_np,
+                trunc_np,
+                done_np,
+                buffer,
+                n_obs_steps,
             )
-            actions_np = actions_t.cpu().numpy()
-
-            obs, rew, term, trunc, _ = envs.step(actions_np)
-            term_np = np.asarray(term, dtype=bool)
-            trunc_np = np.asarray(trunc, dtype=bool)
-            done_np = term_np | trunc_np
-            rew_np = np.asarray(rew, dtype=np.float32)
-            obs_t = torch.from_numpy(np.asarray(obs, dtype=np.float32))
-
-            if live_idx.numel():
-                p = pos_t[live_idx]
-                reward_windows[live_idx, p] = torch.from_numpy(rew_np)[live_idx]
-                step_frames[live_idx, p] = obs_t[live_idx]
-                windows[live_idx, p] = obs_t[live_idx]
-                pos_t[live_idx] = p + 1
-
-            for i in range(n):
-                if awaiting[i]:
-                    windows[i].copy_(obs_t[i].expand_as(windows[i]))
-                    awaiting[i] = False
-                    continue
-                if in_flight[i] is None:
-                    continue
-                n_exec = int(pos_t[i])
-                held = in_flight[i]
-                if done_np[i] or n_exec >= held.step_limit:
-                    raw = held.actions_raw
-                    start_state = held.start_state
-                    windows[i].copy_(
-                        windows[i][roll_table[int(pos_t[i]) % n_obs_steps]]
-                    )
-                    executed_total[i] += n_exec
-                    remaining -= n_exec
-                    buffer.add_chunk(
-                        state=start_state,
-                        next_state=windows[i],
-                        action=raw,
-                        rewards=reward_windows[i, :n_exec],
-                        step_frames=step_frames[i, :n_exec],
-                        terminated=bool(term_np[i]),
-                        truncated=bool(trunc_np[i]),
-                        env_id=i,
-                    )
-
-                    in_flight[i] = None
-                    if done_np[i]:
-                        awaiting[i] = True
 
     except (ValueError, RuntimeError, KeyError):
         flush_on_collection_error(on_error_flush)
