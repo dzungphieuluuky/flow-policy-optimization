@@ -132,7 +132,7 @@ Two kinds of name keep the underscore. Python and the frameworks force them:
 Check the package with one command. It must print the `nn.Module` hook and nothing else.
 
 ```bash
-grep -rn "def _[^_]\|class _" src/myfpo/
+grep -rn "def _[^_]\|class _\|^_[A-Z]" src/myfpo/
 ```
 
 A function does one job. Keep it under 100 lines. Split a longer one into named steps. The next command must print nothing.

@@ -19,7 +19,7 @@ __all__ = [
     "log_metrics",
 ]
 
-_REPORT_TO = ("wandb", "tensorboard", "all", "none")
+REPORT_TO = ("wandb", "tensorboard", "all", "none")
 
 
 def build_run_name(method: str, env_name: str, seed: int, cfg_dict: dict) -> str:
@@ -106,9 +106,9 @@ def build_backends(
 ) -> list:
     """The backends a run logs to. An empty list means no logging."""
     report_to = cfg.report_to
-    if report_to not in _REPORT_TO:
+    if report_to not in REPORT_TO:
         raise ValueError(
-            f"report_to={report_to!r} must be one of {', '.join(_REPORT_TO)}"
+            f"report_to={report_to!r} must be one of {', '.join(REPORT_TO)}"
         )
     if report_to == "none":
         return []

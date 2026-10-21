@@ -127,9 +127,9 @@ class TestFPOCoreRemaining:
 class TestValueDiagnostics:
     def test_gae_diagnostics_shape(self):
         """Diagnostics dict keys match expected tuple."""
-        from myfpo.metrics import _GAE_DIAGNOSTIC_KEYS
-        assert isinstance(_GAE_DIAGNOSTIC_KEYS, tuple)
-        assert len(_GAE_DIAGNOSTIC_KEYS) == 4
+        from myfpo.metrics import GAE_DIAGNOSTIC_KEYS
+        assert isinstance(GAE_DIAGNOSTIC_KEYS, tuple)
+        assert len(GAE_DIAGNOSTIC_KEYS) == 4
 
 
 class TestSamplingFunctions:

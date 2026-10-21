@@ -16,9 +16,9 @@ from myfpo.processor import squash_to_env_bounds
 __all__ = ["RolloutBuffer", "collect_chunks_vec"]
 
 
-_OBS_DTYPE = torch.float32
-_REWARD_DTYPE = torch.float32
-_INDEX_DTYPE = torch.int64
+OBS_DTYPE = torch.float32
+REWARD_DTYPE = torch.float32
+INDEX_DTYPE = torch.int64
 
 
 class InFlightChunk(NamedTuple):
@@ -67,20 +67,20 @@ class RolloutBuffer:
             raise ValueError("chunk_capacity must be positive")
         self.chunk_capacity = chunk_capacity
 
-        self.step_frames = self.zeros_for((max_steps, obs_dim), _OBS_DTYPE)
-        self.step_rewards = self.zeros_for((max_steps,), _REWARD_DTYPE)
+        self.step_frames = self.zeros_for((max_steps, obs_dim), OBS_DTYPE)
+        self.step_rewards = self.zeros_for((max_steps,), REWARD_DTYPE)
 
         self.chunk_state = self.zeros_for(
-            (chunk_capacity, obs_steps, obs_dim), _OBS_DTYPE
+            (chunk_capacity, obs_steps, obs_dim), OBS_DTYPE
         )
         self.chunk_next_state = self.zeros_for(
-            (chunk_capacity, obs_steps, obs_dim), _OBS_DTYPE
+            (chunk_capacity, obs_steps, obs_dim), OBS_DTYPE
         )
         self.chunk_actions = self.zeros_for(
-            (chunk_capacity, action_horizon, action_dim), _OBS_DTYPE
+            (chunk_capacity, action_horizon, action_dim), OBS_DTYPE
         )
-        self.chunk_starts = self.zeros_for((chunk_capacity,), _INDEX_DTYPE)
-        self.chunk_lengths = self.zeros_for((chunk_capacity,), _INDEX_DTYPE)
+        self.chunk_starts = self.zeros_for((chunk_capacity,), INDEX_DTYPE)
+        self.chunk_lengths = self.zeros_for((chunk_capacity,), INDEX_DTYPE)
         self.chunk_terminated = self.zeros_for((chunk_capacity,), torch.bool)
         self.chunk_truncated = self.zeros_for((chunk_capacity,), torch.bool)
         self.chunk_env_id = self.zeros_for((chunk_capacity,), torch.int16)
@@ -134,7 +134,7 @@ class RolloutBuffer:
         """Append one executed chunk."""
         if self.n_chunks >= self.max_chunks:
             raise RuntimeError("RolloutBuffer chunk capacity exceeded")
-        reward_t = torch.as_tensor(rewards, dtype=_REWARD_DTYPE, device=self.device).reshape(-1)
+        reward_t = torch.as_tensor(rewards, dtype=REWARD_DTYPE, device=self.device).reshape(-1)
         n_exec = int(reward_t.numel())
         if n_exec < 1 or self.n_steps + n_exec > self.max_steps:
             raise RuntimeError("RolloutBuffer step capacity exceeded")
@@ -213,8 +213,8 @@ class RolloutBuffer:
 def as_float_tensor(x: object) -> torch.Tensor:
     """fp32 CPU/GPU tensor, without forcing a device hop."""
     if isinstance(x, torch.Tensor):
-        return x.detach().to(_OBS_DTYPE)
-    return torch.as_tensor(np.asarray(x, dtype=np.float32), dtype=_OBS_DTYPE)
+        return x.detach().to(OBS_DTYPE)
+    return torch.as_tensor(np.asarray(x, dtype=np.float32), dtype=OBS_DTYPE)
 
 
 def resolve_action_bounds(
@@ -304,13 +304,13 @@ def make_state(
     remaining: int,
 ) -> CollectState:
     """The state the collection loop starts with."""
-    windows = torch.zeros(n, n_obs_steps, obs_dim, dtype=_OBS_DTYPE)
+    windows = torch.zeros(n, n_obs_steps, obs_dim, dtype=OBS_DTYPE)
     windows.copy_(obs0[:, None, :].expand_as(windows))
     env_rows = torch.arange(n)
     return CollectState(
         windows=windows,
-        reward_windows=torch.zeros(n, action_horizon, dtype=_REWARD_DTYPE),
-        step_frames=torch.zeros(n, action_horizon, obs_dim, dtype=_OBS_DTYPE),
+        reward_windows=torch.zeros(n, action_horizon, dtype=REWARD_DTYPE),
+        step_frames=torch.zeros(n, action_horizon, obs_dim, dtype=OBS_DTYPE),
         in_flight=[None] * n,
         pos_t=torch.zeros(n, dtype=torch.long),
         plan=torch.zeros(n + 1, action_horizon, act_dim, dtype=torch.float32),

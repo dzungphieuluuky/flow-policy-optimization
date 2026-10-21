@@ -7,14 +7,14 @@ from myfpo.configuration import MyfpoConfig
 __all__ = ["build_train_metrics"]
 
 
-_GAE_DIAG_LOG_KEYS = {
+GAE_DIAG_LOG_KEYS = {
     "linked_frac": "gae_linked_frac",
     "advantage_std": "gae_advantage_std",
     "return_rms": "returns_rms",
     "advantage_std_over_return_std": "advantage_std_over_return_std",
 }
 
-_ROLLOUT_ABS_KEYS = (
+ROLLOUT_ABS_KEYS = (
     "raw_action_abs_mean",
     "raw_action_abs_max",
     "executed_action_abs_mean",
@@ -56,14 +56,14 @@ def build_train_metrics(
         data["train/rollout_jerk"] = rollout_jerk
     if rollout_seam_jerk is not None:
         data["train/rollout_seam_jerk"] = rollout_seam_jerk
-    for key in _ROLLOUT_ABS_KEYS:
+    for key in ROLLOUT_ABS_KEYS:
         data[f"train/{key}"] = rollout[key]
     gae_diag = batch.get("gae_diagnostics")
     if gae_diag:
         data.update(
             {
                 f"train/{log}": gae_diag[src]
-                for src, log in _GAE_DIAG_LOG_KEYS.items()
+                for src, log in GAE_DIAG_LOG_KEYS.items()
             }
         )
     data["train/total_loss"] = (

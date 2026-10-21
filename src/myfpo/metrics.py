@@ -48,7 +48,7 @@ def subsampled_min(q: torch.Tensor, size: int = 2) -> torch.Tensor:
     return q.gather(0, idx).amin(dim=0)
 
 
-_GAE_DIAGNOSTIC_KEYS = (
+GAE_DIAGNOSTIC_KEYS = (
     "linked_frac",
     "advantage_std",
     "return_rms",
@@ -66,7 +66,7 @@ def compute_gae_diagnostics(
     """Trace-liveness and scale probes for the chunk backup."""
     n = env_id.numel()
     if n == 0:
-        return dict.fromkeys(_GAE_DIAGNOSTIC_KEYS, float("nan"))
+        return dict.fromkeys(GAE_DIAGNOSTIC_KEYS, float("nan"))
     order = torch.argsort(env_id.to(torch.long), stable=True)
     e = env_id.to(torch.long)[order]
     ends = terminated.to(torch.bool)[order][:-1] | truncated.to(torch.bool)[order][:-1]
@@ -79,7 +79,7 @@ def compute_gae_diagnostics(
         rms(ret).double(),
         adv_std / ret_std,
     ]
-    return dict(zip(_GAE_DIAGNOSTIC_KEYS, torch.stack(fields).tolist()))
+    return dict(zip(GAE_DIAGNOSTIC_KEYS, torch.stack(fields).tolist()))
 
 
 def sample_eps(

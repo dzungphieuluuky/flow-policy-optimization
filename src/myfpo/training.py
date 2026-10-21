@@ -122,7 +122,7 @@ def sample_minibatch(
     return out
 
 
-_OBS_WARMUP_STEPS = 128
+OBS_WARMUP_STEPS = 128
 
 
 def apply_lr_schedule(optimizer, step_count: int) -> None:
@@ -154,7 +154,7 @@ def warm_observation_stats(policy, env, *, obs_dim: int, seed: int) -> int:
     env.action_space.seed(seed)
     obs, _ = env.reset()
     frames = []
-    for _ in range(_OBS_WARMUP_STEPS):
+    for _ in range(OBS_WARMUP_STEPS):
         obs, _, terminated, truncated, _ = env.step(
             np.asarray(env.action_space.sample(), dtype=np.float32)
         )
