@@ -432,6 +432,267 @@ def save_checkpoint(out_dir, policy, optimizer, global_step, name):
     return str(ckpt_dir / "model.safetensors"), ckpt_dir
 
 
+@dataclasses.dataclass
+class _RunState:
+    """The values the training loop carries from one update to the next."""
+
+    global_step: int = 0
+    next_eval: int = 0
+    next_save: int = 0
+    best_return: float | None = None
+    steps_to_best: int | None = None
+    eval_count: int = 0
+    above_clamp_updates: int = 0
+    both_clamped_updates: int = 0
+    best_artifact: str | None = None
+    recent_eval_returns: deque[float] = dataclasses.field(
+        default_factory=lambda: deque(maxlen=10)
+    )
+    all_eval_returns: list[float] = dataclasses.field(default_factory=list)
+    artifacts: list[str] = dataclasses.field(default_factory=list)
+
+
+def _build_or_resume(
+    cfg,
+    device,
+    obs_dim: int,
+    action_dim: int,
+    action_low,
+    action_high,
+    resume_from_checkpoint,
+):
+    """The policy and the optimizer. A resume takes the checkpoint's config."""
+    if resume_from_checkpoint is not None:
+        policy, optimizer, counters = load_policy_checkpoint(
+            resume_from_checkpoint,
+            device=device,
+            action_low=action_low,
+            action_high=action_high,
+        )
+        policy.train()
+        return policy, optimizer, int(counters["global_step"])
+    policy = build_policy(
+        obs_dim,
+        action_dim,
+        cfg,
+        device=device,
+        action_low=action_low,
+        action_high=action_high,
+    )
+    return policy, build_optimizer(policy), 0
+
+
+def _mean_info(epoch_infos: list[dict[str, float]]) -> dict[str, float] | None:
+    """The mean of the per-minibatch info dicts. None when there is none."""
+    if not epoch_infos:
+        return None
+    return {
+        k: sum(d[k] for d in epoch_infos) / len(epoch_infos) for k in epoch_infos[0]
+    }
+
+
+def _mean_update_metrics(above_clamp_fracs, both_clamped_fracs, drift):
+    """The clamp fractions and the drift, averaged over the update."""
+    scalars = [
+        torch.stack(above_clamp_fracs).mean(),
+        torch.stack(both_clamped_fracs).mean(),
+    ]
+    if drift is not None:
+        scalars.extend(drift)
+    (
+        above_clamp_frac,
+        both_clamped_frac,
+        *drift_means,
+    ) = torch.stack(scalars).tolist()
+    return above_clamp_frac, both_clamped_frac, drift_means
+
+
+def _mean_grad_norms(grad_norms_pre: list[dict[str, torch.Tensor]]) -> dict[str, float]:
+    """The mean of the pre-clip gradient norms of the update."""
+    return {
+        k: float(torch.stack([n[k] for n in grad_norms_pre]).mean())
+        for k in ("total", "actor", "critic")
+    }
+
+
+def _check_env_bound(rollout: dict[str, float], action_low, action_high) -> None:
+    """The guard on the action the env receives, which the squash bounds."""
+    env_abs_max = rollout["executed_action_abs_max"]
+    env_bound = float(np.abs(np.concatenate([action_low, action_high])).max())
+    if env_abs_max > env_bound + 1e-3:
+        raise ValueError(
+            f"Post-squash action magnitude exceeded the env bound: "
+            f"max_abs={env_abs_max:.3f} > {env_bound:.3f}."
+        )
+
+
+def _check_clamp_guards(
+    cfg,
+    above_clamp_frac: float,
+    both_clamped_frac: float,
+    l_new_mean: float,
+    state: _RunState,
+) -> None:
+    """Abort when the ratio is pinned at 1 and the policy gets no gradient."""
+    if both_clamped_frac > BOTH_CLAMPED_ABORT_FRAC:
+        state.both_clamped_updates += 1
+        if state.both_clamped_updates >= ABOVE_CLAMP_ABORT_UPDATES:
+            raise MyfpoAborted(
+                f"{ABOVE_CLAMP_ABORT_UPDATES} consecutive updates with >"
+                f"{BOTH_CLAMPED_ABORT_FRAC:.0%} of ratio elements whose two "
+                f"CFM losses both sit above cfm_clamp={cfg.cfm_clamp} "
+                f"(frac={both_clamped_frac:.2f}, "
+                f"l_new_mean={l_new_mean:.4f}, "
+                f"cfm_loss_reduction={cfg.cfm_loss_reduction!r}, "
+                f"action_horizon={cfg.action_horizon}). The ratio is pinned "
+                "at 1 and the policy gets no gradient. Raise cfm_clamp, "
+                "use reduction='mean', or lower action_horizon."
+            )
+    elif above_clamp_frac > 0.5:
+        state.above_clamp_updates += 1
+        state.both_clamped_updates = 0
+        if state.above_clamp_updates >= ABOVE_CLAMP_ABORT_UPDATES:
+            raise MyfpoAborted(
+                f"{ABOVE_CLAMP_ABORT_UPDATES} consecutive updates with >50% "
+                f"of CFM samples above cfm_clamp={cfg.cfm_clamp} "
+                f"(frac={above_clamp_frac:.2f}, "
+                f"cfm_loss_reduction={cfg.cfm_loss_reduction!r}). The policy "
+                "ratio is pinned at 1 and gets no gradient. Raise "
+                "cfm_clamp, or use a reduction whose scale fits under it."
+            )
+    else:
+        state.above_clamp_updates = 0
+        state.both_clamped_updates = 0
+
+
+def _log_eval_window(
+    backends,
+    cfg,
+    eval_policies,
+    result: dict,
+    summaries: dict,
+    state: _RunState,
+    r_rand: float,
+) -> None:
+    """Log the eval rows of one window."""
+    eval_summary = summaries.get(cfg.eval_sampling, {})
+    log_metrics(
+        backends,
+        {
+            "eval/ema_active": float(bool(result.get("displaced", False))),
+            "eval/return_ci_low": eval_summary.get("return_ci_low", 0.0),
+            "eval/return_ci_high": eval_summary.get("return_ci_high", 0.0),
+            "eval/return_ci_width": (
+                eval_summary.get("return_ci_high", 0.0)
+                - eval_summary.get("return_ci_low", 0.0)
+            ),
+            "eval/return_median": eval_summary.get("return_median", 0.0),
+            "eval/return_n": eval_summary.get("return_n", 0),
+            # The learning rate rides the train/* rows, which
+            # land on every update, not only on the eval steps.
+            **{
+                f"eval/{name}_return_mean": summaries.get(name, {}).get(
+                    "return_mean", 0.0
+                )
+                for name in eval_policies
+            },
+        },
+        step=state.global_step,
+    )
+    log_metrics(
+        backends,
+        compute_eval_summary_metrics(
+            result.get("mean_return", 0.0),
+            result.get("eval_results", []),
+            state.all_eval_returns,
+            state.eval_count,
+            r_rand=r_rand,
+            best_return=state.best_return,
+            steps_to_best=state.steps_to_best,
+        )
+        if result.get("eval_results")
+        else {},
+        step=state.global_step,
+    )
+
+
+def _eval_window(
+    policy,
+    optimizer,
+    state: _RunState,
+    out_dir,
+    evaluator,
+    eval_policies,
+    cfg,
+    backends,
+    eval_steps: int,
+    r_rand: float,
+) -> None:
+    """Evaluate both flow starts, log the window, and keep the best checkpoint."""
+    result, summaries = evaluate_policy(
+        policy,
+        state.global_step,
+        out_dir,
+        evaluator,
+        eval_policies,
+        cfg,
+        best_return=state.best_return,
+    )
+    mean_return = result.get("mean_return", 0.0)
+    stop_return = result.get("stop_return", mean_return)
+    state.all_eval_returns.append(mean_return)
+    state.recent_eval_returns.append(mean_return)
+    state.eval_count += 1
+    if result.get("improved", False):
+        state.best_return, state.steps_to_best = stop_return, state.global_step
+        best_artifact_path, _ = save_checkpoint(
+            out_dir, policy, optimizer, state.global_step, "best"
+        )
+        state.best_artifact = best_artifact_path
+    if backends:
+        _log_eval_window(
+            backends, cfg, eval_policies, result, summaries, state, r_rand
+        )
+    state.next_eval = max(
+        state.global_step + eval_steps, state.next_eval + eval_steps
+    )
+
+
+def _finalize_run(out_dir, policy, optimizer, state: _RunState, env_name, seed, fps):
+    """The final checkpoint, the artifact list, and the run summary."""
+    final_path, _ = save_checkpoint(
+        out_dir, policy, optimizer, state.global_step, "final"
+    )
+    state.artifacts.append(final_path)
+    if state.best_artifact is not None and state.best_artifact not in state.artifacts:
+        state.artifacts.append(state.best_artifact)
+
+    csv_path = out_dir / "eval_history.csv"
+    if csv_path.exists():
+        state.artifacts.append(str(csv_path))
+
+    return {
+        "method": "myfpo",
+        "env_name": env_name,
+        "seed": seed,
+        "reward_mean_last10": (
+            float(np.mean(state.recent_eval_returns))
+            if state.recent_eval_returns
+            else 0.0
+        ),
+        "reward_median_last10": (
+            float(np.median(state.recent_eval_returns))
+            if state.recent_eval_returns
+            else 0.0
+        ),
+        "fps": fps,
+        "artifacts": state.artifacts,
+        "best_artifact": state.best_artifact,
+        "best_return": state.best_return,
+        "global_step": state.global_step,
+    }
+
+
 def run_training(
     env: Any,
     out_dir: str | Path,
@@ -488,26 +749,15 @@ def run_training(
     action_low = np.atleast_1d(np.asarray(env.action_space.low, dtype=np.float32))
     action_high = np.atleast_1d(np.asarray(env.action_space.high, dtype=np.float32))
 
-    global_step = 0
-    if resume_from_checkpoint is not None:
-        policy, optimizer, counters = load_policy_checkpoint(
-            resume_from_checkpoint,
-            device=device,
-            action_low=action_low,
-            action_high=action_high,
-        )
-        global_step = int(counters["global_step"])
-        policy.train()
-    else:
-        policy = build_policy(
-            obs_dim,
-            action_dim,
-            cfg,
-            device=device,
-            action_low=action_low,
-            action_high=action_high,
-        )
-        optimizer = build_optimizer(policy)
+    policy, optimizer, global_step = _build_or_resume(
+        cfg,
+        device,
+        obs_dim,
+        action_dim,
+        action_low,
+        action_high,
+        resume_from_checkpoint,
+    )
 
     warmed = warm_observation_stats(
         policy,
@@ -542,42 +792,20 @@ def run_training(
         total_steps=total_steps,
     )
 
-    next_eval = eval_steps
-    next_save = save_steps
-
-    above_clamp_updates = 0
-    both_clamped_updates = 0
-    best_return: float | None = None
-    steps_to_best: int | None = None
-    eval_count = 0
-    recent_eval_returns: deque[float] = deque(maxlen=10)
-    all_eval_returns: list[float] = []
-    artifacts: list[str] = []
-    best_artifact: str | None = None
-    elapsed = 0.0
-    fps = 0.0
+    state = _RunState(
+        global_step=global_step, next_eval=eval_steps, next_save=save_steps
+    )
+    grad_groups = split_grad_params(policy)
     t_start = time.time()
 
-    grad_groups = split_grad_params(policy)
-
     try:
-        while global_step < total_steps:
-            steps_to_go = total_steps - global_step
+        while state.global_step < total_steps:
+            steps_to_go = total_steps - state.global_step
             batch, rollout, steps_this_rollout, rollout_jerk, rollout_seam_jerk = collect_rollouts(
                 policy, train_env, cfg, action_low, action_high, steps_to_go
             )
-            global_step += steps_this_rollout
-            # The guard is on the action the env receives, which the squash
-            # bounds. The stored chunk is the raw one and is unbounded.
-            env_abs_max = rollout["executed_action_abs_max"]
-            env_bound = float(
-                np.abs(np.concatenate([action_low, action_high])).max()
-            )
-            if env_abs_max > env_bound + 1e-3:
-                raise ValueError(
-                    f"Post-squash action magnitude exceeded the env bound: "
-                    f"max_abs={env_abs_max:.3f} > {env_bound:.3f}."
-                )
+            state.global_step += steps_this_rollout
+            _check_env_bound(rollout, action_low, action_high)
 
             epoch_infos, grad_norms_pre, above_clamp_fracs, both_clamped_fracs = train_update(
                 policy, optimizer, batch, backends, cfg, grad_groups
@@ -587,32 +815,15 @@ def run_training(
             if cfg.log_drift_diagnostics and backends:
                 drift = measure_value_drift(policy, batch, device)
 
-            policy.update_ema(global_step)
+            policy.update_ema(state.global_step)
 
             policy.update_observation_stats(batch["normalizer_observations"])
 
-            if epoch_infos:
-                info = {
-                    k: sum(d[k] for d in epoch_infos) / len(epoch_infos)
-                    for k in epoch_infos[0]
-                }
-            else:
-                info = None
-            scalars = [
-                torch.stack(above_clamp_fracs).mean(),
-                torch.stack(both_clamped_fracs).mean(),
-            ]
-            if drift is not None:
-                scalars.extend(drift)
-            (
-                above_clamp_frac,
-                both_clamped_frac,
-                *drift_means,
-            ) = torch.stack(scalars).tolist()
-            grad_norms = {
-                k: float(torch.stack([n[k] for n in grad_norms_pre]).mean())
-                for k in ("total", "actor", "critic")
-            }
+            info = _mean_info(epoch_infos)
+            above_clamp_frac, both_clamped_frac, drift_means = _mean_update_metrics(
+                above_clamp_fracs, both_clamped_fracs, drift
+            )
+            grad_norms = _mean_grad_norms(grad_norms_pre)
 
             if backends and info is not None:
                 log_metrics(
@@ -631,130 +842,48 @@ def run_training(
                         policy_lr=optimizer.param_groups[0]["lr"],
                         critic_lr=optimizer.param_groups[-1]["lr"],
                     ),
-                    step=global_step,
+                    step=state.global_step,
                 )
 
             l_new_mean = info["l_new_mean"] if info is not None else float("nan")
-            if both_clamped_frac > BOTH_CLAMPED_ABORT_FRAC:
-                both_clamped_updates += 1
-                if both_clamped_updates >= ABOVE_CLAMP_ABORT_UPDATES:
-                    raise MyfpoAborted(
-                        f"{ABOVE_CLAMP_ABORT_UPDATES} consecutive updates with >"
-                        f"{BOTH_CLAMPED_ABORT_FRAC:.0%} of ratio elements whose two "
-                        f"CFM losses both sit above cfm_clamp={cfg.cfm_clamp} "
-                        f"(frac={both_clamped_frac:.2f}, "
-                        f"l_new_mean={l_new_mean:.4f}, "
-                        f"cfm_loss_reduction={cfg.cfm_loss_reduction!r}, "
-                        f"action_horizon={cfg.action_horizon}). The ratio is pinned "
-                        "at 1 and the policy gets no gradient. Raise cfm_clamp, "
-                        "use reduction='mean', or lower action_horizon."
-                    )
-            elif above_clamp_frac > 0.5:
-                above_clamp_updates += 1
-                both_clamped_updates = 0
-                if above_clamp_updates >= ABOVE_CLAMP_ABORT_UPDATES:
-                    raise MyfpoAborted(
-                        f"{ABOVE_CLAMP_ABORT_UPDATES} consecutive updates with >50% "
-                        f"of CFM samples above cfm_clamp={cfg.cfm_clamp} "
-                        f"(frac={above_clamp_frac:.2f}, "
-                        f"cfm_loss_reduction={cfg.cfm_loss_reduction!r}). The policy "
-                        "ratio is pinned at 1 and gets no gradient. Raise "
-                        "cfm_clamp, or use a reduction whose scale fits under it."
-                    )
-            else:
-                above_clamp_updates = 0
-                both_clamped_updates = 0
+            _check_clamp_guards(
+                cfg, above_clamp_frac, both_clamped_frac, l_new_mean, state
+            )
 
-            if global_step >= next_eval or global_step >= total_steps:
-                result, summaries = evaluate_policy(
-                    policy, global_step, out_dir, evaluator, eval_policies, cfg, best_return=best_return
+            if state.global_step >= state.next_eval or state.global_step >= total_steps:
+                _eval_window(
+                    policy,
+                    optimizer,
+                    state,
+                    out_dir,
+                    evaluator,
+                    eval_policies,
+                    cfg,
+                    backends,
+                    eval_steps,
+                    r_rand,
                 )
-                mean_return = result.get("mean_return", 0.0)
-                stop_return = result.get("stop_return", mean_return)
-                all_eval_returns.append(mean_return)
-                recent_eval_returns.append(mean_return)
-                eval_count += 1
-                if result.get("improved", False):
-                    best_return, steps_to_best = stop_return, global_step
-                    best_artifact_path, _ = save_checkpoint(out_dir, policy, optimizer, global_step, "best")
-                    best_artifact = best_artifact_path
-                if backends:
-                    eval_summary = summaries.get(cfg.eval_sampling, {})
-                    log_metrics(
-                        backends,
-                        {
-                            "eval/ema_active": float(bool(result.get("displaced", False))),
-                            "eval/return_ci_low": eval_summary.get("return_ci_low", 0.0),
-                            "eval/return_ci_high": eval_summary.get("return_ci_high", 0.0),
-                            "eval/return_ci_width": (
-                                eval_summary.get("return_ci_high", 0.0) - eval_summary.get("return_ci_low", 0.0)
-                            ),
-                            "eval/return_median": eval_summary.get("return_median", 0.0),
-                            "eval/return_n": eval_summary.get("return_n", 0),
-                            # The learning rate rides the train/* rows, which
-                            # land on every update, not only on the eval steps.
-                            **{
-                                f"eval/{name}_return_mean": summaries.get(name, {}).get("return_mean", 0.0)
-                                for name in eval_policies
-                            },
-                        },
-                        step=global_step,
-                    )
-                    log_metrics(
-                        backends,
-                        compute_eval_summary_metrics(
-                            mean_return,
-                            result.get("eval_results", []),
-                            all_eval_returns,
-                            eval_count,
-                            r_rand=r_rand,
-                            best_return=best_return,
-                            steps_to_best=steps_to_best,
-                        ) if result.get("eval_results") else {},
-                        step=global_step,
-                    )
-                next_eval = max(global_step + eval_steps, next_eval + eval_steps)
 
-            if global_step >= next_save or global_step >= total_steps:
-                artifact_path, _ = save_checkpoint(out_dir, policy, optimizer, global_step, f"step_{global_step}")
-                artifacts.append(artifact_path)
-                next_save = max(global_step + save_steps, next_save + save_steps)
+            if state.global_step >= state.next_save or state.global_step >= total_steps:
+                artifact_path, _ = save_checkpoint(
+                    out_dir, policy, optimizer, state.global_step, f"step_{state.global_step}"
+                )
+                state.artifacts.append(artifact_path)
+                state.next_save = max(
+                    state.global_step + save_steps, state.next_save + save_steps
+                )
 
         elapsed = time.time() - t_start
-        fps = global_step / max(elapsed, 1e-6)
+        fps = state.global_step / max(elapsed, 1e-6)
         if backends:
             log_metrics(
                 backends,
                 {"timing/fps": fps, "timing/elapsed_s": elapsed},
-                step=global_step,
+                step=state.global_step,
             )
     finally:
         if train_env is not env:
             train_env.close()
         finish_backends(backends)
 
-    final_path, _ = save_checkpoint(out_dir, policy, optimizer, global_step, "final")
-    artifacts.append(final_path)
-    if best_artifact is not None and best_artifact not in artifacts:
-        artifacts.append(best_artifact)
-
-    csv_path = out_dir / "eval_history.csv"
-    if csv_path.exists():
-        artifacts.append(str(csv_path))
-
-    return {
-        "method": "myfpo",
-        "env_name": env_name,
-        "seed": seed,
-        "reward_mean_last10": (
-            float(np.mean(recent_eval_returns)) if recent_eval_returns else 0.0
-        ),
-        "reward_median_last10": (
-            float(np.median(recent_eval_returns)) if recent_eval_returns else 0.0
-        ),
-        "fps": fps,
-        "artifacts": artifacts,
-        "best_artifact": best_artifact,
-        "best_return": best_return,
-        "global_step": global_step,
-    }
+    return _finalize_run(out_dir, policy, optimizer, state, env_name, seed, fps)

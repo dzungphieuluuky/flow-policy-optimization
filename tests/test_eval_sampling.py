@@ -124,12 +124,24 @@ def test_the_two_adapters_give_different_returns():
 # --- the plumbing ---------------------------------------------------------
 
 
-def test_the_trainer_builds_both_adapters_once():
+def _trainer_source() -> str:
+    """The source of the trainer: the run loop and the helpers it calls."""
     import inspect
 
-    from myfpo.training import run_training
+    from myfpo import training
 
-    src = inspect.getsource(run_training)
+    return "\n".join(
+        inspect.getsource(fn)
+        for fn in (
+            training.run_training,
+            training._eval_window,
+            training._log_eval_window,
+        )
+    )
+
+
+def test_the_trainer_builds_both_adapters_once():
+    src = _trainer_source()
     assert '"zero_start": _EvalPolicy(policy, start_from_zero=True)' in src
     assert '"noise_start": _EvalPolicy(policy, start_from_zero=False)' in src
 
@@ -137,15 +149,14 @@ def test_the_trainer_builds_both_adapters_once():
 def test_the_trainer_reads_both_names_from_the_config():
     import inspect
 
-    from myfpo.training import evaluate_policy, run_training
+    from myfpo.training import evaluate_policy
 
-    src = inspect.getsource(run_training)
+    src = _trainer_source()
     assert 'runtime["eval_sampling"] = cfg.eval_sampling' in src
     assert 'runtime["stop_eval_sampling"] = cfg.stop_eval_sampling' in src
     eval_src = inspect.getsource(evaluate_policy)
     assert "reported_name=cfg.eval_sampling" in eval_src
     assert "stop_name=cfg.stop_eval_sampling" in eval_src
-
 
 def test_each_start_is_evaluated_once():
     """The reported start writes the history. A second pass would double the cost."""
@@ -164,11 +175,7 @@ def test_each_start_is_evaluated_once():
 
 
 def test_both_returns_are_logged_under_their_own_names():
-    import inspect
-
-    from myfpo.training import run_training
-
-    src = inspect.getsource(run_training)
+    src = _trainer_source()
     assert 'f"eval/{name}_return_mean"' in src
     # The tracker takes floats only, so the two names must not be scalars.
     assert '"eval/reported_sampling"' not in src
@@ -177,11 +184,7 @@ def test_both_returns_are_logged_under_their_own_names():
 
 def test_the_names_go_to_the_run_metadata_instead():
     """A string constant cannot be a per-step scalar. It belongs in the metadata."""
-    import inspect
-
-    from myfpo.training import run_training
-
-    src = inspect.getsource(run_training)
+    src = _trainer_source()
     assert 'runtime["eval_sampling"] = cfg.eval_sampling' in src
     assert 'runtime["stop_eval_sampling"] = cfg.stop_eval_sampling' in src
 
@@ -189,15 +192,7 @@ def test_the_names_go_to_the_run_metadata_instead():
 def test_the_tracker_rejects_no_key_after_this_change():
     """Every value the trainer logs must be a float. The tensorboard backend
     calls ``float(value)``, so one string aborts the run."""
-    import inspect
-
-    from myfpo.training import run_training
-
-    src = inspect.getsource(run_training)
-    # The one remaining string-valued value is the EMA flag, which is already
-    # wrapped in float(). Every literal string in a logged dict is a key, not a
-    # value, so this asserts there is no bare string assigned as a value.
-    assert '"train/stochastic_mean_return"' not in src
+    src = _trainer_source()
     for line in src.splitlines():
         stripped = line.strip()
         if not stripped.startswith('"eval/') or ":" not in stripped:
@@ -224,11 +219,7 @@ def test_the_tracker_rejects_no_key_after_this_change():
 
 def test_the_stochastic_mean_return_key_is_gone():
     """The old key named one distribution and hid the other."""
-    import inspect
-
-    from myfpo.training import run_training
-
-    src = inspect.getsource(run_training)
+    src = _trainer_source()
     assert "stochastic_mean_return" not in src, (
         "the single-adapter key is replaced by one key per named start"
     )
@@ -245,15 +236,14 @@ def test_the_stopper_reads_the_stop_distribution():
     import inspect
 
     from myfpo.runner import summarise_window
-    from myfpo.training import evaluate_policy, run_training
+    from myfpo.training import evaluate_policy
 
     src = inspect.getsource(evaluate_policy)
     # The runner reads both names back off the window, and the peak is written
     # from the stop one.
     assert "stop_return = window_obj.stop_return" in src
 
-    src = inspect.getsource(run_training)
-
+    src = _trainer_source()
     # The rule itself lives in summarise_window now. The peak compares against
     # stop_name, never against reported_name.
     win = inspect.getsource(summarise_window)
