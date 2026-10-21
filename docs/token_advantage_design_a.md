@@ -14,9 +14,9 @@ The current surrogate multiplies a **per-token** ratio by a **per-chunk**
 advantage. The two granularities do not match.
 
 - `ratio_token` is `[n, M, H]`: every token of the chunk has its own CFM loss,
-  hence its own ratio (`src/myfpo/modeling.py:685-688`).
+  hence its own ratio (`src/myfpo/modeling.py:733-736`).
 - `adv` is `[n]` — one scalar per chunk, broadcast over all `H` tokens
-  (`src/myfpo/modeling.py:679-680`, `adv_mc.unsqueeze(-1)` at `:680`).
+  (`src/myfpo/modeling.py:727-728`, `adv_mc.unsqueeze(-1)` at `:735`).
 
 The policy is a **factorised** one, so the mismatch is not benign. Causal
 attention (`src/myfpo/attention.py:68`, `is_causal=True`) means token `i` is a
@@ -180,11 +180,11 @@ bookkeeping, the masks, or the trust region.
 
 Two things become per token, and both are deliberate:
 
-- `compute_policy_ratio` (`src/myfpo/fpo_core.py:237-255`) clamps the loss
+- `compute_policy_ratio` (`src/myfpo/fpo_core.py:268-286`) clamps the loss
   for negative advantages. With per-token advantages, the *sign* is per token:
   a token can be "good" inside a bad chunk. This is the point of per-token
   credit, and it is also the biggest behavioural change from today's run.
-- `compute_aspo_surrogate` (`src/myfpo/fpo_core.py:196-215`) selects the PPO
+- `compute_aspo_surrogate` (`src/myfpo/fpo_core.py:227-246`) selects the PPO
   branch for `A > 0` and the SPO branch for `A < 0`. The selection becomes per
   token.
 
@@ -425,7 +425,7 @@ positive screen should be followed by more seeds before it is claimed.
 1. **The proxy is unvalidated per token.** The per-token CFM-loss difference
    is a proxy for a *single token's* density change, not the chunk's. The
    chunk-level proxy already carries this caveat
-   (`src/myfpo/fpo_core.py:234`); the token-level version inherits it and
+   (`src/myfpo/fpo_core.py:265`); the token-level version inherits it and
    amplifies it, because `H` proxies are multiplied by `H` advantages.
 2. **The sign flip.** Per-token advantages change the ASPO branch per token.
    If the per-token signal is mostly noise, the branch selection becomes
