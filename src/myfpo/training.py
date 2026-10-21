@@ -28,7 +28,7 @@ from myfpo.modeling import MyfpoAborted, MyfpoPolicy, build_optimizer
 from myfpo.metrics import compute_eval_summary_metrics, subsampled_min
 from myfpo.processor import squash_to_env_bounds
 from lerobot.utils.constants import CHECKPOINTS_DIR
-from myfpo.utils import cudagraph_step_begin, resolve_device, rms, to_numpy_1d
+from myfpo.utils import cudagraph_step_begin, resolve_device, rms
 from myfpo.tracking import build_backends, finish_backends, log_metrics
 from myfpo.runner import build_train_metrics, summarise_window
 
@@ -52,7 +52,7 @@ class EvalPolicy:
             r = self.policy.select_action({"observation.state": obs}, start_from_zero=self.start)
         finally:
             self.policy.train(was)
-        return to_numpy_1d(r)
+        return np.atleast_1d(r.detach().cpu().numpy())
 
 ABOVE_CLAMP_ABORT_UPDATES = 5
 
@@ -187,7 +187,8 @@ def executed_chunk(
 
 @torch.no_grad()
 def compute_rollout_diagnostics(
-    batch: dict[str, torch.Tensor], *, action_low, action_high
+    batch: dict[str, torch.Tensor], *, action_low, action_high,
+    env_action: torch.Tensor | None = None,
 ) -> dict[str, float]:
     """Read the post-rollout scalars with one device-to-host transfer.
 
@@ -197,7 +198,8 @@ def compute_rollout_diagnostics(
     action = batch["action"].float()
     is_pad = batch["action_is_pad"]
     executed = ~is_pad
-    env_action = executed_chunk(batch, action_low, action_high)
+    if env_action is None:
+        env_action = executed_chunk(batch, action_low, action_high)
     exec_action = env_action[executed]
     scalars = [
         executed.sum(),
@@ -303,8 +305,9 @@ def collect_rollouts(policy, train_env, cfg, action_low, action_high, steps_to_g
     batch = policy.generate_rollout(
         train_env, collect_steps, action_low=action_low, action_high=action_high,
     )
+    env_action = executed_chunk(batch, action_low, action_high)
     rollout = compute_rollout_diagnostics(
-        batch, action_low=action_low, action_high=action_high
+        batch, action_low=action_low, action_high=action_high, env_action=env_action
     )
     steps_this_rollout = int(rollout["executed_action_steps"])
     if steps_this_rollout <= 0:
@@ -320,9 +323,7 @@ def collect_rollouts(policy, train_env, cfg, action_low, action_high, steps_to_g
         )
     # The jerk is a property of the trajectory the env saw, so it is measured
     # on the env-facing action, not on the raw chunk.
-    jerk_action = (
-        executed_chunk(batch, action_low, action_high).detach().cpu().numpy()
-    )
+    jerk_action = env_action.detach().cpu().numpy()
     jerk_pad = batch["action_is_pad"].detach().cpu().numpy()
     rollout_jerk = compute_mean_chunk_jerk(jerk_action, jerk_pad)
     rollout_seam_jerk = compute_seam_jerk(jerk_action, jerk_pad)

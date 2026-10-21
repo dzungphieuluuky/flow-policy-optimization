@@ -196,26 +196,21 @@ def collect_chunks(
     action_dim = int(cfg.action_feature.shape[0])
     obs_dim = int(cfg.robot_state_feature.shape[0])
     max_chunks = max(1, total_steps)
-    buffer_key = (
-        max_chunks,
-        total_steps,
-        cfg.n_obs_steps,
-        obs_dim,
-        cfg.action_horizon,
-        action_dim,
+    # The field order must match RolloutBuffer.shape_key, which the reuse
+    # check below compares against.
+    shape_args = dict(
+        max_chunks=max_chunks,
+        max_steps=total_steps,
+        obs_steps=cfg.n_obs_steps,
+        obs_dim=obs_dim,
+        action_horizon=cfg.action_horizon,
+        action_dim=action_dim,
     )
+    buffer_key = tuple(shape_args.values())
 
     def make_buffer(**extra) -> RolloutBuffer:
         """Host and device buffers share every shape argument."""
-        return RolloutBuffer(
-            max_chunks=max_chunks,
-            max_steps=total_steps,
-            obs_steps=cfg.n_obs_steps,
-            obs_dim=obs_dim,
-            action_horizon=cfg.action_horizon,
-            action_dim=action_dim,
-            **extra,
-        )
+        return RolloutBuffer(**shape_args, **extra)
 
     if buffers.host is None or buffers.host.shape_key() != buffer_key:
         buffers.host = make_buffer(pin_memory=device.type == "cuda")

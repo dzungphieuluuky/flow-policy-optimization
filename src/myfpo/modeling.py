@@ -418,7 +418,6 @@ class MyfpoPolicy(PreTrainedPolicy):
 
         horizon = cfg.action_horizon
         action_dim = int(self.config.action_feature.shape[0])
-        actor = self.actor
 
         with torch.inference_mode(), autocast_context(device):
             condition = cudagraph_safe(self.encoder(states))
@@ -430,9 +429,7 @@ class MyfpoPolicy(PreTrainedPolicy):
                 eps = sample_noise(shape, cfg, device, None)
                 num_steps = cfg.num_steps_noise_start
             action_chunk = sample_action(
-                lambda x, t, c: clip_velocity(
-                    actor(x, t, c), cfg.transported_clip_value
-                ),
+                self.compute_predicted_velocity,
                 shape,
                 condition,
                 num_steps=num_steps,

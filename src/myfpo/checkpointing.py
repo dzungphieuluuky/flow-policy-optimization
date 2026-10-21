@@ -51,7 +51,7 @@ def save_policy_checkpoint(
     dir_path: str | os.PathLike,
     *,
     policy,
-    optimizer: torch.optim.Optimizer | None = None,
+    optimizer: torch.optim.Optimizer,
     global_step: int,
     ema_state: dict | None = None,
 ) -> None:
@@ -65,12 +65,9 @@ def save_policy_checkpoint(
     if ema_state is not None:
         save_atomically(d / "ema.pt", lambda name: torch.save(ema_state, name))
 
-    if optimizer is not None:
-        save_atomically(
-            d / OPTIMIZER_FILE, lambda name: torch.save(optimizer.state_dict(), name)
-        )
-    else:
-        raise ValueError("optimizer is required for checkpoint save")
+    save_atomically(
+        d / OPTIMIZER_FILE, lambda name: torch.save(optimizer.state_dict(), name)
+    )
 
     counters = {
         "global_step": int(global_step),

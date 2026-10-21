@@ -210,13 +210,6 @@ class RolloutBuffer:
         }
 
 
-def as_float_tensor(x: object) -> torch.Tensor:
-    """fp32 CPU/GPU tensor, without forcing a device hop."""
-    if isinstance(x, torch.Tensor):
-        return x.detach().to(OBS_DTYPE)
-    return torch.as_tensor(np.asarray(x, dtype=np.float32), dtype=OBS_DTYPE)
-
-
 def resolve_action_bounds(
     low: float | np.ndarray | torch.Tensor,
     high: float | np.ndarray | torch.Tensor,
@@ -249,15 +242,6 @@ def resolve_chunk_args(
             f"1 <= n <= action_horizon={action_horizon}"
         )
     return n_obs_steps, action_horizon
-
-
-def flush_on_collection_error(
-    on_error_flush: Callable[[], None] | None,
-) -> None:
-    """Call the error flush hook, swallowing any raise."""
-    if on_error_flush is not None:
-        with contextlib.suppress(ValueError, RuntimeError):
-            on_error_flush()
 
 
 def validate_autoreset_mode(envs) -> None:
@@ -342,7 +326,7 @@ def plan_chunks(
     # The policy returns the raw chunk. The env receives the squash
     # of it, and the buffer keeps the raw chunk: the flow is
     # trained on what it produced, not on the squash of it.
-    raw_all = as_float_tensor(policy(states))
+    raw_all = policy(states).detach().to(OBS_DTYPE)
     executed_all = squash_to_env_bounds(raw_all, low, high)
     wavefront = torch.as_tensor(envs_needing_a_chunk)
     state.plan[wavefront] = executed_all
@@ -510,7 +494,9 @@ def collect_chunks_vec(
             )
 
     except (ValueError, RuntimeError, KeyError):
-        flush_on_collection_error(on_error_flush)
+        if on_error_flush is not None:
+            with contextlib.suppress(ValueError, RuntimeError):
+                on_error_flush()
         raise
     else:
         return buffer

@@ -84,16 +84,10 @@ class SinusoidalEncoding(nn.Module):
             persistent=False,
         )
 
-    def compute_freqs(self, device: torch.device | None = None) -> torch.Tensor:
-        """Return the ``[half]`` freq table in fp32 on ``device``."""
-        if device is None or torch.device(device) == self.freqs.device:
-            return self.freqs
-        return self.freqs.to(torch.device(device))
-
     def encode_times(self, t: torch.Tensor) -> torch.Tensor:
         """Embed continuous times with a sinusoid. Accept ``[N]``, return ``[N, dim]``."""
         t = t.to(dtype=torch.float32)
-        freqs = self.compute_freqs(t.device).to(torch.float32)
+        freqs = self.freqs.to(t.device)
         ang = t.unsqueeze(-1) * freqs
         emb = torch.cat([ang.cos(), ang.sin()], dim=-1)
         if self.dim % 2:

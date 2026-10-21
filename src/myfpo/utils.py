@@ -12,7 +12,7 @@ from functools import lru_cache
 import numpy as np
 import torch
 
-from lerobot.processor.converters import from_tensor_to_numpy, to_tensor
+from lerobot.processor.converters import to_tensor
 
 
 @lru_cache(maxsize=1)
@@ -141,11 +141,6 @@ def to_device_async(x: torch.Tensor, device) -> torch.Tensor:
             x = x.pin_memory()
         return x.to(device, non_blocking=True)
     return x.to(device)
-
-
-def to_numpy_1d(x: torch.Tensor | np.ndarray | float) -> np.ndarray:
-    """To numpy, always at least 1-D. A singleton stays ``[1]``, never ``()``."""
-    return np.atleast_1d(from_tensor_to_numpy(x))
 
 
 def to_tensor_1d(

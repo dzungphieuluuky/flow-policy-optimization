@@ -25,13 +25,13 @@ from lerobot.utils.random_utils import set_seed
 
 from myfpo.checkpointing import load_policy_checkpoint
 from myfpo.evaluator import Evaluator
-from myfpo.training import _EvalPolicy
+from myfpo.training import EvalPolicy
 from myfpo.utils import resolve_device
 
 
 def run_once(policy, evaluator, eval_seed: int) -> dict[str, float]:
     """One full eval pass, summarized."""
-    results = evaluator.evaluate(_EvalPolicy(policy), out_dir=None)
+    results = evaluator.evaluate(EvalPolicy(policy), out_dir=None)
     summary = evaluator.summarize(results, seed=eval_seed)
     summary["episode_returns"] = [float(r["return"]) for r in results]
     return summary
@@ -45,7 +45,6 @@ def main() -> int:
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--seed", type=int, default=3407)
     parser.add_argument("--eval-seed", type=int, default=0)
-    parser.add_argument("--zero-sampling", action="store_true", default=True)
     parser.add_argument("--out", default=None, help="write the JSON result here")
     args = parser.parse_args()
 
