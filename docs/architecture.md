@@ -106,12 +106,17 @@ Ensemble of 2 `Q(s_t, a_{t:t+h})` heads over the full window. Trunk follows
 | Ensemble | 2 | the repo's default; TD-MPC2 ships 5 (`--myfpo.num_critics 5` restores it) |
 | Output layer | bare `Linear` | no activation or norm on the scalar head |
 | Width | `critic_hidden_dim=512` | matches TD-MPC2 |
-| Input norms | `LayerNorm` on state and action **separately** | one norm over the concat would couple state dims to action dims, which are unrelated quantities |
+| State input | `LayerNorm` over the flattened window | one norm over the concat would couple state dims to action dims, which are unrelated quantities |
+| Action input | learned affine, **not** a norm | a `LayerNorm` over the chunk subtracts the chunk's mean, so a chunk of all +5 and a chunk of all 0 reach the critic as the same input. The critic was blind to a sustained push, and blind to the drifting raw magnitude that `train/raw_action_abs_max` monitors. |
 
-Defaults: **631k parameters**, 2 members of 316k.
+Defaults for Hopper (`obs_dim=11`, `action_dim=3`): **738k parameters**, 2
+members of 369k. The figure scales with `n_obs_steps * obs_dim`.
 
 `norm_state` is skipped when `critic_share_encoder=True`, so that flag keeps
-meaning "raw shared-encoder vector" rather than double-normalising.
+meaning "raw shared-encoder vector" rather than double-normalising. The two
+paths are not comparable: the shared path ends in an RMSNorm, which does not
+subtract the mean, so the shared critic is shift-sensitive on the state and the
+default critic is not.
 
 ---
 

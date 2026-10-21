@@ -4,6 +4,10 @@ Follows TD-MPC2 (arXiv:2310.16828): every hidden layer is Linear -> LayerNorm
 -> Mish. The old trunk was bare Linear -> ReLU with no normalisation at all.
 TD-MPC2 ships 5 ensemble members; this repo runs 2, and
 ``--myfpo.num_critics 5`` restores the paper's width.
+
+The action input is the one place the trunk departs from the paper. It is a
+learned affine, not a LayerNorm, because a LayerNorm over the chunk erases the
+chunk's offset. See ``myfpo.critic._ActionScale``.
 """
 
 from __future__ import annotations
@@ -17,7 +21,7 @@ from lerobot.configs.types import FeatureType
 from torch import nn
 
 from myfpo.configuration import MyfpoConfig
-from myfpo.critic import Critic, CriticMember
+from myfpo.critic import Critic, CriticMember, _ActionScale
 from myfpo.metrics import compute_value_metrics
 from myfpo.modeling import MyfpoPolicy
 
@@ -187,16 +191,22 @@ def test_dropout_adds_no_parameters():
 # --- per-part input norms ------------------------------------------------------
 
 
-def test_the_state_and_action_are_normalised_separately():
+def test_the_state_and_the_action_are_treated_separately():
+    """The state gets a LayerNorm. The action gets a learned affine.
+
+    A LayerNorm over the chunk would subtract the chunk's mean, so a chunk of
+    all +5 and a chunk of all 0 would reach the critic as the same input.
+    """
     m = _member()
     assert isinstance(m.norm_state, nn.LayerNorm)
-    assert isinstance(m.norm_action, nn.LayerNorm)
+    assert isinstance(m.norm_action, _ActionScale)
     assert m.norm_state.normalized_shape == (STEPS * OBS,)
-    assert m.norm_action.normalized_shape == (H * ACT,)
+    assert m.norm_action.weight.shape == (H * ACT,)
+    assert m.norm_action.bias.shape == (H * ACT,)
 
 
 def test_the_output_is_invariant_to_a_global_affine_on_the_observation():
-    """The property the input norms buy. False before this change."""
+    """The property the state norm buys. False before this change."""
     torch.manual_seed(1)
     m = _member().eval()
     obs = torch.randn(4, STEPS, OBS)
@@ -205,10 +215,56 @@ def test_the_output_is_invariant_to_a_global_affine_on_the_observation():
     base = m(obs, act, frac)
     assert torch.allclose(m(2.0 * obs, act, frac), base, atol=1e-5)
     assert torch.allclose(m(obs + 3.0, act, frac), base, atol=1e-5)
-    assert torch.allclose(m(obs, 0.5 * act, frac), base, atol=1e-5)
 
 
-def test_the_input_norms_add_exactly_their_two_widths():
+def test_the_output_is_not_invariant_to_a_global_affine_on_the_action():
+    """The property the action affine buys.
+
+    A LayerNorm over the chunk subtracted the chunk's mean, so the offset of
+    the chunk never reached the critic: a sustained push and no push were the
+    same input.
+    """
+    torch.manual_seed(1)
+    m = _member().eval()
+    obs = torch.randn(4, STEPS, OBS)
+    act = torch.randn(4, H, ACT)
+    frac = torch.full((4,), 0.5)
+    base = m(obs, act, frac)
+    assert not torch.allclose(m(obs, act + 3.0, frac), base, atol=1e-5)
+    assert not torch.allclose(m(obs, 0.5 * act, frac), base, atol=1e-5)
+
+
+def test_a_constant_chunk_keeps_its_offset():
+    """The sustained-push case.
+
+    A LayerNorm mapped every constant chunk to the same input, so the critic
+    could not tell a push from no push.
+    """
+    torch.manual_seed(1)
+    m = _member().eval()
+    obs = torch.randn(4, STEPS, OBS)
+    frac = torch.full((4,), 0.5)
+    push = torch.full((4, H, ACT), 5.0)
+    idle = torch.zeros(4, H, ACT)
+    assert not torch.allclose(m(obs, push, frac), m(obs, idle, frac), atol=1e-5)
+
+
+def test_the_action_scale_loads_a_layernorm_state_dict():
+    """A checkpoint written before this change must still load."""
+    m = _member()
+    m.norm_action.load_state_dict(nn.LayerNorm(H * ACT).state_dict())
+
+
+def test_the_gradient_reaches_the_action_scale():
+    """Guards a detached or accidentally frozen scale."""
+    m = _member()
+    m(torch.randn(4, STEPS, OBS), torch.randn(4, H, ACT), torch.full((4,), 0.5)).sum().backward()
+    assert m.norm_action.weight.grad is not None
+    assert m.norm_action.weight.grad.abs().sum() > 0
+    assert m.norm_action.bias.grad.abs().sum() > 0
+
+
+def test_the_input_treatment_adds_exactly_their_two_widths():
     with_norms = sum(p.numel() for p in _member().parameters())
     trunk = sum(p.numel() for p in _member().mlp.parameters())
     assert with_norms == trunk + 2 * (STEPS * OBS) + 2 * (H * ACT)
@@ -218,7 +274,7 @@ def test_the_shared_encoder_branch_skips_the_state_norm():
     torch.manual_seed(0)
     m = CriticMember(OBS, ACT, HIDDEN, 1, H, condition_dim=HIDDEN)
     assert not hasattr(m, "norm_state")
-    assert isinstance(m.norm_action, nn.LayerNorm)
+    assert isinstance(m.norm_action, _ActionScale)
     assert m.input_dim == HIDDEN + H * ACT + 1
 
 
