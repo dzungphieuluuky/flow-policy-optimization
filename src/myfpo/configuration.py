@@ -103,6 +103,9 @@ class MyfpoConfig(PreTrainedConfig):
     # How often the policy measures the per-position gradient norms. 0 = never.
     temporal_probe_every: int = 0
 
+    # The temporal filter on the obs window in the actor encoder. 0 = off.
+    obs_temporal_kernel: int = 0
+
     def __post_init__(self) -> None:
         super().__post_init__()
         if self.n_action_steps is None:
@@ -124,6 +127,13 @@ class MyfpoConfig(PreTrainedConfig):
         if self.temporal_probe_every < 0:
             raise ValueError(
                 f"temporal_probe_every={self.temporal_probe_every} must be >= 0"
+            )
+        if self.obs_temporal_kernel < 0 or (
+            self.obs_temporal_kernel and self.obs_temporal_kernel % 2 == 0
+        ):
+            raise ValueError(
+                f"obs_temporal_kernel={self.obs_temporal_kernel} must be 0 or a "
+                "positive odd number"
             )
         if self.n_obs_steps < 1:
             raise ValueError(f"n_obs_steps={self.n_obs_steps} must be >= 1")

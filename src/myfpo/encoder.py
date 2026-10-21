@@ -7,7 +7,7 @@ import warnings
 import torch
 from torch import nn
 
-from myfpo.layers import MIN_WIDTH, CondMLP, build_rms_norm
+from myfpo.layers import MIN_WIDTH, CondMLP, TemporalConv, build_rms_norm
 
 class RunningMeanStd(nn.Module):
     """Per-dimension running mean and variance over raw obs frames."""
@@ -79,7 +79,13 @@ class StateEncoder(nn.Module):
     subtract the mean and it matches the actor's norm1/norm2/norm_out.
     """
 
-    def __init__(self, obs_dim: int, hidden_dim: int, max_obs_steps: int):
+    def __init__(
+        self,
+        obs_dim: int,
+        hidden_dim: int,
+        max_obs_steps: int,
+        temporal_kernel: int = 0,
+    ):
         super().__init__()
         if hidden_dim < MIN_WIDTH:
             raise ValueError("hidden_dim must be at least 2")
@@ -89,6 +95,11 @@ class StateEncoder(nn.Module):
         self.max_obs_steps = max_obs_steps
         self.net = CondMLP(max_obs_steps * obs_dim, hidden_dim, hidden_dim)
         self.out_norm = build_rms_norm(hidden_dim)
+        # The filter is on the frame axis. It keeps the width, so the flatten
+        # below and every shape after it stay the same.
+        self.frame_conv = (
+            TemporalConv(obs_dim, temporal_kernel) if temporal_kernel else None
+        )
 
     def forward(self, states: torch.Tensor) -> torch.Tensor:
         """Accept the window ``[B, T, obs]``. Return one normalised conditioning
@@ -98,5 +109,8 @@ class StateEncoder(nn.Module):
             raise ValueError(f"states must have shape [B, {self.max_obs_steps}, {self.obs_dim}], got {tuple(states.shape)}")
         if states.shape[1] != self.max_obs_steps:
             raise ValueError(f"states has {states.shape[1]} frames, built for max_obs_steps={self.max_obs_steps}")
-        return self.out_norm(self.net(states.flatten(1)))
+        frames = states.transpose(1, 2)
+        if self.frame_conv is not None:
+            frames = self.frame_conv(frames)
+        return self.out_norm(self.net(frames.transpose(1, 2).flatten(1)))
 

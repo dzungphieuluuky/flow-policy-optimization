@@ -146,7 +146,12 @@ class MyfpoPolicy(PreTrainedPolicy):
                 config.dit_mlp_ratio,
                 config.time_embed_dim,
             )
-        self.encoder = StateEncoder(obs_dim, config.hidden_dim, config.n_obs_steps)
+        self.encoder = StateEncoder(
+            obs_dim,
+            config.hidden_dim,
+            config.n_obs_steps,
+            config.obs_temporal_kernel,
+        )
         critic_width = (
             config.critic_hidden_dim
             if config.critic_hidden_dim is not None

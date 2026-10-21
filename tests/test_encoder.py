@@ -65,6 +65,32 @@ def test_the_norm_is_applied_after_the_mlp():
     assert torch.allclose(enc(x), enc.out_norm(enc.net(x.flatten(1))), atol=0.0)
 
 
+def test_the_filter_is_off_by_default():
+    assert _encoder().frame_conv is None
+    assert _encoder(temporal_kernel=3).frame_conv is not None
+
+
+def test_the_filter_keeps_the_shape_and_the_width():
+    enc = _encoder(temporal_kernel=3)
+    assert enc(_window(batch=7)).shape == (7, HIDDEN)
+    assert enc.net.fc1.in_features == STEPS * OBS
+
+
+def test_the_filter_sits_before_the_flatten():
+    enc = _encoder(temporal_kernel=3)
+    x = _window()
+    frames = enc.frame_conv(x.transpose(1, 2))
+    want = enc.out_norm(enc.net(frames.transpose(1, 2).flatten(1)))
+    assert torch.allclose(enc(x), want, atol=0.0)
+
+
+def test_the_filter_changes_the_conditioning():
+    enc = _encoder(temporal_kernel=3)
+    x = _window()
+    plain = enc.out_norm(enc.net(x.flatten(1)))
+    assert not torch.allclose(enc(x), plain, atol=1e-6)
+
+
 def test_the_bad_shapes_still_raise():
     enc = _encoder()
     with pytest.raises(ValueError, match="states must have shape"):
