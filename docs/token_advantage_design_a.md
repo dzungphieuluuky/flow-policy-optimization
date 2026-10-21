@@ -290,7 +290,7 @@ experiments (Section 9). The granularity that exists today is
 
 ### 5.3 `src/myfpo/modeling.py`
 
-- `_loss_and_info`:
+- `loss_and_info`:
   - load the critic output `[num_critics, B, 2H]` in action-level mode;
   - split into `v` and `q`;
   - the value loss becomes a masked MSE over the `2H` heads against the
