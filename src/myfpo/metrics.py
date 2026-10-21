@@ -7,23 +7,19 @@ import torch
 
 from myfpo.configuration import MyfpoConfig
 from myfpo.fpo_core import (
-    broadcast_over_mc_axis,
     sample_noise,
     sample_timesteps,
 )
 from myfpo.utils import rms
 
 __all__ = [
-    "broadcast_condition",
     "compute_cfm_metrics",
     "compute_eval_summary_metrics",
     "compute_gae_diagnostics",
-    "compute_mc_xt",
     "compute_policy_info",
     "compute_ratio_metrics",
     "compute_value_loss",
     "compute_value_metrics",
-    "mc_draws",
     "sample_eps",
     "sample_mc_timesteps",
     "subsampled_min",
@@ -98,40 +94,8 @@ def sample_eps(
     eps_half = sample_noise(shape_half, cfg, device, None)
     return torch.cat([eps_half, -eps_half], dim=1)  # [n, 2*half, ...]
 
-def compute_mc_xt(
-    flatten_mc_timestep: torch.Tensor,
-    flatten_mc_noise: torch.Tensor,
-    flatten_mc_action: torch.Tensor,
-    flow_shape: tuple[int, ...],
-) -> torch.Tensor:
-    """Interpolate noise to action. Returns ``[B * M, *flow_shape]``."""
-    t = flatten_mc_timestep.expand(-1, -1, flow_shape[-1])
-    noise = flatten_mc_noise.reshape(-1, *flow_shape)
-    action = flatten_mc_action.reshape(-1, *flow_shape)
-    # torch.lerp wants one dtype for all three operands: the weight has to
-    # match the flow tensors, so a mixed fp32/bf16 triple raises instead of
-    # interpolating. The common type is the promotion of the three.
-    dtype = torch.promote_types(
-        torch.promote_types(noise.dtype, action.dtype), t.dtype
-    )
-    return torch.lerp(noise.to(dtype), action.to(dtype), t.to(dtype))
 
 
-def mc_draws(
-    actions: torch.Tensor, eps: torch.Tensor, t: torch.Tensor
-) -> tuple[torch.Tensor, torch.Tensor, tuple[int, ...], int]:
-    """The shared MC prologue of ``compute_behavior_cfm_losses`` and ``forward``."""
-    flatten_timestep, flatten_mc_noise, flatten_mc_action, flow_shape, num_mc = (
-        broadcast_over_mc_axis(actions, eps, t)
-    )
-    x_t = compute_mc_xt(flatten_timestep, flatten_mc_noise, flatten_mc_action, flow_shape)
-    return x_t, flatten_timestep.squeeze(-1), flow_shape, num_mc
-
-
-def broadcast_condition(condition: torch.Tensor, num_mc: int) -> torch.Tensor:
-    """Repeat each row ``m`` times, row-major: ``flat[i * m + j] = condition[i]``."""
-    n, d = condition.shape
-    return condition.unsqueeze(1).expand(n, num_mc, d).reshape(n * num_mc, d)
 
 
 def sample_mc_timesteps(cfg: MyfpoConfig, n: int, device: torch.device) -> torch.Tensor:

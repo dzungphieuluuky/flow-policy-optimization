@@ -18,23 +18,23 @@ from lerobot.utils.constants import ACTION, OBS_STATE
 
 from myfpo.configuration import MyfpoConfig
 from myfpo.fpo_core import (
+    broadcast_condition,
     cfm_loss_weight,
-    group_cfm_loss,
-    velocity_to_target_param,
     cfm_target,
     clamp_saturation,
+    clip_velocity,
     compute_aspo_surrogate,
     compute_cfm_loss,
-    clip_velocity,
     compute_policy_ratio,
+    group_cfm_loss,
+    mc_draws,
     sample_action,
     sample_noise,
+    velocity_to_target_param,
 )
 from myfpo.metrics import (
-    broadcast_condition,
     compute_policy_info,
     compute_value_loss,
-    mc_draws,
 )
 from myfpo.critic import Critic
 from myfpo.encoder import RunningMeanStd, StateEncoder

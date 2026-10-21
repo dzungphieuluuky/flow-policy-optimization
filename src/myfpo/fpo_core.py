@@ -93,6 +93,37 @@ def clip_velocity(velocity: torch.Tensor, bound: float | None) -> torch.Tensor:
     return velocity.clamp(-bound, bound)
 
 
+def mc_draws(
+    actions: torch.Tensor, eps: torch.Tensor, t: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor, tuple[int, ...], int]:
+    """The shared MC prologue of the behavior loss and the training loss.
+
+    Returns the flow point ``x_t``, the per-token time, the flow shape, and
+    the number of MC samples. The flow point is the noise moved ``t`` of the
+    way to the action.
+    """
+    flatten_timestep, flatten_mc_noise, flatten_mc_action, flow_shape, num_mc = (
+        broadcast_over_mc_axis(actions, eps, t)
+    )
+    time = flatten_timestep.expand(-1, -1, flow_shape[-1])
+    noise = flatten_mc_noise.reshape(-1, *flow_shape)
+    action = flatten_mc_action.reshape(-1, *flow_shape)
+    # torch.lerp wants one dtype for all three operands: the weight has to
+    # match the flow tensors, so a mixed fp32/bf16 triple raises instead of
+    # interpolating. The common type is the promotion of the three.
+    dtype = torch.promote_types(
+        torch.promote_types(noise.dtype, action.dtype), time.dtype
+    )
+    x_t = torch.lerp(noise.to(dtype), action.to(dtype), time.to(dtype))
+    return x_t, flatten_timestep.squeeze(-1), flow_shape, num_mc
+
+
+def broadcast_condition(condition: torch.Tensor, num_mc: int) -> torch.Tensor:
+    """Repeat each row ``m`` times, row-major: ``flat[i * m + j] = condition[i]``."""
+    n, d = condition.shape
+    return condition.unsqueeze(1).expand(n, num_mc, d).reshape(n * num_mc, d)
+
+
 def compute_cfm_loss(
     v_hat: torch.Tensor,
     v_star: torch.Tensor,

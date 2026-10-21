@@ -1,0 +1,137 @@
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+W1021 17:12:14.786000 330273 torch/_inductor/cudagraph_utils.py:343] [__cudagraphs] CUDAGraph supports dynamic shapes by recording a new graph for each distinct input size. Recording too many CUDAGraphs may lead to extra overhead. We have observed 9 distinct sizes. Please consider the following options for better performance: a) padding inputs to a few fixed number of shapes; or b) set torch._inductor.config.triton.cudagraph_skip_dynamic_graphs=True. Set torch._inductor.config.triton.cudagraph_dynamic_shape_warn_limit=None to silence this warning.
+W1021 17:12:14.827000 330273 torch/_inductor/cudagraph_utils.py:343] [__cudagraphs] CUDAGraph supports dynamic shapes by recording a new graph for each distinct input size. Recording too many CUDAGraphs may lead to extra overhead. We have observed 9 distinct sizes. Please consider the following options for better performance: a) padding inputs to a few fixed number of shapes; or b) set torch._inductor.config.triton.cudagraph_skip_dynamic_graphs=True. Set torch._inductor.config.triton.cudagraph_dynamic_shape_warn_limit=None to silence this warning.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+W1021 17:12:30.930000 330273 torch/_inductor/cudagraph_utils.py:343] [__cudagraphs] CUDAGraph supports dynamic shapes by recording a new graph for each distinct input size. Recording too many CUDAGraphs may lead to extra overhead. We have observed 9 distinct sizes. Please consider the following options for better performance: a) padding inputs to a few fixed number of shapes; or b) set torch._inductor.config.triton.cudagraph_skip_dynamic_graphs=True. Set torch._inductor.config.triton.cudagraph_dynamic_shape_warn_limit=None to silence this warning.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+W1021 17:13:22.101000 330273 torch/_inductor/cudagraph_utils.py:343] [__cudagraphs] CUDAGraph supports dynamic shapes by recording a new graph for each distinct input size. Recording too many CUDAGraphs may lead to extra overhead. We have observed 9 distinct sizes. Please consider the following options for better performance: a) padding inputs to a few fixed number of shapes; or b) set torch._inductor.config.triton.cudagraph_skip_dynamic_graphs=True. Set torch._inductor.config.triton.cudagraph_dynamic_shape_warn_limit=None to silence this warning.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+W1021 17:14:08.964000 330273 torch/_inductor/cudagraph_utils.py:343] [__cudagraphs] CUDAGraph supports dynamic shapes by recording a new graph for each distinct input size. Recording too many CUDAGraphs may lead to extra overhead. We have observed 9 distinct sizes. Please consider the following options for better performance: a) padding inputs to a few fixed number of shapes; or b) set torch._inductor.config.triton.cudagraph_skip_dynamic_graphs=True. Set torch._inductor.config.triton.cudagraph_dynamic_shape_warn_limit=None to silence this warning.
+W1021 17:14:12.294000 330273 torch/_inductor/cudagraph_utils.py:343] [__cudagraphs] CUDAGraph supports dynamic shapes by recording a new graph for each distinct input size. Recording too many CUDAGraphs may lead to extra overhead. We have observed 9 distinct sizes. Please consider the following options for better performance: a) padding inputs to a few fixed number of shapes; or b) set torch._inductor.config.triton.cudagraph_skip_dynamic_graphs=True. Set torch._inductor.config.triton.cudagraph_dynamic_shape_warn_limit=None to silence this warning.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+W1021 17:14:15.716000 330273 torch/_inductor/cudagraph_utils.py:343] [__cudagraphs] CUDAGraph supports dynamic shapes by recording a new graph for each distinct input size. Recording too many CUDAGraphs may lead to extra overhead. We have observed 9 distinct sizes. Please consider the following options for better performance: a) padding inputs to a few fixed number of shapes; or b) set torch._inductor.config.triton.cudagraph_skip_dynamic_graphs=True. Set torch._inductor.config.triton.cudagraph_dynamic_shape_warn_limit=None to silence this warning.
+W1021 17:14:15.720000 330273 torch/_inductor/cudagraph_utils.py:343] [__cudagraphs] CUDAGraph supports dynamic shapes by recording a new graph for each distinct input size. Recording too many CUDAGraphs may lead to extra overhead. We have observed 9 distinct sizes. Please consider the following options for better performance: a) padding inputs to a few fixed number of shapes; or b) set torch._inductor.config.triton.cudagraph_skip_dynamic_graphs=True. Set torch._inductor.config.triton.cudagraph_dynamic_shape_warn_limit=None to silence this warning.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+W1021 17:15:30.745000 330273 torch/_inductor/cudagraph_utils.py:343] [__cudagraphs] CUDAGraph supports dynamic shapes by recording a new graph for each distinct input size. Recording too many CUDAGraphs may lead to extra overhead. We have observed 9 distinct sizes. Please consider the following options for better performance: a) padding inputs to a few fixed number of shapes; or b) set torch._inductor.config.triton.cudagraph_skip_dynamic_graphs=True. Set torch._inductor.config.triton.cudagraph_dynamic_shape_warn_limit=None to silence this warning.
+W1021 17:15:30.763000 330273 torch/_inductor/cudagraph_utils.py:343] [__cudagraphs] CUDAGraph supports dynamic shapes by recording a new graph for each distinct input size. Recording too many CUDAGraphs may lead to extra overhead. We have observed 9 distinct sizes. Please consider the following options for better performance: a) padding inputs to a few fixed number of shapes; or b) set torch._inductor.config.triton.cudagraph_skip_dynamic_graphs=True. Set torch._inductor.config.triton.cudagraph_dynamic_shape_warn_limit=None to silence this warning.
+W1021 17:15:30.780000 330273 torch/_inductor/cudagraph_utils.py:343] [__cudagraphs] CUDAGraph supports dynamic shapes by recording a new graph for each distinct input size. Recording too many CUDAGraphs may lead to extra overhead. We have observed 9 distinct sizes. Please consider the following options for better performance: a) padding inputs to a few fixed number of shapes; or b) set torch._inductor.config.triton.cudagraph_skip_dynamic_graphs=True. Set torch._inductor.config.triton.cudagraph_dynamic_shape_warn_limit=None to silence this warning.
+W1021 17:15:30.786000 330273 torch/_inductor/cudagraph_utils.py:343] [__cudagraphs] CUDAGraph supports dynamic shapes by recording a new graph for each distinct input size. Recording too many CUDAGraphs may lead to extra overhead. We have observed 9 distinct sizes. Please consider the following options for better performance: a) padding inputs to a few fixed number of shapes; or b) set torch._inductor.config.triton.cudagraph_skip_dynamic_graphs=True. Set torch._inductor.config.triton.cudagraph_dynamic_shape_warn_limit=None to silence this warning.
+W1021 17:15:30.803000 330273 torch/_inductor/cudagraph_utils.py:343] [__cudagraphs] CUDAGraph supports dynamic shapes by recording a new graph for each distinct input size. Recording too many CUDAGraphs may lead to extra overhead. We have observed 9 distinct sizes. Please consider the following options for better performance: a) padding inputs to a few fixed number of shapes; or b) set torch._inductor.config.triton.cudagraph_skip_dynamic_graphs=True. Set torch._inductor.config.triton.cudagraph_dynamic_shape_warn_limit=None to silence this warning.
+W1021 17:15:30.819000 330273 torch/_inductor/cudagraph_utils.py:343] [__cudagraphs] CUDAGraph supports dynamic shapes by recording a new graph for each distinct input size. Recording too many CUDAGraphs may lead to extra overhead. We have observed 9 distinct sizes. Please consider the following options for better performance: a) padding inputs to a few fixed number of shapes; or b) set torch._inductor.config.triton.cudagraph_skip_dynamic_graphs=True. Set torch._inductor.config.triton.cudagraph_dynamic_shape_warn_limit=None to silence this warning.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
+WARNING:lerobot.configs.policies:Device 'None' is not available. Switching to 'cuda'.
