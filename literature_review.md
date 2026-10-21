@@ -168,16 +168,17 @@ where `r = π_θ_new(ε|s) / π_θ_old(ε|s)` (tractable, since `ε` is low-dime
 - `LeRobot` (MuJoCo-based, humanoid, manipulation) — used in `myfpo` (`configs/envs.yaml`).
 - Continuous control: `Hopper`, `Ant`, `Humanoid` (OpenAI Gym / MuJoCo).
 - Manipulation: single-arm, bimanual tasks in simulation and real hardware.
-- Metrics: success rate, episode return, convergence speed (steps to threshold), entropy of action distribution (to measure exploration collapse), value drift (`measure_value_drift` in `myfpo`).
+- Metrics: success rate, episode return, convergence speed (steps to threshold), value drift (`measure_value_drift` in `myfpo`). There is no action-entropy metric. The collapse probe is `effective_rank` (`flow.py`), which is a spectral entropy of the actor's hidden features, logged as `train/cond_effective_rank`.
 
 ### Key Experimental Protocols
-- `pytest -q` as only gate (`scripts/AGENTS.md`).
+- Three gates: `pytest -q`, `ruff check .`, and the behaviour pins under `scripts/pins/`. The pins are the one that catches a silent numerical change.
 - Rollout diagnostics (`test_rollout_diagnostics.py`) verifies batched scalar computation; `test_metric_faithfulness.py` verifies metric names and NaN semantics.
-- `scripts/AGENTS.md` notes deleted tests lost 19 (`test_eval_interval`), 4 (`test_tracking`), 1 (`test_metric_audit`), 1 (`test_fpo_parity`). These covered removed guard conditions (`check_divergence`, `check_regression`), tracking keys, metric audit, and paper config mapping.
+- `tests/test_guard_messages.py` pins 73 guarded conditions. A guard message that changes without a deliberate change fails the suite.
 
 ### Reproducibility
-- `myfpo` uses deterministic seeding (`seed` in config), `jupytext`-generated notebooks (`myfpo_online.md` → `.ipynb`), and fixed `pytest -n 4` distributed runs.
-- `verify_deps.sh` was deleted; dependency verification relies on `pyproject.toml` and manual inspection.
+- `myfpo` uses deterministic seeding (`seed` in config) and `jupytext`-generated notebooks (`myfpo_online.md` → `.ipynb`).
+- The test suite runs in one process on purpose. `pyproject.toml` sets `addopts = "-n 0"`. Several xdist workers contend for the same cores, the same `MUJOCO_LOG.TXT`, and the same torch RNG.
+- `verify_deps.sh` does not exist. Dependency verification relies on `pyproject.toml` and `uv.lock`.
 
 ---
 
@@ -185,9 +186,9 @@ where `r = π_θ_new(ε|s) / π_θ_old(ε|s)` (tractable, since `ε` is low-dime
 
 ### Complexity Analysis (per update)
 - **Gaussian**: `O(B · D)` (forward + backward).
-- **FPO / Diffusion**: `O(B · M · H · D · NFE)` where `M` = MC samples, `H` = action horizon (chunk length), `NFE` = number of flow steps, `D` = action dim. Per-sample ratios (`FPO++`) multiply `M` compute by a small constant (independent ratios vs single group average).
-- **Memory**: `O(B · M · H · D)` for chunked rollouts; `RolloutBuffer` (`rollout.py`) manages host/device split with `torch.cuda.Event`.
-- **Parallelism**: `pytest -n 4` uses thread pools; `torch.compile` disabled for diagnostic collection (`_collect_stats` in `flow.py`).
+- **FPO / Diffusion**: `O(B · M · H · D · NFE)` where `M` = MC samples, `H` = action horizon (chunk length), `NFE` = number of flow steps, `D` = action dim. Per-token ratios (`FPO++`) multiply `M` compute by a small constant (independent ratios vs single group average).
+- **Memory**: `O(B · M · H · D)` for chunked rollouts; `RolloutBuffer` (`collector.py`) manages the host/device split with `torch.cuda.Event`.
+- **Parallelism**: the test suite is serial (`-n 0`); `torch.compile` is disabled for diagnostic collection (`_collect_stats` in `flow.py`).
 
 ### Practical Trade-offs
 - `myfpo` uses open-loop chunking (`action_horizon`) to amortize inference cost over multiple steps, but increases batch memory.
@@ -205,7 +206,7 @@ FPO's surrogate ratio is biased. No exact `log π(a|s)` exists for arbitrary neu
 Even with ASPO, aggressive clipping on `A < 0` can collapse exploration. Open: adaptive clipping thresholds based on measured action entropy (`effective_rank` in `flow.py` is a diagnostic, not a control mechanism).
 
 ### 8.3 Chunk Boundary Artifacts
-`myfpo` uses open-loop chunks (`rollout_seam_jerk`, `rollout_jerk` in `rollout.py`). At chunk boundaries, actions may be discontinuous. Open: smooth chunk stitching or closed-loop chunk policies without full re-planning.
+`myfpo` uses open-loop chunks. The measures are `train/rollout_jerk` and `train/rollout_seam_jerk`, computed by `compute_mean_chunk_jerk` and `compute_seam_jerk` (`evaluator.py`). At chunk boundaries, actions may be discontinuous. Open: smooth chunk stitching or closed-loop chunk policies without full re-planning.
 
 ### 8.4 Real-Time Inference vs. Expressivity
 One-step methods (`OGPO`, `DBPO`) trade expressivity for latency. Open: adaptive NFE — use few steps when dynamics are predictable, many steps near obstacles.
@@ -322,7 +323,7 @@ Offline / Inference Only
 13. **PSS** (`arXiv:2609.33765`) — lightweight adaptation.
 14. **LeRobot / `myfpo`** (`pyproject.toml`, `AGENTS.md`, `src/myfpo/`) — implementation patterns, chunking, metrics, guard messages.
 15. **Effective Rank / Collapse Probes** (`effective_rank` in `flow.py`; spectral entropy) — diagnostics.
-16. **Open-Loop Chunking** (`rollout.py`, `rollout_seam_jerk`) — temporal coherence.
+16. **Open-Loop Chunking** (`rollout.py`; `train/rollout_seam_jerk` from `evaluator.py`) — temporal coherence.
 17. **ASPO / Clipping Theory** (`fpo_core.py`: `compute_aspo_surrogate`, `clamp_saturation`) — trust region design.
 18. **Latent Variable RL** (`Kingma & Welling`, VAE; `Haarnoja et al.`, SAC — for comparison with `GoRL`).
 19. **MPC with Generative Priors** (`Williams et al.`; `SPC`) — background for `GPC`.
@@ -336,7 +337,7 @@ Offline / Inference Only
 ### 11.6 Consensus, Disagreements, Outlook
 - **Consensus**: Flow/diffusion policies are necessary for multimodal robot control; online RL requires either approximate ratios (`FPO`) or decoupled optimization (`GoRL`); chunking reduces inference overhead.
 - **Disagreements**: Whether approximate ratios (`FPO`) are theoretically sound compared to exact likelihood methods (`GenPO`, `GoRL`); whether end-to-end joint optimization outperforms decoupled two-timescale training; how long open-loop chunks can be.
-- **Future Outlook**: Integration of FPO-style ratios with GoRL-style decoupling; adaptive chunking; real-world deployment of flow-based policies; one-step methods that retain full multimodality; inference-time planning (`GPC`) combined with online policy updates (`FPO++`). The `myfpo` repo provides a concrete, test-guarded implementation (`tests/test_guard_messages.py`, `tests/test_metric_faithfulness.py`) that captures the current best practices for flow-based robot RL: per-sample ratios, asymmetric clipping, diagnostic metrics, chunked rollouts, and strict config parity (`tests/test_config_yaml_parity.py`, though deleted by user for other stale tests).
+- **Future Outlook**: Integration of FPO-style ratios with GoRL-style decoupling; adaptive chunking; real-world deployment of flow-based policies; one-step methods that retain full multimodality; inference-time planning (`GPC`) combined with online policy updates (`FPO++`). The `myfpo` repo provides a concrete, test-guarded implementation (`tests/test_guard_messages.py`, `tests/test_metric_faithfulness.py`) that captures the current best practices for flow-based robot RL: per-token ratios, asymmetric clipping, diagnostic metrics, chunked rollouts, and strict config parity (`tests/test_config_surface.py`).
 
 ---
 

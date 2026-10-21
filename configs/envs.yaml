@@ -5,7 +5,10 @@
 # override, and the live env space is validated against the registry at startup
 # (mismatch = loud error, usually a gym version change — re-measure and
 # update). Keep this the single source of truth: it also drives KNOWN_ENVS.
-# Dims below MEASURED with gymnasium 1.x + mujoco on 2026-09-14.
+# Dims below MEASURED with gymnasium 1.x + mujoco on 2026-09-14, and
+# RE-VERIFIED against the live env spaces on 2026-10-21. All eleven
+# gymnasium envs matched. The three Adroit entries were not re-measured:
+# they need gymnasium-robotics.
 #
 # Continuous-action envs only. CartPole-v1 and MountainCar-v0 were removed:
 # both have Discrete action spaces, and myfpo is a continuous flow policy that

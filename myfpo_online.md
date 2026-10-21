@@ -287,8 +287,6 @@ KEY_ALIASES = {
     "eval/return_best": "eval/best_mean_return",
     "eval/random_policy_return": "eval/sample_random_baseline",
     "train/boot_value_relative_drift": "train/boot_value_delta",
-    "train/advantage_std_over_return_std": "train/advantage_std_fraction",
-    "train/chunk_clip_count_mean": "train/chunk_clip_counts",
     "train/grad_norm_before_clip": "train/grad_norm_preclip",
 }
 
