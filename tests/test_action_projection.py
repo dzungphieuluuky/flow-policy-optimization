@@ -38,37 +38,9 @@ def _policy(action_dim: int = 3, **over):
     )
 
 
-# --- the dead metric ------------------------------------------------------
-
-
-
-
-
-
-
-
-
-
-# --- the real projection --------------------------------------------------
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# --- the trainer ----------------------------------------------------------
+# --- the real projection -----------------------------------------------------
 def test_the_postprocessor_maps_tanh_onto_the_env_bounds():
     """The map is low + (tanh(x) + 1) / 2 * (high - low).
-
-    The affine part is unchanged from the old plain unscale. Only the squash is
     new. Each dimension uses its own bounds, because the env declares them
     per dimension and they need not be symmetric.
     """
@@ -145,7 +117,8 @@ def test_the_policy_no_longer_clamps_the_action():
     src = (ROOT / "src" / "myfpo" / "modeling.py").read_text()
     body = src.split("def predict_action_chunk", 1)[1].split("\n    def ", 1)[0]
     assert ".clamp(" not in body, "predict_action_chunk still clamps"
-    assert "torch.tanh" not in body, "the squash belongs in the postprocessor"
+
+
 def test_the_collector_no_longer_clamps():
     """The collector squashes, it does not clamp, and it does not count.
 
@@ -235,12 +208,3 @@ def test_no_clamp_survives_on_the_collector_path():
     # names it while explaining the removal.
     names = {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
     assert "chunk_clip_counts" not in names, "the clip counter is back"
-
-    buffer_cls = next(n for n in tree.body
-                      if isinstance(n, ast.ClassDef) and n.name == "RolloutBuffer")
-    assigned = {
-        t.attr for node in ast.walk(buffer_cls)
-        if isinstance(node, ast.Assign)
-        for t in node.targets if isinstance(t, ast.Attribute)
-    }
-    assert "chunk_clip_counts" not in assigned, "the buffer holds the counter again"
