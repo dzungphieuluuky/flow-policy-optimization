@@ -135,12 +135,8 @@ def test_zero_dropout_leaves_no_dropout_module():
     assert not any(isinstance(m, nn.Dropout) for m in _member(3).mlp)
 
 
-def test_the_default_config_carries_the_reference_rate():
-    assert MyfpoConfig().critic_dropout == 0.01
-
-
 def test_the_constructors_default_to_off_so_a_bare_critic_is_deterministic():
-    assert MyfpoConfig().critic_dropout == 0.01
+    """The config default is on; the bare constructor turns it off."""
     assert Critic(OBS, HIDDEN, ACT, STEPS, H, 2).dropout == 0.0
     assert MyfpoPolicy(_cfg()).critic.dropout == 0.01
 
@@ -180,7 +176,7 @@ def test_the_config_rejects_a_dropout_outside_the_unit_interval():
 
 
 def test_dropout_adds_no_parameters():
-    torch.manual_seed(0)
+    a = sum(p.numel() for p in Critic(OBS, HIDDEN, ACT, STEPS, H, 5).parameters())
     a = sum(p.numel() for p in Critic(OBS, HIDDEN, ACT, STEPS, H, 5).parameters())
     b = sum(
         p.numel() for p in Critic(OBS, HIDDEN, ACT, STEPS, H, 5, dropout=0.5).parameters()

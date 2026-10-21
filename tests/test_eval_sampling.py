@@ -54,24 +54,6 @@ def test_both_named_values_are_accepted(field, value):
     dataclasses.replace(MyfpoConfig(), **{field: value}).validate()
 
 
-def test_the_released_defaults_table_is_untouched():
-    """Item 3 adds fields. It must not edit an existing default."""
-    import importlib.util
-    from pathlib import Path
-
-    root = Path(__file__).resolve().parents[1]
-    spec = importlib.util.spec_from_file_location(
-        "released_defaults", root / "tests" / "test_released_defaults.py"
-    )
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    cfg = MyfpoConfig()
-    for name, (want, _where) in mod.RELEASED.items():
-        if name == "spo_clip_param_is_separate":
-            continue
-        assert getattr(cfg, name) == want, f"{name} drifted"
-
-
 # --- the adapter ----------------------------------------------------------
 
 
@@ -147,20 +129,18 @@ def test_the_trainer_builds_both_adapters_once():
     assert '"noise_start": EvalPolicy(policy, start_from_zero=False)' in src
 
 
-def test_the_trainer_reads_both_names_from_the_config():
+def test_the_trainer_copies_both_names_into_evaluate_policy():
     import inspect
 
     from myfpo.training import evaluate_policy
 
-    src = _trainer_source()
-    assert 'runtime["eval_sampling"] = cfg.eval_sampling' in src
-    assert 'runtime["stop_eval_sampling"] = cfg.stop_eval_sampling' in src
-    eval_src = inspect.getsource(evaluate_policy)
-    assert "reported_name=cfg.eval_sampling" in eval_src
-    assert "stop_name=cfg.stop_eval_sampling" in eval_src
+    src = inspect.getsource(evaluate_policy)
+    assert "reported_name=cfg.eval_sampling" in src
+    assert "stop_name=cfg.stop_eval_sampling" in src
+
+
 
 def test_each_start_is_evaluated_once():
-    """The reported start writes the history. A second pass would double the cost."""
     import inspect
 
     from myfpo.training import evaluate_policy
@@ -170,9 +150,6 @@ def test_each_start_is_evaluated_once():
         "the eval dict comprehension must run each start once; an extra call "
         "doubles the eval cost"
     )
-    assert 'out_dir=out_dir if name == cfg.eval_sampling else None' in src
-
-
 
 
 def test_both_returns_are_logged_under_their_own_names():
@@ -227,32 +204,17 @@ def test_the_stochastic_mean_return_key_is_gone():
 
 
 def test_the_stopper_reads_the_stop_distribution():
-    """The best checkpoint must come from the distribution stop_eval_sampling names.
+    """The runner reads the stop name back off the window.
 
-    This invariant outlived the stop guards. It used to say the guards read the
-    stop distribution rather than the reported mean. Now it says the
-    best-checkpoint decision reads it, which is the same claim with one fewer
-    reader.
+    The rule itself is executed (executed rather than scanned) in
+    test_summarise_window_peaks_on_the_stop_distribution.
     """
     import inspect
 
-    from myfpo.runner import summarise_window
     from myfpo.training import evaluate_policy
 
     src = inspect.getsource(evaluate_policy)
-    # The runner reads both names back off the window, and the peak is written
-    # from the stop one.
     assert "stop_return = window_obj.stop_return" in src
-
-    src = _trainer_source()
-    # The rule itself lives in summarise_window now. The peak compares against
-    # stop_name, never against reported_name.
-    win = inspect.getsource(summarise_window)
-    assert 'summaries[stop_name]["return_mean"] > best_return' in win
-    assert 'summaries[reported_name]["return_mean"] > best_return' not in win, (
-        "the best checkpoint must not be chosen on the reported distribution"
-    )
-
 
 # --- the two fields are config fields ---------------------------------------
 

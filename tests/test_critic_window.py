@@ -58,7 +58,7 @@ def test_output_is_one_value_per_sample(batch: int):
 def test_window_length_must_match_the_declared_one():
     """The collector builds windows to n_obs_steps, so a mismatch is a real error."""
     with pytest.raises(ValueError, match=f"built for n_obs_steps={STEPS}"):
-        _q(_critic(), torch.randn(2, 4, OBS), _chunk()[:, :H])
+        _q(_critic(), torch.randn(2, 4, OBS), _chunk())
 
 
 def test_chunk_length_must_match_the_horizon():
@@ -241,10 +241,7 @@ def test_permuting_every_member_permutes_the_output():
     w, c = _window(), _chunk()
     before = _q(critic, w, c).clone()
     with torch.no_grad():
-        critic.networks[0], critic.networks[1] = (
-            critic.networks[1],
-            critic.networks[0],
-        )
+        critic.networks[0], critic.networks[1] = critic.networks[1], critic.networks[0]
     after = _q(critic, w, c)
     torch.testing.assert_close(after[0], before[1])
     torch.testing.assert_close(after[1], before[0])
