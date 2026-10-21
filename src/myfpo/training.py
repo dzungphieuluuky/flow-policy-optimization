@@ -33,7 +33,7 @@ from myfpo.tracking import build_backends, finish_backends, log_metrics
 from myfpo.runner import build_train_metrics, summarise_window
 
 
-class _EvalPolicy:
+class EvalPolicy:
     def __init__(self, policy, start_from_zero=True):
         self.policy = policy
         self.start = start_from_zero
@@ -309,6 +309,15 @@ def collect_rollouts(policy, train_env, cfg, action_low, action_high, steps_to_g
     steps_this_rollout = int(rollout["executed_action_steps"])
     if steps_this_rollout <= 0:
         raise RuntimeError("rollout returned zero executed steps; aborting.")
+    # The guard is on the action the env receives, which the squash bounds.
+    # The stored chunk is the raw one and is unbounded.
+    env_abs_max = rollout["executed_action_abs_max"]
+    env_bound = float(np.abs(np.concatenate([action_low, action_high])).max())
+    if env_abs_max > env_bound + 1e-3:
+        raise ValueError(
+            f"Post-squash action magnitude exceeded the env bound: "
+            f"max_abs={env_abs_max:.3f} > {env_bound:.3f}."
+        )
     # The jerk is a property of the trajectory the env saw, so it is measured
     # on the env-facing action, not on the raw chunk.
     jerk_action = (
@@ -433,7 +442,7 @@ def save_checkpoint(out_dir, policy, optimizer, global_step, name):
 
 
 @dataclasses.dataclass
-class _RunState:
+class RunState:
     """The values the training loop carries from one update to the next."""
 
     global_step: int = 0
@@ -452,7 +461,7 @@ class _RunState:
     artifacts: list[str] = dataclasses.field(default_factory=list)
 
 
-def _build_or_resume(
+def build_or_resume(
     cfg,
     device,
     obs_dim: int,
@@ -482,16 +491,8 @@ def _build_or_resume(
     return policy, build_optimizer(policy), 0
 
 
-def _mean_info(epoch_infos: list[dict[str, float]]) -> dict[str, float] | None:
-    """The mean of the per-minibatch info dicts. None when there is none."""
-    if not epoch_infos:
-        return None
-    return {
-        k: sum(d[k] for d in epoch_infos) / len(epoch_infos) for k in epoch_infos[0]
-    }
 
-
-def _mean_update_metrics(above_clamp_fracs, both_clamped_fracs, drift):
+def mean_update_metrics(above_clamp_fracs, both_clamped_fracs, drift):
     """The clamp fractions and the drift, averaged over the update."""
     scalars = [
         torch.stack(above_clamp_fracs).mean(),
@@ -507,31 +508,12 @@ def _mean_update_metrics(above_clamp_fracs, both_clamped_fracs, drift):
     return above_clamp_frac, both_clamped_frac, drift_means
 
 
-def _mean_grad_norms(grad_norms_pre: list[dict[str, torch.Tensor]]) -> dict[str, float]:
-    """The mean of the pre-clip gradient norms of the update."""
-    return {
-        k: float(torch.stack([n[k] for n in grad_norms_pre]).mean())
-        for k in ("total", "actor", "critic")
-    }
-
-
-def _check_env_bound(rollout: dict[str, float], action_low, action_high) -> None:
-    """The guard on the action the env receives, which the squash bounds."""
-    env_abs_max = rollout["executed_action_abs_max"]
-    env_bound = float(np.abs(np.concatenate([action_low, action_high])).max())
-    if env_abs_max > env_bound + 1e-3:
-        raise ValueError(
-            f"Post-squash action magnitude exceeded the env bound: "
-            f"max_abs={env_abs_max:.3f} > {env_bound:.3f}."
-        )
-
-
-def _check_clamp_guards(
+def check_clamp_guards(
     cfg,
     above_clamp_frac: float,
     both_clamped_frac: float,
     l_new_mean: float,
-    state: _RunState,
+    state: RunState,
 ) -> None:
     """Abort when the ratio is pinned at 1 and the policy gets no gradient."""
     if both_clamped_frac > BOTH_CLAMPED_ABORT_FRAC:
@@ -565,13 +547,13 @@ def _check_clamp_guards(
         state.both_clamped_updates = 0
 
 
-def _log_eval_window(
+def log_eval_window(
     backends,
     cfg,
     eval_policies,
     result: dict,
     summaries: dict,
-    state: _RunState,
+    state: RunState,
     r_rand: float,
 ) -> None:
     """Log the eval rows of one window."""
@@ -616,10 +598,10 @@ def _log_eval_window(
     )
 
 
-def _eval_window(
+def eval_window(
     policy,
     optimizer,
-    state: _RunState,
+    state: RunState,
     out_dir,
     evaluator,
     eval_policies,
@@ -650,7 +632,7 @@ def _eval_window(
         )
         state.best_artifact = best_artifact_path
     if backends:
-        _log_eval_window(
+        log_eval_window(
             backends, cfg, eval_policies, result, summaries, state, r_rand
         )
     state.next_eval = max(
@@ -658,7 +640,7 @@ def _eval_window(
     )
 
 
-def _finalize_run(out_dir, policy, optimizer, state: _RunState, env_name, seed, fps):
+def finalize_run(out_dir, policy, optimizer, state: RunState, env_name, seed, fps):
     """The final checkpoint, the artifact list, and the run summary."""
     final_path, _ = save_checkpoint(
         out_dir, policy, optimizer, state.global_step, "final"
@@ -694,7 +676,7 @@ def _finalize_run(out_dir, policy, optimizer, state: _RunState, env_name, seed, 
 
 
 @dataclasses.dataclass
-class _RunSetup:
+class RunSetup:
     """What one run needs before the training loop starts."""
 
     policy: Any
@@ -710,7 +692,7 @@ class _RunSetup:
     env_name: str
     global_step: int
 
-def _setup_run(
+def setup_run(
     env,
     out_dir: Path,
     cfg: MyfpoConfig,
@@ -721,7 +703,7 @@ def _setup_run(
     action_dim: int,
     resume_from_checkpoint,
     runtime: dict | None,
-) -> _RunSetup:
+) -> RunSetup:
     """The env, the policy, the evaluator, and the log backends."""
     unwrapped = getattr(env, "unwrapped", env)
     spec = getattr(unwrapped, "spec", None)
@@ -755,7 +737,7 @@ def _setup_run(
     action_low = np.atleast_1d(np.asarray(env.action_space.low, dtype=np.float32))
     action_high = np.atleast_1d(np.asarray(env.action_space.high, dtype=np.float32))
 
-    policy, optimizer, global_step = _build_or_resume(
+    policy, optimizer, global_step = build_or_resume(
         cfg,
         device,
         obs_dim,
@@ -786,8 +768,8 @@ def _setup_run(
         env, eval_seed=eval_seed, max_episodes=cfg.eval_max_episodes
     )
     eval_policies = {
-        "zero_start": _EvalPolicy(policy, start_from_zero=True),
-        "noise_start": _EvalPolicy(policy, start_from_zero=False),
+        "zero_start": EvalPolicy(policy, start_from_zero=True),
+        "noise_start": EvalPolicy(policy, start_from_zero=False),
     }
     r_rand = sample_random_baseline(evaluator, env, seed=seed)
     backends = build_backends(
@@ -798,7 +780,7 @@ def _setup_run(
         seed=seed,
         total_steps=total_steps,
     )
-    return _RunSetup(
+    return RunSetup(
         policy=policy,
         optimizer=optimizer,
         train_env=train_env,
@@ -839,7 +821,7 @@ def run_training(
         obs_dim = int(np.prod(env.observation_space.shape))
         action_dim = int(np.prod(env.action_space.shape))
 
-    setup = _setup_run(
+    setup = setup_run(
         env,
         out_dir,
         cfg,
@@ -862,7 +844,7 @@ def run_training(
     env_name = setup.env_name
     device = setup.device
 
-    state = _RunState(
+    state = RunState(
         global_step=setup.global_step, next_eval=eval_steps, next_save=save_steps
     )
     grad_groups = split_grad_params(policy)
@@ -875,7 +857,8 @@ def run_training(
                 policy, train_env, cfg, action_low, action_high, steps_to_go
             )
             state.global_step += steps_this_rollout
-            _check_env_bound(rollout, action_low, action_high)
+
+
 
             epoch_infos, grad_norms_pre, above_clamp_fracs, both_clamped_fracs = train_update(
                 policy, optimizer, batch, backends, cfg, grad_groups
@@ -889,11 +872,21 @@ def run_training(
 
             policy.update_observation_stats(batch["normalizer_observations"])
 
-            info = _mean_info(epoch_infos)
-            above_clamp_frac, both_clamped_frac, drift_means = _mean_update_metrics(
+            info = (
+                {
+                    k: sum(d[k] for d in epoch_infos) / len(epoch_infos)
+                    for k in epoch_infos[0]
+                }
+                if epoch_infos
+                else None
+            )
+            above_clamp_frac, both_clamped_frac, drift_means = mean_update_metrics(
                 above_clamp_fracs, both_clamped_fracs, drift
             )
-            grad_norms = _mean_grad_norms(grad_norms_pre)
+            grad_norms = {
+                k: float(torch.stack([n[k] for n in grad_norms_pre]).mean())
+                for k in ("total", "actor", "critic")
+            }
 
             if backends and info is not None:
                 log_metrics(
@@ -916,12 +909,12 @@ def run_training(
                 )
 
             l_new_mean = info["l_new_mean"] if info is not None else float("nan")
-            _check_clamp_guards(
+            check_clamp_guards(
                 cfg, above_clamp_frac, both_clamped_frac, l_new_mean, state
             )
 
             if state.global_step >= state.next_eval or state.global_step >= total_steps:
-                _eval_window(
+                eval_window(
                     policy,
                     optimizer,
                     state,
@@ -956,4 +949,4 @@ def run_training(
             train_env.close()
         finish_backends(backends)
 
-    return _finalize_run(out_dir, policy, optimizer, state, env_name, seed, fps)
+    return finalize_run(out_dir, policy, optimizer, state, env_name, seed, fps)

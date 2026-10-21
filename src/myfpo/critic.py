@@ -6,7 +6,7 @@ import torch
 from torch import nn
 
 
-class _ActionScale(nn.Module):
+class ActionAffine(nn.Module):
     """A learned per-element affine over the flattened action chunk.
 
     It computes no statistics from the chunk. A ``LayerNorm`` would subtract
@@ -45,7 +45,7 @@ class CriticMember(nn.Module):
     without a mask the only thing distinguishing them is initialisation.
 
     The action input is a learned affine, not a LayerNorm. See
-    :class:`_ActionScale` for why the chunk's offset has to survive.
+    :class:`ActionAffine` for why the chunk's offset has to survive.
     """
 
     def __init__(
@@ -100,7 +100,7 @@ class CriticMember(nn.Module):
         # the chunk subtracts the chunk's mean, so a chunk of all +5 and a
         # chunk of all 0 would reach the critic as the same input. The affine
         # keeps the name and the state dict of the LayerNorm it replaces.
-        self.norm_action = _ActionScale(action_horizon * action_dim)
+        self.norm_action = ActionAffine(action_horizon * action_dim)
         in_dim = self.input_dim
         layers: list[nn.Module] = []
         for i in range(num_layers):

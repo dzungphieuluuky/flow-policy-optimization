@@ -78,7 +78,7 @@ def test_ema_initialises_on_the_first_rollout_boundary():
     assert not policy.ema_ready(steps[0])
     for step in steps:
         policy.update_ema(step)
-    assert policy._ema_initialised is True
+    assert policy.ema_initialised is True
     assert policy.ema_ready(steps[0]) is True
 
 
@@ -89,25 +89,25 @@ def test_ema_warmup_is_a_one_shot():
         for p in policy.actor.parameters():
             p.add_(1.0)
     policy.update_ema(4096)
-    seeded = {n: s.clone() for n, s in policy._ema_shadow.items()}
+    seeded = {n: s.clone() for n, s in policy.ema_shadow.items()}
 
     with torch.no_grad():
         for p in policy.actor.parameters():
             p.add_(10.0)
     policy.update_ema(8192)
     moved = any(
-        not torch.equal(policy._ema_shadow[n], seeded[n]) for n in seeded
+        not torch.equal(policy.ema_shadow[n], seeded[n]) for n in seeded
     )
     assert moved, "shadow should have averaged toward the new weights"
 
     # A third call must keep averaging, not reset to the live weights.
-    averaged = {n: s.clone() for n, s in policy._ema_shadow.items()}
+    averaged = {n: s.clone() for n, s in policy.ema_shadow.items()}
     with torch.no_grad():
         for p in policy.actor.parameters():
             p.add_(10.0)
     policy.update_ema(12288)
     assert any(
-        not torch.equal(policy._ema_shadow[n], averaged[n]) for n in averaged
+        not torch.equal(policy.ema_shadow[n], averaged[n]) for n in averaged
     )
 
 
@@ -115,7 +115,7 @@ def test_ema_is_inert_when_decay_is_zero():
     policy = make_policy(ema_decay=0.0)
     policy.update_ema(4096)
     assert policy.ema_ready(4096) is False
-    assert not policy._ema_shadow
+    assert not policy.ema_shadow
 
 
 # --- EMA swap --------------------------------------------------------------.
@@ -129,10 +129,10 @@ def test_swap_in_ema_puts_the_average_in_the_actor():
         for p in policy.actor.parameters():
             p.add_(10.0)
     policy.update_ema(8192)
-    shadow = {n: s.clone() for n, s in policy._ema_shadow.items()}
+    shadow = {n: s.clone() for n, s in policy.ema_shadow.items()}
 
     displaced = policy.swap_in_ema(8192)
-    live = policy._ema_named_params()
+    live = policy.ema_named_params()
     assert set(displaced) == set(shadow)
     for name, value in shadow.items():
         assert torch.equal(live[name], value)
@@ -146,10 +146,10 @@ def test_swap_out_ema_restores_the_live_weights_exactly():
         for p in policy.actor.parameters():
             p.add_(1.0)
     policy.update_ema(8192)
-    before = {n: p.detach().clone() for n, p in policy._ema_named_params().items()}
+    before = {n: p.detach().clone() for n, p in policy.ema_named_params().items()}
 
     policy.swap_out_ema(policy.swap_in_ema(8192))
-    after = policy._ema_named_params()
+    after = policy.ema_named_params()
     for name, value in before.items():
         assert torch.equal(after[name], value)
 

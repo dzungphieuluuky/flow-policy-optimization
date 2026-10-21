@@ -58,7 +58,7 @@ class WandbBackend:
     ):
         import wandb
 
-        self._wandb = wandb
+        self.wandb = wandb
         wandb.init(
             project=method,
             group=f"{method}_{env_name}",
@@ -71,10 +71,10 @@ class WandbBackend:
         )
 
     def log(self, data: dict[str, float], step: int) -> None:
-        self._wandb.log(data, step=step)
+        self.wandb.log(data, step=step)
 
     def finish(self, exit_code: int) -> None:
-        self._wandb.finish(exit_code=exit_code)
+        self.wandb.finish(exit_code=exit_code)
 
 
 class TensorboardBackend:

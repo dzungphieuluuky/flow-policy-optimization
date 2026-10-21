@@ -19,8 +19,8 @@ class RunningMeanStd(nn.Module):
         self.register_buffer("mean", torch.zeros(dim, dtype=torch.float32))
         self.register_buffer("var", torch.ones(dim, dtype=torch.float32))
         self.register_buffer("count", torch.tensor(0.0, dtype=torch.float64))
-        self._uninitialised = True
-        self._passthrough_warned = False
+        self.uninitialised = True
+        self.passthrough_warned = False
         self.eps = eps
         self.clip = clip
 
@@ -50,22 +50,22 @@ class RunningMeanStd(nn.Module):
             / total
         )
         self.count.copy_(total)
-        self._uninitialised = False
+        self.uninitialised = False
 
     def _load_from_state_dict(self, *args, **kwargs):
         """Load the state. Derive the latch again."""
         super()._load_from_state_dict(*args, **kwargs)
-        self._uninitialised = bool(self.count.item() == 0)
+        self.uninitialised = bool(self.count.item() == 0)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Normalise with the frozen statistics."""
-        if self._uninitialised:
-            if not self._passthrough_warned:
+        if self.uninitialised:
+            if not self.passthrough_warned:
                 warnings.warn(
                     f"{type(self).__name__}: forward before the first update(); "
                     "returning raw input", stacklevel=2,
                 )
-                self._passthrough_warned = True
+                self.passthrough_warned = True
             return x
         norm = (x - self.mean) * torch.rsqrt(self.var + self.eps)
         return norm.clamp(-self.clip, self.clip).to(x.dtype)

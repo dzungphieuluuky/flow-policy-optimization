@@ -87,7 +87,9 @@ class RolloutBuffer:
         self.n_chunks = 0
         self.n_steps = 0
 
-    _PIN_MIN_BYTES = 1 << 20
+    PIN_MIN_BYTES = 1 << 20
+
+
 
     def zeros_for(self, shape: tuple[int, ...], dtype: torch.dtype) -> torch.Tensor:
         """One zero tensor in this buffer's layout, dtype and device."""
@@ -98,7 +100,7 @@ class RolloutBuffer:
             *shape,
             dtype=dtype,
             device=self.device,
-            pin_memory=self.pin_memory and nbytes >= self._PIN_MIN_BYTES,
+            pin_memory=self.pin_memory and nbytes >= self.PIN_MIN_BYTES,
         )
 
     def shape_key(self) -> tuple[int, ...]:
@@ -274,7 +276,7 @@ def validate_autoreset_mode(envs) -> None:
 
 
 @dataclasses.dataclass
-class _VecState:
+class CollectState:
     """The per-env state of the collection loop."""
 
     windows: torch.Tensor
@@ -292,7 +294,7 @@ class _VecState:
     roll_table: torch.Tensor
 
 
-def _make_state(
+def make_state(
     n: int,
     n_obs_steps: int,
     obs_dim: int,
@@ -300,12 +302,12 @@ def _make_state(
     act_dim: int,
     obs0: torch.Tensor,
     remaining: int,
-) -> _VecState:
+) -> CollectState:
     """The state the collection loop starts with."""
     windows = torch.zeros(n, n_obs_steps, obs_dim, dtype=_OBS_DTYPE)
     windows.copy_(obs0[:, None, :].expand_as(windows))
     env_rows = torch.arange(n)
-    return _VecState(
+    return CollectState(
         windows=windows,
         reward_windows=torch.zeros(n, action_horizon, dtype=_REWARD_DTYPE),
         step_frames=torch.zeros(n, action_horizon, obs_dim, dtype=_OBS_DTYPE),
@@ -326,8 +328,8 @@ def _make_state(
     )
 
 
-def _plan_chunks(
-    state: _VecState,
+def plan_chunks(
+    state: CollectState,
     envs_needing_a_chunk: list[int],
     policy: Callable[[torch.Tensor], torch.Tensor],
     low: torch.Tensor,
@@ -353,7 +355,7 @@ def _plan_chunks(
         )
 
 
-def _step_envs(state: _VecState, envs, action_horizon: int):
+def step_envs(state: CollectState, envs, action_horizon: int):
     """Send the next action of every env, and record what came back."""
     stepping = torch.tensor(
         [held is not None for held in state.in_flight], dtype=torch.bool
@@ -381,8 +383,8 @@ def _step_envs(state: _VecState, envs, action_horizon: int):
     return obs_t, term_np, trunc_np, done_np
 
 
-def _close_chunks(
-    state: _VecState,
+def close_chunks(
+    state: CollectState,
     obs_t: torch.Tensor,
     term_np: np.ndarray,
     trunc_np: np.ndarray,
@@ -463,7 +465,7 @@ def collect_chunks_vec(
         obs, _ = envs.reset(seed=[seed + i for i in range(n)])
         obs_dim = int(obs.shape[-1])
         obs0 = torch.from_numpy(np.asarray(obs, dtype=np.float32))
-        state = _make_state(
+        state = make_state(
             n,
             n_obs_steps,
             obs_dim,
@@ -483,7 +485,7 @@ def collect_chunks_vec(
                 )
             ]
             if envs_needing_a_chunk:
-                _plan_chunks(
+                plan_chunks(
                     state,
                     envs_needing_a_chunk,
                     policy,
@@ -493,11 +495,11 @@ def collect_chunks_vec(
                     n_action_steps,
                 )
 
-            obs_t, term_np, trunc_np, done_np = _step_envs(
+            obs_t, term_np, trunc_np, done_np = step_envs(
                 state, envs, action_horizon
             )
 
-            _close_chunks(
+            close_chunks(
                 state,
                 obs_t,
                 term_np,

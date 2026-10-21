@@ -12,7 +12,7 @@ from torch import nn
 # the model has to clear this. One constant keeps the five checks in step.
 MIN_WIDTH = 2
 
-class _RMSNorm(nn.RMSNorm):
+class RMSNorm(nn.RMSNorm):
     """RMSNorm. The compute runs in fp32; the stored weight keeps the model dtype."""
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -29,7 +29,7 @@ class _RMSNorm(nn.RMSNorm):
 
 
 def build_rms_norm(hidden_dim: int, eps: float = 1e-6) -> nn.RMSNorm:
-    return _RMSNorm(hidden_dim, eps=eps)
+    return RMSNorm(hidden_dim, eps=eps)
 
 
 class SwiGLU(nn.Module):

@@ -7,7 +7,7 @@ TD-MPC2 ships 5 ensemble members; this repo runs 2, and
 
 The action input is the one place the trunk departs from the paper. It is a
 learned affine, not a LayerNorm, because a LayerNorm over the chunk erases the
-chunk's offset. See ``myfpo.critic._ActionScale``.
+chunk's offset. See ``myfpo.critic.ActionAffine``.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from lerobot.configs.types import FeatureType
 from torch import nn
 
 from myfpo.configuration import MyfpoConfig
-from myfpo.critic import Critic, CriticMember, _ActionScale
+from myfpo.critic import Critic, CriticMember, ActionAffine
 from myfpo.metrics import compute_value_metrics
 from myfpo.modeling import MyfpoPolicy
 
@@ -199,7 +199,7 @@ def test_the_state_and_the_action_are_treated_separately():
     """
     m = _member()
     assert isinstance(m.norm_state, nn.LayerNorm)
-    assert isinstance(m.norm_action, _ActionScale)
+    assert isinstance(m.norm_action, ActionAffine)
     assert m.norm_state.normalized_shape == (STEPS * OBS,)
     assert m.norm_action.weight.shape == (H * ACT,)
     assert m.norm_action.bias.shape == (H * ACT,)
@@ -274,7 +274,7 @@ def test_the_shared_encoder_branch_skips_the_state_norm():
     torch.manual_seed(0)
     m = CriticMember(OBS, ACT, HIDDEN, 1, H, condition_dim=HIDDEN)
     assert not hasattr(m, "norm_state")
-    assert isinstance(m.norm_action, _ActionScale)
+    assert isinstance(m.norm_action, ActionAffine)
     assert m.input_dim == HIDDEN + H * ACT + 1
 
 

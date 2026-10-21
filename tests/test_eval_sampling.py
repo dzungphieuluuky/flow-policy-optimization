@@ -76,13 +76,13 @@ def test_the_released_defaults_table_is_untouched():
 
 
 def test_the_adapter_maps_the_config_value_to_the_start_point():
-    from myfpo.training import _EvalPolicy
+    from myfpo.training import EvalPolicy
 
     class _P:
         pass
 
-    assert _EvalPolicy.for_sampling(_P(), "zero_start").start is True
-    assert _EvalPolicy.for_sampling(_P(), "noise_start").start is False
+    assert EvalPolicy.for_sampling(_P(), "zero_start").start is True
+    assert EvalPolicy.for_sampling(_P(), "noise_start").start is False
 
 
 def test_the_two_adapters_give_different_returns():
@@ -91,7 +91,7 @@ def test_the_two_adapters_give_different_returns():
 
     from myfpo.configuration import MyfpoConfig
     from myfpo.evaluator import Evaluator
-    from myfpo.training import _EvalPolicy, build_policy
+    from myfpo.training import EvalPolicy, build_policy
 
     env = gym.make("Hopper-v5")
     try:
@@ -109,10 +109,10 @@ def test_the_two_adapters_give_different_returns():
         )
         ev = Evaluator(env, eval_seed=4, max_episodes=6)
         zero_start = ev.summarize(
-            ev.evaluate(_EvalPolicy.for_sampling(policy, "zero_start")), seed=4
+            ev.evaluate(EvalPolicy.for_sampling(policy, "zero_start")), seed=4
         )
         noise_start = ev.summarize(
-            ev.evaluate(_EvalPolicy.for_sampling(policy, "noise_start")), seed=4
+            ev.evaluate(EvalPolicy.for_sampling(policy, "noise_start")), seed=4
         )
         assert (
             zero_start["return_mean"] != noise_start["return_mean"]
@@ -134,17 +134,17 @@ def _trainer_source() -> str:
         inspect.getsource(fn)
         for fn in (
             training.run_training,
-            training._setup_run,
-            training._eval_window,
-            training._log_eval_window,
+            training.setup_run,
+            training.eval_window,
+            training.log_eval_window,
         )
     )
 
 
 def test_the_trainer_builds_both_adapters_once():
     src = _trainer_source()
-    assert '"zero_start": _EvalPolicy(policy, start_from_zero=True)' in src
-    assert '"noise_start": _EvalPolicy(policy, start_from_zero=False)' in src
+    assert '"zero_start": EvalPolicy(policy, start_from_zero=True)' in src
+    assert '"noise_start": EvalPolicy(policy, start_from_zero=False)' in src
 
 
 def test_the_trainer_reads_both_names_from_the_config():

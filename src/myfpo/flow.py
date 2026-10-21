@@ -28,7 +28,7 @@ def effective_rank(features: torch.Tensor) -> torch.Tensor:
     return torch.exp(entropy)
 
 
-class _FlowActorBase(nn.Module):
+class FlowActor(nn.Module):
     """The stem both actors share: embed, project, condition, decode."""
 
     def __init__(
@@ -85,7 +85,7 @@ class _FlowActorBase(nn.Module):
         condition: torch.Tensor,
     ) -> torch.Tensor:
         """Predict the velocity from the token actions and the per-token times."""
-        out, _ = self._forward(x_t, t, condition, collect_stats=False)
+        out, _ = self.forward_core(x_t, t, condition, collect_stats=False)
         return out
 
     def forward_with_stats(
@@ -95,9 +95,9 @@ class _FlowActorBase(nn.Module):
         condition: torch.Tensor,
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         """The same forward, plus the per-block and conditioning diagnostics."""
-        return self._forward(x_t, t, condition, collect_stats=True)
+        return self.forward_core(x_t, t, condition, collect_stats=True)
 
-    def _forward(
+    def forward_core(
         self,
         x_t: torch.Tensor,
         t: torch.Tensor | float,
@@ -153,11 +153,11 @@ class _FlowActorBase(nn.Module):
         for block in self.blocks:
             h, s = block.forward_with_stats(h, c)
             block_stats.append(s)
-        stats = self._collect_stats(temb, condition, c, h, block_stats)
+        stats = self.collect_stats(temb, condition, c, h, block_stats)
         return decode(h), stats
 
     @torch.compiler.disable
-    def _collect_stats(
+    def collect_stats(
         self,
         temb: torch.Tensor,
         condition: torch.Tensor,
@@ -181,7 +181,7 @@ class _FlowActorBase(nn.Module):
 
 
 
-class MyfpoFlowModel(_FlowActorBase):
+class MyfpoFlowModel(FlowActor):
     """The DiT actor. One block is self-attention, one SwiGLU, and adaLN."""
 
     def __init__(
@@ -266,7 +266,7 @@ class ResMLPBlock(AdaLNBlock):
         )
 
 
-class MyfpoFlowResMLP(_FlowActorBase):
+class MyfpoFlowResMLP(FlowActor):
     """The ``resmlp`` actor. DiT's attention and adaLN, the paper's MLP unit."""
 
     def __init__(

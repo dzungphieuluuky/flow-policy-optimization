@@ -86,7 +86,7 @@ def compute_action_jerk(actions: np.ndarray) -> float | None:
 
 def compute_seam_jerk(actions: np.ndarray, action_is_pad: np.ndarray) -> float | None:
     """Mean squared second-difference across consecutive chunk boundaries."""
-    a, pad = _jerk_inputs(actions, action_is_pad)
+    a, pad = jerk_inputs(actions, action_is_pad)
     n = a.shape[0]
     seams: list[float] = []
     for i in range(n - 1):
@@ -99,7 +99,7 @@ def compute_seam_jerk(actions: np.ndarray, action_is_pad: np.ndarray) -> float |
     return float(np.mean(seams)) if seams else None
 
 
-def _jerk_inputs(actions, action_is_pad) -> tuple[np.ndarray, np.ndarray]:
+def jerk_inputs(actions, action_is_pad) -> tuple[np.ndarray, np.ndarray]:
     """Shared validation for the two jerk functions."""
     a = np.asarray(actions)
     pad = np.asarray(action_is_pad, dtype=bool)
@@ -122,7 +122,7 @@ def compute_mean_chunk_jerk(actions: np.ndarray, action_is_pad: np.ndarray) -> f
     """Average :func:`compute_action_jerk` over the executed prefixes of the chunks.
     Returns ``None`` when no chunk executed at least three steps.
     """
-    a, pad = _jerk_inputs(actions, action_is_pad)
+    a, pad = jerk_inputs(actions, action_is_pad)
     jerks: list[float] = []
     for chunk, mask in zip(a, pad):
         n_exec = int((~mask).sum())

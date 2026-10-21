@@ -39,7 +39,7 @@ class RolloutBuffers:
     h2d_event: torch.cuda.Event | None = None
 
 
-def _chunk_advantages(
+def chunk_advantages(
     cfg,
     active: dict[str, torch.Tensor],
     n_chunks: int,
@@ -84,7 +84,7 @@ def _chunk_advantages(
     )
 
 
-def _bootstrap_values(
+def bootstrap_values(
     policy,
     active: dict[str, torch.Tensor],
     n_chunks: int,
@@ -166,7 +166,7 @@ def _bootstrap_values(
     )
 
 
-def _collect_chunks(
+def collect_chunks(
     policy,
     buffers: RolloutBuffers,
     env,
@@ -270,7 +270,7 @@ def run_rollout(
     device = next(policy.parameters()).device
     storage_dtype = resolve_storage_dtype(device)
 
-    active, n_chunks = _collect_chunks(
+    active, n_chunks = collect_chunks(
         policy,
         buffers,
         env,
@@ -286,9 +286,9 @@ def run_rollout(
         boot_actions,
         q_current_chunk,
         q_bootstrap,
-    ) = _bootstrap_values(policy, active, n_chunks, device, storage_dtype)
+    ) = bootstrap_values(policy, active, n_chunks, device, storage_dtype)
     raw_advantages, normalised_advantages, raw_returns, gae_diagnostics = (
-        _chunk_advantages(
+        chunk_advantages(
             cfg, active, n_chunks, q_current_chunk, q_bootstrap, storage_dtype
         )
     )

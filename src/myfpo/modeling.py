@@ -79,7 +79,7 @@ def build_optimizer(policy: MyfpoPolicy) -> torch.optim.Optimizer:
     return optimizer
 
 @dataclasses.dataclass
-class _Batch:
+class Batch:
     """The tensors one training step reads. Loaded and shape-checked."""
 
     states: torch.Tensor
@@ -101,7 +101,7 @@ class _Batch:
 
 
 @dataclasses.dataclass
-class _PolicyTerms:
+class PolicyTerms:
     """The policy loss, and the terms the metrics read."""
 
     policy_per_chunk: torch.Tensor
@@ -172,23 +172,23 @@ class MyfpoPolicy(PreTrainedPolicy):
             "action_high", torch.full((action_dim,), 1.0), persistent=False
         )
 
-        self._ema_shadow: dict[str, torch.Tensor] = {}
-        self._ema_initialised = False
+        self.ema_shadow: dict[str, torch.Tensor] = {}
+        self.ema_initialised = False
         self.rollout_buffers = RolloutBuffers()
 
         self.cfm_above_clamp_frac = torch.zeros(())
         self.cfm_both_clamped_frac = torch.zeros(())
 
-        self._frame_buffer: deque[torch.Tensor] = deque(maxlen=config.n_obs_steps)
-        self._action_buffer: deque[torch.Tensor] = deque()
+        self.frame_buffer: deque[torch.Tensor] = deque(maxlen=config.n_obs_steps)
+        self.action_buffer: deque[torch.Tensor] = deque()
         self.step_count = 0
         self.preprocessor, self.postprocessor = make_pre_post_processors(self)
         del dataset_stats
 
     def reset(self):
         """Drop the cached obs and action buffers."""
-        self._frame_buffer.clear()
-        self._action_buffer.clear()
+        self.frame_buffer.clear()
+        self.action_buffer.clear()
 
     @torch.inference_mode()
     def update_observation_stats(self, observations: torch.Tensor) -> None:
@@ -231,7 +231,7 @@ class MyfpoPolicy(PreTrainedPolicy):
         self.action_high.copy_(high_t)
         self.postprocessor.set_action_bounds(self.action_low, self.action_high)
 
-    def _ema_named_params(self) -> dict[str, torch.nn.Parameter]:
+    def ema_named_params(self) -> dict[str, torch.nn.Parameter]:
         """List every parameter that the EMA shadow covers.
 
         The names carry the module prefix, so the shadow can be matched back to
@@ -244,50 +244,47 @@ class MyfpoPolicy(PreTrainedPolicy):
                     out[f"{prefix}.{name}"] = param
         return out
 
-    def _ema_foreach(
-        self, values: dict[str, torch.nn.Parameter]
-    ) -> tuple[list[str], list[torch.Tensor], list[torch.Tensor]]:
-        """Names, live shadow tensors, detached value tensors."""
-        names = list(self._ema_shadow)
-        shadow = [self._ema_shadow[name] for name in names]
-        return names, shadow, [values[name].detach() for name in names]
-
     @torch.inference_mode()
     def update_ema(self, global_step: int) -> None:
         """Update the actor EMA after an optimizer step."""
         decay = self.config.ema_decay
         if decay <= 0:
             return
-        current = self._ema_named_params()
-        if not self._ema_shadow:
-            self._ema_shadow = {
+        current = self.ema_named_params()
+        if not self.ema_shadow:
+            self.ema_shadow = {
                 name: param.detach().clone() for name, param in current.items()
             }
-        if not self._ema_initialised and global_step >= self.config.ema_warmup_steps:
-            _, shadow, values = self._ema_foreach(current)
+        names = list(self.ema_shadow)
+        shadow = [self.ema_shadow[name] for name in names]
+        values = [current[name].detach() for name in names]
+        if not self.ema_initialised and global_step >= self.config.ema_warmup_steps:
             torch._foreach_copy_(shadow, values)
-            self._ema_initialised = True
+            self.ema_initialised = True
             return
         if global_step > self.config.ema_warmup_steps:
-            _, shadow, values = self._ema_foreach(current)
             torch._foreach_mul_(shadow, decay)
             torch._foreach_add_(shadow, values, alpha=1.0 - decay)
+
 
     def ema_ready(self, global_step: int) -> bool:
         """Can the EMA shadow be used for evaluation yet?"""
         return (
             self.config.ema_decay > 0
-            and self._ema_initialised
+            and self.ema_initialised
             and global_step > self.config.ema_warmup_steps
         )
+
 
     @torch.no_grad()
     def swap_in_ema(self, global_step: int) -> dict[str, torch.Tensor]:
         """Copy the EMA shadow in, and return the displaced live weights."""
         if not self.ema_ready(global_step):
             return {}
-        params = self._ema_named_params()
-        names, shadow, values = self._ema_foreach(params)
+        params = self.ema_named_params()
+        names = list(self.ema_shadow)
+        shadow = [self.ema_shadow[name] for name in names]
+        values = [params[name].detach() for name in names]
         displaced = {name: value.clone() for name, value in zip(names, values)}
         torch._foreach_copy_(values, shadow)
         return displaced
@@ -297,7 +294,7 @@ class MyfpoPolicy(PreTrainedPolicy):
         """Put back the weights :meth:`swap_in_ema` displaced."""
         if not displaced:
             return
-        params = self._ema_named_params()
+        params = self.ema_named_params()
         names = list(displaced)
         torch._foreach_copy_(
             [params[name] for name in names], [displaced[name] for name in names]
@@ -307,25 +304,25 @@ class MyfpoPolicy(PreTrainedPolicy):
         """Export the EMA shadow: decay, init flag, params."""
         return {
             "decay": self.config.ema_decay,
-            "initialised": self._ema_initialised,
-            "shadow_params": self._ema_shadow,
+            "initialised": self.ema_initialised,
+            "shadow_params": self.ema_shadow,
         }
 
     def load_ema_state_dict(self, state: dict) -> bool:
         """Restore the shadow. Return False if the function re-seeded it instead."""
         stored = state.get("shadow_params", {})
-        current = self._ema_named_params()
+        current = self.ema_named_params()
         if set(stored) != set(current):
-            self._ema_shadow = {}
-            self._ema_initialised = False
+            self.ema_shadow = {}
+            self.ema_initialised = False
             return False
         # The state is loaded onto the CPU, so the shadow has to follow the
         # live parameters onto their device, or the EMA update mixes them.
-        self._ema_shadow = {
+        self.ema_shadow = {
             name: value.detach().clone().to(current[name].device)
             for name, value in stored.items()
         }
-        self._ema_initialised = bool(state.get("initialised", True))
+        self.ema_initialised = bool(state.get("initialised", True))
         return True
 
     def get_actor_optim_params(self) -> dict:
@@ -448,25 +445,25 @@ class MyfpoPolicy(PreTrainedPolicy):
         obs = to_tensor(batch[OBS_STATE])
         obs = obs.to(dtype=resolve_storage_dtype(obs.device))
         if obs.dim() == 1:
-            if not self._frame_buffer:
+            if not self.frame_buffer:
                 for _ in range(self.config.n_obs_steps):
-                    self._frame_buffer.append(obs.detach().clone())
+                    self.frame_buffer.append(obs.detach().clone())
             else:
-                self._frame_buffer.append(obs.detach())
-            window = torch.stack(tuple(self._frame_buffer), dim=0)
+                self.frame_buffer.append(obs.detach())
+            window = torch.stack(tuple(self.frame_buffer), dim=0)
         elif obs.dim() == 2:
             window = obs
         else:
             raise ValueError(
                 f"select_action expects [obs] or [T, obs]; got {tuple(obs.shape)}"
             )
-        if not self._action_buffer:
+        if not self.action_buffer:
             chunk = self.predict_action_chunk({OBS_STATE: window}, **kwargs)
             n_execute = max(1, min(self.config.n_action_steps, chunk.shape[1]))
             squashed = self.postprocessor({ACTION: chunk})[ACTION]
             for i in range(n_execute):
-                self._action_buffer.append(squashed[0, i])
-        return self._action_buffer.popleft()
+                self.action_buffer.append(squashed[0, i])
+        return self.action_buffer.popleft()
 
 
     def critic_inputs(
@@ -546,7 +543,7 @@ class MyfpoPolicy(PreTrainedPolicy):
 
 
     @staticmethod
-    def _load(
+    def load_tensor(
         batch: dict[str, torch.Tensor],
         key: str,
         device,
@@ -578,7 +575,7 @@ class MyfpoPolicy(PreTrainedPolicy):
         Use :meth:`loss_with_info` for the diagnostics; they cost a second
         forward pass, so they are not computed here.
         """
-        loss, _ = self._loss_and_info(
+        loss, _ = self.loss_and_info(
             batch, reduction, check_finite, compute_info=False
         )
         return loss
@@ -590,29 +587,29 @@ class MyfpoPolicy(PreTrainedPolicy):
         check_finite: bool = True,
     ) -> tuple[torch.Tensor, dict[str, float]]:
         """The loss and the metric dict. The loss is identical to :meth:`forward`."""
-        loss, info = self._loss_and_info(
+        loss, info = self.loss_and_info(
             batch, reduction, check_finite, compute_info=True
         )
         return loss, info
 
-    def _load_batch(
+    def load_batch(
         self,
         batch: dict[str, torch.Tensor],
         device,
         storage_dtype: torch.dtype,
-    ) -> _Batch:
+    ) -> Batch:
         """Load the batch, check its shapes, and draw the MC flow points."""
         cfg = self.config
-        states = self._load(batch, OBS_STATE, device, storage_dtype, async_=True)
+        states = self.load_tensor(batch, OBS_STATE, device, storage_dtype, async_=True)
         # The action is the flow's raw output, and it is the CFM regression
         # target. It stays fp32: the raw values are unbounded, so a bf16
         # rounding would put a 0.4% error on the target the flow is fit to.
-        actions = self._load(batch, ACTION, device, torch.float32, async_=True)
-        advantages = self._load(
+        actions = self.load_tensor(batch, ACTION, device, torch.float32, async_=True)
+        advantages = self.load_tensor(
             batch, "normalised_advantages", device, storage_dtype
         )
-        returns = self._load(batch, "raw_returns", device, torch.float32)
-        action_is_pad = self._load(
+        returns = self.load_tensor(batch, "raw_returns", device, torch.float32)
+        action_is_pad = self.load_tensor(
             batch, "action_is_pad", device, torch.bool
         )
 
@@ -654,11 +651,11 @@ class MyfpoPolicy(PreTrainedPolicy):
             condition = cudagraph_safe(self.encoder(states))
             condition_flat = broadcast_condition(condition, num_mc)
 
-        cfm_loss_old, cfm_loss_old_token = self._load_behavior_losses(
+        cfm_loss_old, cfm_loss_old_token = self.load_behavior_losses(
             batch, device, n, num_mc
         )
 
-        return _Batch(
+        return Batch(
             states=states,
             actions=actions,
             advantages=advantages,
@@ -677,7 +674,7 @@ class MyfpoPolicy(PreTrainedPolicy):
             cfm_loss_old_token=cfm_loss_old_token,
         )
 
-    def _load_behavior_losses(
+    def load_behavior_losses(
         self,
         batch: dict[str, torch.Tensor],
         device,
@@ -710,7 +707,7 @@ class MyfpoPolicy(PreTrainedPolicy):
             )
         return cfm_loss_old, cfm_loss_old_token
 
-    def _policy_loss(self, b: _Batch, v_new: torch.Tensor, device) -> _PolicyTerms:
+    def policy_loss(self, b: Batch, v_new: torch.Tensor, device) -> PolicyTerms:
         """The ASPO surrogate loss, one value per chunk."""
         cfg = self.config
         n, num_mc, flow_shape = b.n, b.num_mc, b.flow_shape
@@ -765,7 +762,7 @@ class MyfpoPolicy(PreTrainedPolicy):
             else:
                 policy_per_chunk = -surrogate.flatten(1).mean(dim=1)
 
-        return _PolicyTerms(
+        return PolicyTerms(
             policy_per_chunk=policy_per_chunk,
             cfm_loss_new=cfm_loss_new,
             ratio=ratio,
@@ -774,8 +771,8 @@ class MyfpoPolicy(PreTrainedPolicy):
             v_star_f=v_star_f,
         )
 
-    def _value_loss(
-        self, b: _Batch, device
+    def value_loss(
+        self, b: Batch, device
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         with autocast_context(device):
             chunk_exec_frac = self.exec_length_frac((~b.action_is_pad).sum(dim=-1))
@@ -793,7 +790,7 @@ class MyfpoPolicy(PreTrainedPolicy):
         ).mean(dim=0)
         return value_loss_per_chunk, raw_value_pred, raw_returns_flat
 
-    def _loss_and_info(
+    def loss_and_info(
         self,
         batch: dict[str, torch.Tensor],
         reduction: str,
@@ -806,7 +803,7 @@ class MyfpoPolicy(PreTrainedPolicy):
         device = next(self.parameters()).device
         storage_dtype = resolve_storage_dtype(device)
 
-        b = self._load_batch(batch, device, storage_dtype)
+        b = self.load_batch(batch, device, storage_dtype)
 
         with autocast_context(device):
             v_new = self.compute_predicted_velocity(
@@ -823,8 +820,8 @@ class MyfpoPolicy(PreTrainedPolicy):
                     b.condition_flat[:probe],
                 )
 
-        terms = self._policy_loss(b, v_new, device)
-        value_loss_per_chunk, raw_value_pred, raw_returns_flat = self._value_loss(
+        terms = self.policy_loss(b, v_new, device)
+        value_loss_per_chunk, raw_value_pred, raw_returns_flat = self.value_loss(
             b, device
         )
 

@@ -113,9 +113,9 @@ def test_reset_drops_an_unfinished_chunk():
     policy.predict_action_chunk = fake_predict
 
     policy.select_action(_window(cfg))
-    assert len(policy._action_buffer) == EXECUTE - 1
+    assert len(policy.action_buffer) == EXECUTE - 1
     policy.reset()
-    assert not policy._action_buffer
+    assert not policy.action_buffer
     assert policy.select_action(_window(cfg))[0].item() == pytest.approx(
         math.tanh(2.0)
     ), "drained the old chunk"

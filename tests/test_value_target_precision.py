@@ -26,7 +26,7 @@ def test_source_does_not_cast_the_value_target_to_storage_dtype():
     import inspect
 
     # The value path lives in its own method now, so the guard reads it there.
-    src = inspect.getsource(MyfpoPolicy._value_loss)
+    src = inspect.getsource(MyfpoPolicy.value_loss)
     assert "storage_dtype" not in src, (
         "the critic's value path must stay fp32; it regresses on raw returns"
     )
@@ -47,9 +47,9 @@ def test_generate_rollout_does_not_cast_the_value_target():
     # The body moved to myfpo.rollout. The method on the policy is a wrapper,
     # so reading its source would find none of the casts and pass vacuously.
     # The casts live in the advantage step, so the guard reads both.
-    from myfpo.rollout import _chunk_advantages
+    from myfpo.rollout import chunk_advantages
 
-    src = inspect.getsource(run_rollout) + inspect.getsource(_chunk_advantages)
+    src = inspect.getsource(run_rollout) + inspect.getsource(chunk_advantages)
     for name in ("raw_returns", "raw_values"):
         # Both spellings matter. The batch is built as a dict, so the cast would
         # appear as "raw_returns": raw_returns.to(storage_dtype). A test that

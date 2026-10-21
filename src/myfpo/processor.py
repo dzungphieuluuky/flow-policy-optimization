@@ -99,13 +99,13 @@ class MyfpoActionPostprocessorStep(ProcessorStep):
         self.action_low = low
         self.action_high = high
 
-        self._scale_cpu, self._bias_cpu = env_squash_terms(low, high)
+        self.scale_cpu, self.bias_cpu = env_squash_terms(low, high)
 
     @torch.inference_mode()
     def __call__(self, batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
         raw = batch[ACTION]
         out = dict(batch)
-        out[ACTION] = squash_to_env(raw, self._scale_cpu, self._bias_cpu)
+        out[ACTION] = squash_to_env(raw, self.scale_cpu, self.bias_cpu)
         return out
 
     def transform_features(

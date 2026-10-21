@@ -108,15 +108,15 @@ class MyfpoConfig(PreTrainedConfig):
 
     def validate(self) -> None:
         """Run every check. Each group is a method; the groups are independent."""
-        self._validate_shape()
-        self._validate_actor()
-        self._validate_critic()
-        self._validate_trust_region()
-        self._validate_sampling()
-        self._validate_optim_and_batching()
-        self._validate_eval()
+        self.validate_shape()
+        self.validate_actor()
+        self.validate_critic()
+        self.validate_trust_region()
+        self.validate_sampling()
+        self.validate_optim_and_batching()
+        self.validate_eval()
 
-    def _validate_shape(self) -> None:
+    def validate_shape(self) -> None:
         """Window, chunk, and width."""
         if self.n_obs_steps < 1:
             raise ValueError(f"n_obs_steps={self.n_obs_steps} must be >= 1")
@@ -132,7 +132,7 @@ class MyfpoConfig(PreTrainedConfig):
         if self.action_perturb_std < 0:
             raise ValueError("action_perturb_std must be >= 0")
 
-    def _validate_actor(self) -> None:
+    def validate_actor(self) -> None:
         """Actor widths, depths, the resmlp variant, and the EMA."""
         if self.hidden_dim % self.dit_heads != 0:
             raise ValueError(
@@ -183,7 +183,7 @@ class MyfpoConfig(PreTrainedConfig):
         if self.ema_warmup_steps < 0:
             raise ValueError("ema_warmup_steps must be >= 0")
 
-    def _validate_critic(self) -> None:
+    def validate_critic(self) -> None:
         """Ensemble width, depth, dropout, and the critic learning rate."""
         if self.num_critics < 1:
             raise ValueError(f"num_critics={self.num_critics} must be >= 1")
@@ -204,7 +204,7 @@ class MyfpoConfig(PreTrainedConfig):
                 f"critic_lr_warmup_steps={self.critic_lr_warmup_steps} must be >= 0"
             )
 
-    def _validate_trust_region(self) -> None:
+    def validate_trust_region(self) -> None:
         """Discounts, clipping, the ASPO mode, and the CFM ratio terms."""
         if not 0.0 < self.gamma <= 1.0:
             raise ValueError(f"gamma={self.gamma} must satisfy 0 < gamma <= 1")
@@ -265,7 +265,7 @@ class MyfpoConfig(PreTrainedConfig):
             if value <= 0:
                 raise ValueError(f"{name}={value} must be > 0")
 
-    def _validate_sampling(self) -> None:
+    def validate_sampling(self) -> None:
         """The timestep law, the noise law, and the integration step counts."""
         if not (
             0.0
@@ -303,7 +303,7 @@ class MyfpoConfig(PreTrainedConfig):
                 f"num_steps_noise_start={self.num_steps_noise_start} must be >= 1"
             )
 
-    def _validate_optim_and_batching(self) -> None:
+    def validate_optim_and_batching(self) -> None:
         """Learning rates, the optimiser, the regularisers, and the batch shape."""
         if self.policy_lr <= 0:
             raise ValueError(f"policy_lr={self.policy_lr} must be > 0")
@@ -341,7 +341,7 @@ class MyfpoConfig(PreTrainedConfig):
         if self.value_loss_coef < 0:
             raise ValueError(f"value_loss_coef={self.value_loss_coef} must be >= 0")
 
-    def _validate_eval(self) -> None:
+    def validate_eval(self) -> None:
         """The tracking backend and the two named flow starts."""
         if self.report_to not in ("wandb", "tensorboard", "all", "none"):
             raise ValueError(

@@ -11,12 +11,8 @@ from torch import nn
 from myfpo.layers import MIN_WIDTH, CondMLP, SwiGLU, build_rms_norm, modulate
 from myfpo.utils import rms
 
-def _rope(x: torch.Tensor, inv_freq: torch.Tensor) -> torch.Tensor:
-    pos = torch.arange(x.shape[-2], device=x.device, dtype=torch.float32)
-    freqs = torch.einsum("k,d->kd", pos, inv_freq)
-    cos, sin = freqs.cos()[None, None, :, :], freqs.sin()[None, None, :, :]
-    x1, x2 = x[..., 0::2], x[..., 1::2]
-    return torch.stack([x1 * cos - x2 * sin, x1 * sin + x2 * cos], dim=-1).flatten(-2)
+
+
 
 
 class SelfAttention(nn.Module):
@@ -63,8 +59,14 @@ class SelfAttention(nn.Module):
         k = k.view(b, seq, h, d).transpose(1, 2)
         v = v.view(b, seq, h, d).transpose(1, 2)
 
-        q = _rope(q, self.inv_freq)
-        k = _rope(k, self.inv_freq)
+        # RoPE rotates the (even, odd) pairs of each head.
+        pos = torch.arange(seq, device=x.device, dtype=torch.float32)
+        freqs = torch.einsum("k,d->kd", pos, self.inv_freq)
+        cos, sin = freqs.cos()[None, None, :, :], freqs.sin()[None, None, :, :]
+        q1, q2 = q[..., 0::2], q[..., 1::2]
+        k1, k2 = k[..., 0::2], k[..., 1::2]
+        q = torch.stack([q1 * cos - q2 * sin, q1 * sin + q2 * cos], dim=-1).flatten(-2)
+        k = torch.stack([k1 * cos - k2 * sin, k1 * sin + k2 * cos], dim=-1).flatten(-2)
         y = F.scaled_dot_product_attention(q, k, v, is_causal=True)
         y = y.transpose(1, 2).reshape(b, seq, h * d)
         return self.out(y)
@@ -95,14 +97,14 @@ class AdaLNBlock(nn.Module):
         """``[B, K, H]`` action tokens, with adaLN conditioning on ``c``. ``c`` is
         ``[B, H]`` for a whole chunk or ``[B, K, H]`` for per-token time.
         """
-        out, _ = self._forward(x, c)
+        out, _ = self.forward_parts(x, c)
         return out
 
     def forward_with_stats(
         self, x: torch.Tensor, c: torch.Tensor
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         """The same block, plus the adaLN gate and scale diagnostics."""
-        out, (gate_msa, gate_mlp, scale_msa, scale_mlp) = self._forward(x, c)
+        out, (gate_msa, gate_mlp, scale_msa, scale_mlp) = self.forward_parts(x, c)
         with torch.inference_mode():
             stats = {
                 "gate_msa": rms(gate_msa),
@@ -112,7 +114,7 @@ class AdaLNBlock(nn.Module):
             }
         return out, stats
 
-    def _forward(
+    def forward_parts(
         self, x: torch.Tensor, c: torch.Tensor
     ) -> tuple[torch.Tensor, tuple[torch.Tensor, ...]]:
         """The block itself, with the adaLN parts the diagnostics read."""
