@@ -1,17 +1,14 @@
 """The two ratio axes must select the trust region the papers name."""
 
-import dataclasses
 from pathlib import Path
 
 import numpy as np
 import pytest
 import torch
 
-from lerobot.configs.types import FeatureType
-from lerobot.configs.policies import PolicyFeature
+from fixtures import cfg
 
 import myfpo.modeling as M
-from myfpo.configuration import MyfpoConfig
 from myfpo.training import build_policy
 
 OBS, ACT, N, MC, HORIZON = 11, 2, 6, 4, 16
@@ -21,16 +18,12 @@ HIGH = np.array([2.0, 2.0], dtype=np.float32)
 
 
 def _cfg(**overrides):
-    return dataclasses.replace(
-        MyfpoConfig(
-            num_mc_samples=MC,
-            action_horizon=HORIZON,
-            value_loss_coef=0.0,
-            input_features={"observation.state": PolicyFeature(FeatureType.STATE, (OBS,))},
-            output_features={"action": PolicyFeature(FeatureType.ACTION, (ACT,))},
-        ),
-        **overrides,
+    base = dict(
+        obs_dim=OBS, act_dim=ACT, num_mc_samples=MC, action_horizon=HORIZON,
+        value_loss_coef=0.0,
     )
+    base.update(overrides)
+    return cfg(**base)
 
 
 def _policy_and_batch(cfg, seed=0, pad_from=None):
@@ -231,24 +224,12 @@ def test_an_unknown_granularity_is_rejected():
         _cfg(num_mc_samples=6, cfm_average_group_size=4).validate()
 
 
-def test_the_paper_configs_select_the_trust_regions_they_name():
-    """A config that names an equation must select the ratio implementing it."""
-    # (trust region, token axis folded, MC group size).
-    # fpo: PPO clip, Eq. 8 sum, Eq. 9 one group. fpo++: ASPO, Eq. 10 per pair.
-    expected = {
-        "fpo": ("ppo", True, -1, "sum"),
-        "fpo++": ("aspo", True, 1, "mean"),
-    }
-    for name, (mode, token_avg, group, reduction) in expected.items():
-        cfg = dataclasses.replace(
-            MyfpoConfig(),
+def test_the_paper_configs_validate_their_trust_region_mapping():
+    """fpo: PPO clip, Eq. 8 sum, Eq. 9 one group. fpo++: ASPO, Eq. 10 per pair."""
+    for mode, group, reduction in (("ppo", -1, "sum"), ("aspo", 1, "mean")):
+        _cfg(
             trust_region_mode=mode,
-            do_average_cfm_loss_in_chunk=token_avg,
+            do_average_cfm_loss_in_chunk=True,
             cfm_average_group_size=group,
             cfm_loss_reduction=reduction,
-        )
-        assert cfg.trust_region_mode == mode, name
-        assert cfg.do_average_cfm_loss_in_chunk is token_avg, name
-        assert cfg.cfm_average_group_size == group, name
-        assert cfg.cfm_loss_reduction == reduction, name
-        cfg.validate()
+        ).validate()
