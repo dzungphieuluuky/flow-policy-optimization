@@ -492,20 +492,90 @@ def build_or_resume(
 
 
 
-def mean_update_metrics(above_clamp_fracs, both_clamped_fracs, drift):
-    """The clamp fractions and the drift, averaged over the update."""
+@dataclasses.dataclass
+class UpdateMetrics:
+    """The mean metrics of one optimiser update."""
+
+    info: dict[str, float] | None
+    grad_norms: dict[str, float]
+    above_clamp_frac: float
+    both_clamped_frac: float
+    drift_means: list[float]
+    rollout_jerk: float | None
+    rollout_seam_jerk: float | None
+
+    @property
+    def l_new_mean(self) -> float:
+        """The mean of the new CFM loss. NaN when there is no info dict."""
+        if self.info is None:
+            return float("nan")
+        return self.info["l_new_mean"]
+
+
+def update_metrics(
+    epoch_infos: list[dict[str, float]],
+    above_clamp_fracs,
+    both_clamped_fracs,
+    drift,
+    grad_norms_pre: list[dict[str, torch.Tensor]],
+    rollout_jerk: float | None = None,
+    rollout_seam_jerk: float | None = None,
+) -> UpdateMetrics:
+    """The mean of the per-minibatch metrics of one update."""
+    info = (
+        {
+            k: sum(d[k] for d in epoch_infos) / len(epoch_infos)
+            for k in epoch_infos[0]
+        }
+        if epoch_infos
+        else None
+    )
     scalars = [
         torch.stack(above_clamp_fracs).mean(),
         torch.stack(both_clamped_fracs).mean(),
     ]
     if drift is not None:
         scalars.extend(drift)
-    (
-        above_clamp_frac,
-        both_clamped_frac,
-        *drift_means,
-    ) = torch.stack(scalars).tolist()
-    return above_clamp_frac, both_clamped_frac, drift_means
+    above_clamp_frac, both_clamped_frac, *drift_means = torch.stack(scalars).tolist()
+    grad_norms = {
+        k: float(torch.stack([n[k] for n in grad_norms_pre]).mean())
+        for k in ("total", "actor", "critic")
+    }
+    return UpdateMetrics(
+        info=info,
+        grad_norms=grad_norms,
+        above_clamp_frac=above_clamp_frac,
+        both_clamped_frac=both_clamped_frac,
+        drift_means=drift_means,
+        rollout_jerk=rollout_jerk,
+        rollout_seam_jerk=rollout_seam_jerk,
+    )
+
+
+def log_update(setup, state, cfg, batch, rollout, update: UpdateMetrics) -> None:
+    """Log the train rows of one update."""
+    backends = setup.backends
+    if not backends or update.info is None:
+        return
+    optimizer = setup.optimizer
+    log_metrics(
+        backends,
+        build_train_metrics(
+            cfg=cfg,
+            info=update.info,
+            batch=batch,
+            rollout=rollout,
+            grad_norms=update.grad_norms,
+            above_clamp_frac=update.above_clamp_frac,
+            both_clamped_frac=update.both_clamped_frac,
+            drift_means=update.drift_means,
+            rollout_jerk=update.rollout_jerk,
+            rollout_seam_jerk=update.rollout_seam_jerk,
+            policy_lr=optimizer.param_groups[0]["lr"],
+            critic_lr=optimizer.param_groups[-1]["lr"],
+        ),
+        step=state.global_step,
+    )
 
 
 def check_clamp_guards(
@@ -692,6 +762,25 @@ class RunSetup:
     env_name: str
     global_step: int
 
+
+def make_train_env(cfg, env, env_name, runtime: dict | None):
+    """The env the policy collects from. A vector env when the config asks."""
+    if cfg.num_envs > 1 and env_name != "unknown":
+        return make_vec_env(env_name, cfg.num_envs, record=runtime)
+    if runtime is not None:
+        runtime["vector_env"] = "single"
+    if cfg.num_envs > 1:
+        warnings.warn(
+            f"num_envs={cfg.num_envs} requested but env_name={env_name!r} "
+            "(no spec.id on the passed env), so vectorisation was skipped "
+            "and the run uses a single env. Expect a large throughput drop; "
+            "the run is otherwise correct.",
+            RuntimeWarning,
+            stacklevel=3,
+        )
+    return env
+
+
 def setup_run(
     env,
     out_dir: Path,
@@ -712,21 +801,7 @@ def setup_run(
     set_seed(seed)
     device = resolve_device()
 
-    train_env = env
-    if cfg.num_envs > 1 and env_name != "unknown":
-        train_env = make_vec_env(env_name, cfg.num_envs, record=runtime)
-    else:
-        if runtime is not None:
-            runtime["vector_env"] = "single"
-        if cfg.num_envs > 1:
-            warnings.warn(
-                f"num_envs={cfg.num_envs} requested but env_name={env_name!r} "
-                "(no spec.id on the passed env), so vectorisation was skipped "
-                "and the run uses a single env. Expect a large throughput drop; "
-                "the run is otherwise correct.",
-                RuntimeWarning,
-                stacklevel=3,
-            )
+    train_env = make_train_env(cfg, env, env_name, runtime)
     if runtime is not None:
         runtime["eval_sampling"] = cfg.eval_sampling
         runtime["stop_eval_sampling"] = cfg.stop_eval_sampling
@@ -796,6 +871,105 @@ def setup_run(
     )
 
 
+def train_loop(
+    setup: RunSetup,
+    state: RunState,
+    cfg: MyfpoConfig,
+    out_dir: Path,
+    *,
+    total_steps: int,
+    eval_steps: int,
+    save_steps: int,
+) -> float:
+    """The training loop. Return the frames per second of the run."""
+    policy = setup.policy
+    optimizer = setup.optimizer
+    train_env = setup.train_env
+    action_low = setup.action_low
+    action_high = setup.action_high
+    evaluator = setup.evaluator
+    eval_policies = setup.eval_policies
+    r_rand = setup.r_rand
+    backends = setup.backends
+    device = setup.device
+    grad_groups = split_grad_params(policy)
+    t_start = time.time()
+
+    while state.global_step < total_steps:
+        steps_to_go = total_steps - state.global_step
+        batch, rollout, steps_this_rollout, rollout_jerk, rollout_seam_jerk = collect_rollouts(
+            policy, train_env, cfg, action_low, action_high, steps_to_go
+        )
+        state.global_step += steps_this_rollout
+
+        epoch_infos, grad_norms_pre, above_clamp_fracs, both_clamped_fracs = train_update(
+            policy, optimizer, batch, backends, cfg, grad_groups
+        )
+
+        drift = None
+        if cfg.log_drift_diagnostics and backends:
+            drift = measure_value_drift(policy, batch, device)
+
+        policy.update_ema(state.global_step)
+
+        policy.update_observation_stats(batch["normalizer_observations"])
+
+        update = update_metrics(
+            epoch_infos,
+            above_clamp_fracs,
+            both_clamped_fracs,
+            drift,
+            grad_norms_pre,
+            rollout_jerk,
+            rollout_seam_jerk,
+        )
+        log_update(setup, state, cfg, batch, rollout, update)
+
+        check_clamp_guards(
+            cfg,
+            update.above_clamp_frac,
+            update.both_clamped_frac,
+            update.l_new_mean,
+            state,
+        )
+
+
+
+
+        if state.global_step >= state.next_eval or state.global_step >= total_steps:
+            eval_window(
+                policy,
+                optimizer,
+                state,
+                out_dir,
+                evaluator,
+                eval_policies,
+                cfg,
+                backends,
+                eval_steps,
+                r_rand,
+            )
+
+        if state.global_step >= state.next_save or state.global_step >= total_steps:
+            artifact_path, _ = save_checkpoint(
+                out_dir, policy, optimizer, state.global_step, f"step_{state.global_step}"
+            )
+            state.artifacts.append(artifact_path)
+            state.next_save = max(
+                state.global_step + save_steps, state.next_save + save_steps
+            )
+
+    elapsed = time.time() - t_start
+    fps = state.global_step / max(elapsed, 1e-6)
+    if backends:
+        log_metrics(
+            backends,
+            {"timing/fps": fps, "timing/elapsed_s": elapsed},
+            step=state.global_step,
+        )
+    return fps
+
+
 def run_training(
     env: Any,
     out_dir: str | Path,
@@ -835,118 +1009,27 @@ def run_training(
     policy = setup.policy
     optimizer = setup.optimizer
     train_env = setup.train_env
-    action_low = setup.action_low
-    action_high = setup.action_high
-    evaluator = setup.evaluator
-    eval_policies = setup.eval_policies
-    r_rand = setup.r_rand
     backends = setup.backends
     env_name = setup.env_name
-    device = setup.device
 
     state = RunState(
         global_step=setup.global_step, next_eval=eval_steps, next_save=save_steps
     )
-    grad_groups = split_grad_params(policy)
-    t_start = time.time()
-
     try:
-        while state.global_step < total_steps:
-            steps_to_go = total_steps - state.global_step
-            batch, rollout, steps_this_rollout, rollout_jerk, rollout_seam_jerk = collect_rollouts(
-                policy, train_env, cfg, action_low, action_high, steps_to_go
-            )
-            state.global_step += steps_this_rollout
-
-
-
-            epoch_infos, grad_norms_pre, above_clamp_fracs, both_clamped_fracs = train_update(
-                policy, optimizer, batch, backends, cfg, grad_groups
-            )
-
-            drift = None
-            if cfg.log_drift_diagnostics and backends:
-                drift = measure_value_drift(policy, batch, device)
-
-            policy.update_ema(state.global_step)
-
-            policy.update_observation_stats(batch["normalizer_observations"])
-
-            info = (
-                {
-                    k: sum(d[k] for d in epoch_infos) / len(epoch_infos)
-                    for k in epoch_infos[0]
-                }
-                if epoch_infos
-                else None
-            )
-            above_clamp_frac, both_clamped_frac, drift_means = mean_update_metrics(
-                above_clamp_fracs, both_clamped_fracs, drift
-            )
-            grad_norms = {
-                k: float(torch.stack([n[k] for n in grad_norms_pre]).mean())
-                for k in ("total", "actor", "critic")
-            }
-
-            if backends and info is not None:
-                log_metrics(
-                    backends,
-                    build_train_metrics(
-                        cfg=cfg,
-                        info=info,
-                        batch=batch,
-                        rollout=rollout,
-                        grad_norms=grad_norms,
-                        above_clamp_frac=above_clamp_frac,
-                        both_clamped_frac=both_clamped_frac,
-                        drift_means=drift_means,
-                        rollout_jerk=rollout_jerk,
-                        rollout_seam_jerk=rollout_seam_jerk,
-                        policy_lr=optimizer.param_groups[0]["lr"],
-                        critic_lr=optimizer.param_groups[-1]["lr"],
-                    ),
-                    step=state.global_step,
-                )
-
-            l_new_mean = info["l_new_mean"] if info is not None else float("nan")
-            check_clamp_guards(
-                cfg, above_clamp_frac, both_clamped_frac, l_new_mean, state
-            )
-
-            if state.global_step >= state.next_eval or state.global_step >= total_steps:
-                eval_window(
-                    policy,
-                    optimizer,
-                    state,
-                    out_dir,
-                    evaluator,
-                    eval_policies,
-                    cfg,
-                    backends,
-                    eval_steps,
-                    r_rand,
-                )
-
-            if state.global_step >= state.next_save or state.global_step >= total_steps:
-                artifact_path, _ = save_checkpoint(
-                    out_dir, policy, optimizer, state.global_step, f"step_{state.global_step}"
-                )
-                state.artifacts.append(artifact_path)
-                state.next_save = max(
-                    state.global_step + save_steps, state.next_save + save_steps
-                )
-
-        elapsed = time.time() - t_start
-        fps = state.global_step / max(elapsed, 1e-6)
-        if backends:
-            log_metrics(
-                backends,
-                {"timing/fps": fps, "timing/elapsed_s": elapsed},
-                step=state.global_step,
-            )
+        fps = train_loop(
+            setup,
+            state,
+            cfg,
+            out_dir,
+            total_steps=total_steps,
+            eval_steps=eval_steps,
+            save_steps=save_steps,
+        )
     finally:
         if train_env is not env:
             train_env.close()
         finish_backends(backends)
 
     return finalize_run(out_dir, policy, optimizer, state, env_name, seed, fps)
+
+

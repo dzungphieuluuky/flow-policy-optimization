@@ -97,17 +97,34 @@ def compute_chunk_advantages(
     if env_id.numel() != n_chunks:
         raise ValueError(f"chunk_env_id must have {n_chunks} entries, got {env_id.numel()}")
 
+    successor = chunk_successors(env_id)
+    trace = gamma_h * (~done) * gae_lambda
+    adv = gae_trace(delta, trace, successor)
+    return adv, adv + q_current_chunk
+
+
+def chunk_successors(env_id: torch.Tensor) -> torch.Tensor:
+    """The next chunk of each chunk, inside the same env. ``-1`` means none.
+
+    The chunks of different envs interleave in the buffer, so adjacency is
+    resolved through the env id, not through the buffer position.
+    """
     order = torch.argsort(env_id, stable=True)
     sorted_env = env_id[order]
     same_env = sorted_env[:-1] == sorted_env[1:]
     successor = torch.full_like(order, -1)
     successor[order[:-1][same_env]] = order[1:][same_env]
+    return successor
 
-    trace = gamma_h * (~done) * gae_lambda
+
+def gae_trace(
+    delta: torch.Tensor, trace: torch.Tensor, successor: torch.Tensor
+) -> torch.Tensor:
+    """The advantage of each chunk, traced back over its successors."""
     successor_host = successor.tolist()
     adv = delta.clone()
-    for i in range(n_chunks - 1, -1, -1):
+    for i in range(delta.numel() - 1, -1, -1):
         j = successor_host[i]
         if j >= 0:
             adv[i] = delta[i] + trace[i] * adv[j]
-    return adv, adv + q_current_chunk
+    return adv
