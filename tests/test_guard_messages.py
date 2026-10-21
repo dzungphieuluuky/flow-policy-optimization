@@ -10,7 +10,7 @@ import pytest
 import torch
 
 # : Guard count the table below is expected to cover.
-EXPECTED_CASES = 73
+EXPECTED_CASES = 74
 
 _CASES: list[tuple[str, object]] = []
 
@@ -68,6 +68,7 @@ _BAD_CONFIG = {
     "report_to": "mlflow",
     "cfm_average_group_size": 0,
 
+    "temporal_probe_every": -1,
     "timestep_inverse_cdf_beta": 0.0,
     "timestep_sampling_mode": "cosine",
     "transported_clip_value": 0.0,
@@ -236,6 +237,7 @@ KEYWORDS = {
     'config:policy_lr': 'policy_lr',
     'config:report_to': 'report_to',
 
+    'config:temporal_probe_every': 'temporal_probe_every',
     'config:timestep_inverse_cdf_beta': 'timestep_inverse_cdf_beta',
     'config:timestep_sampling_mode': 'timestep_sampling_mode',
     'config:transported_clip_value': 'transported_clip_value',

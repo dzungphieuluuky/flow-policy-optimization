@@ -897,9 +897,11 @@ def train_loop(
 
     while state.global_step < total_steps:
         steps_to_go = total_steps - state.global_step
+        t0 = time.perf_counter()
         batch, rollout, steps_this_rollout, rollout_jerk, rollout_seam_jerk = collect_rollouts(
             policy, train_env, cfg, action_low, action_high, steps_to_go
         )
+        rollout["collect_s"] = time.perf_counter() - t0
         state.global_step += steps_this_rollout
 
         epoch_infos, grad_norms_pre, above_clamp_fracs, both_clamped_fracs = train_update(
@@ -923,6 +925,8 @@ def train_loop(
             rollout_jerk,
             rollout_seam_jerk,
         )
+        rollout["actor_step_s"] = policy.actor_step_s
+        rollout["critic_step_s"] = policy.critic_step_s
         log_update(setup, state, cfg, batch, rollout, update)
 
         check_clamp_guards(

@@ -8,6 +8,7 @@ from collections import deque
 from typing import Any
 
 import dataclasses
+import time
 
 import numpy as np
 import torch
@@ -178,6 +179,9 @@ class MyfpoPolicy(PreTrainedPolicy):
 
         self.cfm_above_clamp_frac = torch.zeros(())
         self.cfm_both_clamped_frac = torch.zeros(())
+        self.probe_counter = 0
+        self.actor_step_s = 0.0
+        self.critic_step_s = 0.0
 
         self.frame_buffer: deque[torch.Tensor] = deque(maxlen=config.n_obs_steps)
         self.action_buffer: deque[torch.Tensor] = deque()
@@ -597,8 +601,14 @@ class MyfpoPolicy(PreTrainedPolicy):
         batch: dict[str, torch.Tensor],
         device,
         storage_dtype: torch.dtype,
+        grad_inputs: bool = False,
     ) -> Batch:
-        """Load the batch, check its shapes, and draw the MC flow points."""
+        """Load the batch, check its shapes, and draw the MC flow points.
+
+        ``grad_inputs`` makes the obs window and the chunk leaves that carry a
+        gradient, so the probe can ask how much the value depends on each
+        frame and each chunk token. The values do not change.
+        """
         cfg = self.config
         states = self.load_tensor(batch, OBS_STATE, device, storage_dtype, async_=True)
         # The action is the flow's raw output, and it is the CFM regression
@@ -629,6 +639,9 @@ class MyfpoPolicy(PreTrainedPolicy):
             )
 
         states = self.preprocessor({OBS_STATE: states})[OBS_STATE]
+        if grad_inputs:
+            states = states.detach().requires_grad_(True)
+            actions = actions.detach().requires_grad_(True)
 
         horizon = cfg.action_horizon
         n = states.shape[0]
@@ -803,12 +816,23 @@ class MyfpoPolicy(PreTrainedPolicy):
         device = next(self.parameters()).device
         storage_dtype = resolve_storage_dtype(device)
 
-        b = self.load_batch(batch, device, storage_dtype)
+        self.probe_counter += 1
+        probe_on = (
+            cfg.temporal_probe_every > 0
+            and self.probe_counter % cfg.temporal_probe_every == 0
+            and torch.is_grad_enabled()
+        )
 
+        b = self.load_batch(batch, device, storage_dtype, grad_inputs=probe_on)
+
+        t0 = time.perf_counter()
         with autocast_context(device):
             v_new = self.compute_predicted_velocity(
                 b.x_t, b.actor_t, b.condition_flat
             ).float()
+        if device.type == "cuda":
+            torch.cuda.synchronize()
+        actor_s = time.perf_counter() - t0
 
         cond_stats = None
         if compute_info:
@@ -821,8 +845,16 @@ class MyfpoPolicy(PreTrainedPolicy):
                 )
 
         terms = self.policy_loss(b, v_new, device)
+        t0 = time.perf_counter()
         value_loss_per_chunk, raw_value_pred, raw_returns_flat = self.value_loss(
             b, device
+        )
+        if device.type == "cuda":
+            torch.cuda.synchronize()
+        critic_s = time.perf_counter() - t0
+
+        sensitivity = (
+            self.temporal_sensitivity(raw_value_pred, b) if probe_on else {}
         )
 
         if reduction == "mean":
@@ -861,7 +893,37 @@ class MyfpoPolicy(PreTrainedPolicy):
             cond_stats=cond_stats,
             cfg=cfg,
         )
+        self.actor_step_s = actor_s
+        self.critic_step_s = critic_s
+        info.update(sensitivity)
         return loss, info
+
+    def temporal_sensitivity(
+        self, raw_value_pred: torch.Tensor, b: Batch
+    ) -> dict[str, float]:
+        """How much the value depends on each chunk token and each obs frame.
+
+        The gradient of Q with respect to the chunk token ``i`` says how much
+        the value moves when token ``i`` moves. The same for the obs frame
+        ``j``. The profile over positions is the measurement the temporal
+        filters are judged on.
+
+        The chunk positions are the whole planned chunk, not only the executed
+        prefix: the critic prices the plan, and the executed length is a
+        separate input.
+        """
+        out = {}
+        grads = torch.autograd.grad(
+            raw_value_pred.sum(), b.actions, retain_graph=True
+        )[0]
+        for i, value in enumerate(grads.norm(dim=-1).mean(dim=0).tolist()):
+            out[f"critic_action_grad_norm_pos{i}"] = value
+        grads = torch.autograd.grad(
+            raw_value_pred.sum(), b.states, retain_graph=True
+        )[0]
+        for j, value in enumerate(grads.norm(dim=-1).mean(dim=0).tolist()):
+            out[f"obs_frame_grad_norm_pos{j}"] = value
+        return out
 
 
 

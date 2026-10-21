@@ -58,6 +58,8 @@ def build_train_metrics(
         data["train/rollout_seam_jerk"] = rollout_seam_jerk
     for key in ROLLOUT_ABS_KEYS:
         data[f"train/{key}"] = rollout[key]
+    for key in ("collect_s", "actor_step_s", "critic_step_s"):
+        data[f"train/{key}"] = rollout.get(key, 0.0)
     gae_diag = batch.get("gae_diagnostics")
     if gae_diag:
         data.update(

@@ -100,6 +100,9 @@ class MyfpoConfig(PreTrainedConfig):
 
     log_drift_diagnostics: bool = True
 
+    # How often the policy measures the per-position gradient norms. 0 = never.
+    temporal_probe_every: int = 0
+
     def __post_init__(self) -> None:
         super().__post_init__()
         if self.n_action_steps is None:
@@ -118,6 +121,10 @@ class MyfpoConfig(PreTrainedConfig):
 
     def validate_shape(self) -> None:
         """Window, chunk, and width."""
+        if self.temporal_probe_every < 0:
+            raise ValueError(
+                f"temporal_probe_every={self.temporal_probe_every} must be >= 0"
+            )
         if self.n_obs_steps < 1:
             raise ValueError(f"n_obs_steps={self.n_obs_steps} must be >= 1")
         if self.action_horizon < 1:
