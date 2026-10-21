@@ -95,9 +95,6 @@ def sample_eps(
     return torch.cat([eps_half, -eps_half], dim=1)  # [n, 2*half, ...]
 
 
-
-
-
 def sample_mc_timesteps(cfg: MyfpoConfig, n: int, device: torch.device) -> torch.Tensor:
     """MC timesteps, one trailing axis: ``[n, M, horizon, 1]``."""
     return sample_timesteps(
