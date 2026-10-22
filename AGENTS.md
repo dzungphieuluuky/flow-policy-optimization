@@ -170,6 +170,25 @@ The test helpers and the script helpers keep their underscore. They are local to
 - No `torch.utils.checkpoint` in `flow.py` or `rollout.py`.
 - No experiment results in git. A run's numbers live in its wandb run.
 
+## Research-repo law (caveman style)
+
+Rules from many broken research repos. This section speaks caveman. The rest of this file speaks STE.
+
+- One command make whole result. Data to picture. No hand step.
+- One file hold all number. No magic number hide in code.
+- Every run folder carry config, seed, commit. Folder alone = rerun possible.
+- Seed all random: python, numpy, torch. Seed travel with result.
+- Lock file law. `uv.lock` rule. No "work on my machine".
+- Git hold code and config. Data, checkpoint, wandb run stay out of git.
+- Test what make number trust: config, metric, checkpoint load, smoke run.
+- Notebook only explore. Stable logic move to `src/`. Never logic live only in `.ipynb`.
+- Log every run: config, metric, code version. wandb hold the evidence here.
+- Preregister claim before big sweep. Write what decide what. Not story after.
+- Dead code die same day. Ruff kill the unused name.
+- Reproduce before believe. Same machine twice, then other machine.
+- Small delta under noise floor = wind. Measure floor first. Pin probe give floor.
+- Machine change number? dtype, kernel, library version. Write hazard loud in this file.
+
 ## Style
 
 - Result first, and the bad news first when it changes what to do.
