@@ -792,29 +792,44 @@ def bootstrap_values(
         boot_exec_frac = policy.exec_length_frac(
             torch.full_like(lengths, round(fitted_steps.item()))
         )
-        critic_cond = (
-            cudagraph_safe(policy.encoder(all_chunk_normalised_states))
-            if cfg.critic_share_encoder
-            else None
-        )
-        chunk_cond = critic_cond[:n_chunks] if critic_cond is not None else None
-        next_cond = critic_cond[n_chunks:] if critic_cond is not None else None
-        with autocast_context(device):
-            q_current_chunk = subsampled_min(
-                policy.critic(
-                    policy.critic_inputs(normalised_states, chunk_cond),
-                    actions,
-                    exec_length_frac,
-                ).float()
-            )
-        with autocast_context(device):
-            q_bootstrap = subsampled_min(
-                policy.critic(
-                    policy.critic_inputs(normalised_next_states, next_cond),
-                    boot_actions,
-                    boot_exec_frac,
-                ).float()
-            )
+        # The two critic reads are targets, not exploration. A dropout layer
+        # in the critic path re-rolls the value on every call, so the critic
+        # path reads in eval mode. The actor proposal above stays in train
+        # mode on purpose: its dropout is part of the behaviour noise.
+        critic_path = [policy.critic]
+        if cfg.critic_share_encoder:
+            critic_path.append(policy.encoder)
+        critic_path_training = [m.training for m in critic_path]
+        for m in critic_path:
+            m.eval()
+        try:
+            if cfg.critic_share_encoder:
+                critic_cond = (
+                    cudagraph_safe(policy.encoder(all_chunk_normalised_states))
+                )
+            else:
+                critic_cond = None
+            chunk_cond = critic_cond[:n_chunks] if critic_cond is not None else None
+            next_cond = critic_cond[n_chunks:] if critic_cond is not None else None
+            with autocast_context(device):
+                q_current_chunk = subsampled_min(
+                    policy.critic(
+                        policy.critic_inputs(normalised_states, chunk_cond),
+                        actions,
+                        exec_length_frac,
+                    ).float()
+                )
+            with autocast_context(device):
+                q_bootstrap = subsampled_min(
+                    policy.critic(
+                        policy.critic_inputs(normalised_next_states, next_cond),
+                        boot_actions,
+                        boot_exec_frac,
+                    ).float()
+                )
+        finally:
+            for m, was_training in zip(critic_path, critic_path_training):
+                m.train(was_training)
 
     return (
         normalised_states,
