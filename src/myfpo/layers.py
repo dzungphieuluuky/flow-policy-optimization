@@ -243,10 +243,15 @@ class SinusoidalEncoding(nn.Module):
         return emb
 
 class TemporalConv(nn.Module):
-    """A learned local filter along a time axis. It computes no statistics.
+    """A learned per-feature filter along a time axis. It computes no statistics.
 
     The input is ``[B, C, T]`` and the output is ``[B, C, T]``. The width
     never changes, so every shape after the flatten stays the same.
+
+    The convolution is depthwise: channel ``c`` filters its own history and
+    nothing else. The linear layer that follows already mixes features, so a
+    full convolution only adds parameters: ``C*k`` here against ``C*C*k``,
+    which would be 363k at the 348 observation channels.
 
     ``causal=True`` pads on the left only, so the output at position i reads
     positions <= i and never the future.
@@ -266,6 +271,7 @@ class TemporalConv(nn.Module):
             channels,
             channels,
             kernel_size,
+            groups=channels,
             padding=0 if causal else kernel_size // 2,
         )
 

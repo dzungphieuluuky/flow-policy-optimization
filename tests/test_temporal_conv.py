@@ -18,6 +18,25 @@ def test_an_even_or_zero_kernel_is_rejected():
             TemporalConv(3, kernel)
 
 
+
+def test_the_filter_is_depthwise():
+    """``C*k`` parameters, not ``C*C*k``. The next linear mixes features."""
+    conv = TemporalConv(5, 3)
+    assert conv.conv.groups == 5
+    assert conv.conv.weight.shape == (5, 1, 3)
+    assert sum(p.numel() for p in conv.parameters()) == 5 * 3 + 5
+
+
+def test_one_channel_never_sees_another():
+    torch.manual_seed(0)
+    conv = TemporalConv(4, 3)
+    x = torch.randn(1, 4, 6)
+    moved = x.clone()
+    moved[:, 1] += 1.0
+    out, out_moved = conv(x), conv(moved)
+    torch.testing.assert_close(out[:, 0], out_moved[:, 0])
+    assert not torch.allclose(out[:, 1], out_moved[:, 1])
+
 def test_the_filter_keeps_the_offset():
     """A constant shift must move the output. A norm would erase it."""
     torch.manual_seed(0)
