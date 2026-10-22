@@ -99,7 +99,7 @@ def rms(x: torch.Tensor) -> torch.Tensor:
     return torch.linalg.vector_norm(x) / math.sqrt(x.numel())
 
 
-def cudagraph_safe(x: torch.Tensor) -> torch.Tensor:
+def cudagraph_safe(x: torch.Tensor, enabled: bool = True) -> torch.Tensor:
     """A copy of a tensor that a cudagraph may still own.
 
     A module compiled with ``mode="reduce-overhead"`` runs on a cudagraph, and
@@ -111,9 +111,10 @@ def cudagraph_safe(x: torch.Tensor) -> torch.Tensor:
 
     The copy leaves the pool, so the consumer of the tensor reads a stable
     value. Call it on the way out of a compiled module, before the tensor
-    crosses into another one.
+    crosses into another one. With ``enabled`` false nothing was compiled, so
+    the input comes back unchanged.
     """
-    return x.clone()
+    return x.clone() if enabled else x
 
 
 def cudagraph_step_begin() -> None:

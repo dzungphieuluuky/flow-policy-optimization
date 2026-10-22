@@ -88,7 +88,7 @@ src/myfpo/          the package, 13 modules. The leaves are layers,
                      configuration, evaluator, fpo_core, modeling,
                      processor, runner, tracking and layers.
 scripts/            train.py is the entry. pins/ holds the behaviour gates.
-tests/              49 files. test_guard_messages.py pins 76 guard
+tests/              50 files. test_guard_messages.py pins 76 guard
                      messages. test_ratio_axes.py pins the paper configs.
 docs/               architecture.md explains the networks and why.
                      ablation_reference.md lists ready-made ablations.

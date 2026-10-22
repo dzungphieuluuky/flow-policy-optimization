@@ -410,7 +410,7 @@ class MyfpoPolicy(PreTrainedPolicy):
         action_dim = int(self.config.action_feature.shape[0])
 
         with torch.inference_mode(), autocast_context(device):
-            condition = cudagraph_safe(self.encoder(states))
+            condition = cudagraph_safe(self.encoder(states), self.config.compile)
             shape = (states.shape[0], horizon, action_dim)
             if start_from_zero:
                 eps = torch.zeros(*shape, device=device)
@@ -656,7 +656,7 @@ class MyfpoPolicy(PreTrainedPolicy):
         x_t, actor_t, flow_shape, num_mc = mc_draws(actions, eps, t)
 
         with autocast_context(device):
-            condition = cudagraph_safe(self.encoder(states))
+            condition = cudagraph_safe(self.encoder(states), self.config.compile)
             condition_flat = broadcast_condition(condition, num_mc)
 
         cfm_loss_old, cfm_loss_old_token = self.load_behavior_losses(

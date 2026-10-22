@@ -804,8 +804,8 @@ def bootstrap_values(
             m.eval()
         try:
             if cfg.critic_share_encoder:
-                critic_cond = (
-                    cudagraph_safe(policy.encoder(all_chunk_normalised_states))
+                critic_cond = cudagraph_safe(
+                    policy.encoder(all_chunk_normalised_states), cfg.compile
                 )
             else:
                 critic_cond = None
