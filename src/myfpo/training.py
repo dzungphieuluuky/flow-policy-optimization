@@ -875,6 +875,10 @@ def train_loop(
         rollout["collect_s"] = time.perf_counter() - t0
         state.global_step += steps_this_rollout
 
+        # The batch normalises at load time, so the stats must take in this
+        # rollout before the first update reads it.
+        policy.update_observation_stats(batch["normalizer_observations"])
+
         epoch_infos, grad_norms_pre, above_clamp_fracs, both_clamped_fracs = train_update(
             policy, optimizer, batch, backends, cfg, grad_groups
         )
@@ -884,8 +888,6 @@ def train_loop(
             drift = measure_value_drift(policy, batch, device)
 
         policy.update_ema(state.global_step)
-
-        policy.update_observation_stats(batch["normalizer_observations"])
 
         update = update_metrics(
             epoch_infos,
