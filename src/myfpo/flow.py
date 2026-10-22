@@ -184,7 +184,7 @@ class FlowActor(nn.Module):
 
 
 class MyfpoFlowModel(FlowActor):
-    """The DiT actor. One block is self-attention, one SwiGLU, and adaLN."""
+    """The DiT actor. One block is self-attention, one MishFFN, and adaLN."""
 
     def __init__(
         self,

@@ -91,9 +91,9 @@ from myfpo.layers import DiTBlock, SelfAttention  # noqa: E402
 from myfpo.critic import Critic, CriticMember  # noqa: E402
 from myfpo.processor import RunningMeanStd, StateEncoder  # noqa: E402
 from myfpo.flow import MyfpoFlowModel  # noqa: E402
-from myfpo.layers import CondMLP, SinusoidalEncoding, SwiGLU  # noqa: E402
+from myfpo.layers import CondMLP, SinusoidalEncoding, MishFFN  # noqa: E402
 
-case("layers:SwiGLU:zero-dims")(lambda: SwiGLU(0, 4, 4))
+case("layers:MishFFN:zero-dims")(lambda: MishFFN(0, 4, 4))
 case("layers:CondMLP:zero-dims")(lambda: CondMLP(0, 4, 4))
 case("layers:SinusoidalEncoding:dim")(lambda: SinusoidalEncoding(1))
 case("encoder:RunningMeanStd:dim")(lambda: RunningMeanStd(0))
@@ -300,7 +300,7 @@ KEYWORDS = {
     'gae:requires-truncated': 'chunk_truncated',
     'layers:CondMLP:zero-dims': 'dimensions must be positive',
     'layers:SinusoidalEncoding:dim': 'SinusoidalEncoding',
-    'layers:SwiGLU:zero-dims': 'dimensions must be positive',
+    'layers:MishFFN:zero-dims': 'dimensions must be positive',
 }
 
 

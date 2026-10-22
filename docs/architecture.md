@@ -16,21 +16,21 @@ Two variants behind `config.actor_arch`; `dit` is the default.
 |---|---|---|
 | Block | adaLN-Zero DiT block, shared by both actors | Peebles & Xie, DiT (`arXiv:2212.09748`) |
 | Norm | RMSNorm, pre-norm | |
-| FFN | SwiGLU, `dit_mlp_ratio=2` | Shazeer, GLU Variants (`arXiv:2002.05202`) |
+| FFN | MishFFN, `dit_mlp_ratio=2` | Shazeer, GLU Variants (`arXiv:2002.05202`) |
 | Output init | zero on `adaLN_out` and `out` | DiT |
 | Position | RoPE on q/k | Su et al. (`arXiv:2104.09864`) |
 | Timestep | per-token, not per-sample | SD-DiT / rectified-flow training |
 | Time embedding | log-spaced DDPM table | Ho et al. (`arXiv:2006.11239`) |
 | Depth / width | `dit_depth=4`, `hidden_dim=128` | see Depth and width |
 
-`dit_mlp_ratio=2` means the SwiGLU hidden width is twice the model width. Its
-parameter count equals that of a 4x GELU MLP, because SwiGLU keeps two
+`dit_mlp_ratio=2` means the MishFFN hidden width is twice the model width. Its
+parameter count equals that of a 4x GELU MLP, because MishFFN keeps two
 matrices of that width.
 
 Defaults: **1.24M parameters**, 4 blocks of 281k each.
 
 The block is one class (`layers.AdaLNBlock`) with the MLP as the only
-difference: `DiTBlock` supplies a SwiGLU, `ResMLPBlock` the paper's residual
+difference: `DiTBlock` supplies a MishFFN, `ResMLPBlock` the paper's residual
 MLP. The counts and the checkpoint keys are pinned in
 `tests/test_block_contract.py`.
 

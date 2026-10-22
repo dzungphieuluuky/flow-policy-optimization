@@ -174,19 +174,17 @@ def build_rms_norm(hidden_dim: int, eps: float = 1e-6) -> nn.RMSNorm:
     return RMSNorm(hidden_dim, eps=eps)
 
 
-class SwiGLU(nn.Module):
-    """Compute down(silu(gate(x)) * up(x))."""
-
+class MishFFN(nn.Module):
+    """MishFFN MLP (replaces MishFFN)."""
     def __init__(self, in_dim: int, hidden_dim: int, out_dim: int):
         super().__init__()
         if in_dim < 1 or hidden_dim < 1 or out_dim < 1:
-            raise ValueError("SwiGLU dimensions must be positive")
-        self.gate_up = nn.Linear(in_dim, 2 * hidden_dim)
-        self.down = nn.Linear(hidden_dim, out_dim)
-
+            raise ValueError("MishFFN dimensions must be positive")
+        self.fc = nn.Linear(in_dim, hidden_dim)
+        self.norm = nn.LayerNorm(hidden_dim)
+        self.out = nn.Linear(hidden_dim, out_dim)
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        g, u = self.gate_up(x).chunk(2, dim=-1)
-        return self.down(F.silu(g).mul_(u))
+        return self.out(F.mish(self.norm(self.fc(x))))
 
 
 class CondMLP(nn.Module):
@@ -419,7 +417,7 @@ class AdaLNBlock(nn.Module):
 
 
 class DiTBlock(AdaLNBlock):
-    """The DiT block: attention, one SwiGLU, adaLN."""
+    """The DiT block: attention, one MishFFN, adaLN."""
 
     def __init__(self, hidden_dim: int, n_heads: int, mlp_ratio: float):
         if not math.isfinite(mlp_ratio) or mlp_ratio <= 0 or int(hidden_dim * mlp_ratio) < 1:
@@ -427,5 +425,5 @@ class DiTBlock(AdaLNBlock):
         super().__init__(
             hidden_dim,
             n_heads,
-            SwiGLU(hidden_dim, int(hidden_dim * mlp_ratio), hidden_dim),
+            MishFFN(hidden_dim, int(hidden_dim * mlp_ratio), hidden_dim),
         )

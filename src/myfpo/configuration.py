@@ -103,8 +103,8 @@ class MyfpoConfig(PreTrainedConfig):
     resmlp_hidden_mult: float = 2.0
     time_embed_dim: int = 32
 
-    policy_lr: float = 1e-5
-    critic_lr: float = 1e-4
+    policy_lr: float = 3e-4
+    critic_lr: float = 3e-4
     optimizer_weight_decay: float = 1e-4
     adam_betas: tuple[float, float] = (0.9, 0.99)
     max_grad_norm: float = 1.0
