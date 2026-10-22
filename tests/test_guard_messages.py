@@ -10,7 +10,7 @@ import pytest
 import torch
 
 # : Guard count the table below is expected to cover.
-EXPECTED_CASES = 75
+EXPECTED_CASES = 76
 
 _CASES: list[tuple[str, object]] = []
 
@@ -78,6 +78,9 @@ _BAD_CONFIG = {
 }
 for _field, _bad in sorted(_BAD_CONFIG.items()):
     case(f"config:{_field}")(lambda f=_field, b=_bad: MyfpoConfig(**{f: b}))
+
+# An even count is required: sample_eps draws half and mirrors it.
+case("config:num_mc_samples-odd")(lambda: MyfpoConfig(num_mc_samples=3))
 
 
 @case("config:missing-input-features")
@@ -230,6 +233,7 @@ KEYWORDS = {
     'config:num_envs': 'num_envs',
     'config:num_learning_epochs': 'num_learning_epochs',
     'config:num_mc_samples': 'num_mc_samples',
+    'config:num_mc_samples-odd': 'num_mc_samples',
     'config:num_steps_noise_start': 'num_steps_noise_start',
     'config:num_steps_zero_start': 'num_steps_zero_start',
     'config:optimizer_weight_decay': 'optimizer_weight_decay',

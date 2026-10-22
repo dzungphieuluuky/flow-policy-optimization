@@ -369,8 +369,12 @@ class MyfpoConfig(PreTrainedConfig):
             )
         if self.num_envs < 1:
             raise ValueError(f"num_envs={self.num_envs} must be >= 1")
-        if self.num_mc_samples < 1:
-            raise ValueError(f"num_mc_samples={self.num_mc_samples} must be >= 1")
+        # sample_eps draws half the count and mirrors it, so an odd count
+        # changes the row count downstream.
+        if self.num_mc_samples < 2 or self.num_mc_samples % 2:
+            raise ValueError(
+                f"num_mc_samples={self.num_mc_samples} must be even and >= 2"
+            )
         if self.value_loss_coef < 0:
             raise ValueError(f"value_loss_coef={self.value_loss_coef} must be >= 0")
 

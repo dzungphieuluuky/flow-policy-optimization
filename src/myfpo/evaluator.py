@@ -111,13 +111,6 @@ def jerk_inputs(actions, action_is_pad) -> tuple[np.ndarray, np.ndarray]:
     return a, pad
 
 
-def extract_success(info: dict) -> float | None:
-    """Task success flag out of an info dict."""
-    if not isinstance(info, dict) or info.get("success") is None:
-        return None
-    return float(bool(info["success"]))
-
-
 def compute_mean_chunk_jerk(actions: np.ndarray, action_is_pad: np.ndarray) -> float | None:
     """Average :func:`compute_action_jerk` over the executed prefixes of the chunks.
     Returns ``None`` when no chunk executed at least three steps.
@@ -190,9 +183,8 @@ class Evaluator:
             ep_length += 1
             done = bool(terminated) or bool(truncated)
             ep_actions.append(np.asarray(action, dtype=np.float32).reshape(-1))
-            success = extract_success(info)
-            if success is not None:
-                ep_success = success
+            if isinstance(info, dict) and info.get("success") is not None:
+                ep_success = float(bool(info["success"]))
         jerk = compute_action_jerk(np.stack(ep_actions)) if ep_actions else None
         return (
             {
