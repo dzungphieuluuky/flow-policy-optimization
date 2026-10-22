@@ -10,7 +10,7 @@ import pytest
 import torch
 
 # : Guard count the table below is expected to cover.
-EXPECTED_CASES = 77
+EXPECTED_CASES = 75
 
 _CASES: list[tuple[str, object]] = []
 
@@ -36,7 +36,6 @@ from myfpo.configuration import MyfpoConfig  # noqa: E402
 
 _BAD_CONFIG = {
     "action_perturb_std": -1.0,
-    "actor_lr_warmup_steps": -1,
     "advantage_clamp_pos": 0.0,
     "batch_size": 0,
     "cfm_clamp": 0.0,
@@ -47,7 +46,6 @@ _BAD_CONFIG = {
     "cfm_loss_huber_delta": 0.0,
     "critic_hidden_dim": 0,
     "critic_lr": 0.0,
-    "critic_lr_warmup_steps": -1,
     "critic_num_layers": 0,
     "eval_max_episodes": 0,
     "gae_lambda": 1.5,
@@ -207,7 +205,6 @@ KEYWORDS = {
     'attention:SelfAttention:hidden': 'hidden_dim',
     'attention:SelfAttention:split': 'split',
     'config:action_perturb_std': 'action_perturb_std',
-    'config:actor_lr_warmup_steps': 'actor_lr_warmup_steps',
     'config:advantage_clamp_pos': 'advantage_clamp_pos',
     'config:batch_size': 'batch_size',
     'config:cfm_average_group_size': 'cfm_average_group_size',
@@ -219,7 +216,6 @@ KEYWORDS = {
     'config:clip_param': 'clip_param',
     'config:critic_hidden_dim': 'critic_hidden_dim',
     'config:critic_lr': 'critic_lr',
-    'config:critic_lr_warmup_steps': 'critic_lr_warmup_steps',
     'config:critic_num_layers': 'critic_num_layers',
     'config:eval_max_episodes': 'eval_max_episodes',
     'config:gae_lambda': 'gae_lambda',

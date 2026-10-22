@@ -58,7 +58,6 @@ class MyfpoAborted(RuntimeError):
 
 def build_optimizer(policy: MyfpoPolicy) -> torch.optim.Optimizer:
     """Build one AdamW. Split the actor and the critic into separate groups."""
-    cfg = policy.config
     kwargs = dataclasses.asdict(policy.config.get_optimizer_preset())
     kwargs.pop("grad_clip_norm", None)  # AdamW would clip all groups as one. See split_grad_params.
     kwargs["betas"] = policy.config.adam_betas
@@ -68,16 +67,7 @@ def build_optimizer(policy: MyfpoPolicy) -> torch.optim.Optimizer:
         *policy.get_actor_optim_params()["params"],
         *policy.get_critic_optim_params()["params"],
     ]
-    optimizer = torch.optim.AdamW(groups, **kwargs)
-    warmups = [cfg.actor_lr_warmup_steps] * len(
-        policy.get_actor_optim_params()["params"]
-    ) + [cfg.critic_lr_warmup_steps] * len(
-        policy.get_critic_optim_params()["params"]
-    )
-    for group, warmup in zip(optimizer.param_groups, warmups):
-        group["lr_warmup_steps"] = int(warmup)
-        group["base_lr"] = float(group["lr"])
-    return optimizer
+    return torch.optim.AdamW(groups, **kwargs)
 
 @dataclasses.dataclass
 class Batch:

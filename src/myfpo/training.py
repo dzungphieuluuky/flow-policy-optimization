@@ -122,16 +122,6 @@ def sample_minibatch(
     return out
 
 
-
-def apply_lr_schedule(optimizer, step_count: int) -> None:
-    """Apply the linear warmup, starting from the bases."""
-    for group in optimizer.param_groups:
-        base = group["base_lr"]
-        warmup = group.get("lr_warmup_steps", 0)
-        ramp = 1.0 if warmup <= 0 else min(1.0, step_count / warmup)
-        group["lr"] = base * ramp
-
-
 def split_grad_params(policy) -> dict[str, list[torch.nn.Parameter]]:
     """Split the trainable weights into the groups that clip independently.
 
@@ -371,7 +361,6 @@ def train_update(policy, optimizer, batch, backends, cfg, grad_groups):
             optimizer.step()
             optimizer.zero_grad(set_to_none=True)
             policy.step_count += 1
-            apply_lr_schedule(optimizer, policy.step_count)
         if epoch_info is not None:
             epoch_infos.append(epoch_info)
     if bool(finite_error):

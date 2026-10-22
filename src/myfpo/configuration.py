@@ -105,8 +105,6 @@ class MyfpoConfig(PreTrainedConfig):
 
     policy_lr: float = 1e-5
     critic_lr: float = 1e-4
-    actor_lr_warmup_steps: int = 5
-    critic_lr_warmup_steps: int = 1
     optimizer_weight_decay: float = 1e-4
     adam_betas: tuple[float, float] = (0.9, 0.99)
     max_grad_norm: float = 1.0
@@ -242,10 +240,6 @@ class MyfpoConfig(PreTrainedConfig):
             )
         if self.critic_lr <= 0:
             raise ValueError(f"critic_lr={self.critic_lr} must be > 0")
-        if self.critic_lr_warmup_steps < 0:
-            raise ValueError(
-                f"critic_lr_warmup_steps={self.critic_lr_warmup_steps} must be >= 0"
-            )
 
     def validate_trust_region(self) -> None:
         """Discounts, clipping, the ASPO mode, and the CFM ratio terms."""
@@ -358,10 +352,6 @@ class MyfpoConfig(PreTrainedConfig):
             raise ValueError(f"adam_betas={self.adam_betas} must each be in (0, 1)")
         if self.max_grad_norm <= 0:
             raise ValueError(f"max_grad_norm={self.max_grad_norm} must be > 0")
-        if self.actor_lr_warmup_steps < 0:
-            raise ValueError(
-                f"actor_lr_warmup_steps={self.actor_lr_warmup_steps} must be >= 0"
-            )
         if self.grad_accum_steps < 1:
             raise ValueError(f"grad_accum_steps={self.grad_accum_steps} must be >= 1")
         if self.chunks_per_update < 1:

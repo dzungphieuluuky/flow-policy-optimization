@@ -19,8 +19,6 @@ RELEASED = {
     "max_grad_norm": (1.0, "finetune_online_rl.py:121"),
     "value_loss_coef": (1.0, "finetune_online_rl.py:121 vf_coef"),
     "normalize_advantage": (True, "finetune_online_rl.py:121 norm_adv"),
-    "actor_lr_warmup_steps": (5, "finetune_online_rl.py:131"),
-    "critic_lr_warmup_steps": (1, "finetune_online_rl.py:132"),
     # Mechanism defaults, same provenance as the value knobs.
     "do_average_cfm_loss_in_chunk": (False, "finetune_online_rl.py:92"),
     "cfm_average_group_size": (1, "finetune_online_rl.py:95"),
