@@ -296,10 +296,23 @@ def sample_action(
     num_steps: int,
     eps: torch.Tensor,
     device: torch.device | str | None,
+    *,
+    t_min: float,
+    t_max: float,
 ):
-    """Euler-sample flow from t=0 (noise) to t=1 (data). ``device`` is required explicitly (no default)."""
+    """Euler-sample flow from t=0 (noise) to t=1 (data). ``device`` is required explicitly (no default).
+
+    The velocity is read at each grid time clamped into ``[t_min, t_max]``, the
+    band the flow was trained on. The step sizes keep the grid, so the path still
+    ends at t=1.
+    """
     if device is None:
         raise ValueError("device must be provided explicitly")
+    if not 0.0 <= t_min <= t_max <= 1.0:
+        raise ValueError(
+            "t_min and t_max must satisfy 0 <= t_min <= t_max <= 1, "
+            f"got ({t_min}, {t_max})"
+        )
     if tuple(eps.shape) != tuple(shape):
         raise ValueError(f"eps shape {tuple(eps.shape)} != requested {tuple(shape)}")
 
@@ -318,7 +331,7 @@ def sample_action(
     with torch.inference_mode():
         dts = grid[1:] - grid[:-1]
         for i in range(num_steps):
-            t_current = grid[i].reshape(1)
+            t_current = grid[i].clamp(t_min, t_max).reshape(1)
             v_hat = predict_velocity(x, t_current, condition)
             x = torch.addcmul(x, v_hat, dts[i])
     return x

@@ -425,6 +425,8 @@ class MyfpoPolicy(PreTrainedPolicy):
                 num_steps=num_steps,
                 eps=eps,
                 device=device,
+                t_min=cfg.min_sampled_timestep,
+                t_max=cfg.max_sampled_timestep,
             ).float()
 
         proposal = action_chunk

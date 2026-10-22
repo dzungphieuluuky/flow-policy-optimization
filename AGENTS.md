@@ -88,7 +88,7 @@ src/myfpo/          the package, 13 modules. The leaves are layers,
                      configuration, evaluator, fpo_core, modeling,
                      processor, runner, tracking and layers.
 scripts/            train.py is the entry. pins/ holds the behaviour gates.
-tests/              50 files. test_guard_messages.py pins 76 guard
+tests/              50 files. test_guard_messages.py pins 77 guard
                      messages. test_ratio_axes.py pins the paper configs.
 docs/               architecture.md explains the networks and why.
                      ablation_reference.md lists ready-made ablations.
@@ -153,7 +153,7 @@ The test helpers and the script helpers keep their underscore. They are local to
 
 ## Adding a guard
 
-`tests/test_guard_messages.py` has a table of 76 cases and a count. Add the case, then update `EXPECTED_CASES`. The test fails if the count moves without a deliberate change.
+`tests/test_guard_messages.py` has a table of 77 cases and a count. Add the case, then update `EXPECTED_CASES`. The test fails if the count moves without a deliberate change.
 
 ## The notebook pair
 

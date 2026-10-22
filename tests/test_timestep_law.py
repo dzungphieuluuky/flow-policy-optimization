@@ -41,31 +41,36 @@ def test_the_draw_bounds_are_not_the_range_of_the_flow():
     assert cfg.min_sampled_timestep > 0.0, "the draw must not sit exactly on t=0"
     assert cfg.max_sampled_timestep < 1.0, "the draw must not sit exactly on t=1"
 
-    # The sampler grid starts at 0 and ends at 1 regardless of the draw bounds.
+    # The sampler grid starts at 0 and ends at 1. The band it reads the
+    # velocity in is an argument, so the draw bounds cannot be read as the
+    # flow range.
     from myfpo.fpo_core import sample_action
 
     seen = []
 
     def predict_velocity(x, t, _condition):
         seen.append(float(t.reshape(-1)[0]))
-        return torch.zeros_like(x)
+        return torch.ones_like(x)
 
-    sample_action(
+    out = sample_action(
         predict_velocity,
         (1, 2, 1),
         None,
         num_steps=cfg.num_steps_noise_start,
         eps=torch.zeros(1, 2, 1),
         device="cpu",
+        t_min=cfg.min_sampled_timestep,
+        t_max=cfg.max_sampled_timestep,
     )
-    # The loop evaluates grid[0 .. num_steps-1], so the times it reads start at
-    # exactly 0.0 and stop one step short of 1.0. The final update lands on 1.0.
-    assert seen[0] == 0.0 and seen[-1] < 1.0, seen
-    assert min(seen) < cfg.min_sampled_timestep, (
-        "the sampler must evaluate times the training draw never sees"
-    )
-    # And the integration still covers the whole interval, so the draw bounds
-    # cannot be read as the flow range.
+    # Every read sits in the trained band, so the velocity is never an
+    # extrapolation.
+    assert (
+        min(seen) >= cfg.min_sampled_timestep
+        and max(seen) <= cfg.max_sampled_timestep
+    ), seen
+    # The step sizes still come from a grid that ends at 1, so a unit velocity
+    # moves the sample by the full path length.
+    assert float(out[0, 0, 0]) == 1.0
     assert cfg.max_sampled_timestep - cfg.min_sampled_timestep < 1.0
     grid = torch.linspace(0.0, 1.0, cfg.num_steps_noise_start + 1)
     assert float(grid[-1]) == 1.0, "the sampler integrates to t=1"

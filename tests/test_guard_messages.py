@@ -10,7 +10,7 @@ import pytest
 import torch
 
 # : Guard count the table below is expected to cover.
-EXPECTED_CASES = 76
+EXPECTED_CASES = 77
 
 _CASES: list[tuple[str, object]] = []
 
@@ -180,12 +180,38 @@ case("fpo_core:cfm:reduce-mode")(
 )
 case("fpo_core:sample_action:device")(
     lambda: sample_action(
-        lambda x, _t, _c: x, (2, 4, 3), None, 2, torch.zeros(2, 4, 3), None
+        lambda x, _t, _c: x,
+        (2, 4, 3),
+        None,
+        2,
+        torch.zeros(2, 4, 3),
+        None,
+        t_min=0.0,
+        t_max=1.0,
     )
 )
 case("fpo_core:sample_action:shape")(
     lambda: sample_action(
-        lambda x, _t, _c: x, (2, 4, 3), None, 2, torch.zeros(2, 1, 3), "cpu"
+        lambda x, _t, _c: x,
+        (2, 4, 3),
+        None,
+        2,
+        torch.zeros(2, 1, 3),
+        "cpu",
+        t_min=0.0,
+        t_max=1.0,
+    )
+)
+case("fpo_core:sample_action:t_min")(
+    lambda: sample_action(
+        lambda x, _t, _c: x,
+        (2, 4, 3),
+        None,
+        2,
+        torch.zeros(2, 4, 3),
+        "cpu",
+        t_min=0.5,
+        t_max=0.4,
     )
 )
 case("fpo_core:sample_timesteps:mode")(
@@ -269,6 +295,7 @@ KEYWORDS = {
     'fpo_core:mc:t-shape': 't shape',
     'fpo_core:sample_action:device': 'device',
     'fpo_core:sample_action:shape': 'eps shape',
+    'fpo_core:sample_action:t_min': 't_min',
     'fpo_core:sample_timesteps:mode': 'timestep_sampling_mode',
     'gae:gae_lambda': 'gae_lambda',
     'gae:gamma': 'gamma',
