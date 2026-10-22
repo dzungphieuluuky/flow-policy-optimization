@@ -399,15 +399,23 @@ def evaluate_policy(policy, global_step, out_dir, evaluator, eval_policies, cfg,
     return result, summaries
 
 
-def save_checkpoint(out_dir, policy, optimizer, global_step, name):
+def save_checkpoint(out_dir, policy, optimizer, global_step, name, use_ema=False):
+    """Save one checkpoint, with the live model weights and the EMA shadow."""
     ckpt_dir = out_dir / CHECKPOINTS_DIR / name
-    save_policy_checkpoint(
-        ckpt_dir,
-        policy=policy,
-        optimizer=optimizer,
-        global_step=global_step,
-        ema_state=policy.ema_state_dict(),
-    )
+    # The best and final scores are measured on the EMA weights. Saving the
+    # live weights instead would pair the score with unmeasured weights.
+    displaced = policy.swap_in_ema(global_step) if use_ema else {}
+    try:
+        save_policy_checkpoint(
+            ckpt_dir,
+            policy=policy,
+            optimizer=optimizer,
+            global_step=global_step,
+            ema_state=policy.ema_state_dict(),
+        )
+    finally:
+        if displaced:
+            policy.swap_out_ema(displaced)
     return str(ckpt_dir / "model.safetensors"), ckpt_dir
 
 
@@ -668,7 +676,7 @@ def eval_window(
     if result.get("improved", False):
         state.best_return, state.steps_to_best = stop_return, state.global_step
         best_artifact_path, _ = save_checkpoint(
-            out_dir, policy, optimizer, state.global_step, "best"
+            out_dir, policy, optimizer, state.global_step, "best", use_ema=True
         )
         state.best_artifact = best_artifact_path
     if backends:
@@ -683,7 +691,7 @@ def eval_window(
 def finalize_run(out_dir, policy, optimizer, state: RunState, env_name, seed, fps):
     """The final checkpoint, the artifact list, and the run summary."""
     final_path, _ = save_checkpoint(
-        out_dir, policy, optimizer, state.global_step, "final"
+        out_dir, policy, optimizer, state.global_step, "final", use_ema=True
     )
     state.artifacts.append(final_path)
     if state.best_artifact is not None and state.best_artifact not in state.artifacts:
@@ -835,7 +843,6 @@ def setup_run(
 def train_loop(
     setup: RunSetup,
     state: RunState,
-    cfg: MyfpoConfig,
     out_dir: Path,
     *,
     total_steps: int,
@@ -844,6 +851,9 @@ def train_loop(
 ) -> float:
     """The training loop. Return the frames per second of the run."""
     policy = setup.policy
+    # On a resume the checkpoint config wins: build_or_resume already ignores
+    # CLI scalar overrides, and the loop must not read two configs.
+    cfg = policy.config
     optimizer = setup.optimizer
     train_env = setup.train_env
     action_low = setup.action_low
@@ -984,7 +994,6 @@ def run_training(
         fps = train_loop(
             setup,
             state,
-            cfg,
             out_dir,
             total_steps=total_steps,
             eval_steps=eval_steps,

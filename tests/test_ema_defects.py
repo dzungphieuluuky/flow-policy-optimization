@@ -91,3 +91,57 @@ def test_the_ema_state_dict_carries_the_encoder():
     p = _warm(make_policy())
     state = p.ema_state_dict()
     assert any(k.startswith("encoder.") for k in state["shadow_params"])
+
+
+def test_ema_scored_checkpoints_save_the_ema_weights(monkeypatch, tmp_path):
+    """The best and final scores are measured on the EMA weights.
+
+    The save must run with the EMA weights in the living model, and must
+    put the live weights back after. The equality is exact.
+    """
+    import myfpo.training as training
+
+    captured: dict[str, dict[str, torch.Tensor]] = {}
+
+    def fake_save(ckpt_dir, policy, **kw):  # noqa: ARG001
+        captured["saved"] = {
+            n: q.detach().clone() for n, q in policy.ema_named_params().items()
+        }
+
+    monkeypatch.setattr(training, "save_policy_checkpoint", fake_save)
+    p = _warm(make_policy())
+    shadow = {n: t.clone() for n, t in p.ema_shadow.items()}
+    with torch.no_grad():
+        for q in p.ema_named_params().values():
+            q.add_(1.0)
+    live = {n: q.detach().clone() for n, q in p.ema_named_params().items()}
+
+    training.save_checkpoint(tmp_path, p, None, 1000, "best", use_ema=True)
+    for name, want in shadow.items():
+        assert torch.equal(captured["saved"][name], want), name
+    after = {n: q.detach().clone() for n, q in p.ema_named_params().items()}
+    for name, want in live.items():
+        assert torch.equal(after[name], want), name
+    assert any(not torch.equal(live[n], shadow[n]) for n in shadow), (
+        "live and EMA are identical, test is vacuous"
+    )
+
+
+def test_a_plain_save_keeps_the_live_weights(monkeypatch, tmp_path):
+    """The periodic resume checkpoints carry the live weights."""
+    import myfpo.training as training
+
+    captured: dict[str, dict[str, torch.Tensor]] = {}
+
+    def fake_save(ckpt_dir, policy, **kw):  # noqa: ARG001
+        captured["saved"] = {
+            n: q.detach().clone() for n, q in policy.ema_named_params().items()
+        }
+
+    monkeypatch.setattr(training, "save_policy_checkpoint", fake_save)
+    p = _warm(make_policy())
+    live = {n: q.detach().clone() for n, q in p.ema_named_params().items()}
+
+    training.save_checkpoint(tmp_path, p, None, 1000, "step_1000")
+    for name, want in live.items():
+        assert torch.equal(captured["saved"][name], want), name
