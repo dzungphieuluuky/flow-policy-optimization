@@ -184,7 +184,6 @@ class CriticMember(nn.Module):
             chunk = self.chunk_conv(chunk)
         parts = [state_part, chunk.transpose(1, 2).flatten(1)]
         parts[1] = self.norm_action(parts[1])
-        parts[1] = self.norm_action(parts[1])
         if self.condition_on_exec_length:
             if exec_length_frac is None:
                 raise ValueError(

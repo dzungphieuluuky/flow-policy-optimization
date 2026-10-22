@@ -268,6 +268,44 @@ def test_the_gradient_reaches_the_action_scale():
     assert m.norm_action.bias.grad.abs().sum() > 0
 
 
+def test_the_action_affine_runs_once_per_forward():
+    """One affine pass over the chunk.
+
+    A second pass squares the scale: two passes compute ``w * (w * x + b) + b``,
+    so the chunk reaches the critic with the weight applied twice. The value
+    changes and the gradient on the weight doubles. The count is the check.
+    """
+    m = _member()
+    calls: list[tuple] = []
+    original = m.norm_action.forward
+    m.norm_action.forward = lambda x: (calls.append(tuple(x.shape)), original(x))[1]
+    m(torch.randn(3, STEPS, OBS), torch.randn(3, H, ACT), torch.full((3,), 0.5))
+    assert len(calls) == 1
+
+
+def test_the_chunk_reaches_the_first_layer_through_one_affine():
+    """The affine is applied once, so the chunk keeps its own scale."""
+    torch.manual_seed(3)
+    m = _member().eval()
+    with torch.no_grad():
+        m.norm_action.weight.copy_(
+            torch.linspace(0.5, 2.0, H * ACT).reshape(H * ACT)
+        )
+        m.norm_action.bias.copy_(torch.linspace(-0.3, 0.4, H * ACT))
+    seen: dict[str, torch.Tensor] = {}
+    m.mlp[0].register_forward_pre_hook(
+        lambda _module, args: seen.__setitem__("x", args[0].detach().clone())
+    )
+    obs = torch.randn(2, STEPS, OBS)
+    act = torch.randn(2, H, ACT)
+    m(obs, act, torch.full((2,), 0.5))
+    chunk = seen["x"][:, HIDDEN : HIDDEN + H * ACT]
+    expected = (
+        act.reshape(2, H * ACT) * m.norm_action.weight + m.norm_action.bias
+    )
+    assert torch.equal(chunk, expected)
+
+
 def test_the_input_parts_add_exactly_their_own_widths():
     """State affine + window trunk + action affine, beyond the MLP trunk."""
     m = _member()
