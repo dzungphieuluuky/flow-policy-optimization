@@ -5,9 +5,11 @@ Follows TD-MPC2 (arXiv:2310.16828): every hidden layer is Linear -> LayerNorm
 TD-MPC2 ships 5 ensemble members; this repo runs 2, and
 ``--myfpo.num_critics 5`` restores the paper's width.
 
-The action input is the one place the trunk departs from the paper. It is a
-learned affine, not a LayerNorm, because a LayerNorm over the chunk erases the
-chunk's offset. See ``myfpo.critic.ActionAffine``.
+The action and state inputs are the two places the trunk departs from the paper.
+The action is a learned affine, not a LayerNorm, because a LayerNorm over the
+chunk erases the chunk's offset. The state norm divides by the RMS and keeps
+the mean, for the same reason. See ``myfpo.critic.ActionAffine`` and
+``StateAffine``.
 """
 
 from __future__ import annotations
@@ -21,7 +23,7 @@ from lerobot.configs.types import FeatureType
 from torch import nn
 
 from myfpo.configuration import MyfpoConfig
-from myfpo.critic import Critic, CriticMember, ActionAffine
+from myfpo.critic import Critic, CriticMember, ActionAffine, StateAffine
 from myfpo.fpo_core import compute_value_metrics
 from myfpo.modeling import MyfpoPolicy
 
@@ -188,21 +190,26 @@ def test_dropout_adds_no_parameters():
 
 
 def test_the_state_and_the_action_are_treated_separately():
-    """The state gets a LayerNorm. The action gets a learned affine.
+    """The state gets an RMS affine. The action gets a learned affine.
 
     A LayerNorm over the chunk would subtract the chunk's mean, so a chunk of
     all +5 and a chunk of all 0 would reach the critic as the same input.
     """
     m = _member()
-    assert isinstance(m.norm_state, nn.LayerNorm)
+    assert isinstance(m.norm_state, StateAffine)
     assert isinstance(m.norm_action, ActionAffine)
-    assert m.norm_state.normalized_shape == (STEPS * OBS,)
+    assert m.norm_state.weight.shape == (STEPS * OBS,)
+    assert m.norm_state.bias.shape == (STEPS * OBS,)
     assert m.norm_action.weight.shape == (H * ACT,)
     assert m.norm_action.bias.shape == (H * ACT,)
 
 
-def test_the_output_is_invariant_to_a_global_affine_on_the_observation():
-    """The property the state norm buys. False before this change."""
+def test_the_output_is_invariant_to_a_global_scale_on_the_observation():
+    """The property the state norm buys: the state's scale does not move Q.
+
+    The offset does, and that is the point of ``StateAffine``: a LayerNorm
+    subtracted it, so a raised state and the original state were one input.
+    """
     torch.manual_seed(1)
     m = _member().eval()
     obs = torch.randn(4, STEPS, OBS)
@@ -210,7 +217,7 @@ def test_the_output_is_invariant_to_a_global_affine_on_the_observation():
     frac = torch.full((4,), 0.5)
     base = m(obs, act, frac)
     assert torch.allclose(m(2.0 * obs, act, frac), base, atol=1e-5)
-    assert torch.allclose(m(obs + 3.0, act, frac), base, atol=1e-5)
+    assert not torch.allclose(m(obs + 3.0, act, frac), base, atol=1e-5)
 
 
 def test_the_output_is_not_invariant_to_a_global_affine_on_the_action():

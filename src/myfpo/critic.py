@@ -31,6 +31,29 @@ class ActionAffine(nn.Module):
         return x * self.weight + self.bias
 
 
+
+class StateAffine(nn.Module):
+    """A learned per-element affine over the flattened state window, on the RMS.
+
+    It divides by the root mean square but keeps the mean, so a constant offset
+    in the state survives. A ``LayerNorm`` subtracts that offset, and the critic
+    would then read a raised state and the original state as one input.
+
+    The state dict matches ``nn.LayerNorm`` exactly: ``weight`` and ``bias``,
+    the same shapes, the same initial values.
+    """
+
+    def __init__(self, dim: int, eps: float = 1e-5):
+        super().__init__()
+        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(dim))
+        self.bias = nn.Parameter(torch.zeros(dim))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        scale = x.float().pow(2).mean(dim=-1, keepdim=True)
+        scale = scale.add(self.eps).rsqrt().to(x.dtype)
+        return x * scale * self.weight + self.bias
+
 class CriticMember(nn.Module):
     """One Q(s, a_{t:t+h}) head. The network is a concat MLP. It has no FiLM
     conditioning; the executed-chunk fraction is concatenated instead.
@@ -47,7 +70,10 @@ class CriticMember(nn.Module):
     without a mask the only thing distinguishing them is initialisation.
 
     The action input is a learned affine, not a LayerNorm. See
-    :class:`ActionAffine` for why the chunk's offset has to survive.
+    :class:`ActionAffine` for why the chunk's offset has to survive. The state
+    input is :class:`StateAffine`, which keeps the window's mean for the same
+    reason.
+
     """
 
     def __init__(
@@ -94,13 +120,14 @@ class CriticMember(nn.Module):
         self.input_dim = state_dim + action_horizon * action_dim + (
             1 if condition_on_exec_length else 0
         )
-        # Normalise state and action separately. One LayerNorm over the whole
+        # Normalise state and action separately. One norm over the whole
         # concat would couple state dims to action dims, and they are unrelated
-        # quantities. The state norm is skipped when the shared encoder already
-        # produced a normalised vector, so critic_share_encoder keeps meaning
-        # "raw shared-encoder vector".
+        # quantities. The state norm divides by the RMS and keeps the mean, so
+        # the critic still sees how high the state sits. The state norm is
+        # skipped when the shared encoder already produced a normalised vector,
+        # so critic_share_encoder keeps meaning "raw shared-encoder vector".
         if condition_dim is None:
-            self.norm_state = nn.LayerNorm(n_obs_steps * obs_dim)
+            self.norm_state = StateAffine(n_obs_steps * obs_dim)
         # The action gets a learned affine, not a LayerNorm. A LayerNorm over
         # the chunk subtracts the chunk's mean, so a chunk of all +5 and a
         # chunk of all 0 would reach the critic as the same input. The affine

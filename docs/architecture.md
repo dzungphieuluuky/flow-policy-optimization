@@ -134,7 +134,7 @@ Ensemble of 2 `Q(s_t, a_{t:t+h})` heads over the full window. Trunk follows
 | Dropout | 1% after the first `Linear` | TD-MPC2. Every member regresses onto the same scalar target, so initialisation is the only thing separating them. |
 | Activation | `Mish` | TD-MPC2 uses GELU. `Mish` is the swap. |
 | Ensemble | 2 | the repo's default; TD-MPC2 ships 5 (`--myfpo.num_critics 5` restores it) |
-| Output layer | bare `Linear` | no activation or norm on the scalar head |
+| State input | `StateAffine`: RMS over the flattened window, then a learned affine | one norm over the concat would couple state dims to action dims, which are unrelated quantities. A `LayerNorm` also subtracts the window's mean, so a raised state and the original state reached the critic as one input. |
 | Width | `critic_hidden_dim=512` | matches TD-MPC2 |
 | State input | `LayerNorm` over the flattened window | one norm over the concat would couple state dims to action dims, which are unrelated quantities |
 | Action input | learned affine, **not** a norm | a `LayerNorm` over the chunk subtracts the chunk's mean, so a chunk of all +5 and a chunk of all 0 reach the critic as the same input. The critic was blind to a sustained push, and blind to the drifting raw magnitude that `train/raw_action_abs_max` monitors. |
