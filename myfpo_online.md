@@ -96,6 +96,28 @@ wandb
 ```
 
 ```python
+# The scripts import the myfpo package. A fresh clone needs an editable
+# install; requirements-colab.txt above only covers the dependencies.
+import subprocess
+import sys
+
+_install = subprocess.call(["uv", "pip", "install", "-e", ".", "--no-deps"])
+if _install != 0:
+    _install = subprocess.call([sys.executable, "-m", "pip", "install", "-e", ".", "--no-deps"])
+if _install != 0:
+    raise SystemExit("editable install of myfpo failed; check the log above")
+print("myfpo installed editable")
+```
+
+```python
+# Guard: every later cell depends on this import resolving.
+subprocess.run(
+    [sys.executable, "-c", "import myfpo, myfpo.training; print('myfpo import OK')"],
+    check=True,
+)
+```
+
+```python
 _wandb_key = load_secret("WANDB_API_KEY")
 if _wandb_key:
     !wandb login $_wandb_key
