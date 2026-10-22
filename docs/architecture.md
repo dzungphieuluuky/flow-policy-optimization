@@ -230,10 +230,12 @@ baseline cannot be thresholded honestly. Watch it against
 
 `train/value_pred_member_corr` is the mean Pearson correlation between the
 members, over the batch axis. It compares the members' value functions, not
-their values on one state. A value near one means the members agree on every
-state, so the ensemble adds nothing to the `subsampled_min` target. A single
-member, or a member that is constant over the batch, has no correlation to
-measure, so the value is NaN. NaN is how the repo says "unmeasured".
+their values on one state. The correlation is invariant to a shift and to a
+scale, so a member that is the same function with a different offset still
+reads one. A collapse shows as a correlation near one **together with** a gap
+near zero. A single member, or a member that is constant over the batch, has
+no correlation to measure, so the value is NaN. NaN is how the repo says
+"unmeasured".
 
 The metric reads the training forward, so the critic dropout is active. The
 confound was measured: on a critic fit to one shared target, the train-mode

@@ -15,7 +15,7 @@ A fresh clone has no `.venv`. Run `uv sync` before `pytest` or any script. `uv.l
 ## Gates
 
 ```bash
-.venv/bin/python -m pytest -q    # 540 tests, about 10 s
+.venv/bin/python -m pytest -q    # 541 tests, about 10 s
 uv run ruff check .              # dead code and unused names
 ```
 

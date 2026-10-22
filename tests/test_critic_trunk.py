@@ -365,6 +365,22 @@ def test_the_member_correlation_flags_a_collapsed_ensemble():
     assert _member_corr(collapsed) > _member_corr(independent)
 
 
+def test_the_correlation_and_the_gap_read_a_collapse_together():
+    """The correlation is invariant to a shift and a scale. The gap is not.
+
+    So a member that is the same function with an offset reads correlation one
+    and a nonzero gap. A collapse is correlation one and a gap of zero.
+    """
+    n = 64
+    base = torch.randn(n)
+    offset = torch.stack([base, base + 0.5])
+    identical = base.unsqueeze(0).expand(2, n).clone()
+    assert _member_corr(offset) == pytest.approx(1.0)
+    assert _member_gap(offset) > 0.0
+    assert _member_corr(identical) == pytest.approx(1.0)
+    assert _member_gap(identical) == pytest.approx(0.0)
+
+
 def test_one_member_has_no_pair_so_the_correlation_is_nan():
     """NaN is how the repo says "unmeasured"."""
     out = compute_value_metrics(
@@ -397,3 +413,13 @@ def _member_corr(pred: torch.Tensor) -> float:
         value_loss_per_chunk=torch.zeros(pred.shape[1]),
     )
     return float(out["value_pred_member_corr"])
+
+
+def _member_gap(pred: torch.Tensor) -> float:
+    out = compute_value_metrics(
+        raw_value_pred=pred,
+        raw_returns_flat=torch.zeros(pred.shape[1]),
+        policy_per_chunk=torch.zeros(pred.shape[1]),
+        value_loss_per_chunk=torch.zeros(pred.shape[1]),
+    )
+    return float(out["value_pred_member_gap"])
