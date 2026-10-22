@@ -134,7 +134,7 @@ magnitude regardless of observation scale, which matters because
 
 ---
 
-## Critic — `src/myfpo/critic.py`
+| State input | `StateAffine` on the raw window, then the actor's window trunk (`StateEncoder`) | one norm over the concat would couple state dims to action dims, which are unrelated quantities. A `LayerNorm` also subtracts the window's mean, so a raised state and the original state reached the critic as one input. The trunk replaces the flat `T * obs_dim` first layer. |
 
 Ensemble of 2 `Q(s_t, a_{t:t+h})` heads over the full window. Trunk follows
 **TD-MPC2** (`arXiv:2310.16828`) throughout.
@@ -144,9 +144,12 @@ Ensemble of 2 `Q(s_t, a_{t:t+h})` heads over the full window. Trunk follows
 | Hidden layers | `Linear → LayerNorm → Mish` | TD-MPC2. Its stated result: scaling an *unnormalised* critic does not improve performance, while adding LayerNorm does. The norm is the load-bearing part. |
 | Dropout | 1% after the first `Linear` | TD-MPC2. Every member regresses onto the same scalar target, so initialisation is the only thing separating them. |
 | Activation | `Mish` | TD-MPC2 uses GELU. `Mish` is the swap. |
-| Ensemble | 2 | the repo's default; TD-MPC2 ships 5 (`--myfpo.num_critics 5` restores it) |
-| State input | `StateAffine`: RMS over the flattened window, then a learned affine | one norm over the concat would couple state dims to action dims, which are unrelated quantities. A `LayerNorm` also subtracts the window's mean, so a raised state and the original state reached the critic as one input. |
-| Width | `critic_hidden_dim=512` | matches TD-MPC2 |
+Defaults for Hopper (`obs_dim=11`, `action_dim=3`): **858k parameters**, 2
+members of 429k. Humanoid (`obs_dim=348`) is **1.08M**, against 6.40M before the
+window trunk. The figure follows `obs_dim` plus the trunk's fixed 66k attention
+layer, not `n_obs_steps * obs_dim`. The actor is 1.24M, so the critic is 0.69x
+the actor for Hopper and 0.87x for Humanoid. Before the trunk the Humanoid
+figure was 5.14x.
 
 | Action input | learned affine, **not** a norm | a `LayerNorm` over the chunk subtracts the chunk's mean, so a chunk of all +5 and a chunk of all 0 reach the critic as the same input. The critic was blind to a sustained push, and blind to the drifting raw magnitude that `train/raw_action_abs_max` monitors. |
 

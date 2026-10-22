@@ -84,9 +84,10 @@ def test_the_layernorms_are_on_the_hidden_width(num_layers):
             assert m.normalized_shape == (HIDDEN,)
 
 
-def test_the_first_linear_takes_the_concatenated_input():
+def test_the_first_linear_takes_the_trunk_output_and_the_chunk():
+    """The window reaches it through the trunk, so its width is the trunk's."""
     first = _member(2).mlp[0]
-    assert first.in_features == STEPS * OBS + H * ACT + 1
+    assert first.in_features == HIDDEN + H * ACT + 1
 
 
 def test_the_default_ensemble_is_two():
@@ -267,16 +268,20 @@ def test_the_gradient_reaches_the_action_scale():
     assert m.norm_action.bias.grad.abs().sum() > 0
 
 
-def test_the_input_treatment_adds_exactly_their_two_widths():
-    with_norms = sum(p.numel() for p in _member().parameters())
-    trunk = sum(p.numel() for p in _member().mlp.parameters())
-    assert with_norms == trunk + 2 * (STEPS * OBS) + 2 * (H * ACT)
+def test_the_input_parts_add_exactly_their_own_widths():
+    """State affine + window trunk + action affine, beyond the MLP trunk."""
+    m = _member()
+    with_parts = sum(p.numel() for p in m.parameters())
+    mlp = sum(p.numel() for p in m.mlp.parameters())
+    encoder = sum(p.numel() for p in m.state_encoder.parameters())
+    assert with_parts == mlp + encoder + 2 * (STEPS * OBS) + 2 * (H * ACT)
 
 
-def test_the_shared_encoder_branch_skips_the_state_norm():
+def test_the_shared_encoder_branch_skips_the_state_trunk():
     torch.manual_seed(0)
     m = CriticMember(OBS, ACT, HIDDEN, 1, H, condition_dim=HIDDEN)
-    assert not hasattr(m, "norm_state")
+    assert m.norm_state is None
+    assert m.state_encoder is None
     assert isinstance(m.norm_action, ActionAffine)
     assert m.input_dim == HIDDEN + H * ACT + 1
 

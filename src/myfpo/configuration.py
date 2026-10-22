@@ -121,8 +121,7 @@ class MyfpoConfig(PreTrainedConfig):
     # How often the policy measures the per-position gradient norms. 0 = never.
     temporal_probe_every: int = 0
 
-    # The temporal filters in the critic. 0 = off.
-    critic_obs_temporal_kernel: int = 0
+    # The temporal filter on the action chunk in the critic. 0 = off.
     critic_chunk_temporal_kernel: int = 0
     critic_chunk_temporal_causal: bool = False
 
@@ -148,14 +147,14 @@ class MyfpoConfig(PreTrainedConfig):
             raise ValueError(
                 f"temporal_probe_every={self.temporal_probe_every} must be >= 0"
             )
-        for name, value in (
-            ("critic_obs_temporal_kernel", self.critic_obs_temporal_kernel),
-            ("critic_chunk_temporal_kernel", self.critic_chunk_temporal_kernel),
+        if self.critic_chunk_temporal_kernel < 0 or (
+            self.critic_chunk_temporal_kernel
+            and self.critic_chunk_temporal_kernel % 2 == 0
         ):
-            if value < 0 or (value and value % 2 == 0):
-                raise ValueError(
-                    f"{name}={value} must be 0 or a positive odd number"
-                )
+            raise ValueError(
+                "critic_chunk_temporal_kernel="
+                f"{self.critic_chunk_temporal_kernel} must be 0 or a positive odd number"
+            )
         if self.n_obs_steps < 1:
             raise ValueError(f"n_obs_steps={self.n_obs_steps} must be >= 1")
         if self.action_horizon < 1:

@@ -6,6 +6,7 @@ import torch
 from torch import nn
 
 from myfpo.layers import TemporalConv
+from myfpo.processor import StateEncoder
 
 
 class ActionAffine(nn.Module):
@@ -88,7 +89,7 @@ class CriticMember(nn.Module):
         num_layers: int = 2,
         condition_dim: int | None = None,
         dropout: float = 0.0,
-        state_temporal_kernel: int = 0,
+        state_hidden: int | None = None,
         chunk_temporal_kernel: int = 0,
         chunk_temporal_causal: bool = False,
     ):
@@ -110,7 +111,9 @@ class CriticMember(nn.Module):
         self.condition_on_exec_length = condition_on_exec_length
         self.condition_dim = condition_dim
         state_dim = (
-            condition_dim if condition_dim is not None else n_obs_steps * obs_dim
+            condition_dim
+            if condition_dim is not None
+            else (state_hidden if state_hidden is not None else hidden_dim)
         )
         if condition_dim is not None and n_obs_steps != 1:
             raise ValueError(
@@ -123,30 +126,35 @@ class CriticMember(nn.Module):
         # Normalise state and action separately. One norm over the whole
         # concat would couple state dims to action dims, and they are unrelated
         # quantities. The state norm divides by the RMS and keeps the mean, so
-        # the critic still sees how high the state sits. The state norm is
-        # skipped when the shared encoder already produced a normalised vector,
-        # so critic_share_encoder keeps meaning "raw shared-encoder vector".
-        if condition_dim is None:
-            self.norm_state = StateAffine(n_obs_steps * obs_dim)
+        # the critic still sees how high the state sits. It also puts the raw
+        # window on a fixed scale before the first linear. The norm is skipped
+        # when the shared encoder already produced a normalised vector, so
+        # critic_share_encoder keeps meaning "raw shared-encoder vector".
+        self.norm_state = (
+            StateAffine(n_obs_steps * obs_dim) if condition_dim is None else None
+        )
+        # The window trunk is the actor's: one shared per-frame projection and
+        # one causal attention pass, then the last frame. The old first layer
+        # read the flat window, 5568 -> 512 on Humanoid, and that one layer was
+        # 5.1M of the 6.4M critic. Now the first layer reads state_hidden.
+        self.state_encoder = (
+            StateEncoder(obs_dim, state_dim, n_obs_steps)
+            if condition_dim is None
+            else None
+        )
         # The action gets a learned affine, not a LayerNorm. A LayerNorm over
         # the chunk subtracts the chunk's mean, so a chunk of all +5 and a
         # chunk of all 0 would reach the critic as the same input. The affine
         # keeps the name and the state dict of the LayerNorm it replaces.
         self.norm_action = ActionAffine(action_horizon * action_dim)
-        # The filters sit before the flatten. They keep the width, so the
-        # first layer sees the same input size as before. The state filter
-        # needs the frames, so it only exists when the critic reads the
-        # window and not the shared encoder's vector.
-        self.frame_conv = (
-            TemporalConv(obs_dim, state_temporal_kernel)
-            if state_temporal_kernel and condition_dim is None
-            else None
-        )
+        # The chunk filter keeps the frame order and the width, so the first
+        # layer sees the same action size as before.
         self.chunk_conv = (
             TemporalConv(action_dim, chunk_temporal_kernel, causal=chunk_temporal_causal)
             if chunk_temporal_kernel
             else None
         )
+
         in_dim = self.input_dim
         layers: list[nn.Module] = []
         for i in range(num_layers):
@@ -167,18 +175,15 @@ class CriticMember(nn.Module):
         action_dim]`` and the scalar exec length. Returns ``[B]``.
         """
         if self.condition_dim is None:
-            frames = states.transpose(1, 2)
-            if self.frame_conv is not None:
-                frames = self.frame_conv(frames)
-            state_part = frames.transpose(1, 2).flatten(1)
+            window = self.norm_state(states.flatten(1))
+            state_part = self.state_encoder(window.view(states.shape))
         else:
             state_part = states
         chunk = actions.transpose(1, 2)
         if self.chunk_conv is not None:
             chunk = self.chunk_conv(chunk)
         parts = [state_part, chunk.transpose(1, 2).flatten(1)]
-        if self.condition_dim is None:
-            parts[0] = self.norm_state(parts[0])
+        parts[1] = self.norm_action(parts[1])
         parts[1] = self.norm_action(parts[1])
         if self.condition_on_exec_length:
             if exec_length_frac is None:
@@ -213,7 +218,7 @@ class Critic(nn.Module):
         num_layers: int = 2,
         condition_dim: int | None = None,
         dropout: float = 0.0,
-        state_temporal_kernel: int = 0,
+        state_hidden: int | None = None,
         chunk_temporal_kernel: int = 0,
         chunk_temporal_causal: bool = False,
     ):
@@ -252,7 +257,7 @@ class Critic(nn.Module):
                     num_layers=num_layers,
                     condition_dim=condition_dim,
                     dropout=dropout,
-                    state_temporal_kernel=state_temporal_kernel,
+                    state_hidden=state_hidden,
                     chunk_temporal_kernel=chunk_temporal_kernel,
                     chunk_temporal_causal=chunk_temporal_causal,
                 )

@@ -157,7 +157,7 @@ class MyfpoPolicy(PreTrainedPolicy):
             num_layers=config.critic_num_layers,
             condition_dim=config.hidden_dim if config.critic_share_encoder else None,
             dropout=config.critic_dropout,
-            state_temporal_kernel=config.critic_obs_temporal_kernel,
+            state_hidden=config.hidden_dim,
             chunk_temporal_kernel=config.critic_chunk_temporal_kernel,
             chunk_temporal_causal=config.critic_chunk_temporal_causal,
         )
