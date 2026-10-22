@@ -479,6 +479,25 @@ def compute_value_metrics(
     # zero means the ensemble has collapsed onto one function. Logged, not
     # gated: there is no baseline to pick a threshold against.
     member_gap = raw_value_pred.amax(dim=0) - raw_value_pred.amin(dim=0)
+    # The correlation over the batch axis compares the members' value
+    # functions, not their values on one state. A value near one means the
+    # members agree on every state and the ensemble adds nothing. A single
+    # member has no pair, so the value is NaN. A member that is constant over
+    # the batch has no correlation to measure, so the value is NaN too. NaN
+    # is how the repo says "unmeasured".
+    if raw_value_pred.shape[0] < 2:
+        member_corr = torch.tensor(float("nan"), dtype=torch.float32)
+    else:
+        centred = raw_value_pred - raw_value_pred.mean(dim=1, keepdim=True)
+        norms = centred.norm(dim=1, keepdim=True)
+        if bool((norms < 1e-12).any()):
+            member_corr = torch.tensor(float("nan"), dtype=torch.float32)
+        else:
+            unit = centred / norms
+            corr = unit @ unit.t()
+            n_members = raw_value_pred.shape[0]
+            off_diagonal = corr[~torch.eye(n_members, dtype=torch.bool)]
+            member_corr = off_diagonal.mean()
     return {
         "policy_loss": policy_per_chunk.mean(),
         "value_loss": value_loss_per_chunk.mean(),
@@ -493,6 +512,7 @@ def compute_value_metrics(
         "value_pred_std_member_mean": raw_value_pred.std(dim=1, correction=0).mean(),
         "value_pred_member_gap": member_gap.mean(),
         "value_pred_member_gap_p95": torch.quantile(member_gap.float(), 0.95),
+        "value_pred_member_corr": member_corr,
     }
 
 

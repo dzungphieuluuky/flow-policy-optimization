@@ -15,6 +15,7 @@ the mean, for the same reason. See ``myfpo.critic.ActionAffine`` and
 from __future__ import annotations
 
 import dataclasses
+import math
 
 import pytest
 import torch
@@ -351,3 +352,48 @@ def _gap_p95(pred: torch.Tensor) -> float:
         value_loss_per_chunk=torch.zeros(pred.shape[1]),
     )
     return float(out["value_pred_member_gap_p95"])
+
+
+def test_the_member_correlation_flags_a_collapsed_ensemble():
+    """A correlation near one means the members agree on every state."""
+    n = 64
+    base = torch.randn(n)
+    collapsed = base.unsqueeze(0).expand(5, n).clone()
+    independent = torch.randn(5, n)
+    assert _member_corr(collapsed) == pytest.approx(1.0)
+    assert _member_corr(independent) < 0.5
+    assert _member_corr(collapsed) > _member_corr(independent)
+
+
+def test_one_member_has_no_pair_so_the_correlation_is_nan():
+    """NaN is how the repo says "unmeasured"."""
+    out = compute_value_metrics(
+        raw_value_pred=torch.zeros(1, 8),
+        raw_returns_flat=torch.zeros(8),
+        policy_per_chunk=torch.zeros(8),
+        value_loss_per_chunk=torch.zeros(8),
+    )
+    assert math.isnan(float(out["value_pred_member_corr"]))
+
+
+def test_a_constant_member_has_no_correlation_to_measure():
+    """A member that gives the same value on every state has no spread."""
+    pred = torch.randn(2, 8)
+    pred[1] = 3.0
+    out = compute_value_metrics(
+        raw_value_pred=pred,
+        raw_returns_flat=torch.zeros(8),
+        policy_per_chunk=torch.zeros(8),
+        value_loss_per_chunk=torch.zeros(8),
+    )
+    assert math.isnan(float(out["value_pred_member_corr"]))
+
+
+def _member_corr(pred: torch.Tensor) -> float:
+    out = compute_value_metrics(
+        raw_value_pred=pred,
+        raw_returns_flat=torch.zeros(pred.shape[1]),
+        policy_per_chunk=torch.zeros(pred.shape[1]),
+        value_loss_per_chunk=torch.zeros(pred.shape[1]),
+    )
+    return float(out["value_pred_member_corr"])

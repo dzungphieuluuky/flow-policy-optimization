@@ -15,7 +15,7 @@ A fresh clone has no `.venv`. Run `uv sync` before `pytest` or any script. `uv.l
 ## Gates
 
 ```bash
-.venv/bin/python -m pytest -q    # 518 tests, about 10 s
+.venv/bin/python -m pytest -q    # 540 tests, about 10 s
 uv run ruff check .              # dead code and unused names
 ```
 
@@ -74,7 +74,7 @@ One file holds both. The top of `src/myfpo/configuration.py` is the dataclass; t
 ## Layout
 
 ```
-src/myfpo/          the package, 13 modules. The leaves are layers,
+src/myfpo/          the package, 14 modules. The leaves are layers,
                      configuration, critic, evaluator and tracking.
                      processor builds on layers (the obs encoder and the
                      running normaliser live there). flow builds on layers.
@@ -88,7 +88,7 @@ src/myfpo/          the package, 13 modules. The leaves are layers,
                      configuration, evaluator, fpo_core, modeling,
                      processor, runner, tracking and layers.
 scripts/            train.py is the entry. pins/ holds the behaviour gates.
-tests/              50 files. test_guard_messages.py pins 75 guard
+tests/              51 files. test_guard_messages.py pins 75 guard
                      messages. test_ratio_axes.py pins the paper configs.
 docs/               architecture.md explains the networks and why.
                      ablation_reference.md lists ready-made ablations.
@@ -167,6 +167,7 @@ The test helpers and the script helpers keep their underscore. They are local to
 
 - No statistical significance test for the metrics. The naming and the NaN checks only.
 - No chunk-boundary mitigation. `rollout_seam_jerk` and `rollout_jerk` are measured, not fixed.
+- The critic ensemble is 2 members with 1% dropout on the first layer. `train/value_pred_member_corr` measures whether the members agree. The measurement is 0.94 on Hopper after 1000 steps. The trend over a full run is not known.
 - The approximate ratio `ρ̂ = exp(L_old - L_new)` is a biased proxy. The bias is not quantified in a test.
 - The raw action has no clip. `train/raw_action_abs_max` is the monitor. A drifting raw magnitude makes `cfm_clamp` bind and pins the ratio at 1.
 - No `torch.utils.checkpoint` in `flow.py` or `rollout.py`.
