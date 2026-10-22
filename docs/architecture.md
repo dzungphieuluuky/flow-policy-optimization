@@ -109,7 +109,18 @@ requires a retrain. Revisit if depth and width both grow.
 
 ## State encoder — `src/myfpo/processor.py` (the absorbed `encoder.py` section)
 
-`CondMLP(n_obs_steps * obs_dim → hidden → hidden)`, then **RMSNorm**.
+One shared `CondMLP(obs_dim → hidden → hidden)` runs on every frame, one causal
+`SelfAttention` layer mixes the window, and the last frame is read out through
+**RMSNorm**.
+
+The flat `CondMLP(n_obs_steps * obs_dim → hidden → hidden)` was the capacity
+sink. On Humanoid (348 obs, 16 frames) it held 713k of the encoder's 729k, 59%
+of the whole actor. The per-frame projection makes the width follow `obs_dim`:
+Humanoid is now 127k. Hopper pays more, 39k → 84k, because the attention layer
+is 66k at any window.
+
+Attention keeps the frame order, which a pool would drop. It is causal, so
+frame `i` reads the prefix only, and the readout is the last frame.
 
 The norm is the point. This was the only unnormalised path in the whole stack:
 every observation reaches the actor through it and then through an unnormalised
@@ -136,7 +147,7 @@ Ensemble of 2 `Q(s_t, a_{t:t+h})` heads over the full window. Trunk follows
 | Ensemble | 2 | the repo's default; TD-MPC2 ships 5 (`--myfpo.num_critics 5` restores it) |
 | State input | `StateAffine`: RMS over the flattened window, then a learned affine | one norm over the concat would couple state dims to action dims, which are unrelated quantities. A `LayerNorm` also subtracts the window's mean, so a raised state and the original state reached the critic as one input. |
 | Width | `critic_hidden_dim=512` | matches TD-MPC2 |
-| State input | `LayerNorm` over the flattened window | one norm over the concat would couple state dims to action dims, which are unrelated quantities |
+
 | Action input | learned affine, **not** a norm | a `LayerNorm` over the chunk subtracts the chunk's mean, so a chunk of all +5 and a chunk of all 0 reach the critic as the same input. The critic was blind to a sustained push, and blind to the drifting raw magnitude that `train/raw_action_abs_max` monitors. |
 
 Two places depart from the reference implementation, not from the paper.

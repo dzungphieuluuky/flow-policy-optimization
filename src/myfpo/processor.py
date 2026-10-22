@@ -6,7 +6,7 @@ from __future__ import annotations
 import warnings
 import torch
 from torch import nn
-from myfpo.layers import MIN_WIDTH, CondMLP, TemporalConv, build_rms_norm
+from myfpo.layers import MIN_WIDTH, CondMLP, SelfAttention, build_rms_norm
 from lerobot.configs import PipelineFeatureType, PolicyFeature
 from lerobot.processor.pipeline import ProcessorStep
 from lerobot.utils.constants import ACTION, OBS_STATE
@@ -74,12 +74,20 @@ class RunningMeanStd(nn.Module):
         return norm.clamp(-self.clip, self.clip).to(x.dtype)
 
 class StateEncoder(nn.Module):
-    """Flatten the window. Pass it to one SiLU MLP. Normalise. Return it.
+    """Project each frame, mix the window with one causal attention pass, read
+    the last frame. Normalise. Return it.
 
-    The norm is the point. This was the only unnormalised path in the stack:
-    every observation reaches the actor through here and then through an
-    unnormalised adaLN projection. RMSNorm over LayerNorm, because it does not
-    subtract the mean and it matches the actor's norm1/norm2/norm_out.
+    The projection is shared over the frames, so the first width follows
+    ``obs_dim`` and not ``T * obs_dim``. The old flat dense was the capacity
+    sink: on Humanoid (348 obs, 16 frames) it held 713k of the encoder's 729k,
+    which was 59% of the actor. Attention keeps the frame order, which a pool
+    would drop, and the causal mask means frame ``i`` reads the prefix only.
+
+    The norm is the point of the path. This was the only unnormalised
+    conditioning path in the stack: every observation reaches the actor through
+    here and then through an unnormalised adaLN projection. RMSNorm over
+    LayerNorm, because it does not subtract the mean and it matches the actor's
+    norm1/norm2/norm_out.
     """
 
     def __init__(
@@ -87,7 +95,7 @@ class StateEncoder(nn.Module):
         obs_dim: int,
         hidden_dim: int,
         max_obs_steps: int,
-        temporal_kernel: int = 0,
+        n_heads: int = 2,
     ):
         super().__init__()
         if hidden_dim < MIN_WIDTH:
@@ -96,13 +104,11 @@ class StateEncoder(nn.Module):
             raise ValueError(f"max_obs_steps must be >= 1, got {max_obs_steps}")
         self.obs_dim = obs_dim
         self.max_obs_steps = max_obs_steps
-        self.net = CondMLP(max_obs_steps * obs_dim, hidden_dim, hidden_dim)
+        self.n_heads = n_heads
+        self.frame = CondMLP(obs_dim, hidden_dim, hidden_dim)
+        self.attn_norm = build_rms_norm(hidden_dim)
+        self.attn = SelfAttention(hidden_dim, n_heads)
         self.out_norm = build_rms_norm(hidden_dim)
-        # The filter is on the frame axis. It keeps the width, so the flatten
-        # below and every shape after it stay the same.
-        self.frame_conv = (
-            TemporalConv(obs_dim, temporal_kernel) if temporal_kernel else None
-        )
 
     def forward(self, states: torch.Tensor) -> torch.Tensor:
         """Accept the window ``[B, T, obs]``. Return one normalised conditioning
@@ -112,10 +118,9 @@ class StateEncoder(nn.Module):
             raise ValueError(f"states must have shape [B, {self.max_obs_steps}, {self.obs_dim}], got {tuple(states.shape)}")
         if states.shape[1] != self.max_obs_steps:
             raise ValueError(f"states has {states.shape[1]} frames, built for max_obs_steps={self.max_obs_steps}")
-        frames = states.transpose(1, 2)
-        if self.frame_conv is not None:
-            frames = self.frame_conv(frames)
-        return self.out_norm(self.net(frames.transpose(1, 2).flatten(1)))
+        h = self.frame(states)
+        h = h + self.attn(self.attn_norm(h))
+        return self.out_norm(h[:, -1])
 
 
 def env_squash_terms(

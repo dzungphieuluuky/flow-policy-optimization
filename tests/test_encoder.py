@@ -1,7 +1,9 @@
-"""The state encoder normalises its output.
+"""The state encoder projects each frame, mixes the window, and normalises.
 
-It was the only unnormalised path in the stack: every observation reaches the
-actor through here and then through an unnormalised adaLN projection.
+It was the only unnormalised path in the stack: every observation reached the
+actor through here and then through an unnormalised adaLN projection. It was
+also the capacity sink: one dense over ``T * obs_dim`` held 713k of the
+encoder's 729k on Humanoid.
 """
 
 from __future__ import annotations
@@ -23,6 +25,12 @@ def _encoder(**kw) -> StateEncoder:
 def _window(seed: int = 0, batch: int = 4) -> torch.Tensor:
     torch.manual_seed(seed)
     return torch.randn(batch, STEPS, OBS)
+
+
+def _mixed(enc: StateEncoder, x: torch.Tensor) -> torch.Tensor:
+    """The per-frame vector after the attention pass, before the readout."""
+    h = enc.frame(x)
+    return h + enc.attn(enc.attn_norm(h))
 
 
 def test_the_output_is_normalised():
@@ -53,42 +61,67 @@ def test_the_norm_carries_an_affine_scale():
     assert _encoder().out_norm.normalized_shape == (HIDDEN,)
 
 
-def test_the_norm_adds_exactly_one_hidden_width_of_parameters():
-    plain = sum(p.numel() for p in _encoder().net.parameters())
-    assert sum(p.numel() for p in _encoder().parameters()) == plain + HIDDEN
-
-
-def test_the_norm_is_applied_after_the_mlp():
-    """Order matters: normalising the flattened window would discard the MLP."""
+def test_the_last_mixed_frame_is_the_output():
+    """The readout is one frame, so the width does not grow with the window."""
     enc = _encoder()
     x = _window()
-    assert torch.allclose(enc(x), enc.out_norm(enc.net(x.flatten(1))), atol=0.0)
-
-
-def test_the_filter_is_off_by_default():
-    assert _encoder().frame_conv is None
-    assert _encoder(temporal_kernel=3).frame_conv is not None
-
-
-def test_the_filter_keeps_the_shape_and_the_width():
-    enc = _encoder(temporal_kernel=3)
-    assert enc(_window(batch=7)).shape == (7, HIDDEN)
-    assert enc.net.fc1.in_features == STEPS * OBS
-
-
-def test_the_filter_sits_before_the_flatten():
-    enc = _encoder(temporal_kernel=3)
-    x = _window()
-    frames = enc.frame_conv(x.transpose(1, 2))
-    want = enc.out_norm(enc.net(frames.transpose(1, 2).flatten(1)))
+    want = enc.out_norm(_mixed(enc, x)[:, -1])
     assert torch.allclose(enc(x), want, atol=0.0)
 
 
-def test_the_filter_changes_the_conditioning():
-    enc = _encoder(temporal_kernel=3)
+def test_the_projection_width_follows_obs_dim_not_the_window():
+    """The old flat dense read ``T * obs_dim``. This is the regression."""
+    enc = _encoder()
+    assert enc.frame.fc1.in_features == OBS
+    assert enc.frame.fc1.in_features != STEPS * OBS
+
+
+def test_the_projection_is_shared_over_the_frames():
+    """One module sees every frame, so the cost does not grow with T."""
+    enc = _encoder()
+    torch.manual_seed(3)
+    v = torch.randn(2, OBS)
+    same = v[:, None, :].expand(-1, STEPS, -1)
+    h = enc.frame(same)
+    torch.testing.assert_close(h, enc.frame(v[:, None, :]).expand(-1, STEPS, -1))
+
+
+def test_every_frame_changes_the_conditioning():
+    enc = _encoder()
     x = _window()
-    plain = enc.out_norm(enc.net(x.flatten(1)))
-    assert not torch.allclose(enc(x), plain, atol=1e-6)
+    base = enc(x)
+    for frame in (0, STEPS - 1):
+        moved = x.clone()
+        moved[:, frame] += 1.0
+        assert not torch.allclose(base, enc(moved), atol=1e-6), f"frame {frame}"
+
+
+def test_the_frame_order_changes_the_conditioning():
+    """A pool would pass this window and its roll as one input."""
+    enc = _encoder()
+    x = _window()
+    assert not torch.allclose(enc(x), enc(torch.roll(x, 1, dims=1)), atol=1e-6)
+
+
+def test_attention_is_causal():
+    """Frame 0 must not read the later frames. The last frame reads them all."""
+    enc = _encoder()
+    x = _window()
+    moved = x.clone()
+    moved[:, 5] += 1.0
+    a, b = _mixed(enc, x), _mixed(enc, moved)
+    torch.testing.assert_close(a[:, 0], b[:, 0])
+    assert not torch.allclose(a[:, -1], b[:, -1], atol=1e-6)
+
+
+def test_the_capacity_follows_obs_dim():
+    """Exact count for Humanoid (348 obs, 16 frames, 128 wide).
+
+    The old encoder was 729_472 here. The per-frame projection is 61_184 and
+    the attention layer is 66_048, which is the whole cost at any window.
+    """
+    enc = StateEncoder(348, 128, 16)
+    assert sum(p.numel() for p in enc.parameters()) == 127_488
 
 
 def test_the_bad_shapes_still_raise():

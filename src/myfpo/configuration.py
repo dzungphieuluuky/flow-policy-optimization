@@ -121,9 +121,6 @@ class MyfpoConfig(PreTrainedConfig):
     # How often the policy measures the per-position gradient norms. 0 = never.
     temporal_probe_every: int = 0
 
-    # The temporal filter on the obs window in the actor encoder. 0 = off.
-    obs_temporal_kernel: int = 0
-
     # The temporal filters in the critic. 0 = off.
     critic_obs_temporal_kernel: int = 0
     critic_chunk_temporal_kernel: int = 0
@@ -152,7 +149,6 @@ class MyfpoConfig(PreTrainedConfig):
                 f"temporal_probe_every={self.temporal_probe_every} must be >= 0"
             )
         for name, value in (
-            ("obs_temporal_kernel", self.obs_temporal_kernel),
             ("critic_obs_temporal_kernel", self.critic_obs_temporal_kernel),
             ("critic_chunk_temporal_kernel", self.critic_chunk_temporal_kernel),
         ):

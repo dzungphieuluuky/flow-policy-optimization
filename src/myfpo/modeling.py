@@ -140,7 +140,6 @@ class MyfpoPolicy(PreTrainedPolicy):
             obs_dim,
             config.hidden_dim,
             config.n_obs_steps,
-            config.obs_temporal_kernel,
         )
         critic_width = (
             config.critic_hidden_dim
