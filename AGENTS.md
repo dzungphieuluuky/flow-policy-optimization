@@ -118,7 +118,7 @@ No cycles, including the deferred imports. `docs/architecture.md` has the layer 
 
 **The critic ensemble default is 2, not 5.** TD-MPC2 ships 5. `--myfpo.num_critics 5` restores the paper width. The docs follow the code.
 
-**Storage dtype follows the GPU model.** `utils.resolve_storage_dtype` returns bf16 on an RTX PRO 1000 Blackwell and fp32 elsewhere. The same code then gives different numbers on different machines. This is a known hazard. It is not fixed.
+**Storage dtype follows the GPU model.** `layers.resolve_storage_dtype` returns bf16 on an RTX PRO 1000 Blackwell and fp32 elsewhere. The same code then gives different numbers on different machines. This is a known hazard. It is not fixed.
 
 **The env reset happens once per run.** `RolloutBuffer.carry` holds the obs windows and the awaiting flags between rollouts, and `collect_chunks` passes it back. An episode spans rollout boundaries. Do not call `envs.reset` inside `collect_chunks_vec` when `carry` is not `None`. A carried `awaiting` env gets its reset observation through the vec env autoreset step.
 
@@ -153,7 +153,7 @@ The test helpers and the script helpers keep their underscore. They are local to
 
 ## Adding a guard
 
-`tests/test_guard_messages.py` has a table of 73 cases and a count. Add the case, then update `EXPECTED_CASES`. The test fails if the count moves without a deliberate change.
+`tests/test_guard_messages.py` has a table of 75 cases and a count. Add the case, then update `EXPECTED_CASES`. The test fails if the count moves without a deliberate change.
 
 ## The notebook pair
 
