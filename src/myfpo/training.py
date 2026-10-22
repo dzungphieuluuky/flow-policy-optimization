@@ -122,8 +122,6 @@ def sample_minibatch(
     return out
 
 
-OBS_WARMUP_STEPS = 128
-
 
 def apply_lr_schedule(optimizer, step_count: int) -> None:
     """Apply the linear warmup, starting from the bases."""
@@ -147,24 +145,6 @@ def split_grad_params(policy) -> dict[str, list[torch.nn.Parameter]]:
             ("critic", policy.get_critic_optim_params()),
         )
     }
-
-
-def warm_observation_stats(policy, env, *, obs_dim: int, seed: int) -> int:
-    """Fold random-policy frames into the running obs stats."""
-    env.action_space.seed(seed)
-    obs, _ = env.reset()
-    frames = []
-    for _ in range(OBS_WARMUP_STEPS):
-        obs, _, terminated, truncated, _ = env.step(
-            np.asarray(env.action_space.sample(), dtype=np.float32)
-        )
-        frames.append(np.asarray(obs, dtype=np.float32).reshape(-1, obs_dim))
-        if bool(np.any(terminated)) or bool(np.any(truncated)):
-            obs, _ = env.reset()
-    stacked = np.concatenate(frames, axis=0)
-    policy.update_observation_stats(torch.from_numpy(stacked))
-    env.reset()
-    return int(stacked.shape[0])
 
 
 def executed_chunk(
@@ -823,15 +803,6 @@ def setup_run(
         resume_from_checkpoint,
     )
 
-    warmed = warm_observation_stats(
-        policy,
-        train_env,
-        obs_dim=obs_dim,
-        seed=seed,
-    )
-    print(
-        f"obs normalizer warmed on {warmed} frames", file=sys.stderr
-    )
     print(
         f"myfpo policy: actor_depth={cfg.dit_depth} hidden={cfg.hidden_dim} "
         f"params={sum(p.numel() for p in policy.parameters()):,}",
