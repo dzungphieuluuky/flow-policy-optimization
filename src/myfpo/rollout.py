@@ -24,7 +24,13 @@ from myfpo.layers import (
     to_device_async,
 )
 
-__all__ = ["RolloutBuffer", "RolloutBuffers", "collect_chunks_vec", "run_rollout"]
+__all__ = [
+    "EnvCarry",
+    "RolloutBuffer",
+    "RolloutBuffers",
+    "collect_chunks_vec",
+    "run_rollout",
+]
 
 # ---- from gae.py ----
 @torch.no_grad()
@@ -223,7 +229,8 @@ class RolloutBuffer:
         self.chunk_env_id = self.zeros_for((chunk_capacity,), torch.int16)
         self.n_chunks = 0
         self.n_steps = 0
-
+        # The env-side state one rollout hands to the next. reset() keeps it.
+        self.carry: EnvCarry | None = None
     PIN_MIN_BYTES = 1 << 20
 
 
@@ -425,8 +432,21 @@ def make_state(
     remaining: int,
 ) -> CollectState:
     """The state the collection loop starts with."""
-    windows = torch.zeros(n, n_obs_steps, obs_dim, dtype=OBS_DTYPE)
-    windows.copy_(obs0[:, None, :].expand_as(windows))
+    if obs0.dim() == 3:
+        if tuple(obs0.shape) != (n, n_obs_steps, obs_dim):
+            raise ValueError(
+                f"obs0 window shape {tuple(obs0.shape)} != "
+                f"{(n, n_obs_steps, obs_dim)}"
+            )
+        windows = obs0.clone()
+    elif obs0.dim() == 2:
+        windows = torch.zeros(n, n_obs_steps, obs_dim, dtype=OBS_DTYPE)
+        windows.copy_(obs0[:, None, :].expand_as(windows))
+    else:
+        raise ValueError(
+            "obs0 must have shape [n, obs_dim] or [n, n_obs_steps, obs_dim], "
+            f"got {tuple(obs0.shape)}"
+        )
     env_rows = torch.arange(n)
     return CollectState(
         windows=windows,
@@ -558,8 +578,15 @@ def collect_chunks_vec(
     seed: int | None = None,
     on_error_flush: Callable[[], None] | None = None,
     buffer: RolloutBuffer,
+    carry: EnvCarry | None = None,
 ) -> RolloutBuffer:
-    """Collect executed action chunks from a vectorised env into ``buffer``."""
+    """Collect executed action chunks from a vectorised env into ``buffer``.
+
+    ``carry is None`` resets the envs: the first rollout of a run. Any later
+    call passes the previous call's ``EnvCarry``, so an episode spans rollout
+    boundaries. A carried ``awaiting`` env gets its reset observation through
+    the vec env's autoreset step.
+    """
     n_obs_steps, action_horizon = resolve_chunk_args(
         n_obs_steps, n_action_steps, buffer.action_horizon
     )
@@ -583,18 +610,29 @@ def collect_chunks_vec(
     act_dim = int(np.asarray(envs.single_action_space.shape).prod())
 
     try:
-        obs, _ = envs.reset(seed=[seed + i for i in range(n)])
-        obs_dim = int(obs.shape[-1])
-        obs0 = torch.from_numpy(np.asarray(obs, dtype=np.float32))
-        state = make_state(
-            n,
-            n_obs_steps,
-            obs_dim,
-            action_horizon,
-            act_dim,
-            obs0,
-            remaining=sum(targets),
-        )
+        if carry is None:
+            obs, _ = envs.reset(seed=[seed + i for i in range(n)])
+            obs0 = torch.from_numpy(np.asarray(obs, dtype=np.float32))
+            state = make_state(
+                n,
+                n_obs_steps,
+                int(obs0.shape[-1]),
+                action_horizon,
+                act_dim,
+                obs0,
+                remaining=sum(targets),
+            )
+        else:
+            state = make_state(
+                n,
+                n_obs_steps,
+                int(carry.windows.shape[-1]),
+                action_horizon,
+                act_dim,
+                carry.windows,
+                remaining=sum(targets),
+            )
+            state.awaiting[:] = carry.awaiting
         while state.remaining:
             envs_needing_a_chunk = [
                 i
@@ -636,16 +674,28 @@ def collect_chunks_vec(
                 on_error_flush()
         raise
     else:
+        buffer.carry = EnvCarry(
+            windows=state.windows, awaiting=[bool(x) for x in state.awaiting]
+        )
         return buffer
+
+
+@dataclass
+class EnvCarry:
+    """The env-side state one rollout hands to the next one."""
+
+    windows: torch.Tensor
+    awaiting: list[bool]
 
 
 @dataclass
 class RolloutBuffers:
     """The buffers a rollout reuses between calls."""
-
     host: RolloutBuffer | None = None
     device: RolloutBuffer | None = None
     h2d_event: torch.cuda.Event | None = None
+    carry: EnvCarry | None = None
+    env_wrapper: object | None = None
 
 
 def chunk_advantages(
@@ -833,17 +883,19 @@ def collect_chunks(
         n_obs_steps=cfg.n_obs_steps,
         n_action_steps=cfg.n_action_steps,
         buffer=buffer,
+        carry=buffer.carry,
     )
     if num_envs == 1:
-        import gymnasium as gym
+        if buffers.env_wrapper is None:
+            import gymnasium as gym
 
-        envs = gym.vector.SyncVectorEnv([lambda: env])
-        try:
-            collect_chunks_vec(envs, propose_batch, **collect_kwargs)
-        finally:
-            envs.close()
+            # The wrapper lives for the whole run. A per-rollout close()
+            # walks into close_extras and closes the caller's training env.
+            buffers.env_wrapper = gym.vector.SyncVectorEnv([lambda: env])
+        envs = buffers.env_wrapper
     else:
-        collect_chunks_vec(env, propose_batch, **collect_kwargs)
+        envs = env
+    collect_chunks_vec(envs, propose_batch, **collect_kwargs)
 
     if device.type == "cuda":
         if buffers.device is None or buffers.device.shape_key() != buffer.shape_key():

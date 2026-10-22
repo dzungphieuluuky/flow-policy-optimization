@@ -213,3 +213,45 @@ def test_the_buffer_is_the_only_source_of_the_row_width():
         action_horizon=HORIZON + 3, action_dim=ACT_DIM,
     )
     assert buf.action_horizon == HORIZON + 3
+
+
+def test_chunks_span_rollouts_when_carry_is_passed():
+    """The window one call returns is the window the next call starts from.
+
+    No reset sits between two collected rollouts, so the first chunk of the
+    second call starts from the returned carry window. The equality is exact.
+    """
+    pytest.importorskip("gymnasium")
+    envs = _pendulum_vec(1)
+    try:
+        kwargs = dict(
+            n_action_steps=HORIZON,
+            action_low=-2.0,
+            action_high=2.0,
+            n_obs_steps=OBS_STEPS,
+            seed=0,
+        )
+        buf1 = _buffer()
+        buf1 = _buffer()
+        collect_chunks_vec(
+            envs,
+            lambda s: torch.zeros(s.shape[0], HORIZON, ACT_DIM),
+            total_steps=2 * HORIZON,
+            buffer=buf1,
+            **kwargs,
+        )
+        carry = buf1.carry
+        buf2 = _buffer()
+        collect_chunks_vec(
+            envs,
+            lambda s: torch.zeros(s.shape[0], HORIZON, ACT_DIM),
+            total_steps=HORIZON,
+            buffer=buf2,
+            carry=carry,
+            **kwargs,
+        )
+    finally:
+        envs.close()
+    assert torch.equal(buf2.chunk_state[0], carry.windows[0]), (
+        "the second rollout did not start from the carried window"
+    )

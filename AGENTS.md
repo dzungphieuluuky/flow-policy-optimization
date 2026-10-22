@@ -120,6 +120,8 @@ No cycles, including the deferred imports. `docs/architecture.md` has the layer 
 
 **Storage dtype follows the GPU model.** `utils.resolve_storage_dtype` returns bf16 on an RTX PRO 1000 Blackwell and fp32 elsewhere. The same code then gives different numbers on different machines. This is a known hazard. It is not fixed.
 
+**The env reset happens once per run.** `RolloutBuffer.carry` holds the obs windows and the awaiting flags between rollouts, and `collect_chunks` passes it back. An episode spans rollout boundaries. Do not call `envs.reset` inside `collect_chunks_vec` when `carry` is not `None`. A carried `awaiting` env gets its reset observation through the vec env autoreset step.
+
 ## Names and functions
 
 Every name in `src/myfpo` is public. Do not write a leading underscore on a function, a class, a method, an attribute, or a constant.
