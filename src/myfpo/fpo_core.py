@@ -274,6 +274,9 @@ def compute_policy_ratio(
     """Return ``exp(cfm_loss_old - cfm_loss_new)``, with clamping and straight-through cap on delta."""
     old = torch.clamp(cfm_loss_old, max=cfg.cfm_clamp)
     new = torch.clamp(cfm_loss_new, max=cfg.cfm_clamp)
+    # Inert at the default: the max equals cfm_clamp, so this clamp only
+    # binds on a sweep that moves one of the two. This matches the official
+    # FPO++ implementation. The condition is cfg.cfm_loss_clamp_negative_advantages.
     if cfg.cfm_loss_clamp_negative_advantages and advantage is not None:
         new = torch.where(
             advantage < 0,
