@@ -313,7 +313,7 @@ experiments (Section 9). The granularity that exists today is
   both deserve a name).
 - `compute_ratio_metrics`: unchanged. The ratio is unchanged.
 
-### 5.5 `src/myfpo/runner/train_metrics.py`
+### 5.5 `src/myfpo/runner.py`
 
 - New `train/*` keys (Section 6). The builder is a pure function; the new
   scalars arrive in `info`.
