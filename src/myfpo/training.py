@@ -490,6 +490,23 @@ class UpdateMetrics:
         return self.info["l_new_mean"]
 
 
+def _mean_info(epoch_infos: list[dict[str, float]]) -> dict[str, float] | None:
+    """The mean of each key over the minibatches that carry it.
+
+    A probe key exists only on the minibatches where the probe ran. The mean
+    of that key is over those minibatches, so the number describes the probe
+    and not the minibatches without it.
+    """
+    if not epoch_infos:
+        return None
+    keys = {k for info in epoch_infos for k in info}
+    out: dict[str, float] = {}
+    for key in sorted(keys):
+        values = [info[key] for info in epoch_infos if key in info]
+        out[key] = sum(values) / len(values)
+    return out
+
+
 def update_metrics(
     epoch_infos: list[dict[str, float]],
     above_clamp_fracs,
@@ -499,15 +516,13 @@ def update_metrics(
     rollout_jerk: float | None = None,
     rollout_seam_jerk: float | None = None,
 ) -> UpdateMetrics:
-    """The mean of the per-minibatch metrics of one update."""
-    info = (
-        {
-            k: sum(d[k] for d in epoch_infos) / len(epoch_infos)
-            for k in epoch_infos[0]
-        }
-        if epoch_infos
-        else None
-    )
+    """The mean of the per-minibatch metrics of one update.
+
+    A key is averaged over the minibatches that carry it. The per-position
+    probe runs on some minibatches only, so a key can be missing from the
+    others. Reading it from every minibatch would raise.
+    """
+    info = _mean_info(epoch_infos)
     scalars = [
         torch.stack(above_clamp_fracs).mean(),
         torch.stack(both_clamped_fracs).mean(),
