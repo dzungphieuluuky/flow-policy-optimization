@@ -869,6 +869,9 @@ def collect_chunks(
     num_envs = int(getattr(env, "num_envs", 1))
     action_dim = int(cfg.action_feature.shape[0])
     obs_dim = int(cfg.robot_state_feature.shape[0])
+    # The worst case is one chunk per step, so the rows must cover total_steps.
+    # A normal rollout writes total_steps / action_horizon (1024 of 8192 at the
+    # defaults). A shorter cap aborts on an off-boundary episode length.
     max_chunks = max(1, total_steps)
     # The field order must match RolloutBuffer.shape_key, which the reuse
     # check below compares against.

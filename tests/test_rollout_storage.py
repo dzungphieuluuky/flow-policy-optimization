@@ -10,12 +10,13 @@ OBS_STEPS, OBS_DIM, HORIZON, ACT_DIM = 4, 3, 4, 1
 NUM_ENVS = 3
 
 
-def _pendulum_vec(n: int = NUM_ENVS):
+def _pendulum_vec(n: int = NUM_ENVS, limit: int | None = None):
     gym = pytest.importorskip("gymnasium")
 
     def make(seed: int):
         def fn():
-            env = gym.make("Pendulum-v1")
+            kwargs = {} if limit is None else {"max_episode_steps": limit}
+            env = gym.make("Pendulum-v1", **kwargs)
             env.reset(seed=seed)
             env.action_space.seed(seed)
             return env
@@ -255,3 +256,53 @@ def test_chunks_span_rollouts_when_carry_is_passed():
     assert torch.equal(buf2.chunk_state[0], carry.windows[0]), (
         "the second rollout did not start from the carried window"
     )
+
+
+def _collect_limited(n: int, total: int, limit: int) -> RolloutBuffer:
+    """Collect from n envs whose episodes end every ``limit`` steps."""
+    envs = _pendulum_vec(n=n, limit=limit)
+    buffer = RolloutBuffer(
+        max_chunks=total,
+        max_steps=total,
+        obs_steps=OBS_STEPS,
+        obs_dim=OBS_DIM,
+        action_horizon=HORIZON,
+        action_dim=ACT_DIM,
+    )
+    try:
+        collect_chunks_vec(
+            envs,
+            lambda s: torch.zeros(s.shape[0], HORIZON, ACT_DIM),
+            total_steps=total,
+            n_action_steps=HORIZON,
+            action_low=-2.0,
+            action_high=2.0,
+            n_obs_steps=OBS_STEPS,
+            buffer=buffer,
+            seed=0,
+        )
+    finally:
+        envs.close()
+    return buffer
+
+
+def test_the_chunk_rows_cover_an_episode_that_ends_every_step():
+    """One chunk per step is the worst case.
+
+    ``collect_chunks`` sizes ``max_chunks`` from ``total_steps`` for this
+    reason. A cap of ``total_steps // action_horizon`` would overflow here.
+    """
+    buffer = _collect_limited(n=4, total=64, limit=1)
+    assert buffer.n_chunks == 64
+    assert buffer.n_steps == 64
+
+
+def test_an_off_boundary_episode_writes_more_chunks_than_the_planned_count():
+    """A 3-step episode in a 4-step chunk adds a row per episode.
+
+    32 planned chunks over 128 steps become 44. The rows are sized from
+    ``total_steps``, not from ``total_steps // action_horizon``.
+    """
+    buffer = _collect_limited(n=4, total=128, limit=3)
+    assert buffer.n_chunks == 44
+    assert buffer.n_steps == 128
