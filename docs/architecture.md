@@ -78,11 +78,14 @@ This is a choice, not an oversight. If it is ever revisited, the ablation is to
 flip one flag and compare `rollout_seam_jerk` against return.
 
 ### Time embedding
-`SinusoidalEncoding` uses `exp(-log(10000) * i / half)`. An earlier
-`2**i` table ran to 32768 rad over `t in [0, 1]`, which made neighbouring
-timesteps near-orthogonal (cosine similarity 0.35 between `t=0` and `t=0.05`)
-rather than smooth (0.9999 with the current table). A continuous velocity
-field is regressed against these codes, so smoothness is not cosmetic.
+`SinusoidalEncoding` uses `exp(-log(10000) * i / half)` and multiplies `t` by
+`TIME_SCALE = 1000` before the sinusoid. The table alone was not enough: with
+`t` on `[0, 1]` the top channel turned through 1 rad over the whole path, so
+`t=0.1` and `t=0.9` had cosine similarity 0.97. The scale is the DiT
+convention, whose timesteps run to 1000. It puts 127 cycles on the top channel
+over the trained band `[0.1, 0.9]`, so a 0.01 step moves the code (similarity
+0.63) and a 0.001 step stays close (0.96). A `2**i` table is still rejected: it
+runs to 32768 rad.
 
 ### Depth and width
 `dit_depth` 3 → 4 and `hidden_dim` 128 are capacity ceilings, not literature

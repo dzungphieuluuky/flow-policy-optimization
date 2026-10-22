@@ -203,6 +203,12 @@ class CondMLP(nn.Module):
         return self.fc2(F.silu(self.fc1(x)))
 
 
+# DiT scales its integer timesteps to [0, 1000]. The flow lives on t in
+# [0, 1], so the same scale here gives the code the resolution the MLP needs:
+# the top channel completes about 159 cycles over the full path.
+TIME_SCALE = 1000.0
+
+
 class SinusoidalEncoding(nn.Module):
     """Fixed sinusoidal codes. The module holds one freq table as a buffer."""
 
@@ -230,7 +236,7 @@ class SinusoidalEncoding(nn.Module):
         """Embed continuous times with a sinusoid. Accept ``[N]``, return ``[N, dim]``."""
         t = t.to(dtype=torch.float32)
         freqs = self.freqs.to(t.device)
-        ang = t.unsqueeze(-1) * freqs
+        ang = (t.unsqueeze(-1) * TIME_SCALE) * freqs
         emb = torch.cat([ang.cos(), ang.sin()], dim=-1)
         if self.dim % 2:
             emb = F.pad(emb, (0, 1))
