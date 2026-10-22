@@ -37,6 +37,7 @@ class FlowActor(nn.Module):
         action_horizon: int,
         hidden_dim: int,
         time_embed_dim: int,
+        num_blocks: int,
         block_cls: type[nn.Module],
         block_kwargs: dict,
     ):
@@ -47,12 +48,13 @@ class FlowActor(nn.Module):
             raise ValueError("action_horizon must be positive")
         if time_embed_dim < MIN_WIDTH:
             raise ValueError(f"time_embed_dim={time_embed_dim} must be at least 2")
-        if self.num_blocks < 1:
-            raise ValueError(f"an actor needs >= 1 block, got {self.num_blocks}")
+        if num_blocks < 1:
+            raise ValueError(f"an actor needs >= 1 block, got {num_blocks}")
         self.action_dim = action_dim
         self.hidden_dim = hidden_dim
         self.action_horizon = action_horizon
         self.time_embed_dim = time_embed_dim
+        self.num_blocks = num_blocks
         self.timestep_embedder = SinusoidalEncoding(self.time_embed_dim)
         self.in_proj = nn.Linear(action_dim, hidden_dim)
         self.time_mlp = CondMLP(time_embed_dim, 4 * hidden_dim, hidden_dim)
@@ -204,12 +206,12 @@ class MyfpoFlowModel(FlowActor):
             or int(hidden_dim * dit_mlp_ratio) < 1
         ):
             raise ValueError("dit_mlp_ratio must produce a positive hidden width")
-        self.num_blocks = dit_depth
         super().__init__(
             action_dim,
             action_horizon,
             hidden_dim,
             time_embed_dim,
+            dit_depth,
             DiTBlock,
             {"hidden_dim": hidden_dim, "n_heads": dit_heads,
              "mlp_ratio": dit_mlp_ratio},
@@ -286,12 +288,12 @@ class MyfpoFlowResMLP(FlowActor):
             raise ValueError(f"resmlp_units={resmlp_units} must be >= 1")
         if n_heads < 1:
             raise ValueError(f"n_heads={n_heads} must be >= 1")
-        self.num_blocks = resmlp_blocks
         super().__init__(
             action_dim,
             action_horizon,
             hidden_dim,
             time_embed_dim,
+            resmlp_blocks,
             ResMLPBlock,
             {"hidden_dim": hidden_dim, "n_heads": n_heads,
              "hidden_mult": resmlp_hidden_mult, "num_units": resmlp_units},
