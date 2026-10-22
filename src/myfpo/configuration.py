@@ -115,6 +115,7 @@ class MyfpoConfig(PreTrainedConfig):
     eval_sampling: str = "noise_start"
     stop_eval_sampling: str = "noise_start"
 
+    # Costs one extra critic forward on every update when a backend logs.
     log_drift_diagnostics: bool = True
 
     # How often the policy measures the per-position gradient norms. 0 = never.
