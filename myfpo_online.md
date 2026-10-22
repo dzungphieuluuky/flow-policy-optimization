@@ -555,3 +555,160 @@ if rows:
               f"{statistics.stdev([rep['peak'] for rep in ctrl]):.1f}. "
               "An arm that beats dit_d3 by less than that is noise.")
 ```
+
+
+---
+
+## Kaggle suite — the experiments that gate the next decision
+
+Run the clone/install/wandb cells at the top of this notebook first.
+Notes for Kaggle:
+
+- No Blackwell GPU on Kaggle, so `resolve_storage_dtype` returns fp32: the storage
+  dtype is consistent between all nodes here. That kills the known local-vs-cluster
+  dtype hazard for these runs.
+- Two suites from the experiment plan are **not runnable from flags yet**: the
+  direct-competitor baselines (ReFPO, Flow-DPPO) and Design A (per-token
+  advantage). The ratio-bias quantifier is also not implemented. This notebook
+  covers only the arms the repo already ships.
+- Budget: Kaggle caps a session at ~9-12 GPU hours. `SUITE_STEPS` is sized for a
+  pilot; raise it on the cluster once the pilot decides the direction.
+
+```python
+# Suite knobs. One arm = one sweep of SUITE_SEEDS.
+import os
+
+SUITE_ENV = "Hopper-v5"
+SUITE_STEPS = 300_000
+SUITE_SEEDS = "3407,1,2"
+
+os.environ.setdefault("MPLBACKEND", "Agg")
+os.environ.setdefault("MUJOCO_GL", "egl")
+
+# tag -> extra flags; the default arm (no flags) is FPO++ as validated by the pins.
+ARMS = {
+    # tag -> extra flags. No flags (fpo_pp) is FPO++ as validated by the pins.
+    "fpo_pp":         [],
+    # FPO behaviour: one CFM loss per chunk instead of one per token.
+    "fpo_chunk_avg":  ["--myfpo.do_average_cfm_loss_in_chunk", "true"],
+    # Symmetric PPO clipping: the ASPO ablation.
+    "aspo_ppo":       ["--myfpo.trust_region_mode", "ppo"],
+    # Credibility ablations (docs/ablation_reference.md).
+    "critic_drop0":   ["--myfpo.critic_dropout", "0.0"],
+    "critics_1":      ["--myfpo.num_critics", "1"],
+    "critics_5":      ["--myfpo.num_critics", "5"],
+}
+
+def suite_arm(tag):
+    return f"outputs/suite_{tag}"
+
+def suite_summary_path(tag):
+    return os.path.join(suite_arm(tag), "sweep_summary.csv")
+```
+
+```python
+# Run every arm whose summary is missing. Sequential by design: the runner
+# already guards against parallel workers contending for cores and RNG.
+import os
+import subprocess
+
+for tag, extra in ARMS.items():
+    if os.path.exists(suite_summary_path(tag)):
+        print(f"{tag}: summary exists, skipping")
+        continue
+    cmd = [
+        "python", "scripts/multiseed.py", "run",
+        "--env", SUITE_ENV,
+        "--seeds", SUITE_SEEDS,
+        "--total_steps", str(SUITE_STEPS),
+        "--out", suite_arm(tag),
+        "--method", "myfpo",
+        *extra,
+    ]
+    print(f"\n=== {tag} ===\n{' '.join(cmd)}\n", flush=True)
+    rc = subprocess.call(cmd)
+    print(f"=== {tag} exit={rc} ===", flush=True)
+```
+
+```python
+# The fpo_pp arm's noise floor. A gain below it decides nothing.
+# The probe loads the control arm's best checkpoint.
+import csv as _csv
+import glob
+
+run_dirs = []
+if os.path.exists(suite_summary_path("fpo_pp")):
+    with open(suite_summary_path("fpo_pp"), encoding="utf-8") as fh:
+        run_dirs = [r["run_dir"] for r in _csv.DictReader(fh)]
+ckpt = sorted(glob.glob(f"{run_dirs[0]}/checkpoints/best") if run_dirs else [])
+if ckpt:
+    subprocess.call([
+        "python", "scripts/determinism_probe.py",
+        "--env", SUITE_ENV,
+        "--checkpoint", ckpt[0],
+        "--episodes", "50",
+        "--repeats", "3",
+    ])
+else:
+    print("fpo_pp run not found; run the sweep cell first")
+```
+
+```python
+# One table over every finished arm. reward_mean_last10 is the last-window
+# survival read; best_return is the peak read. Compare arms on the last
+# window (a peak read rewards checkpoint luck).
+import csv
+import statistics as st
+
+def suite_rows(tag):
+    with open(suite_summary_path(tag), encoding="utf-8") as fh:
+        return list(csv.DictReader(fh))
+
+readings = {}
+for tag in ARMS:
+    if not os.path.exists(suite_summary_path(tag)):
+        print(f"{tag:>14}  (no summary)")
+        continue
+    rows = suite_rows(tag)
+    readings[tag] = [float(r["reward_mean_last10"]) for r in rows]
+
+print(f"\n{'arm':>14} {'seeds':>6} {'last10 mean':>12} {'sd':>8}")
+for tag, fs in readings.items():
+    mean = st.fmean(fs)
+    sd = st.stdev(fs) if len(fs) > 1 else float("nan")
+    print(f"{tag:>14} {len(fs):>6} {mean:>12.1f} {sd:>8.1f}")
+
+if "fpo_pp" in readings and "fpo_chunk_avg" in readings:
+    gap = st.fmean(readings["fpo_pp"]) - st.fmean(readings["fpo_chunk_avg"])
+    ses = []
+    for fs in (readings["fpo_pp"], readings["fpo_chunk_avg"]):
+        if len(fs) > 1:
+            ses.append(st.stdev(fs) / len(fs) ** 0.5)
+    if ses:
+        pooled = sum(s * s for s in ses) ** 0.5
+        verdict = "outside the seed noise" if abs(gap) > 2 * pooled else "inside the seed noise"
+        print(f"\nFPO++ minus chunk-averaged FPO: {gap:+.1f} ({verdict}; "
+              f"2x pooled SE = {2 * pooled:.1f})")
+```
+
+```python
+# Head-to-head comparison of the two main arms.
+if os.path.exists(suite_summary_path("fpo_pp")) and \
+        os.path.exists(suite_summary_path("fpo_chunk_avg")):
+    subprocess.call([
+        "python", "scripts/multiseed.py", "compare",
+        suite_summary_path("fpo_pp"), suite_summary_path("fpo_chunk_avg"),
+    ])
+```
+
+Decision checklist (run all arms first, then answer):
+
+1. Is `fpo_pp` above `fpo_chunk_avg` by more than 2x the pooled SE **and** more
+   than the determinism-probe floor? If yes, Gate 1 holds for Hopper: scale to
+   more envs x 5 seeds on the cluster. If no: quantify the approximate-ratio
+   bias before spending more sweeps.
+2. Does `aspo_ppo` change the return in a meaningful way? Watch
+   `train/value_pred_member_gap_p95` and the clamp guards on wandb.
+3. Do `critic_drop0` / `critics_1` / `critics_5` move the value diagnostics
+   without moving the return? Then the defaults are defensible ablation notes.
+```
