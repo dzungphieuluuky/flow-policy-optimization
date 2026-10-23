@@ -490,21 +490,6 @@ class UpdateMetrics:
         return self.info["l_new_mean"]
 
 
-def _mean_info(epoch_infos: list[dict[str, float]]) -> dict[str, float] | None:
-    """The mean of each key over the minibatches that carry it.
-
-    A probe key exists only on the minibatches where the probe ran. The mean
-    of that key is over those minibatches, so the number describes the probe
-    and not the minibatches without it.
-    """
-    if not epoch_infos:
-        return None
-    keys = {k for info in epoch_infos for k in info}
-    out: dict[str, float] = {}
-    for key in sorted(keys):
-        values = [info[key] for info in epoch_infos if key in info]
-        out[key] = sum(values) / len(values)
-    return out
 
 
 def update_metrics(
@@ -522,7 +507,14 @@ def update_metrics(
     probe runs on some minibatches only, so a key can be missing from the
     others. Reading it from every minibatch would raise.
     """
-    info = _mean_info(epoch_infos)
+    if not epoch_infos:
+        info = None
+    else:
+        keys = {k for entry in epoch_infos for k in entry}
+        info = {}
+        for key in sorted(keys):
+            values = [entry[key] for entry in epoch_infos if key in entry]
+            info[key] = sum(values) / len(values)
     scalars = [
         torch.stack(above_clamp_fracs).mean(),
         torch.stack(both_clamped_fracs).mean(),
@@ -863,6 +855,20 @@ def train_loop(
     total_steps: int,
     eval_steps: int,
     save_steps: int,
+) -> float:
+    return train_loop_core(
+        setup,
+        state,
+        out_dir,
+        total_steps=total_steps,
+        eval_steps=eval_steps,
+        save_steps=save_steps,
+    )
+
+
+def train_loop_core(
+    setup: RunSetup, state: RunState, out_dir: Path,
+    *, total_steps: int, eval_steps: int, save_steps: int,
 ) -> float:
     """The training loop. Return the frames per second of the run."""
     policy = setup.policy
