@@ -733,4 +733,148 @@ Decision checklist (run all arms first, then answer):
    `train/value_pred_member_gap_p95` and the clamp guards on wandb.
 3. Do `critic_drop0` / `critics_1` / `critics_5` move the value diagnostics
    without moving the return? Then the defaults are defensible ablation notes.
+
+## Ratio-mode sweep — one arm per `ratio_mode`
+
+Every arm runs the same algorithm with one flag changed: `--myfpo.ratio_mode`.
+All other flags stay at the default FPO++ value. A gap between two arms then
+comes from the ratio alone.
+
+- `cfm` (default) — `clamp(L_old) - clamp(L_new)`. The FPO++ form.
+- `cfm_raw` — `L_old - L_new` with no clamp. Ablation only.
+- `linear` — `-2 * mean((v_old - v*) * (v_new - v_old))`. Signed, so the
+  ratio can pass 1.
+- `quadratic` — `linear` minus `mean((v_new - v_old)**2)`. Signed, and it
+  carries the squared term of the CFM difference.
+
+Three facts to know before you read the table:
+
+- `quadratic` does not equal `cfm` at the default config. The default loss is
+  Huber and the default token weight rises with `t`. The two modes agree only
+  with `cfm_loss_use_huber=false`, `cfm_loss_weight_from_t=constant` and
+  `cfm_loss_reduction=mean`.
+- All four modes read the behaviour snapshot from the rollout. The rollout
+  stores `L_old`, `L_old` per token and `v_old`, so every arm trains on the
+  same data. The rollout cost does not change with the mode.
+- `linear` and `quadratic` ignore `cfm_clamp` in the ratio. The clamp guard
+  still runs, because the two clamp fractions are computed for every mode.
+
+```python
+# One arm per ratio mode. The tag is the flag value, so the table cannot drift
+# from the config that produced it.
+import csv
+import os
+import subprocess
+
+RATIO_ENV = SUITE_ENV
+RATIO_SEEDS = SUITE_SEEDS
+RATIO_STEPS = 150_000          # pilot size. Raise it on the cluster.
+RATIO_WANT = len(RATIO_SEEDS.split(","))
+
+RATIO_ARMS = {
+    "cfm":       ["--myfpo.ratio_mode", "cfm"],
+    "cfm_raw":   ["--myfpo.ratio_mode", "cfm_raw"],
+    "linear":    ["--myfpo.ratio_mode", "linear"],
+    "quadratic": ["--myfpo.ratio_mode", "quadratic"],
+}
+
+def ratio_arm(tag):
+    return f"outputs/ratio_{tag}"
+
+def ratio_summary(tag):
+    return os.path.join(ratio_arm(tag), "sweep_summary.csv")
+
+def ratio_rows(tag):
+    """The summary rows of one arm. An empty list when the file is absent."""
+    if not os.path.exists(ratio_summary(tag)):
+        return []
+    with open(ratio_summary(tag), encoding="utf-8") as fh:
+        return list(csv.DictReader(fh))
+
+for tag, extra in RATIO_ARMS.items():
+    # An arm is complete only when every seed wrote a row. A partial summary
+    # would put one seed against three in the table.
+    done = len(ratio_rows(tag))
+    if done >= RATIO_WANT:
+        print(f"{tag}: {done} seeds present, skipping")
+        continue
+    cmd = [
+        "python", "scripts/multiseed.py", "run",
+        "--env", RATIO_ENV,
+        "--seeds", RATIO_SEEDS,
+        "--total_steps", str(RATIO_STEPS),
+        "--out", ratio_arm(tag),
+        "--method", "myfpo",
+        *extra,
+    ]
+    print(f"\n=== {tag} ===\n{' '.join(cmd)}\n", flush=True)
+    rc = subprocess.call(cmd)
+    print(f"=== {tag} exit={rc} ===", flush=True)
 ```
+
+```python
+# One row per mode. The last window is the survival read. A peak read would
+# reward checkpoint luck.
+import statistics as st
+
+readings = {}
+for tag in RATIO_ARMS:
+    rows = ratio_rows(tag)
+    if len(rows) < RATIO_WANT:
+        print(f"{tag:>12}  ({len(rows)}/{RATIO_WANT} seeds, not ranked)")
+        continue
+    readings[tag] = [float(r["reward_mean_last10"]) for r in rows]
+
+print(f"\n{'arm':>12} {'seeds':>6} {'last10 mean':>12} {'sd':>8}")
+for tag, fs in readings.items():
+    sd = st.stdev(fs) if len(fs) > 1 else float("nan")
+    print(f"{tag:>12} {len(fs):>6} {st.fmean(fs):>12.1f} {sd:>8.1f}")
+
+if "cfm" in readings:
+    print()
+    for tag, fs in readings.items():
+        if tag == "cfm":
+            continue
+        gap = st.fmean(fs) - st.fmean(readings["cfm"])
+        ses = [
+            st.stdev(v) / len(v) ** 0.5
+            for v in (readings["cfm"], fs)
+            if len(v) > 1
+        ]
+        if not ses:
+            print(f"{tag:>12} minus cfm: {gap:+8.1f}  (one seed, no interval)")
+            continue
+        pooled = sum(s * s for s in ses) ** 0.5
+        verdict = (
+            "outside the seed noise" if abs(gap) > 2 * pooled
+            else "inside the seed noise"
+        )
+        print(f"{tag:>12} minus cfm: {gap:+8.1f}  "
+              f"(2x pooled SE {2 * pooled:5.1f}; {verdict})")
+```
+
+```python
+# Head-to-head against the default. compare reads the spread over the seeds.
+if os.path.exists(ratio_summary("cfm")):
+    for tag in RATIO_ARMS:
+        if tag == "cfm" or not os.path.exists(ratio_summary(tag)):
+            continue
+        subprocess.call([
+            "python", "scripts/multiseed.py", "compare",
+            ratio_summary("cfm"), ratio_summary(tag),
+        ])
+```
+
+Read the table in this order:
+
+1. Is any mode above `cfm` by more than 2x the pooled SE? If no, keep `cfm`.
+   The velocity modes cost the same and add one failure mode, a large signed
+   delta.
+2. If yes, run `scripts/determinism_probe.py` on that arm's best checkpoint.
+   A gain below the probe floor is wind.
+3. Watch `train/log_ratio_clip_frac` and `train/mean_log_ratio`. A large
+   positive delta makes the ratio explode. `log_ratio_cap` stops it, and the
+   default is 10.
+4. Watch `train/cfm_both_clamped_frac`. It stays meaningful for every mode,
+   but for `linear` and `quadratic` the value of `cfm_clamp` does not enter
+   the ratio.
