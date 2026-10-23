@@ -28,7 +28,7 @@ from myfpo.fpo_core import (
     compute_cfm_loss,
     compute_policy_ratio,
     group_cfm_loss,
-    mc_draws,
+    mc_samples,
     sample_action,
     sample_noise,
     velocity_to_target_param,
@@ -475,7 +475,7 @@ class MyfpoPolicy(PreTrainedPolicy):
         actions = actions.to(storage_dtype)
         eps = eps.to(storage_dtype)
         t = t.to(storage_dtype)
-        x_t, actor_t, flow_shape, num_mc = mc_draws(actions, eps, t)
+        x_t, actor_t, flow_shape, num_mc = mc_samples(actions, eps, t)
         with torch.inference_mode(), autocast_context(actions.device):
             condition = self.encoder(normalised_states)
             condition_flat = broadcast_condition(condition, num_mc)
@@ -617,7 +617,7 @@ class MyfpoPolicy(PreTrainedPolicy):
         if tuple(eps.shape) != expected_eps:
             raise ValueError(f"stored MC noise shape {tuple(eps.shape)} != {expected_eps}")
 
-        x_t, actor_t, flow_shape, num_mc = mc_draws(actions, eps, t)
+        x_t, actor_t, flow_shape, num_mc = mc_samples(actions, eps, t)
 
         with autocast_context(device):
             condition = cudagraph_safe(self.encoder(states), self.config.compile)

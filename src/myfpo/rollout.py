@@ -153,10 +153,9 @@ def gae_trace(
     delta: torch.Tensor, trace: torch.Tensor, successor: torch.Tensor
 ) -> torch.Tensor:
     """The advantage of each chunk, traced back over its successors."""
-    successor_host = successor.tolist()
     adv = delta.clone()
     for i in range(delta.numel() - 1, -1, -1):
-        j = successor_host[i]
+        j = int(successor[i].item())
         if j >= 0:
             adv[i] = delta[i] + trace[i] * adv[j]
     return adv
@@ -646,7 +645,7 @@ def collect_chunks_vec(
 
     n = int(envs.num_envs)
     base_target, remainder = divmod(total_steps, n)
-    targets = [base_target + int(i < remainder) for i in range(n)]
+    targets = torch.tensor([base_target + (i < remainder) for i in range(n)], dtype=torch.long)
 
     low, high = resolve_action_bounds(action_low, action_high)
 

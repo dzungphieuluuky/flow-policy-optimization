@@ -96,7 +96,7 @@ def autocast_context(device=None):
 
 def rms(x: torch.Tensor) -> torch.Tensor:
     """Root mean square over every element."""
-    return torch.linalg.vector_norm(x) / math.sqrt(x.numel())
+    return torch.sqrt(torch.mean(x * x))
 
 
 def cudagraph_safe(x: torch.Tensor, enabled: bool = True) -> torch.Tensor:
