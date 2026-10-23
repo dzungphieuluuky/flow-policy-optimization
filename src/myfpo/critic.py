@@ -42,7 +42,7 @@ class StateAffine(nn.Module):
         return x * scale * self.weight + self.bias
 
 
-def _build_mlp_layers(in_dim: int, hidden_dim: int, num_layers: int, dropout: float) -> nn.Module:
+def build_mlp_layers(in_dim: int, hidden_dim: int, num_layers: int, dropout: float) -> nn.Module:
     layers: list[nn.Module] = []
     for i in range(num_layers):
         layers.append(nn.Linear(in_dim if i == 0 else hidden_dim, hidden_dim))
@@ -165,7 +165,7 @@ class CriticMember(nn.Module):
         self.act_to_obs = CrossAttention(state_dim, attn_heads)
         self.cross_norm_obs = build_rms_norm(state_dim)
         self.cross_norm_act = build_rms_norm(state_dim)
-        self.mlp = _build_mlp_layers(self.input_dim, hidden_dim, num_layers, dropout)
+        self.mlp = build_mlp_layers(self.input_dim, hidden_dim, num_layers, dropout)
 
     def forward(
         self,

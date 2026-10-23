@@ -267,7 +267,7 @@ def clamp_saturation(
 # FPO++ (arXiv:2602.02481).
 # POLICY RATIO
 
-def _compute_delta(
+def compute_delta(
     cfm_loss_old, cfm_loss_new, cfg, advantage, velocity_old, velocity_new, target, token_weight, action_is_pad, group_size
 ):
     mode = cfg.ratio_mode
@@ -335,7 +335,7 @@ def compute_policy_ratio(
     The velocity modes need the three flow tensors in the same target space.
     ``group_size`` groups the MC axis before the exponent, as FPO Eq. 9 does.
     """
-    delta = _compute_delta(cfm_loss_old, cfm_loss_new, cfg, advantage, velocity_old, velocity_new, target, token_weight, action_is_pad, group_size)
+    delta = compute_delta(cfm_loss_old, cfm_loss_new, cfg, advantage, velocity_old, velocity_new, target, token_weight, action_is_pad, group_size)
     safe_delta = delta.clamp(max=cfg.log_ratio_cap)
     delta_st = safe_delta.detach() + delta - delta.detach()
     return torch.exp(delta_st)

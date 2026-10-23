@@ -106,7 +106,7 @@ class PolicyTerms:
 
 # ARCHITECTURE
 
-def _build_policy_head(config: MyfpoConfig):
+def build_policy_head(config: MyfpoConfig):
     obs_dim = int(config.robot_state_feature.shape[0])
     action_dim = int(config.action_feature.shape[0])
     if config.actor_arch == "resmlp":
@@ -131,7 +131,7 @@ def _build_policy_head(config: MyfpoConfig):
     )
     return actor, encoder, critic, obs_dim, action_dim
 
-def _init_ema_buffers(obj, config: MyfpoConfig):
+def init_ema_buffers(obj, config: MyfpoConfig):
     obj.ema_shadow = {}
     obj.ema_initialised = False
     obj.rollout_buffers = RolloutBuffers()
@@ -153,11 +153,11 @@ class MyfpoPolicy(PreTrainedPolicy):
     ):
         super().__init__(config, dataset_stats)
         config.validate_features()
-        self.actor, self.encoder, self.critic, obs_dim, action_dim = _build_policy_head(config)
+        self.actor, self.encoder, self.critic, obs_dim, action_dim = build_policy_head(config)
         self.obs_normalizer = RunningMeanStd(obs_dim)
         self.register_buffer("action_low", torch.full((action_dim,), -1.0), persistent=False)
         self.register_buffer("action_high", torch.full((action_dim,), 1.0), persistent=False)
-        _init_ema_buffers(self, config)
+        init_ema_buffers(self, config)
         self.preprocessor, self.postprocessor = make_pre_post_processors(self)
         del dataset_stats
 
