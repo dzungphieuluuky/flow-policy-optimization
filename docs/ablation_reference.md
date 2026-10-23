@@ -1,6 +1,6 @@
 # Ablation / Comparison Reference
 
-Based on `literature_review.md` (Sections 2, 5, 11.4) and repo implementation (`fpo_core.py` with the metrics, `rollout.py` with the collector and gae).
+Based on the repo implementation (`fpo_core.py` with the metrics, `rollout.py` with the collector and gae).
 
 ## Method taxonomy (repo-relevant)
 
@@ -59,4 +59,4 @@ the wider ensemble is worth its parameters.
 .venv/bin/python scripts/train.py --env Hopper-v5 --myfpo.num_critics 5
 ```
 
-See `literature_review.md` Section 5 (table) and Section 11.4 (detailed comparison) for full citations and mathematical formulations.
+Full citations are in `README.md`.

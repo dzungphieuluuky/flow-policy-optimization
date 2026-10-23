@@ -477,6 +477,4 @@ difference.
 - Q-chunking: `arXiv:2507.07969`. Decoupled Q-chunking: ICLR 2026.
 - ReinFlow: `arXiv:2505.22094`. Flow-GRPO, DPPO, RISE: the denoising-time axis,
   not the chunk-token axis.
-- `literature_review.md` in this repo: the taxonomy and the open problems
-  (8.3 chunk-boundary artifacts, 8.2 entropy collapse in the negative-advantage
-  regime).
+

@@ -33,5 +33,4 @@ uv run ruff check .            # dead code, unused names
 - Diffusion Policy: `arXiv:2303.04137`
 - GoRL / GORL: `arXiv:2512.02581v1` (ICML 2026)
 
-See `docs/architecture.md` for how each network is built and why, and
-`literature_review.md` for the full synthesis.
+See `docs/architecture.md` for how each network is built and why.
