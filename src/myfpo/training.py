@@ -34,6 +34,7 @@ from myfpo.layers import cudagraph_step_begin, resolve_device, rms
 from myfpo.tracking import build_backends, log_metrics
 from myfpo.train_utils import finish_backends
 from myfpo.train_utils import build_train_metrics, summarise_window
+from tqdm import tqdm
 
 
 class EvalPolicy:
@@ -892,55 +893,57 @@ def run_training_loop(
     grad_groups = split_grad_params(policy)
     t_start = time.time()
 
-    while state.global_step < total_steps:
-        steps_to_go = total_steps - state.global_step
-        t0 = time.perf_counter()
-        batch, rollout, steps_this_rollout, rollout_jerk, rollout_seam_jerk = collect_rollouts(
-            policy, train_env, cfg, action_low, action_high, steps_to_go
-        )
-        rollout["collect_s"] = time.perf_counter() - t0
-        state.global_step += steps_this_rollout
+    with tqdm(total=total_steps, desc="train", unit="step") as pbar:
+        while state.global_step < total_steps:
+            steps_to_go = total_steps - state.global_step
+            t0 = time.perf_counter()
+            batch, rollout, steps_this_rollout, rollout_jerk, rollout_seam_jerk = collect_rollouts(
+                policy, train_env, cfg, action_low, action_high, steps_to_go
+            )
+            rollout["collect_s"] = time.perf_counter() - t0
+            state.global_step += steps_this_rollout
+            pbar.update(steps_this_rollout)
 
-        # The batch normalises at load time, so the stats must take in this
-        # rollout before the first update reads it.
-        policy.update_observation_stats(batch["normalizer_observations"])
+            # The batch normalises at load time, so the stats must take in this
+            # rollout before the first update reads it.
+            policy.update_observation_stats(batch["normalizer_observations"])
 
-        epoch_infos, grad_norms_pre, above_clamp_fracs, both_clamped_fracs = policy_update_step(
-            policy, optimizer, batch, backends, cfg, grad_groups
-        )
+            epoch_infos, grad_norms_pre, above_clamp_fracs, both_clamped_fracs = policy_update_step(
+                policy, optimizer, batch, backends, cfg, grad_groups
+            )
 
-        drift = None
-        if cfg.log_drift_diagnostics and backends:
-            drift = measure_value_drift(policy, batch, device)
+            drift = None
+            if cfg.log_drift_diagnostics and backends:
+                drift = measure_value_drift(policy, batch, device)
 
-        policy.update_ema(state.global_step)
+            policy.update_ema(state.global_step)
 
-        update = update_metrics(
-            epoch_infos,
-            above_clamp_fracs,
-            both_clamped_fracs,
-            drift,
-            grad_norms_pre,
-            rollout_jerk,
-            rollout_seam_jerk,
-        )
-        rollout["actor_step_s"] = policy.actor_step_s
-        rollout["critic_step_s"] = policy.critic_step_s
-        log_update(setup, state, cfg, batch, rollout, update)
+            update = update_metrics(
+                epoch_infos,
+                above_clamp_fracs,
+                both_clamped_fracs,
+                drift,
+                grad_norms_pre,
+                rollout_jerk,
+                rollout_seam_jerk,
+            )
+            rollout["actor_step_s"] = policy.actor_step_s
+            rollout["critic_step_s"] = policy.critic_step_s
+            log_update(setup, state, cfg, batch, rollout, update)
 
-        check_clamp_guards(
-            cfg,
-            update.above_clamp_frac,
-            update.both_clamped_frac,
-            update.l_new_mean,
-            state,
-        )
-
-
+            check_clamp_guards(
+                cfg,
+                update.above_clamp_frac,
+                update.both_clamped_frac,
+                update.l_new_mean,
+                state,
+            )
 
 
-        if state.global_step >= state.next_eval or state.global_step >= total_steps:
-            eval_window(
+
+
+            if state.global_step >= state.next_eval or state.global_step >= total_steps:
+                eval_window(
                 policy,
                 optimizer,
                 state,
@@ -951,25 +954,25 @@ def run_training_loop(
                 backends,
                 eval_steps,
                 r_rand,
+                )
+    
+                if state.global_step >= state.next_save or state.global_step >= total_steps:
+                    artifact_path, _ = save_checkpoint(
+                        out_dir, policy, optimizer, state.global_step, f"step_{state.global_step}"
+                    )
+                    state.artifacts.append(artifact_path)
+                    state.next_save = max(
+                        state.global_step + save_steps, state.next_save + save_steps
+                    )
+        
+            elapsed = time.time() - t_start
+        fps = state.global_step / max(elapsed, 1e-6)
+        if backends:
+            log_metrics(
+                backends,
+                {"timing/fps": fps, "timing/elapsed_s": elapsed},
+                step=state.global_step,
             )
-
-        if state.global_step >= state.next_save or state.global_step >= total_steps:
-            artifact_path, _ = save_checkpoint(
-                out_dir, policy, optimizer, state.global_step, f"step_{state.global_step}"
-            )
-            state.artifacts.append(artifact_path)
-            state.next_save = max(
-                state.global_step + save_steps, state.next_save + save_steps
-            )
-
-    elapsed = time.time() - t_start
-    fps = state.global_step / max(elapsed, 1e-6)
-    if backends:
-        log_metrics(
-            backends,
-            {"timing/fps": fps, "timing/elapsed_s": elapsed},
-            step=state.global_step,
-        )
     return fps
 
 
