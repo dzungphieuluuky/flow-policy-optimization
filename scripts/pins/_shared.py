@@ -13,8 +13,6 @@ it checks cannot catch a defect in the shared part.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import torch
 from lerobot.configs.policies import PolicyFeature
 from lerobot.configs.types import FeatureType
@@ -26,10 +24,8 @@ from myfpo.configuration import MyfpoConfig
 OBS, ACT, HORIZON, MC, N_OBS = 6, 3, 4, 4, 2
 HIDDEN, TIME_EMBED, HEADS, DEPTH = 32, 16, 2, 1
 
-PIN_DIR = Path(__file__).resolve().parent
-
 __all__ = [
-    "ACT", "HORIZON", "MC", "N_OBS", "OBS", "PIN_DIR",
+    "ACT", "HORIZON", "MC", "N_OBS", "OBS",
     "build", "compare", "fixed_batch", "flatten", "pin_config",
 ]
 

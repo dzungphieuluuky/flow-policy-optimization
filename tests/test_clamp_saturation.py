@@ -198,7 +198,6 @@ def _policy_and_batch(cfm_clamp):
         "behavior_velocity_token": old_velocity,
     }
     return policy, batch, pcfg
-    return policy, batch, cfg
 
 
 def test_above_clamp_frac_reads_the_tensor_the_ratio_actually_clamps(monkeypatch):

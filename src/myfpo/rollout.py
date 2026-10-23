@@ -208,7 +208,6 @@ class RolloutBuffer:
             chunk_capacity = max_chunks
         if chunk_capacity < 1:
             raise ValueError("chunk_capacity must be positive")
-        self.chunk_capacity = chunk_capacity
 
         self.step_frames = self.zeros_for((max_steps, obs_dim), OBS_DTYPE)
         self.step_rewards = self.zeros_for((max_steps,), REWARD_DTYPE)

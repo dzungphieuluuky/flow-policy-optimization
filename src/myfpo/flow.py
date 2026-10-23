@@ -230,8 +230,6 @@ class ResidualMLP(nn.Module):
         inner = int(hidden_dim * hidden_mult)
         if inner < 1:
             raise ValueError("resmlp_hidden_mult must produce a positive width")
-        self.inner = inner
-        self.num_units = num_units
         self.denses = nn.ModuleList(
             nn.Linear(hidden_dim if i == 0 else inner, inner)
             for i in range(num_units)
