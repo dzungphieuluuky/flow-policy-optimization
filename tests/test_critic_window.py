@@ -306,9 +306,10 @@ def test_parameter_count_is_proportionate():
     )
     # state_hidden defaults to hidden_dim=128. Per member:
     # norm_state 352, window trunk 84352, norm_action 544, act_in 2304,
-    # obs_to_act 66048, act_to_obs 66048, two cross norms 256,
-    # pool 2*128+1=257 -> MLP 50177 -> 270081, times 2 members.
-    assert n == pytest.approx(540_162, abs=50), f"critic is {n} params"
+    # act_attn 66048 + its norm 128, obs_to_act 66048, act_to_obs 66048,
+    # two cross norms 256, pool 2*128+1=257 -> MLP 50177
+    # -> 336257, times 2 members.
+    assert n == pytest.approx(672_514, abs=50), f"critic is {n} params"
 
 
 def test_n_obs_steps_must_be_positive():

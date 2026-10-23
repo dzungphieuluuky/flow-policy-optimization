@@ -5,12 +5,7 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from myfpo.layers import (
-    CrossAttention,
-    SinusoidalEncoding,
-    TemporalConv,
-    build_rms_norm,
-)
+from myfpo.layers import CrossAttention, SelfAttention, build_rms_norm
 from myfpo.processor import StateEncoder
 
 
@@ -52,11 +47,13 @@ class CriticMember(nn.Module):
     raw streams, then the last state token and the mean action token go to
     ``Linear -> Dropout -> LayerNorm -> Mish``. The output layer stays linear.
 
-    The attention is bidirectional. The critic reads a chunk it has already
-    executed, so no prefix rule applies here, unlike the actor's causal pass.
-    The action tokens carry no norm: a chunk of all +5 and a chunk of all 0
-    must reach the critic different. State and action keep the same affine
-    normalisers the concat head used, for the same reason.
+    Inside the chunk one causal ``SelfAttention`` layer mixes the steps, and
+    its RoPE codes carry the step position. Token ``i`` reads the prefix only,
+    the same rule the actor's chunk attention uses. The cross blocks stay
+    bidirectional: the critic reads a chunk it has already executed.
+    The action tokens carry no norm of the chunk: a chunk of all +5 and a chunk
+    of all 0 must reach the critic different. State and action keep the same
+    affine normalisers the concat head used, for the same reason.
     """
 
     def __init__(
@@ -72,8 +69,6 @@ class CriticMember(nn.Module):
         condition_dim: int | None = None,
         dropout: float = 0.0,
         state_hidden: int | None = None,
-        chunk_temporal_kernel: int = 0,
-        chunk_temporal_causal: bool = False,
     ):
         super().__init__()
         if action_dim < 1:
@@ -138,22 +133,17 @@ class CriticMember(nn.Module):
         # chunk of all 0 would reach the critic as the same input. The affine
         # keeps the name and the state dict of the LayerNorm it replaces.
         self.norm_action = ActionAffine(action_horizon * action_dim)
-        # The chunk filter keeps the frame order and the width, so the first
-        # layer sees the same action size as before.
-        self.chunk_conv = (
-            TemporalConv(action_dim, chunk_temporal_kernel, causal=chunk_temporal_causal)
-            if chunk_temporal_kernel
-            else None
-        )
         # One token per action step, projected to the stream width. The affine
         # above already ran on the flat chunk, so a constant chunk stays
         # constant and the tokens keep its offset.
         self.act_in = nn.Linear(action_dim, state_dim)
         # The chunk is pooled by its mean, which is order-blind, and the cross
-        # pass is position-wise. Fixed step codes keep the chunk's order, so a
-        # reversed chunk cannot read as the same one. The state side needs
-        # none: its trunk already carries RoPE.
-        self.act_pos = SinusoidalEncoding(state_dim)
+        # pass is position-wise. A causal self-attention layer over the steps
+        # restores the order: it carries RoPE, so token i knows its step, and it
+        # reads the prefix only. The state side needs none: its trunk carries
+        # RoPE already.
+        self.act_attn = SelfAttention(state_dim, attn_heads)
+        self.act_attn_norm = build_rms_norm(state_dim)
         # Both directions read the same input streams, so neither pass sees the
         # other's output. Chaining them would make the second pass read a
         # half-mixed stream.
@@ -190,18 +180,12 @@ class CriticMember(nn.Module):
             )
         else:
             obs_tokens = states.unsqueeze(1)
-        chunk = actions.transpose(1, 2)
-        if self.chunk_conv is not None:
-            chunk = self.chunk_conv(chunk)
         # The affine runs on the flat chunk in step-major order.
-        chunk_flat = self.norm_action(chunk.transpose(1, 2).flatten(1))
+        chunk_flat = self.norm_action(actions.flatten(1))
         act_tokens = self.act_in(chunk_flat.view(actions.shape))
-        steps = torch.arange(
-            actions.shape[1], dtype=torch.float32, device=act_tokens.device
+        act_tokens = act_tokens + self.act_attn(
+            self.act_attn_norm(act_tokens)
         )
-        act_tokens = act_tokens + self.act_pos.encode_times(
-            steps / actions.shape[1]
-        ).to(dtype=act_tokens.dtype)
         obs = obs_tokens + self.obs_to_act(
             self.cross_norm_obs(obs_tokens), act_tokens
         )
@@ -242,8 +226,6 @@ class Critic(nn.Module):
         condition_dim: int | None = None,
         dropout: float = 0.0,
         state_hidden: int | None = None,
-        chunk_temporal_kernel: int = 0,
-        chunk_temporal_causal: bool = False,
     ):
         super().__init__()
         if condition_dim is not None and condition_dim < 1:
@@ -282,8 +264,6 @@ class Critic(nn.Module):
                     condition_dim=condition_dim,
                     dropout=dropout,
                     state_hidden=state_hidden,
-                    chunk_temporal_kernel=chunk_temporal_kernel,
-                    chunk_temporal_causal=chunk_temporal_causal,
                 )
                 for _ in range(num_critics)
             ]

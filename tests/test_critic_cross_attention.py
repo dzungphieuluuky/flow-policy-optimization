@@ -68,8 +68,8 @@ def test_the_two_directions_are_parallel():
             m.state_encoder.encode_tokens(window)
         )[:, -1]
         tokens = m.act_in(m.norm_action(act.flatten(1)).view(act.shape))
-        steps = torch.arange(H, dtype=torch.float32)
-        return state_last, (tokens + m.act_pos.encode_times(steps / H)).mean(dim=1)
+        tokens = tokens + m.act_attn(m.act_attn_norm(tokens))
+        return state_last, tokens.mean(dim=1)
 
     m = _member(dropout=0.0).eval()
     with torch.no_grad():
@@ -129,6 +129,26 @@ def test_the_shared_encoder_branch_runs_one_token():
     assert q.shape == (3,)
 
 
+def test_the_chunk_attention_is_causal():
+    """A later step cannot change an earlier step's token."""
+    torch.manual_seed(0)
+    m = _member(dropout=0.0).eval()
+    obs = torch.randn(2, STEPS, OBS)
+    act = torch.randn(2, H, ACT)
+    seen: dict[str, torch.Tensor] = {}
+    handle = m.act_attn.register_forward_hook(
+        lambda _m, _args, out: seen.__setitem__("y", out.detach().clone())
+    )
+    with torch.no_grad():
+        m(obs, act, torch.full((2,), 0.5))
+        first = seen["y"]
+        moved = act.clone()
+        moved[:, -1] += 5.0
+        m(obs, moved, torch.full((2,), 0.5))
+    handle.remove()
+    assert torch.allclose(first[:, :-1], seen["y"][:, :-1])
+    assert not torch.allclose(first[:, -1], seen["y"][:, -1])
+
 
 def test_the_head_count_is_four():
     assert _member().attn_heads == 4
@@ -155,17 +175,18 @@ def test_the_param_count_identity_holds():
         "mlp": sum(p.numel() for p in m.mlp.parameters()),
         "encoder": sum(p.numel() for p in m.state_encoder.parameters()),
         "act_in": sum(p.numel() for p in m.act_in.parameters()),
+        "act_attn": sum(p.numel() for p in m.act_attn.parameters()),
         "obs_to_act": sum(p.numel() for p in m.obs_to_act.parameters()),
         "act_to_obs": sum(p.numel() for p in m.act_to_obs.parameters()),
         "norms": sum(p.numel() for p in m.cross_norm_obs.parameters())
-        + sum(p.numel() for p in m.cross_norm_act.parameters()),
+        + sum(p.numel() for p in m.cross_norm_act.parameters())
+        + sum(p.numel() for p in m.act_attn_norm.parameters()),
     }
     fixed = 2 * (STEPS * OBS) + 2 * (H * ACT)
     assert parts == sum(named.values()) + fixed
 
 
 def test_the_ensemble_shares_the_head_count():
-
     c = Critic(OBS, HIDDEN, ACT, STEPS, H, 2)
     assert all(net.attn_heads == 4 for net in c.networks)
     with torch.no_grad():

@@ -139,23 +139,23 @@ Ensemble of 2 **TD-MPC2** (`arXiv:2310.16828`) heads over the full window.
 | Element | Choice | Why |
 |---|---|---|
 | State input | `StateAffine` on the raw window, then the actor's window trunk (`StateEncoder`), one token per frame | one norm over the state would couple state dims to action dims, which are unrelated quantities. A `LayerNorm` also subtracts the window's mean, so a raised state and the original state reached the critic as one input. The trunk replaces the flat `T * obs_dim` first layer. |
-| Layout | two token streams, `CrossAttention` both ways, then the MLP | the window and the chunk condition each other before the head. Each direction reads the raw stream, so neither pass sees a half-mixed one. The pool is the last state token plus the mean action token. |
-| Step codes | fixed sinusoid on the action tokens | the pool is a mean, which is order-blind, and the cross pass is position-wise. Without a step code a reversed chunk reads as the same chunk. The state side needs none: its trunk carries RoPE. |
+| Layout | two token streams, a causal `SelfAttention` over the chunk steps, then `CrossAttention` both ways, then the MLP | the window and the chunk condition each other before the head. Each cross direction reads the raw stream, so neither pass sees a half-mixed one. The pool is the last state token plus the mean action token. |
+| Chunk attention | causal `SelfAttention`, RoPE step codes | the pool is a mean, which is order-blind. Without an intra-chunk pass a reversed chunk reads as the same chunk. RoPE gives each step its position, and the mask makes token `i` read the prefix only. There is no convolution in the critic. |
 | Hidden layers | `Linear → LayerNorm → Mish` | TD-MPC2. Its stated result: scaling an *unnormalised* critic does not improve performance, while adding LayerNorm does. The norm is the load-bearing part. |
 | Dropout | 1% after the first `Linear` | TD-MPC2. Every member regresses onto the same scalar target, so initialisation is the only thing separating them. |
 | Activation | `Mish` | TD-MPC2 uses GELU. `Mish` is the swap. |
 | Action input | learned affine, **not** a norm | a `LayerNorm` over the chunk subtracts the chunk's mean, so a chunk of all +5 and a chunk of all 0 reach the critic as the same input. The critic was blind to a sustained push, and blind to the drifting raw magnitude that `train/raw_action_abs_max` monitors. |
 
 Defaults for Hopper (`obs_dim=11`, `action_dim=3`, 16 frames, 8-step chunk):
-**536k parameters**, 2 members of 268k. Humanoid (`obs_dim=348`) is **647k**.
+**668k parameters**, 2 members of 334k. Humanoid (`obs_dim=348`) is **780k**.
 
 Two places depart from the reference implementation, not from the paper.
 The official tdmpc2 `mlp.py` puts dropout **after** the LayerNorm and applies
 it after **every** hidden layer. The repo follows the paper's wording, which
 says "1% Dropout after the first linear layer in each Q-function".
 
-No causal mask: the critic reads a chunk it has already executed, so no prefix
-rule applies. Only the actor's attention is causal.
+The chunk self-attention is causal, and so is the actor's. The two cross blocks
+stay bidirectional: the critic reads a chunk it has already executed.
 
 `norm_state` is skipped when `critic_share_encoder=True`, so that flag keeps
 meaning "raw shared-encoder vector" rather than double-normalising. The two

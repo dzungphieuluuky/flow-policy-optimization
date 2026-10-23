@@ -307,19 +307,22 @@ def test_the_chunk_reaches_the_action_tokens_through_one_affine():
 
 
 def test_the_input_parts_add_exactly_their_own_widths():
-    """Two affines, two cross blocks, and the token projection, beyond the MLP."""
+    """Two affines, a chunk attention block, two cross blocks, and the token
+    projection, beyond the MLP."""
     m = _member()
     with_parts = sum(p.numel() for p in m.parameters())
     mlp = sum(p.numel() for p in m.mlp.parameters())
     encoder = sum(p.numel() for p in m.state_encoder.parameters())
-    cross = (
+    blocks = (
         sum(p.numel() for p in m.obs_to_act.parameters())
         + sum(p.numel() for p in m.act_to_obs.parameters())
         + sum(p.numel() for p in m.cross_norm_obs.parameters())
         + sum(p.numel() for p in m.cross_norm_act.parameters())
+        + sum(p.numel() for p in m.act_attn.parameters())
+        + sum(p.numel() for p in m.act_attn_norm.parameters())
         + sum(p.numel() for p in m.act_in.parameters())
     )
-    assert with_parts == mlp + encoder + cross + 2 * (STEPS * OBS) + 2 * (H * ACT)
+    assert with_parts == mlp + encoder + blocks + 2 * (STEPS * OBS) + 2 * (H * ACT)
 
 
 def test_the_shared_encoder_branch_skips_the_state_trunk():
