@@ -1,5 +1,5 @@
-"""myfpo policy. The class holds the flow head, the state conditioner, and the
-EMA shadow used for evaluation.
+"""Owns: policy architecture, EMA shadow, loss computation. NOT: training loop or rollout. Key: MyfpoPolicy, build_optimizer.
+The class holds the flow head, the state conditioner, and the EMA shadow used for evaluation.
 """
 
 from __future__ import annotations
@@ -104,6 +104,46 @@ class PolicyTerms:
     v_star_f: torch.Tensor
 
 
+# ARCHITECTURE
+
+def _build_policy_head(config: MyfpoConfig):
+    obs_dim = int(config.robot_state_feature.shape[0])
+    action_dim = int(config.action_feature.shape[0])
+    if config.actor_arch == "resmlp":
+        actor = MyfpoFlowResMLP(
+            action_dim, config.action_horizon, config.hidden_dim,
+            config.resmlp_blocks, config.resmlp_units, config.resmlp_hidden_mult,
+            config.dit_heads, config.time_embed_dim,
+        )
+    else:
+        actor = MyfpoFlowModel(
+            action_dim, config.action_horizon, config.hidden_dim,
+            config.dit_depth, config.dit_heads, config.dit_mlp_ratio, config.time_embed_dim,
+        )
+    encoder = StateEncoder(obs_dim, config.hidden_dim, config.n_obs_steps)
+    critic_width = config.critic_hidden_dim if config.critic_hidden_dim is not None else config.hidden_dim
+    critic = Critic(
+        obs_dim, critic_width, action_dim, config.n_obs_steps, config.action_horizon,
+        config.num_critics, condition_on_exec_length=config.critic_condition_on_exec_length,
+        num_layers=config.critic_num_layers,
+        condition_dim=config.hidden_dim if config.critic_share_encoder else None,
+        dropout=config.critic_dropout, state_hidden=config.hidden_dim,
+    )
+    return actor, encoder, critic, obs_dim, action_dim
+
+def _init_ema_buffers(obj, config: MyfpoConfig):
+    obj.ema_shadow = {}
+    obj.ema_initialised = False
+    obj.rollout_buffers = RolloutBuffers()
+    obj.cfm_above_clamp_frac = torch.zeros(())
+    obj.cfm_both_clamped_frac = torch.zeros(())
+    obj.probe_counter = 0
+    obj.actor_step_s = 0.0
+    obj.critic_step_s = 0.0
+    obj.frame_buffer = deque(maxlen=config.n_obs_steps)
+    obj.action_buffer = deque()
+    obj.step_count = 0
+
 class MyfpoPolicy(PreTrainedPolicy):
     config_class = MyfpoConfig
     name = "myfpo"
@@ -113,75 +153,11 @@ class MyfpoPolicy(PreTrainedPolicy):
     ):
         super().__init__(config, dataset_stats)
         config.validate_features()
-        obs_dim = int(config.robot_state_feature.shape[0])
-        action_dim = int(config.action_feature.shape[0])
-
-        if config.actor_arch == "resmlp":
-            self.actor = MyfpoFlowResMLP(
-                action_dim,
-                config.action_horizon,
-                config.hidden_dim,
-                config.resmlp_blocks,
-                config.resmlp_units,
-                config.resmlp_hidden_mult,
-                config.dit_heads,
-                config.time_embed_dim,
-            )
-        else:
-            self.actor = MyfpoFlowModel(
-                action_dim,
-                config.action_horizon,
-                config.hidden_dim,
-                config.dit_depth,
-                config.dit_heads,
-                config.dit_mlp_ratio,
-                config.time_embed_dim,
-            )
-        self.encoder = StateEncoder(
-            obs_dim,
-            config.hidden_dim,
-            config.n_obs_steps,
-        )
-        critic_width = (
-            config.critic_hidden_dim
-            if config.critic_hidden_dim is not None
-            else config.hidden_dim
-        )
-        self.critic = Critic(
-            obs_dim,
-            critic_width,
-            action_dim,
-            config.n_obs_steps,
-            config.action_horizon,
-            config.num_critics,
-            condition_on_exec_length=config.critic_condition_on_exec_length,
-            num_layers=config.critic_num_layers,
-            condition_dim=config.hidden_dim if config.critic_share_encoder else None,
-            dropout=config.critic_dropout,
-            state_hidden=config.hidden_dim,
-        )
+        self.actor, self.encoder, self.critic, obs_dim, action_dim = _build_policy_head(config)
         self.obs_normalizer = RunningMeanStd(obs_dim)
-
-        self.register_buffer(
-            "action_low", torch.full((action_dim,), -1.0), persistent=False
-        )
-        self.register_buffer(
-            "action_high", torch.full((action_dim,), 1.0), persistent=False
-        )
-
-        self.ema_shadow: dict[str, torch.Tensor] = {}
-        self.ema_initialised = False
-        self.rollout_buffers = RolloutBuffers()
-
-        self.cfm_above_clamp_frac = torch.zeros(())
-        self.cfm_both_clamped_frac = torch.zeros(())
-        self.probe_counter = 0
-        self.actor_step_s = 0.0
-        self.critic_step_s = 0.0
-
-        self.frame_buffer: deque[torch.Tensor] = deque(maxlen=config.n_obs_steps)
-        self.action_buffer: deque[torch.Tensor] = deque()
-        self.step_count = 0
+        self.register_buffer("action_low", torch.full((action_dim,), -1.0), persistent=False)
+        self.register_buffer("action_high", torch.full((action_dim,), 1.0), persistent=False)
+        _init_ema_buffers(self, config)
         self.preprocessor, self.postprocessor = make_pre_post_processors(self)
         del dataset_stats
 
@@ -820,6 +796,7 @@ class MyfpoPolicy(PreTrainedPolicy):
         ).mean(dim=0)
         return value_loss_per_chunk, raw_value_pred, raw_returns_flat
 
+# LOSS
     def loss_and_info(
         self,
         batch: dict[str, torch.Tensor],

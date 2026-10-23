@@ -1,4 +1,6 @@
-"""Ensemble chunk-Q critic."""
+"""Owns: value critic + optimization. Key: Critic.__init__.
+Ensemble chunk-Q critic.
+"""
 
 from __future__ import annotations
 
@@ -39,6 +41,17 @@ class StateAffine(nn.Module):
         scale = torch.rsqrt(scale + self.eps).to(x.dtype)
         return x * scale * self.weight + self.bias
 
+
+def _build_mlp_layers(in_dim: int, hidden_dim: int, num_layers: int, dropout: float) -> nn.Module:
+    layers: list[nn.Module] = []
+    for i in range(num_layers):
+        layers.append(nn.Linear(in_dim if i == 0 else hidden_dim, hidden_dim))
+        if i == 0 and dropout > 0.0:
+            layers.append(nn.Dropout(dropout))
+        layers += [nn.LayerNorm(hidden_dim), nn.Mish()]
+    layers.append(nn.Linear(hidden_dim, 1))
+    return nn.Sequential(*layers)
+
 class CriticMember(nn.Module):
     """One Q(s, chunk) head: two token streams that condition each other.
 
@@ -54,6 +67,7 @@ class CriticMember(nn.Module):
     The action tokens carry no norm of the chunk: a chunk of all +5 and a chunk
     of all 0 must reach the critic different. State and action keep the same
     affine normalisers the concat head used, for the same reason.
+# INIT
     """
 
     def __init__(
@@ -151,15 +165,7 @@ class CriticMember(nn.Module):
         self.act_to_obs = CrossAttention(state_dim, attn_heads)
         self.cross_norm_obs = build_rms_norm(state_dim)
         self.cross_norm_act = build_rms_norm(state_dim)
-        in_dim = self.input_dim
-        layers: list[nn.Module] = []
-        for i in range(num_layers):
-            layers.append(nn.Linear(in_dim if i == 0 else hidden_dim, hidden_dim))
-            if i == 0 and dropout > 0.0:
-                layers.append(nn.Dropout(dropout))
-            layers += [nn.LayerNorm(hidden_dim), nn.Mish()]
-        layers.append(nn.Linear(hidden_dim, 1))
-        self.mlp = nn.Sequential(*layers)
+        self.mlp = _build_mlp_layers(self.input_dim, hidden_dim, num_layers, dropout)
 
     def forward(
         self,

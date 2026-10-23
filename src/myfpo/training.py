@@ -1,4 +1,6 @@
-"""myfpo online training entry (LeRobot-native, MuJoCo-only)."""
+"""Owns: online loop, checkpointing, metrics. NOT: policy architecture. Key: train_loop_core, setup_run.
+myfpo online training entry (LeRobot-native, MuJoCo-only).
+"""
 
 from __future__ import annotations
 
@@ -29,8 +31,9 @@ from myfpo.fpo_core import compute_eval_summary_metrics, subsampled_min
 from myfpo.processor import squash_to_env_bounds
 from lerobot.utils.constants import CHECKPOINTS_DIR
 from myfpo.layers import cudagraph_step_begin, resolve_device, rms
-from myfpo.tracking import build_backends, finish_backends, log_metrics
-from myfpo.runner import build_train_metrics, summarise_window
+from myfpo.tracking import build_backends, log_metrics
+from myfpo.train_utils import finish_backends
+from myfpo.train_utils import build_train_metrics, summarise_window
 
 
 class EvalPolicy:
@@ -615,6 +618,7 @@ def log_eval_window(
     eval_summary = summaries.get(cfg.eval_sampling, {})
     log_metrics(
         backends,
+# SETUP
         {
             "eval/ema_active": float(bool(result.get("displaced", False))),
             "eval/return_ci_low": eval_summary.get("return_ci_low", 0.0),
@@ -864,6 +868,7 @@ def train_loop(
         eval_steps=eval_steps,
         save_steps=save_steps,
     )
+# LOOP
 
 
 def train_loop_core(

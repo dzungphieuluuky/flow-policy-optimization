@@ -1,4 +1,6 @@
-"""The rollout procedure, as a module function."""
+"""Owns: chunk collection, advantage computation, bootstrap. Key: compute_chunk_advantages, run_rollout.
+The rollout procedure, as a module function.
+"""
 
 from __future__ import annotations
 import torch
@@ -32,6 +34,7 @@ __all__ = [
     "run_rollout",
 ]
 
+# ADVANTAGES
 # ---- from gae.py ----
 @torch.no_grad()
 def compute_chunk_advantages(
@@ -177,6 +180,7 @@ class InFlightChunk(NamedTuple):
 
 
 class RolloutBuffer:
+# COLLECTION
     """Fixed-capacity CPU storage for chunk and executed-step rollout data."""
 
     def __init__(
