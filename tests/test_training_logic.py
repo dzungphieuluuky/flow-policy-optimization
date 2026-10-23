@@ -2,7 +2,7 @@
 import inspect
 
 import torch
-from myfpo.training import build_policy, train_loop
+from myfpo.training import build_policy, train_loop_core
 from myfpo.configuration import MyfpoConfig
 from lerobot.configs.types import FeatureType, PolicyFeature
 
@@ -10,7 +10,7 @@ from lerobot.configs.types import FeatureType, PolicyFeature
 def test_observation_stats_land_before_the_update():
     """The batch normalises at load time (``modeling.load_batch``), so a stats
     update after ``train_update`` leaves the first rollout unnormalised."""
-    source = inspect.getsource(train_loop)
+    source = inspect.getsource(train_loop_core)
     assert source.index("update_observation_stats") < source.index("train_update(")
 
 def test_training_logic():

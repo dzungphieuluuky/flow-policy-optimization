@@ -561,20 +561,7 @@ class MyfpoPolicy(PreTrainedPolicy):
         reduction: str = "mean",
         check_finite: bool = True,
     ) -> torch.Tensor:
-        """Compute the ASPO policy loss and the MSE value loss.
-
-        Seven phases, in order:
-          1. load and shape-check the batch
-          2. encode the observation window
-          3. load the frozen behavior CFM loss from the rollout
-          4. the new velocity, and the flow targets under no autocast
-          5. ratio, ASPO surrogate, chunk-masked policy loss
-          6. the critic and the value loss
-          7. assemble, then optionally raise on a non-finite loss
-
-        Use :meth:`loss_with_info` for the diagnostics; they cost a second
-        forward pass, so they are not computed here.
-        """
+        """ASPO policy loss + MSE value loss. See ``loss_with_info`` for diagnostics."""
         loss, _ = self.loss_and_info(
             batch, reduction, check_finite, compute_info=False
         )
@@ -897,17 +884,8 @@ class MyfpoPolicy(PreTrainedPolicy):
     def temporal_sensitivity(
         self, raw_value_pred: torch.Tensor, b: Batch
     ) -> dict[str, float]:
-        """How much the value depends on each chunk token and each obs frame.
-
-        The gradient of Q with respect to the chunk token ``i`` says how much
-        the value moves when token ``i`` moves. The same for the obs frame
-        ``j``. The profile over positions is the measurement the temporal
-        filters are judged on.
-
-        The chunk positions are the whole planned chunk, not only the executed
-        prefix: the critic prices the plan, and the executed length is a
-        separate input.
-        """
+        """Diagnostic: Q gradient wrt chunk tokens / obs frames.
+        Measures temporal filter quality; prices full plan, not executed prefix."""
         out = {}
         grads = torch.autograd.grad(
             raw_value_pred.sum(), b.actions, retain_graph=True

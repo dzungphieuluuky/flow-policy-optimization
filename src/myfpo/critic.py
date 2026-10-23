@@ -5,23 +5,19 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from myfpo.layers import TemporalConv
+from myfpo.layers import (
+    CrossAttention,
+    SinusoidalEncoding,
+    TemporalConv,
+    build_rms_norm,
+)
 from myfpo.processor import StateEncoder
 
 
 class ActionAffine(nn.Module):
-    """A learned per-element affine over the flattened action chunk.
-
-    It computes no statistics from the chunk. A ``LayerNorm`` would subtract
-    the chunk's mean and divide by its standard deviation, so every chunk
-    would reach the critic with the same offset removed and the same scale.
-    The critic would then be blind to a sustained push, and blind to the
-    drifting raw magnitude that ``train/raw_action_abs_max`` monitors.
-
-    The state dict matches ``nn.LayerNorm`` exactly: ``weight`` and ``bias``,
-    the same shapes, the same initial values. A checkpoint written before this
-    change loads into this module unchanged.
-    """
+    """Per-element affine over the chunk. No chunk statistics (no LayerNorm),
+    so sustained pushes and raw magnitude drift survive. State dict matches
+    ``nn.LayerNorm`` (weight/bias) for checkpoint compatibility."""
 
     def __init__(self, dim: int):
         super().__init__()
@@ -34,15 +30,8 @@ class ActionAffine(nn.Module):
 
 
 class StateAffine(nn.Module):
-    """A learned per-element affine over the flattened state window, on the RMS.
-
-    It divides by the root mean square but keeps the mean, so a constant offset
-    in the state survives. A ``LayerNorm`` subtracts that offset, and the critic
-    would then read a raised state and the original state as one input.
-
-    The state dict matches ``nn.LayerNorm`` exactly: ``weight`` and ``bias``,
-    the same shapes, the same initial values.
-    """
+    """Per-element affine over state window using RMS (not mean subtraction),
+    so constant offsets survive. Matches ``nn.LayerNorm`` state dict."""
 
     def __init__(self, dim: int, eps: float = 1e-5):
         super().__init__()
@@ -51,30 +40,23 @@ class StateAffine(nn.Module):
         self.bias = nn.Parameter(torch.zeros(dim))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        scale = x.float().pow(2).mean(dim=-1, keepdim=True)
-        scale = scale.add(self.eps).rsqrt().to(x.dtype)
+        scale = torch.mean(x.float() * x.float(), dim=-1, keepdim=True)
+        scale = torch.rsqrt(scale + self.eps).to(x.dtype)
         return x * scale * self.weight + self.bias
 
 class CriticMember(nn.Module):
-    """One Q(s, a_{t:t+h}) head. The network is a concat MLP. It has no FiLM
-    conditioning; the executed-chunk fraction is concatenated instead.
+    """One Q(s, chunk) head: two token streams that condition each other.
 
-    Every hidden layer is ``Linear -> LayerNorm -> Mish``, following TD-MPC2
-    (arXiv:2310.16828). The norm is the part that matters: that paper reports
-    that scaling an unnormalised critic does not improve performance while
-    LayerNorm does. The output layer stays linear.
+    The state window enters as one token per frame, the action chunk as one
+    token per step. Each stream queries the other in parallel, both read the
+    raw streams, then the last state token and the mean action token go to
+    ``Linear -> Dropout -> LayerNorm -> Mish``. The output layer stays linear.
 
-    ``dropout`` sits directly after the first ``Linear``, the only placement
-    TD-MPC2 specifies ("1% Dropout after the first linear layer in each
-    Q-function"). Its purpose here is to keep the ensemble from converging onto
-    one function: every member regresses onto the same scalar target, so
-    without a mask the only thing distinguishing them is initialisation.
-
-    The action input is a learned affine, not a LayerNorm. See
-    :class:`ActionAffine` for why the chunk's offset has to survive. The state
-    input is :class:`StateAffine`, which keeps the window's mean for the same
-    reason.
-
+    The attention is bidirectional. The critic reads a chunk it has already
+    executed, so no prefix rule applies here, unlike the actor's causal pass.
+    The action tokens carry no norm: a chunk of all +5 and a chunk of all 0
+    must reach the critic different. State and action keep the same affine
+    normalisers the concat head used, for the same reason.
     """
 
     def __init__(
@@ -104,6 +86,7 @@ class CriticMember(nn.Module):
             raise ValueError(f"num_layers must be >= 1, got {num_layers}")
         if not 0.0 <= dropout < 1.0:
             raise ValueError(f"dropout must be in [0, 1), got {dropout}")
+
         self.obs_dim = obs_dim
         self.action_dim = action_dim
         self.n_obs_steps = n_obs_steps
@@ -115,12 +98,20 @@ class CriticMember(nn.Module):
             if condition_dim is not None
             else (state_hidden if state_hidden is not None else hidden_dim)
         )
+        # Four heads on the attention width. The actor's window encoder already
+        # requires a width that splits over its two heads with an even head
+        # width, so state_dim divides by four on every reachable config.
+        attn_heads = 4
+        self.attn_heads = attn_heads
+
         if condition_dim is not None and n_obs_steps != 1:
             raise ValueError(
                 f"condition_dim is set, so n_obs_steps must be 1 (unused), got "
                 f"{n_obs_steps}"
             )
-        self.input_dim = state_dim + action_horizon * action_dim + (
+        # The pool is 2 * state_dim. The first MLP layer does the resize when
+        # state_dim != hidden_dim.
+        self.input_dim = 2 * state_dim + (
             1 if condition_on_exec_length else 0
         )
         # Normalise state and action separately. One norm over the whole
@@ -154,7 +145,22 @@ class CriticMember(nn.Module):
             if chunk_temporal_kernel
             else None
         )
-
+        # One token per action step, projected to the stream width. The affine
+        # above already ran on the flat chunk, so a constant chunk stays
+        # constant and the tokens keep its offset.
+        self.act_in = nn.Linear(action_dim, state_dim)
+        # The chunk is pooled by its mean, which is order-blind, and the cross
+        # pass is position-wise. Fixed step codes keep the chunk's order, so a
+        # reversed chunk cannot read as the same one. The state side needs
+        # none: its trunk already carries RoPE.
+        self.act_pos = SinusoidalEncoding(state_dim)
+        # Both directions read the same input streams, so neither pass sees the
+        # other's output. Chaining them would make the second pass read a
+        # half-mixed stream.
+        self.obs_to_act = CrossAttention(state_dim, attn_heads)
+        self.act_to_obs = CrossAttention(state_dim, attn_heads)
+        self.cross_norm_obs = build_rms_norm(state_dim)
+        self.cross_norm_act = build_rms_norm(state_dim)
         in_dim = self.input_dim
         layers: list[nn.Module] = []
         for i in range(num_layers):
@@ -175,15 +181,34 @@ class CriticMember(nn.Module):
         action_dim]`` and the scalar exec length. Returns ``[B]``.
         """
         if self.condition_dim is None:
-            window = self.norm_state(states.flatten(1))
-            state_part = self.state_encoder(window.view(states.shape))
+            window = self.norm_state(states.flatten(1)).view(states.shape)
+            # The encoder's output norm runs on every token, the same way it
+            # runs on the pooled vector in StateEncoder.forward. Leaving it
+            # out would keep a parameter that never sees a gradient.
+            obs_tokens = self.state_encoder.out_norm(
+                self.state_encoder.encode_tokens(window)
+            )
         else:
-            state_part = states
+            obs_tokens = states.unsqueeze(1)
         chunk = actions.transpose(1, 2)
         if self.chunk_conv is not None:
             chunk = self.chunk_conv(chunk)
-        parts = [state_part, chunk.transpose(1, 2).flatten(1)]
-        parts[1] = self.norm_action(parts[1])
+        # The affine runs on the flat chunk in step-major order.
+        chunk_flat = self.norm_action(chunk.transpose(1, 2).flatten(1))
+        act_tokens = self.act_in(chunk_flat.view(actions.shape))
+        steps = torch.arange(
+            actions.shape[1], dtype=torch.float32, device=act_tokens.device
+        )
+        act_tokens = act_tokens + self.act_pos.encode_times(
+            steps / actions.shape[1]
+        ).to(dtype=act_tokens.dtype)
+        obs = obs_tokens + self.obs_to_act(
+            self.cross_norm_obs(obs_tokens), act_tokens
+        )
+        act = act_tokens + self.act_to_obs(
+            self.cross_norm_act(act_tokens), obs_tokens
+        )
+        parts = [obs[:, -1], act.mean(dim=1)]
         if self.condition_on_exec_length:
             if exec_length_frac is None:
                 raise ValueError(
@@ -195,8 +220,7 @@ class CriticMember(nn.Module):
                     f"exec_length_frac must be [B] matching states, got {tuple(exec_length_frac.shape)}"
                 )
             parts.append(exec_length_frac.to(dtype=parts[0].dtype).unsqueeze(-1))
-        x = torch.cat(parts, dim=-1)
-        return self.mlp(x).squeeze(-1)
+        return self.mlp(torch.cat(parts, dim=-1)).squeeze(-1)
 
 
 class Critic(nn.Module):
@@ -244,6 +268,7 @@ class Critic(nn.Module):
         self.condition_on_exec_length = condition_on_exec_length
         self.condition_dim = condition_dim
         self.dropout = dropout
+
         self.networks = nn.ModuleList(
             [
                 CriticMember(

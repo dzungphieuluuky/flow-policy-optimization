@@ -24,13 +24,13 @@ def test_both_blocks_are_the_same_block_with_a_different_mlp():
 
 
 def test_the_block_parameter_counts_are_pinned():
-    """The docs quote 2.36M parameters and 280k per DiT block."""
+    """The docs quote the actor total, and these are its two block widths."""
     cfg = MyfpoConfig()
     dit = DiTBlock(cfg.hidden_dim, cfg.dit_heads, cfg.dit_mlp_ratio)
     res = ResMLPBlock(
         cfg.hidden_dim, cfg.dit_heads, cfg.resmlp_hidden_mult, cfg.resmlp_units
     )
-    assert _params(dit) == 280_832
+    assert _params(dit) == 248_320
     assert _params(res) == 446_464
 
 
@@ -48,10 +48,12 @@ def test_the_block_state_dict_keys_are_the_checkpoint_contract():
         "attn.out.weight",
         "attn.out.bias",
         "norm2.weight",
-        "mlp.gate_up.weight",
-        "mlp.gate_up.bias",
-        "mlp.down.weight",
-        "mlp.down.bias",
+        "mlp.fc.weight",
+        "mlp.fc.bias",
+        "mlp.norm.weight",
+        "mlp.norm.bias",
+        "mlp.out.weight",
+        "mlp.out.bias",
         "adaLN.fc1.weight",
         "adaLN.fc1.bias",
         "adaLN.fc2.weight",

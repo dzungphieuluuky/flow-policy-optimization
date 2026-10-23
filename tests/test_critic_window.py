@@ -156,7 +156,7 @@ def test_input_dim_grows_by_exactly_one_with_the_length_feature():
     on = _critic(condition_on_exec_length=True)
     off = _critic(condition_on_exec_length=False)
     assert on.input_dim - off.input_dim == 1
-    assert off.input_dim == HIDDEN + H * ACT
+    assert off.input_dim == 2 * HIDDEN
 
 
 def test_flag_off_ignores_exec_frac_entirely():
@@ -278,14 +278,14 @@ def test_the_window_trunk_reads_every_frame_and_the_chunk_is_a_full_input():
     member = _critic().networks[0]
     first = member.mlp[0]
     assert member.state_encoder.frame.fc1.in_features == OBS
-    assert first.in_features == HIDDEN + H * ACT + 1
+    assert first.in_features == 2 * HIDDEN + 1
     assert first.out_features == HIDDEN
 
 
 def test_the_trunk_width_is_separate_from_the_critic_width():
     """A narrow window trunk must not force a narrow Q MLP, or the reverse."""
     member = Critic(OBS, HIDDEN, ACT, STEPS, H, 1, state_hidden=16).networks[0]
-    assert member.mlp[0].in_features == 16 + H * ACT + 1
+    assert member.mlp[0].in_features == 2 * 16 + 1
 
 
 def test_num_layers_controls_hidden_width():
@@ -305,11 +305,10 @@ def test_parameter_count_is_proportionate():
         for p in Critic(11, 128, 17, 16, 16, 2).parameters()
     )
     # state_hidden defaults to hidden_dim=128. Per member:
-    # norm_state StateAffine(176)=352, window trunk StateEncoder(11,128,16)=84352,
-    # norm_action affine(272)=544, in_dim = 128 + 16*17 + 1 = 401,
-    # Linear(401,128)=51456, LayerNorm(128)=256, Linear(128,128)=16512,
-    # LayerNorm(128)=256, Linear(128,1)=129 -> 153857, times 2 members.
-    assert n == pytest.approx(307_714, abs=50), f"critic is {n} params"
+    # norm_state 352, window trunk 84352, norm_action 544, act_in 2304,
+    # obs_to_act 66048, act_to_obs 66048, two cross norms 256,
+    # pool 2*128+1=257 -> MLP 50177 -> 270081, times 2 members.
+    assert n == pytest.approx(540_162, abs=50), f"critic is {n} params"
 
 
 def test_n_obs_steps_must_be_positive():

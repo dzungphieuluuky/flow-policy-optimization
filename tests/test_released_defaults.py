@@ -11,8 +11,10 @@ RELEASED = {
     "num_learning_epochs": (10, "finetune_online_rl.py:74 update_epochs"),
     "num_steps_noise_start": (4, "flow_model_config.py:68 sampling_steps"),
     "num_steps_zero_start": (4, "flow_model_config.py:68 sampling_steps"),
-    "policy_lr": (1e-5, "finetune_online_rl.py:124 learning_rate_actor"),
-    "critic_lr": (1e-4, "finetune_online_rl.py:125 learning_rate_critic"),
+    # The repo departs from the release here: one LR for both networks, set by
+    # the 2026-10-23 redesign. The release keeps two separate values.
+    "policy_lr": (3e-4, "this repo, not finetune_online_rl.py:124"),
+    "critic_lr": (3e-4, "this repo, not finetune_online_rl.py:125"),
     "adam_betas": ((0.9, 0.99), "finetune_online_rl.py:128 optimizer_betas_actor"),
     "gae_lambda": (0.95, "finetune_online_rl.py:120"),
     "gamma": (0.99, "finetune_online_rl.py:119 discount"),

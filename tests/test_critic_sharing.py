@@ -36,8 +36,8 @@ def test_the_shared_critic_takes_one_embedding_not_the_window():
     frac = torch.full((4,), 0.5)
 
     assert critic(cond, actions, frac).shape == (2, 4)
-    assert critic.input_dim == HIDDEN + HORIZON * ACT + 1, (
-        "the first layer must be the embedding width, not n_obs_steps * obs_dim"
+    assert critic.input_dim == 2 * HIDDEN + 1, (
+        "the shared vector is one token, so the pool is twice the embedding width"
     )
 
 

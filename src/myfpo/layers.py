@@ -100,34 +100,13 @@ def rms(x: torch.Tensor) -> torch.Tensor:
 
 
 def cudagraph_safe(x: torch.Tensor, enabled: bool = True) -> torch.Tensor:
-    """A copy of a tensor that a cudagraph may still own.
-
-    A module compiled with ``mode="reduce-overhead"`` runs on a cudagraph, and
-    the tensor it returns is memory the cudagraph pool owns: the next
-    invocation of that module can overwrite it, and the pool can retire the
-    tensor while another compiled region is still holding it. Reading it then
-    raises "accessing tensor output of CUDAGraphs that has been overwritten by
-    a subsequent run".
-
-    The copy leaves the pool, so the consumer of the tensor reads a stable
-    value. Call it on the way out of a compiled module, before the tensor
-    crosses into another one. With ``enabled`` false nothing was compiled, so
-    the input comes back unchanged.
-    """
+    """Copy a cudagraph-owned tensor; call before a consumer keeps it.
+    ``enabled=False`` returns input unchanged."""
     return x.clone() if enabled else x
 
 
 def cudagraph_step_begin() -> None:
-    """Tell the cudagraph manager that a new step starts here.
-
-    A module compiled with ``mode="reduce-overhead"`` runs on a cudagraph, and
-    the manager holds the memory of the finished step until it is told that
-    the step is over. Marking the step lets it recycle that memory, and it
-    keeps the manager from warning that it cannot hit the fast path.
-
-    It is a no-op when nothing is compiled, so it can be called
-    unconditionally.
-    """
+    """No-op unless cudagraph active; marks step start so memory can recycle."""
     torch.compiler.cudagraph_mark_step_begin()
 
 
@@ -241,19 +220,8 @@ class SinusoidalEncoding(nn.Module):
         return emb
 
 class TemporalConv(nn.Module):
-    """A learned per-feature filter along a time axis. It computes no statistics.
-
-    The input is ``[B, C, T]`` and the output is ``[B, C, T]``. The width
-    never changes, so every shape after the flatten stays the same.
-
-    The convolution is depthwise: channel ``c`` filters its own history and
-    nothing else. The linear layer that follows already mixes features, so a
-    full convolution only adds parameters: ``C*k`` here against ``C*C*k``,
-    which would be 363k at the 348 observation channels.
-
-    ``causal=True`` pads on the left only, so the output at position i reads
-    positions <= i and never the future.
-    """
+    """Depthwise 1-D conv over [B,C,T]; output length = input length.
+    Causal pads left only (position i reads <= i). Keeps width fixed."""
 
     def __init__(self, channels: int, kernel_size: int, causal: bool = False):
         super().__init__()
@@ -343,6 +311,58 @@ class SelfAttention(nn.Module):
         return self.out(y)
 
 
+
+
+class CrossAttention(nn.Module):
+    """SDPA where the query and the key/value come from different streams.
+
+    There is no causal mask. The critic reads a chunk it has already seen, so
+    no prefix rule applies. The sequence lengths of the two sides may differ.
+    No RoPE: token order already lives in the frame and step features.
+    """
+
+    def __init__(self, hidden_dim: int, n_heads: int):
+        super().__init__()
+        if hidden_dim < 1:
+            raise ValueError(f"hidden_dim must be positive, got {hidden_dim}")
+        if n_heads < 1:
+            raise ValueError(f"n_heads must be positive, got {n_heads}")
+        if hidden_dim % n_heads != 0:
+            raise ValueError(f"hidden_dim={hidden_dim} must split over {n_heads} heads")
+        self.n_heads = n_heads
+        self.head_dim = hidden_dim // n_heads
+        self.q_proj = nn.Linear(hidden_dim, hidden_dim)
+        self.kv_proj = nn.Linear(hidden_dim, 2 * hidden_dim)
+        self.out = nn.Linear(hidden_dim, hidden_dim)
+
+    def forward(
+        self, query: torch.Tensor, context: torch.Tensor
+    ) -> torch.Tensor:
+        """``query`` is ``[B, Lq, D]``, ``context`` is ``[B, Lk, D]``. Returns
+        ``[B, Lq, D]``.
+        """
+        if query.dim() != 3 or context.dim() != 3:
+            raise ValueError(
+                f"query and context must be 3D, got {tuple(query.shape)} and "
+                f"{tuple(context.shape)}"
+            )
+        if query.shape[0] != context.shape[0]:
+            raise ValueError(
+                f"query batch {query.shape[0]} != context batch {context.shape[0]}"
+            )
+        if query.shape[2] != context.shape[2]:
+            raise ValueError(
+                f"query width {query.shape[2]} != context width {context.shape[2]}"
+            )
+        b, lq, _ = query.shape
+        lk = context.shape[1]
+        h, d = self.n_heads, self.head_dim
+        q = self.q_proj(query).view(b, lq, h, d).transpose(1, 2)
+        k, v = self.kv_proj(context).chunk(2, dim=-1)
+        k = k.view(b, lk, h, d).transpose(1, 2)
+        v = v.view(b, lk, h, d).transpose(1, 2)
+        y = F.scaled_dot_product_attention(q, k, v)
+        return self.out(y.transpose(1, 2).reshape(b, lq, h * d))
 class AdaLNBlock(nn.Module):
     """Pre-norm adaLN-Zero block: self-attention and one MLP, conditioned on ``c``.
 

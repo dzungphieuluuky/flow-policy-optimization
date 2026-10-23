@@ -10,7 +10,7 @@ import pytest
 import torch
 
 # : Guard count the table below is expected to cover.
-EXPECTED_CASES = 75
+EXPECTED_CASES = 78
 
 _CASES: list[tuple[str, object]] = []
 
@@ -87,7 +87,7 @@ def _missing_input_features() -> None:
 
 
 # --- network constructors ----------------------------------------------------.
-from myfpo.layers import DiTBlock, SelfAttention  # noqa: E402
+from myfpo.layers import CrossAttention, DiTBlock, SelfAttention  # noqa: E402
 from myfpo.critic import Critic, CriticMember  # noqa: E402
 from myfpo.processor import RunningMeanStd, StateEncoder  # noqa: E402
 from myfpo.flow import MyfpoFlowModel  # noqa: E402
@@ -102,6 +102,9 @@ case("encoder:StateEncoder:steps")(lambda: StateEncoder(3, 8, 0))
 case("attention:SelfAttention:hidden")(lambda: SelfAttention(0, 2))
 case("attention:SelfAttention:heads")(lambda: SelfAttention(8, 0))
 case("attention:SelfAttention:split")(lambda: SelfAttention(8, 3))
+case("attention:CrossAttention:hidden")(lambda: CrossAttention(0, 2))
+case("attention:CrossAttention:heads")(lambda: CrossAttention(8, 0))
+case("attention:CrossAttention:split")(lambda: CrossAttention(8, 3))
 case("attention:DiTBlock:hidden")(lambda: DiTBlock(1, 2, 2.0))
 case("attention:DiTBlock:ratio")(lambda: DiTBlock(8, 2, 0.0))
 case("flow:actor:action_dim")(lambda: MyfpoFlowModel(0, 8, 128, 3, 2, 2.0, 64))
@@ -231,6 +234,9 @@ KEYWORDS = {
     'attention:SelfAttention:heads': 'n_heads',
     'attention:SelfAttention:hidden': 'hidden_dim',
     'attention:SelfAttention:split': 'split',
+    'attention:CrossAttention:heads': 'n_heads',
+    'attention:CrossAttention:hidden': 'hidden_dim',
+    'attention:CrossAttention:split': 'split',
     'config:action_perturb_std': 'action_perturb_std',
     'config:advantage_clamp_pos': 'advantage_clamp_pos',
     'config:batch_size': 'batch_size',
@@ -279,6 +285,7 @@ KEYWORDS = {
     'critic:member:hidden': 'hidden_dim',
     'critic:member:horizon': 'action_horizon',
     'critic:member:layers': 'num_layers',
+
     'encoder:RunningMeanStd:dim': 'dim',
     'encoder:StateEncoder:hidden': 'hidden_dim',
     'encoder:StateEncoder:steps': 'max_obs_steps',

@@ -78,8 +78,8 @@ def test_critic_hidden_dim_overrides_the_actor_width():
     without doubling the actor."""
     policy = _policy_with_critic(_cfg(hidden_dim=64, critic_hidden_dim=256))
     assert policy.critic.networks[0].mlp[0].out_features == 256
-    # The critic width does not set the input width: the window trunk does.
-    assert policy.critic.networks[0].mlp[0].in_features == 64 + 2 * 8 + 1
+    # The attention width follows the actor; only the MLP widens.
+    assert policy.critic.networks[0].mlp[0].in_features == 2 * 64 + 1
 
 
 @pytest.mark.parametrize("bad", [0, -3])

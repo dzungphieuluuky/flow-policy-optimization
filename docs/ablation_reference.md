@@ -23,6 +23,17 @@ Based on `literature_review.md` (Sections 2, 5, 11.4) and repo implementation (`
 
 The config is the `MyfpoConfig` dataclass, so every knob is a `--myfpo.` flag.
 
+**Cross-attention critic instead of the concat head.** The state window enters
+as one token per frame, the action chunk as one token per step. Each stream
+queries the other, then the last state token and the mean action token go to
+the same `Linear -> LayerNorm -> Mish` MLP. The action tokens carry no norm, so
+a constant chunk keeps its offset. No mask: the critic reads a chunk it has
+already executed. Costs about `8 * hidden_dim**2` parameters per member.
+
+```bash
+.venv/bin/python scripts/train.py --env Hopper-v5 --myfpo.critic_arch cross_attn
+```
+
 **No critic dropout.** TD-MPC2 puts 1% after the first linear to stop the
 ensemble converging onto one function. Every member here regresses onto the
 same scalar target, so initialisation is the only thing separating them. Watch

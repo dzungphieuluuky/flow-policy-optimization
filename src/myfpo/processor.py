@@ -74,21 +74,8 @@ class RunningMeanStd(nn.Module):
         return norm.clamp(-self.clip, self.clip).to(x.dtype)
 
 class StateEncoder(nn.Module):
-    """Project each frame, mix the window with one causal attention pass, read
-    the last frame. Normalise. Return it.
-
-    The projection is shared over the frames, so the first width follows
-    ``obs_dim`` and not ``T * obs_dim``. The old flat dense was the capacity
-    sink: on Humanoid (348 obs, 16 frames) it held 713k of the encoder's 729k,
-    which was 59% of the actor. Attention keeps the frame order, which a pool
-    would drop, and the causal mask means frame ``i`` reads the prefix only.
-
-    The norm is the point of the path. This was the only unnormalised
-    conditioning path in the stack: every observation reaches the actor through
-    here and then through an unnormalised adaLN projection. RMSNorm over
-    LayerNorm, because it does not subtract the mean and it matches the actor's
-    norm1/norm2/norm_out.
-    """
+    """Project frame, causal attention over window, read last, RMSNorm.
+    Shared projection (not flat dense); RMS (not LayerNorm) to keep mean."""
 
     def __init__(
         self,
@@ -110,17 +97,24 @@ class StateEncoder(nn.Module):
         self.attn = SelfAttention(hidden_dim, n_heads)
         self.out_norm = build_rms_norm(hidden_dim)
 
-    def forward(self, states: torch.Tensor) -> torch.Tensor:
-        """Accept the window ``[B, T, obs]``. Return one normalised conditioning
-        vector of width ``hidden_dim``.
+    def encode_tokens(self, states: torch.Tensor) -> torch.Tensor:
+        """Return the attended window ``[B, T, hidden]``, before the pool.
+
+        The critic's cross-attention reads one token per frame, so it needs the
+        sequence. ``forward`` pools this sequence to the last frame.
         """
         if states.dim() != 3 or states.shape[2] != self.obs_dim:
             raise ValueError(f"states must have shape [B, {self.max_obs_steps}, {self.obs_dim}], got {tuple(states.shape)}")
         if states.shape[1] != self.max_obs_steps:
             raise ValueError(f"states has {states.shape[1]} frames, built for max_obs_steps={self.max_obs_steps}")
         h = self.frame(states)
-        h = h + self.attn(self.attn_norm(h))
-        return self.out_norm(h[:, -1])
+        return h + self.attn(self.attn_norm(h))
+
+    def forward(self, states: torch.Tensor) -> torch.Tensor:
+        """Accept the window ``[B, T, obs]``. Return one normalised conditioning
+        vector of width ``hidden_dim``.
+        """
+        return self.out_norm(self.encode_tokens(states)[:, -1])
 
 
 def env_squash_terms(

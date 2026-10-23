@@ -85,10 +85,10 @@ def test_the_layernorms_are_on_the_hidden_width(num_layers):
             assert m.normalized_shape == (HIDDEN,)
 
 
-def test_the_first_linear_takes_the_trunk_output_and_the_chunk():
-    """The window reaches it through the trunk, so its width is the trunk's."""
+def test_the_first_linear_takes_the_pool_and_not_the_chunk():
+    """The pool is the last state token and the mean action token."""
     first = _member(2).mlp[0]
-    assert first.in_features == HIDDEN + H * ACT + 1
+    assert first.in_features == 2 * HIDDEN + 1
 
 
 def test_the_default_ensemble_is_two():
@@ -284,7 +284,7 @@ def test_the_action_affine_runs_once_per_forward():
     assert len(calls) == 1
 
 
-def test_the_chunk_reaches_the_first_layer_through_one_affine():
+def test_the_chunk_reaches_the_action_tokens_through_one_affine():
     """The affine is applied once, so the chunk keeps its own scale."""
     torch.manual_seed(3)
     m = _member().eval()
@@ -294,26 +294,32 @@ def test_the_chunk_reaches_the_first_layer_through_one_affine():
         )
         m.norm_action.bias.copy_(torch.linspace(-0.3, 0.4, H * ACT))
     seen: dict[str, torch.Tensor] = {}
-    m.mlp[0].register_forward_pre_hook(
+    m.act_in.register_forward_pre_hook(
         lambda _module, args: seen.__setitem__("x", args[0].detach().clone())
     )
     obs = torch.randn(2, STEPS, OBS)
     act = torch.randn(2, H, ACT)
     m(obs, act, torch.full((2,), 0.5))
-    chunk = seen["x"][:, HIDDEN : HIDDEN + H * ACT]
     expected = (
         act.reshape(2, H * ACT) * m.norm_action.weight + m.norm_action.bias
-    )
-    assert torch.equal(chunk, expected)
+    ).view(2, H, ACT)
+    assert torch.equal(seen["x"], expected)
 
 
 def test_the_input_parts_add_exactly_their_own_widths():
-    """State affine + window trunk + action affine, beyond the MLP trunk."""
+    """Two affines, two cross blocks, and the token projection, beyond the MLP."""
     m = _member()
     with_parts = sum(p.numel() for p in m.parameters())
     mlp = sum(p.numel() for p in m.mlp.parameters())
     encoder = sum(p.numel() for p in m.state_encoder.parameters())
-    assert with_parts == mlp + encoder + 2 * (STEPS * OBS) + 2 * (H * ACT)
+    cross = (
+        sum(p.numel() for p in m.obs_to_act.parameters())
+        + sum(p.numel() for p in m.act_to_obs.parameters())
+        + sum(p.numel() for p in m.cross_norm_obs.parameters())
+        + sum(p.numel() for p in m.cross_norm_act.parameters())
+        + sum(p.numel() for p in m.act_in.parameters())
+    )
+    assert with_parts == mlp + encoder + cross + 2 * (STEPS * OBS) + 2 * (H * ACT)
 
 
 def test_the_shared_encoder_branch_skips_the_state_trunk():
@@ -322,7 +328,7 @@ def test_the_shared_encoder_branch_skips_the_state_trunk():
     assert m.norm_state is None
     assert m.state_encoder is None
     assert isinstance(m.norm_action, ActionAffine)
-    assert m.input_dim == HIDDEN + H * ACT + 1
+    assert m.input_dim == 2 * HIDDEN + 1
 
 
 def test_the_state_norm_receives_the_flattened_window_not_the_chunk():
