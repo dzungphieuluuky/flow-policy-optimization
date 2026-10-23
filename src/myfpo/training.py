@@ -34,7 +34,7 @@ from myfpo.layers import cudagraph_step_begin, resolve_device, rms
 from myfpo.tracking import build_backends, log_metrics
 from myfpo.train_utils import finish_backends
 from myfpo.train_utils import build_train_metrics, summarise_window
-from tqdm import tqdm
+from tqdm.auto import tqdm
 
 
 class EvalPolicy:
