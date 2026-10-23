@@ -1,4 +1,4 @@
-"""Owns: pure math / flow-matching helpers used by policy + rollout. Key: compute_policy_ratio, cfm_target, mc_draws.
+"""Owns: pure math / flow-matching helpers used by policy + rollout. Key: compute_policy_ratio, cfm_target, mc_samples.
 FPO++ core maths. The module holds the CFM loss, the ratio, the ASPO trust region, the timestep and noise laws, and the flow sampler.
 """
 
@@ -93,7 +93,7 @@ def clip_velocity(velocity: torch.Tensor, bound: float | None) -> torch.Tensor:
     return velocity.clamp(-bound, bound)
 
 
-def mc_draws(
+def mc_samples(
     actions: torch.Tensor, eps: torch.Tensor, t: torch.Tensor
 ) -> tuple[torch.Tensor, torch.Tensor, tuple[int, ...], int]:
     """The shared MC prologue of the behavior loss and the training loss.

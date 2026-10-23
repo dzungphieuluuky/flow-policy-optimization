@@ -1,4 +1,4 @@
-"""Owns: online loop, checkpointing, metrics. NOT: policy architecture. Key: train_loop_core, setup_run.
+"""Owns: online loop, checkpointing, metrics. NOT: policy architecture. Key: run_training_loop, configure_run.
 myfpo online training entry (LeRobot-native, MuJoCo-only).
 """
 
@@ -303,7 +303,7 @@ def collect_rollouts(policy, train_env, cfg, action_low, action_high, steps_to_g
     return batch, rollout, steps_this_rollout, rollout_jerk, rollout_seam_jerk
 
 
-def train_update(policy, optimizer, batch, backends, cfg, grad_groups):
+def policy_update_step(policy, optimizer, batch, backends, cfg, grad_groups):
     policy.train()
     epoch_infos: list[dict[str, float]] = []
     grad_norms_pre: list[dict[str, torch.Tensor]] = []
@@ -770,7 +770,7 @@ def make_train_env(cfg, env, env_name, runtime: dict | None):
     return env
 
 
-def setup_run(
+def configure_run(
     env,
     out_dir: Path,
     cfg: MyfpoConfig,
@@ -860,7 +860,7 @@ def train_loop(
     eval_steps: int,
     save_steps: int,
 ) -> float:
-    return train_loop_core(
+    return run_training_loop(
         setup,
         state,
         out_dir,
@@ -871,7 +871,7 @@ def train_loop(
 # LOOP
 
 
-def train_loop_core(
+def run_training_loop(
     setup: RunSetup, state: RunState, out_dir: Path,
     *, total_steps: int, eval_steps: int, save_steps: int,
 ) -> float:
@@ -905,7 +905,7 @@ def train_loop_core(
         # rollout before the first update reads it.
         policy.update_observation_stats(batch["normalizer_observations"])
 
-        epoch_infos, grad_norms_pre, above_clamp_fracs, both_clamped_fracs = train_update(
+        epoch_infos, grad_norms_pre, above_clamp_fracs, both_clamped_fracs = policy_update_step(
             policy, optimizer, batch, backends, cfg, grad_groups
         )
 
@@ -998,7 +998,7 @@ def run_training(
         obs_dim = int(np.prod(env.observation_space.shape))
         action_dim = int(np.prod(env.action_space.shape))
 
-    setup = setup_run(
+    setup = configure_run(
         env,
         out_dir,
         cfg,
