@@ -566,6 +566,54 @@ def close_chunks(
                 state.awaiting[i] = True
 
 
+def init_collect_state(
+    carry, envs, seed, n, n_obs_steps, action_horizon, act_dim, targets
+):
+    try:
+        if carry is None:
+            obs, _ = envs.reset(seed=[seed + i for i in range(n)])
+            obs0 = torch.from_numpy(np.asarray(obs, dtype=np.float32))
+            state = make_state(
+                n, n_obs_steps, int(obs0.shape[-1]), action_horizon, act_dim,
+                obs0, remaining=sum(targets),
+            )
+        else:
+            state = make_state(
+                n, n_obs_steps, int(carry.windows.shape[-1]), action_horizon,
+                act_dim, carry.windows, remaining=sum(targets),
+            )
+            state.awaiting[:] = carry.awaiting
+    except (ValueError, RuntimeError, KeyError):
+        raise
+    return state
+
+
+def run_collect_loop(
+    state, envs, policy, low, high, targets, n_action_steps, buffer,
+    n_obs_steps, action_horizon,
+):
+    while state.remaining:
+        envs_needing_a_chunk = [
+            i for i in range(len(state.windows))
+            if (
+                state.in_flight[i] is None
+                and not state.awaiting[i]
+                and state.executed_total[i] < targets[i]
+            )
+        ]
+        if envs_needing_a_chunk:
+            plan_chunks(
+                state, envs_needing_a_chunk, policy, low, high,
+                targets, n_action_steps,
+            )
+        obs_t, term_np, trunc_np, done_np = step_envs(
+            state, envs, action_horizon
+        )
+        close_chunks(
+            state, obs_t, term_np, trunc_np, done_np,
+            buffer, n_obs_steps,
+        )
+
 def collect_chunks_vec(
     envs,
     policy: Callable[[torch.Tensor], torch.Tensor],
@@ -609,65 +657,14 @@ def collect_chunks_vec(
         seed = int(torch.randint(0, 2**31, (1,)).item())
     act_dim = int(np.asarray(envs.single_action_space.shape).prod())
 
+    state = init_collect_state(
+        carry, envs, seed, n, n_obs_steps, action_horizon, act_dim, targets
+    )
     try:
-        if carry is None:
-            obs, _ = envs.reset(seed=[seed + i for i in range(n)])
-            obs0 = torch.from_numpy(np.asarray(obs, dtype=np.float32))
-            state = make_state(
-                n,
-                n_obs_steps,
-                int(obs0.shape[-1]),
-                action_horizon,
-                act_dim,
-                obs0,
-                remaining=sum(targets),
-            )
-        else:
-            state = make_state(
-                n,
-                n_obs_steps,
-                int(carry.windows.shape[-1]),
-                action_horizon,
-                act_dim,
-                carry.windows,
-                remaining=sum(targets),
-            )
-            state.awaiting[:] = carry.awaiting
-        while state.remaining:
-            envs_needing_a_chunk = [
-                i
-                for i in range(n)
-                if (
-                    state.in_flight[i] is None
-                    and not state.awaiting[i]
-                    and state.executed_total[i] < targets[i]
-                )
-            ]
-            if envs_needing_a_chunk:
-                plan_chunks(
-                    state,
-                    envs_needing_a_chunk,
-                    policy,
-                    low,
-                    high,
-                    targets,
-                    n_action_steps,
-                )
-
-            obs_t, term_np, trunc_np, done_np = step_envs(
-                state, envs, action_horizon
-            )
-
-            close_chunks(
-                state,
-                obs_t,
-                term_np,
-                trunc_np,
-                done_np,
-                buffer,
-                n_obs_steps,
-            )
-
+        run_collect_loop(
+            state, envs, policy, low, high, targets, n_action_steps,
+            buffer, n_obs_steps, action_horizon,
+        )
     except (ValueError, RuntimeError, KeyError):
         if on_error_flush is not None:
             with contextlib.suppress(ValueError, RuntimeError):
@@ -978,7 +975,11 @@ def run_rollout(
     t = sample_mc_timesteps(cfg, n_chunks, device)
     eps = sample_eps(cfg, n_chunks, int(cfg.action_feature.shape[0]), device)
 
-    behavior_cfm_loss, behavior_cfm_loss_token = policy.compute_behavior_cfm_losses(
+    (
+        behavior_cfm_loss,
+        behavior_cfm_loss_token,
+        behavior_velocity_token,
+    ) = policy.compute_behavior_cfm_losses(
         normalised_states, actions, t, eps, action_is_pad
     )
 
@@ -998,4 +999,5 @@ def run_rollout(
         "gae_diagnostics": gae_diagnostics,
         "behavior_cfm_loss": behavior_cfm_loss,
         "behavior_cfm_loss_token": behavior_cfm_loss_token,
+        "behavior_velocity_token": behavior_velocity_token,
     }

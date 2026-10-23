@@ -55,4 +55,5 @@ def make_batch(
         "mc_eps": torch.randn(n, mc, horizon, action_dim),
         "behavior_cfm_loss": torch.ones(n, mc),
         "behavior_cfm_loss_token": torch.ones(n, mc, horizon),
+        "behavior_velocity_token": torch.zeros(n, mc, horizon, action_dim),
     }

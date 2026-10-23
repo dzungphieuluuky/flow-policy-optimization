@@ -92,7 +92,9 @@ def fixed_batch(policy, n: int = 3, seed: int = 1) -> dict:
     pad = torch.zeros(n, HORIZON, dtype=torch.bool)
 
     pre = policy.preprocessor({"observation.state": states})["observation.state"]
-    old, old_token = policy.compute_behavior_cfm_losses(pre, actions, t, eps, pad)
+    old, old_token, old_velocity = policy.compute_behavior_cfm_losses(
+        pre, actions, t, eps, pad
+    )
     return {
         "observation.state": states,
         "action": actions,
@@ -103,6 +105,7 @@ def fixed_batch(policy, n: int = 3, seed: int = 1) -> dict:
         "mc_eps": eps,
         "behavior_cfm_loss": old,
         "behavior_cfm_loss_token": old_token,
+        "behavior_velocity_token": old_velocity,
     }
 
 

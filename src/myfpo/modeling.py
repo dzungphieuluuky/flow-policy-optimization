@@ -17,7 +17,7 @@ from lerobot.policies import PreTrainedPolicy
 from lerobot.processor.converters import to_tensor
 from lerobot.utils.constants import ACTION, OBS_STATE
 
-from myfpo.configuration import MyfpoConfig
+from myfpo.configuration import MyfpoConfig, VELOCITY_RATIO_MODES
 from myfpo.fpo_core import (
     broadcast_condition,
     cfm_loss_weight,
@@ -89,6 +89,7 @@ class Batch:
     condition_flat: torch.Tensor
     cfm_loss_old: torch.Tensor
     cfm_loss_old_token: torch.Tensor
+    velocity_old_token: torch.Tensor
 
 
 @dataclasses.dataclass
@@ -158,8 +159,6 @@ class MyfpoPolicy(PreTrainedPolicy):
             condition_dim=config.hidden_dim if config.critic_share_encoder else None,
             dropout=config.critic_dropout,
             state_hidden=config.hidden_dim,
-            chunk_temporal_kernel=config.critic_chunk_temporal_kernel,
-            chunk_temporal_causal=config.critic_chunk_temporal_causal,
         )
         self.obs_normalizer = RunningMeanStd(obs_dim)
 
@@ -483,7 +482,7 @@ class MyfpoPolicy(PreTrainedPolicy):
         t: torch.Tensor,
         eps: torch.Tensor,
         action_is_pad: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """The CFM loss of the behavior policy.
 
         That is the ``cfm_loss_old`` of the FPO ratio, evaluated against the
@@ -517,9 +516,10 @@ class MyfpoPolicy(PreTrainedPolicy):
                 cfg,
             )
             loss_mask = action_is_pad
-            return compute_cfm_loss(
+            loss, loss_token = compute_cfm_loss(
                 v_old, v_star, cfg, "sample_and_token", loss_mask, cfm_loss_weight(t, cfg)
             )
+            return loss, loss_token, v_old
 
     def generate_rollout(
         self,
@@ -647,8 +647,8 @@ class MyfpoPolicy(PreTrainedPolicy):
             condition = cudagraph_safe(self.encoder(states), self.config.compile)
             condition_flat = broadcast_condition(condition, num_mc)
 
-        cfm_loss_old, cfm_loss_old_token = self.load_behavior_losses(
-            batch, device, n, num_mc
+        cfm_loss_old, cfm_loss_old_token, velocity_old_token = (
+            self.load_behavior_losses(batch, device, n, num_mc, action_dim)
         )
 
         return Batch(
@@ -668,6 +668,7 @@ class MyfpoPolicy(PreTrainedPolicy):
             condition_flat=condition_flat,
             cfm_loss_old=cfm_loss_old,
             cfm_loss_old_token=cfm_loss_old_token,
+            velocity_old_token=velocity_old_token,
         )
 
     def load_behavior_losses(
@@ -676,12 +677,18 @@ class MyfpoPolicy(PreTrainedPolicy):
         device,
         n: int,
         num_mc: int,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """The frozen behavior CFM losses, computed once per rollout."""
+        action_dim: int,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """The frozen behavior CFM losses and velocity, computed once per rollout."""
         cfg = self.config
-        if "behavior_cfm_loss" not in batch or "behavior_cfm_loss_token" not in batch:
+        required = (
+            "behavior_cfm_loss",
+            "behavior_cfm_loss_token",
+            "behavior_velocity_token",
+        )
+        if any(key not in batch for key in required):
             raise KeyError(
-                "forward requires 'behavior_cfm_loss' and 'behavior_cfm_loss_token' "
+                f"forward requires {', '.join(repr(key) for key in required)} "
                 "from generate_rollout. They are computed once per rollout against "
                 "the frozen snapshot and must not be recomputed here."
             )
@@ -690,6 +697,9 @@ class MyfpoPolicy(PreTrainedPolicy):
         )
         cfm_loss_old_token = to_tensor(
             batch["behavior_cfm_loss_token"], dtype=torch.float32, device=device
+        )
+        velocity_old_token = to_tensor(
+            batch["behavior_velocity_token"], dtype=torch.float32, device=device
         )
         if tuple(cfm_loss_old.shape) != (n, num_mc):
             raise ValueError(
@@ -701,7 +711,13 @@ class MyfpoPolicy(PreTrainedPolicy):
                 f"behavior_cfm_loss_token shape {tuple(cfm_loss_old_token.shape)} != "
                 f"{(n, num_mc, expected_tokens)}"
             )
-        return cfm_loss_old, cfm_loss_old_token
+        expected_velocity = (n, num_mc, expected_tokens, action_dim)
+        if tuple(velocity_old_token.shape) != expected_velocity:
+            raise ValueError(
+                f"behavior_velocity_token shape {tuple(velocity_old_token.shape)} != "
+                f"{expected_velocity}"
+            )
+        return cfm_loss_old, cfm_loss_old_token, velocity_old_token
 
     def policy_loss(self, b: Batch, v_new: torch.Tensor, device) -> PolicyTerms:
         """The ASPO surrogate loss, one value per chunk."""
@@ -719,21 +735,44 @@ class MyfpoPolicy(PreTrainedPolicy):
 
             adv = b.advantages.float()
             adv_mc = adv.unsqueeze(1)
+            weight = cfm_loss_weight(b.t, cfg)
             cfm_loss_new, cfm_loss_new_token = compute_cfm_loss(
-                v_new_r_f, v_star_f, cfg, "sample_and_token", loss_mask,
-                cfm_loss_weight(b.t, cfg),
+                v_new_r_f, v_star_f, cfg, "sample_and_token", loss_mask, weight,
+            )
+            flow_ratio_inputs = dict(
+                velocity_old=b.velocity_old_token,
+                velocity_new=v_new_r_f,
+                target=v_star_f,
+                token_weight=weight,
+                action_is_pad=loss_mask,
             )
             ratio_token = compute_policy_ratio(
                 b.cfm_loss_old_token, cfm_loss_new_token, cfg,
-                advantage=adv_mc.unsqueeze(-1),
+                advantage=adv_mc.unsqueeze(-1), **flow_ratio_inputs,
             )
 
             if cfg.do_average_cfm_loss_in_chunk:
-                loss_old, loss_new = b.cfm_loss_old, cfm_loss_new
+                loss_old = group_cfm_loss(b.cfm_loss_old, cfg.cfm_average_group_size)
+                loss_new = group_cfm_loss(cfm_loss_new, cfg.cfm_average_group_size)
+                if cfg.ratio_mode in VELOCITY_RATIO_MODES:
+                    ratio = compute_policy_ratio(
+                        b.cfm_loss_old, cfm_loss_new, cfg,
+                        advantage=adv.reshape(-1, 1),
+                        group_size=cfg.cfm_average_group_size,
+                        **flow_ratio_inputs,
+                    )
+                else:
+                    ratio = compute_policy_ratio(
+                        loss_old, loss_new, cfg, advantage=adv.reshape(-1, 1)
+                    )
             else:
-                loss_old, loss_new = b.cfm_loss_old_token, cfm_loss_new_token
-            loss_old = group_cfm_loss(loss_old, cfg.cfm_average_group_size)
-            loss_new = group_cfm_loss(loss_new, cfg.cfm_average_group_size)
+                ratio = ratio_token
+                loss_old = group_cfm_loss(
+                    b.cfm_loss_old_token, cfg.cfm_average_group_size
+                )
+                loss_new = group_cfm_loss(
+                    cfm_loss_new_token, cfg.cfm_average_group_size
+                )
             self.cfm_above_clamp_frac = (
                 (loss_new > cfg.cfm_clamp).float().mean().detach()
             )
@@ -742,11 +781,6 @@ class MyfpoPolicy(PreTrainedPolicy):
             ).detach()
             delta = loss_old - loss_new
             adv_ratio = adv.reshape(-1, *([1] * (delta.dim() - 1)))
-            ratio = (
-                ratio_token
-                if loss_old is b.cfm_loss_old_token
-                else compute_policy_ratio(loss_old, loss_new, cfg, advantage=adv_ratio)
-            )
             surrogate = compute_aspo_surrogate(ratio, adv_ratio, cfg)
             if surrogate.dim() == 3:
                 keep = (~b.action_is_pad).to(surrogate.dtype)

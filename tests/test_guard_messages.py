@@ -10,7 +10,7 @@ import pytest
 import torch
 
 # : Guard count the table below is expected to cover.
-EXPECTED_CASES = 78
+EXPECTED_CASES = 79
 
 _CASES: list[tuple[str, object]] = []
 
@@ -63,10 +63,10 @@ _BAD_CONFIG = {
     "num_mc_samples": 0,
     "optimizer_weight_decay": -1.0,
     "policy_lr": 0.0,
+    "ratio_mode": "softmax",
     "report_to": "mlflow",
     "cfm_average_group_size": 0,
 
-    "critic_chunk_temporal_kernel": 2,
     "temporal_probe_every": -1,
     "timestep_inverse_cdf_beta": 0.0,
     "timestep_sampling_mode": "cosine",
@@ -130,6 +130,7 @@ case("attention:DiTBlock:forward:cond-batch")(
 # --- pure functions ----------------------------------------------------------.
 from myfpo.fpo_core import (  # noqa: E402
     compute_cfm_loss,
+    compute_policy_ratio,
     broadcast_over_mc_axis,
     sample_action,
     sample_timesteps,
@@ -220,6 +221,13 @@ case("fpo_core:sample_timesteps:mode")(
         4, MyfpoConfig(timestep_sampling_mode="cosine"), "cpu", None
     )
 )
+case("fpo_core:ratio:velocity-inputs")(
+    lambda: compute_policy_ratio(
+        torch.ones(1, 1, 1),
+        torch.ones(1, 1, 1),
+        MyfpoConfig(ratio_mode="linear"),
+    )
+)
 
 _IDS = [cid for cid, _ in _CASES]
 _THUNKS = dict(_CASES)
@@ -268,10 +276,8 @@ KEYWORDS = {
     'config:num_steps_zero_start': 'num_steps_zero_start',
     'config:optimizer_weight_decay': 'optimizer_weight_decay',
     'config:policy_lr': 'policy_lr',
+    'config:ratio_mode': 'ratio_mode',
     'config:report_to': 'report_to',
-
-    'config:critic_chunk_temporal_kernel': 'critic_chunk_temporal_kernel',
-
     'config:temporal_probe_every': 'temporal_probe_every',
     'config:timestep_inverse_cdf_beta': 'timestep_inverse_cdf_beta',
     'config:timestep_sampling_mode': 'timestep_sampling_mode',
@@ -301,6 +307,7 @@ KEYWORDS = {
     'fpo_core:sample_action:shape': 'eps shape',
     'fpo_core:sample_action:t_min': 't_min',
     'fpo_core:sample_timesteps:mode': 'timestep_sampling_mode',
+    'fpo_core:ratio:velocity-inputs': 'velocity_old',
     'gae:gae_lambda': 'gae_lambda',
     'gae:gamma': 'gamma',
     'gae:lengths': 'chunk_lengths',

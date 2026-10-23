@@ -8,7 +8,13 @@ from dataclasses import dataclass
 from lerobot.configs import PreTrainedConfig
 from lerobot.optim import AdamWConfig
 
-__all__ = ["ACTOR_ARCHITECTURES", "FLOW_STARTS", "MyfpoConfig"]
+__all__ = [
+    "ACTOR_ARCHITECTURES",
+    "FLOW_STARTS",
+    "RATIO_MODES",
+    "VELOCITY_RATIO_MODES",
+    "MyfpoConfig",
+]
 
 # ---- from config.py ----
 ENV_REGISTRY_PATH = Path(__file__).resolve().parents[2] / "configs" / "envs.yaml"
@@ -33,6 +39,12 @@ ACTOR_ARCHITECTURES = ("dit", "resmlp")
 
 
 FLOW_STARTS = ("zero_start", "noise_start")
+
+
+# ``cfm`` and ``cfm_raw`` read the stored CFM losses. ``linear`` and
+# ``quadratic`` read the velocity gap. See ``compute_policy_ratio``.
+VELOCITY_RATIO_MODES = ("linear", "quadratic")
+RATIO_MODES = ("cfm", "cfm_raw", *VELOCITY_RATIO_MODES)
 
 
 @PreTrainedConfig.register_subclass("myfpo")
@@ -73,6 +85,7 @@ class MyfpoConfig(PreTrainedConfig):
     cfm_loss_target: str = "velocity"
     cfm_loss_weight_from_t: str = "constant"
     cfm_clamp: float = 20.0
+    ratio_mode: str = "cfm"
     cfm_loss_clamp_negative_advantages: bool = True
     cfm_loss_clamp_negative_advantages_max: float = 20.0
     log_ratio_cap: float = 10.0
@@ -121,9 +134,6 @@ class MyfpoConfig(PreTrainedConfig):
     # How often the policy measures the per-position gradient norms. 0 = never.
     temporal_probe_every: int = 0
 
-    # The temporal filter on the action chunk in the critic. 0 = off.
-    critic_chunk_temporal_kernel: int = 0
-    critic_chunk_temporal_causal: bool = False
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -146,14 +156,6 @@ class MyfpoConfig(PreTrainedConfig):
         if self.temporal_probe_every < 0:
             raise ValueError(
                 f"temporal_probe_every={self.temporal_probe_every} must be >= 0"
-            )
-        if self.critic_chunk_temporal_kernel < 0 or (
-            self.critic_chunk_temporal_kernel
-            and self.critic_chunk_temporal_kernel % 2 == 0
-        ):
-            raise ValueError(
-                "critic_chunk_temporal_kernel="
-                f"{self.critic_chunk_temporal_kernel} must be 0 or a positive odd number"
             )
         if self.n_obs_steps < 1:
             raise ValueError(f"n_obs_steps={self.n_obs_steps} must be >= 1")
@@ -284,6 +286,11 @@ class MyfpoConfig(PreTrainedConfig):
                 "or 'linear_0.01_to_1'. A linear name states the weight at t=0 "
                 "first, then the weight at t=1. Under this repo's path the "
                 "noise sits at t=0, so a rising weight is full at the action end."
+            )
+        if self.ratio_mode not in RATIO_MODES:
+            raise ValueError(
+                f"ratio_mode={self.ratio_mode!r} must be one of "
+                f"{', '.join(repr(mode) for mode in RATIO_MODES)}"
             )
         if self.cfm_clamp <= 0:
             raise ValueError(f"cfm_clamp={self.cfm_clamp} must be > 0")

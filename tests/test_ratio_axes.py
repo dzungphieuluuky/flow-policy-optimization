@@ -66,12 +66,15 @@ def _policy_and_batch(cfg, seed=0, pad_from=None):
     if pad_from is not None:
         batch["action_is_pad"][1, pad_from:] = True
     normalised = policy.preprocessor({M.OBS_STATE: batch[M.OBS_STATE]})[M.OBS_STATE]
-    cfm_loss_old, cfm_loss_old_token = policy.compute_behavior_cfm_losses(
-        normalised, batch[M.ACTION], batch["mc_t"], batch["mc_eps"],
-        batch["action_is_pad"],
+    cfm_loss_old, cfm_loss_old_token, velocity_old_token = (
+        policy.compute_behavior_cfm_losses(
+            normalised, batch[M.ACTION], batch["mc_t"], batch["mc_eps"],
+            batch["action_is_pad"],
+        )
     )
     batch["behavior_cfm_loss"] = cfm_loss_old
     batch["behavior_cfm_loss_token"] = cfm_loss_old_token
+    batch["behavior_velocity_token"] = velocity_old_token
 
     # Stands in for the optimizer step. The live actor now differs from the
     # behaviour policy that collected the batch.

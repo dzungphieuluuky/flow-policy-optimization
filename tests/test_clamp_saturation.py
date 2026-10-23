@@ -186,13 +186,16 @@ def _policy_and_batch(cfm_clamp):
     eps = torch.randn(n, mc, horizon, act)
     pad = torch.zeros(n, horizon, dtype=torch.bool)
     pre = policy.preprocessor({"observation.state": states})["observation.state"]
-    old, old_token = policy.compute_behavior_cfm_losses(pre, actions, t, eps, pad)
+    old, old_token, old_velocity = policy.compute_behavior_cfm_losses(
+        pre, actions, t, eps, pad
+    )
     batch = {
         "observation.state": states, "action": actions, "action_is_pad": pad,
         "normalised_advantages": torch.randn(n, generator=torch.Generator().manual_seed(7)),
         "raw_returns": torch.randn(n, generator=torch.Generator().manual_seed(8)),
         "mc_t": t, "mc_eps": eps,
         "behavior_cfm_loss": old, "behavior_cfm_loss_token": old_token,
+        "behavior_velocity_token": old_velocity,
     }
     return policy, batch, pcfg
     return policy, batch, cfg
@@ -212,9 +215,9 @@ def test_above_clamp_frac_reads_the_tensor_the_ratio_actually_clamps(monkeypatch
     real = modeling.compute_policy_ratio
     clamped = []
 
-    def spy(old, new, cfg, advantage=None):
+    def spy(old, new, cfg, advantage=None, **kwargs):
         clamped.append(new.detach())
-        return real(old, new, cfg, advantage=advantage)
+        return real(old, new, cfg, advantage=advantage, **kwargs)
 
     monkeypatch.setattr(modeling, "compute_policy_ratio", spy)
 

@@ -180,7 +180,7 @@ bookkeeping, the masks, or the trust region.
 
 Two things become per token, and both are deliberate:
 
-- `compute_policy_ratio` (`src/myfpo/fpo_core.py:268-286`) clamps the loss
+- `compute_policy_ratio` (`src/myfpo/fpo_core.py`) clamps the loss
   for negative advantages. With per-token advantages, the *sign* is per token:
   a token can be "good" inside a bad chunk. This is the point of per-token
   credit, and it is also the biggest behavioural change from today's run.

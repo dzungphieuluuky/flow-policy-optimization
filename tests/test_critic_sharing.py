@@ -72,11 +72,12 @@ def test_both_settings_pass_a_rollout_and_a_forward():
             "mc_eps": torch.randn(4, 2, HORIZON, ACT),
         }
         states = policy.preprocessor({"observation.state": batch["observation.state"]})["observation.state"]
-        old, old_tok = policy.compute_behavior_cfm_losses(
+        old, old_tok, old_velocity = policy.compute_behavior_cfm_losses(
             states, batch["action"], batch["mc_t"], batch["mc_eps"], batch["action_is_pad"]
         )
         batch["behavior_cfm_loss"] = old
         batch["behavior_cfm_loss_token"] = old_tok
+        batch["behavior_velocity_token"] = old_velocity
 
         loss = policy(batch, check_finite=False)
         loss.backward()  # already unpacked: forward returns (loss, info).
@@ -97,11 +98,12 @@ def test_the_encoder_gets_gradient_from_the_critic_too():
         "mc_eps": torch.randn(4, 2, HORIZON, ACT),
     }
     states = policy.preprocessor({"observation.state": batch["observation.state"]})["observation.state"]
-    old, old_tok = policy.compute_behavior_cfm_losses(
+    old, old_tok, old_velocity = policy.compute_behavior_cfm_losses(
         states, batch["action"], batch["mc_t"], batch["mc_eps"], batch["action_is_pad"]
     )
     batch["behavior_cfm_loss"] = old
     batch["behavior_cfm_loss_token"] = old_tok
+    batch["behavior_velocity_token"] = old_velocity
 
     policy(batch, check_finite=False).backward()
     grads = [p.grad for p in policy.encoder.parameters() if p.grad is not None]
