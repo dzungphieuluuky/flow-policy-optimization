@@ -85,16 +85,6 @@ class CriticMember(nn.Module):
         state_hidden: int | None = None,
     ):
         super().__init__()
-        if action_dim < 1:
-            raise ValueError("action_dim must be positive")
-        if action_horizon < 1:
-            raise ValueError(f"action_horizon must be positive, got {action_horizon}")
-        if hidden_dim < 1:
-            raise ValueError("hidden_dim must be positive")
-        if num_layers < 1:
-            raise ValueError(f"num_layers must be >= 1, got {num_layers}")
-        if not 0.0 <= dropout < 1.0:
-            raise ValueError(f"dropout must be in [0, 1), got {dropout}")
 
         self.obs_dim = obs_dim
         self.action_dim = action_dim
@@ -236,18 +226,6 @@ class Critic(nn.Module):
         super().__init__()
         if condition_dim is not None and condition_dim < 1:
             raise ValueError("condition_dim must be >= 1 when set")
-        if obs_dim <= 0:
-            raise ValueError("obs_dim must be positive")
-        if hidden_dim < 1:
-            raise ValueError("hidden_dim must be positive")
-        if n_obs_steps < 1:
-            raise ValueError(f"n_obs_steps must be >= 1, got {n_obs_steps}")
-        if num_critics < 1:
-            raise ValueError(f"num_critics must be >= 1, got {num_critics}")
-        if num_layers < 1:
-            raise ValueError(f"num_layers must be >= 1, got {num_layers}")
-        if not 0.0 <= dropout < 1.0:
-            raise ValueError(f"dropout must be in [0, 1), got {dropout}")
         self.obs_dim = obs_dim
         self.action_dim = action_dim
         self.n_obs_steps = n_obs_steps

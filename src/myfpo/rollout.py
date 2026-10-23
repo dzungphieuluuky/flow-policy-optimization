@@ -74,14 +74,8 @@ def compute_chunk_advantages(
     terminated = chunk_terminated.to(device=device, dtype=torch.bool).reshape(-1)
 
     n_chunks = starts.numel()
-    for name, tensor in (
-        ("chunk_lengths", lengths),
-        ("chunk_terminated", terminated),
-        ("q_current_chunk", q_current_chunk),
-        ("q_next_state", q_next_state),
-    ):
-        if tensor.numel() != n_chunks:
-            raise ValueError(f"{name} must have {n_chunks} entries, got {tensor.numel()}")
+    if lengths.numel() != n_chunks or terminated.numel() != n_chunks or q_current_chunk.numel() != n_chunks or q_next_state.numel() != n_chunks:
+        raise ValueError(f"chunk tensors must have {n_chunks} entries")
 
     if chunk_truncated is None:
         truncated = torch.zeros(n_chunks, device=device, dtype=torch.bool)
