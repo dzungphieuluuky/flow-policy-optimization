@@ -7,7 +7,7 @@ import math
 from collections.abc import Callable
 from typing import Any
 import torch
-from myfpo.configuration import MyfpoConfig, RATIO_MODES
+from myfpo.configuration import MyfpoConfig
 from myfpo.layers import resolve_storage_dtype
 import numpy as np
 from myfpo.layers import rms
