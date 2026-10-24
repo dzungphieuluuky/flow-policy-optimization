@@ -117,9 +117,8 @@ class CriticMember(nn.Module):
         # concat would couple state dims to action dims, and they are unrelated
         # quantities. The state norm divides by the RMS and keeps the mean, so
         # the critic still sees how high the state sits. It also puts the raw
-        # window on a fixed scale before the first linear. The norm is skipped
-        # when the shared encoder already produced a normalised vector, so
-        # critic_share_encoder keeps meaning "raw shared-encoder vector".
+        # window on a fixed scale before the first linear. When ``condition_dim``
+        # is set, the norm is skipped: the caller already encoded the window.
         self.norm_state = (
             StateAffine(n_obs_steps * obs_dim) if condition_dim is None else None
         )

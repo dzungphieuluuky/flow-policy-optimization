@@ -27,7 +27,6 @@ RELEASED = {
     "cfm_loss_weight_from_t": ("constant", "finetune_online_rl.py:98"),
     "cfm_loss_target": ("velocity", "flow_model_config.py cfm_loss_mode='u'"),
     "actor_arch": ("dit", "no actor arch is configurable; this repo's own"),
-    "critic_share_encoder": (False, "always shared upstream"),
     "spo_clip_param_is_separate": (True, "two coefficients, not one"),
 }
 

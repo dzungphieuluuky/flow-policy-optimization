@@ -157,11 +157,11 @@ says "1% Dropout after the first linear layer in each Q-function".
 The chunk self-attention is causal, and so is the actor's. The two cross blocks
 stay bidirectional: the critic reads a chunk it has already executed.
 
-`norm_state` is skipped when `critic_share_encoder=True`, so that flag keeps
-meaning "raw shared-encoder vector" rather than double-normalising. The two
-paths are not comparable: the shared path ends in an RMSNorm, which does not
-subtract the mean, so the shared critic is shift-sensitive on the state and the
-default critic is not.
+The critic encodes the obs window itself through its own ``StateAffine`` and
+``StateEncoder``, so the actor and the critic keep separate encoders. Its
+``norm_state`` keeps the mean, so a constant state offset survives. The
+``condition_dim`` option still lets a caller replace the window with an encoded
+vector; it then skips ``norm_state`` because the vector is already encoded.
 
 ---
 

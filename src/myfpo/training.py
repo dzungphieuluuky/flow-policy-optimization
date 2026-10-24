@@ -30,7 +30,7 @@ from myfpo.modeling import MyfpoAborted, MyfpoPolicy, build_optimizer
 from myfpo.fpo_core import compute_eval_summary_metrics, subsampled_min
 from myfpo.processor import squash_to_env_bounds
 from lerobot.utils.constants import CHECKPOINTS_DIR
-from myfpo.layers import autocast_context, cudagraph_step_begin, resolve_device, rms
+from myfpo.layers import cudagraph_step_begin, resolve_device, rms
 from myfpo.tracking import build_backends, log_metrics
 from myfpo.train_utils import finish_backends
 from myfpo.train_utils import build_train_metrics, summarise_window
@@ -208,16 +208,10 @@ def measure_value_drift(policy, batch, device) -> tuple[torch.Tensor, torch.Tens
             dtype=torch.long,
         )
     )
-    with autocast_context(boot_obs.device):
-        cond = (
-            policy.encoder(boot_obs)
-            if policy.config.critic_share_encoder
-            else None
-        )
-        values = policy.critic(
-            policy.critic_inputs(boot_obs, cond), boot_actions, boot_exec_frac
-        ).float()
-    delta = subsampled_min(values) - start
+    delta = (
+        subsampled_min(policy.critic(boot_obs, boot_actions, boot_exec_frac).float())
+        - start
+    )
     drift_rms = rms(delta)
     return (
         drift_rms / (rms(start) + 1e-8),

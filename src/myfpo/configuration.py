@@ -92,7 +92,6 @@ class MyfpoConfig(PreTrainedConfig):
 
     num_critics: int = 2
     critic_condition_on_exec_length: bool = True
-    critic_share_encoder: bool = False
     critic_hidden_dim: int = 512
     critic_num_layers: int = 2
     critic_dropout: float = 0.01

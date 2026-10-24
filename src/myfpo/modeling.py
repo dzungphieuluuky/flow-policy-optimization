@@ -126,7 +126,6 @@ def build_policy_head(config: MyfpoConfig):
         obs_dim, critic_width, action_dim, config.n_obs_steps, config.action_horizon,
         config.num_critics, condition_on_exec_length=config.critic_condition_on_exec_length,
         num_layers=config.critic_num_layers,
-        condition_dim=config.hidden_dim if config.critic_share_encoder else None,
         dropout=config.critic_dropout, state_hidden=config.hidden_dim,
     )
     return actor, encoder, critic, obs_dim, action_dim
@@ -440,12 +439,6 @@ class MyfpoPolicy(PreTrainedPolicy):
                 self.action_buffer.append(squashed[0, i])
         return self.action_buffer.popleft()
 
-
-    def critic_inputs(
-        self, normalised_states: torch.Tensor, condition: torch.Tensor
-    ) -> torch.Tensor:
-        """What the critic reads: the obs window, or the shared encoder's vector."""
-        return condition if self.config.critic_share_encoder else normalised_states
 
     def exec_length_frac(self, executed_steps: torch.Tensor) -> torch.Tensor:
         """Normalise an executed-step count to ``[0, 1]``."""
@@ -782,8 +775,7 @@ class MyfpoPolicy(PreTrainedPolicy):
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         with autocast_context(device):
             chunk_exec_frac = self.exec_length_frac((~b.action_is_pad).sum(dim=-1))
-            critic_in = self.critic_inputs(b.states, b.condition)
-            raw_value_pred = self.critic(critic_in, b.actions, chunk_exec_frac).float()  # [num_critics, n]
+            raw_value_pred = self.critic(b.states, b.actions, chunk_exec_frac).float()  # [num_critics, n]
         raw_returns_flat = b.returns.reshape(-1)
         if raw_value_pred.shape[-1] != raw_returns_flat.shape[0]:
             raise ValueError(
