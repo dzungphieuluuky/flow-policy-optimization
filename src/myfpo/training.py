@@ -30,7 +30,7 @@ from myfpo.modeling import MyfpoAborted, MyfpoPolicy, build_optimizer
 from myfpo.fpo_core import compute_eval_summary_metrics, subsampled_min
 from myfpo.processor import squash_to_env_bounds
 from lerobot.utils.constants import CHECKPOINTS_DIR
-from myfpo.layers import cudagraph_step_begin, resolve_device, rms
+from myfpo.layers import autocast_context, cudagraph_step_begin, resolve_device, rms
 from myfpo.tracking import build_backends, log_metrics
 from myfpo.train_utils import finish_backends
 from myfpo.train_utils import build_train_metrics, summarise_window
@@ -208,10 +208,16 @@ def measure_value_drift(policy, batch, device) -> tuple[torch.Tensor, torch.Tens
             dtype=torch.long,
         )
     )
-    delta = (
-        subsampled_min(policy.critic(boot_obs, boot_actions, boot_exec_frac).float())
-        - start
-    )
+    with autocast_context(boot_obs.device):
+        cond = (
+            policy.encoder(boot_obs)
+            if policy.config.critic_share_encoder
+            else None
+        )
+        values = policy.critic(
+            policy.critic_inputs(boot_obs, cond), boot_actions, boot_exec_frac
+        ).float()
+    delta = subsampled_min(values) - start
     drift_rms = rms(delta)
     return (
         drift_rms / (rms(start) + 1e-8),
@@ -324,9 +330,6 @@ def policy_update_step(policy, optimizer, batch, backends, cfg, grad_groups):
     group_sizes = [accumulation_steps] * full + ([remainder] if remainder else [])
     optimizer.zero_grad(set_to_none=True)
     minibatch: dict[str, torch.Tensor] = {}
-    finite_error = torch.zeros(
-        (), device=batch["raw_advantages"].device, dtype=torch.bool
-    )
     for micro_step, mb_idx in enumerate(microbatches):
         group_size = group_sizes[micro_step // accumulation_steps]
         minibatch = sample_minibatch(batch, mb_idx, minibatch)
@@ -338,7 +341,6 @@ def policy_update_step(policy, optimizer, batch, backends, cfg, grad_groups):
         else:
             loss = policy(minibatch, check_finite=False)
             epoch_info = None
-        finite_error |= ~torch.isfinite(loss)
         if loss.dim() != 0:
             raise ValueError(f"Loss must be scalar before backward; got {tuple(loss.shape)}.")
         if not bool(torch.isfinite(loss).all()):
@@ -367,8 +369,6 @@ def policy_update_step(policy, optimizer, batch, backends, cfg, grad_groups):
             policy.step_count += 1
         if epoch_info is not None:
             epoch_infos.append(epoch_info)
-    if bool(finite_error):
-        raise MyfpoAborted("Non-finite loss detected during gradient accumulation")
     return epoch_infos, grad_norms_pre, above_clamp_fracs, both_clamped_fracs
 
 
@@ -955,16 +955,15 @@ def run_training_loop(
                 eval_steps,
                 r_rand,
                 )
-    
-                if state.global_step >= state.next_save or state.global_step >= total_steps:
-                    artifact_path, _ = save_checkpoint(
-                        out_dir, policy, optimizer, state.global_step, f"step_{state.global_step}"
-                    )
-                    state.artifacts.append(artifact_path)
-                    state.next_save = max(
-                        state.global_step + save_steps, state.next_save + save_steps
-                    )
-        
+
+            if state.global_step >= state.next_save or state.global_step >= total_steps:
+                artifact_path, _ = save_checkpoint(
+                    out_dir, policy, optimizer, state.global_step, f"step_{state.global_step}"
+                )
+                state.artifacts.append(artifact_path)
+                state.next_save = max(
+                    state.global_step + save_steps, state.next_save + save_steps
+                )
             elapsed = time.time() - t_start
         fps = state.global_step / max(elapsed, 1e-6)
         if backends:

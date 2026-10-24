@@ -29,12 +29,21 @@ class _FixedCritic:
 
 class _FixedConfig:
     n_action_steps = 4
+    critic_share_encoder = False
 
 
 class _FixedPolicy:
     def __init__(self, value):
         self.critic = _FixedCritic(value)
         self.config = _FixedConfig()
+
+    def exec_length_frac(self, executed_steps):
+        return executed_steps.to(torch.float32)
+
+    # Same contract as MyfpoPolicy: the critic reads states, or the shared
+    # encoder output when the encoders are shared.
+    def critic_inputs(self, states, condition):
+        return condition if self.config.critic_share_encoder else states
 
     def exec_length_frac(self, executed_steps):
         return executed_steps.to(torch.float32)
