@@ -75,7 +75,7 @@ class MyfpoConfig(PreTrainedConfig):
     gae_lambda: float = 0.95
     do_average_cfm_loss_in_chunk: bool = False
     cfm_average_group_size: int = 1
-    clip_param: float = 0.01
+    clip_param: float = 0.05
     spo_clip_param: float = 0.01
     trust_region_mode: str = "aspo" 
     cfm_loss_reduction: str = "mean"
@@ -118,14 +118,14 @@ class MyfpoConfig(PreTrainedConfig):
     adam_betas: tuple[float, float] = (0.9, 0.99)
     max_grad_norm: float = 1.0
     ema_decay: float = 0.95
-    ema_warmup_steps: int = 500
+    ema_warmup_steps: int = 100
 
     eval_max_episodes: int = 50
     eval_sampling: str = "noise_start"
     stop_eval_sampling: str = "noise_start"
 
     # Costs one extra critic forward on every update when a backend logs.
-    log_drift_diagnostics: bool = True
+    log_drift_diagnostics: bool = False
 
     # How often the policy measures the per-position gradient norms. 0 = never.
     temporal_probe_every: int = 0
