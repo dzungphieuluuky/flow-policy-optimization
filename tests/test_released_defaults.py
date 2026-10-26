@@ -6,7 +6,7 @@ from myfpo.configuration import MyfpoConfig
 RELEASED = {
     # Isaac Lab ships 16 too (rl_cfg.py:217). Spot and H1 raise it to 32.
     "num_mc_samples": (16, "rl_cfg.py:217 / finetune_online_rl.py:93"),
-    "clip_param": (0.01, "finetune_online_rl.py:117 clip_coef"),
+    "clip_param": (0.05, "this repo config optimization"),
     "spo_clip_param": (0.01, "finetune_online_rl.py:118 spo_clip_coef"),
     "num_learning_epochs": (10, "finetune_online_rl.py:74 update_epochs"),
     "num_steps_noise_start": (4, "flow_model_config.py:68 sampling_steps"),

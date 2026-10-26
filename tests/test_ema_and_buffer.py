@@ -69,10 +69,10 @@ def test_no_caller_has_to_slice_the_key():
 
 
 def test_ema_initialises_on_the_first_rollout_boundary():
-    """ema_warmup_steps=500 but global_step lands on 4096, 8192, ..."""
+    """ema_warmup_steps=100 but global_step lands on 4096, 8192, ..."""
     policy = make_policy()
     steps = [4096, 8192, 12288]
-    assert policy.config.ema_warmup_steps == 500
+    assert policy.config.ema_warmup_steps == 100
     assert 500 not in steps
 
     assert not policy.ema_ready(steps[0])
