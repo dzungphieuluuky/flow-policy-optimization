@@ -324,40 +324,41 @@ def policy_update_step(policy, optimizer, batch, backends, cfg, grad_groups):
     group_sizes = [accumulation_steps] * full + ([remainder] if remainder else [])
     optimizer.zero_grad(set_to_none=True)
     minibatch: dict[str, torch.Tensor] = {}
-    for micro_step, mb_idx in enumerate(microbatches):
-        group_size = group_sizes[micro_step // accumulation_steps]
-        minibatch = sample_minibatch(batch, mb_idx, minibatch)
-        # One minibatch is one cudagraph step. Its backward runs before the
-        # next forward, so the manager may recycle the step's memory.
-        cudagraph_step_begin()
-        if backends:
-            loss, epoch_info = policy.loss_with_info(minibatch, check_finite=False)
-        else:
-            loss = policy(minibatch, check_finite=False)
-            epoch_info = None
-        if loss.dim() != 0:
-            raise ValueError(f"Loss must be scalar before backward; got {tuple(loss.shape)}.")
-        if not bool(torch.isfinite(loss).all()):
-            raise MyfpoAborted(f"Non-finite loss at step {micro_step}: {loss}")
-        (loss / group_size).backward()
-        is_boundary = (
-            (micro_step + 1) % accumulation_steps == 0 or micro_step + 1 == len(microbatches)
-        )
-        if is_boundary:
-            norms = {
-                role: torch.nn.utils.clip_grad_norm_(
-                    params, cfg.max_grad_norm
-                ).detach()
-                for role, params in grad_groups.items()
-            }
-            # The groups partition the parameters, so this is the joint pre-clip
-            # norm. It keeps train/grad_norm_before_clip comparable with history.
-            norms["total"] = torch.linalg.vector_norm(
-                torch.stack([n.reshape(()) for n in norms.values()])
+    with autocast_context(policy.device if hasattr(policy, 'device') else torch.device('cpu')):
+        for micro_step, mb_idx in enumerate(microbatches):
+            group_size = group_sizes[micro_step // accumulation_steps]
+            minibatch = sample_minibatch(batch, mb_idx, minibatch)
+            # One minibatch is one cudagraph step. Its backward runs before the
+            # next forward, so the manager may recycle the step's memory.
+            cudagraph_step_begin()
+            if backends:
+                loss, epoch_info = policy.loss_with_info(minibatch, check_finite=False)
+            else:
+                loss = policy(minibatch, check_finite=False)
+                epoch_info = None
+            if loss.dim() != 0:
+                raise ValueError(f"Loss must be scalar before backward; got {tuple(loss.shape)}.")
+            if not bool(torch.isfinite(loss).all()):
+                raise MyfpoAborted(f"Non-finite loss at step {micro_step}: {loss}")
+            (loss / group_size).backward()
+            is_boundary = (
+                (micro_step + 1) % accumulation_steps == 0 or micro_step + 1 == len(microbatches)
             )
-            grad_norms_pre.append(norms)
-            above_clamp_fracs.append(policy.cfm_above_clamp_frac)
-            both_clamped_fracs.append(policy.cfm_both_clamped_frac)
+            if is_boundary:
+                norms = {
+                    role: torch.nn.utils.clip_grad_norm_(
+                        params, cfg.max_grad_norm
+                    ).detach()
+                    for role, params in grad_groups.items()
+                }
+                # The groups partition the parameters, so this is the joint pre-clip
+                # norm. It keeps train/grad_norm_before_clip comparable with history.
+                norms["total"] = torch.linalg.vector_norm(
+                    torch.stack([n.reshape(()) for n in norms.values()])
+                )
+                grad_norms_pre.append(norms)
+                above_clamp_fracs.append(policy.cfm_above_clamp_frac)
+                both_clamped_fracs.append(policy.cfm_both_clamped_frac)
             optimizer.step()
             optimizer.zero_grad(set_to_none=True)
             policy.step_count += 1

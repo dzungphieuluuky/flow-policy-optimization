@@ -116,7 +116,7 @@ def _trainer_source() -> str:
         inspect.getsource(fn)
         for fn in (
             training.run_training,
-            training.setup_run,
+            training.configure_run,
             training.eval_window,
             training.log_eval_window,
         )

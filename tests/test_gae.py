@@ -398,18 +398,18 @@ def test_rejects_value_arrays_of_the_wrong_length():
         chunk_terminated=torch.zeros(n, dtype=torch.bool),
         chunk_size=4,
     )
-    with pytest.raises(ValueError, match="q_current_chunk"):
+    with pytest.raises(ValueError, match="chunk tensors must have"):
         compute_chunk_advantages(
             q_current_chunk=torch.zeros(16), q_next_state=torch.zeros(n), **common
         )
-    with pytest.raises(ValueError, match="q_next_state"):
+    with pytest.raises(ValueError, match="chunk tensors must have"):
         compute_chunk_advantages(
             q_current_chunk=torch.zeros(n), q_next_state=torch.zeros(16), **common
         )
 
 
 def test_rejects_mismatched_chunk_lengths():
-    with pytest.raises(ValueError, match="chunk_lengths"):
+    with pytest.raises(ValueError, match="chunk tensors must have"):
         compute_chunk_advantages(
             torch.ones(H), torch.zeros(2), torch.zeros(2),
             torch.zeros(2, dtype=torch.long), torch.tensor([H]),

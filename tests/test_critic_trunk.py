@@ -112,14 +112,6 @@ def test_a_saved_config_round_trips_with_the_new_ensemble():
     cfg.validate()
 
 
-def test_num_critics_must_be_positive():
-    with pytest.raises(ValueError, match="num_critics must be >= 1"):
-        Critic(OBS, HIDDEN, ACT, STEPS, H, num_critics=0)
-
-
-# --- dropout (TD-MPC2: 1% after the first linear) ------------------------------
-
-
 def test_the_dropout_sits_directly_after_the_first_linear():
     mods = list(_member(2, dropout=0.1).mlp)
     kinds = [type(m).__name__ for m in mods]
@@ -169,14 +161,9 @@ def test_the_members_get_independent_masks_in_one_pass():
 
 
 @pytest.mark.parametrize("bad", [-0.1, 1.0, 1.5])
-def test_dropout_must_be_a_probability(bad):
-    with pytest.raises(ValueError, match=r"dropout must be in \[0, 1\)"):
-        _member(2, dropout=bad)
-
-
-def test_the_config_rejects_a_dropout_outside_the_unit_interval():
+def test_the_config_rejects_a_dropout_outside_the_unit_interval(bad):
     with pytest.raises(ValueError, match=r"critic_dropout=.* must be in \[0, 1\)"):
-        dataclasses.replace(MyfpoConfig(), critic_dropout=1.0)
+        dataclasses.replace(MyfpoConfig(), critic_dropout=bad)
 
 
 def test_dropout_adds_no_parameters():

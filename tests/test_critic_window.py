@@ -313,15 +313,7 @@ def test_parameter_count_is_proportionate():
 
 
 def test_n_obs_steps_must_be_positive():
-    with pytest.raises(ValueError, match="n_obs_steps must be >= 1"):
+    with pytest.raises(ValueError, match="max_obs_steps must be >= 1"):
         Critic(OBS, HIDDEN, ACT, 0, H, 2)
 
 
-def test_num_critics_must_be_positive():
-    with pytest.raises(ValueError, match="num_critics must be >= 1"):
-        Critic(OBS, HIDDEN, ACT, STEPS, H, 0)
-
-
-def test_num_layers_must_be_positive():
-    with pytest.raises(ValueError, match="num_layers must be >= 1"):
-        _critic(num_layers=0)

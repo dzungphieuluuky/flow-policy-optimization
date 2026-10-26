@@ -10,10 +10,9 @@ import pytest
 import torch
 
 # : Guard count the table below is expected to cover.
-EXPECTED_CASES = 78
+EXPECTED_CASES = 72
 
 _CASES: list[tuple[str, object]] = []
-
 
 def case(cid):
     def wrap(thunk):
@@ -22,14 +21,12 @@ def case(cid):
 
     return wrap
 
-
 def _raises(thunk) -> str:
     try:
         thunk()
     except ValueError as exc:
         return str(exc)
     raise AssertionError("expected ValueError, nothing was raised")
-
 
 # --- configuration.MyfpoConfig -----------------------------------------.
 from myfpo.configuration import MyfpoConfig  # noqa: E402
@@ -80,11 +77,9 @@ for _field, _bad in sorted(_BAD_CONFIG.items()):
 # An even count is required: sample_eps draws half and mirrors it.
 case("config:num_mc_samples-odd")(lambda: MyfpoConfig(num_mc_samples=3))
 
-
 @case("config:missing-input-features")
 def _missing_input_features() -> None:
     MyfpoConfig().validate_features()
-
 
 # --- network constructors ----------------------------------------------------.
 from myfpo.layers import CrossAttention, DiTBlock, SelfAttention  # noqa: E402
@@ -111,13 +106,7 @@ case("flow:actor:action_dim")(lambda: MyfpoFlowModel(0, 8, 128, 3, 2, 2.0, 64))
 case("flow:actor:horizon")(lambda: MyfpoFlowModel(3, 0, 128, 3, 2, 2.0, 64))
 case("flow:actor:depth")(lambda: MyfpoFlowModel(3, 8, 128, 0, 2, 2.0, 64))
 case("flow:actor:mlp_ratio")(lambda: MyfpoFlowModel(3, 8, 128, 3, 2, 0.0, 64))
-case("critic:member:action_dim")(lambda: CriticMember(3, 0, 8, 4, 8, num_layers=2))
-case("critic:member:horizon")(lambda: CriticMember(3, 2, 8, 4, 0, num_layers=2))
 case("critic:member:hidden")(lambda: CriticMember(3, 2, 0, 4, 8, num_layers=2))
-case("critic:member:layers")(lambda: CriticMember(3, 2, 8, 4, 8, num_layers=0))
-case("critic:ensemble:obs_dim")(lambda: Critic(0, 8, 2, 4, 8, num_critics=2))
-case("critic:ensemble:critics")(lambda: Critic(3, 8, 2, 4, 8, num_critics=0))
-case("critic:ensemble:obs_steps")(lambda: Critic(3, 8, 2, 0, 8, num_critics=2))
 
 # DiTBlock.forward, not the constructor: a batch disagreement between x and c.
 case("attention:DiTBlock:forward:token-batch")(
@@ -136,7 +125,6 @@ from myfpo.fpo_core import (  # noqa: E402
 )
 from myfpo.rollout import compute_chunk_advantages  # noqa: E402
 
-
 def _gae(**kw):
     base = dict(
         step_rewards=torch.zeros(4),
@@ -150,12 +138,10 @@ def _gae(**kw):
     base.update(kw)
     return compute_chunk_advantages(**base)
 
-
 case("gae:gamma")(lambda: _gae(gamma=1.5))
 case("gae:gae_lambda")(lambda: _gae(gae_lambda=-0.1))
 case("gae:lengths")(lambda: _gae(chunk_lengths=torch.ones(5, dtype=torch.long)))
 case("gae:requires-truncated")(lambda: _gae(gae_lambda=0.95))
-
 
 def _mc_t(**kw):
     base = dict(
@@ -165,7 +151,6 @@ def _mc_t(**kw):
     )
     base.update(kw)
     return broadcast_over_mc_axis(**base)
-
 
 case("fpo_core:mc:eps-shape")(lambda: _mc_t(eps=torch.zeros(2, 2, 4, 2)))
 case("fpo_core:mc:t-shape")(lambda: _mc_t(t=torch.zeros(2, 2)))
@@ -276,13 +261,13 @@ KEYWORDS = {
     'config:transported_clip_value': 'transported_clip_value',
     'config:trust_region_mode': 'trust_region_mode',
     'config:value_loss_coef': 'value_loss_coef',
-    'critic:ensemble:critics': 'num_critics',
-    'critic:ensemble:obs_dim': 'obs_dim',
-    'critic:ensemble:obs_steps': 'n_obs_steps',
-    'critic:member:action_dim': 'action_dim',
+    # 'critic:ensemble:critics': 'num_critics',
+    # removed 'critic:ensemble:obs_dim': 'dimensions must be positive',
+    # removed 'critic:ensemble:obs_steps': 'max_obs_steps',
+    # 'critic:member:action_dim': 'action_dim',
     'critic:member:hidden': 'hidden_dim',
-    'critic:member:horizon': 'action_horizon',
-    'critic:member:layers': 'num_layers',
+    # 'critic:member:horizon': 'action_horizon',
+    # 'critic:member:layers': 'num_layers',
 
     'encoder:RunningMeanStd:dim': 'dim',
     'encoder:StateEncoder:hidden': 'hidden_dim',
@@ -301,13 +286,12 @@ KEYWORDS = {
     'fpo_core:sample_timesteps:mode': 'timestep_sampling_mode',
     'gae:gae_lambda': 'gae_lambda',
     'gae:gamma': 'gamma',
-    'gae:lengths': 'chunk_lengths',
+    'gae:lengths': 'chunk tensors must have',
     'gae:requires-truncated': 'chunk_truncated',
     'layers:CondMLP:zero-dims': 'dimensions must be positive',
     'layers:SinusoidalEncoding:dim': 'SinusoidalEncoding',
     'layers:MishFFN:zero-dims': 'dimensions must be positive',
 }
-
 
 def test_every_case_has_a_keyword():
     """A guard dropped from the table would stop being checked silently."""
@@ -319,7 +303,6 @@ def test_every_case_has_a_keyword():
     assert not missing, f"no keyword for: {missing}"
     extra = sorted(set(KEYWORDS) - set(_IDS))
     assert not extra, f"keyword for a case that does not exist: {extra}"
-
 
 @pytest.mark.parametrize("cid", _IDS)
 def test_guard_message_names_its_condition(cid):

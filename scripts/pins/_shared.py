@@ -29,7 +29,6 @@ __all__ = [
     "build", "compare", "fixed_batch", "flatten", "pin_config",
 ]
 
-
 def pin_config(**kw) -> MyfpoConfig:
     """The one config every pin uses.
 
@@ -53,7 +52,6 @@ def pin_config(**kw) -> MyfpoConfig:
     base.update(kw)
     return MyfpoConfig(**base)
 
-
 def build(cfg: MyfpoConfig, seed: int = 0):
     """Build the policy and the batch together, under one seed.
 
@@ -68,7 +66,6 @@ def build(cfg: MyfpoConfig, seed: int = 0):
         OBS, ACT, cfg, device="cpu",
         action_low=[-1.0] * ACT, action_high=[1.0] * ACT,
     )
-
 
 def fixed_batch(policy, n: int = 3, seed: int = 1) -> dict:
     """A batch whose ``(t, eps)`` pairs the policy already agreed on.
@@ -104,7 +101,6 @@ def fixed_batch(policy, n: int = 3, seed: int = 1) -> dict:
         "behavior_velocity_token": old_velocity,
     }
 
-
 def flatten(obj, prefix: str = "") -> dict:
     """Turn a nested result into ``dotted.key -> number``.
 
@@ -134,7 +130,6 @@ def flatten(obj, prefix: str = "") -> dict:
         out[prefix.rstrip(".")] = repr(obj)
     return out
 
-
 def _walk_equal(a, b, path: str, bad: list):
     """Compare two leaves with ``atol=0``.
 
@@ -154,7 +149,6 @@ def _walk_equal(a, b, path: str, bad: list):
         return
     if a != b:
         bad.append(f"{path}: {a!r} != {b!r}")
-
 
 def compare(name: str, new: dict, old: dict | None) -> int:
     """Report every difference. Return the count, so the shell can gate on it.
