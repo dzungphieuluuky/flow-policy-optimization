@@ -267,9 +267,7 @@ def clamp_saturation(
 # FPO++ (arXiv:2602.02481).
 # POLICY RATIO
 
-def compute_delta(
-    cfm_loss_old, cfm_loss_new, cfg, advantage, velocity_old, velocity_new, target, token_weight, action_is_pad, group_size
-):
+def compute_delta(cfm_loss_old, cfm_loss_new, cfg, advantage, group_size=1):
     mode = cfg.ratio_mode
     if mode in ("cfm", "cfm_raw"):
         if group_size != 1:
@@ -282,29 +280,9 @@ def compute_delta(
                 new = torch.where(advantage < 0, torch.clamp(new, max=cfg.cfm_loss_clamp_negative_advantages_max), new)
         else:
             old, new = cfm_loss_old, cfm_loss_new
-        delta = old - new
-    elif mode in ("linear", "quadratic"):
-        if velocity_old is None or velocity_new is None or target is None:
-            raise ValueError(f"ratio_mode={mode!r} needs velocity_old, velocity_new, target")
-        gap = velocity_new - velocity_old
-        residual = velocity_old - target
-        delta = -2.0 * (residual * gap).mean(dim=-1)
-        if mode == "quadratic":
-            delta = delta - gap.square().mean(dim=-1)
-        if token_weight is not None:
-            weight = token_weight
-            if weight.dim() == delta.dim() + 1:
-                weight = weight.squeeze(-1)
-            delta = delta * weight
-        if action_is_pad is not None:
-            keep = (~action_is_pad).to(delta.dtype)[:, None, :]
-            delta = delta * keep
-        if group_size != 1:
-            n_valid = keep.sum(dim=-1).clamp(min=1.0) if action_is_pad is not None else float(delta.shape[-1])
-            delta = group_cfm_loss(delta.sum(dim=-1) / n_valid, group_size)
-    else:
-        raise ValueError(f"ratio_mode={mode!r}")
-    return delta
+        return old - new
+    raise ValueError(f"ratio_mode={mode!r}")
+
 
 def compute_policy_ratio(
     cfm_loss_old: torch.Tensor,
@@ -312,11 +290,6 @@ def compute_policy_ratio(
     cfg: MyfpoConfig,
     advantage: torch.Tensor | None = None,
     *,
-    velocity_old: torch.Tensor | None = None,
-    velocity_new: torch.Tensor | None = None,
-    target: torch.Tensor | None = None,
-    token_weight: torch.Tensor | None = None,
-    action_is_pad: torch.Tensor | None = None,
     group_size: int = 1,
 ) -> torch.Tensor:
     """Return ``exp(log_delta)`` with a straight-through cap on ``log_delta``.
@@ -326,16 +299,10 @@ def compute_policy_ratio(
     * ``"cfm"`` (default): ``clamp(L_old) - clamp(L_new)``, the FPO++ form.
       ``cfm_clamp`` and ``cfm_loss_clamp_negative_advantages`` apply.
     * ``"cfm_raw"``: ``L_old - L_new`` with no clamp. Ablation only.
-    * ``"linear"``: ``-2 <v_old - target, v_new - v_old>``, the first-order
-      term of the CFM difference. Signed, so the ratio can exceed 1.
-    * ``"quadratic"``: ``"linear"`` minus ``|v_new - v_old|^2``. This equals
-      ``"cfm"`` when the loss is squared error, the token weight is constant,
-      and ``cfm_loss_reduction`` is ``"mean"``.
 
-    The velocity modes need the three flow tensors in the same target space.
     ``group_size`` groups the MC axis before the exponent, as FPO Eq. 9 does.
     """
-    delta = compute_delta(cfm_loss_old, cfm_loss_new, cfg, advantage, velocity_old, velocity_new, target, token_weight, action_is_pad, group_size)
+    delta = compute_delta(cfm_loss_old, cfm_loss_new, cfg, advantage, group_size)
     safe_delta = delta.clamp(max=cfg.log_ratio_cap)
     delta_st = safe_delta.detach() + delta - delta.detach()
     return torch.exp(delta_st)

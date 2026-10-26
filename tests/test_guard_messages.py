@@ -10,7 +10,7 @@ import pytest
 import torch
 
 # : Guard count the table below is expected to cover.
-EXPECTED_CASES = 79
+EXPECTED_CASES = 78
 
 _CASES: list[tuple[str, object]] = []
 
@@ -130,7 +130,6 @@ case("attention:DiTBlock:forward:cond-batch")(
 # --- pure functions ----------------------------------------------------------.
 from myfpo.fpo_core import (  # noqa: E402
     compute_cfm_loss,
-    compute_policy_ratio,
     broadcast_over_mc_axis,
     sample_action,
     sample_timesteps,
@@ -221,13 +220,6 @@ case("fpo_core:sample_timesteps:mode")(
         4, MyfpoConfig(timestep_sampling_mode="cosine"), "cpu", None
     )
 )
-case("fpo_core:ratio:velocity-inputs")(
-    lambda: compute_policy_ratio(
-        torch.ones(1, 1, 1),
-        torch.ones(1, 1, 1),
-        MyfpoConfig(ratio_mode="linear"),
-    )
-)
 
 _IDS = [cid for cid, _ in _CASES]
 _THUNKS = dict(_CASES)
@@ -307,7 +299,6 @@ KEYWORDS = {
     'fpo_core:sample_action:shape': 'eps shape',
     'fpo_core:sample_action:t_min': 't_min',
     'fpo_core:sample_timesteps:mode': 'timestep_sampling_mode',
-    'fpo_core:ratio:velocity-inputs': 'velocity_old',
     'gae:gae_lambda': 'gae_lambda',
     'gae:gamma': 'gamma',
     'gae:lengths': 'chunk_lengths',

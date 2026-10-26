@@ -14,7 +14,7 @@ Based on the repo implementation (`fpo_core.py` with the metrics, `rollout.py` w
 | Inference Planning | GPC (`IEEE LRA 2026`) | Frozen policy + world model | No policy improvement | Test-time adaptation |
 
 ## Design trade-offs in `myfpo`
-- **Approximate ratio** (`compute_policy_ratio`, `ratio_mode`): Enables end-to-end flow policy without an invertible architecture. Modes: `cfm` (default), `cfm_raw`, `linear`, `quadratic`. Cost: every mode is a biased proxy for `log pi_new - log pi_old`.
+- **Approximate ratio** (`compute_policy_ratio`, `ratio_mode`): Enables end-to-end flow policy without an invertible architecture. Modes: `cfm` (default), `cfm_raw`. Cost: every mode is a biased proxy for `log pi_new - log pi_old`.
 - **Open-loop chunking** (`rollout.py`): Amortizes inference over `action_horizon`. Cost: chunk boundary artifacts (`rollout_seam_jerk`).
 - **Per-token ratios** (`FPO++`): Improves scratch training. The repo default is per token (`do_average_cfm_loss_in_chunk=False`). Cost: doubles MC-sample compute.
 - **Asymmetric clipping** (`ASPO`): Preserves entropy for `A < 0`. Cost: requires separate clipping thresholds (`cfm_loss_clamp_negative_advantages_max`).

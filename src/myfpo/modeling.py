@@ -17,7 +17,7 @@ from lerobot.policies import PreTrainedPolicy
 from lerobot.processor.converters import to_tensor
 from lerobot.utils.constants import ACTION, OBS_STATE
 
-from myfpo.configuration import MyfpoConfig, VELOCITY_RATIO_MODES
+from myfpo.configuration import MyfpoConfig
 from myfpo.fpo_core import (
     broadcast_condition,
     cfm_loss_weight,
@@ -708,32 +708,17 @@ class MyfpoPolicy(PreTrainedPolicy):
             cfm_loss_new, cfm_loss_new_token = compute_cfm_loss(
                 v_new_r_f, v_star_f, cfg, "sample_and_token", loss_mask, weight,
             )
-            flow_ratio_inputs = dict(
-                velocity_old=b.velocity_old_token,
-                velocity_new=v_new_r_f,
-                target=v_star_f,
-                token_weight=weight,
-                action_is_pad=loss_mask,
-            )
             ratio_token = compute_policy_ratio(
                 b.cfm_loss_old_token, cfm_loss_new_token, cfg,
-                advantage=adv_mc.unsqueeze(-1), **flow_ratio_inputs,
+                advantage=adv_mc.unsqueeze(-1),
             )
 
             if cfg.do_average_cfm_loss_in_chunk:
                 loss_old = group_cfm_loss(b.cfm_loss_old, cfg.cfm_average_group_size)
                 loss_new = group_cfm_loss(cfm_loss_new, cfg.cfm_average_group_size)
-                if cfg.ratio_mode in VELOCITY_RATIO_MODES:
-                    ratio = compute_policy_ratio(
-                        b.cfm_loss_old, cfm_loss_new, cfg,
-                        advantage=adv.reshape(-1, 1),
-                        group_size=cfg.cfm_average_group_size,
-                        **flow_ratio_inputs,
-                    )
-                else:
-                    ratio = compute_policy_ratio(
-                        loss_old, loss_new, cfg, advantage=adv.reshape(-1, 1)
-                    )
+                ratio = compute_policy_ratio(
+                    loss_old, loss_new, cfg, advantage=adv.reshape(-1, 1)
+                )
             else:
                 ratio = ratio_token
                 loss_old = group_cfm_loss(

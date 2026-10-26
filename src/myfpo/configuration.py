@@ -12,7 +12,6 @@ __all__ = [
     "ACTOR_ARCHITECTURES",
     "FLOW_STARTS",
     "RATIO_MODES",
-    "VELOCITY_RATIO_MODES",
     "MyfpoConfig",
 ]
 
@@ -41,10 +40,8 @@ ACTOR_ARCHITECTURES = ("dit", "resmlp")
 FLOW_STARTS = ("zero_start", "noise_start")
 
 
-# ``cfm`` and ``cfm_raw`` read the stored CFM losses. ``linear`` and
-# ``quadratic`` read the velocity gap. See ``compute_policy_ratio``.
-VELOCITY_RATIO_MODES = ("linear", "quadratic")
-RATIO_MODES = ("cfm", "cfm_raw", *VELOCITY_RATIO_MODES)
+# ``cfm`` and ``cfm_raw`` read the stored CFM losses. See ``compute_policy_ratio``.
+RATIO_MODES = ("cfm", "cfm_raw")
 
 
 @PreTrainedConfig.register_subclass("myfpo")
