@@ -505,12 +505,18 @@ def compute_value_metrics(
     # the batch has no correlation to measure, so the value is NaN too. NaN
     # is how the repo says "unmeasured".
     if raw_value_pred.shape[0] < 2:
-        member_corr = torch.tensor(float("nan"), dtype=torch.float32)
+        # Same device as the metric tensors, or the stack in
+        # compute_policy_info mixes devices on CUDA.
+        member_corr = torch.tensor(
+            float("nan"), dtype=torch.float32, device=raw_value_pred.device
+        )
     else:
         centred = raw_value_pred - raw_value_pred.mean(dim=1, keepdim=True)
         norms = centred.norm(dim=1, keepdim=True)
         if bool((norms < 1e-12).any()):
-            member_corr = torch.tensor(float("nan"), dtype=torch.float32)
+            member_corr = torch.tensor(
+                float("nan"), dtype=torch.float32, device=raw_value_pred.device
+            )
         else:
             unit = centred / norms
             corr = unit @ unit.t()
@@ -668,4 +674,9 @@ def compute_policy_info(
         else torch.as_tensor(float(s))
         for s in scalars.values()
     ]
+    # A python float builds on the default device. The metric row is one
+    # stack on the batch device, so every scalar must sit there first.
+    device = packed[0].device
+    if any(t.device != device for t in packed):
+        packed = [t.to(device) for t in packed]
     return dict(zip(scalars.keys(), torch.stack(packed).float().cpu().tolist()))

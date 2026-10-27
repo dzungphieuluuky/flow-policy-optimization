@@ -388,6 +388,24 @@ def test_one_member_has_no_pair_so_the_correlation_is_nan():
     assert math.isnan(float(out["value_pred_member_corr"]))
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="device mixing bites on cuda")
+def test_the_nan_branch_sits_on_the_input_device():
+    """The nan branch must not build its tensor on the default device.
+
+    One cpu tensor among cuda ones makes the stack in compute_policy_info
+    raise "Expected all tensors to be on the same device". This is a regression
+    test for that abort, so it only runs where the failure can.
+    """
+    values = torch.zeros(1, 8, device="cuda")
+    out = compute_value_metrics(
+        raw_value_pred=values,
+        raw_returns_flat=torch.zeros(8, device="cuda"),
+        policy_per_chunk=torch.zeros(8, device="cuda"),
+        value_loss_per_chunk=torch.zeros(8, device="cuda"),
+    )
+    assert out["value_pred_member_corr"].is_cuda
+
+
 def test_a_constant_member_has_no_correlation_to_measure():
     """A member that gives the same value on every state has no spread."""
     pred = torch.randn(2, 8)
