@@ -184,7 +184,6 @@ class RolloutBuffer:
         obs_dim: int,
         action_horizon: int,
         action_dim: int,
-        chunk_capacity: int | None = None,
         device: torch.device | str = "cpu",
         pin_memory: bool = False,
     ):
@@ -193,6 +192,9 @@ class RolloutBuffer:
         if obs_steps < 1 or obs_dim < 1 or action_horizon < 1 or action_dim < 1:
             raise ValueError("observation and action dimensions must be positive")
         self.device = torch.device(device)
+        # max_chunks owns both the chunk rows and the add_chunk guard. Two
+        # capacities once disagreed, so the guard passed and the row write
+        # raised IndexError outside collect_chunks_vec's flush handler.
         self.max_chunks = max_chunks
         self.max_steps = max_steps
         self.obs_steps = obs_steps
@@ -200,28 +202,24 @@ class RolloutBuffer:
         self.action_horizon = action_horizon
         self.action_dim = action_dim
         self.pin_memory = pin_memory
-        if chunk_capacity is None:
-            chunk_capacity = max_chunks
-        if chunk_capacity < 1:
-            raise ValueError("chunk_capacity must be positive")
 
         self.step_frames = self.zeros_for((max_steps, obs_dim), OBS_DTYPE)
         self.step_rewards = self.zeros_for((max_steps,), REWARD_DTYPE)
 
         self.chunk_state = self.zeros_for(
-            (chunk_capacity, obs_steps, obs_dim), OBS_DTYPE
+            (max_chunks, obs_steps, obs_dim), OBS_DTYPE
         )
         self.chunk_next_state = self.zeros_for(
-            (chunk_capacity, obs_steps, obs_dim), OBS_DTYPE
+            (max_chunks, obs_steps, obs_dim), OBS_DTYPE
         )
         self.chunk_actions = self.zeros_for(
-            (chunk_capacity, action_horizon, action_dim), OBS_DTYPE
+            (max_chunks, action_horizon, action_dim), OBS_DTYPE
         )
-        self.chunk_starts = self.zeros_for((chunk_capacity,), INDEX_DTYPE)
-        self.chunk_lengths = self.zeros_for((chunk_capacity,), INDEX_DTYPE)
-        self.chunk_terminated = self.zeros_for((chunk_capacity,), torch.bool)
-        self.chunk_truncated = self.zeros_for((chunk_capacity,), torch.bool)
-        self.chunk_env_id = self.zeros_for((chunk_capacity,), torch.int16)
+        self.chunk_starts = self.zeros_for((max_chunks,), INDEX_DTYPE)
+        self.chunk_lengths = self.zeros_for((max_chunks,), INDEX_DTYPE)
+        self.chunk_terminated = self.zeros_for((max_chunks,), torch.bool)
+        self.chunk_truncated = self.zeros_for((max_chunks,), torch.bool)
+        self.chunk_env_id = self.zeros_for((max_chunks,), torch.int16)
         self.n_chunks = 0
         self.n_steps = 0
         # The env-side state one rollout hands to the next. reset() keeps it.
@@ -308,8 +306,6 @@ class RolloutBuffer:
 
     def copy_to(self, other: "RolloutBuffer", *, non_blocking: bool = False) -> None:
         """Copy the active prefix into a compatible buffer, e.g. onto a GPU."""
-        other.n_chunks = self.n_chunks
-        other.n_steps = self.n_steps
         names = (
             "step_frames",
             "step_rewards",
@@ -326,11 +322,15 @@ class RolloutBuffer:
             n = self.n_steps if name.startswith("step_") else self.n_chunks
             return getattr(buffer, name)[:n]
 
+        # The copy runs first: a destination too small raises here, and its
+        # cursors must not claim rows it does not hold.
         torch._foreach_copy_(
             [prefix(other, name) for name in names],
             [prefix(self, name) for name in names],
             non_blocking=non_blocking,
         )
+        other.n_chunks = self.n_chunks
+        other.n_steps = self.n_steps
 
     def active(self) -> dict[str, torch.Tensor]:
         """Contiguous views of the populated prefix."""

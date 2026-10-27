@@ -1,5 +1,7 @@
 """The buffer stores one obs window per chunk plus one frame per step."""
 
+import inspect
+
 import numpy as np
 import pytest
 import torch
@@ -306,3 +308,65 @@ def test_an_off_boundary_episode_writes_more_chunks_than_the_planned_count():
     buffer = _collect_limited(n=4, total=128, limit=3)
     assert buffer.n_chunks == 44
     assert buffer.n_steps == 128
+
+
+def _row() -> dict:
+    """One chunk's worth of arguments for ``add_chunk``."""
+    window = torch.zeros(OBS_STEPS, OBS_DIM)
+    return dict(
+        state=window,
+        next_state=window,
+        action=torch.zeros(HORIZON, ACT_DIM),
+        rewards=np.zeros(1, dtype=np.float32),
+        step_frames=torch.zeros(1, OBS_DIM),
+        terminated=False,
+        truncated=False,
+    )
+
+
+def test_the_guard_and_the_row_count_are_one_capacity():
+    """A second capacity knob let the guard pass and the row write IndexError.
+
+    ``collect_chunks_vec`` flushes on RuntimeError only, so an IndexError from
+    the row write skipped the flush. max_chunks now owns both, and there is no
+    second parameter to split them again.
+    """
+    assert "chunk_capacity" not in inspect.signature(RolloutBuffer).parameters
+    buf = RolloutBuffer(
+        max_chunks=2,
+        max_steps=8,
+        obs_steps=OBS_STEPS,
+        obs_dim=OBS_DIM,
+        action_horizon=HORIZON,
+        action_dim=ACT_DIM,
+    )
+    assert buf.chunk_state.shape[0] == buf.max_chunks
+    assert buf.chunk_env_id.shape[0] == buf.max_chunks
+    buf.add_chunk(**_row())
+    buf.add_chunk(**_row())
+    with pytest.raises(RuntimeError, match="chunk capacity exceeded"):
+        buf.add_chunk(**_row())
+    assert buf.n_chunks == 2 and buf.n_steps == 2
+
+
+def test_a_failed_copy_leaves_the_destination_cursors_alone():
+    """copy_to must not claim rows it failed to write.
+
+    The counters used to be set before the transfer, so a destination too
+    small reported rows of earlier data.
+    """
+    src = _buffer()
+    src.add_chunk(**_row())
+    src.add_chunk(**_row())
+    small = RolloutBuffer(
+        max_chunks=1,
+        max_steps=1,
+        obs_steps=OBS_STEPS,
+        obs_dim=OBS_DIM,
+        action_horizon=HORIZON,
+        action_dim=ACT_DIM,
+    )
+    with pytest.raises(RuntimeError):
+        src.copy_to(small)
+    assert small.n_chunks == 0 and small.n_steps == 0
+
