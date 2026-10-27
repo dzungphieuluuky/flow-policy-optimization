@@ -77,7 +77,7 @@ class MyfpoConfig(PreTrainedConfig):
     cfm_average_group_size: int = -1
     clip_param: float = 0.05
     spo_clip_param: float = 0.1
-    trust_region_mode: str = "aspo" 
+    trust_region_mode: str = "ppo"
     cfm_loss_reduction: str = "mean"
     cfm_loss_target: str = "velocity"
     cfm_loss_weight_from_t: str = "constant"
