@@ -7,7 +7,7 @@ Written so the next reader does not have to reverse it out of `git log`.
 
 ---
 
-## Actor — `src/myfpo/flow.py`, `src/myfpo/layers.py` (the attention section)
+## Actor — `src/myfpo/networks.py`, `src/myfpo/layers.py` (the attention section)
 
 Conditional flow-matching velocity model over `action_horizon` action tokens.
 Two variants behind `config.actor_arch`; `dit` is the default.
@@ -95,7 +95,7 @@ for 8-token low-dimensional actions and probably was not the bottleneck. The
 
 **These two numbers went in unmeasured.** There is no shallow-actor
 config, so going back means passing `dit_depth` on the CLI. Run names encode the
-value (`tracking.py` emits `d128x4`), so a depth-3 run opens a separate
+value (`training.py` emits `d128x4`), so a depth-3 run opens a separate
 series rather than continuing this one.
 
 ### Known, not fixed
@@ -270,23 +270,22 @@ because it tracks the online distribution.
 
 Every import edge in the package. Read it as "X builds on Y".
 
-Every import edge in the package. Read it as "X builds on Y".
-
 ```
-layers, configuration, critic, evaluator, tracking ──► (leaves; layers holds
-                         utils and attention)
+layers, configuration, evaluator ──► (leaves; layers holds
+                      utils and attention)
 
 processor ─────────────► layers (encoder + running obs norm + the squash)
+networks ──────────────► layers, processor (the actor and the critic)
 fpo_core ──────────────► configuration, layers (the metrics live inside)
-flow ──────────────────► layers
 rollout ───────────────► processor, fpo_core, layers (collector and gae
                          live inside)
-modeling ──────────────► flow, critic, processor, rollout, fpo_core,
+modeling ──────────────► networks, processor, rollout, fpo_core,
                          configuration, layers
 checkpointing ─────────► modeling
 training ──────────────► checkpointing, rollout, configuration, evaluator,
-                         fpo_core, modeling, processor, runner, tracking,
-                         layers
+                         fpo_core, modeling, processor, networks, layers
+                         (the backends, log keys, and the metric window
+                         live inside)
 ```
 
 No cycles, including the deferred imports. All absorbed-section notes name

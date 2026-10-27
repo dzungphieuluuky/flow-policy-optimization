@@ -3,7 +3,7 @@
 import pytest
 import torch
 
-from myfpo.flow import MyfpoFlowModel, effective_rank
+from myfpo.networks import MyfpoFlowModel, effective_rank
 
 N, HIDDEN = 128, 128
 

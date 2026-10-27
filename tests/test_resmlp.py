@@ -25,7 +25,7 @@ from torch import nn
 from fixtures import cfg, make_batch
 
 from myfpo.configuration import ACTOR_ARCHITECTURES
-from myfpo.flow import (
+from myfpo.networks import (
     ResidualMLP,
     ResMLPBlock,
     MyfpoFlowModel,

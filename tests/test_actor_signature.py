@@ -17,7 +17,7 @@ import torch
 
 from myfpo.configuration import MyfpoConfig
 from myfpo.processor import StateEncoder
-from myfpo.flow import MyfpoFlowModel
+from myfpo.networks import MyfpoFlowModel
 
 SRC = __import__("pathlib").Path(__file__).resolve().parents[1] / "src" / "myfpo"
 
@@ -50,14 +50,14 @@ def test_the_time_embedding_argument_is_present():
 def test_no_actor_names_an_argument_condition_dim():
     """That name read as the space dimension, not a width.
 
-    The check is scoped to ``flow.py``, which holds the actors.
-    ``Critic.condition_dim`` is a different thing and stays: it selects the
-    shared-encoder mode, where the critic is fed one vector instead of a window.
-    ``modeling`` still passes it to the Critic, so that file is out of
-    scope here.
+    The check is scoped to the actor section of ``networks.py``. The critic
+    section after ``# CRITIC`` is out of scope: ``Critic.condition_dim`` is a
+    different thing and stays. It selects the shared-encoder mode, where the
+    critic is fed one vector instead of a window. ``modeling`` still passes it
+    to the Critic, so that file is out of scope here.
     """
-    src = (SRC / "flow.py").read_text()
-    assert "condition_dim" not in src, "flow.py reintroduced condition_dim"
+    actor = (SRC / "networks.py").read_text().split("# CRITIC")[0]
+    assert "condition_dim" not in actor, "the actor reintroduced condition_dim"
 
 
 def test_the_comparison_reads_the_live_signature():

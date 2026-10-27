@@ -200,7 +200,7 @@ selects the granularity today is `do_average_cfm_loss_in_chunk`, which is
 
 ### 3.1 Two heads, one trunk, masked inputs
 
-`CriticMember` (`src/myfpo/critic.py:32-139`) currently flattens the chunk
+`CriticMember` (`src/myfpo/networks.py` (the CriticMember section)) currently flattens the chunk
 (`parts[1] = self.norm_action(actions.flatten(1))`) and mixes it with the
 state. For the prefix semantics to hold, the head that produces `v_i` must not
 see `a_i` or anything after it.
@@ -268,7 +268,7 @@ experiments (Section 9). The granularity that exists today is
 
 ## 5. File-by-file changes
 
-### 5.1 `src/myfpo/critic.py`
+### 5.1 `src/myfpo/networks.py` (critic)
 
 - `CriticMember.__init__`: the output head `Linear(hidden_dim, 1)` becomes
   `Linear(hidden_dim, value_head_size)` with `value_head_size in {1, 2H}`.
@@ -313,7 +313,7 @@ experiments (Section 9). The granularity that exists today is
   both deserve a name).
 - `compute_ratio_metrics`: unchanged. The ratio is unchanged.
 
-### 5.5 `src/myfpo/runner.py`
+### 5.5 `src/myfpo/training.py` (metrics)
 
 - New `train/*` keys (Section 6). The builder is a pure function; the new
   scalars arrive in `info`.
@@ -355,7 +355,7 @@ noise, not credit assignment.
   granularity change is upstream of them.
 - `src/myfpo/layers.py` (the attention section) — the causal mask is the licence for the
   factorisation and is already pinned by `tests/test_causal_attention.py`.
-- `src/myfpo/flow.py` — the actor.
+- `src/myfpo/networks.py` — the actor and the critic.
 
 ---
 

@@ -449,7 +449,7 @@ subprocess.call([
 ```
 
 ```python
-from myfpo.flow import MyfpoFlowModel, MyfpoFlowResMLP
+from myfpo.networks import MyfpoFlowModel, MyfpoFlowResMLP
 
 OBS_DIM, ACT_DIM = 11, 3
 HIDDEN, HEADS, TIME_EMBED = 128, 2, 32

@@ -83,9 +83,9 @@ def _missing_input_features() -> None:
 
 # --- network constructors ----------------------------------------------------.
 from myfpo.layers import CrossAttention, DiTBlock, SelfAttention  # noqa: E402
-from myfpo.critic import Critic, CriticMember  # noqa: E402
+from myfpo.networks import CriticMember  # noqa: E402
 from myfpo.processor import RunningMeanStd, StateEncoder  # noqa: E402
-from myfpo.flow import MyfpoFlowModel  # noqa: E402
+from myfpo.networks import MyfpoFlowModel  # noqa: E402
 from myfpo.layers import CondMLP, SinusoidalEncoding, MishFFN  # noqa: E402
 
 case("layers:MishFFN:zero-dims")(lambda: MishFFN(0, 4, 4))

@@ -6,10 +6,13 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
 import sys
 import time
 import warnings
 from collections import deque
+from datetime import datetime, timezone
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -31,9 +34,6 @@ from myfpo.fpo_core import compute_eval_summary_metrics, subsampled_min
 from myfpo.processor import squash_to_env_bounds
 from lerobot.utils.constants import CHECKPOINTS_DIR
 from myfpo.layers import autocast_context, cudagraph_step_begin, resolve_device, rms
-from myfpo.tracking import build_backends, log_metrics
-from myfpo.train_utils import finish_backends
-from myfpo.train_utils import build_train_metrics, summarise_window
 from tqdm.auto import tqdm
 
 
@@ -1032,5 +1032,230 @@ def run_training(
         finish_backends(backends)
 
     return finalize_run(out_dir, policy, optimizer, state, env_name, seed, fps)
+
+# TRACKING
+
+
+class WandbBackend:
+    """Writes scalars to a wandb run."""
+
+    def __init__(
+        self,
+        *,
+        name: str,
+        method: str,
+        env_name: str,
+        seed: int,
+        total_steps: int,
+        cfg_dict: dict,
+    ):
+        import wandb
+
+        self.wandb = wandb
+        wandb.init(
+            project=method,
+            group=f"{method}_{env_name}",
+            name=name,
+            tags=["mujoco"],
+            config={**cfg_dict, "method": method, "seed": seed, "env": env_name},
+            job_type="smoke" if total_steps <= 10000 else "train",
+            mode=os.environ.get("WANDB_MODE", "online"),
+            reinit="finish_previous",
+        )
+
+    def log(self, data: dict[str, float], step: int) -> None:
+        self.wandb.log(data, step=step)
+
+    def finish(self, exit_code: int) -> None:
+        self.wandb.finish(exit_code=exit_code)
+
+
+class TensorboardBackend:
+    """Writes scalars to a tensorboard event file."""
+
+    def __init__(self, log_dir: str):
+        from torch.utils.tensorboard import SummaryWriter
+
+        self.writer = SummaryWriter(log_dir, flush_secs=30)
+
+    def log(self, data: dict[str, float], step: int) -> None:
+        for key, value in data.items():
+            if value is None:
+                continue
+            self.writer.add_scalar(key, float(value), step)
+
+    def finish(self, _exit_code: int) -> None:
+        self.writer.close()
+
+
+def build_run_name(method: str, env_name: str, seed: int, cfg_dict: dict) -> str:
+    """The run name: method, env, seed, the knobs that differ, and a timestamp.
+
+    The timestamp tells two runs of the same config apart in the wandb list.
+    """
+    tags: list[str] = []
+    get = cfg_dict.get
+    if (v := get("action_horizon")) is not None:
+        tags.append(f"h{v}")
+    if (v := get("hidden_dim")) is not None and (d := get("dit_depth")) is not None:
+        tags.append(f"d{v}x{d}")
+    if (v := get("num_learning_epochs")) is not None:
+        tags.append(f"ep{v}")
+    if (v := get("policy_lr")) is not None:
+        tags.append(f"lr{v:g}" if isinstance(v, float) else f"lr{v}")
+    if (v := get("clip_param")) is not None:
+        tags.append(f"eps{v:g}" if isinstance(v, float) else f"eps{v}")
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return "_".join([f"{method}_{env_name}_s{seed}", *tags, stamp])
+
+
+def build_backends(
+    cfg,
+    *,
+    out_dir: str | Path,
+    method: str,
+    env_name: str,
+    seed: int,
+    total_steps: int,
+) -> list:
+    """The backends a run logs to. An empty list means no logging."""
+    report_to = cfg.report_to
+    if report_to == "none":
+        return []
+
+    cfg_dict = dataclasses.asdict(cfg)
+    name = build_run_name(method, env_name, seed, cfg_dict)
+    backends: list = []
+    if report_to in ("wandb", "all"):
+        backends.append(
+            WandbBackend(
+                name=name,
+                method=method,
+                env_name=env_name,
+                seed=seed,
+                total_steps=total_steps,
+                cfg_dict=cfg_dict,
+            )
+        )
+    if report_to in ("tensorboard", "all"):
+        log_dir = Path(out_dir) / "tensorboard" / name
+        backends.append(TensorboardBackend(str(log_dir)))
+    return backends
+
+
+def log_metrics(backends: list, data: dict[str, float], step: int) -> None:
+    """Write one scalar dict to every backend."""
+    for backend in backends:
+        backend.log(data, step)
+
+
+def finish_backends(backends: list, exit_code: int = 0) -> None:
+    """Close every backend."""
+    for backend in backends:
+        backend.finish(exit_code)
+
+# METRICS
+
+
+@dataclass
+class WindowSummary:
+    """What one eval window found."""
+
+    reported_results: list[dict]
+    summaries: dict[str, dict]
+    mean_return: float
+    stop_return: float
+    improved: bool
+
+
+def summarise_window(
+    results_by_sampling: dict[str, list[dict]],
+    *,
+    reported_name: str,
+    stop_name: str,
+    eval_seed: int,
+    summarise,
+    best_return: float | None,
+) -> WindowSummary:
+    """Summarise every start, then read the two means the runner needs."""
+    summaries = {
+        name: summarise(rows, seed=eval_seed)
+        for name, rows in results_by_sampling.items()
+    }
+    return WindowSummary(
+        reported_results=results_by_sampling[reported_name],
+        summaries=summaries,
+        mean_return=summaries[reported_name]["return_mean"],
+        stop_return=summaries[stop_name]["return_mean"],
+        improved=best_return is None or summaries[stop_name]["return_mean"] > best_return,
+    )
+
+
+GAE_DIAG_LOG_KEYS = {
+    "linked_frac": "gae_linked_frac",
+    "advantage_std": "gae_advantage_std",
+    "return_rms": "returns_rms",
+    "advantage_std_over_return_std": "advantage_std_over_return_std",
+}
+
+ROLLOUT_ABS_KEYS = (
+    "raw_action_abs_mean",
+    "raw_action_abs_max",
+    "executed_action_abs_mean",
+    "executed_action_abs_max",
+)
+
+
+def build_train_metrics(
+    *,
+    cfg: MyfpoConfig,
+    info: dict,
+    batch: dict,
+    rollout: dict,
+    grad_norms: dict[str, float],
+    above_clamp_frac: float,
+    both_clamped_frac: float,
+    drift_means: list[float],
+    rollout_jerk: float | None,
+    rollout_seam_jerk: float | None,
+    policy_lr: float,
+    critic_lr: float,
+) -> dict:
+    """Return the ``train/*`` rows for one optimiser step."""
+    data = {f"train/{k}": v for k, v in info.items()}
+    data["train/grad_norm_before_clip"] = grad_norms["total"]
+    data["train/grad_norm_actor_before_clip"] = grad_norms["actor"]
+    data["train/grad_norm_critic_before_clip"] = grad_norms["critic"]
+    data["train/cfm_above_clamp_frac"] = above_clamp_frac
+    data["train/cfm_both_clamped_frac"] = both_clamped_frac
+    # The learning rate of the step that is about to run. It is logged here,
+    # on every update, so the curve has one point per update and not one per
+    # evaluation.
+    data["train/policy_lr"] = policy_lr
+    data["train/critic_lr"] = critic_lr
+    if cfg.log_drift_diagnostics and drift_means:
+        data["train/boot_value_relative_drift"] = drift_means[0]
+        data["train/value_target_drift"] = drift_means[1]
+    if rollout_jerk is not None:
+        data["train/rollout_jerk"] = rollout_jerk
+    if rollout_seam_jerk is not None:
+        data["train/rollout_seam_jerk"] = rollout_seam_jerk
+    for key in ROLLOUT_ABS_KEYS:
+        data[f"train/{key}"] = rollout[key]
+    for key in ("collect_s", "actor_step_s", "critic_step_s"):
+        data[f"train/{key}"] = rollout.get(key, 0.0)
+    gae_diag = batch.get("gae_diagnostics")
+    if gae_diag:
+        data.update(
+            {
+                f"train/{log}": gae_diag[src]
+                for src, log in GAE_DIAG_LOG_KEYS.items()
+            }
+        )
+    data["train/total_loss"] = (
+        info["policy_loss"] + cfg.value_loss_coef * info["value_loss"]
+    )
+    return data
+
 
 

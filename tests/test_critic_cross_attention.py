@@ -12,7 +12,7 @@ from __future__ import annotations
 import torch
 from fixtures import cfg
 
-from myfpo.critic import Critic, CriticMember
+from myfpo.networks import Critic, CriticMember
 from myfpo.layers import CrossAttention
 from myfpo.training import build_policy
 

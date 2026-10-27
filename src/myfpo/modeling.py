@@ -37,9 +37,8 @@ from myfpo.fpo_core import (
     compute_policy_info,
     compute_value_loss,
 )
-from myfpo.critic import Critic
+from myfpo.networks import Critic, MyfpoFlowModel, MyfpoFlowResMLP
 from myfpo.processor import RunningMeanStd, StateEncoder
-from myfpo.flow import MyfpoFlowModel, MyfpoFlowResMLP
 from myfpo.processor import make_pre_post_processors
 from myfpo.rollout import RolloutBuffers, run_rollout
 from myfpo.layers import (

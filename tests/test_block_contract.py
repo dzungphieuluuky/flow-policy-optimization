@@ -10,7 +10,7 @@ import pytest
 
 from myfpo.layers import AdaLNBlock, DiTBlock
 from myfpo.configuration import MyfpoConfig
-from myfpo.flow import ResMLPBlock
+from myfpo.networks import ResMLPBlock
 
 
 def _params(module) -> int:

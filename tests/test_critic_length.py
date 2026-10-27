@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from myfpo.configuration import MyfpoConfig
-from myfpo.critic import Critic
+from myfpo.networks import Critic
 
 
 def _cfg(**kw) -> MyfpoConfig:

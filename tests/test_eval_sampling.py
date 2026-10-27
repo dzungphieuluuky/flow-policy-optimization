@@ -232,7 +232,7 @@ def test_summarise_window_peaks_on_the_stop_distribution():
     reported mean, this case would report improved on the first window and
     lose the improvement on the second.
     """
-    from myfpo.runner import summarise_window
+    from myfpo.training import summarise_window
 
     def summarise(rows, *, seed):
         # The seed only has to reach the call. The real summarize resamples.
