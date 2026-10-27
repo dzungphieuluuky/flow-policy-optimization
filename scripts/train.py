@@ -91,7 +91,7 @@ def apply_runtime_settings() -> dict:
     # After 8 shape variants, dynamo silently falls back to eager. Then you keep
     # paying the compile cost and get none of the benefit. The chunk count of the
     # rollout varies every run, so the default of 8 is reached quickly.
-    torch._dynamo.config.cache_size_limit = 32
+    torch._inductor.config.cudagraph_trees = False  # T4 + compile + inference-mode crash
 
     return {
         "gpu": gpu,
