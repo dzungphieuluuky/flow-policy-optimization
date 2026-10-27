@@ -915,6 +915,9 @@ def run_training_loop(
                 drift = measure_value_drift(policy, batch, device)
 
             policy.update_ema(state.global_step)
+            # Normaliser updated at end of cycle: rollout + update used frozen stats.
+            policy.update_observation_stats(batch["normalizer_observations"])
+            policy.update_target_critic()
 
             update = update_metrics(
                 epoch_infos,

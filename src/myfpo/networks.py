@@ -320,11 +320,12 @@ class ActionAffine(nn.Module):
 
     def __init__(self, dim: int):
         super().__init__()
+        self.step_bias = nn.Parameter(torch.zeros(1, 1, dim))
         self.weight = nn.Parameter(torch.ones(dim))
         self.bias = nn.Parameter(torch.zeros(dim))
-
+ 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return x * self.weight + self.bias
+        return x * self.weight + self.bias + self.step_bias
 
 
 class StateAffine(nn.Module):

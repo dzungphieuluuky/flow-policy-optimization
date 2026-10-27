@@ -782,7 +782,7 @@ def bootstrap_values(
             )
         )
         boot_exec_frac = policy.exec_length_frac(
-            torch.full_like(lengths, round(fitted_steps.item()))
+            torch.full_like(lengths, float(cfg.n_action_steps))
         )
         # The critic read is a target, not exploration. A dropout layer in
         # the critic re-rolls the value on every call, so the critic reads in
@@ -792,13 +792,15 @@ def bootstrap_values(
         policy.critic.eval()
         try:
             with autocast_context(device):
+                actions_squashed = squash_to_env_bounds(actions, policy.action_low, policy.action_high)
                 q_current_chunk = subsampled_min(
-                    policy.critic(normalised_states, actions, exec_length_frac)
+                    policy.critic(normalised_states, actions_squashed, exec_length_frac)
                     .float()
                 )
+                boot_actions_squashed = squash_to_env_bounds(boot_actions, policy.action_low, policy.action_high)
                 q_bootstrap = subsampled_min(
-                    policy.critic(
-                        normalised_next_states, boot_actions, boot_exec_frac
+                    policy.critic_target(
+                        normalised_next_states, boot_actions_squashed, boot_exec_frac
                     ).float()
                 )
         finally:

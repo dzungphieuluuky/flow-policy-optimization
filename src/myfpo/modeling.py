@@ -38,7 +38,7 @@ from myfpo.fpo_core import (
     compute_value_loss,
 )
 from myfpo.networks import Critic, MyfpoFlowModel, MyfpoFlowResMLP
-from myfpo.processor import RunningMeanStd, StateEncoder
+from myfpo.processor import RunningMeanStd, StateEncoder, squash_to_env_bounds
 from myfpo.processor import make_pre_post_processors
 from myfpo.rollout import RolloutBuffers, run_rollout
 from myfpo.layers import (
@@ -152,6 +152,10 @@ class MyfpoPolicy(PreTrainedPolicy):
         super().__init__(config, dataset_stats)
         config.validate_features()
         self.actor, self.encoder, self.critic, obs_dim, action_dim = build_policy_head(config)
+        import copy
+        self.critic_target = copy.deepcopy(self.critic)
+        self.critic_target.requires_grad_(False)
+        self.critic_target.eval()
         self.obs_normalizer = RunningMeanStd(obs_dim)
         self.register_buffer("action_low", torch.full((action_dim,), -1.0), persistent=False)
         self.register_buffer("action_high", torch.full((action_dim,), 1.0), persistent=False)
@@ -296,6 +300,7 @@ class MyfpoPolicy(PreTrainedPolicy):
             name: value.detach().clone().to(current[name].device)
             for name, value in stored.items()
         }
+        # Encoder updated with actor; ratio compares encoder_old vs encoder_new.
         self.ema_initialised = bool(state.get("initialised", True))
         return True
 
@@ -328,6 +333,10 @@ class MyfpoPolicy(PreTrainedPolicy):
                 }
             ]
         }
+    @torch.no_grad()
+    def update_target_critic(self, tau: float = 0.005):
+        for p_target, p in zip(self.critic_target.parameters(), self.critic.parameters()):
+            p_target.copy_(tau * p + (1.0 - tau) * p_target)
 
     def get_optim_params(self) -> dict:
         """Required by ``PreTrainedPolicy``. Returns what the optimizer actually uses.
@@ -759,7 +768,11 @@ class MyfpoPolicy(PreTrainedPolicy):
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         with autocast_context(device):
             chunk_exec_frac = self.exec_length_frac((~b.action_is_pad).sum(dim=-1))
-            raw_value_pred = self.critic(b.states, b.actions, chunk_exec_frac).float()  # [num_critics, n]
+            b_actions_squashed = squash_to_env_bounds(b.actions, self.action_low, self.action_high)
+            # Zero out padded steps so critic doesn't condition on arbitrary values.
+            pad_mask = (~b.action_is_pad).unsqueeze(-1).float()
+            b_actions_squashed = b_actions_squashed * pad_mask
+            raw_value_pred = self.critic(b.states, b_actions_squashed, chunk_exec_frac).float()  # [num_critics, n]
         raw_returns_flat = b.returns.reshape(-1)
         if raw_value_pred.shape[-1] != raw_returns_flat.shape[0]:
             raise ValueError(

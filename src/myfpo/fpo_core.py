@@ -229,21 +229,12 @@ def compute_aspo_surrogate(
     advantage: torch.Tensor,
     cfg: MyfpoConfig,
 ) -> torch.Tensor:
-    """FPO++ trust region. ASPO is PPO for A>0 and SPO for A<0. It runs on each
-    ratio element independently, so both branches are always computed.
+    """FPO++ asymmetric trust region (Wang et al., 2025 / FPO++). No PPO/SPO sign split.
+    Equation: L = min(r·A, clamp(r, 1-ε, 1+ε)·A) with ε = cfg.clip_param.
     """
     ratio_adv = ratio * advantage
     ratio_clipped = torch.clamp(ratio, 1.0 - cfg.clip_param, 1.0 + cfg.clip_param)
-    ppo = torch.min(ratio_adv, ratio_clipped * advantage)
-    spo = ratio_adv - (advantage.abs() / (2.0 * cfg.spo_clip_param)) * torch.square(
-        ratio - 1.0
-    )
-
-    if cfg.trust_region_mode == "ppo":
-        return ppo
-    if cfg.trust_region_mode == "spo":
-        return spo
-    return torch.where(advantage > 0, ppo, spo)
+    return torch.min(ratio_adv, ratio_clipped * advantage)
 
 
 def clamp_saturation(
@@ -303,7 +294,7 @@ def compute_policy_ratio(
     ``group_size`` groups the MC axis before the exponent, as FPO Eq. 9 does.
     """
     delta = compute_delta(cfm_loss_old, cfm_loss_new, cfg, advantage, group_size)
-    safe_delta = delta.clamp(max=cfg.log_ratio_cap)
+    safe_delta = delta.clamp(min=-cfg.log_ratio_cap, max=cfg.log_ratio_cap)  # cap=2.0; ST lets raw delta backprop
     delta_st = safe_delta.detach() + delta - delta.detach()
     return torch.exp(delta_st)
 

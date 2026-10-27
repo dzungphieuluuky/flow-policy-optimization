@@ -73,10 +73,10 @@ class MyfpoConfig(PreTrainedConfig):
 
     gamma: float = 0.99
     gae_lambda: float = 0.95
-    do_average_cfm_loss_in_chunk: bool = False
-    cfm_average_group_size: int = 1
+    do_average_cfm_loss_in_chunk: bool = True
+    cfm_average_group_size: int = -1
     clip_param: float = 0.05
-    spo_clip_param: float = 0.01
+    spo_clip_param: float = 0.1
     trust_region_mode: str = "aspo" 
     cfm_loss_reduction: str = "mean"
     cfm_loss_target: str = "velocity"
@@ -85,7 +85,7 @@ class MyfpoConfig(PreTrainedConfig):
     ratio_mode: str = "cfm"
     cfm_loss_clamp_negative_advantages: bool = True
     cfm_loss_clamp_negative_advantages_max: float = 20.0
-    log_ratio_cap: float = 10.0
+    log_ratio_cap: float = 2.0
 
     num_critics: int = 2
     critic_condition_on_exec_length: bool = True
