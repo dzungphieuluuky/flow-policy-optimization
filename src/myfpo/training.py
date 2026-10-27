@@ -30,7 +30,7 @@ from myfpo.modeling import MyfpoAborted, MyfpoPolicy, build_optimizer
 from myfpo.fpo_core import compute_eval_summary_metrics, subsampled_min
 from myfpo.processor import squash_to_env_bounds
 from lerobot.utils.constants import CHECKPOINTS_DIR
-from myfpo.layers import cudagraph_step_begin, resolve_device, rms
+from myfpo.layers import autocast_context, cudagraph_step_begin, resolve_device, rms
 from myfpo.tracking import build_backends, log_metrics
 from myfpo.train_utils import finish_backends
 from myfpo.train_utils import build_train_metrics, summarise_window
@@ -324,7 +324,9 @@ def policy_update_step(policy, optimizer, batch, backends, cfg, grad_groups):
     group_sizes = [accumulation_steps] * full + ([remainder] if remainder else [])
     optimizer.zero_grad(set_to_none=True)
     minibatch: dict[str, torch.Tensor] = {}
-    with autocast_context(policy.device if hasattr(policy, 'device') else torch.device('cpu')):
+    # The policy carries no .device attribute; its parameters carry the device.
+    # Passing a CPU device here would silently disable bf16 autocast on CUDA.
+    with autocast_context(next(policy.parameters()).device):
         for micro_step, mb_idx in enumerate(microbatches):
             group_size = group_sizes[micro_step // accumulation_steps]
             minibatch = sample_minibatch(batch, mb_idx, minibatch)
