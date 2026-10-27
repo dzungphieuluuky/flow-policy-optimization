@@ -1,4 +1,5 @@
-"""Owns: online loop, checkpointing, metrics. NOT: policy architecture. Key: run_training_loop, configure_run.
+"""Owns: online loop, checkpointing, metrics, log backends. NOT: policy
+architecture. Key: run_training_loop, configure_run.
 myfpo online training entry (LeRobot-native, MuJoCo-only).
 """
 

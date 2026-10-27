@@ -154,7 +154,7 @@ def build_rms_norm(hidden_dim: int, eps: float = 1e-6) -> nn.RMSNorm:
 
 
 class MishFFN(nn.Module):
-    """MishFFN MLP (replaces MishFFN)."""
+    """``Linear -> LayerNorm -> Mish -> Linear``. The DiT block's feed-forward unit."""
     def __init__(self, in_dim: int, hidden_dim: int, out_dim: int):
         super().__init__()
         if in_dim < 1 or hidden_dim < 1 or out_dim < 1:

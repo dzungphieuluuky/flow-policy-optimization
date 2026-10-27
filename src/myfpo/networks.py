@@ -328,8 +328,11 @@ class ActionAffine(nn.Module):
 
 
 class StateAffine(nn.Module):
-    """Per-element affine over state window using RMS (not mean subtraction),
-    so constant offsets survive. Matches ``nn.LayerNorm`` state dict."""
+    """One RMS scale over the whole window, no mean subtraction, so constant
+    offsets survive. The weight and bias stay per element. The caller has
+    already z-scored each dim through RunningMeanStd, so this adds a window
+    level scale, not the first normalisation. Matches ``nn.LayerNorm`` state
+    dict."""
 
     def __init__(self, dim: int, eps: float = 1e-5):
         super().__init__()
@@ -343,7 +346,12 @@ class StateAffine(nn.Module):
         return x * scale * self.weight + self.bias
 
 
-def build_mlp_layers(in_dim: int, hidden_dim: int, num_layers: int, dropout: float) -> nn.Module:
+def build_mlp_layers(
+    in_dim: int, hidden_dim: int, num_layers: int, dropout: float
+) -> nn.Module:
+    """The critic trunk. Each layer is ``Linear -> LayerNorm -> Mish``, and
+    the first layer adds ``Dropout`` when ``dropout > 0``. One final linear
+    maps to the scalar."""
     layers: list[nn.Module] = []
     for i in range(num_layers):
         layers.append(nn.Linear(in_dim if i == 0 else hidden_dim, hidden_dim))
@@ -359,7 +367,9 @@ class CriticMember(nn.Module):
     The state window enters as one token per frame, the action chunk as one
     token per step. Each stream queries the other in parallel, both read the
     raw streams, then the last state token and the mean action token go to
-    ``Linear -> Dropout -> LayerNorm -> Mish``. The output layer stays linear.
+    the trunk. The trunk is ``Linear -> LayerNorm -> Mish`` per layer, and the
+    first layer adds ``Dropout`` when ``dropout > 0``. The output layer stays
+    linear.
 
     Inside the chunk one causal ``SelfAttention`` layer mixes the steps, and
     its RoPE codes carry the step position. Token ``i`` reads the prefix only,
@@ -368,7 +378,6 @@ class CriticMember(nn.Module):
     The action tokens carry no norm of the chunk: a chunk of all +5 and a chunk
     of all 0 must reach the critic different. State and action keep the same
     affine normalisers the concat head used, for the same reason.
-# INIT
     """
 
     def __init__(
@@ -416,9 +425,10 @@ class CriticMember(nn.Module):
         )
         # Normalise state and action separately. One norm over the whole
         # concat would couple state dims to action dims, and they are unrelated
-        # quantities. The state norm divides by the RMS and keeps the mean, so
-        # the critic still sees how high the state sits. It also puts the raw
-        # window on a fixed scale before the first linear. When ``condition_dim``
+        # quantities. The state norm divides by the window RMS and keeps the
+        # mean, so the critic still sees how high the state sits. The obs
+        # normaliser already z-scores each dim, so this adds one per-window
+        # scale on top, not the first fixed scale. When ``condition_dim``
         # is set, the norm is skipped: the caller already encoded the window.
         self.norm_state = (
             StateAffine(n_obs_steps * obs_dim) if condition_dim is None else None

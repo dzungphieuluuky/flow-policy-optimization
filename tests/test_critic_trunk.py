@@ -8,7 +8,7 @@ TD-MPC2 ships 5 ensemble members; this repo runs 2, and
 The action and state inputs are the two places the trunk departs from the paper.
 The action is a learned affine, not a LayerNorm, because a LayerNorm over the
 chunk erases the chunk's offset. The state norm divides by the RMS and keeps
-the mean, for the same reason. See ``myfpo.critic.ActionAffine`` and
+the mean, for the same reason. See ``myfpo.networks.ActionAffine`` and
 ``StateAffine``.
 """
 
