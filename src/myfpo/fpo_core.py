@@ -229,12 +229,14 @@ def compute_aspo_surrogate(
     advantage: torch.Tensor,
     cfg: MyfpoConfig,
 ) -> torch.Tensor:
-    """FPO++ asymmetric trust region (Wang et al., 2025 / FPO++). No PPO/SPO sign split.
-    Equation: L = min(r·A, clamp(r, 1-ε, 1+ε)·A) with ε = cfg.clip_param.
-    """
+    """FPO++ trust region (amazon-far/fpo-control ASPO mode). PPO for A>0, SPO for A<0."""
     ratio_adv = ratio * advantage
     ratio_clipped = torch.clamp(ratio, 1.0 - cfg.clip_param, 1.0 + cfg.clip_param)
-    return torch.min(ratio_adv, ratio_clipped * advantage)
+    ppo = torch.min(ratio_adv, ratio_clipped * advantage)
+    spo = ratio_adv - (advantage.abs() / (2.0 * cfg.spo_clip_param)) * torch.square(
+        ratio - 1.0
+    )
+    return torch.where(advantage > 0, ppo, spo)
 
 
 def clamp_saturation(
