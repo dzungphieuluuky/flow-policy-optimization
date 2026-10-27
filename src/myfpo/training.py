@@ -104,9 +104,9 @@ def build_policy(
     if action_low is not None and action_high is not None:
         policy.set_action_bounds(action_low, action_high)
     if cfg.compile:
-        policy.actor = torch.compile(policy.actor, mode="reduce-overhead")
-        policy.encoder = torch.compile(policy.encoder, mode="reduce-overhead")
-        policy.critic = torch.compile(policy.critic, mode="reduce-overhead")
+        policy.actor = torch.compile(policy.actor, mode="default")
+        policy.encoder = torch.compile(policy.encoder, mode="default")
+        policy.critic = torch.compile(policy.critic, mode="default")
     return policy
 
 
