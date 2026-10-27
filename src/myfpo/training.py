@@ -902,9 +902,6 @@ def run_training_loop(
             state.global_step += steps_this_rollout
             pbar.update(steps_this_rollout)
 
-            # The batch normalises at load time, so the stats must take in this
-            # rollout before the first update reads it.
-            policy.update_observation_stats(batch["normalizer_observations"])
 
             epoch_infos, grad_norms_pre, above_clamp_fracs, both_clamped_fracs = policy_update_step(
                 policy, optimizer, batch, backends, cfg, grad_groups

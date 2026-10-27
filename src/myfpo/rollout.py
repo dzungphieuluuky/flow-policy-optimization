@@ -793,16 +793,13 @@ def bootstrap_values(
         try:
             with autocast_context(device):
                 actions_squashed = squash_to_env_bounds(actions, policy.action_low, policy.action_high)
-                q_current_chunk = subsampled_min(
-                    policy.critic(normalised_states, actions_squashed, exec_length_frac)
-                    .float()
-                )
+                chunk_len_mask = (torch.arange(cfg.action_horizon, device=actions.device).unsqueeze(0) < active["chunk_lengths"].unsqueeze(1)).unsqueeze(-1).float()
+                actions_squashed = actions_squashed * chunk_len_mask
+                q_current_chunk = subsampled_min(policy.critic(normalised_states, actions_squashed, exec_length_frac).float())
                 boot_actions_squashed = squash_to_env_bounds(boot_actions, policy.action_low, policy.action_high)
-                q_bootstrap = subsampled_min(
-                    policy.critic_target(
-                        normalised_next_states, boot_actions_squashed, boot_exec_frac
-                    ).float()
-                )
+                boot_mask = (torch.arange(cfg.action_horizon, device=boot_actions.device).unsqueeze(0) < cfg.n_action_steps).unsqueeze(-1).float()
+                boot_actions_squashed = boot_actions_squashed * boot_mask
+                q_bootstrap = subsampled_min(policy.critic_target(normalised_next_states, boot_actions_squashed, boot_exec_frac).float())
         finally:
             policy.critic.train(critic_training)
 
