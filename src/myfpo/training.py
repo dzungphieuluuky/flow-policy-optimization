@@ -197,22 +197,33 @@ def compute_rollout_diagnostics(
 
 @torch.no_grad()
 def measure_value_drift(policy, batch, device) -> tuple[torch.Tensor, torch.Tensor]:
-    """Both critic-drift metrics off one critic forward."""
+    cfg = policy.config
     boot_obs = batch["boot_observations"].to(device=device, dtype=torch.float32)
-    boot_actions = batch["boot_actions"].to(device=device, dtype=torch.float32)
+    boot_actions_raw = batch["boot_actions"].to(device=device, dtype=torch.float32)
     start = batch["boot_values_start"].to(device).reshape(-1)
-    boot_exec_frac = policy.exec_length_frac(
-        torch.full(
-            (boot_obs.shape[0],),
-            policy.config.n_action_steps,
-            device=boot_obs.device,
-            dtype=torch.long,
+    boot_exec_frac = torch.full(
+        (boot_obs.shape[0],),
+        cfg.n_action_steps / float(cfg.action_horizon),
+        device=boot_obs.device,
+        dtype=torch.float32,
+    )
+    # Match the masking in bootstrap_values: squash, then zero out steps
+    # beyond n_action_steps, so live and target critics read the same chunk.
+    boot_actions = squash_to_env_bounds(boot_actions_raw, policy.action_low, policy.action_high)
+    boot_mask = (
+        torch.arange(cfg.action_horizon, device=boot_obs.device)
+        .unsqueeze(0) < cfg.n_action_steps
+    ).unsqueeze(-1).float()
+    boot_actions = boot_actions * boot_mask
+    critic_was_training = policy.critic.training
+    policy.critic.eval()
+    try:
+        delta = (
+            subsampled_min(policy.critic(boot_obs, boot_actions, boot_exec_frac).float())
+            - start
         )
-    )
-    delta = (
-        subsampled_min(policy.critic(boot_obs, boot_actions, boot_exec_frac).float())
-        - start
-    )
+    finally:
+        policy.critic.train(critic_was_training)
     drift_rms = rms(delta)
     return (
         drift_rms / (rms(start) + 1e-8),
@@ -327,7 +338,7 @@ def policy_update_step(policy, optimizer, batch, backends, cfg, grad_groups):
     minibatch: dict[str, torch.Tensor] = {}
     # The policy carries no .device attribute; its parameters carry the device.
     # Passing a CPU device here would silently disable bf16 autocast on CUDA.
-    with autocast_context(next(policy.parameters()).device):
+    with autocast_context(next(policy.actor.parameters()).device):
         for micro_step, mb_idx in enumerate(microbatches):
             group_size = group_sizes[micro_step // accumulation_steps]
             minibatch = sample_minibatch(batch, mb_idx, minibatch)

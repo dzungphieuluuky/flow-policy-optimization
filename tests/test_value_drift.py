@@ -22,6 +22,13 @@ class _FixedCritic:
 
     def __init__(self, value):
         self.value = value
+        self.training = True
+
+    def eval(self):
+        return self
+
+    def train(self, mode=True):
+        return self
 
     def __call__(self, obs, _actions, _exec_length_frac):
         return torch.full((2, obs.shape[0]), float(self.value))
@@ -29,12 +36,15 @@ class _FixedCritic:
 
 class _FixedConfig:
     n_action_steps = 4
+    action_horizon = 4
 
 
 class _FixedPolicy:
     def __init__(self, value):
         self.critic = _FixedCritic(value)
         self.config = _FixedConfig()
+        self.action_low = torch.zeros(1)
+        self.action_high = torch.ones(1)
 
     def exec_length_frac(self, executed_steps):
         return executed_steps.to(torch.float32)

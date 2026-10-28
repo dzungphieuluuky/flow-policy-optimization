@@ -229,13 +229,26 @@ def compute_aspo_surrogate(
     advantage: torch.Tensor,
     cfg: MyfpoConfig,
 ) -> torch.Tensor:
-    """FPO++ trust region (amazon-far/fpo-control ASPO mode). PPO for A>0, SPO for A<0."""
+    """Trust-region surrogate, selected by ``cfg.trust_region_mode``.
+
+    - ``"ppo"``: PPO clipped surrogate on both signs.
+    - ``"spo"``: SPO quadratic surrogate on both signs.
+    - ``"aspo"``: PPO for ``A > 0``, SPO for ``A < 0`` (Wang et al. 2025 / FPO++).
+
+    ``cfg.spo_clip_param`` sets the quadratic penalty width; larger values are
+    a looser trust region for the negative-advantage branch.
+    """
     ratio_adv = ratio * advantage
     ratio_clipped = torch.clamp(ratio, 1.0 - cfg.clip_param, 1.0 + cfg.clip_param)
     ppo = torch.min(ratio_adv, ratio_clipped * advantage)
+    mode = cfg.trust_region_mode
+    if mode == "ppo":
+        return ppo
     spo = ratio_adv - (advantage.abs() / (2.0 * cfg.spo_clip_param)) * torch.square(
         ratio - 1.0
     )
+    if mode == "spo":
+        return spo
     return torch.where(advantage > 0, ppo, spo)
 
 
@@ -260,12 +273,9 @@ def clamp_saturation(
 # FPO++ (arXiv:2602.02481).
 # POLICY RATIO
 
-def compute_delta(cfm_loss_old, cfm_loss_new, cfg, advantage, group_size=1):
+def compute_delta(cfm_loss_old, cfm_loss_new, cfg, advantage):
     mode = cfg.ratio_mode
     if mode in ("cfm", "cfm_raw"):
-        if group_size != 1:
-            cfm_loss_old = group_cfm_loss(cfm_loss_old, group_size)
-            cfm_loss_new = group_cfm_loss(cfm_loss_new, group_size)
         if mode == "cfm":
             old = torch.clamp(cfm_loss_old, max=cfg.cfm_clamp)
             new = torch.clamp(cfm_loss_new, max=cfg.cfm_clamp)
@@ -282,8 +292,6 @@ def compute_policy_ratio(
     cfm_loss_new: torch.Tensor,
     cfg: MyfpoConfig,
     advantage: torch.Tensor | None = None,
-    *,
-    group_size: int = 1,
 ) -> torch.Tensor:
     """Return ``exp(log_delta)`` with a straight-through cap on ``log_delta``.
 
@@ -295,7 +303,7 @@ def compute_policy_ratio(
 
     ``group_size`` groups the MC axis before the exponent, as FPO Eq. 9 does.
     """
-    delta = compute_delta(cfm_loss_old, cfm_loss_new, cfg, advantage, group_size)
+    delta = compute_delta(cfm_loss_old, cfm_loss_new, cfg, advantage)
     safe_delta = delta.clamp(min=-cfg.log_ratio_cap, max=cfg.log_ratio_cap)  # cap=2.0; ST lets raw delta backprop
     delta_st = safe_delta.detach() + delta - delta.detach()
     return torch.exp(delta_st)

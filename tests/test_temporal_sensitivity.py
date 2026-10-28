@@ -75,4 +75,8 @@ def test_the_probe_changes_neither_the_loss_nor_the_gradients():
 
     torch.testing.assert_close(loss_off, loss_on, rtol=0, atol=0)
     for (name, a), (_, b) in zip(off.named_parameters(), on.named_parameters()):
-        assert torch.equal(a.grad, b.grad), name
+        if a.grad is None and b.grad is None:
+            continue
+        assert (a.grad is not None) == (b.grad is not None), f"{name}: one grad is None"
+        if a.grad is not None:
+            assert torch.equal(a.grad, b.grad), name

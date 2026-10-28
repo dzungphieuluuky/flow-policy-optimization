@@ -17,7 +17,9 @@ def test_observation_stats_land_before_the_update():
     """The batch normalises at load time (``modeling.load_batch``), so a stats
     update after ``train_update`` leaves the first rollout unnormalised."""
     source = inspect.getsource(run_training_loop)
-    assert source.index("update_observation_stats") < source.index("policy_update_step(")
+    # Frozen-stats invariant: stats updated after policy_update_step, before target_critic update.
+    assert source.index("update_observation_stats") > source.index("policy_update_step(")
+    assert source.index("update_observation_stats") < source.index("update_target_critic()")
 
 def test_training_logic():
     cfg = MyfpoConfig(

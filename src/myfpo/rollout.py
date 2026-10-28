@@ -772,17 +772,11 @@ def bootstrap_values(
         normalised_states = all_chunk_normalised_states[:n_chunks]
         normalised_next_states = all_chunk_normalised_states[n_chunks:]
         exec_length_frac = policy.exec_length_frac(lengths)
-        fitted_steps = (
-            lengths.float().mean()
-            if lengths.numel() > 0
-            else torch.tensor(
-                float(cfg.action_horizon),
-                device=lengths.device,
-                dtype=torch.float32,
-            )
-        )
-        boot_exec_frac = policy.exec_length_frac(
-            torch.full_like(lengths, float(cfg.n_action_steps))
+        boot_exec_frac = torch.full(
+            (lengths.shape[0],),
+            cfg.n_action_steps / float(cfg.action_horizon),
+            device=lengths.device,
+            dtype=torch.float32,
         )
         # The critic read is a target, not exploration. A dropout layer in
         # the critic re-rolls the value on every call, so the critic reads in

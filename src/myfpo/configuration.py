@@ -73,10 +73,10 @@ class MyfpoConfig(PreTrainedConfig):
 
     gamma: float = 0.99
     gae_lambda: float = 0.95
-    do_average_cfm_loss_in_chunk: bool = True
-    cfm_average_group_size: int = -1
+    do_average_cfm_loss_in_chunk: bool = False
+    cfm_average_group_size: int = 1
     clip_param: float = 0.05
-    spo_clip_param: float = 0.1
+    spo_clip_param: float = 0.01
     trust_region_mode: str = "ppo"
     cfm_loss_reduction: str = "mean"
     cfm_loss_target: str = "velocity"
@@ -241,10 +241,12 @@ class MyfpoConfig(PreTrainedConfig):
             raise ValueError(f"gamma={self.gamma} must satisfy 0 < gamma <= 1")
         if not 0.0 <= self.gae_lambda <= 1.0:
             raise ValueError(f"gae_lambda={self.gae_lambda} must be in [0, 1]")
-        if not 0.0 < self.spo_clip_param < 1.0:
-            raise ValueError(
-                f"spo_clip_param={self.spo_clip_param} must satisfy 0 < eps < 1"
-            )
+        if self.trust_region_mode in {"spo", "aspo"}:
+            if not 0.0 < self.spo_clip_param < 1.0:
+                raise ValueError(
+                    f"spo_clip_param={self.spo_clip_param} must satisfy 0 < eps < 1 "
+                    f"when trust_region_mode={self.trust_region_mode!r}"
+                )
         if not 0.0 < self.clip_param < 1.0:
             raise ValueError(
                 f"clip_param={self.clip_param} must satisfy 0 < eps < 1"

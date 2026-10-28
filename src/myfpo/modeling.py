@@ -334,9 +334,11 @@ class MyfpoPolicy(PreTrainedPolicy):
             ]
         }
     @torch.no_grad()
-    def update_target_critic(self, tau: float = 0.005):
+    def update_target_critic(self, soft_update_rate: float = 0.005):
+        # The flow time parameter was also spelled ``tau``; this method
+        # keeps the paper letter ``t`` in its argument name.
         for p_target, p in zip(self.critic_target.parameters(), self.critic.parameters()):
-            p_target.copy_(tau * p + (1.0 - tau) * p_target)
+            p_target.copy_(soft_update_rate * p + (1.0 - soft_update_rate) * p_target)
 
     def get_optim_params(self) -> dict:
         """Required by ``PreTrainedPolicy``. Returns what the optimizer actually uses.
@@ -477,26 +479,27 @@ class MyfpoPolicy(PreTrainedPolicy):
         eps = eps.to(storage_dtype)
         t = t.to(storage_dtype)
         x_t, actor_t, flow_shape, num_mc = mc_samples(actions, eps, t)
-        with torch.inference_mode(), autocast_context(actions.device):
-            condition = self.encoder(normalised_states)
-            condition_flat = broadcast_condition(condition, num_mc)
-            v_old = self.compute_predicted_velocity(
-                x_t, actor_t, condition_flat
-            ).float()
-        with torch.autocast(device_type=actions.device.type, enabled=False):
-            v_star = cfm_target(actions, eps, cfg).float()
-            v_old = v_old.reshape(eps.shape[0], num_mc, *flow_shape)
-            v_old = velocity_to_target_param(
-                v_old,
-                x_t.reshape(eps.shape[0], num_mc, *flow_shape),
-                t,
-                cfg,
-            )
-            loss_mask = action_is_pad
-            loss, loss_token = compute_cfm_loss(
-                v_old, v_star, cfg, "sample_and_token", loss_mask, cfm_loss_weight(t, cfg)
-            )
-            return loss, loss_token, v_old
+        with torch.no_grad():
+            with autocast_context(actions.device):
+                condition = self.encoder(normalised_states)
+                condition_flat = broadcast_condition(condition, num_mc)
+                v_old = self.compute_predicted_velocity(
+                    x_t, actor_t, condition_flat
+                ).float()
+            with torch.autocast(device_type=actions.device.type, enabled=False):
+                v_star = cfm_target(actions, eps, cfg).float()
+                v_old = v_old.reshape(eps.shape[0], num_mc, *flow_shape)
+                v_old = velocity_to_target_param(
+                    v_old,
+                    x_t.reshape(eps.shape[0], num_mc, *flow_shape),
+                    t,
+                    cfg,
+                )
+                loss_mask = action_is_pad
+                loss, loss_token = compute_cfm_loss(
+                    v_old, v_star, cfg, "sample_and_token", loss_mask, cfm_loss_weight(t, cfg)
+                )
+                return loss, loss_token, v_old
 
     def generate_rollout(
         self,
@@ -796,7 +799,7 @@ class MyfpoPolicy(PreTrainedPolicy):
     ) -> tuple[torch.Tensor, dict[str, float] | None]:
         """The shared body. ``compute_info`` picks the metrics pass."""
         cfg = self.config
-        device = next(self.parameters()).device
+        device = next(self.actor.parameters()).device
         storage_dtype = resolve_storage_dtype(device)
 
         self.probe_counter += 1
@@ -886,6 +889,15 @@ class MyfpoPolicy(PreTrainedPolicy):
     ) -> dict[str, float]:
         """Diagnostic: Q gradient wrt chunk tokens / obs frames.
         Measures temporal filter quality; prices full plan, not executed prefix."""
+        if b.actions.grad_fn is None and b.actions.requires_grad:
+            import warnings
+            warnings.warn(
+                "temporal_sensitivity: b.actions requires_grad=True but grad_fn is None; "
+                "autograd graph is dead. Check backward() was not called before this probe.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            return {}
         out = {}
         grads = torch.autograd.grad(
             raw_value_pred.sum(), b.actions, retain_graph=True
