@@ -782,8 +782,9 @@ def bootstrap_values(
         # the critic re-rolls the value on every call, so the critic reads in
         # eval mode. The actor proposal above stays in train mode on purpose:
         # its dropout is part of the behaviour noise.
-        critic_training = policy.critic.training
         policy.critic.eval()
+        policy.critic_target.eval()  # invariant: target always eval
+        critic_training = policy.critic.training
         try:
             with autocast_context(device):
                 actions_squashed = squash_to_env_bounds(actions, policy.action_low, policy.action_high)

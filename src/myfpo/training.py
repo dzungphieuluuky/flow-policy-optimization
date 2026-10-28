@@ -376,8 +376,6 @@ def policy_update_step(policy, optimizer, batch, backends, cfg, grad_groups):
             optimizer.step()
             optimizer.zero_grad(set_to_none=True)
             policy.step_count += 1
-        if epoch_info is not None:
-            epoch_infos.append(epoch_info)
     return epoch_infos, grad_norms_pre, above_clamp_fracs, both_clamped_fracs
 
 
@@ -823,7 +821,7 @@ def configure_run(
 
     print(
         f"myfpo policy: actor_depth={cfg.dit_depth} hidden={cfg.hidden_dim} "
-        f"params={sum(p.numel() for p in policy.parameters()):,}",
+        f"params={sum(p.numel() for p in policy.parameters() if p.requires_grad):,}",
         file=sys.stderr,
     )
     print(policy, file=sys.stderr)

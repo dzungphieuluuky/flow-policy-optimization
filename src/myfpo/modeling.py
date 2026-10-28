@@ -13,6 +13,7 @@ import time
 import numpy as np
 import torch
 
+import warnings
 from lerobot.policies import PreTrainedPolicy
 from lerobot.processor.converters import to_tensor
 from lerobot.utils.constants import ACTION, OBS_STATE
@@ -60,7 +61,7 @@ def build_optimizer(policy: MyfpoPolicy) -> torch.optim.Optimizer:
     kwargs = dataclasses.asdict(policy.config.get_optimizer_preset())
     kwargs.pop("grad_clip_norm", None)  # AdamW would clip all groups as one. See split_grad_params.
     kwargs["betas"] = policy.config.adam_betas
-    if next(policy.parameters()).is_cuda:
+    if next(policy.actor.parameters()).is_cuda:
         kwargs["fused"] = True
     groups = [
         *policy.get_actor_optim_params()["params"],

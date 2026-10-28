@@ -301,7 +301,8 @@ def compute_policy_ratio(
       ``cfm_clamp`` and ``cfm_loss_clamp_negative_advantages`` apply.
     * ``"cfm_raw"``: ``L_old - L_new`` with no clamp. Ablation only.
 
-    ``group_size`` groups the MC axis before the exponent, as FPO Eq. 9 does.
+    The MC axis is grouped by :func:`group_cfm_loss` before this call;
+    the function operates on already-grouped tensors.
     """
     delta = compute_delta(cfm_loss_old, cfm_loss_new, cfg, advantage)
     safe_delta = delta.clamp(min=-cfg.log_ratio_cap, max=cfg.log_ratio_cap)  # cap=2.0; ST lets raw delta backprop
