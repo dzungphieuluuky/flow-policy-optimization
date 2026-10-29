@@ -4,6 +4,7 @@ myfpo online training entry (LeRobot-native, MuJoCo-only).
 """
 
 from __future__ import annotations
+import math
 
 import dataclasses
 import json
@@ -82,6 +83,19 @@ def generate_mini_batch_indices(
             yield perm[start:stop]
 
 
+
+
+
+def build_scheduler(optimizer, cfg, total_steps: int):
+    if cfg.lr_schedule == "none" or cfg.lr_warmup_steps <= 0 or total_steps <= cfg.lr_warmup_steps:
+        return None
+    warmup = max(1, cfg.lr_warmup_steps)
+    def lr_lambda(step):
+        if step < warmup:
+            return float(step) / float(warmup)
+        progress = float(step - warmup) / float(max(1, total_steps - warmup))
+        return 0.5 * (1.0 + math.cos(math.pi * progress))
+    return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
 def build_policy(
     obs_dim: int,
@@ -900,6 +914,7 @@ def run_training_loop(
     grad_groups = split_grad_params(policy)
     t_start = time.time()
 
+    scheduler = build_scheduler(optimizer, cfg, total_steps)
     with tqdm(total=total_steps, desc="train", unit="step") as pbar:
         while state.global_step < total_steps:
             steps_to_go = total_steps - state.global_step
@@ -908,6 +923,10 @@ def run_training_loop(
                 policy, train_env, cfg, action_low, action_high, steps_to_go
             )
             rollout["collect_s"] = time.perf_counter() - t0
+            if cfg.normalize_rewards and hasattr(policy, "reward_normalizer"):
+                rew = rollout.get("step_rewards") or batch.get("step_rewards")
+                if rew is not None:
+                    policy.reward_normalizer.update(rew.reshape(-1, 1))
             state.global_step += steps_this_rollout
             pbar.update(steps_this_rollout)
 
@@ -915,6 +934,8 @@ def run_training_loop(
             epoch_infos, grad_norms_pre, above_clamp_fracs, both_clamped_fracs = policy_update_step(
                 policy, optimizer, batch, backends, cfg, grad_groups
             )
+            if scheduler is not None:
+                scheduler.step()
 
             drift = None
             if cfg.log_drift_diagnostics and backends:

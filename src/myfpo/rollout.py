@@ -697,10 +697,15 @@ def chunk_advantages(
     q_current_chunk: torch.Tensor,
     q_bootstrap: torch.Tensor,
     storage_dtype: torch.dtype,
-):
+    reward_normalizer=None,
+    ):
     """The advantages, the regression targets, and the GAE diagnostics."""
+    if cfg.normalize_rewards and reward_normalizer is not None:
+        step_rewards = reward_normalizer(active["step_rewards"].reshape(-1, 1)).reshape(active["step_rewards"].shape)
+    else:
+        step_rewards = active["step_rewards"]
     raw_advantages, raw_returns = compute_chunk_advantages(
-        active["step_rewards"],
+        step_rewards,
         q_current_chunk,
         q_bootstrap,
         active["chunk_starts"],
@@ -930,7 +935,8 @@ def run_rollout(
     ) = bootstrap_values(policy, active, n_chunks, device, storage_dtype)
     raw_advantages, normalised_advantages, raw_returns, gae_diagnostics = (
         chunk_advantages(
-            cfg, active, n_chunks, q_current_chunk, q_bootstrap, storage_dtype
+            cfg, active, n_chunks, q_current_chunk, q_bootstrap, storage_dtype,
+            reward_normalizer=getattr(policy, "reward_normalizer", None),
         )
     )
 

@@ -157,6 +157,7 @@ class MyfpoPolicy(PreTrainedPolicy):
         self.critic_target = copy.deepcopy(self.critic)
         self.critic_target.requires_grad_(False)
         self.critic_target.eval()
+        self.reward_normalizer = RunningMeanStd(1)
         self.obs_normalizer = RunningMeanStd(obs_dim)
         self.register_buffer("action_low", torch.full((action_dim,), -1.0), persistent=False)
         self.register_buffer("action_high", torch.full((action_dim,), 1.0), persistent=False)

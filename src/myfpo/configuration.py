@@ -119,7 +119,9 @@ class MyfpoConfig(PreTrainedConfig):
     max_grad_norm: float = 1.0
     ema_decay: float = 0.95
     ema_warmup_steps: int = 100
-
+    lr_warmup_steps: int = 10000
+    lr_schedule: str = "cosine"
+    normalize_rewards: bool = True
     eval_max_episodes: int = 50
     eval_sampling: str = "noise_start"
     stop_eval_sampling: str = "noise_start"
