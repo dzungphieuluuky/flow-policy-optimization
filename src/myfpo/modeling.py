@@ -69,7 +69,7 @@ def make_optimizer(policy: MyfpoPolicy) -> torch.optim.Optimizer:
     return torch.optim.AdamW(groups, **kwargs)
 
 @dataclasses.dataclass
-class Batch:
+class TrainingBatch:
     """The tensors one training step reads. Loaded and shape-checked."""
 
     states: torch.Tensor
@@ -540,7 +540,7 @@ class MyfpoPolicy(nn.Module):
         device,
         storage_dtype: torch.dtype,
         grad_inputs: bool = False,
-    ) -> Batch:
+    ) -> TrainingBatch:
         """Load the batch, check its shapes, and draw the MC flow points.
 
         ``grad_inputs`` makes the obs window and the chunk leaves that carry a
@@ -606,7 +606,7 @@ class MyfpoPolicy(nn.Module):
             self.to_device_behavior_losses(batch, device, n, num_mc, action_dim)
         )
 
-        return Batch(
+        return TrainingBatch(
             states=states,
             actions=actions,
             advantages=advantages,
@@ -674,7 +674,7 @@ class MyfpoPolicy(nn.Module):
             )
         return cfm_loss_old, cfm_loss_old_token, velocity_old_token
 
-    def policy_loss(self, b: Batch, v_new: torch.Tensor, device) -> PolicyTerms:
+    def policy_loss(self, b: TrainingBatch, v_new: torch.Tensor, device) -> PolicyTerms:
         """The ASPO surrogate loss, one value per chunk."""
         cfg = self.config
         n, num_mc, flow_shape = b.n, b.num_mc, b.flow_shape
@@ -742,7 +742,7 @@ class MyfpoPolicy(nn.Module):
         )
 
     def value_loss(
-        self, b: Batch, device
+        self, b: TrainingBatch, device
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Score the critic on the executed chunk. Return the loss, the values, and the returns."""
         with autocast_context(device):
@@ -861,7 +861,7 @@ class MyfpoPolicy(nn.Module):
         return loss, info
 
     def temporal_sensitivity(
-        self, raw_value_pred: torch.Tensor, b: Batch
+        self, raw_value_pred: torch.Tensor, b: TrainingBatch
     ) -> dict[str, float]:
         """Diagnostic: Q gradient wrt chunk tokens / obs frames.
         Measures temporal filter quality; prices full plan, not executed prefix."""
