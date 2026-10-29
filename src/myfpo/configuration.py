@@ -50,17 +50,17 @@ class MyfpoConfig(PreTrainedConfig):
     """myfpo hyperparameters."""
 
     report_to: str = "all"
-    n_obs_steps: int = 16
-    action_horizon: int = 8
-    n_action_steps: int = 8
+    n_obs_steps: int = 4
+    action_horizon: int = 4
+    n_action_steps: int = 4
     action_perturb_std: float = 0.0
     hidden_dim: int = 128
 
-    num_envs: int = 64
-    num_mc_samples: int = 16
-    num_learning_epochs: int = 10
+    num_envs: int = 32
+    num_mc_samples: int = 8
+    num_learning_epochs: int = 4
     chunks_per_update: int = 1024
-    batch_size: int = 128
+    batch_size: int = 256
     grad_accum_steps: int = 1
 
     num_steps_zero_start: int = 4

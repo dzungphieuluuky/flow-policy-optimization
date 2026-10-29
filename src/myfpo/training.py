@@ -406,13 +406,25 @@ def policy_update_step(policy, optimizer, batch, backends, cfg, grad_groups):
     return epoch_infos, grad_norms_pre, above_clamp_fracs, both_clamped_fracs
 
 
-def evaluate_policy(policy, global_step, out_dir, evaluator, eval_policies, cfg, best_return=None):
+def evaluate_policy(
+    policy, global_step, out_dir, evaluator, eval_policies, cfg, best_return=None,
+    video=None,
+):
     displaced = policy.swap_in_ema(global_step)
     try:
         results_by_sampling = {
             name: evaluator.evaluate(adapter, out_dir=out_dir if name == cfg.eval_sampling else None, append_csv=(name == cfg.eval_sampling))
             for name, adapter in eval_policies.items()
         }
+        if video is not None:
+            # Inside the EMA swap, so the frames show the weights that were
+            # scored. The recorder has its own env and seed, so this neither
+            # perturbs the numbers above nor reuses their RNG stream.
+            recorder, video_dir = video
+            recorder.evaluate(
+                eval_policies[cfg.eval_sampling],
+                video_path=Path(video_dir) / f"step_{global_step}.mp4",
+            )
     finally:
         policy.swap_out_ema(displaced)
     window_obj = summarise_window(
@@ -703,6 +715,7 @@ def eval_window(
     backends,
     eval_steps: int,
     r_rand: float,
+    video=None,
 ) -> None:
     """Evaluate both flow starts, log the window, and keep the best checkpoint."""
     result, summaries = evaluate_policy(
@@ -713,6 +726,7 @@ def eval_window(
         eval_policies,
         cfg,
         best_return=state.best_return,
+        video=video,
     )
     mean_return = result.get("mean_return", 0.0)
     stop_return = result.get("stop_return", mean_return)
@@ -786,6 +800,21 @@ class RunSetup:
     env_name: str
     global_step: int
     eval_env: Any = None
+    video_env: Any = None
+    video_evaluator: Any = None
+    video_dir: Path | None = None
+
+
+# Rows in the recording env. ``render()`` renders every row, so this is kept
+# small on purpose: the training width would be hundreds of MB per frame.
+VIDEO_ENVS = 4
+
+# Device memory a SAPIEN GPU sim context needs before it can start, measured
+# (~1.3 GiB for a 4-row sim, almost independent of ``num_envs``). The recording
+# env is a third context on top of training and evaluation. Below this the
+# context creation faults and takes the whole run with it, so the budget is
+# checked rather than discovered.
+VIDEO_CONTEXT_BYTES = 1536 * 2**20
 
 
 def make_train_env(cfg, env, env_name, runtime: dict | None):
@@ -823,6 +852,7 @@ def configure_run(
     action_dim: int,
     resume_from_checkpoint,
     runtime: dict | None,
+    video_dir: Path | None = None,
 ) -> RunSetup:
     """The env, the policy, the evaluator, and the log backends."""
     unwrapped = getattr(env, "unwrapped", env)
@@ -862,6 +892,8 @@ def configure_run(
 
     eval_seed = 10000 + seed
     eval_env = None
+    video_env = None
+    video_evaluator = None
     if callable(getattr(train_env, "make_eval_env", None)):
         eval_env = train_env.make_eval_env()
         evaluator = VectorEvaluator(
@@ -872,9 +904,52 @@ def configure_run(
             eval_seed=eval_seed,
             max_episodes=cfg.eval_max_episodes,
         )
+        if video_dir is not None:
+            # A separate, small render env: rendering costs GPU time per row and
+            # returns every row, so the training width is the wrong thing to
+            # record. Same task and seed, so the video is the same policy.
+            free = torch.cuda.mem_get_info()[0] if torch.cuda.is_available() else 0
+            if free < VIDEO_CONTEXT_BYTES:
+                print(
+                    f"myfpo: skipping video: {free / 2**20:.0f} MiB free, a render "
+                    f"context needs ~{VIDEO_CONTEXT_BYTES / 2**20:.0f} MiB. "
+                    "Free the GPU or lower --myfpo.num_envs.",
+                    file=sys.stderr,
+                )
+            else:
+                try:
+                    video_env = train_env.make_eval_env(
+                        num_envs=min(VIDEO_ENVS, cfg.num_envs),
+                        render_mode="rgb_array",
+                    )
+                except Exception as exc:  # noqa: BLE001 - a video must not end the run
+                    print(
+                        "myfpo: skipping video, could not start a render env: "
+                        f"{type(exc).__name__}: {exc}",
+                        file=sys.stderr,
+                    )
+                    video_env = None
+            if video_env is not None:
+                video_evaluator = VectorEvaluator(
+                    video_env,
+                    n_obs_steps=cfg.n_obs_steps,
+                    n_action_steps=cfg.n_action_steps,
+                    action_horizon=cfg.action_horizon,
+                    eval_seed=eval_seed,
+                    # One round of rows is one episode each: enough for a video.
+                    max_episodes=min(VIDEO_ENVS, cfg.num_envs),
+                )
     else:
         evaluator = Evaluator(
             env, eval_seed=eval_seed, max_episodes=cfg.eval_max_episodes
+        )
+    if video_dir is not None and video_evaluator is None:
+        # Rather than fail the run over a diagnostic, say so and carry on: the
+        # CPU envs have no batched renderer to record from.
+        print(
+            "myfpo: video requested but this env cannot render in batch; "
+            "no video will be written (needs an MS-* env)",
+            file=sys.stderr,
         )
     eval_policies = {
         "zero_start": EvalPolicy(policy, start_from_zero=True),
@@ -903,6 +978,9 @@ def configure_run(
         env_name=env_name,
         global_step=global_step,
         eval_env=eval_env,
+        video_env=video_env,
+        video_evaluator=video_evaluator,
+        video_dir=Path(video_dir) if video_dir is not None else None,
     )
 
 
@@ -1015,6 +1093,11 @@ def run_training_loop(
                 backends,
                 eval_steps,
                 r_rand,
+                video=(
+                    (setup.video_evaluator, setup.video_dir)
+                    if setup.video_evaluator is not None
+                    else None
+                ),
                 )
 
             if state.global_step >= state.next_save or state.global_step >= total_steps:
@@ -1049,9 +1132,14 @@ def run_training(
     action_dim: int | None = None,
     resume_from_checkpoint: str | Path | None = None,
     runtime: dict | None = None,
+    video_dir: str | Path | None = None,
 ) -> dict[str, Any]:
     """One myfpo training run. Env builds before any CUDA init, so forked
     vector-env workers inherit the right device state.
+
+    ``video_dir`` records the eval rollout of every eval window as an mp4
+    (``step_<N>.mp4``). It needs a torch env that can render, and a first eval
+    window: nothing is written if the run never evaluates.
     """
     cfg = cfg or MyfpoConfig()
     out_dir = Path(out_dir)
@@ -1071,6 +1159,7 @@ def run_training(
         action_dim=action_dim,
         resume_from_checkpoint=resume_from_checkpoint,
         runtime=runtime,
+        video_dir=video_dir,
     )
     policy = setup.policy
     optimizer = setup.optimizer
@@ -1095,6 +1184,8 @@ def run_training(
             train_env.close()
         if setup.eval_env is not None and setup.eval_env is not train_env:
             setup.eval_env.close()
+        if setup.video_env is not None and setup.video_env is not train_env:
+            setup.video_env.close()
         finish_backends(backends)
 
     return finalize_run(out_dir, policy, optimizer, state, env_name, seed, fps)

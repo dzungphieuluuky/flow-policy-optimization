@@ -322,14 +322,47 @@ class VectorEvaluator:
         planner = getattr(policy, "plan", None)
         return planner(window) if planner is not None else policy(window)
 
+    def _grab_frame(self) -> np.ndarray:
+        """One RGB frame for the whole batch, tiled into a single image.
+
+        ``render()`` returns every row, so a recording env must be built with a
+        handful of rows: at the training width this would be gigabytes a frame.
+        """
+        frames = np.asarray(self.env.render())
+        if frames.ndim == 3:
+            return frames
+        from mani_skill.utils.visualization.misc import tile_images
+
+        return tile_images(frames, nrows=max(1, int(np.sqrt(len(frames)))))
+
+    @staticmethod
+    def _write_video(
+        images: list[np.ndarray], video_path: str | Path, fps: int
+    ) -> Path:
+        """Encode the captured frames to ``video_path`` (a ``.mp4``)."""
+        from mani_skill.utils.visualization.misc import images_to_video
+
+        path = Path(video_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # images_to_video appends the suffix itself, so hand it the stem.
+        images_to_video(images, str(path.parent), path.stem, fps=fps, verbose=False)
+        return path
+
     def evaluate(
         self,
         policy: Any,
         *,
         out_dir: str | Path | None = None,
         append_csv: bool = False,
+        video_path: str | Path | None = None,
+        video_fps: int = 30,
     ) -> list[dict[str, Any]]:
-        """Deterministic batched rollouts, optionally writing ``eval_history.csv``."""
+        """Deterministic batched rollouts, optionally writing ``eval_history.csv``.
+
+        ``video_path`` records the first round of episodes only: that is one
+        full-length rollout of every row, which is what a video of the policy is
+        for. Recording every round would write the same rollout over and over.
+        """
         rng = np.random.default_rng(self.eval_seed)
         n = int(self.env.num_envs)
         device = torch.device(self.env.device)
@@ -350,6 +383,10 @@ class VectorEvaluator:
                 saw_success = False
                 frames: list[torch.Tensor] = []
                 steps = 0
+                # Only the first round is captured; one round is one episode of
+                # every row, so later rounds would overwrite the same video.
+                recording = video_path is not None and not results
+                images: list[np.ndarray] = [self._grab_frame()] if recording else []
                 chunk: torch.Tensor | None = None
                 while True:
                     if chunk is None or steps % self.n_action_steps == 0:
@@ -359,6 +396,8 @@ class VectorEvaluator:
                     action = chunk[:, steps % self.n_action_steps]
                     obs, reward, terminated, truncated, info = self.env.step_torch(action)
                     frames.append(action)
+                    if recording:
+                        images.append(self._grab_frame())
                     ep_return += reward
                     if isinstance(info, dict) and "success" in info:
                         success = success | info["success"]
@@ -372,6 +411,8 @@ class VectorEvaluator:
                 actions = torch.stack(frames, dim=1).cpu().numpy()
                 returns = ep_return.cpu().numpy()
                 successes = success.cpu().numpy()
+                if recording and images:
+                    self._write_video(images, video_path, video_fps)
                 for row in range(n):
                     if len(results) >= self.max_episodes:
                         break

@@ -23,6 +23,7 @@ from __future__ import annotations
 import types
 
 import gymnasium as gym
+import numpy as np
 import torch
 from gymnasium.vector import AutoresetMode
 
@@ -79,6 +80,10 @@ class NextStepShim:
             obs = torch.where(done.unsqueeze(-1), info["final_observation"], obs)
         return obs, reward, terminated, truncated, info
 
+    def render(self):
+        """Pass through to the wrapped env's batched renderer."""
+        return self.vec.render()
+
     def step(self, actions):
         """Numpy in/out, for callers that are not the collector."""
         obs, reward, terminated, truncated, info = self.step_torch(
@@ -114,6 +119,7 @@ class ManiSkillTorchEnv(NextStepShim):
         ignore_terminations: bool = False,
         obs_mode: str = DEFAULT_OBS_MODE,
         control_mode: str = DEFAULT_CONTROL_MODE,
+        render_mode: str | None = None,
     ):
         if alias not in MANISKILL_TASKS:
             raise KeyError(f"unknown ManiSkill alias {alias!r}; add it to MANISKILL_TASKS")
@@ -126,11 +132,13 @@ class ManiSkillTorchEnv(NextStepShim):
         self.task_id = MANISKILL_TASKS[alias]
         self.obs_mode = obs_mode
         self.control_mode = control_mode
+        self.render_mode = render_mode
         base = gym.make(
             self.task_id,
             num_envs=int(num_envs),
             obs_mode=obs_mode,
             control_mode=control_mode,
+            render_mode=render_mode,
         )
         vec = ManiSkillVectorEnv(
             base, auto_reset=True, ignore_terminations=ignore_terminations
@@ -143,20 +151,43 @@ class ManiSkillTorchEnv(NextStepShim):
         # the user passed, not the ManiSkill task id.
         self.spec = types.SimpleNamespace(id=alias)
 
-    def make_eval_env(self) -> ManiSkillTorchEnv:
+    def make_eval_env(
+        self, *, num_envs: int | None = None, render_mode: str | None = None
+    ) -> ManiSkillTorchEnv:
         """A sibling env for evaluation.
 
         Terminations are ignored so every row stops only at the time limit.
         That keeps the batch in lockstep, which is what lets the evaluator hold
         one shared observation window for all rows.
+
+        ``render_mode="rgb_array"`` costs GPU rendering on every ``render()``,
+        and it renders *all* rows at once, so a recording env is built with a
+        handful of rows rather than the training width.
         """
         return ManiSkillTorchEnv(
             self.alias,
-            self.num_envs,
+            self.num_envs if num_envs is None else int(num_envs),
             ignore_terminations=True,
             obs_mode=self.obs_mode,
             control_mode=self.control_mode,
+            render_mode=render_mode,
         )
+
+    def render(self) -> np.ndarray:
+        """RGB frames for every row, ``(num_envs, H, W, 3)`` uint8.
+
+        Capture happens on the GPU and comes back through the human render
+        camera, so it works with ``obs_mode="state"``: no sensor is needed.
+        """
+        if self.render_mode != "rgb_array":
+            raise RuntimeError(
+                "render() needs render_mode='rgb_array'; pass it to "
+                "ManiSkillTorchEnv or make_eval_env"
+            )
+        frames = self.vec.render()
+        if torch.is_tensor(frames):
+            frames = frames.detach().cpu().numpy()
+        return np.asarray(frames)
 
     def random_chunk(self, horizon: int) -> torch.Tensor:
         """A raw random chunk ``[num_envs, horizon, action_dim]``."""

@@ -121,6 +121,9 @@ class TrainConfig:
     # run dir (<base>_resume[/2...]). total_steps stays an absolute env-step
     # budget.
     resume: str | None = None
+    # Record the eval rollout of every eval window to <out_dir>/videos. Needs a
+    # ManiSkill GPU env (MS-*); the CPU path has no batched renderer.
+    video: bool = False
     myfpo: MyfpoConfig = field(default_factory=MyfpoConfig)
 
 
@@ -194,6 +197,7 @@ def run_single(
     action_dim: int | None,
     resume_from_checkpoint: str | None = None,
     runtime: dict | None = None,
+    video_dir: Path | None = None,
 ) -> dict:
     """Dispatch one run to the matching backend's training entry."""
     import gymnasium as gym
@@ -248,6 +252,7 @@ def run_single(
             action_dim=action_dim,
             resume_from_checkpoint=resume_from_checkpoint,
             runtime=runtime,
+            video_dir=video_dir,
         )
     finally:
         env.close()
@@ -313,6 +318,7 @@ def main(argv: list[str] | None = None) -> int:
             args.action_dim,
             args.resume,
             runtime,
+            video_dir=run_dir / "videos" if args.video else None,
         )
     except Exception as exc:  # noqa: BLE001 - a run can fail any way; the traceback is printed
         traceback.print_exc(file=sys.stderr)
