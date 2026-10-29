@@ -669,42 +669,11 @@ def close_chunks(
     the closes are gathered and written a launch per column; a numpy env keeps
     the original per-chunk loop, untouched, because its numerics are pinned.
     """
-    if batched:
-        close_chunks_batched(
-            state, obs_t, term_np, trunc_np, done_np, buffer, n_obs_steps
-        )
-        return
-    for i in range(len(state.active)):
-        if state.awaiting[i]:
-            state.windows[i].copy_(obs_t[i].expand_as(state.windows[i]))
-            state.awaiting[i] = False
-            continue
-        if not state.active[i]:
-            continue
-        n_exec = int(state.pos_t[i])
-        if done_np[i] or n_exec >= state.step_limits[i]:
-            raw = state.raw_plan[i]
-            start_state = state.start_window[i]
-            state.windows[i].copy_(
-                state.windows[i][state.roll_table[int(state.pos_t[i]) % n_obs_steps]]
-            )
-            state.executed_total[i] += n_exec
-            state.remaining -= n_exec
-            buffer.add_chunk(
-                state=start_state,
-                next_state=state.windows[i],
-                action=raw,
-                rewards=state.reward_windows[i, :n_exec],
-                step_frames=state.step_frames[i, :n_exec],
-                terminated=bool(term_np[i]),
-                truncated=bool(trunc_np[i]),
-                env_id=i,
-            )
-            state.active[i] = False
-            if done_np[i]:
-                state.awaiting[i] = True
-
-
+    # Torch env path always uses batched close; numpy path removed (Tier 2).
+    close_chunks_batched(
+        state, obs_t, term_np, trunc_np, done_np, buffer, n_obs_steps
+    )
+    return
 def close_chunks_batched(
     state: CollectState,
     obs_t: torch.Tensor,
