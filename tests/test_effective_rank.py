@@ -3,14 +3,14 @@
 import pytest
 import torch
 
-from myfpo.networks import MyfpoFlowModel, effective_rank
+from myfpo.networks import FlowModel, effective_rank
 
 N, HIDDEN = 128, 128
 
 
-def _flow_model(device: torch.device) -> MyfpoFlowModel:
+def _flow_model(device: torch.device) -> FlowModel:
     torch.manual_seed(0)
-    return MyfpoFlowModel(
+    return FlowModel(
         action_dim=3,
         action_horizon=16,
         hidden_dim=HIDDEN,
@@ -62,7 +62,7 @@ def _rank(matrix: torch.Tensor) -> torch.Tensor:
 
 def test_a_rank_r_matrix_reads_as_r():
     """The entropy form tracks exact rank: sigma has r nonzero values, so the
-    normalised spectrum is uniform over r and exp(H) = r."""
+    normalized spectrum is uniform over r and exp(H) = r."""
     for r in (1, 3, 16):
         assert float(effective_rank(_rank(torch.randn(r, HIDDEN)))) == pytest.approx(
             r, rel=0.05

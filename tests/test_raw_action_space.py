@@ -21,7 +21,7 @@ from lerobot.utils.constants import OBS_STATE
 
 from myfpo.configuration import MyfpoConfig
 from myfpo.processor import squash_to_env_bounds
-from myfpo.training import build_policy
+from myfpo.training import make_policy
 from test_collector_batch_equivalence import FakeVecEnv
 
 OBS, ACT = 11, 3
@@ -36,7 +36,7 @@ def _policy():
         input_features={"observation.state": PolicyFeature(FeatureType.STATE, (OBS,))},
         output_features={"action": PolicyFeature(FeatureType.ACTION, (ACT,))},
     )
-    return build_policy(
+    return make_policy(
         OBS, ACT, cfg, device="cpu", action_low=LOW, action_high=HIGH
     )
 
@@ -110,13 +110,13 @@ def test_every_squash_site_computes_the_same_terms():
     diagnostics report drift apart.
     """
     from myfpo.rollout import resolve_action_bounds
-    from myfpo.processor import MyfpoActionPostprocessorStep
+    from myfpo.processor import ActionPostprocessorStep
     from myfpo.training import executed_chunk
 
     low, high = resolve_action_bounds(LOW, HIGH)
     raw = torch.randn(3, 4, ACT)
 
-    post = MyfpoActionPostprocessorStep(torch.tensor(LOW), torch.tensor(HIGH))
+    post = ActionPostprocessorStep(torch.tensor(LOW), torch.tensor(HIGH))
     from_post = post({"action": raw})["action"]
 
     from_diag = executed_chunk({"action": raw}, LOW, HIGH)

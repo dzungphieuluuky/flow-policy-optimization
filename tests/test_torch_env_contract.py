@@ -3,7 +3,7 @@
 ManiSkill resets a finished env inside the done ``step()`` and hands the real
 next observation through ``info["final_observation"]``. These tests pin the shim
 that swaps them, and pin the collector storing the swapped frame, without
-needing SAPIEN: the fake below has ManiSkill's autoreset behaviour.
+needing SAPIEN: the fake below has ManiSkill's autoreset behavior.
 """
 
 import numpy as np

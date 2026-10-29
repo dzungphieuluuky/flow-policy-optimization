@@ -2,7 +2,7 @@
 
 The module docstring used to say "the attention is maskless" while the call
 passed ``is_causal=True``. The mask is deliberate (see ``SelfAttention``); this
-module pins the behaviour so the docstring and the code cannot drift again.
+module pins the behavior so the docstring and the code cannot drift again.
 """
 
 from __future__ import annotations

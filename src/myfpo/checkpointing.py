@@ -96,9 +96,9 @@ def save_policy_checkpoint(
 
 def load_optimizer(policy, d: Path) -> torch.optim.Optimizer:
     """Rebuild the optimizer from the policy, then load its state."""
-    from myfpo.modeling import build_optimizer
+    from myfpo.modeling import make_optimizer
 
-    optimizer = build_optimizer(policy)
+    optimizer = make_optimizer(policy)
 
     try:
         opt_state = torch.load(

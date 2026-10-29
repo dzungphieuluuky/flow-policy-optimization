@@ -1,5 +1,5 @@
 # State-based MuJoCo prototype ladder. `--env <id>` is all you pass: the runner
-# resolves obs_dim/action_dim from here and hands them to build_policy, which
+# resolves obs_dim/action_dim from here and hands them to make_policy, which
 # attaches the PolicyFeatures to policy.config. Never pass dims for a normal
 # run. --obs_dim/--action_dim (underscores, draccus convention) exist only to
 # override, and the live env space is validated against the registry at startup

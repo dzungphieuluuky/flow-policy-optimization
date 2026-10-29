@@ -31,7 +31,7 @@ def cfg(
     )
 
 
-def make_policy(**kw) -> MyfpoPolicy:
+def make_test_policy(**kw) -> MyfpoPolicy:
     """A policy with the feature specs the suite uses. ``kw`` goes to the config."""
     return MyfpoPolicy(cfg(**kw))
 
@@ -49,7 +49,7 @@ def make_batch(
         "observation.state": torch.zeros(n, policy.config.n_obs_steps, obs_dim),
         "action": torch.zeros(n, horizon, action_dim),
         "action_is_pad": torch.zeros(n, horizon, dtype=torch.bool),
-        "normalised_advantages": torch.ones(n),
+        "normalized_advantages": torch.ones(n),
         "raw_returns": torch.ones(n),
         "mc_t": torch.ones(n, mc, horizon, 1),
         "mc_eps": torch.randn(n, mc, horizon, action_dim),

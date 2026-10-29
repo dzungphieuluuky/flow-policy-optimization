@@ -253,7 +253,7 @@ class Evaluator:
         """The mean, the median, the interval, and the count for one eval."""
         return summarize_results(results, seed=seed)
 
-    def cloned(self, max_episodes: int) -> Evaluator:
+    def clone(self, max_episodes: int) -> Evaluator:
         """The same evaluator, with a different episode budget."""
         return Evaluator(
             self.env,
@@ -435,7 +435,7 @@ class VectorEvaluator:
         """The mean, the median, the interval, and the count for one eval."""
         return summarize_results(results, seed=seed)
 
-    def cloned(self, max_episodes: int) -> VectorEvaluator:
+    def clone(self, max_episodes: int) -> VectorEvaluator:
         """The same evaluator, with a different episode budget."""
         return VectorEvaluator(
             self.env,
@@ -456,6 +456,7 @@ class VectorEvaluator:
         del seed
 
         def plan(_window: torch.Tensor) -> torch.Tensor:
+            """Return one raw random chunk of ``action_horizon`` actions."""
             horizon = int(self.action_horizon)
             return env.random_chunk(horizon)
 

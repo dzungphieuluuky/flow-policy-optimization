@@ -14,7 +14,7 @@ from fixtures import cfg
 
 from myfpo.networks import Critic, CriticMember
 from myfpo.layers import CrossAttention
-from myfpo.training import build_policy
+from myfpo.training import make_policy
 
 OBS, HIDDEN, STEPS, ACT, H = 11, 32, 8, 3, 6
 
@@ -195,7 +195,7 @@ def test_the_ensemble_shares_the_head_count():
 
 
 def test_the_policy_builds_the_cross_critic():
-    policy = build_policy(
+    policy = make_policy(
         11,
         3,
         cfg(),

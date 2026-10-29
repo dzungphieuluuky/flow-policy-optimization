@@ -32,7 +32,7 @@ from myfpo.evaluator import (
     compute_mean_chunk_jerk,
     compute_seam_jerk,
 )
-from myfpo.modeling import MyfpoAborted, MyfpoPolicy, build_optimizer
+from myfpo.modeling import TrainingAborted, MyfpoPolicy, make_optimizer
 from myfpo.fpo_core import compute_eval_summary_metrics, subsampled_min
 from myfpo.processor import squash_to_env_bounds
 from lerobot.utils.constants import CHECKPOINTS_DIR, OBS_STATE
@@ -47,12 +47,15 @@ class EvalPolicy:
 
     @classmethod
     def for_sampling(cls, policy, sampling):
+        """Build the wrapper that matches the ``eval_sampling`` mode."""
         return cls(policy, start_from_zero=(sampling == "zero_start"))
 
     def reset(self):
+        """Clear the wrapped policy's frame and action buffers."""
         self.policy.reset()
 
     def __call__(self, obs):
+        """Select one action in eval mode, and restore the training mode after."""
         was = self.policy.training
         self.policy.eval()
         try:
@@ -65,7 +68,7 @@ class EvalPolicy:
         """A batched raw chunk for the GPU evaluator: ``window`` is ``[E, T, obs]``.
 
         ``select_action`` is single-env by construction (one action buffer, one
-        frame buffer), so the vectorised path plans a whole chunk per env
+        frame buffer), so the vectorized path plans a whole chunk per env
         instead of one action at a time. The evaluator executes it open-loop,
         which is what the collector does during training.
         """
@@ -104,18 +107,20 @@ def generate_mini_batch_indices(
 
 
 
-def build_scheduler(optimizer, cfg, total_steps: int):
+def make_scheduler(optimizer, cfg, total_steps: int):
+    """Build the warmup and cosine ``LambdaLR``. Return None when the config turns the schedule off."""
     if cfg.lr_schedule == "none" or cfg.lr_warmup_steps <= 0 or total_steps <= cfg.lr_warmup_steps:
         return None
     warmup = max(1, cfg.lr_warmup_steps)
     def lr_lambda(step):
+        """Scale the LR linearly during warmup, then apply the cosine decay over the remaining steps."""
         if step < warmup:
             return float(step) / float(warmup)
         progress = float(step - warmup) / float(max(1, total_steps - warmup))
         return 0.5 * (1.0 + math.cos(math.pi * progress))
     return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
-def build_policy(
+def make_policy(
     obs_dim: int,
     action_dim: int,
     cfg: MyfpoConfig,
@@ -229,6 +234,7 @@ def compute_rollout_diagnostics(
 
 @torch.no_grad()
 def measure_value_drift(policy, batch, device) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return the RMS of the bootstrap delta relative to the start values and to the raw returns."""
     cfg = policy.config
     boot_obs = batch["boot_observations"].to(device=device, dtype=torch.float32)
     boot_actions_raw = batch["boot_actions"].to(device=device, dtype=torch.float32)
@@ -271,14 +277,14 @@ def sample_random_baseline(
     The evaluator builds the baseline, so the same code covers the single-env
     numpy path and the batched GPU path.
     """
-    baseline = evaluator.cloned(max_episodes=max_episodes)
+    baseline = evaluator.clone(max_episodes=max_episodes)
     results = baseline.evaluate(baseline.random_policy(env, seed), out_dir=None)
     if not results:
         return 0.0
     return float(np.mean([r["return"] for r in results]))
 
 def make_vec_env(env_name: str, num_envs: int, record: dict | None = None):
-    """Build a vectorised env with ``forkserver`` workers."""
+    """Build a vectorized env with ``forkserver`` workers."""
     import gymnasium as gym
 
     def make_one():
@@ -313,7 +319,21 @@ def make_vec_env(env_name: str, num_envs: int, record: dict | None = None):
         return env
 
 
-def collect_rollouts(policy, train_env, cfg, action_low, action_high, steps_to_go):
+@dataclasses.dataclass
+class RolloutStep:
+    """One rollout, its diagnostics, and the trajectory metrics the loop logs."""
+
+    batch: dict[str, torch.Tensor]
+    diagnostics: dict[str, float]
+    executed_steps: int
+    jerk: float | None
+    seam_jerk: float | None
+
+
+def rollout_with_diagnostics(
+    policy, train_env, cfg, action_low, action_high, steps_to_go
+):
+    """Run one rollout, run its diagnostics, and guard the env-facing action magnitude."""
     collect_steps = min(cfg.chunks_per_update * cfg.action_horizon, steps_to_go)
     batch = policy.generate_rollout(
         train_env, collect_steps, action_low=action_low, action_high=action_high,
@@ -340,10 +360,17 @@ def collect_rollouts(policy, train_env, cfg, action_low, action_high, steps_to_g
     jerk_pad = batch["action_is_pad"].detach().cpu().numpy()
     rollout_jerk = compute_mean_chunk_jerk(jerk_action, jerk_pad)
     rollout_seam_jerk = compute_seam_jerk(jerk_action, jerk_pad)
-    return batch, rollout, steps_this_rollout, rollout_jerk, rollout_seam_jerk
+    return RolloutStep(
+        batch=batch,
+        diagnostics=rollout,
+        executed_steps=steps_this_rollout,
+        jerk=rollout_jerk,
+        seam_jerk=rollout_seam_jerk,
+    )
 
 
 def policy_update_step(policy, optimizer, batch, backends, cfg, grad_groups):
+    """Run all minibatch epochs. Each accumulation boundary clips per role and applies one optimizer step."""
     policy.train()
     epoch_infos: list[dict[str, float]] = []
     grad_norms_pre: list[dict[str, torch.Tensor]] = []
@@ -380,7 +407,7 @@ def policy_update_step(policy, optimizer, batch, backends, cfg, grad_groups):
             if loss.dim() != 0:
                 raise ValueError(f"Loss must be scalar before backward; got {tuple(loss.shape)}.")
             if not bool(torch.isfinite(loss).all()):
-                raise MyfpoAborted(f"Non-finite loss at step {micro_step}: {loss}")
+                raise TrainingAborted(f"Non-finite loss at step {micro_step}: {loss}")
             (loss / group_size).backward()
             is_boundary = (
                 (micro_step + 1) % accumulation_steps == 0 or micro_step + 1 == len(microbatches)
@@ -410,6 +437,7 @@ def evaluate_policy(
     policy, global_step, out_dir, evaluator, eval_policies, cfg, best_return=None,
     video=None,
 ):
+    """Swap in the EMA weights, evaluate every eval policy, and record the optional video."""
     displaced = policy.swap_in_ema(global_step)
     try:
         results_by_sampling = {
@@ -427,12 +455,12 @@ def evaluate_policy(
             )
     finally:
         policy.swap_out_ema(displaced)
-    window_obj = summarise_window(
+    window_obj = summarize_window(
         results_by_sampling,
         reported_name=cfg.eval_sampling,
         stop_name=cfg.stop_eval_sampling,
         eval_seed=evaluator.eval_seed,
-        summarise=evaluator.summarize,
+        summarize=evaluator.summarize,
         best_return=best_return,
     )
     summaries = window_obj.summaries
@@ -489,7 +517,7 @@ class RunState:
     artifacts: list[str] = dataclasses.field(default_factory=list)
 
 
-def build_or_resume(
+def make_or_resume(
     cfg,
     device,
     obs_dim: int,
@@ -508,7 +536,7 @@ def build_or_resume(
         )
         policy.train()
         return policy, optimizer, int(counters["global_step"])
-    policy = build_policy(
+    policy = make_policy(
         obs_dim,
         action_dim,
         cfg,
@@ -516,13 +544,13 @@ def build_or_resume(
         action_low=action_low,
         action_high=action_high,
     )
-    return policy, build_optimizer(policy), 0
+    return policy, make_optimizer(policy), 0
 
 
 
 @dataclasses.dataclass
 class UpdateMetrics:
-    """The mean metrics of one optimiser update."""
+    """The mean metrics of one optimizer update."""
 
     info: dict[str, float] | None
     grad_norms: dict[str, float]
@@ -595,7 +623,7 @@ def log_update(setup, state, cfg, batch, rollout, update: UpdateMetrics) -> None
     optimizer = setup.optimizer
     log_metrics(
         backends,
-        build_train_metrics(
+        make_train_metrics(
             cfg=cfg,
             info=update.info,
             batch=batch,
@@ -624,7 +652,7 @@ def check_clamp_guards(
     if both_clamped_frac > BOTH_CLAMPED_ABORT_FRAC:
         state.both_clamped_updates += 1
         if state.both_clamped_updates >= ABOVE_CLAMP_ABORT_UPDATES:
-            raise MyfpoAborted(
+            raise TrainingAborted(
                 f"{ABOVE_CLAMP_ABORT_UPDATES} consecutive updates with >"
                 f"{BOTH_CLAMPED_ABORT_FRAC:.0%} of ratio elements whose two "
                 f"CFM losses both sit above cfm_clamp={cfg.cfm_clamp} "
@@ -639,7 +667,7 @@ def check_clamp_guards(
         state.above_clamp_updates += 1
         state.both_clamped_updates = 0
         if state.above_clamp_updates >= ABOVE_CLAMP_ABORT_UPDATES:
-            raise MyfpoAborted(
+            raise TrainingAborted(
                 f"{ABOVE_CLAMP_ABORT_UPDATES} consecutive updates with >50% "
                 f"of CFM samples above cfm_clamp={cfg.cfm_clamp} "
                 f"(frac={above_clamp_frac:.2f}, "
@@ -832,7 +860,7 @@ def make_train_env(cfg, env, env_name, runtime: dict | None):
     if cfg.num_envs > 1:
         warnings.warn(
             f"num_envs={cfg.num_envs} requested but env_name={env_name!r} "
-            "(no spec.id on the passed env), so vectorisation was skipped "
+            "(no spec.id on the passed env), so vectorization was skipped "
             "and the run uses a single env. Expect a large throughput drop; "
             "the run is otherwise correct.",
             RuntimeWarning,
@@ -873,7 +901,7 @@ def configure_run(
     action_low = np.atleast_1d(np.asarray(env.action_space.low, dtype=np.float32))
     action_high = np.atleast_1d(np.asarray(env.action_space.high, dtype=np.float32))
 
-    policy, optimizer, global_step = build_or_resume(
+    policy, optimizer, global_step = make_or_resume(
         cfg,
         device,
         obs_dim,
@@ -956,7 +984,7 @@ def configure_run(
         "noise_start": EvalPolicy(policy, start_from_zero=False),
     }
     r_rand = sample_random_baseline(evaluator, train_env, seed=seed)
-    backends = build_backends(
+    backends = make_backends(
         cfg,
         out_dir=out_dir,
         method="myfpo",
@@ -993,6 +1021,7 @@ def train_loop(
     eval_steps: int,
     save_steps: int,
 ) -> float:
+    """Hand the setup to ``run_training_loop`` and return the fps."""
     return run_training_loop(
         setup,
         state,
@@ -1010,7 +1039,7 @@ def run_training_loop(
 ) -> float:
     """The training loop. Return the frames per second of the run."""
     policy = setup.policy
-    # On a resume the checkpoint config wins: build_or_resume already ignores
+    # On a resume the checkpoint config wins: make_or_resume already ignores
     # CLI scalar overrides, and the loop must not read two configs.
     cfg = policy.config
     optimizer = setup.optimizer
@@ -1025,14 +1054,17 @@ def run_training_loop(
     grad_groups = split_grad_params(policy)
     t_start = time.time()
 
-    scheduler = build_scheduler(optimizer, cfg, total_steps)
+    scheduler = make_scheduler(optimizer, cfg, total_steps)
     with tqdm(total=total_steps, desc="train", unit="step") as pbar:
         while state.global_step < total_steps:
             steps_to_go = total_steps - state.global_step
             t0 = time.perf_counter()
-            batch, rollout, steps_this_rollout, rollout_jerk, rollout_seam_jerk = collect_rollouts(
+            collected = rollout_with_diagnostics(
                 policy, train_env, cfg, action_low, action_high, steps_to_go
             )
+            batch, rollout = collected.batch, collected.diagnostics
+            steps_this_rollout = collected.executed_steps
+            rollout_jerk, rollout_seam_jerk = collected.jerk, collected.seam_jerk
             rollout["collect_s"] = time.perf_counter() - t0
             if cfg.normalize_rewards and hasattr(policy, "reward_normalizer"):
                 rew = rollout.get("step_rewards") or batch.get("step_rewards")
@@ -1221,9 +1253,11 @@ class WandbBackend:
         )
 
     def log(self, data: dict[str, float], step: int) -> None:
+        """Log the scalars at the given step."""
         self.wandb.log(data, step=step)
 
     def finish(self, exit_code: int) -> None:
+        """Finish the wandb run with the given exit code."""
         self.wandb.finish(exit_code=exit_code)
 
 
@@ -1236,16 +1270,18 @@ class TensorboardBackend:
         self.writer = SummaryWriter(log_dir, flush_secs=30)
 
     def log(self, data: dict[str, float], step: int) -> None:
+        """Log each scalar at the given step. None values are skipped."""
         for key, value in data.items():
             if value is None:
                 continue
             self.writer.add_scalar(key, float(value), step)
 
     def finish(self, _exit_code: int) -> None:
+        """Close the event writer."""
         self.writer.close()
 
 
-def build_run_name(method: str, env_name: str, seed: int, cfg_dict: dict) -> str:
+def make_run_name(method: str, env_name: str, seed: int, cfg_dict: dict) -> str:
     """The run name: method, env, seed, the knobs that differ, and a timestamp.
 
     The timestamp tells two runs of the same config apart in the wandb list.
@@ -1266,7 +1302,7 @@ def build_run_name(method: str, env_name: str, seed: int, cfg_dict: dict) -> str
     return "_".join([f"{method}_{env_name}_s{seed}", *tags, stamp])
 
 
-def build_backends(
+def make_backends(
     cfg,
     *,
     out_dir: str | Path,
@@ -1281,7 +1317,7 @@ def build_backends(
         return []
 
     cfg_dict = dataclasses.asdict(cfg)
-    name = build_run_name(method, env_name, seed, cfg_dict)
+    name = make_run_name(method, env_name, seed, cfg_dict)
     backends: list = []
     if report_to in ("wandb", "all"):
         backends.append(
@@ -1325,18 +1361,18 @@ class WindowSummary:
     improved: bool
 
 
-def summarise_window(
+def summarize_window(
     results_by_sampling: dict[str, list[dict]],
     *,
     reported_name: str,
     stop_name: str,
     eval_seed: int,
-    summarise,
+    summarize,
     best_return: float | None,
 ) -> WindowSummary:
     """Summarise every start, then read the two means the runner needs."""
     summaries = {
-        name: summarise(rows, seed=eval_seed)
+        name: summarize(rows, seed=eval_seed)
         for name, rows in results_by_sampling.items()
     }
     return WindowSummary(
@@ -1363,7 +1399,7 @@ ROLLOUT_ABS_KEYS = (
 )
 
 
-def build_train_metrics(
+def make_train_metrics(
     *,
     cfg: MyfpoConfig,
     info: dict,
@@ -1378,7 +1414,7 @@ def build_train_metrics(
     policy_lr: float,
     critic_lr: float,
 ) -> dict:
-    """Return the ``train/*`` rows for one optimiser step."""
+    """Return the ``train/*`` rows for one optimizer step."""
     data = {f"train/{k}": v for k, v in info.items()}
     data["train/grad_norm_before_clip"] = grad_norms["total"]
     data["train/grad_norm_actor_before_clip"] = grad_norms["actor"]

@@ -129,7 +129,7 @@ def to_tensor_1d(
     return torch.atleast_1d(to_tensor(x, dtype=dtype, device=device))
 
 
-# A width of 1 gives the norm nothing to normalise, so every hidden width in
+# A width of 1 gives the norm nothing to normalize, so every hidden width in
 # the model has to clear this. One constant keeps the five checks in step.
 MIN_WIDTH = 2
 
@@ -149,7 +149,8 @@ class RMSNorm(nn.RMSNorm):
         return y.to(dtype=input_dtype)
 
 
-def build_rms_norm(hidden_dim: int, eps: float = 1e-6) -> nn.RMSNorm:
+def make_rms_norm(hidden_dim: int, eps: float = 1e-6) -> nn.RMSNorm:
+    """Build a repo ``RMSNorm`` at the given width."""
     return RMSNorm(hidden_dim, eps=eps)
 
 
@@ -163,6 +164,7 @@ class MishFFN(nn.Module):
         self.norm = nn.LayerNorm(hidden_dim)
         self.out = nn.Linear(hidden_dim, out_dim)
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Project to the hidden width, norm, apply Mish, and project to out_dim."""
         return self.out(F.mish(self.norm(self.fc(x))))
 
 
@@ -177,6 +179,7 @@ class CondMLP(nn.Module):
         self.fc2 = nn.Linear(hidden_dim, out_dim)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Project to the hidden width, apply SiLU, and project to out_dim."""
         return self.fc2(F.silu(self.fc1(x)))
 
 
@@ -346,9 +349,9 @@ class AdaLNBlock(nn.Module):
         super().__init__()
         if hidden_dim < MIN_WIDTH:
             raise ValueError("hidden_dim must be at least 2")
-        self.norm1 = build_rms_norm(hidden_dim)
+        self.norm1 = make_rms_norm(hidden_dim)
         self.attn = SelfAttention(hidden_dim, n_heads)
-        self.norm2 = build_rms_norm(hidden_dim)
+        self.norm2 = make_rms_norm(hidden_dim)
         self.mlp = mlp
         self.adaLN = CondMLP(hidden_dim, hidden_dim, 6 * hidden_dim)
         nn.init.constant_(self.adaLN.fc2.weight, 0.0)

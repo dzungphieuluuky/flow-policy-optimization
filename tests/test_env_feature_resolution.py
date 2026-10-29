@@ -63,16 +63,16 @@ def test_registry_dims_match_the_live_env_space(env_id):
 
 
 @pytest.mark.parametrize("env_id", SMOKE_ENVS)
-def test_build_policy_attaches_features_from_dims_alone(env_id):
+def test_make_policy_attaches_features_from_dims_alone(env_id):
     """The runner's only inputs: an env name and its resolved dims."""
-    from myfpo.training import build_policy
+    from myfpo.training import make_policy
 
     obs_dim, action_dim = get_observation_action_dim(env_id)
     cfg = MyfpoConfig()
-    policy = build_policy(obs_dim=obs_dim, action_dim=action_dim, cfg=cfg, device="cpu")
+    policy = make_policy(obs_dim=obs_dim, action_dim=action_dim, cfg=cfg, device="cpu")
     assert tuple(policy.config.robot_state_feature.shape) == (obs_dim,)
     assert tuple(policy.config.action_feature.shape) == (action_dim,)
-    # dataclasses.replace inside build_policy: the caller's config is untouched.
+    # dataclasses.replace inside make_policy: the caller's config is untouched.
     assert cfg.input_features == {}
 
 

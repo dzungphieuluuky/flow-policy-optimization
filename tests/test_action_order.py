@@ -8,7 +8,7 @@ import torch
 
 from fixtures import cfg
 
-from myfpo.training import build_policy
+from myfpo.training import make_policy
 from test_collector_batch_equivalence import FakeVecEnv
 
 OBS, ACT, HORIZON, EXECUTE = 5, 3, 8, 4
@@ -30,7 +30,7 @@ def _cfg(**overrides):
 
 def _policy(cfg=None):
     cfg = cfg or _cfg()
-    return build_policy(OBS, ACT, cfg, device="cpu", action_low=LOW, action_high=HIGH), cfg
+    return make_policy(OBS, ACT, cfg, device="cpu", action_low=LOW, action_high=HIGH), cfg
 
 
 def _ramp(horizon=HORIZON, scale=0.1):

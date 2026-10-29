@@ -86,7 +86,7 @@ def apply_runtime_settings() -> dict:
     tf32 = bool(gpu and gpu["supports"]["tf32"])
     # TF32 is an instruction set of sm_80 and above. A request for TF32 on
     # Turing is accepted and ignored. So the "highest" branch exists to make that
-    # no-op visible in the metadata. It does not change the behaviour.
+    # no-op visible in the metadata. It does not change the behavior.
     torch.set_float32_matmul_precision("high" if tf32 else "highest")
     # After 8 shape variants, dynamo silently falls back to eager. Then you keep
     # paying the compile cost and get none of the benefit. The chunk count of the
@@ -214,9 +214,9 @@ def run_single(
         # ManiSkill's GPU env batches its own sims on one device, so it is built
         # here rather than through gym.make/make_vec_env. The spaces it exposes
         # are the single-env ones, which is what the checks below size from.
-        from myfpo.maniskill_gpu import build_train_env
+        from myfpo.maniskill_gpu import make_maniskill_env
 
-        env = build_train_env(env_id, num_envs=cfg.num_envs)
+        env = make_maniskill_env(env_id, num_envs=cfg.num_envs)
     else:
         env = gym.make(env_id)
     try:

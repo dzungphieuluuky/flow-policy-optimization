@@ -2,7 +2,7 @@
 
 Two entry points, on purpose:
 
-* :func:`build_train_env` builds the GPU-parallel simulator the collector steps.
+* :func:`make_maniskill_env` builds the GPU-parallel simulator the collector steps.
   It hands back torch tensors on the simulator's device, and nothing in the
   rollout path converts them to numpy.
 * :func:`register_gym_envs` registers the same tasks under ``MS-*`` ids for the
@@ -66,6 +66,7 @@ class NextStepShim:
         self.autoreset_mode = AutoresetMode.NEXT_STEP
 
     def reset(self, *, seed=None, options=None):
+        """Reset every row through the wrapped env, with the seed and options passed on."""
         return self.vec.reset(seed=seed, options=options)
 
     def step_torch(
@@ -196,7 +197,7 @@ class ManiSkillTorchEnv(NextStepShim):
         return torch.empty(shape, device=self.device).uniform_(-1.0, 1.0)
 
 
-def build_train_env(alias: str, num_envs: int = 1, **kwargs) -> ManiSkillTorchEnv:
+def make_maniskill_env(alias: str, num_envs: int = 1, **kwargs) -> ManiSkillTorchEnv:
     """The env the training loop collects from."""
     return ManiSkillTorchEnv(alias, num_envs, **kwargs)
 

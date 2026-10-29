@@ -164,7 +164,7 @@ def _policy_and_batch(cfm_clamp):
     wrong axis looks correct. The sweep below shows where the two axes cross.
     """
     from myfpo.fpo_core import sample_timesteps
-    from myfpo.training import build_policy
+    from myfpo.training import make_policy
 
     obs, act, horizon, mc = 6, 3, 4, 4
     pcfg = cfg(
@@ -174,7 +174,7 @@ def _policy_and_batch(cfm_clamp):
         compile=False, report_to="none", cfm_clamp=cfm_clamp,
     )
     torch.manual_seed(0)
-    policy = build_policy(
+    policy = make_policy(
         obs, act, pcfg, device="cpu",
         action_low=[-1.0] * act, action_high=[1.0] * act,
     )
@@ -191,7 +191,7 @@ def _policy_and_batch(cfm_clamp):
     )
     batch = {
         "observation.state": states, "action": actions, "action_is_pad": pad,
-        "normalised_advantages": torch.randn(n, generator=torch.Generator().manual_seed(7)),
+        "normalized_advantages": torch.randn(n, generator=torch.Generator().manual_seed(7)),
         "raw_returns": torch.randn(n, generator=torch.Generator().manual_seed(8)),
         "mc_t": t, "mc_eps": eps,
         "behavior_cfm_loss": old, "behavior_cfm_loss_token": old_token,

@@ -3,7 +3,7 @@
 import math
 
 import torch
-from fixtures import make_batch, make_policy
+from fixtures import make_batch, make_test_policy
 
 ACTION_KEY = "critic_action_grad_norm_pos"
 FRAME_KEY = "obs_frame_grad_norm_pos"
@@ -11,7 +11,7 @@ FRAME_KEY = "obs_frame_grad_norm_pos"
 
 def _policy(**kw):
     # Dropout off: the critic's 1% mask would make every call a new draw.
-    return make_policy(critic_dropout=0.0, **kw)
+    return make_test_policy(critic_dropout=0.0, **kw)
 
 
 def _batch(policy):

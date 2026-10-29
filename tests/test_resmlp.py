@@ -28,10 +28,10 @@ from myfpo.configuration import ACTOR_ARCHITECTURES
 from myfpo.networks import (
     ResidualMLP,
     ResMLPBlock,
-    MyfpoFlowModel,
-    MyfpoFlowResMLP,
+    FlowModel,
+    FlowResMLP,
 )
-from myfpo.training import build_policy
+from myfpo.training import make_policy
 
 OBS, ACT, HORIZON, HIDDEN, TIME_EMBED = 6, 3, 8, 32, 16
 HEADS = 2
@@ -49,14 +49,14 @@ def _cfg(**kw):
 
 def _policy(**kw):
     """The actor under test, on CPU with a squashed [-1, 1] action space."""
-    return build_policy(
+    return make_policy(
         OBS, ACT, _cfg(compile=False, **kw), device="cpu",
         action_low=[-1.0] * ACT, action_high=[1.0] * ACT,
     )
 
 
 def _resmlp(blocks=2, units=4, mult=2.0):
-    return MyfpoFlowResMLP(
+    return FlowResMLP(
         ACT, HORIZON, HIDDEN, blocks, units, mult, HEADS, TIME_EMBED
     )
 
@@ -164,7 +164,7 @@ def test_the_adaln_head_still_zero_inits():
 
 
 def test_resmlp_shares_the_actor_prefix_with_the_dit_actor():
-    for cls in (MyfpoFlowModel, MyfpoFlowResMLP):
+    for cls in (FlowModel, FlowResMLP):
         params = list(inspect.signature(cls.__init__).parameters)[1:]
         assert params[:3] == ["action_dim", "action_horizon", "hidden_dim"], (
             f"{cls.__name__} prefix is {params[:3]}"
@@ -244,7 +244,7 @@ def test_a_tracked_run_works_for_every_actor():
 
 
 def test_the_policy_builds_the_configured_actor():
-    for arch, cls in (("dit", MyfpoFlowModel), ("resmlp", MyfpoFlowResMLP)):
+    for arch, cls in (("dit", FlowModel), ("resmlp", FlowResMLP)):
         assert isinstance(_policy(actor_arch=arch).actor, cls), arch
 
 
@@ -257,13 +257,13 @@ def test_the_dit_path_is_untouched_by_the_resmlp_actor():
     so a later refactor cannot repeat it silently.
     """
     torch.manual_seed(0)
-    a = MyfpoFlowModel(ACT, HORIZON, HIDDEN, 3, HEADS, 2.0, TIME_EMBED)
+    a = FlowModel(ACT, HORIZON, HIDDEN, 3, HEADS, 2.0, TIME_EMBED)
     first = {
         k: v.clone() for k, v in a.state_dict().items()
         if k.startswith(("in_proj", "token_pos", "time_mlp"))
     }
     torch.manual_seed(0)
-    b = MyfpoFlowModel(ACT, HORIZON, HIDDEN, 3, HEADS, 2.0, TIME_EMBED)
+    b = FlowModel(ACT, HORIZON, HIDDEN, 3, HEADS, 2.0, TIME_EMBED)
     for k, v in first.items():
         assert torch.equal(v, b.state_dict()[k]), k
 

@@ -79,7 +79,7 @@ def collect(
 
 def _per_env_chunks(buf):
     """chunk indices grouped by env, in time order within each env."""
-    a = buf.active()
+    a = buf.active_prefix()
     env_id = a["chunk_env_id"].to(torch.long)
     order = torch.argsort(env_id, stable=True)
     groups: dict[int, list[int]] = {}
@@ -101,7 +101,7 @@ def test_obs_windows_slide_by_exactly_one_frame_per_step():
     checked = 0
     for episode in (1000, 50, 16, 1):
         buf, _ = collect(episode)
-        a = buf.active()
+        a = buf.active_prefix()
         for i in range(buf.n_chunks):
             n = int(a["chunk_lengths"][i])
             keep = N_OBS - n
@@ -224,7 +224,7 @@ def test_a_chunk_as_deep_as_the_window_still_lands_chronologically():
     """n_action_steps == n_obs_steps: the cursor reaches n_obs_steps."""
     assert HORIZON == N_OBS, "this test is the boundary case"
     buf, _ = collect(1000)  # no terminal: every chunk runs the full horizon.
-    a = buf.active()
+    a = buf.active_prefix()
     full = [i for i in range(buf.n_chunks) if int(a["chunk_lengths"][i]) == N_OBS]
     assert len(full) >= N_ENVS, f"no full-width chunks: {buf.n_chunks}"
     for i in full:

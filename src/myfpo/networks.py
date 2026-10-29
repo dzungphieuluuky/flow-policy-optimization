@@ -1,5 +1,5 @@
 """The two networks that read the obs window: the actor flow model, and the
-ensemble chunk-Q critic. Key: MyfpoFlowModel, Critic.
+ensemble chunk-Q critic. Key: FlowModel, Critic.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from myfpo.layers import (
     CondMLP,
     SelfAttention,
     SinusoidalEncoding,
-    build_rms_norm,
+    make_rms_norm,
     modulate,
     rms,
 )
@@ -75,7 +75,7 @@ class FlowActor(nn.Module):
         self.blocks = nn.ModuleList(
             block_cls(**block_kwargs) for _ in range(self.num_blocks)
         )
-        self.norm_out = build_rms_norm(hidden_dim)
+        self.norm_out = make_rms_norm(hidden_dim)
         self.adaLN_out = nn.Linear(hidden_dim, 2 * hidden_dim)
         nn.init.constant_(self.adaLN_out.weight, 0.0)
         nn.init.constant_(self.adaLN_out.bias, 0.0)
@@ -121,6 +121,7 @@ class FlowActor(nn.Module):
         *,
         collect_stats: bool,
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor] | None]:
+        """Embed ``t``, condition the tokens, run the blocks, and decode. ``collect_stats`` adds the per-block diagnostics."""
         if x_t.dim() != 3 or x_t.shape[2] != self.action_dim:
             raise ValueError(f"x_t must have shape [B, K, {self.action_dim}], got {tuple(x_t.shape)}")
         if condition.dim() != 2 or condition.shape[0] != x_t.shape[0] or condition.shape[1] != self.hidden_dim:
@@ -155,6 +156,7 @@ class FlowActor(nn.Module):
         h = self.in_proj(x_t)
 
         def decode(hidden: torch.Tensor) -> torch.Tensor:
+            """Modulate the final hidden state and apply the output projection."""
             shift, scale = self.adaLN_out(c).chunk(2, dim=-1)
             if not token_axis:
                 shift, scale = shift[:, None, :], scale[:, None, :]
@@ -196,7 +198,7 @@ class FlowActor(nn.Module):
             }
 
 
-class MyfpoFlowModel(FlowActor):
+class FlowModel(FlowActor):
     """The DiT actor. One block is self-attention, one MishFFN, and adaLN."""
 
     def __init__(
@@ -247,8 +249,8 @@ class ResidualMLP(nn.Module):
             nn.Linear(hidden_dim if i == 0 else inner, inner)
             for i in range(num_units)
         )
-        self.norms = nn.ModuleList(build_rms_norm(inner) for _ in range(num_units))
-        self.out_norm = build_rms_norm(inner)
+        self.norms = nn.ModuleList(make_rms_norm(inner) for _ in range(num_units))
+        self.out_norm = make_rms_norm(inner)
         self.out = nn.Linear(inner, hidden_dim)
         nn.init.zeros_(self.out.weight)
         nn.init.zeros_(self.out.bias)
@@ -279,7 +281,7 @@ class ResMLPBlock(AdaLNBlock):
         )
 
 
-class MyfpoFlowResMLP(FlowActor):
+class FlowResMLP(FlowActor):
     """The ``resmlp`` actor. DiT's attention and adaLN, the paper's MLP unit."""
 
     def __init__(
@@ -324,6 +326,7 @@ class ActionAffine(nn.Module):
         self.bias = nn.Parameter(torch.zeros(dim))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Apply the learned per-element scale and shift."""
         return x * self.weight + self.bias
 
 
@@ -331,7 +334,7 @@ class StateAffine(nn.Module):
     """One RMS scale over the whole window, no mean subtraction, so constant
     offsets survive. The weight and bias stay per element. The caller has
     already z-scored each dim through RunningMeanStd, so this adds a window
-    level scale, not the first normalisation. Matches ``nn.LayerNorm`` state
+    level scale, not the first normalization. Matches ``nn.LayerNorm`` state
     dict."""
 
     def __init__(self, dim: int, eps: float = 1e-5):
@@ -341,12 +344,13 @@ class StateAffine(nn.Module):
         self.bias = nn.Parameter(torch.zeros(dim))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Apply the window RMS scale, then the learned per-element scale and shift."""
         scale = torch.mean(x.float() * x.float(), dim=-1, keepdim=True)
         scale = torch.rsqrt(scale + self.eps).to(x.dtype)
         return x * scale * self.weight + self.bias
 
 
-def build_mlp_layers(
+def make_mlp_layers(
     in_dim: int, hidden_dim: int, num_layers: int, dropout: float
 ) -> nn.Module:
     """The critic trunk. Each layer is ``Linear -> LayerNorm -> Mish``, and
@@ -377,7 +381,7 @@ class CriticMember(nn.Module):
     bidirectional: the critic reads a chunk it has already executed.
     The action tokens carry no norm of the chunk: a chunk of all +5 and a chunk
     of all 0 must reach the critic different. State and action keep the same
-    affine normalisers the concat head used, for the same reason.
+    affine normalizers the concat head used, for the same reason.
     """
 
     def __init__(
@@ -427,7 +431,7 @@ class CriticMember(nn.Module):
         # concat would couple state dims to action dims, and they are unrelated
         # quantities. The state norm divides by the window RMS and keeps the
         # mean, so the critic still sees how high the state sits. The obs
-        # normaliser already z-scores each dim, so this adds one per-window
+        # normalizer already z-scores each dim, so this adds one per-window
         # scale on top, not the first fixed scale. When ``condition_dim``
         # is set, the norm is skipped: the caller already encoded the window.
         self.norm_state = (
@@ -457,15 +461,15 @@ class CriticMember(nn.Module):
         # reads the prefix only. The state side needs none: its trunk carries
         # RoPE already.
         self.act_attn = SelfAttention(state_dim, attn_heads)
-        self.act_attn_norm = build_rms_norm(state_dim)
+        self.act_attn_norm = make_rms_norm(state_dim)
         # Both directions read the same input streams, so neither pass sees the
         # other's output. Chaining them would make the second pass read a
         # half-mixed stream.
         self.obs_to_act = CrossAttention(state_dim, attn_heads)
         self.act_to_obs = CrossAttention(state_dim, attn_heads)
-        self.cross_norm_obs = build_rms_norm(state_dim)
-        self.cross_norm_act = build_rms_norm(state_dim)
-        self.mlp = build_mlp_layers(self.input_dim, hidden_dim, num_layers, dropout)
+        self.cross_norm_obs = make_rms_norm(state_dim)
+        self.cross_norm_act = make_rms_norm(state_dim)
+        self.mlp = make_mlp_layers(self.input_dim, hidden_dim, num_layers, dropout)
 
     def forward(
         self,

@@ -1,4 +1,4 @@
-"""myfpo pre/post processors (LeRobot style). The pair normalises the obs and
+"""myfpo pre/post processors (LeRobot style). The pair normalizes the obs and
 squashes the policy output into the env's action bounds.
 """
 
@@ -6,7 +6,7 @@ from __future__ import annotations
 import warnings
 import torch
 from torch import nn
-from myfpo.layers import MIN_WIDTH, CondMLP, SelfAttention, build_rms_norm
+from myfpo.layers import MIN_WIDTH, CondMLP, SelfAttention, make_rms_norm
 from lerobot.configs import PipelineFeatureType, PolicyFeature
 from lerobot.processor.pipeline import ProcessorStep
 from lerobot.utils.constants import ACTION, OBS_STATE
@@ -22,7 +22,7 @@ class RunningMeanStd(nn.Module):
         self.register_buffer("mean", torch.zeros(dim, dtype=torch.float32))
         self.register_buffer("var", torch.ones(dim, dtype=torch.float32))
         self.register_buffer("count", torch.tensor(0.0, dtype=torch.float64))
-        self.uninitialised = True
+        self.uninitialized = True
         self.passthrough_warned = False
         self.eps = eps
         self.clip = clip
@@ -53,16 +53,16 @@ class RunningMeanStd(nn.Module):
             / total
         )
         self.count.copy_(total)
-        self.uninitialised = False
+        self.uninitialized = False
 
     def _load_from_state_dict(self, *args, **kwargs):
         """Load the state. Derive the latch again."""
         super()._load_from_state_dict(*args, **kwargs)
-        self.uninitialised = bool(self.count.item() == 0)
+        self.uninitialized = bool(self.count.item() == 0)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Normalise with the frozen statistics."""
-        if self.uninitialised:
+        if self.uninitialized:
             if not self.passthrough_warned:
                 warnings.warn(
                     f"{type(self).__name__}: forward before the first update(); "
@@ -93,9 +93,9 @@ class StateEncoder(nn.Module):
         self.max_obs_steps = max_obs_steps
         self.n_heads = n_heads
         self.frame = CondMLP(obs_dim, hidden_dim, hidden_dim)
-        self.attn_norm = build_rms_norm(hidden_dim)
+        self.attn_norm = make_rms_norm(hidden_dim)
         self.attn = SelfAttention(hidden_dim, n_heads)
-        self.out_norm = build_rms_norm(hidden_dim)
+        self.out_norm = make_rms_norm(hidden_dim)
 
     def encode_tokens(self, states: torch.Tensor) -> torch.Tensor:
         """Return the attended window ``[B, T, hidden]``, before the pool.
@@ -111,7 +111,7 @@ class StateEncoder(nn.Module):
         return h + self.attn(self.attn_norm(h))
 
     def forward(self, states: torch.Tensor) -> torch.Tensor:
-        """Accept the window ``[B, T, obs]``. Return one normalised conditioning
+        """Accept the window ``[B, T, obs]``. Return one normalized conditioning
         vector of width ``hidden_dim``.
         """
         return self.out_norm(self.encode_tokens(states)[:, -1])
@@ -159,7 +159,7 @@ def squash_to_env_bounds(
     return squash_to_env(raw, scale, bias)
 
 
-class MyfpoObservationProcessorStep(ProcessorStep):
+class ObservationProcessorStep(ProcessorStep):
     """Hold a reference to the ``RunningMeanStd`` of the policy, not a copy."""
 
     def __init__(self, normalizer: RunningMeanStd):
@@ -167,6 +167,7 @@ class MyfpoObservationProcessorStep(ProcessorStep):
 
     @torch.no_grad()
     def __call__(self, batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+        """Normalise ``observation.state`` through the shared ``RunningMeanStd``."""
         out = dict(batch)
         out[OBS_STATE] = self.normalizer(batch[OBS_STATE])
         return out
@@ -178,7 +179,7 @@ class MyfpoObservationProcessorStep(ProcessorStep):
         return features
 
 
-class MyfpoActionPostprocessorStep(ProcessorStep):
+class ActionPostprocessorStep(ProcessorStep):
     """Map the actor's raw output into the env's action bounds with ``tanh``."""
 
     def __init__(self, action_low: torch.Tensor, action_high: torch.Tensor):
@@ -207,6 +208,7 @@ class MyfpoActionPostprocessorStep(ProcessorStep):
 
     @torch.inference_mode()
     def __call__(self, batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+        """Squash the raw action into the env bounds."""
         raw = batch[ACTION]
         out = dict(batch)
         out[ACTION] = squash_to_env(raw, self.scale_cpu, self.bias_cpu)
@@ -221,9 +223,9 @@ class MyfpoActionPostprocessorStep(ProcessorStep):
 
 def make_pre_post_processors(
     policy,
-) -> tuple[MyfpoObservationProcessorStep, MyfpoActionPostprocessorStep]:
+) -> tuple[ObservationProcessorStep, ActionPostprocessorStep]:
     """Build the pre/post pair. The policy setter syncs action bounds."""
     return (
-        MyfpoObservationProcessorStep(policy.obs_normalizer),
-        MyfpoActionPostprocessorStep(policy.action_low, policy.action_high),
+        ObservationProcessorStep(policy.obs_normalizer),
+        ActionPostprocessorStep(policy.action_low, policy.action_high),
     )

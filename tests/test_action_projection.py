@@ -19,16 +19,16 @@ import torch
 
 from myfpo.configuration import MyfpoConfig
 from lerobot.utils.constants import ACTION
-from myfpo.processor import MyfpoActionPostprocessorStep
+from myfpo.processor import ActionPostprocessorStep
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def _policy(action_dim: int = 3, **over):
-    from myfpo.training import build_policy
+    from myfpo.training import make_policy
 
     cfg = dataclasses.replace(MyfpoConfig(), compile=False, **over)
-    return build_policy(
+    return make_policy(
         11,
         action_dim,
         cfg,
@@ -46,7 +46,7 @@ def test_the_postprocessor_maps_tanh_onto_the_env_bounds():
     """
     low = torch.tensor([-2.0, -0.4, 0.0])
     high = torch.tensor([2.0, 0.4, 1.0])
-    step = MyfpoActionPostprocessorStep(low, high)
+    step = ActionPostprocessorStep(low, high)
     x = torch.tensor([[-3.0, -1.0, -0.2], [0.0, 0.0, 0.0], [3.0, 1.0, 0.2]])
     out = step({ACTION: x})[ACTION]
 
@@ -71,7 +71,7 @@ def test_tanh_is_open_interval_for_moderate_inputs_and_closed_when_it_saturates(
     open. Anything that assumes the action can never equal the bound is wrong.
     """
     low, high = torch.tensor([-1.0]), torch.tensor([1.0])
-    step = MyfpoActionPostprocessorStep(low, high)
+    step = ActionPostprocessorStep(low, high)
 
     moderate = step({ACTION: torch.tensor([[-3.0], [3.0]])})[ACTION]
     assert float(moderate[0, 0]) > low.item(), "a moderate value hit the endpoint"
@@ -87,7 +87,7 @@ def test_asymmetric_bounds_map_correctly():
     """The env declares per-dimension bounds, and they need not be symmetric."""
     low = torch.tensor([-0.4, 0.0, -3.0])
     high = torch.tensor([0.4, 1.0, 3.0])
-    step = MyfpoActionPostprocessorStep(low, high)
+    step = ActionPostprocessorStep(low, high)
     out = step({ACTION: torch.zeros(1, 3)})[ACTION]
     for value, lo, hi in zip(out[0], low, high):
         assert float(value) == pytest.approx(float((lo + hi) / 2), abs=1e-6)

@@ -9,7 +9,7 @@ import torch
 from fixtures import cfg
 
 import myfpo.modeling as M
-from myfpo.training import build_policy
+from myfpo.training import make_policy
 
 OBS, ACT, N, MC, HORIZON = 11, 2, 6, 4, 16
 ROOT = Path(__file__).resolve().parents[1]
@@ -27,16 +27,16 @@ def _cfg(**overrides):
 
 
 def _policy_and_batch(cfg, seed=0, pad_from=None):
-    """A batch like ``generate_rollout``'s, with the behaviour losses filled in.
+    """A batch like ``generate_rollout``'s, with the behavior losses filled in.
 
-    The behaviour losses are recorded BEFORE the actor moves. That is the real
+    The behavior losses are recorded BEFORE the actor moves. That is the real
     order: the rollout computes cfm_loss_old, the optimizer step moves the
     weights, then the update computes cfm_loss_new. Recording them afterwards
     would make cfm_loss_old equal cfm_loss_new and pin every ratio at one.
     """
     rng = np.random.default_rng(seed)
     torch.manual_seed(seed)
-    policy = build_policy(OBS, ACT, cfg, device="cpu", action_low=LOW, action_high=HIGH)
+    policy = make_policy(OBS, ACT, cfg, device="cpu", action_low=LOW, action_high=HIGH)
 
     batch = {
         M.OBS_STATE: torch.from_numpy(
@@ -46,7 +46,7 @@ def _policy_and_batch(cfg, seed=0, pad_from=None):
             rng.standard_normal((N, HORIZON, ACT), dtype=np.float32)
         ),
         "action_is_pad": torch.zeros(N, HORIZON, dtype=torch.bool),
-        "normalised_advantages": torch.from_numpy(
+        "normalized_advantages": torch.from_numpy(
             rng.standard_normal(N, dtype=np.float32)
         ),
         "raw_returns": torch.from_numpy(
@@ -65,10 +65,10 @@ def _policy_and_batch(cfg, seed=0, pad_from=None):
     }
     if pad_from is not None:
         batch["action_is_pad"][1, pad_from:] = True
-    normalised = policy.preprocessor({M.OBS_STATE: batch[M.OBS_STATE]})[M.OBS_STATE]
+    normalized = policy.preprocessor({M.OBS_STATE: batch[M.OBS_STATE]})[M.OBS_STATE]
     cfm_loss_old, cfm_loss_old_token, velocity_old_token = (
         policy.compute_behavior_cfm_losses(
-            normalised, batch[M.ACTION], batch["mc_t"], batch["mc_eps"],
+            normalized, batch[M.ACTION], batch["mc_t"], batch["mc_eps"],
             batch["action_is_pad"],
         )
     )
@@ -77,7 +77,7 @@ def _policy_and_batch(cfg, seed=0, pad_from=None):
     batch["behavior_velocity_token"] = velocity_old_token
 
     # Stands in for the optimizer step. The live actor now differs from the
-    # behaviour policy that collected the batch.
+    # behavior policy that collected the batch.
     with torch.no_grad():
         policy.actor.out.weight.add_(0.1 * torch.randn_like(policy.actor.out.weight))
     return policy, batch
@@ -200,7 +200,7 @@ def test_padded_tokens_evaluate_to_the_advantage_not_to_zero():
     pad_from = HORIZON // 2
     policy, batch = _padded_per_sample_batch(pad_from=pad_from)
     _, surrogate = _per_sample_surrogate(policy, batch)
-    adv = batch["normalised_advantages"].float()[1]
+    adv = batch["normalized_advantages"].float()[1]
     padded = surrogate[1, :, pad_from:]
     assert torch.equal(padded, adv.expand_as(padded)), (
         "padded tokens are no longer exactly the advantage; if this changed, "

@@ -58,12 +58,12 @@ def main() -> int:
 
     if args.checkpoint is None:
         from myfpo.configuration import MyfpoConfig
-        from myfpo.training import build_policy
+        from myfpo.training import make_policy
 
         obs_dim = int(np.prod(env.observation_space.shape))
         act_dim = int(np.prod(env.action_space.shape))
         cfg = MyfpoConfig(compile=False)
-        policy = build_policy(
+        policy = make_policy(
             obs_dim, act_dim, cfg, device=device, action_low=low, action_high=high
         )
         source = "fresh policy"

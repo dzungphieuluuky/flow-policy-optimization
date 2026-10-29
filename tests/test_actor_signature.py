@@ -17,7 +17,7 @@ import torch
 
 from myfpo.configuration import MyfpoConfig
 from myfpo.processor import StateEncoder
-from myfpo.networks import MyfpoFlowModel
+from myfpo.networks import FlowModel
 
 SRC = __import__("pathlib").Path(__file__).resolve().parents[1] / "src" / "myfpo"
 
@@ -28,7 +28,7 @@ def _params(cls):
 
 def test_the_dit_prefix_is_the_contract():
     """action_dim, action_horizon, hidden_dim, in that order."""
-    assert _params(MyfpoFlowModel)[:3] == [
+    assert _params(FlowModel)[:3] == [
         "action_dim", "action_horizon", "hidden_dim",
     ]
 
@@ -44,7 +44,7 @@ def test_the_third_argument_is_the_encoder_output_width():
 
 
 def test_the_time_embedding_argument_is_present():
-    assert "time_embed_dim" in _params(MyfpoFlowModel)
+    assert "time_embed_dim" in _params(FlowModel)
 
 
 def test_no_actor_names_an_argument_condition_dim():
@@ -62,8 +62,8 @@ def test_no_actor_names_an_argument_condition_dim():
 
 def test_the_comparison_reads_the_live_signature():
     """Guard: this file must not pin a copy of the signature."""
-    live = _params(MyfpoFlowModel)
+    live = _params(FlowModel)
     assert live is not None
-    assert live == _params(MyfpoFlowModel)
+    assert live == _params(FlowModel)
     # A wrong expectation must fail, so the assertion above is doing work.
     assert live[:3] != ["action_dim", "action_horizon", "nope"]

@@ -3,8 +3,8 @@ import inspect
 
 import torch
 from myfpo.training import (
-    build_optimizer,
-    build_policy,
+    make_optimizer,
+    make_policy,
     policy_update_step,
     run_training_loop,
     split_grad_params,
@@ -14,8 +14,8 @@ from lerobot.configs.types import FeatureType, PolicyFeature
 
 
 def test_observation_stats_land_before_the_update():
-    """The batch normalises at load time (``modeling.load_batch``), so a stats
-    update after ``train_update`` leaves the first rollout unnormalised."""
+    """The batch normalizes at load time (``modeling.to_device_batch``), so a stats
+    update after ``train_update`` leaves the first rollout unnormalized."""
     source = inspect.getsource(run_training_loop)
     # Frozen-stats invariant: stats updated after policy_update_step, before target_critic update.
     assert source.index("update_observation_stats") > source.index("policy_update_step(")
@@ -29,13 +29,13 @@ def test_training_logic():
         input_features={"observation.state": PolicyFeature(FeatureType.STATE, (5,))},
         output_features={"action": PolicyFeature(FeatureType.ACTION, (3,))},
     )
-    policy = build_policy(5, 3, cfg, device="cpu")
+    policy = make_policy(5, 3, cfg, device="cpu")
     batch = {
         "observation.state": torch.zeros(1, cfg.n_obs_steps, 5),
         "action": torch.zeros(1, cfg.action_horizon, 3),
         "action_is_pad": torch.zeros(1, cfg.action_horizon, dtype=torch.bool),
         "raw_advantages": torch.ones(1),
-        "normalised_advantages": torch.ones(1),
+        "normalized_advantages": torch.ones(1),
         "raw_returns": torch.ones(1),
         "mc_t": torch.ones(1, cfg.num_mc_samples, cfg.action_horizon, 1),
         "mc_eps": torch.randn(1, cfg.num_mc_samples, cfg.action_horizon, 3),
@@ -69,18 +69,18 @@ def test_one_policy_update_runs():
         num_mc_samples=2,
         num_learning_epochs=1,
         chunks_per_update=2,
-        batch_size=1,
+        chunks_per_minibatch=1,
         input_features={"observation.state": PolicyFeature(FeatureType.STATE, (5,))},
         output_features={"action": PolicyFeature(FeatureType.ACTION, (3,))},
     )
-    policy = build_policy(5, 3, cfg, device="cpu")
+    policy = make_policy(5, 3, cfg, device="cpu")
     n = 2
     batch = {
         "observation.state": torch.zeros(n, cfg.n_obs_steps, 5),
         "action": torch.zeros(n, cfg.action_horizon, 3),
         "action_is_pad": torch.zeros(n, cfg.action_horizon, dtype=torch.bool),
         "raw_advantages": torch.ones(n),
-        "normalised_advantages": torch.ones(n),
+        "normalized_advantages": torch.ones(n),
         "raw_returns": torch.ones(n),
         "mc_t": torch.ones(n, cfg.num_mc_samples, cfg.action_horizon, 1),
         "mc_eps": torch.randn(n, cfg.num_mc_samples, cfg.action_horizon, 3),
@@ -90,7 +90,7 @@ def test_one_policy_update_runs():
             n, cfg.num_mc_samples, cfg.action_horizon, 3
         ),
     }
-    optimizer = build_optimizer(policy)
+    optimizer = make_optimizer(policy)
     _, grad_norms_pre, _, _ = policy_update_step(
         policy, optimizer, batch, None, cfg, split_grad_params(policy)
     )

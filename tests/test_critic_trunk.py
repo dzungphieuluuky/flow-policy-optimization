@@ -1,7 +1,7 @@
 """Critic trunk: LayerNorm + Mish, and a two-member ensemble by default.
 
 Follows TD-MPC2 (arXiv:2310.16828): every hidden layer is Linear -> LayerNorm
--> Mish. The old trunk was bare Linear -> ReLU with no normalisation at all.
+-> Mish. The old trunk was bare Linear -> ReLU with no normalization at all.
 TD-MPC2 ships 5 ensemble members; this repo runs 2, and
 ``--myfpo.num_critics 5`` restores the paper's width.
 

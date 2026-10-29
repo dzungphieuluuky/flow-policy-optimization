@@ -2,7 +2,7 @@
 
 import torch
 
-from fixtures import make_policy
+from fixtures import make_test_policy
 from myfpo.fpo_core import subsampled_min
 from myfpo.modeling import MyfpoPolicy
 from myfpo.rollout import run_rollout
@@ -57,22 +57,22 @@ def test_generate_rollout_does_not_cast_the_value_target():
         # one the code actually uses.
         assert f"{name} = {name}.to(storage_dtype)" not in src, (
             f"{name} is the critic's regression target in raw reward units and "
-            "must not be quantised by the storage dtype"
+            "must not be quantized by the storage dtype"
         )
         assert f'"{name}": {name}.to(storage_dtype)' not in src, (
-            f"{name} is quantised by the storage dtype in the batch dict"
+            f"{name} is quantized by the storage dtype in the batch dict"
         )
         assert f"{name}.to(storage_dtype)" not in src, (
             f"{name} must not pass through the storage dtype in any form"
         )
     # The tensors that ride storage_dtype legitimately must still do so.
     assert "raw_advantages.to(storage_dtype)" in src
-    assert "normalised_advantages.to(storage_dtype)" in src
+    assert "normalized_advantages.to(storage_dtype)" in src
 
 
 def test_drift_diagnostics_take_the_bf16_observations_they_stored():
     """generate_rollout stores boot_observations/boot_actions in storage_dtype."""
-    policy = make_policy()
+    policy = make_test_policy()
     obs = torch.randn(3, policy.config.n_obs_steps, 5)
     actions = torch.randn(3, policy.config.action_horizon, 2)
     # Same fraction generate_rollout bootstrapped with: a full-horizon proposal that only runs for n_action_steps.

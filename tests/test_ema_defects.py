@@ -6,7 +6,7 @@ import warnings
 
 import torch
 
-from fixtures import make_policy
+from fixtures import make_test_policy
 from myfpo.modeling import MyfpoPolicy
 
 
@@ -20,7 +20,7 @@ def _warm(p: MyfpoPolicy) -> MyfpoPolicy:
 
 
 def test_ema_shadow_covers_the_encoder():
-    p = _warm(make_policy())
+    p = _warm(make_test_policy())
     enc = {f"encoder.{n}" for n, _ in p.encoder.named_parameters()}
     actor = {f"actor.{n}" for n, _ in p.actor.named_parameters()}
     assert enc, "the encoder has no parameters, test is vacuous"
@@ -29,13 +29,13 @@ def test_ema_shadow_covers_the_encoder():
 
 
 def test_ema_names_are_namespaced_so_the_two_modules_cannot_collide():
-    p = _warm(make_policy())
+    p = _warm(make_test_policy())
     for name in p.ema_shadow:
         assert name.startswith(("actor.", "encoder.")), name
 
 
 def test_swap_round_trips_actor_and_encoder_together():
-    p = _warm(make_policy())
+    p = _warm(make_test_policy())
     before = {n: q.detach().clone() for n, q in p.ema_named_params().items()}
     shadow = {n: t.clone() for n, t in p.ema_shadow.items()}
 
@@ -51,7 +51,7 @@ def test_swap_round_trips_actor_and_encoder_together():
 
 def test_swap_in_actually_moves_the_encoder():
     """The old bug: only self.actor moved, so the encoder stayed live."""
-    p = _warm(make_policy())
+    p = _warm(make_test_policy())
     with torch.no_grad():
         for q in p.encoder.parameters():
             q.add_(100.0)
@@ -65,7 +65,7 @@ def test_swap_in_actually_moves_the_encoder():
 
 
 def test_an_actor_only_shadow_is_reseeded_not_half_applied():
-    p = _warm(make_policy())
+    p = _warm(make_test_policy())
     legacy = {"initialised": True, "shadow_params": {
         n: torch.zeros_like(q) for n, q in p.actor.named_parameters()
     }}
@@ -73,13 +73,13 @@ def test_an_actor_only_shadow_is_reseeded_not_half_applied():
         warnings.simplefilter("error")  # nothing should warn at this layer.
         assert p.load_ema_state_dict(legacy) is False
     assert p.ema_shadow == {}
-    assert p.ema_initialised is False
+    assert p.ema_initialized is False
 
 
 def test_a_matching_shadow_is_restored():
-    p = _warm(make_policy())
+    p = _warm(make_test_policy())
     state = p.ema_state_dict()
-    fresh = make_policy()
+    fresh = make_test_policy()
     assert fresh.load_ema_state_dict(state) is True
     assert set(fresh.ema_shadow) == set(p.ema_shadow)
 
@@ -88,7 +88,7 @@ def test_a_matching_shadow_is_restored():
 
 
 def test_the_ema_state_dict_carries_the_encoder():
-    p = _warm(make_policy())
+    p = _warm(make_test_policy())
     state = p.ema_state_dict()
     assert any(k.startswith("encoder.") for k in state["shadow_params"])
 
@@ -109,7 +109,7 @@ def test_ema_scored_checkpoints_save_the_ema_weights(monkeypatch, tmp_path):
         }
 
     monkeypatch.setattr(training, "save_policy_checkpoint", fake_save)
-    p = _warm(make_policy())
+    p = _warm(make_test_policy())
     shadow = {n: t.clone() for n, t in p.ema_shadow.items()}
     with torch.no_grad():
         for q in p.ema_named_params().values():
@@ -139,7 +139,7 @@ def test_a_plain_save_keeps_the_live_weights(monkeypatch, tmp_path):
         }
 
     monkeypatch.setattr(training, "save_policy_checkpoint", fake_save)
-    p = _warm(make_policy())
+    p = _warm(make_test_policy())
     live = {n: q.detach().clone() for n, q in p.ema_named_params().items()}
 
     training.save_checkpoint(tmp_path, p, None, 1000, "step_1000")

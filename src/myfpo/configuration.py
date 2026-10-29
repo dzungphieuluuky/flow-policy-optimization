@@ -60,7 +60,7 @@ class MyfpoConfig(PreTrainedConfig):
     num_mc_samples: int = 8
     num_learning_epochs: int = 4
     chunks_per_update: int = 1024
-    batch_size: int = 256
+    chunks_per_minibatch: int = 256
     grad_accum_steps: int = 1
 
     num_steps_zero_start: int = 4
@@ -134,6 +134,7 @@ class MyfpoConfig(PreTrainedConfig):
 
 
     def __post_init__(self) -> None:
+        """Set the derived fields, then run every validation check."""
         super().__post_init__()
         if self.n_action_steps is None:
             self.n_action_steps = self.action_horizon
@@ -344,7 +345,7 @@ class MyfpoConfig(PreTrainedConfig):
             )
 
     def validate_optim_and_batching(self) -> None:
-        """Learning rates, the optimiser, the regularisers, and the batch shape."""
+        """Learning rates, the optimizer, the regularizers, and the batch shape."""
         if self.policy_lr <= 0:
             raise ValueError(f"policy_lr={self.policy_lr} must be > 0")
         if self.optimizer_weight_decay < 0:
@@ -359,11 +360,13 @@ class MyfpoConfig(PreTrainedConfig):
             raise ValueError(f"grad_accum_steps={self.grad_accum_steps} must be >= 1")
         if self.chunks_per_update < 1:
             raise ValueError(f"chunks_per_update={self.chunks_per_update} must be >= 1")
-        if self.batch_size < 1:
-            raise ValueError(f"batch_size={self.batch_size} must be >= 1")
-        if self.batch_size > self.chunks_per_update:
+        if self.chunks_per_minibatch < 1:
             raise ValueError(
-                f"batch_size={self.batch_size} must be <= "
+                f"chunks_per_minibatch={self.chunks_per_minibatch} must be >= 1"
+            )
+        if self.chunks_per_minibatch > self.chunks_per_update:
+            raise ValueError(
+                f"chunks_per_minibatch={self.chunks_per_minibatch} must be <= "
                 f"chunks_per_update={self.chunks_per_update}"
             )
         if self.num_learning_epochs < 1:
@@ -407,6 +410,7 @@ class MyfpoConfig(PreTrainedConfig):
             raise ValueError("myfpo requires 'action' in output_features.")
 
     def get_optimizer_preset(self) -> "AdamWConfig":
+        """Build the AdamW config from the policy LR, weight decay, and max grad norm."""
         kwargs = dict(
             lr=self.policy_lr,
             weight_decay=self.optimizer_weight_decay,
@@ -415,20 +419,25 @@ class MyfpoConfig(PreTrainedConfig):
         return AdamWConfig(**kwargs)
 
     def get_scheduler_preset(self):
-        return None
+        """No preset. ``training.make_scheduler`` owns the LR schedule."""
+        return
 
     @property
     def num_mini_batches(self) -> int:
-        return max(1, self.chunks_per_update // self.batch_size)
+        """The minibatch count in one update, at least 1."""
+        return max(1, self.chunks_per_update // self.chunks_per_minibatch)
 
     @property
     def observation_delta_indices(self) -> list[int] | None:
+        """The obs window indices: the last ``n_obs_steps`` frames, oldest first."""
         return list(range(1 - self.n_obs_steps, 1))
 
     @property
     def action_delta_indices(self) -> list[int]:
+        """The chunk indices: 0 through ``action_horizon`` - 1."""
         return list(range(self.action_horizon))
 
     @property
     def reward_delta_indices(self) -> None:
+        """No history window. Rewards keep none."""
         return None

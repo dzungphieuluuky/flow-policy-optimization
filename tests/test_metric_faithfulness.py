@@ -136,7 +136,7 @@ def test_metrics_survive_the_wandb_scalar_pack():
     out = compute_cfm_metrics(
         cfm_loss_old=torch.zeros(2),
         cfm_loss_new=torch.ones(2),
-        v_star_f=torch.ones(2, 8, 3),
+        target_velocity=torch.ones(2, 8, 3),
         above_clamp_frac=torch.zeros(()),
         both_clamped_frac=torch.zeros(()),
     )

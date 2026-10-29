@@ -2,7 +2,7 @@
 
 The value ``mlp`` used to live here. It flattened the chunk into one vector, so
 a per-token timestep could not modulate per token. It also had three hidden
-layers, Mish, and no residual and no normalisation. Both reference networks for
+layers, Mish, and no residual and no normalization. Both reference networks for
 chunked action prediction mix across action steps: Diffusion Policy with a
 temporal ``Conv1d`` (``kernel_size=5``), ACT with self-attention over the chunk.
 The flattened trunk was the odd one out on both counts. The attention here is
@@ -18,8 +18,8 @@ from fixtures import cfg
 from fixtures import make_batch
 
 from myfpo.configuration import ACTOR_ARCHITECTURES, MyfpoConfig
-from myfpo.networks import MyfpoFlowModel
-from myfpo.training import build_policy
+from myfpo.networks import FlowModel
+from myfpo.training import make_policy
 
 OBS, ACT, HORIZON, HIDDEN, TIME_EMBED = 6, 3, 8, 32, 16
 
@@ -36,7 +36,7 @@ def _cfg(**kw):
 
 
 def _dit():
-    return MyfpoFlowModel(ACT, HORIZON, HIDDEN, 1, 2, 2.0, TIME_EMBED)
+    return FlowModel(ACT, HORIZON, HIDDEN, 1, 2, 2.0, TIME_EMBED)
 
 
 def test_the_dit_first_layer_projects_the_action_only():
@@ -77,7 +77,7 @@ def test_every_form_of_time_is_accepted():
 def test_a_fresh_actor_ignores_the_time_entirely():
     """adaLN-Zero makes this true on purpose, so it must be pinned.
 
-    Every ``adaLN.fc2`` and ``adaLN_out`` is zero-initialised. So the whole
+    Every ``adaLN.fc2`` and ``adaLN_out`` is zero-initialized. So the whole
     conditioning path is zero at init: the blocks are the identity and the
     output modulation is the identity. A fresh actor reads only ``x_t`` and the
     token positions. Together with the zero output layer this is what makes a
@@ -118,16 +118,16 @@ def test_a_per_token_time_reaches_every_token_once_the_path_is_broken():
 
 
 def test_the_policy_builds_the_configured_actor():
-    policy = build_policy(
+    policy = make_policy(
         OBS, ACT, _cfg(actor_arch="dit", compile=False), device="cpu",
         action_low=[-1.0] * ACT, action_high=[1.0] * ACT,
     )
-    assert isinstance(policy.actor, MyfpoFlowModel)
+    assert isinstance(policy.actor, FlowModel)
 
 
 def test_a_tracked_run_works():
     """``loss_with_info`` unpacks actor stats, so the actor must honour it."""
-    policy = build_policy(
+    policy = make_policy(
         OBS, ACT, _cfg(actor_arch="dit", compile=False), device="cpu",
         action_low=[-1.0] * ACT, action_high=[1.0] * ACT,
     )
@@ -140,7 +140,7 @@ def test_a_tracked_run_works():
 
 def test_the_actor_output_layer_skips_weight_decay_when_compiled():
     """``torch.compile`` renames params, so the ``out.`` test must still match."""
-    policy = build_policy(
+    policy = make_policy(
         OBS, ACT, _cfg(compile=True), device="cpu",
         action_low=[-1.0] * ACT, action_high=[1.0] * ACT,
     )

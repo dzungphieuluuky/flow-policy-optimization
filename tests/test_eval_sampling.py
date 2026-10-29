@@ -73,7 +73,7 @@ def test_the_two_adapters_give_different_returns():
 
     from myfpo.configuration import MyfpoConfig
     from myfpo.evaluator import Evaluator
-    from myfpo.training import EvalPolicy, build_policy
+    from myfpo.training import EvalPolicy, make_policy
 
     env = gym.make("Hopper-v5")
     try:
@@ -81,7 +81,7 @@ def test_the_two_adapters_give_different_returns():
         act_dim = int(np.prod(env.action_space.shape))
         low = np.atleast_1d(np.asarray(env.action_space.low, dtype=np.float32))
         high = np.atleast_1d(np.asarray(env.action_space.high, dtype=np.float32))
-        policy = build_policy(
+        policy = make_policy(
             obs_dim,
             act_dim,
             dataclasses.replace(MyfpoConfig(), compile=False),
@@ -186,7 +186,7 @@ def test_the_tracker_rejects_no_key_after_this_change():
             or "[" in literal
             or "(" in literal
         ):
-            # A float() call, a parenthesised expression, a dict subscript, or a
+            # A float() call, a parenthesized expression, a dict subscript, or a
             # helper call. All of these resolve to a float at run time.
             continue
         try:
@@ -207,7 +207,7 @@ def test_the_stopper_reads_the_stop_distribution():
     """The runner reads the stop name back off the window.
 
     The rule itself is executed (executed rather than scanned) in
-    test_summarise_window_peaks_on_the_stop_distribution.
+    test_summarize_window_peaks_on_the_stop_distribution.
     """
     import inspect
 
@@ -225,16 +225,16 @@ def test_both_fields_are_config_fields():
     assert cfg.eval_sampling in ("zero_start", "noise_start")
     assert cfg.stop_eval_sampling in ("zero_start", "noise_start")
 
-def test_summarise_window_peaks_on_the_stop_distribution():
+def test_summarize_window_peaks_on_the_stop_distribution():
     """The rule, executed rather than scanned.
 
     The reported start is deliberately the weaker one. If the peak read the
     reported mean, this case would report improved on the first window and
     lose the improvement on the second.
     """
-    from myfpo.training import summarise_window
+    from myfpo.training import summarize_window
 
-    def summarise(rows, *, seed):
+    def summarize(rows, *, seed):
         # The seed only has to reach the call. The real summarize resamples.
         return {
             "return_mean": sum(r["return"] for r in rows) / len(rows),
@@ -247,9 +247,9 @@ def test_summarise_window_peaks_on_the_stop_distribution():
 
     rows = {"noise_start": [{"return": 100.0}], "zero_start": [{"return": 10.0}]}
 
-    first = summarise_window(
+    first = summarize_window(
         rows, reported_name="zero_start", stop_name="noise_start",
-        eval_seed=7, summarise=summarise, best_return=None,
+        eval_seed=7, summarize=summarize, best_return=None,
     )
     assert first.mean_return == 10.0, "the reported score is the reported start"
     assert first.stop_return == 100.0
@@ -258,9 +258,9 @@ def test_summarise_window_peaks_on_the_stop_distribution():
     # The second window is worse than the peak on the stop distribution and
     # better than the reported mean. It must not improve.
     later = {"noise_start": [{"return": 50.0}], "zero_start": [{"return": 90.0}]}
-    second = summarise_window(
+    second = summarize_window(
         later, reported_name="zero_start", stop_name="noise_start",
-        eval_seed=7, summarise=summarise, best_return=100.0,
+        eval_seed=7, summarize=summarize, best_return=100.0,
     )
     assert second.stop_return == 50.0
     assert second.improved is False, (

@@ -95,7 +95,7 @@ def test_frame_order_matters():
     assert not torch.allclose(_q(critic, w, c), _q(critic, w.flip(1), c), atol=1e-6)
 
 
-def test_a_state_offset_is_not_normalised_away():
+def test_a_state_offset_is_not_normalized_away():
     """A LayerNorm subtracts the window's mean, so ``w`` and ``w + c`` reach the
     first layer as one input. The critic must see how high the state sits."""
     critic = _critic()

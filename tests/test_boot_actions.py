@@ -7,7 +7,7 @@ from lerobot.configs.policies import PolicyFeature
 from lerobot.configs.types import FeatureType
 
 from myfpo.configuration import MyfpoConfig
-from myfpo.training import build_policy
+from myfpo.training import make_policy
 from test_collector_batch_equivalence import FakeVecEnv
 
 OBS, ACT, N_ENVS = 11, 3, 4
@@ -22,7 +22,7 @@ def _policy():
         input_features={"observation.state": PolicyFeature(FeatureType.STATE, (OBS,))},
         output_features={"action": PolicyFeature(FeatureType.ACTION, (ACT,))},
     )
-    return build_policy(
+    return make_policy(
         OBS, ACT, cfg, device="cpu", action_low=LOW, action_high=HIGH
     )
 

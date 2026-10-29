@@ -379,6 +379,7 @@ class RolloutBuffer:
             "chunk_env_id",
         )
         def prefix(buffer, name):
+            """Slice one field to the rows this buffer wrote."""
             n = self.n_steps if name.startswith("step_") else self.n_chunks
             return getattr(buffer, name)[:n]
 
@@ -392,7 +393,7 @@ class RolloutBuffer:
         other.n_chunks = self.n_chunks
         other.n_steps = self.n_steps
 
-    def active(self) -> dict[str, torch.Tensor]:
+    def active_prefix(self) -> dict[str, torch.Tensor]:
         """Contiguous views of the populated prefix."""
         n_chunks, n_steps = self.n_chunks, self.n_steps
         return {
@@ -752,6 +753,7 @@ def close_chunks_batched(
 def init_collect_state(
     carry, envs, seed, n, n_obs_steps, action_horizon, act_dim, targets
 ):
+    """Build the collector state. An empty carry resets the env rows. Otherwise rebuild from the carried windows."""
     try:
         if carry is None:
             obs, _ = envs.reset(seed=[seed + i for i in range(n)])
@@ -779,6 +781,7 @@ def run_collect_loop(
     state, envs, policy, low, high, targets, n_action_steps, buffer,
     n_obs_steps, action_horizon,
 ):
+    """Plan chunks, step the envs, and close chunks until every row reaches its step target."""
     # The writer is chosen once per rollout, not once per step.
     batched = is_torch_env(envs)
     targets_np = targets.numpy()
@@ -812,7 +815,7 @@ def collect_chunks_vec(
     buffer: RolloutBuffer,
     carry: EnvCarry | None = None,
 ) -> RolloutBuffer:
-    """Collect executed action chunks from a vectorised env into ``buffer``.
+    """Collect executed action chunks from a vectorized env into ``buffer``.
 
     ``carry is None`` resets the envs: the first rollout of a run. Any later
     call passes the previous call's ``EnvCarry``, so an episode spans rollout
@@ -906,12 +909,12 @@ def chunk_advantages(
         chunk_env_id=active["chunk_env_id"],
         gae_lambda=cfg.gae_lambda,
     )
-    normalised_advantages = raw_advantages
+    normalized_advantages = raw_advantages
     if cfg.normalize_advantage and raw_advantages.numel() > 0:
-        normalised_advantages = (raw_advantages - raw_advantages.mean()) / (
+        normalized_advantages = (raw_advantages - raw_advantages.mean()) / (
             raw_advantages.std(correction=0).clamp_min(1e-8)
         )
-    normalised_advantages = normalised_advantages.clamp(
+    normalized_advantages = normalized_advantages.clamp(
         -cfg.advantage_clamp_neg, cfg.advantage_clamp_pos
     )
     gae_diagnostics = compute_gae_diagnostics(
@@ -923,7 +926,7 @@ def chunk_advantages(
     )
     return (
         raw_advantages.to(storage_dtype),
-        normalised_advantages.to(storage_dtype),
+        normalized_advantages.to(storage_dtype),
         raw_returns,
         gae_diagnostics,
     )
@@ -936,7 +939,7 @@ def bootstrap_values(
     device,
     storage_dtype: torch.dtype,
 ):
-    """The bootstrap action, the normalised states, and the two critic reads."""
+    """The bootstrap action, the normalized states, and the two critic reads."""
     cfg = policy.config
     lengths = active["chunk_lengths"]
     actions = active["chunk_actions"]
@@ -956,15 +959,15 @@ def bootstrap_values(
             boot_actions[needs_proposal] = proposed
 
         # The training pass reloads the batch in the storage dtype before it
-        # normalises, so the rollout normalises the same values it will train
+        # normalizes, so the rollout normalizes the same values it will train
         # on. Normalising the fp32 buffer states here would give the rollout
         # and the training pass two different conditions, and the behavior
         # loss would not be the loss the training pass recomputes.
-        all_chunk_normalised_states = policy.preprocessor(
+        all_chunk_normalized_states = policy.preprocessor(
             {OBS_STATE: torch.cat([states, next_states], dim=0).to(storage_dtype)}
         )[OBS_STATE]
-        normalised_states = all_chunk_normalised_states[:n_chunks]
-        normalised_next_states = all_chunk_normalised_states[n_chunks:]
+        normalized_states = all_chunk_normalized_states[:n_chunks]
+        normalized_next_states = all_chunk_normalized_states[n_chunks:]
         exec_length_frac = policy.exec_length_frac(lengths)
         boot_exec_frac = torch.full(
             (lengths.shape[0],),
@@ -975,7 +978,7 @@ def bootstrap_values(
         # The critic read is a target, not exploration. A dropout layer in
         # the critic re-rolls the value on every call, so the critic reads in
         # eval mode. The actor proposal above stays in train mode on purpose:
-        # its dropout is part of the behaviour noise.
+        # its dropout is part of the behavior noise.
         policy.critic.eval()
         policy.critic_target.eval()  # invariant: target always eval
         critic_training = policy.critic.training
@@ -984,17 +987,17 @@ def bootstrap_values(
                 actions_squashed = squash_to_env_bounds(actions, policy.action_low, policy.action_high)
                 chunk_len_mask = (torch.arange(cfg.action_horizon, device=actions.device).unsqueeze(0) < active["chunk_lengths"].unsqueeze(1)).unsqueeze(-1).float()
                 actions_squashed = actions_squashed * chunk_len_mask
-                q_current_chunk = subsampled_min(policy.critic(normalised_states, actions_squashed, exec_length_frac).float())
+                q_current_chunk = subsampled_min(policy.critic(normalized_states, actions_squashed, exec_length_frac).float())
                 boot_actions_squashed = squash_to_env_bounds(boot_actions, policy.action_low, policy.action_high)
                 boot_mask = (torch.arange(cfg.action_horizon, device=boot_actions.device).unsqueeze(0) < cfg.n_action_steps).unsqueeze(-1).float()
                 boot_actions_squashed = boot_actions_squashed * boot_mask
-                q_bootstrap = subsampled_min(policy.critic_target(normalised_next_states, boot_actions_squashed, boot_exec_frac).float())
+                q_bootstrap = subsampled_min(policy.critic_target(normalized_next_states, boot_actions_squashed, boot_exec_frac).float())
         finally:
             policy.critic.train(critic_training)
 
     return (
-        normalised_states,
-        normalised_next_states,
+        normalized_states,
+        normalized_next_states,
         boot_actions,
         q_current_chunk,
         q_bootstrap,
@@ -1024,6 +1027,7 @@ def collect_chunks(
     )
 
     def propose_batch(states: torch.Tensor) -> torch.Tensor:
+        """Predict one raw chunk from the policy and stage it on the buffer device."""
         # One chunk is one cudagraph step: the previous chunk's graphs are
         # dead here, so the manager may recycle their memory.
         cudagraph_step_begin()
@@ -1093,16 +1097,16 @@ def collect_chunks(
     if buffer.device.type == "cuda":
         # Collected on the device already: the host copy would be a round trip.
         buffers.device = buffer
-        active = buffer.active()
+        active = buffer.active_prefix()
     elif device.type == "cuda":
         if buffers.device is None or buffers.device.shape_key() != buffer.shape_key():
             buffers.device = make_buffer(device=device)
         buffer.copy_to(buffers.device, non_blocking=True)
         buffers.h2d_event = torch.cuda.Event()
         buffers.h2d_event.record()
-        active = buffers.device.active()
+        active = buffers.device.active_prefix()
     else:
-        active = buffer.active()
+        active = buffer.active_prefix()
     return active, buffer.n_chunks
 
 
@@ -1134,13 +1138,13 @@ def run_rollout(
         device,
     )
     (
-        normalised_states,
-        normalised_next_states,
+        normalized_states,
+        normalized_next_states,
         boot_actions,
         q_current_chunk,
         q_bootstrap,
     ) = bootstrap_values(policy, active, n_chunks, device, storage_dtype)
-    raw_advantages, normalised_advantages, raw_returns, gae_diagnostics = (
+    raw_advantages, normalized_advantages, raw_returns, gae_diagnostics = (
         chunk_advantages(
             cfg, active, n_chunks, q_current_chunk, q_bootstrap, storage_dtype,
             reward_normalizer=getattr(policy, "reward_normalizer", None),
@@ -1163,7 +1167,7 @@ def run_rollout(
         behavior_cfm_loss_token,
         behavior_velocity_token,
     ) = policy.compute_behavior_cfm_losses(
-        normalised_states, actions, t, eps, action_is_pad
+        normalized_states, actions, t, eps, action_is_pad
     )
 
     return {
@@ -1171,10 +1175,10 @@ def run_rollout(
         ACTION: actions,
         "action_is_pad": action_is_pad,
         "raw_advantages": raw_advantages,
-        "normalised_advantages": normalised_advantages,
+        "normalized_advantages": normalized_advantages,
         "raw_returns": raw_returns,
         "normalizer_observations": active["step_frames"].detach(),
-        "boot_observations": normalised_next_states.to(storage_dtype),
+        "boot_observations": normalized_next_states.to(storage_dtype),
         "boot_actions": boot_actions.to(storage_dtype),
         "boot_values_start": q_bootstrap.unsqueeze(1),
         "mc_t": t,

@@ -180,7 +180,7 @@ def test_copy_to_matches_the_active_prefix():
     buf = _collect(total_steps=120)
     gpu = _buffer()
     buf.copy_to(gpu)
-    active, mirrored = buf.active(), gpu.active()
+    active, mirrored = buf.active_prefix(), gpu.active_prefix()
     assert set(active) == set(mirrored)
     for name in active:
         assert torch.equal(active[name], mirrored[name]), name

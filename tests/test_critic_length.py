@@ -40,7 +40,7 @@ def _policy_with_critic(cfg: MyfpoConfig):
     return policy
 
 
-def test_exec_frac_normalises_by_the_horizon():
+def test_exec_frac_normalizes_by_the_horizon():
     policy = _policy_with_critic(_cfg())
     got = policy.exec_length_frac(torch.tensor([0, 4, 8]))
     torch.testing.assert_close(got, torch.tensor([0.0, 0.5, 1.0]))

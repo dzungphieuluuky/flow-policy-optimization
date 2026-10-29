@@ -34,7 +34,7 @@ from myfpo.configuration import MyfpoConfig  # noqa: E402
 _BAD_CONFIG = {
     "action_perturb_std": -1.0,
     "advantage_clamp_pos": 0.0,
-    "batch_size": 0,
+    "chunks_per_minibatch": 0,
     "cfm_clamp": 0.0,
     "cfm_loss_clamp_negative_advantages_max": 0.0,
     "cfm_loss_reduction": "median",
@@ -85,7 +85,7 @@ def _missing_input_features() -> None:
 from myfpo.layers import CrossAttention, DiTBlock, SelfAttention  # noqa: E402
 from myfpo.networks import CriticMember  # noqa: E402
 from myfpo.processor import RunningMeanStd, StateEncoder  # noqa: E402
-from myfpo.networks import MyfpoFlowModel  # noqa: E402
+from myfpo.networks import FlowModel  # noqa: E402
 from myfpo.layers import CondMLP, SinusoidalEncoding, MishFFN  # noqa: E402
 
 case("layers:MishFFN:zero-dims")(lambda: MishFFN(0, 4, 4))
@@ -102,10 +102,10 @@ case("attention:CrossAttention:heads")(lambda: CrossAttention(8, 0))
 case("attention:CrossAttention:split")(lambda: CrossAttention(8, 3))
 case("attention:DiTBlock:hidden")(lambda: DiTBlock(1, 2, 2.0))
 case("attention:DiTBlock:ratio")(lambda: DiTBlock(8, 2, 0.0))
-case("flow:actor:action_dim")(lambda: MyfpoFlowModel(0, 8, 128, 3, 2, 2.0, 64))
-case("flow:actor:horizon")(lambda: MyfpoFlowModel(3, 0, 128, 3, 2, 2.0, 64))
-case("flow:actor:depth")(lambda: MyfpoFlowModel(3, 8, 128, 0, 2, 2.0, 64))
-case("flow:actor:mlp_ratio")(lambda: MyfpoFlowModel(3, 8, 128, 3, 2, 0.0, 64))
+case("flow:actor:action_dim")(lambda: FlowModel(0, 8, 128, 3, 2, 2.0, 64))
+case("flow:actor:horizon")(lambda: FlowModel(3, 0, 128, 3, 2, 2.0, 64))
+case("flow:actor:depth")(lambda: FlowModel(3, 8, 128, 0, 2, 2.0, 64))
+case("flow:actor:mlp_ratio")(lambda: FlowModel(3, 8, 128, 3, 2, 0.0, 64))
 case("critic:member:hidden")(lambda: CriticMember(3, 2, 0, 4, 8, num_layers=2))
 
 # DiTBlock.forward, not the constructor: a batch disagreement between x and c.
@@ -224,7 +224,7 @@ KEYWORDS = {
     'attention:CrossAttention:split': 'split',
     'config:action_perturb_std': 'action_perturb_std',
     'config:advantage_clamp_pos': 'advantage_clamp_pos',
-    'config:batch_size': 'batch_size',
+    'config:chunks_per_minibatch': 'chunks_per_minibatch',
     'config:cfm_average_group_size': 'cfm_average_group_size',
     'config:cfm_clamp': 'cfm_clamp',
     'config:cfm_loss_clamp_negative_advantages_max': 'cfm_loss_clamp_negative_advantages_max',

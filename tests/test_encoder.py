@@ -1,7 +1,7 @@
-"""The state encoder projects each frame, mixes the window, and normalises.
+"""The state encoder projects each frame, mixes the window, and normalizes.
 
-It was the only unnormalised path in the stack: every observation reached the
-actor through here and then through an unnormalised adaLN projection. It was
+It was the only unnormalized path in the stack: every observation reached the
+actor through here and then through an unnormalized adaLN projection. It was
 also the capacity sink: one dense over ``T * obs_dim`` held 713k of the
 encoder's 729k on Humanoid.
 """
@@ -33,13 +33,13 @@ def _mixed(enc: StateEncoder, x: torch.Tensor) -> torch.Tensor:
     return h + enc.attn(enc.attn_norm(h))
 
 
-def test_the_output_is_normalised():
+def test_the_output_is_normalized():
     out = _encoder()(_window())
     rms = out.float().pow(2).mean(dim=-1).sqrt()
     assert torch.allclose(rms, torch.ones_like(rms), atol=1e-5)
 
 
-def test_the_output_stays_normalised_whatever_the_input_scale():
+def test_the_output_stays_normalized_whatever_the_input_scale():
     """The property the norm buys.
 
     Exact scale invariance only holds in the eps->0 limit, since the norm is

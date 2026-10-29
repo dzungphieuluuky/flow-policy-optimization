@@ -1,15 +1,15 @@
 # AGENTS — scripts (ASD-STE 100)
 
-Read the root `AGENTS.md` first. It holds the setup, the gates, the commands, and the invariants. This file holds only the facts that are specific to `scripts/`.
+Read the root `AGENTS.md` first. This file holds only script-local facts.
 
-Entry: `scripts/train.py`. The CLI takes the `MyfpoConfig` dataclass. Every field is a `--myfpo.` flag. The runner reads the dataclass, it does not copy the fields.
+Entry: `scripts/train.py`. Draccus builds `TrainConfig`; `MyfpoConfig` is the nested `--myfpo.` block.
 
-Do not add runner scalars (`total_steps`, `eval_steps`, `save_steps`, `obs_dim`, `action_dim`) to `MyfpoConfig`. The runner bypasses the config for them, by design.
+Do not add runner scalars (`total_steps`, `eval_steps`, `save_steps`, `obs_dim`, `action_dim`) to `MyfpoConfig`. They stay on `TrainConfig`, and the runner bypasses the config for them, by design.
 
-`--resume` makes the checkpoint config win. CLI overrides of scalar fields are then ignored. `scripts/train.py` warns about them.
+`--resume` makes the checkpoint config win. Scalar CLI overrides are then ignored, and `scripts/train.py` warns.
 
 `scripts/pins/` holds the behaviour gates. Read `scripts/pins/README.md` before you change anything under `scripts/pins/`.
 
-`myfpo_online.md` and `myfpo_online.ipynb` are one file in two formats. Edit the `.md`, then run `jupytext --sync`. Do not hand-edit the `.ipynb`.
+`pin_train.py` and `pin_eval.py` add their own directory to `sys.path` to import `_shared`. That is the only `sys.path` code in the repo.
 
-`uv sync` installs the package editable. The scripts have no `sys.path` code. A fresh clone needs `uv sync` before any script runs.
+`scripts/play.py` registers the `MS-*` ids against a single-env CPU sim before `gym.make`.

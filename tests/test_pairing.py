@@ -5,7 +5,7 @@ import torch
 from fixtures import cfg
 
 from myfpo.fpo_core import sample_timesteps
-from myfpo.training import build_policy
+from myfpo.training import make_policy
 
 OBS, ACT, HORIZON, MC = 6, 3, 4, 4
 
@@ -23,7 +23,7 @@ def _cfg(**kw):
 
 
 def _policy():
-    return build_policy(
+    return make_policy(
         OBS, ACT, _cfg(), device="cpu",
         action_low=[-1.0] * ACT, action_high=[1.0] * ACT,
     )
@@ -46,7 +46,7 @@ def _batch(policy, states, actions, t, eps):
         "observation.state": states,
         "action": actions,
         "action_is_pad": pad,
-        "normalised_advantages": torch.ones(states.shape[0]),
+        "normalized_advantages": torch.ones(states.shape[0]),
         "raw_returns": torch.ones(states.shape[0]),
         "mc_t": t,
         "mc_eps": eps,

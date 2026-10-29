@@ -274,6 +274,7 @@ def clamp_saturation(
 # POLICY RATIO
 
 def compute_delta(cfm_loss_old, cfm_loss_new, cfg, advantage):
+    """Return the log-ratio delta between the losses, in the mode ``ratio_mode`` selects."""
     mode = cfg.ratio_mode
     if mode in ("cfm", "cfm_raw"):
         if mode == "cfm":
@@ -451,6 +452,7 @@ def compute_ratio_metrics(
     num_tokens = ratio_token_mean_per_step.numel()
     split = max(1, num_tokens // 2)
     def outside(t: torch.Tensor) -> torch.Tensor:
+        """Return the share of ratios outside the ``clip_param`` band."""
         return ((t < 1.0 - cfg.clip_param) | (t > 1.0 + cfg.clip_param)).float().mean()
 
     early_outside = outside(ratio_token[..., :split])
@@ -560,6 +562,7 @@ def compute_eval_summary_metrics(
     jerks = [r["jerk"] for r in eval_results if r.get("jerk") is not None]
 
     def stat(values, fn):
+        """Apply ``fn`` to the values. An empty list becomes NaN."""
         return float(fn(values)) if values else float("nan")
 
     data = {
@@ -600,7 +603,7 @@ def compute_cfm_metrics(
     *,
     cfm_loss_old: torch.Tensor,
     cfm_loss_new: torch.Tensor,
-    v_star_f: torch.Tensor,
+    target_velocity: torch.Tensor,
     above_clamp_frac: torch.Tensor,
     both_clamped_frac: torch.Tensor,
 ) -> dict[str, torch.Tensor]:
@@ -609,7 +612,7 @@ def compute_cfm_metrics(
     cfm_loss_new_std = cfm_loss_new.std(correction=0)
     corr_denom = cfm_loss_old_std * cfm_loss_new_std + 1e-8
     return {
-        "flow_v_star_rms": rms(v_star_f),
+        "flow_v_star_rms": rms(target_velocity),
         "l_old_mean": cfm_loss_old.mean(),
         "l_new_mean": cfm_loss_new.mean(),
         "cfm_loss_old_std": cfm_loss_old_std,
@@ -630,7 +633,7 @@ def compute_policy_info(
     ratio_token,
     delta,
     action_is_pad,
-    v_star_f,
+    target_velocity,
     raw_value_pred,
     raw_returns_flat,
     policy_per_chunk,
@@ -658,7 +661,7 @@ def compute_policy_info(
         **compute_cfm_metrics(
             cfm_loss_old=cfm_loss_old,
             cfm_loss_new=cfm_loss_new,
-            v_star_f=v_star_f,
+            target_velocity=target_velocity,
             above_clamp_frac=above_clamp_frac,
             both_clamped_frac=both_clamped_frac,
         ),

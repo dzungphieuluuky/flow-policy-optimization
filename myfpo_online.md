@@ -449,7 +449,7 @@ subprocess.call([
 ```
 
 ```python
-from myfpo.networks import MyfpoFlowModel, MyfpoFlowResMLP
+from myfpo.networks import FlowModel, FlowResMLP
 
 OBS_DIM, ACT_DIM = 11, 3
 HIDDEN, HEADS, TIME_EMBED = 128, 2, 32
@@ -459,10 +459,10 @@ def n_params(module):
     return sum(p.numel() for p in module.parameters())
 
 def dit_actor(depth):
-    return MyfpoFlowModel(ACT_DIM, 8, HIDDEN, depth, HEADS, MULT, TIME_EMBED)
+    return FlowModel(ACT_DIM, 8, HIDDEN, depth, HEADS, MULT, TIME_EMBED)
 
 def resmlp_actor(blocks, units=UNITS, mult=MULT):
-    return MyfpoFlowResMLP(ACT_DIM, 8, HIDDEN, blocks, units, mult, HEADS, TIME_EMBED)
+    return FlowResMLP(ACT_DIM, 8, HIDDEN, blocks, units, mult, HEADS, TIME_EMBED)
 
 print(f"{'actor':>8} {'blocks':>7} {'Dense':>7} {'params':>12} {'x dit_d3':>9}")
 base = n_params(dit_actor(3))

@@ -1,10 +1,10 @@
-"""Shared setup for the behaviour pins.
+"""Shared setup for the behavior pins.
 
 A pin does one job. It runs a fixed computation and records every number the
 computation produces. A later run replays the same computation and compares.
 
 The rule is ``atol=0``. A refactor that moves a float by one part in a hundred
-is a behaviour change. These scripts exist to make such a change impossible to
+is a behavior change. These scripts exist to make such a change impossible to
 miss, so they must fail on any difference at all. Do not add a tolerance.
 
 Do not import these helpers from ``src``. A pin that shares code with the code
@@ -59,10 +59,10 @@ def build(cfg: MyfpoConfig, seed: int = 0):
     order fixes the random stream. Moving one ``nn.Module`` to a different
     position in ``__init__`` changes every later draw. The pin catches that.
     """
-    from myfpo.training import build_policy
+    from myfpo.training import make_policy
 
     torch.manual_seed(seed)
-    return build_policy(
+    return make_policy(
         OBS, ACT, cfg, device="cpu",
         action_low=[-1.0] * ACT, action_high=[1.0] * ACT,
     )
@@ -70,7 +70,7 @@ def build(cfg: MyfpoConfig, seed: int = 0):
 def fixed_batch(policy, n: int = 3, seed: int = 1) -> dict:
     """A batch whose ``(t, eps)`` pairs the policy already agreed on.
 
-    The behaviour CFM losses come from the same policy, so a fresh forward pass
+    The behavior CFM losses come from the same policy, so a fresh forward pass
     must report a ratio of exactly one. The pin therefore measures the training
     step only, not the learning.
     """
@@ -92,7 +92,7 @@ def fixed_batch(policy, n: int = 3, seed: int = 1) -> dict:
         "observation.state": states,
         "action": actions,
         "action_is_pad": pad,
-        "normalised_advantages": torch.randn(n, generator=torch.Generator().manual_seed(7)),
+        "normalized_advantages": torch.randn(n, generator=torch.Generator().manual_seed(7)),
         "raw_returns": torch.randn(n, generator=torch.Generator().manual_seed(8)),
         "mc_t": t,
         "mc_eps": eps,
@@ -106,7 +106,7 @@ def flatten(obj, prefix: str = "") -> dict:
 
     Every leaf becomes a plain Python float or list. A tensor would pin its
     dtype and device as well as its value, which makes the pin fail for a
-    reason that has nothing to do with behaviour.
+    reason that has nothing to do with behavior.
     """
     out: dict = {}
     if isinstance(obj, dict):
@@ -154,7 +154,7 @@ def compare(name: str, new: dict, old: dict | None) -> int:
     """Report every difference. Return the count, so the shell can gate on it.
 
     A missing key and an extra key are both failures. A key that appears or
-    disappears means the computation changed shape, which is a behaviour change
+    disappears means the computation changed shape, which is a behavior change
     even when no value moved.
     """
     if old is None:

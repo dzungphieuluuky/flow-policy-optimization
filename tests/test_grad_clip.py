@@ -81,7 +81,7 @@ def test_a_large_actor_gradient_leaves_a_small_critic_gradient_alone():
 
 
 def test_the_joint_clip_would_have_attenuated_both():
-    """The old behaviour, kept as the contrast that makes the test above mean something."""
+    """The old behavior, kept as the contrast that makes the test above mean something."""
     groups = split_grad_params(_policy())
     _set_grad(groups["actor"], 10.0)
     _set_grad(groups["critic"], 1e-3)

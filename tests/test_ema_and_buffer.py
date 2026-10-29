@@ -1,8 +1,8 @@
-"""Two reuse/initialisation defects that both failed silently."""
+"""Two reuse/initialization defects that both failed silently."""
 
 import torch
 
-from fixtures import make_policy
+from fixtures import make_test_policy
 from myfpo.rollout import RolloutBuffer
 
 
@@ -68,9 +68,9 @@ def test_no_caller_has_to_slice_the_key():
 # --- #2 EMA warmup ---------------------------------------------------------.
 
 
-def test_ema_initialises_on_the_first_rollout_boundary():
+def test_ema_initializes_on_the_first_rollout_boundary():
     """ema_warmup_steps=100 but global_step lands on 4096, 8192, ..."""
-    policy = make_policy()
+    policy = make_test_policy()
     steps = [4096, 8192, 12288]
     assert policy.config.ema_warmup_steps == 100
     assert 500 not in steps
@@ -78,13 +78,13 @@ def test_ema_initialises_on_the_first_rollout_boundary():
     assert not policy.ema_ready(steps[0])
     for step in steps:
         policy.update_ema(step)
-    assert policy.ema_initialised is True
+    assert policy.ema_initialized is True
     assert policy.ema_ready(steps[0]) is True
 
 
 def test_ema_warmup_is_a_one_shot():
     """The gate must not re-hard-copy on every later call."""
-    policy = make_policy()
+    policy = make_test_policy()
     with torch.no_grad():
         for p in policy.actor.parameters():
             p.add_(1.0)
@@ -112,7 +112,7 @@ def test_ema_warmup_is_a_one_shot():
 
 
 def test_ema_is_inert_when_decay_is_zero():
-    policy = make_policy(ema_decay=0.0)
+    policy = make_test_policy(ema_decay=0.0)
     policy.update_ema(4096)
     assert policy.ema_ready(4096) is False
     assert not policy.ema_shadow
@@ -123,7 +123,7 @@ def test_ema_is_inert_when_decay_is_zero():
 
 def test_swap_in_ema_puts_the_average_in_the_actor():
     """The eval path depends on this: EMA is otherwise computed and discarded."""
-    policy = make_policy()
+    policy = make_test_policy()
     policy.update_ema(4096)
     with torch.no_grad():
         for p in policy.actor.parameters():
@@ -140,7 +140,7 @@ def test_swap_in_ema_puts_the_average_in_the_actor():
 
 def test_swap_out_ema_restores_the_live_weights_exactly():
     """Training must never continue on the average."""
-    policy = make_policy()
+    policy = make_test_policy()
     policy.update_ema(4096)
     with torch.no_grad():
         for p in policy.actor.parameters():
@@ -156,7 +156,7 @@ def test_swap_out_ema_restores_the_live_weights_exactly():
 
 def test_swap_is_inert_before_the_shadow_is_ready():
     """Seeded at the first call, hard-copied at warmup: 499 is neither."""
-    policy = make_policy(ema_warmup_steps=500)
+    policy = make_test_policy(ema_warmup_steps=500)
     policy.update_ema(499)
     assert policy.swap_in_ema(499) == {}
     policy.swap_out_ema({})
@@ -164,7 +164,7 @@ def test_swap_is_inert_before_the_shadow_is_ready():
 
 def test_swap_reads_the_env_step_clock_not_the_optimizer_step_counter():
     """The shadow warms on global_step. Step_count runs far ahead of it."""
-    policy = make_policy(ema_warmup_steps=500)
+    policy = make_test_policy(ema_warmup_steps=500)
     policy.update_ema(500)
     policy.step_count = 10_000
     assert policy.ema_ready(500) is False

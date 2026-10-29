@@ -1,4 +1,4 @@
-"""Owns: policy architecture, EMA shadow, loss computation. NOT: training loop or rollout. Key: MyfpoPolicy, build_optimizer.
+"""Owns: policy architecture, EMA shadow, loss computation. NOT: training loop or rollout. Key: MyfpoPolicy, make_optimizer.
 The class holds the flow head, the state conditioner, and the EMA shadow used for evaluation.
 """
 
@@ -38,7 +38,7 @@ from myfpo.fpo_core import (
     compute_policy_info,
     compute_value_loss,
 )
-from myfpo.networks import Critic, MyfpoFlowModel, MyfpoFlowResMLP
+from myfpo.networks import Critic, FlowModel, FlowResMLP
 from myfpo.processor import RunningMeanStd, StateEncoder, squash_to_env_bounds
 from myfpo.processor import make_pre_post_processors
 from myfpo.rollout import RolloutBuffers, run_rollout
@@ -50,13 +50,13 @@ from myfpo.layers import (
     to_tensor_1d,
 )
 
-class MyfpoAborted(RuntimeError):
+class TrainingAborted(RuntimeError):
     """Non-finite training loss. The message names the offending term."""
 
 
 
 
-def build_optimizer(policy: MyfpoPolicy) -> torch.optim.Optimizer:
+def make_optimizer(policy: MyfpoPolicy) -> torch.optim.Optimizer:
     """Build one AdamW. Split the actor and the critic into separate groups."""
     kwargs = dataclasses.asdict(policy.config.get_optimizer_preset())
     kwargs.pop("grad_clip_norm", None)  # AdamW would clip all groups as one. See split_grad_params.
@@ -101,22 +101,23 @@ class PolicyTerms:
     ratio: torch.Tensor
     ratio_token: torch.Tensor
     delta: torch.Tensor
-    v_star_f: torch.Tensor
+    target_velocity: torch.Tensor
 
 
 # ARCHITECTURE
 
-def build_policy_head(config: MyfpoConfig):
+def make_policy_head(config: MyfpoConfig):
+    """Build the actor, the state encoder, and the critic from the config, and return the dims."""
     obs_dim = int(config.robot_state_feature.shape[0])
     action_dim = int(config.action_feature.shape[0])
     if config.actor_arch == "resmlp":
-        actor = MyfpoFlowResMLP(
+        actor = FlowResMLP(
             action_dim, config.action_horizon, config.hidden_dim,
             config.resmlp_blocks, config.resmlp_units, config.resmlp_hidden_mult,
             config.dit_heads, config.time_embed_dim,
         )
     else:
-        actor = MyfpoFlowModel(
+        actor = FlowModel(
             action_dim, config.action_horizon, config.hidden_dim,
             config.dit_depth, config.dit_heads, config.dit_mlp_ratio, config.time_embed_dim,
         )
@@ -131,8 +132,9 @@ def build_policy_head(config: MyfpoConfig):
     return actor, encoder, critic, obs_dim, action_dim
 
 def init_ema_buffers(obj, config: MyfpoConfig):
+    """Create the EMA state, the rollout buffers, the diagnostics counters, and the inference deques."""
     obj.ema_shadow = {}
-    obj.ema_initialised = False
+    obj.ema_initialized = False
     obj.rollout_buffers = RolloutBuffers()
     obj.cfm_above_clamp_frac = torch.zeros(())
     obj.cfm_both_clamped_frac = torch.zeros(())
@@ -152,7 +154,7 @@ class MyfpoPolicy(PreTrainedPolicy):
     ):
         super().__init__(config, dataset_stats)
         config.validate_features()
-        self.actor, self.encoder, self.critic, obs_dim, action_dim = build_policy_head(config)
+        self.actor, self.encoder, self.critic, obs_dim, action_dim = make_policy_head(config)
         import copy
         self.critic_target = copy.deepcopy(self.critic)
         self.critic_target.requires_grad_(False)
@@ -238,9 +240,9 @@ class MyfpoPolicy(PreTrainedPolicy):
         names = list(self.ema_shadow)
         shadow = [self.ema_shadow[name] for name in names]
         values = [current[name].detach() for name in names]
-        if not self.ema_initialised and global_step >= self.config.ema_warmup_steps:
+        if not self.ema_initialized and global_step >= self.config.ema_warmup_steps:
             torch._foreach_copy_(shadow, values)
-            self.ema_initialised = True
+            self.ema_initialized = True
             return
         if global_step > self.config.ema_warmup_steps:
             torch._foreach_mul_(shadow, decay)
@@ -251,7 +253,7 @@ class MyfpoPolicy(PreTrainedPolicy):
         """Can the EMA shadow be used for evaluation yet?"""
         return (
             self.config.ema_decay > 0
-            and self.ema_initialised
+            and self.ema_initialized
             and global_step > self.config.ema_warmup_steps
         )
 
@@ -284,7 +286,7 @@ class MyfpoPolicy(PreTrainedPolicy):
         """Export the EMA shadow: decay, init flag, params."""
         return {
             "decay": self.config.ema_decay,
-            "initialised": self.ema_initialised,
+            "initialised": self.ema_initialized,
             "shadow_params": self.ema_shadow,
         }
 
@@ -294,7 +296,7 @@ class MyfpoPolicy(PreTrainedPolicy):
         current = self.ema_named_params()
         if set(stored) != set(current):
             self.ema_shadow = {}
-            self.ema_initialised = False
+            self.ema_initialized = False
             return False
         # The state is loaded onto the CPU, so the shadow has to follow the
         # live parameters onto their device, or the EMA update mixes them.
@@ -303,7 +305,7 @@ class MyfpoPolicy(PreTrainedPolicy):
             for name, value in stored.items()
         }
         # Encoder updated with actor; ratio compares encoder_old vs encoder_new.
-        self.ema_initialised = bool(state.get("initialised", True))
+        self.ema_initialized = bool(state.get("initialised", True))
         return True
 
     def get_actor_optim_params(self) -> dict:
@@ -337,6 +339,7 @@ class MyfpoPolicy(PreTrainedPolicy):
         }
     @torch.no_grad()
     def update_target_critic(self, soft_update_rate: float = 0.005):
+        """Blend the target critic toward the live critic at ``soft_update_rate``."""
         # The flow time parameter was also spelled ``tau``; this method
         # keeps the paper letter ``t`` in its argument name.
         for p_target, p in zip(self.critic_target.parameters(), self.critic.parameters()):
@@ -346,7 +349,7 @@ class MyfpoPolicy(PreTrainedPolicy):
         """Required by ``PreTrainedPolicy``. Returns what the optimizer actually uses.
 
         The split is delegated rather than restated, so it cannot drift away
-        from :meth:`build_optimizer`.
+        from :meth:`make_optimizer`.
         """
         return {"params": [
             *self.get_actor_optim_params()["params"],
@@ -458,7 +461,7 @@ class MyfpoPolicy(PreTrainedPolicy):
 
     def compute_behavior_cfm_losses(
         self,
-        normalised_states: torch.Tensor,
+        normalized_states: torch.Tensor,
         actions: torch.Tensor,
         t: torch.Tensor,
         eps: torch.Tensor,
@@ -483,7 +486,7 @@ class MyfpoPolicy(PreTrainedPolicy):
         x_t, actor_t, flow_shape, num_mc = mc_samples(actions, eps, t)
         with torch.no_grad():
             with autocast_context(actions.device):
-                condition = self.encoder(normalised_states)
+                condition = self.encoder(normalized_states)
                 condition_flat = broadcast_condition(condition, num_mc)
                 v_old = self.compute_predicted_velocity(
                     x_t, actor_t, condition_flat
@@ -525,7 +528,7 @@ class MyfpoPolicy(PreTrainedPolicy):
 
 
     @staticmethod
-    def load_tensor(
+    def to_device_tensor(
         batch: dict[str, torch.Tensor],
         key: str,
         device,
@@ -561,7 +564,7 @@ class MyfpoPolicy(PreTrainedPolicy):
         )
         return loss, info
 
-    def load_batch(
+    def to_device_batch(
         self,
         batch: dict[str, torch.Tensor],
         device,
@@ -575,16 +578,16 @@ class MyfpoPolicy(PreTrainedPolicy):
         frame and each chunk token. The values do not change.
         """
         cfg = self.config
-        states = self.load_tensor(batch, OBS_STATE, device, storage_dtype, async_=True)
+        states = self.to_device_tensor(batch, OBS_STATE, device, storage_dtype, async_=True)
         # The action is the flow's raw output, and it is the CFM regression
         # target. It stays fp32: the raw values are unbounded, so a bf16
         # rounding would put a 0.4% error on the target the flow is fit to.
-        actions = self.load_tensor(batch, ACTION, device, torch.float32, async_=True)
-        advantages = self.load_tensor(
-            batch, "normalised_advantages", device, storage_dtype
+        actions = self.to_device_tensor(batch, ACTION, device, torch.float32, async_=True)
+        advantages = self.to_device_tensor(
+            batch, "normalized_advantages", device, storage_dtype
         )
-        returns = self.load_tensor(batch, "raw_returns", device, torch.float32)
-        action_is_pad = self.load_tensor(
+        returns = self.to_device_tensor(batch, "raw_returns", device, torch.float32)
+        action_is_pad = self.to_device_tensor(
             batch, "action_is_pad", device, torch.bool
         )
 
@@ -630,7 +633,7 @@ class MyfpoPolicy(PreTrainedPolicy):
             condition_flat = broadcast_condition(condition, num_mc)
 
         cfm_loss_old, cfm_loss_old_token, velocity_old_token = (
-            self.load_behavior_losses(batch, device, n, num_mc, action_dim)
+            self.to_device_behavior_losses(batch, device, n, num_mc, action_dim)
         )
 
         return Batch(
@@ -653,7 +656,7 @@ class MyfpoPolicy(PreTrainedPolicy):
             velocity_old_token=velocity_old_token,
         )
 
-    def load_behavior_losses(
+    def to_device_behavior_losses(
         self,
         batch: dict[str, torch.Tensor],
         device,
@@ -712,14 +715,14 @@ class MyfpoPolicy(PreTrainedPolicy):
                 b.t,
                 cfg,
             )
-            v_star_f = cfm_target(b.actions, b.eps, cfg).float()
+            target_velocity = cfm_target(b.actions, b.eps, cfg).float()
             loss_mask = b.action_is_pad
 
             adv = b.advantages.float()
             adv_mc = adv.unsqueeze(1)
             weight = cfm_loss_weight(b.t, cfg)
             cfm_loss_new, cfm_loss_new_token = compute_cfm_loss(
-                v_new_r_f, v_star_f, cfg, "sample_and_token", loss_mask, weight,
+                v_new_r_f, target_velocity, cfg, "sample_and_token", loss_mask, weight,
             )
             ratio_token = compute_policy_ratio(
                 b.cfm_loss_old_token, cfm_loss_new_token, cfg,
@@ -765,12 +768,13 @@ class MyfpoPolicy(PreTrainedPolicy):
             ratio=ratio,
             ratio_token=ratio_token,
             delta=delta,
-            v_star_f=v_star_f,
+            target_velocity=target_velocity,
         )
 
     def value_loss(
         self, b: Batch, device
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Score the critic on the executed chunk. Return the loss, the values, and the returns."""
         with autocast_context(device):
             chunk_exec_frac = self.exec_length_frac((~b.action_is_pad).sum(dim=-1))
             b_actions_squashed = squash_to_env_bounds(b.actions, self.action_low, self.action_high)
@@ -811,7 +815,7 @@ class MyfpoPolicy(PreTrainedPolicy):
             and torch.is_grad_enabled()
         )
 
-        b = self.load_batch(batch, device, storage_dtype, grad_inputs=probe_on)
+        b = self.to_device_batch(batch, device, storage_dtype, grad_inputs=probe_on)
 
         t0 = time.perf_counter()
         with autocast_context(device):
@@ -855,7 +859,7 @@ class MyfpoPolicy(PreTrainedPolicy):
             raise ValueError(f"reduction={reduction!r} must be 'mean' or 'none'")
 
         if check_finite and not bool(torch.isfinite(loss).all()):
-            raise MyfpoAborted(
+            raise TrainingAborted(
                 f"Non-finite loss: "
                 f"policy_loss={float(terms.policy_per_chunk.mean().detach())}, "
                 f"value_loss={float(value_loss_per_chunk.mean().detach())}"
@@ -873,7 +877,7 @@ class MyfpoPolicy(PreTrainedPolicy):
             ratio_token=terms.ratio_token,
             delta=terms.delta,
             action_is_pad=b.action_is_pad,
-            v_star_f=terms.v_star_f,
+            target_velocity=terms.target_velocity,
             raw_value_pred=raw_value_pred,
             raw_returns_flat=raw_returns_flat,
             policy_per_chunk=terms.policy_per_chunk,
