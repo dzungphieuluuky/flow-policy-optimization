@@ -9,7 +9,6 @@ uv.log
 .pi-subagents/
 tmp/
 tensorboard/
-wandb/
 
 # The behaviour pin baselines are binary and regenerable. The scripts that read
 # them are tracked. See scripts/pins/README.md.

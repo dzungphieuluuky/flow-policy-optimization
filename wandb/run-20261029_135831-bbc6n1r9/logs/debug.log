@@ -1,0 +1,37 @@
+2026-10-29 13:58:31,988 INFO    MainThread:11016 [wandb_setup.py:_flush():81] Current SDK version is 0.30.0
+2026-10-29 13:58:31,988 INFO    MainThread:11016 [wandb_setup.py:_flush():81] Configure stats pid to 11016
+2026-10-29 13:58:31,988 INFO    MainThread:11016 [wandb_setup.py:_flush():81] Loading settings from environment variables
+2026-10-29 13:58:31,988 INFO    MainThread:11016 [wandb_init.py:setup_run_log_directory():739] Logging user logs to /home/vr-tts27/Downloads/myfpo/wandb/run-20261029_135831-bbc6n1r9/logs/debug.log
+2026-10-29 13:58:31,988 INFO    MainThread:11016 [wandb_init.py:setup_run_log_directory():740] Logging internal logs to /home/vr-tts27/Downloads/myfpo/wandb/run-20261029_135831-bbc6n1r9/logs/debug-internal.log
+2026-10-29 13:58:31,988 INFO    MainThread:11016 [wandb_init.py:init():783] calling init triggers
+2026-10-29 13:58:31,988 INFO    MainThread:11016 [wandb_init.py:init():788] wandb.init called with sweep_config: {}
+config: {'n_obs_steps': 16, 'input_features': {}, 'output_features': {}, 'device': 'cuda', 'use_amp': False, 'use_peft': False, 'push_to_hub': True, 'repo_id': None, 'private': None, 'tags': None, 'license': None, 'pretrained_path': None, 'pretrained_revision': None, 'report_to': 'all', 'action_horizon': 8, 'n_action_steps': 8, 'action_perturb_std': 0.0, 'hidden_dim': 128, 'num_envs': 64, 'num_mc_samples': 16, 'num_learning_epochs': 10, 'chunks_per_update': 1024, 'batch_size': 128, 'grad_accum_steps': 1, 'num_steps_zero_start': 4, 'num_steps_noise_start': 4, 'min_sampled_timestep': 0.1, 'max_sampled_timestep': 0.9, 'timestep_sampling_mode': 'uniform', 'noise_sampling_mode': 'normal', 'timestep_inverse_cdf_beta': 2.0, 'gamma': 0.99, 'gae_lambda': 0.95, 'do_average_cfm_loss_in_chunk': False, 'cfm_average_group_size': 1, 'clip_param': 0.05, 'spo_clip_param': 0.01, 'trust_region_mode': 'ppo', 'cfm_loss_reduction': 'mean', 'cfm_loss_target': 'velocity', 'cfm_loss_weight_from_t': 'constant', 'cfm_clamp': 20.0, 'ratio_mode': 'cfm', 'cfm_loss_clamp_negative_advantages': True, 'cfm_loss_clamp_negative_advantages_max': 20.0, 'log_ratio_cap': 2.0, 'num_critics': 2, 'critic_condition_on_exec_length': True, 'critic_hidden_dim': 512, 'critic_num_layers': 2, 'critic_dropout': 0.01, 'normalize_advantage': True, 'advantage_clamp_neg': 100.0, 'advantage_clamp_pos': 100.0, 'value_loss_coef': 1.0, 'cfm_loss_use_huber': True, 'cfm_loss_huber_delta': 0.5, 'transported_clip_value': None, 'compile': False, 'actor_arch': 'dit', 'dit_depth': 4, 'dit_heads': 2, 'dit_mlp_ratio': 2.0, 'resmlp_blocks': 2, 'resmlp_units': 4, 'resmlp_hidden_mult': 2.0, 'time_embed_dim': 32, 'policy_lr': 0.0003, 'critic_lr': 0.0003, 'optimizer_weight_decay': 0.0001, 'adam_betas': (0.9, 0.99), 'max_grad_norm': 1.0, 'ema_decay': 0.95, 'ema_warmup_steps': 100, 'lr_warmup_steps': 10000, 'lr_schedule': 'cosine', 'normalize_rewards': True, 'eval_max_episodes': 50, 'eval_sampling': 'noise_start', 'stop_eval_sampling': 'noise_start', 'log_drift_diagnostics': False, 'temporal_probe_every': 0, 'method': 'myfpo', 'seed': 3407, 'env': 'Humanoid-v5', '_wandb': {}}
+2026-10-29 13:58:31,988 INFO    MainThread:11016 [wandb_init.py:init():831] starting backend
+2026-10-29 13:58:31,988 INFO    MainThread:11016 [wandb_init.py:init():846] sending inform_init request
+2026-10-29 13:58:31,994 INFO    MainThread:11016 [wandb_init.py:init():851] backend started and connected
+2026-10-29 13:58:31,995 INFO    MainThread:11016 [wandb_init.py:init():921] updated telemetry
+2026-10-29 13:58:31,999 INFO    MainThread:11016 [wandb_init.py:init():944] communicating run to backend with 90.0 second timeout
+2026-10-29 13:58:44,850 WARNING MainThread:11016 [wandb_init.py:init():1549] [no run ID] interrupted
+Traceback (most recent call last):
+  File "/home/vr-tts27/Downloads/spectral-joint-policy/.venv/lib/python3.12/site-packages/wandb/sdk/wandb_init.py", line 1540, in init
+    run = wi.init(run_settings, run_config, run_printer)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/vr-tts27/Downloads/spectral-joint-policy/.venv/lib/python3.12/site-packages/wandb/sdk/wandb_init.py", line 952, in init
+    result = wait_with_progress(
+             ^^^^^^^^^^^^^^^^^^^
+  File "/home/vr-tts27/Downloads/spectral-joint-policy/.venv/lib/python3.12/site-packages/wandb/sdk/mailbox/wait_with_progress.py", line 24, in wait_with_progress
+    return wait_all_with_progress(
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/vr-tts27/Downloads/spectral-joint-policy/.venv/lib/python3.12/site-packages/wandb/sdk/mailbox/wait_with_progress.py", line 78, in wait_all_with_progress
+    return asyncer.run(progress_loop_with_timeout)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/vr-tts27/Downloads/spectral-joint-policy/.venv/lib/python3.12/site-packages/wandb/sdk/lib/asyncio_manager.py", line 145, in run
+    return future.result()
+           ^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/concurrent/futures/_base.py", line 451, in result
+    self._condition.wait(timeout)
+  File "/usr/lib/python3.12/threading.py", line 355, in wait
+    waiter.acquire()
+KeyboardInterrupt
+2026-10-29 13:58:44,909 INFO    wandb-AsyncioManager-main:11016 [service_client.py:_forward_responses():122] [no run ID] Reached EOF.
+2026-10-29 13:58:44,909 INFO    wandb-AsyncioManager-main:11016 [mailbox.py:close():154] [no run ID] Closing mailbox, abandoning 1 handles.
