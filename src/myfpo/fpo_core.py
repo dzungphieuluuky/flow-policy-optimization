@@ -93,7 +93,7 @@ def clip_velocity(velocity: torch.Tensor, bound: float | None) -> torch.Tensor:
     return velocity.clamp(-bound, bound)
 
 
-def mc_samples(
+def expand_mc_samples(
     actions: torch.Tensor, eps: torch.Tensor, t: torch.Tensor
 ) -> tuple[torch.Tensor, torch.Tensor, tuple[int, ...], int]:
     """The shared MC prologue of the behavior loss and the training loss.
@@ -273,7 +273,7 @@ def clamp_saturation(
 # FPO++ (arXiv:2602.02481).
 # POLICY RATIO
 
-def compute_delta(cfm_loss_old, cfm_loss_new, cfg, advantage):
+def compute_cfm_log_ratio(cfm_loss_old, cfm_loss_new, cfg, advantage):
     """Return the log-ratio delta between the losses, in the mode ``ratio_mode`` selects."""
     mode = cfg.ratio_mode
     if mode in ("cfm", "cfm_raw"):
@@ -305,7 +305,7 @@ def compute_policy_ratio(
     The MC axis is grouped by :func:`group_cfm_loss` before this call;
     the function operates on already-grouped tensors.
     """
-    delta = compute_delta(cfm_loss_old, cfm_loss_new, cfg, advantage)
+    delta = compute_cfm_log_ratio(cfm_loss_old, cfm_loss_new, cfg, advantage)
     safe_delta = delta.clamp(min=-cfg.log_ratio_cap, max=cfg.log_ratio_cap)  # cap=2.0; ST lets raw delta backprop
     delta_st = safe_delta.detach() + delta - delta.detach()
     return torch.exp(delta_st)

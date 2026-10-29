@@ -25,7 +25,7 @@ from myfpo.fpo_core import (
     compute_cfm_loss,
     compute_policy_ratio,
     group_cfm_loss,
-    mc_samples,
+    expand_mc_samples,
     sample_action,
     sample_noise,
     velocity_to_target_param,
@@ -464,7 +464,7 @@ class MyfpoPolicy(nn.Module):
         actions = actions.to(storage_dtype)
         eps = eps.to(storage_dtype)
         t = t.to(storage_dtype)
-        x_t, actor_t, flow_shape, num_mc = mc_samples(actions, eps, t)
+        x_t, actor_t, flow_shape, num_mc = expand_mc_samples(actions, eps, t)
         with torch.no_grad():
             with autocast_context(actions.device):
                 condition = self.encoder(normalized_states)
@@ -528,22 +528,11 @@ class MyfpoPolicy(nn.Module):
         check_finite: bool = True,
     ) -> torch.Tensor:
         """ASPO policy loss + MSE value loss. See ``loss_with_info`` for diagnostics."""
-        loss, _ = self.loss_and_info(
-            batch, reduction, check_finite, compute_info=False
-        )
+        loss, _ = self.loss_and_info(batch, reduction, check_finite, compute_info=False)
         return loss
 
-    def loss_with_info(
-        self,
-        batch: dict[str, torch.Tensor],
-        reduction: str = "mean",
-        check_finite: bool = True,
-    ) -> tuple[torch.Tensor, dict[str, float]]:
-        """The loss and the metric dict. The loss is identical to :meth:`forward`."""
-        loss, info = self.loss_and_info(
-            batch, reduction, check_finite, compute_info=True
-        )
-        return loss, info
+    def loss_with_info(self, batch, reduction="mean", check_finite=True):
+        return self.loss_and_info(batch, reduction, check_finite)
 
     def to_device_batch(
         self,
@@ -607,7 +596,7 @@ class MyfpoPolicy(nn.Module):
         if tuple(eps.shape) != expected_eps:
             raise ValueError(f"stored MC noise shape {tuple(eps.shape)} != {expected_eps}")
 
-        x_t, actor_t, flow_shape, num_mc = mc_samples(actions, eps, t)
+        x_t, actor_t, flow_shape, num_mc = expand_mc_samples(actions, eps, t)
 
         with autocast_context(device):
             condition = cudagraph_safe(self.encoder(states), self.config.compile)
@@ -782,7 +771,7 @@ class MyfpoPolicy(nn.Module):
         reduction: str,
         check_finite: bool,
         *,
-        compute_info: bool,
+        compute_info: bool = True,
     ) -> tuple[torch.Tensor, dict[str, float] | None]:
         """The shared body. ``compute_info`` picks the metrics pass."""
         cfg = self.config

@@ -405,7 +405,7 @@ def policy_update_step(policy, optimizer, batch, backends, cfg, grad_groups):
             # next forward, so the manager may recycle the step's memory.
             cudagraph_step_begin()
             if backends:
-                loss, epoch_info = policy.loss_with_info(minibatch, check_finite=False)
+                loss, epoch_info = policy.loss_and_info(minibatch, check_finite=False)
             else:
                 loss = policy(minibatch, check_finite=False)
                 epoch_info = None
