@@ -13,7 +13,7 @@ you want.
         --resume outputs/myfpo_Hopper-v5_seed0/checkpoint_1000 \
         --total_steps 4000
 
-Flags use underscores (draccus convention, same as lerobot-train).
+Flags use underscores. Draccus expects that spelling.
 
 The config is the ``MyfpoConfig`` dataclass. Every field is a CLI flag under
 ``--myfpo.``, so the command line is the only override.

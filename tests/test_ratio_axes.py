@@ -39,10 +39,10 @@ def _policy_and_batch(cfg, seed=0, pad_from=None):
     policy = make_policy(OBS, ACT, cfg, device="cpu", action_low=LOW, action_high=HIGH)
 
     batch = {
-        M.OBS_STATE: torch.from_numpy(
+        "observation.state": torch.from_numpy(
             rng.standard_normal((N, cfg.n_obs_steps, OBS), dtype=np.float32)
         ),
-        M.ACTION: torch.from_numpy(
+        "action": torch.from_numpy(
             rng.standard_normal((N, HORIZON, ACT), dtype=np.float32)
         ),
         "action_is_pad": torch.zeros(N, HORIZON, dtype=torch.bool),
@@ -65,10 +65,10 @@ def _policy_and_batch(cfg, seed=0, pad_from=None):
     }
     if pad_from is not None:
         batch["action_is_pad"][1, pad_from:] = True
-    normalized = policy.preprocessor({M.OBS_STATE: batch[M.OBS_STATE]})[M.OBS_STATE]
+    normalized = policy.obs_normalizer(batch["observation.state"])
     cfm_loss_old, cfm_loss_old_token, velocity_old_token = (
         policy.compute_behavior_cfm_losses(
-            normalized, batch[M.ACTION], batch["mc_t"], batch["mc_eps"],
+            normalized, batch["action"], batch["mc_t"], batch["mc_eps"],
             batch["action_is_pad"],
         )
     )

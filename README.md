@@ -2,13 +2,13 @@
 
 **Code for:** *Flow Policy Gradients for Robot Control (FPO++)*  
 **ArXiv:** https://arxiv.org/abs/2602.02481  
-**Implementation:** Open-loop action chunking, LeRobot / PyTorch, online RL with CFM surrogate ratios and asymmetric trust region (ASPO).
+**Implementation:** Open-loop action chunking, PyTorch, online RL with CFM surrogate ratios and asymmetric trust region (ASPO).
 
 ## What this repo does
 Trains expressive, multimodal flow-based robot policies using online reinforcement learning without explicit action likelihoods. Key features:
 - Per-token ratio clipping (`FPO++`) and ASPO trust region (`fpo_core.py`)
 - Chunked rollout (`rollout.py`) with boundary diagnostics (`rollout_seam_jerk`)
-- Raw action space: the flow's output is what it is trained on, and the `tanh` squash happens on the way to the env (`docs/architecture.md`)
+- Raw action space: the flow's output is what it is trained on, and the `tanh` squash happens on the way to the env (see `processor.py` and `networks.py` in the source)
 - AdaLN-Zero DiT actor with causal attention, RoPE, and a log-spaced time embedding (`networks.py`, `layers.py`)
 - TD-MPC2-style critic: 2 members by default (`--myfpo.num_critics 5` for the full ensemble), LayerNorm + Mish, 1% dropout, REDQ min-of-2 targets (`networks.py`). The action chunk enters through a learned affine, so the chunk's offset survives
 - Independent actor and critic gradient clipping (`training.py`)
@@ -33,4 +33,4 @@ uv run ruff check .            # dead code, unused names
 - Diffusion Policy: `arXiv:2303.04137`
 - GoRL / GORL: `arXiv:2512.02581v1` (ICML 2026)
 
-See `docs/architecture.md` for how each network is built and why.
+See `networks.py` and `configuration.py` for how each network is built and why.

@@ -45,18 +45,15 @@ def test_no_config_field_is_declared_twice():
 
 def test_every_declared_field_exists_on_the_dataclass():
     """Every annotation in the class body must become a real field."""
-    from lerobot.configs import PreTrainedConfig
-
     declared = {name for name, _, _ in _annotated_assignments()}
     actual = {f.name for f in dataclasses.fields(MyfpoConfig)}
-    inherited = {f.name for f in dataclasses.fields(PreTrainedConfig)}
 
     assert declared <= actual, (
         f"annotated here but not a field: {sorted(declared - actual)}"
     )
-    # Anything that is a field but not annotated here must be inherited.
-    unexplained = actual - declared - inherited
-    assert not unexplained, f"fields with no declaration and no base: {sorted(unexplained)}"
+    # A plain dataclass inherits nothing, so every field is declared here.
+    unexplained = actual - declared
+    assert not unexplained, f"fields with no declaration: {sorted(unexplained)}"
 
 
 def test_the_noise_marginal_is_normal_and_uniform_only():

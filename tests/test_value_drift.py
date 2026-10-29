@@ -27,7 +27,7 @@ class _FixedCritic:
     def eval(self):
         return self
 
-    def train(self, mode=True):
+    def train(self, _mode=True):
         return self
 
     def __call__(self, obs, _actions, _exec_length_frac):

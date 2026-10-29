@@ -1,12 +1,10 @@
-"""Single home for every hyperparameter (LeRobot ``PreTrainedConfig``)."""
+"""Single home for every hyperparameter."""
 
 from __future__ import annotations
 from pathlib import Path
 import yaml
 import warnings
 from dataclasses import dataclass
-from lerobot.configs import PreTrainedConfig
-from lerobot.optim import AdamWConfig
 
 __all__ = [
     "ACTOR_ARCHITECTURES",
@@ -44,10 +42,13 @@ FLOW_STARTS = ("zero_start", "noise_start")
 RATIO_MODES = ("cfm", "cfm_raw")
 
 
-@PreTrainedConfig.register_subclass("myfpo")
 @dataclass
-class MyfpoConfig(PreTrainedConfig):
+class MyfpoConfig:
     """myfpo hyperparameters."""
+
+    # Filled by ``make_policy`` from the env. None means "not attached yet".
+    obs_dim: int | None = None
+    action_dim: int | None = None
 
     report_to: str = "all"
     n_obs_steps: int = 4
@@ -135,7 +136,6 @@ class MyfpoConfig(PreTrainedConfig):
 
     def __post_init__(self) -> None:
         """Set the derived fields, then run every validation check."""
-        super().__post_init__()
         if self.n_action_steps is None:
             self.n_action_steps = self.action_horizon
         self.validate()
@@ -244,12 +244,11 @@ class MyfpoConfig(PreTrainedConfig):
             raise ValueError(f"gamma={self.gamma} must satisfy 0 < gamma <= 1")
         if not 0.0 <= self.gae_lambda <= 1.0:
             raise ValueError(f"gae_lambda={self.gae_lambda} must be in [0, 1]")
-        if self.trust_region_mode in {"spo", "aspo"}:
-            if not 0.0 < self.spo_clip_param < 1.0:
-                raise ValueError(
-                    f"spo_clip_param={self.spo_clip_param} must satisfy 0 < eps < 1 "
-                    f"when trust_region_mode={self.trust_region_mode!r}"
-                )
+        if self.trust_region_mode in {"spo", "aspo"} and not 0.0 < self.spo_clip_param < 1.0:
+            raise ValueError(
+                f"spo_clip_param={self.spo_clip_param} must satisfy 0 < eps < 1 "
+                f"when trust_region_mode={self.trust_region_mode!r}"
+            )
         if not 0.0 < self.clip_param < 1.0:
             raise ValueError(
                 f"clip_param={self.clip_param} must satisfy 0 < eps < 1"
@@ -402,42 +401,20 @@ class MyfpoConfig(PreTrainedConfig):
                     f"{', '.join(repr(k) for k in FLOW_STARTS)}"
                 )
 
-    def validate_features(self) -> None:
-        """Require the run-time features. ``MyfpoPolicy.__init__`` calls this."""
-        if self.robot_state_feature is None:
-            raise ValueError("myfpo requires 'observation.state' in input_features.")
-        if self.action_feature is None:
-            raise ValueError("myfpo requires 'action' in output_features.")
-
-    def get_optimizer_preset(self) -> "AdamWConfig":
-        """Build the AdamW config from the policy LR, weight decay, and max grad norm."""
-        kwargs = dict(
-            lr=self.policy_lr,
-            weight_decay=self.optimizer_weight_decay,
-            grad_clip_norm=self.max_grad_norm,
-        )
-        return AdamWConfig(**kwargs)
-
-    def get_scheduler_preset(self):
-        """No preset. ``training.make_scheduler`` owns the LR schedule."""
-        return
+    def validate_dims(self) -> None:
+        """Require the env dims. ``MyfpoPolicy.__init__`` calls this."""
+        if self.obs_dim is None or self.obs_dim < 1:
+            raise ValueError(
+                f"obs_dim={self.obs_dim} must be set to a positive int before "
+                "building the policy"
+            )
+        if self.action_dim is None or self.action_dim < 1:
+            raise ValueError(
+                f"action_dim={self.action_dim} must be set to a positive int "
+                "before building the policy"
+            )
 
     @property
     def num_mini_batches(self) -> int:
         """The minibatch count in one update, at least 1."""
         return max(1, self.chunks_per_update // self.chunks_per_minibatch)
-
-    @property
-    def observation_delta_indices(self) -> list[int] | None:
-        """The obs window indices: the last ``n_obs_steps`` frames, oldest first."""
-        return list(range(1 - self.n_obs_steps, 1))
-
-    @property
-    def action_delta_indices(self) -> list[int]:
-        """The chunk indices: 0 through ``action_horizon`` - 1."""
-        return list(range(self.action_horizon))
-
-    @property
-    def reward_delta_indices(self) -> None:
-        """No history window. Rewards keep none."""
-        return None

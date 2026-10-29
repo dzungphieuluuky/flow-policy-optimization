@@ -7,11 +7,7 @@ that builds one.
 
 from __future__ import annotations
 
-import dataclasses
-
 import torch
-from lerobot.configs.policies import PolicyFeature
-from lerobot.configs.types import FeatureType
 
 from myfpo.configuration import MyfpoConfig
 from myfpo.modeling import MyfpoPolicy
@@ -23,12 +19,8 @@ ACT_DIM = 2
 def cfg(
     *, obs_dim: int = OBS_DIM, act_dim: int = ACT_DIM, **kw
 ) -> MyfpoConfig:
-    """A config with the feature specs the suite uses. ``kw`` goes to the fields."""
-    return dataclasses.replace(
-        MyfpoConfig(**kw),
-        input_features={"observation.state": PolicyFeature(FeatureType.STATE, (obs_dim,))},
-        output_features={"action": PolicyFeature(FeatureType.ACTION, (act_dim,))},
-    )
+    """A config with the dims the suite uses. ``kw`` goes to the fields."""
+    return MyfpoConfig(obs_dim=obs_dim, action_dim=act_dim, **kw)
 
 
 def make_test_policy(**kw) -> MyfpoPolicy:

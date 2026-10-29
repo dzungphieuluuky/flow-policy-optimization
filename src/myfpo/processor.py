@@ -1,5 +1,5 @@
-"""myfpo pre/post processors (LeRobot style). The pair normalizes the obs and
-squashes the policy output into the env's action bounds.
+"""myfpo pre/post helpers. The pair normalizes the obs and squashes the policy
+output into the env's action bounds.
 """
 
 from __future__ import annotations
@@ -7,9 +7,6 @@ import warnings
 import torch
 from torch import nn
 from myfpo.layers import MIN_WIDTH, CondMLP, SelfAttention, make_rms_norm
-from lerobot.configs import PipelineFeatureType, PolicyFeature
-from lerobot.processor.pipeline import ProcessorStep
-from lerobot.utils.constants import ACTION, OBS_STATE
 
 # ---- from encoder.py ----
 class RunningMeanStd(nn.Module):
@@ -153,79 +150,8 @@ def squash_to_env_bounds(
     """Map a raw policy output into the env's action bounds.
 
     One place computes the affine terms, so the collector, the training
-    diagnostics and the postprocessor cannot drift apart.
+    diagnostics and the policy cannot drift apart.
     """
     scale, bias = env_squash_terms(low, high)
     return squash_to_env(raw, scale, bias)
 
-
-class ObservationProcessorStep(ProcessorStep):
-    """Hold a reference to the ``RunningMeanStd`` of the policy, not a copy."""
-
-    def __init__(self, normalizer: RunningMeanStd):
-        self.normalizer = normalizer
-
-    @torch.no_grad()
-    def __call__(self, batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
-        """Normalise ``observation.state`` through the shared ``RunningMeanStd``."""
-        out = dict(batch)
-        out[OBS_STATE] = self.normalizer(batch[OBS_STATE])
-        return out
-
-    def transform_features(
-        self, features: dict[PipelineFeatureType, dict[str, PolicyFeature]]
-    ) -> dict[PipelineFeatureType, dict[str, PolicyFeature]]:
-        """Pass the pipeline features through. The schema is unchanged."""
-        return features
-
-
-class ActionPostprocessorStep(ProcessorStep):
-    """Map the actor's raw output into the env's action bounds with ``tanh``."""
-
-    def __init__(self, action_low: torch.Tensor, action_high: torch.Tensor):
-        self.set_action_bounds(action_low, action_high)
-
-    def set_action_bounds(
-        self,
-        action_low: torch.Tensor,
-        action_high: torch.Tensor,
-    ) -> None:
-        """Set the action bounds. Recomputes the cached scale and bias."""
-        low = torch.as_tensor(action_low, dtype=torch.float32).reshape(-1).clone()
-        high = torch.as_tensor(action_high, dtype=torch.float32).reshape(-1).clone()
-        if low.shape != high.shape:
-            raise ValueError(
-                f"action_low shape {tuple(low.shape)} != "
-                f"action_high shape {tuple(high.shape)}"
-            )
-        if not bool((high >= low).all()):
-            raise ValueError("action_high must be elementwise >= action_low")
-
-        self.action_low = low
-        self.action_high = high
-
-        self.scale_cpu, self.bias_cpu = env_squash_terms(low, high)
-
-    @torch.inference_mode()
-    def __call__(self, batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
-        """Squash the raw action into the env bounds."""
-        raw = batch[ACTION]
-        out = dict(batch)
-        out[ACTION] = squash_to_env(raw, self.scale_cpu, self.bias_cpu)
-        return out
-
-    def transform_features(
-        self, features: dict[PipelineFeatureType, dict[str, PolicyFeature]]
-    ) -> dict[PipelineFeatureType, dict[str, PolicyFeature]]:
-        """Pass the pipeline features through. The function does not change the schema."""
-        return features
-
-
-def make_pre_post_processors(
-    policy,
-) -> tuple[ObservationProcessorStep, ActionPostprocessorStep]:
-    """Build the pre/post pair. The policy setter syncs action bounds."""
-    return (
-        ObservationProcessorStep(policy.obs_normalizer),
-        ActionPostprocessorStep(policy.action_low, policy.action_high),
-    )

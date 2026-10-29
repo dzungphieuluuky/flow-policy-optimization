@@ -1,7 +1,7 @@
 """The tanh that maps the actor output into the env action bounds.
 
-The mapping lives in the postprocessor, so the per-dimension bounds the env
-declares are the only source of the range. It replaced a clamp that sat in
+The mapping is one function, so the per-dimension bounds the env declares are
+the only source of the range. It replaced a clamp that sat in
 ``predict_action_chunk``.
 
 The perturbation is added before the squash, so it is bounded by it. It used to
@@ -18,8 +18,7 @@ import pytest
 import torch
 
 from myfpo.configuration import MyfpoConfig
-from lerobot.utils.constants import ACTION
-from myfpo.processor import ActionPostprocessorStep
+from myfpo.processor import squash_to_env_bounds
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -39,16 +38,15 @@ def _policy(action_dim: int = 3, **over):
 
 
 # --- the real projection -----------------------------------------------------
-def test_the_postprocessor_maps_tanh_onto_the_env_bounds():
+def test_the_squash_maps_tanh_onto_the_env_bounds():
     """The map is low + (tanh(x) + 1) / 2 * (high - low).
     new. Each dimension uses its own bounds, because the env declares them
     per dimension and they need not be symmetric.
     """
     low = torch.tensor([-2.0, -0.4, 0.0])
     high = torch.tensor([2.0, 0.4, 1.0])
-    step = ActionPostprocessorStep(low, high)
     x = torch.tensor([[-3.0, -1.0, -0.2], [0.0, 0.0, 0.0], [3.0, 1.0, 0.2]])
-    out = step({ACTION: x})[ACTION]
+    out = squash_to_env_bounds(x, low, high)
 
     for row, raw in zip(out, x):
         for value, r, lo, hi in zip(row, raw, low, high):
@@ -71,13 +69,12 @@ def test_tanh_is_open_interval_for_moderate_inputs_and_closed_when_it_saturates(
     open. Anything that assumes the action can never equal the bound is wrong.
     """
     low, high = torch.tensor([-1.0]), torch.tensor([1.0])
-    step = ActionPostprocessorStep(low, high)
 
-    moderate = step({ACTION: torch.tensor([[-3.0], [3.0]])})[ACTION]
+    moderate = squash_to_env_bounds(torch.tensor([[-3.0], [3.0]]), low, high)
     assert float(moderate[0, 0]) > low.item(), "a moderate value hit the endpoint"
     assert float(moderate[1, 0]) < high.item(), "a moderate value hit the endpoint"
 
-    saturated = step({ACTION: torch.tensor([[-50.0], [50.0]])})[ACTION]
+    saturated = squash_to_env_bounds(torch.tensor([[-50.0], [50.0]]), low, high)
     assert float(saturated[0, 0]) == pytest.approx(low.item(), abs=1e-7)
     assert float(saturated[1, 0]) == pytest.approx(high.item(), abs=1e-7)
     assert torch.isfinite(saturated).all()
@@ -87,8 +84,7 @@ def test_asymmetric_bounds_map_correctly():
     """The env declares per-dimension bounds, and they need not be symmetric."""
     low = torch.tensor([-0.4, 0.0, -3.0])
     high = torch.tensor([0.4, 1.0, 3.0])
-    step = ActionPostprocessorStep(low, high)
-    out = step({ACTION: torch.zeros(1, 3)})[ACTION]
+    out = squash_to_env_bounds(torch.zeros(1, 3), low, high)
     for value, lo, hi in zip(out[0], low, high):
         assert float(value) == pytest.approx(float((lo + hi) / 2), abs=1e-6)
 
@@ -108,7 +104,7 @@ def test_the_perturbation_is_bounded_by_the_squash():
     for _ in range(8):
         raw = policy.predict_action_chunk(states, start_from_zero=False)
         # Env bounds for this fixture are [-2, 2].
-        executed = policy.postprocessor({ACTION: raw})[ACTION]
+        executed = squash_to_env_bounds(raw, policy.action_low, policy.action_high)
         assert float(executed.abs().max()) <= 2.0, float(executed.abs().max())
 
 
@@ -152,7 +148,7 @@ def test_the_stored_action_is_bounded_because_of_the_squash():
     states = {"observation.state": torch.randn(64, 16, 11) * 3.0}
     for _ in range(8):
         raw = policy.predict_action_chunk(states, start_from_zero=False)
-        executed = policy.postprocessor({ACTION: raw})[ACTION]
+        executed = squash_to_env_bounds(raw, policy.action_low, policy.action_high)
         assert float(executed.min()) >= -2.0 - 1e-6, float(executed.min())
         assert float(executed.max()) <= 2.0 + 1e-6, float(executed.max())
 

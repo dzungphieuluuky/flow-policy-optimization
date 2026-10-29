@@ -4,10 +4,10 @@ from __future__ import annotations
 import contextlib
 import math
 import os
+import random
 from functools import lru_cache
 import numpy as np
 import torch
-from lerobot.processor.converters import to_tensor
 import torch.nn.functional as F
 from torch import nn
 
@@ -61,6 +61,15 @@ def resolve_device() -> torch.device:
             f"MYFPO_DEVICE={want!r} unknown; expected 'auto', 'cpu', or 'cuda'"
         )
     return torch.device("cuda") if cuda_available() else torch.device("cpu")
+
+
+def set_seed(seed: int) -> None:
+    """Seed Python, NumPy, and torch, including every CUDA device."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
 
 def resolve_storage_dtype(
@@ -126,7 +135,7 @@ def to_tensor_1d(
     device: torch.device | str | None = None,
 ) -> torch.Tensor:
     """To a tensor, always at least 1-D. A singleton stays ``[1]``, never ``()``."""
-    return torch.atleast_1d(to_tensor(x, dtype=dtype, device=device))
+    return torch.atleast_1d(torch.as_tensor(x, dtype=dtype, device=device))
 
 
 # A width of 1 gives the norm nothing to normalize, so every hidden width in

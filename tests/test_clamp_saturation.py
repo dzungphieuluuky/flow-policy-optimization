@@ -185,7 +185,7 @@ def _policy_and_batch(cfm_clamp):
     t = sample_timesteps((n, mc, horizon), pcfg, "cpu", None).unsqueeze(-1)
     eps = torch.randn(n, mc, horizon, act)
     pad = torch.zeros(n, horizon, dtype=torch.bool)
-    pre = policy.preprocessor({"observation.state": states})["observation.state"]
+    pre = policy.obs_normalizer(states)
     old, old_token, old_velocity = policy.compute_behavior_cfm_losses(
         pre, actions, t, eps, pad
     )

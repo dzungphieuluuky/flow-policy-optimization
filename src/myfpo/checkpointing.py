@@ -1,9 +1,9 @@
-"""Policy checkpoint IO (HuggingFace style): save_pretrained/from_pretrained."""
+"""Policy checkpoint IO: one ``torch.save`` payload per checkpoint directory."""
 
 from __future__ import annotations
 
 import contextlib
-import json
+import dataclasses
 import os
 import pickle
 import tempfile
@@ -12,12 +12,13 @@ from collections.abc import Callable
 from pathlib import Path
 
 import torch
-from huggingface_hub.constants import CONFIG_NAME, SAFETENSORS_SINGLE_FILE
 
-OPTIMIZER_FILE = "optimizer.pt"
-COUNTERS_FILE = "counters.json"
-RNG_FILE = "rng.pt"
-ACTION_SPACE_FILE = "action_space.json"
+from myfpo.configuration import MyfpoConfig
+
+CHECKPOINT_FILE = "checkpoint.pt"
+
+# The payload layout. Bump it when a key changes meaning.
+FORMAT_VERSION = 1
 
 # The action space the policy is trained in. "raw" means the flow's own output
 # is the training target and the squash is applied on the way to the env.
@@ -51,72 +52,41 @@ def save_policy_checkpoint(
     dir_path: str | os.PathLike,
     *,
     policy,
-    optimizer: torch.optim.Optimizer,
+    optimizer: torch.optim.Optimizer | None,
     global_step: int,
     ema_state: dict | None = None,
 ) -> None:
-    """Save through the LeRobot ``HubMixin``. Then save ``optimizer.pt``, the EMA
-    shadow, the counters, and the RNG state.
-    """
+    """Save the policy, the optimizer, the EMA shadow, the counters, and the RNG."""
     d = Path(dir_path)
     d.mkdir(parents=True, exist_ok=True)
-
-    policy.save_pretrained(d, state_dict=policy.state_dict())
-    if ema_state is not None:
-        save_atomically(d / "ema.pt", lambda name: torch.save(ema_state, name))
-
-    save_atomically(
-        d / OPTIMIZER_FILE, lambda name: torch.save(optimizer.state_dict(), name)
-    )
-
-    counters = {
-        "global_step": int(global_step),
-        "step_count": int(getattr(policy, "step_count", 0)),
-    }
-    save_atomically(
-        d / COUNTERS_FILE,
-        lambda name: Path(name).write_bytes(
-            json.dumps(counters, indent=2).encode("utf-8")
-        ),
-    )
 
     rng = {"torch": torch.get_rng_state()}
     if torch.cuda.is_available():
         rng["cuda"] = torch.cuda.get_rng_state_all()
-    save_atomically(d / RNG_FILE, lambda name: torch.save(rng, name))
 
+    payload = {
+        "format": FORMAT_VERSION,
+        "action_space": ACTION_SPACE_VERSION,
+        "config": dataclasses.asdict(policy.config),
+        "state_dict": policy.state_dict(),
+        "optimizer": optimizer.state_dict() if optimizer is not None else None,
+        "counters": {
+            "global_step": int(global_step),
+            "step_count": int(getattr(policy, "step_count", 0)),
+        },
+        "ema": ema_state,
+        "rng": rng,
+    }
     save_atomically(
-        d / ACTION_SPACE_FILE,
-        lambda name: Path(name).write_text(
-            json.dumps({"version": ACTION_SPACE_VERSION}, indent=2),
-            encoding="utf-8",
-        ),
+        d / CHECKPOINT_FILE, lambda name: torch.save(payload, name)
     )
 
 
-def load_optimizer(policy, d: Path) -> torch.optim.Optimizer:
+def load_optimizer(policy, opt_state: dict) -> torch.optim.Optimizer:
     """Rebuild the optimizer from the policy, then load its state."""
     from myfpo.modeling import make_optimizer
 
     optimizer = make_optimizer(policy)
-
-    try:
-        opt_state = torch.load(
-            d / OPTIMIZER_FILE, map_location="cpu", weights_only=True
-        )
-    except (OSError, RuntimeError, ValueError) as e:
-        raise ResumeError(
-            f"failed to unpickle {d / OPTIMIZER_FILE}: {e}. "
-            "If the optimizer was subclassed with non-tensor state, re-save "
-            "with weights_only=False at your own risk."
-        ) from e
-
-    if isinstance(opt_state, dict) and opt_state.get("format") == 2:
-        raise ResumeError(
-            f"{d / OPTIMIZER_FILE} holds separate actor/critic optimizers, which "
-            "predate the merged single optimizer. That state cannot be loaded "
-            "into one optimizer; resume from a checkpoint saved after the merge."
-        )
     saved_groups = opt_state.get("param_groups", [])
     if len(saved_groups) != len(optimizer.param_groups):
         raise ResumeError(
@@ -132,56 +102,14 @@ def load_optimizer(policy, d: Path) -> torch.optim.Optimizer:
     return optimizer
 
 
-def load_rng(d: Path) -> None:
+def restore_rng(rng: dict | None) -> None:
     """Restore torch and CUDA RNG state, best effort."""
-    path = d / RNG_FILE
-    if not path.is_file():
-        return
-    try:
-        rng = torch.load(path, map_location="cpu", weights_only=True)
-    except (OSError, RuntimeError, ValueError, EOFError, pickle.UnpicklingError):
-        warnings.warn(
-            f"{path} is unreadable; the run resumes without the saved RNG state",
-            RuntimeWarning,
-            stacklevel=2,
-        )
+    if not rng:
         return
     if "torch" in rng:
         torch.set_rng_state(rng["torch"])
     if "cuda" in rng and torch.cuda.is_available():
         torch.cuda.set_rng_state_all(rng["cuda"])
-
-
-def check_action_space(d: Path) -> None:
-    """Refuse a checkpoint whose action space is not this one.
-
-    The critic reads the action chunk. A checkpoint written before the action
-    space changed has a critic that was fit on the squashed chunk, and that
-    is a different quantity from the raw chunk the critic reads now. Loading
-    it would evaluate a policy against a value function that never saw its
-    actions, so the load fails with the reason named.
-    """
-    path = d / ACTION_SPACE_FILE
-    if not path.is_file():
-        raise ResumeError(
-            f"{d} has no {ACTION_SPACE_FILE}, so its action space is not "
-            f"recorded. Checkpoints written before the action space changed "
-            "were trained with the critic reading the squashed chunk, and "
-            "the current critic reads the raw chunk; they are not "
-            "interchangeable. Train a new run."
-        )
-    try:
-        recorded = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError) as e:
-        raise ResumeError(f"corrupt {path}: {e}") from e
-    version = recorded.get("version")
-    if version != ACTION_SPACE_VERSION:
-        raise ResumeError(
-            f"{d} was written with action space {version!r}; this code trains "
-            f"with {ACTION_SPACE_VERSION!r}. The critic's action input is a "
-            "different quantity in the two, so the checkpoint cannot be "
-            "resumed or evaluated."
-        )
 
 
 def load_policy_checkpoint(
@@ -197,17 +125,37 @@ def load_policy_checkpoint(
     from myfpo.modeling import MyfpoPolicy
 
     d = Path(dir_path)
-    missing = [
-        f
-        for f in (CONFIG_NAME, SAFETENSORS_SINGLE_FILE, OPTIMIZER_FILE, COUNTERS_FILE)
-        if not (d / f).is_file()
-    ]
-    if missing:
-        raise ResumeError(f"incomplete policy checkpoint in {d}: missing {missing}")
+    path = d / CHECKPOINT_FILE
+    if not path.is_file():
+        raise ResumeError(
+            f"{d} has no {CHECKPOINT_FILE}. The checkpoint format is one "
+            "torch.save payload per directory; runs saved in the old "
+            "HuggingFace layout cannot be resumed."
+        )
+    try:
+        payload = torch.load(path, map_location="cpu", weights_only=True)
+    except (OSError, RuntimeError, ValueError, EOFError, pickle.UnpicklingError) as e:
+        raise ResumeError(f"failed to load {path}: {e}") from e
+    if not isinstance(payload, dict) or payload.get("format") != FORMAT_VERSION:
+        found = payload.get("format") if isinstance(payload, dict) else type(payload).__name__
+        raise ResumeError(
+            f"{path} has format {found!r}; this code reads "
+            f"format {FORMAT_VERSION}."
+        )
+    if payload.get("action_space") != ACTION_SPACE_VERSION:
+        raise ResumeError(
+            f"{path} was written with action space "
+            f"{payload.get('action_space')!r}; this code trains with "
+            f"{ACTION_SPACE_VERSION!r}. The critic's action input is a "
+            "different quantity in the two, so the checkpoint cannot be "
+            "resumed or evaluated."
+        )
 
-    check_action_space(d)
-
-    policy = MyfpoPolicy.from_pretrained(d)
+    try:
+        policy = MyfpoPolicy(MyfpoConfig(**payload["config"]))
+        policy.load_state_dict(payload["state_dict"])
+    except (KeyError, TypeError, ValueError, RuntimeError) as e:
+        raise ResumeError(f"cannot rebuild the policy from {path}: {e}") from e
     if device is not None:
         policy.to(device)
     if (action_low is None) != (action_high is None):
@@ -215,25 +163,24 @@ def load_policy_checkpoint(
     if action_low is not None:
         policy.set_action_bounds(action_low, action_high)
 
-    optimizer = load_optimizer(policy, d)
+    opt_state = payload.get("optimizer")
+    if opt_state is None:
+        raise ResumeError(f"{path} carries no optimizer state")
+    optimizer = load_optimizer(policy, opt_state)
 
-    ema_path = d / "ema.pt"
-    if ema_path.is_file():
-        restored = policy.load_ema_state_dict(
-            torch.load(ema_path, map_location="cpu", weights_only=True)
-        )
+    if payload.get("ema") is not None:
+        restored = policy.load_ema_state_dict(payload["ema"])
         if not restored:
             warnings.warn(
-                f"{ema_path.name} does not match the current EMA coverage; "
+                "the saved EMA shadow does not match the current EMA coverage; "
                 "reseeding the shadow from live weights instead of restoring it",
                 RuntimeWarning,
                 stacklevel=2,
             )
 
-    try:
-        counters_raw = json.loads((d / COUNTERS_FILE).read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError) as e:
-        raise ResumeError(f"corrupt {d / COUNTERS_FILE}: {e}") from e
+    counters_raw = payload.get("counters")
+    if not isinstance(counters_raw, dict):
+        raise ResumeError(f"{path} has no counters")
     try:
         global_step = int(counters_raw["global_step"])
         step_count = int(counters_raw["step_count"])
@@ -246,7 +193,7 @@ def load_policy_checkpoint(
         )
     policy.step_count = step_count
 
-    load_rng(d)
+    restore_rng(payload.get("rng"))
 
     counters = {"global_step": global_step, "step_count": step_count}
     return policy, optimizer, counters

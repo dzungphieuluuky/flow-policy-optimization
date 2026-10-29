@@ -10,7 +10,6 @@ from collections.abc import Callable
 import numpy as np
 from myfpo.processor import squash_to_env_bounds
 from dataclasses import dataclass
-from lerobot.utils.constants import ACTION, OBS_STATE
 from myfpo.fpo_core import (
     compute_gae_diagnostics,
     sample_eps,
@@ -951,7 +950,7 @@ def bootstrap_values(
         needs_proposal = ~active["chunk_terminated"]
         if bool(needs_proposal.any()):
             proposed = policy.predict_action_chunk(
-                {OBS_STATE: to_device_async(next_states[needs_proposal], device)},
+                {"observation.state": to_device_async(next_states[needs_proposal], device)},
                 start_from_zero=False,
             )
             # The backup's action lives in the same space as the stored
@@ -963,9 +962,9 @@ def bootstrap_values(
         # on. Normalising the fp32 buffer states here would give the rollout
         # and the training pass two different conditions, and the behavior
         # loss would not be the loss the training pass recomputes.
-        all_chunk_normalized_states = policy.preprocessor(
-            {OBS_STATE: torch.cat([states, next_states], dim=0).to(storage_dtype)}
-        )[OBS_STATE]
+        all_chunk_normalized_states = policy.obs_normalizer(
+            torch.cat([states, next_states], dim=0).to(storage_dtype)
+        )
         normalized_states = all_chunk_normalized_states[:n_chunks]
         normalized_next_states = all_chunk_normalized_states[n_chunks:]
         exec_length_frac = policy.exec_length_frac(lengths)
@@ -1032,7 +1031,7 @@ def collect_chunks(
         # dead here, so the manager may recycle their memory.
         cudagraph_step_begin()
         chunk = policy.predict_action_chunk(
-            {OBS_STATE: to_device_async(states, device)}, start_from_zero=not noisy
+            {"observation.state": to_device_async(states, device)}, start_from_zero=not noisy
         )
         # The buffer decides the destination: a GPU rollout keeps the chunk on
         # the device instead of a D2H followed by an H2D.
@@ -1043,8 +1042,8 @@ def collect_chunks(
         buffers.h2d_event = None
 
     num_envs = int(getattr(env, "num_envs", 1))
-    action_dim = int(cfg.action_feature.shape[0])
-    obs_dim = int(cfg.robot_state_feature.shape[0])
+    action_dim = int(cfg.action_dim)
+    obs_dim = int(cfg.obs_dim)
     # The worst case is one chunk per step, so the rows must cover total_steps.
     # A normal rollout writes total_steps / action_horizon (1024 of 8192 at the
     # defaults). A shorter cap aborts on an off-boundary episode length.
@@ -1160,7 +1159,7 @@ def run_rollout(
     ) >= lengths.unsqueeze(1)
 
     t = sample_mc_timesteps(cfg, n_chunks, device)
-    eps = sample_eps(cfg, n_chunks, int(cfg.action_feature.shape[0]), device)
+    eps = sample_eps(cfg, n_chunks, int(cfg.action_dim), device)
 
     (
         behavior_cfm_loss,
@@ -1171,8 +1170,8 @@ def run_rollout(
     )
 
     return {
-        OBS_STATE: states,
-        ACTION: actions,
+        "observation.state": states,
+        "action": actions,
         "action_is_pad": action_is_pad,
         "raw_advantages": raw_advantages,
         "normalized_advantages": normalized_advantages,

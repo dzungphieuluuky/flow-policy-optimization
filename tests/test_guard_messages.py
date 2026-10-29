@@ -77,9 +77,9 @@ for _field, _bad in sorted(_BAD_CONFIG.items()):
 # An even count is required: sample_eps draws half and mirrors it.
 case("config:num_mc_samples-odd")(lambda: MyfpoConfig(num_mc_samples=3))
 
-@case("config:missing-input-features")
-def _missing_input_features() -> None:
-    MyfpoConfig().validate_features()
+@case("config:missing-dims")
+def _missing_dims() -> None:
+    MyfpoConfig().validate_dims()
 
 # --- network constructors ----------------------------------------------------.
 from myfpo.layers import CrossAttention, DiTBlock, SelfAttention  # noqa: E402
@@ -242,7 +242,7 @@ KEYWORDS = {
     'config:log_ratio_cap': 'log_ratio_cap',
     'config:max_grad_norm': 'max_grad_norm',
     'config:min_sampled_timestep': 'min_sampled_timestep',
-    'config:missing-input-features': 'input_features',
+    'config:missing-dims': 'obs_dim',
     'config:noise_sampling_mode': 'noise_sampling_mode',
     'config:num_critics': 'num_critics',
     'config:num_envs': 'num_envs',

@@ -4,19 +4,15 @@ The class holds the flow head, the state conditioner, and the EMA shadow used fo
 
 from __future__ import annotations
 
+import copy
 from collections import deque
-from typing import Any
 
 import dataclasses
 import time
 
 import numpy as np
 import torch
-
-import warnings
-from lerobot.policies import PreTrainedPolicy
-from lerobot.processor.converters import to_tensor
-from lerobot.utils.constants import ACTION, OBS_STATE
+from torch import nn
 
 from myfpo.configuration import MyfpoConfig
 from myfpo.fpo_core import (
@@ -40,7 +36,6 @@ from myfpo.fpo_core import (
 )
 from myfpo.networks import Critic, FlowModel, FlowResMLP
 from myfpo.processor import RunningMeanStd, StateEncoder, squash_to_env_bounds
-from myfpo.processor import make_pre_post_processors
 from myfpo.rollout import RolloutBuffers, run_rollout
 from myfpo.layers import (
     autocast_context,
@@ -58,9 +53,13 @@ class TrainingAborted(RuntimeError):
 
 def make_optimizer(policy: MyfpoPolicy) -> torch.optim.Optimizer:
     """Build one AdamW. Split the actor and the critic into separate groups."""
-    kwargs = dataclasses.asdict(policy.config.get_optimizer_preset())
-    kwargs.pop("grad_clip_norm", None)  # AdamW would clip all groups as one. See split_grad_params.
-    kwargs["betas"] = policy.config.adam_betas
+    cfg = policy.config
+    kwargs = dict(
+        lr=cfg.policy_lr,
+        betas=cfg.adam_betas,
+        eps=1e-8,
+        weight_decay=cfg.optimizer_weight_decay,
+    )
     if next(policy.actor.parameters()).is_cuda:
         kwargs["fused"] = True
     groups = [
@@ -108,8 +107,9 @@ class PolicyTerms:
 
 def make_policy_head(config: MyfpoConfig):
     """Build the actor, the state encoder, and the critic from the config, and return the dims."""
-    obs_dim = int(config.robot_state_feature.shape[0])
-    action_dim = int(config.action_feature.shape[0])
+    config.validate_dims()
+    obs_dim = int(config.obs_dim)
+    action_dim = int(config.action_dim)
     if config.actor_arch == "resmlp":
         actor = FlowResMLP(
             action_dim, config.action_horizon, config.hidden_dim,
@@ -145,17 +145,13 @@ def init_ema_buffers(obj, config: MyfpoConfig):
     obj.action_buffer = deque()
     obj.step_count = 0
 
-class MyfpoPolicy(PreTrainedPolicy):
-    config_class = MyfpoConfig
-    name = "myfpo"
+class MyfpoPolicy(nn.Module):
+    """The flow actor, the state encoder, the critic pair, and the EMA shadow."""
 
-    def __init__(
-        self, config: MyfpoConfig, dataset_stats: dict[str, Any] | None = None
-    ):
-        super().__init__(config, dataset_stats)
-        config.validate_features()
+    def __init__(self, config: MyfpoConfig):
+        super().__init__()
+        self.config = config
         self.actor, self.encoder, self.critic, obs_dim, action_dim = make_policy_head(config)
-        import copy
         self.critic_target = copy.deepcopy(self.critic)
         self.critic_target.requires_grad_(False)
         self.critic_target.eval()
@@ -164,8 +160,6 @@ class MyfpoPolicy(PreTrainedPolicy):
         self.register_buffer("action_low", torch.full((action_dim,), -1.0), persistent=False)
         self.register_buffer("action_high", torch.full((action_dim,), 1.0), persistent=False)
         init_ema_buffers(self, config)
-        self.preprocessor, self.postprocessor = make_pre_post_processors(self)
-        del dataset_stats
 
     def reset(self):
         """Drop the cached obs and action buffers."""
@@ -190,7 +184,7 @@ class MyfpoPolicy(PreTrainedPolicy):
         low: np.ndarray | torch.Tensor,
         high: np.ndarray | torch.Tensor,
     ) -> None:
-        """Set the env action bounds the postprocessor uses."""
+        """Set the env action bounds that ``select_action`` squashes into."""
         storage_dtype = resolve_storage_dtype(self.action_low.device)
         low_t = to_tensor_1d(
             low, dtype=storage_dtype, device=self.action_low.device
@@ -211,7 +205,6 @@ class MyfpoPolicy(PreTrainedPolicy):
 
         self.action_low.copy_(low_t)
         self.action_high.copy_(high_t)
-        self.postprocessor.set_action_bounds(self.action_low, self.action_high)
 
     def ema_named_params(self) -> dict[str, torch.nn.Parameter]:
         """List every parameter that the EMA shadow covers.
@@ -345,18 +338,6 @@ class MyfpoPolicy(PreTrainedPolicy):
         for p_target, p in zip(self.critic_target.parameters(), self.critic.parameters()):
             p_target.copy_(soft_update_rate * p + (1.0 - soft_update_rate) * p_target)
 
-    def get_optim_params(self) -> dict:
-        """Required by ``PreTrainedPolicy``. Returns what the optimizer actually uses.
-
-        The split is delegated rather than restated, so it cannot drift away
-        from :meth:`make_optimizer`.
-        """
-        return {"params": [
-            *self.get_actor_optim_params()["params"],
-            *self.get_critic_optim_params()["params"],
-        ]}
-
-
     def compute_predicted_velocity(
         self,
         x_t: torch.Tensor,
@@ -381,7 +362,7 @@ class MyfpoPolicy(PreTrainedPolicy):
         cfg = self.config
         device = next(self.actor.parameters()).device
 
-        states = to_tensor(batch[OBS_STATE])
+        states = torch.as_tensor(batch["observation.state"])
         states = states.to(dtype=resolve_storage_dtype(states.device))
         if states.dim() == 2 and states.shape[0] == cfg.n_obs_steps:
             states = states.unsqueeze(0)
@@ -392,10 +373,10 @@ class MyfpoPolicy(PreTrainedPolicy):
                 "select_action, which buffers it into a window."
             )
         states = to_device_async(states, device)
-        states = self.preprocessor({OBS_STATE: states})[OBS_STATE]
+        states = self.obs_normalizer(states)
 
         horizon = cfg.action_horizon
-        action_dim = int(self.config.action_feature.shape[0])
+        action_dim = int(cfg.action_dim)
 
         with torch.inference_mode(), autocast_context(device):
             condition = cudagraph_safe(self.encoder(states), self.config.compile)
@@ -431,7 +412,7 @@ class MyfpoPolicy(PreTrainedPolicy):
         The action handed out is the env-facing one: the raw chunk the policy
         planned, squashed into the env's bounds.
         """
-        obs = to_tensor(batch[OBS_STATE])
+        obs = torch.as_tensor(batch["observation.state"])
         obs = obs.to(dtype=resolve_storage_dtype(obs.device))
         if obs.dim() == 1:
             if not self.frame_buffer:
@@ -447,9 +428,9 @@ class MyfpoPolicy(PreTrainedPolicy):
                 f"select_action expects [obs] or [T, obs]; got {tuple(obs.shape)}"
             )
         if not self.action_buffer:
-            chunk = self.predict_action_chunk({OBS_STATE: window}, **kwargs)
+            chunk = self.predict_action_chunk({"observation.state": window}, **kwargs)
             n_execute = max(1, min(self.config.n_action_steps, chunk.shape[1]))
-            squashed = self.postprocessor({ACTION: chunk})[ACTION]
+            squashed = squash_to_env_bounds(chunk, self.action_low, self.action_high)
             for i in range(n_execute):
                 self.action_buffer.append(squashed[0, i])
         return self.action_buffer.popleft()
@@ -537,7 +518,7 @@ class MyfpoPolicy(PreTrainedPolicy):
         async_: bool = False,
     ) -> torch.Tensor:
         """One spelling of 'coerce to device and dtype'."""
-        tensor = to_tensor(batch[key], dtype=dtype, device=device)
+        tensor = torch.as_tensor(batch[key], dtype=dtype, device=device)
         return to_device_async(tensor, device) if async_ else tensor
 
     def forward(
@@ -578,11 +559,11 @@ class MyfpoPolicy(PreTrainedPolicy):
         frame and each chunk token. The values do not change.
         """
         cfg = self.config
-        states = self.to_device_tensor(batch, OBS_STATE, device, storage_dtype, async_=True)
+        states = self.to_device_tensor(batch, "observation.state", device, storage_dtype, async_=True)
         # The action is the flow's raw output, and it is the CFM regression
         # target. It stays fp32: the raw values are unbounded, so a bf16
         # rounding would put a 0.4% error on the target the flow is fit to.
-        actions = self.to_device_tensor(batch, ACTION, device, torch.float32, async_=True)
+        actions = self.to_device_tensor(batch, "action", device, torch.float32, async_=True)
         advantages = self.to_device_tensor(
             batch, "normalized_advantages", device, storage_dtype
         )
@@ -606,7 +587,7 @@ class MyfpoPolicy(PreTrainedPolicy):
                 f"{(states.shape[0], cfg.action_horizon)}"
             )
 
-        states = self.preprocessor({OBS_STATE: states})[OBS_STATE]
+        states = self.obs_normalizer(states)
         if grad_inputs:
             states = states.detach().requires_grad_(True)
             actions = actions.detach().requires_grad_(True)
@@ -617,11 +598,11 @@ class MyfpoPolicy(PreTrainedPolicy):
 
         if "mc_t" not in batch or "mc_eps" not in batch:
             raise ValueError("Mandatory paired reuse: batch must contain 'mc_t' and 'mc_eps' (coupled draws for both old/new CFM loss)")
-        t = to_tensor(batch["mc_t"], dtype=storage_dtype, device=device)
+        t = torch.as_tensor(batch["mc_t"], dtype=storage_dtype, device=device)
         expected_t = (n, cfg.num_mc_samples, horizon, 1)
         if tuple(t.shape) != expected_t:
             raise ValueError(f"mc_t shape {tuple(t.shape)} != {expected_t}")
-        eps = to_tensor(batch["mc_eps"], dtype=storage_dtype, device=device)
+        eps = torch.as_tensor(batch["mc_eps"], dtype=storage_dtype, device=device)
         expected_eps = (n, cfg.num_mc_samples, horizon, action_dim)
         if tuple(eps.shape) != expected_eps:
             raise ValueError(f"stored MC noise shape {tuple(eps.shape)} != {expected_eps}")
@@ -677,13 +658,13 @@ class MyfpoPolicy(PreTrainedPolicy):
                 "from generate_rollout. They are computed once per rollout against "
                 "the frozen snapshot and must not be recomputed here."
             )
-        cfm_loss_old = to_tensor(
+        cfm_loss_old = torch.as_tensor(
             batch["behavior_cfm_loss"], dtype=torch.float32, device=device
         )
-        cfm_loss_old_token = to_tensor(
+        cfm_loss_old_token = torch.as_tensor(
             batch["behavior_cfm_loss_token"], dtype=torch.float32, device=device
         )
-        velocity_old_token = to_tensor(
+        velocity_old_token = torch.as_tensor(
             batch["behavior_velocity_token"], dtype=torch.float32, device=device
         )
         if tuple(cfm_loss_old.shape) != (n, num_mc):

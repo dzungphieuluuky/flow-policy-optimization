@@ -37,7 +37,7 @@ def _pairs(policy, n):
 
 
 def _batch(policy, states, actions, t, eps):
-    pre = policy.preprocessor({"observation.state": states})["observation.state"]
+    pre = policy.obs_normalizer(states)
     pad = torch.zeros(states.shape[0], HORIZON, dtype=torch.bool)
     old, old_token, old_velocity = policy.compute_behavior_cfm_losses(
         pre, actions, t, eps, pad
@@ -104,7 +104,7 @@ def test_the_frozen_pass_is_deterministic():
     torch.manual_seed(2)
     states = torch.randn(n, policy.config.n_obs_steps, OBS)
     actions = torch.randn(n, HORIZON, ACT)
-    pre = policy.preprocessor({"observation.state": states})["observation.state"]
+    pre = policy.obs_normalizer(states)
     pad = torch.zeros(n, HORIZON, dtype=torch.bool)
     t, eps = _pairs(policy, n)
     first = policy.compute_behavior_cfm_losses(pre, actions, t, eps, pad)

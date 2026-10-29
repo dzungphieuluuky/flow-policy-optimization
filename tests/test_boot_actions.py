@@ -1,10 +1,6 @@
 """The backup's target chunk must live in the same space as the data's chunks."""
 
-import dataclasses
-
 import pytest
-from lerobot.configs.policies import PolicyFeature
-from lerobot.configs.types import FeatureType
 
 from myfpo.configuration import MyfpoConfig
 from myfpo.training import make_policy
@@ -17,11 +13,7 @@ TOTAL_STEPS = 256
 
 
 def _policy():
-    cfg = dataclasses.replace(
-        MyfpoConfig(),
-        input_features={"observation.state": PolicyFeature(FeatureType.STATE, (OBS,))},
-        output_features={"action": PolicyFeature(FeatureType.ACTION, (ACT,))},
-    )
+    cfg = MyfpoConfig(obs_dim=OBS, action_dim=ACT)
     return make_policy(
         OBS, ACT, cfg, device="cpu", action_low=LOW, action_high=HIGH
     )

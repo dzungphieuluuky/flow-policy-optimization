@@ -83,8 +83,6 @@ einx
 draccus
 gymnasium
 gymnasium-robotics
-huggingface-hub
-lerobot
 mujoco
 pyyaml
 tensorboard

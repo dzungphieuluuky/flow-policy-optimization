@@ -11,8 +11,6 @@ import dataclasses
 
 import pytest
 import torch
-from lerobot.configs.policies import PolicyFeature
-from lerobot.configs.types import FeatureType
 
 from myfpo.configuration import MyfpoConfig
 from myfpo.modeling import MyfpoPolicy
@@ -30,8 +28,8 @@ def _policy(**kw) -> MyfpoPolicy:
             dit_depth=1,
             dit_heads=2,
             num_critics=5,
-            input_features={"observation.state": PolicyFeature(FeatureType.STATE, (OBS,))},
-            output_features={"action": PolicyFeature(FeatureType.ACTION, (ACT,))},
+            obs_dim=OBS,
+            action_dim=ACT,
         ),
         **kw,
     )

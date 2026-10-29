@@ -14,8 +14,6 @@ it checks cannot catch a defect in the shared part.
 from __future__ import annotations
 
 import torch
-from lerobot.configs.policies import PolicyFeature
-from lerobot.configs.types import FeatureType
 
 from myfpo.configuration import MyfpoConfig
 
@@ -46,8 +44,8 @@ def pin_config(**kw) -> MyfpoConfig:
         n_obs_steps=N_OBS,
         compile=False,
         report_to="none",
-        input_features={"observation.state": PolicyFeature(FeatureType.STATE, (OBS,))},
-        output_features={"action": PolicyFeature(FeatureType.ACTION, (ACT,))},
+        obs_dim=OBS,
+        action_dim=ACT,
     )
     base.update(kw)
     return MyfpoConfig(**base)
@@ -84,7 +82,7 @@ def fixed_batch(policy, n: int = 3, seed: int = 1) -> dict:
     eps = torch.randn(n, MC, HORIZON, ACT)
     pad = torch.zeros(n, HORIZON, dtype=torch.bool)
 
-    pre = policy.preprocessor({"observation.state": states})["observation.state"]
+    pre = policy.obs_normalizer(states)
     old, old_token, old_velocity = policy.compute_behavior_cfm_losses(
         pre, actions, t, eps, pad
     )

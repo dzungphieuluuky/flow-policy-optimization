@@ -1,0 +1,39 @@
+{
+  "os": "Linux-7.0.0-38-generic-x86_64-with-glibc2.43",
+  "python": "CPython 3.12.14",
+  "startedAt": "2026-10-23T15:02:52.449093Z",
+  "args": [
+    "--env",
+    "Hopper-v5",
+    "--seed",
+    "0",
+    "--total_steps",
+    "100",
+    "--out_dir",
+    "outputs/smoke_after_repl",
+    "--eval_steps",
+    "100"
+  ],
+  "program": "/run/media/dung-pham/DATA/Personal/myfpo/scripts/train.py",
+  "codePath": "scripts/train.py",
+  "codePathLocal": "scripts/train.py",
+  "git": {
+    "remote": "git@github.com:dzungphieuluuky/myfpo.git",
+    "commit": "91bd6380d8585bf6b8bd80951db6e8069e17cad8"
+  },
+  "root": "/run/media/dung-pham/DATA/Personal/myfpo",
+  "host": "dung-pham",
+  "executable": "/run/media/dung-pham/DATA/Personal/myfpo/.venv/bin/python",
+  "cpu_count": 8,
+  "cpu_count_logical": 16,
+  "disk": {
+    "/": {
+      "total": "42938253312",
+      "used": "38553497600"
+    }
+  },
+  "memory": {
+    "total": "31731818496"
+  },
+  "writerId": "h01kfigv4vhwm66c3je88r5w3sd3el7t"
+}

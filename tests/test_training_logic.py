@@ -10,7 +10,6 @@ from myfpo.training import (
     split_grad_params,
 )
 from myfpo.configuration import MyfpoConfig
-from lerobot.configs.types import FeatureType, PolicyFeature
 
 
 def test_observation_stats_land_before_the_update():
@@ -26,8 +25,6 @@ def test_training_logic():
         action_horizon=4,
         n_action_steps=2,
         hidden_dim=16,
-        input_features={"observation.state": PolicyFeature(FeatureType.STATE, (5,))},
-        output_features={"action": PolicyFeature(FeatureType.ACTION, (3,))},
     )
     policy = make_policy(5, 3, cfg, device="cpu")
     batch = {
@@ -70,8 +67,6 @@ def test_one_policy_update_runs():
         num_learning_epochs=1,
         chunks_per_update=2,
         chunks_per_minibatch=1,
-        input_features={"observation.state": PolicyFeature(FeatureType.STATE, (5,))},
-        output_features={"action": PolicyFeature(FeatureType.ACTION, (3,))},
     )
     policy = make_policy(5, 3, cfg, device="cpu")
     n = 2

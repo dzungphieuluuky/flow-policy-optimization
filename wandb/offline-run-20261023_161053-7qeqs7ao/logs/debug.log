@@ -1,0 +1,23 @@
+2026-10-23 16:10:53,172 INFO    MainThread:39483 [wandb_setup.py:_flush():81] Current SDK version is 0.30.0
+2026-10-23 16:10:53,172 INFO    MainThread:39483 [wandb_setup.py:_flush():81] Configure stats pid to 39483
+2026-10-23 16:10:53,172 INFO    MainThread:39483 [wandb_setup.py:_flush():81] Loading settings from environment variables
+2026-10-23 16:10:53,173 INFO    MainThread:39483 [wandb_init.py:setup_run_log_directory():739] Logging user logs to /run/media/dung-pham/DATA/Personal/myfpo/wandb/offline-run-20261023_161053-7qeqs7ao/logs/debug.log
+2026-10-23 16:10:53,173 INFO    MainThread:39483 [wandb_init.py:setup_run_log_directory():740] Logging internal logs to /run/media/dung-pham/DATA/Personal/myfpo/wandb/offline-run-20261023_161053-7qeqs7ao/logs/debug-internal.log
+2026-10-23 16:10:53,173 INFO    MainThread:39483 [wandb_init.py:init():783] calling init triggers
+2026-10-23 16:10:53,173 INFO    MainThread:39483 [wandb_init.py:init():788] wandb.init called with sweep_config: {}
+config: {'n_obs_steps': 16, 'input_features': {}, 'output_features': {}, 'device': 'cpu', 'use_amp': False, 'use_peft': False, 'push_to_hub': True, 'repo_id': None, 'private': None, 'tags': None, 'license': None, 'pretrained_path': None, 'pretrained_revision': None, 'report_to': 'all', 'action_horizon': 8, 'n_action_steps': 8, 'action_perturb_std': 0.0, 'hidden_dim': 128, 'num_envs': 64, 'num_mc_samples': 16, 'num_learning_epochs': 10, 'chunks_per_update': 1024, 'batch_size': 128, 'grad_accum_steps': 1, 'num_steps_zero_start': 4, 'num_steps_noise_start': 4, 'min_sampled_timestep': 0.1, 'max_sampled_timestep': 0.9, 'timestep_sampling_mode': 'uniform', 'noise_sampling_mode': 'normal', 'timestep_inverse_cdf_beta': 2.0, 'gamma': 0.99, 'gae_lambda': 0.95, 'do_average_cfm_loss_in_chunk': False, 'cfm_average_group_size': 1, 'clip_param': 0.01, 'spo_clip_param': 0.01, 'trust_region_mode': 'aspo', 'cfm_loss_reduction': 'mean', 'cfm_loss_target': 'velocity', 'cfm_loss_weight_from_t': 'constant', 'cfm_clamp': 20.0, 'cfm_loss_clamp_negative_advantages': True, 'cfm_loss_clamp_negative_advantages_max': 20.0, 'log_ratio_cap': 10.0, 'num_critics': 2, 'critic_condition_on_exec_length': True, 'critic_share_encoder': False, 'critic_hidden_dim': 512, 'critic_num_layers': 2, 'critic_dropout': 0.01, 'normalize_advantage': True, 'advantage_clamp_neg': 100.0, 'advantage_clamp_pos': 100.0, 'value_loss_coef': 1.0, 'cfm_loss_use_huber': True, 'cfm_loss_huber_delta': 0.5, 'transported_clip_value': None, 'compile': False, 'actor_arch': 'dit', 'dit_depth': 4, 'dit_heads': 2, 'dit_mlp_ratio': 2.0, 'resmlp_blocks': 2, 'resmlp_units': 4, 'resmlp_hidden_mult': 2.0, 'time_embed_dim': 32, 'policy_lr': 0.0003, 'critic_lr': 0.0003, 'optimizer_weight_decay': 0.0001, 'adam_betas': (0.9, 0.99), 'max_grad_norm': 1.0, 'ema_decay': 0.95, 'ema_warmup_steps': 500, 'eval_max_episodes': 50, 'eval_sampling': 'noise_start', 'stop_eval_sampling': 'noise_start', 'log_drift_diagnostics': True, 'temporal_probe_every': 0, 'method': 'myfpo', 'seed': 3407, 'env': 'Hopper-v5', '_wandb': {}}
+2026-10-23 16:10:53,173 INFO    MainThread:39483 [wandb_init.py:init():831] starting backend
+2026-10-23 16:10:53,376 INFO    MainThread:39483 [wandb_init.py:init():846] sending inform_init request
+2026-10-23 16:10:53,397 INFO    MainThread:39483 [wandb_init.py:init():851] backend started and connected
+2026-10-23 16:10:53,398 INFO    MainThread:39483 [wandb_init.py:init():921] updated telemetry
+2026-10-23 16:10:53,410 INFO    MainThread:39483 [wandb_init.py:init():944] communicating run to backend with 90.0 second timeout
+2026-10-23 16:10:53,415 INFO    MainThread:39483 [wandb_init.py:init():981] starting run threads in backend
+2026-10-23 16:10:53,466 INFO    MainThread:39483 [wandb_run.py:_console_start():2531] atexit reg
+2026-10-23 16:10:53,466 INFO    MainThread:39483 [wandb_run.py:_redirect():2381] redirect: wrap_raw
+2026-10-23 16:10:53,466 INFO    MainThread:39483 [wandb_run.py:_redirect():2450] Wrapping output streams.
+2026-10-23 16:10:53,466 INFO    MainThread:39483 [wandb_run.py:_redirect():2473] Redirects installed.
+2026-10-23 16:10:53,468 INFO    MainThread:39483 [wandb_init.py:init():1019] run started, returning control to user process
+2026-10-23 16:11:09,841 INFO    MainThread:39483 [wandb_run.py:_finish():2303] finishing run myfpo/7qeqs7ao
+2026-10-23 16:11:09,841 INFO    MainThread:39483 [wandb_run.py:_atexit_cleanup():2498] got exitcode: 0
+2026-10-23 16:11:09,841 INFO    MainThread:39483 [wandb_run.py:_restore():2480] restore
+2026-10-23 16:11:09,841 INFO    MainThread:39483 [wandb_run.py:_restore():2486] restore done

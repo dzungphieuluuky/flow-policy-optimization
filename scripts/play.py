@@ -46,7 +46,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--checkpoint",
         required=True,
-        help="Checkpoint directory (contains config.json + model.safetensors + optimizer.pt + counters.json).",
+        help="Checkpoint directory (contains checkpoint.pt).",
     )
     parser.add_argument(
         "--episodes",

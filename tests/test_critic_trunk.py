@@ -19,8 +19,6 @@ import math
 
 import pytest
 import torch
-from lerobot.configs.policies import PolicyFeature
-from lerobot.configs.types import FeatureType
 from torch import nn
 
 from myfpo.configuration import MyfpoConfig
@@ -40,10 +38,8 @@ def _cfg(**kw) -> MyfpoConfig:
             n_obs_steps=STEPS,
             dit_depth=1,
             dit_heads=2,
-            input_features={
-                "observation.state": PolicyFeature(FeatureType.STATE, (OBS,))
-            },
-            output_features={"action": PolicyFeature(FeatureType.ACTION, (ACT,))},
+            obs_dim=OBS,
+            action_dim=ACT,
         ),
         **kw,
     )

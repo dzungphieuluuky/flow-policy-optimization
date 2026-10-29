@@ -11,13 +11,8 @@ whole action-space change.
 
 from __future__ import annotations
 
-import dataclasses
-
 import numpy as np
 import torch
-from lerobot.configs.policies import PolicyFeature
-from lerobot.configs.types import FeatureType
-from lerobot.utils.constants import OBS_STATE
 
 from myfpo.configuration import MyfpoConfig
 from myfpo.processor import squash_to_env_bounds
@@ -31,11 +26,7 @@ TOTAL_STEPS = 256
 
 
 def _policy():
-    cfg = dataclasses.replace(
-        MyfpoConfig(),
-        input_features={"observation.state": PolicyFeature(FeatureType.STATE, (OBS,))},
-        output_features={"action": PolicyFeature(FeatureType.ACTION, (ACT,))},
-    )
+    cfg = MyfpoConfig()
     return make_policy(
         OBS, ACT, cfg, device="cpu", action_low=LOW, action_high=HIGH
     )
@@ -50,7 +41,7 @@ def _fake_predict(horizon: int, value: float = 3.0):
     """A policy that always plans the same raw chunk, whatever the batch size."""
 
     def fake(batch, **kwargs):
-        n = batch[OBS_STATE].shape[0]
+        n = batch["observation.state"].shape[0]
         return torch.full((n, horizon, ACT), value, dtype=torch.float32)
 
     return fake
@@ -104,25 +95,23 @@ def test_the_squash_is_applied_exactly_once():
 def test_every_squash_site_computes_the_same_terms():
     """One formula, three call sites. They must agree bit for bit.
 
-    The collector, the training diagnostic and the postprocessor each turn a
+    The collector, the training diagnostic and the policy each turn a
     raw chunk into the action the env receives. If one of them spells the
     affine terms differently, the action the env saw and the action the
     diagnostics report drift apart.
     """
     from myfpo.rollout import resolve_action_bounds
-    from myfpo.processor import ActionPostprocessorStep
     from myfpo.training import executed_chunk
 
     low, high = resolve_action_bounds(LOW, HIGH)
     raw = torch.randn(3, 4, ACT)
 
-    post = ActionPostprocessorStep(torch.tensor(LOW), torch.tensor(HIGH))
-    from_post = post({"action": raw})["action"]
+    from_post = squash_to_env_bounds(raw, low, high)
 
     from_diag = executed_chunk({"action": raw}, LOW, HIGH)
 
     assert torch.equal(from_post, from_diag), (
-        "the postprocessor and the training diagnostic disagree on the "
+        "the policy and the training diagnostic disagree on the "
         f"env-facing action: {from_post[0, 0]} vs {from_diag[0, 0]}"
     )
     assert torch.equal(from_diag, squash_to_env_bounds(raw, low, high))

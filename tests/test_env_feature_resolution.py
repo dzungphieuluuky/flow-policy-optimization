@@ -24,14 +24,14 @@ def _gym_env(env_id):
     return gym.make(env_id)
 
 
-def test_a_bare_config_constructs_without_features():
+def test_a_bare_config_constructs_without_dims():
     """The regression: this used to raise, breaking every CLI parse."""
     cfg = MyfpoConfig()
-    assert cfg.input_features == {}
-    assert cfg.output_features == {}
-    # Feature requirement is still enforced, just later -- see the two tests below.
-    with pytest.raises(ValueError, match=r"observation\.state"):
-        cfg.validate_features()
+    assert cfg.obs_dim is None
+    assert cfg.action_dim is None
+    # The dim requirement is still enforced, just later -- see below.
+    with pytest.raises(ValueError, match=r"obs_dim"):
+        cfg.validate_dims()
 
 
 def test_the_env_name_is_not_a_config_field():
@@ -63,17 +63,17 @@ def test_registry_dims_match_the_live_env_space(env_id):
 
 
 @pytest.mark.parametrize("env_id", SMOKE_ENVS)
-def test_make_policy_attaches_features_from_dims_alone(env_id):
+def test_make_policy_attaches_dims_from_the_registry(env_id):
     """The runner's only inputs: an env name and its resolved dims."""
     from myfpo.training import make_policy
 
     obs_dim, action_dim = get_observation_action_dim(env_id)
     cfg = MyfpoConfig()
     policy = make_policy(obs_dim=obs_dim, action_dim=action_dim, cfg=cfg, device="cpu")
-    assert tuple(policy.config.robot_state_feature.shape) == (obs_dim,)
-    assert tuple(policy.config.action_feature.shape) == (action_dim,)
+    assert policy.config.obs_dim == obs_dim
+    assert policy.config.action_dim == action_dim
     # dataclasses.replace inside make_policy: the caller's config is untouched.
-    assert cfg.input_features == {}
+    assert cfg.obs_dim is None
 
 
 def test_no_discrete_action_envs_are_registered():

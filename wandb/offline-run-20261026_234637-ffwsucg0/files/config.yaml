@@ -1,0 +1,218 @@
+_wandb:
+    value:
+        cli_version: 0.30.0
+        e:
+            tfwtvhxwauysvl37mlmxedr2upg3akd9:
+                args:
+                    - --env
+                    - Hopper-v5
+                    - --seed
+                    - "0"
+                    - --total_steps
+                    - "200"
+                codePath: scripts/train.py
+                codePathLocal: scripts/train.py
+                cpu_count: 8
+                cpu_count_logical: 16
+                disk:
+                    /:
+                        total: "42938253312"
+                        used: "37652615168"
+                executable: /run/media/dung-pham/DATA/Personal/myfpo/.venv/bin/python
+                git:
+                    commit: 5079c8fba3c7bf92d99dcd0180c631bec7981aef
+                    remote: git@github.com:dzungphieuluuky/myfpo.git
+                host: dung-pham
+                memory:
+                    total: "31731822592"
+                os: Linux-7.0.0-38-generic-x86_64-with-glibc2.43
+                program: /run/media/dung-pham/DATA/Personal/myfpo/scripts/train.py
+                python: CPython 3.12.14
+                root: /run/media/dung-pham/DATA/Personal/myfpo
+                startedAt: "2026-10-26T16:46:37.861312Z"
+                writerId: dctfft55n87nso5hwcqcx73l4vjdtw50
+        m: []
+        python_version: 3.12.14
+        t:
+            "1":
+                - 1
+                - 41
+                - 49
+            "2":
+                - 1
+                - 41
+                - 49
+            "3":
+                - 2
+                - 4
+                - 13
+                - 15
+                - 16
+                - 76
+                - 61
+            "4": 3.12.14
+            "5": 0.30.0
+            "12": 0.30.0
+            "13": linux-x86_64
+action_horizon:
+    value: 8
+action_perturb_std:
+    value: 0
+actor_arch:
+    value: dit
+adam_betas:
+    value:
+        - 0.9
+        - 0.99
+advantage_clamp_neg:
+    value: 100
+advantage_clamp_pos:
+    value: 100
+batch_size:
+    value: 128
+cfm_average_group_size:
+    value: 1
+cfm_clamp:
+    value: 20
+cfm_loss_clamp_negative_advantages:
+    value: true
+cfm_loss_clamp_negative_advantages_max:
+    value: 20
+cfm_loss_huber_delta:
+    value: 0.5
+cfm_loss_reduction:
+    value: mean
+cfm_loss_target:
+    value: velocity
+cfm_loss_use_huber:
+    value: true
+cfm_loss_weight_from_t:
+    value: constant
+chunks_per_update:
+    value: 1024
+clip_param:
+    value: 0.01
+compile:
+    value: false
+critic_condition_on_exec_length:
+    value: true
+critic_dropout:
+    value: 0.01
+critic_hidden_dim:
+    value: 512
+critic_lr:
+    value: 0.0003
+critic_num_layers:
+    value: 2
+device:
+    value: cpu
+dit_depth:
+    value: 4
+dit_heads:
+    value: 2
+dit_mlp_ratio:
+    value: 2
+do_average_cfm_loss_in_chunk:
+    value: false
+ema_decay:
+    value: 0.95
+ema_warmup_steps:
+    value: 500
+env:
+    value: Hopper-v5
+eval_max_episodes:
+    value: 50
+eval_sampling:
+    value: noise_start
+gae_lambda:
+    value: 0.95
+gamma:
+    value: 0.99
+grad_accum_steps:
+    value: 1
+hidden_dim:
+    value: 128
+license:
+    value: null
+log_drift_diagnostics:
+    value: true
+log_ratio_cap:
+    value: 10
+max_grad_norm:
+    value: 1
+max_sampled_timestep:
+    value: 0.9
+method:
+    value: myfpo
+min_sampled_timestep:
+    value: 0.1
+n_action_steps:
+    value: 8
+n_obs_steps:
+    value: 16
+noise_sampling_mode:
+    value: normal
+normalize_advantage:
+    value: true
+num_critics:
+    value: 2
+num_envs:
+    value: 64
+num_learning_epochs:
+    value: 10
+num_mc_samples:
+    value: 16
+num_steps_noise_start:
+    value: 4
+num_steps_zero_start:
+    value: 4
+optimizer_weight_decay:
+    value: 0.0001
+policy_lr:
+    value: 0.0003
+pretrained_path:
+    value: null
+pretrained_revision:
+    value: null
+private:
+    value: null
+push_to_hub:
+    value: true
+ratio_mode:
+    value: cfm
+repo_id:
+    value: null
+report_to:
+    value: all
+resmlp_blocks:
+    value: 2
+resmlp_hidden_mult:
+    value: 2
+resmlp_units:
+    value: 4
+seed:
+    value: 0
+spo_clip_param:
+    value: 0.01
+stop_eval_sampling:
+    value: noise_start
+tags:
+    value: null
+temporal_probe_every:
+    value: 0
+time_embed_dim:
+    value: 32
+timestep_inverse_cdf_beta:
+    value: 2
+timestep_sampling_mode:
+    value: uniform
+transported_clip_value:
+    value: null
+trust_region_mode:
+    value: aspo
+use_amp:
+    value: false
+use_peft:
+    value: false
+value_loss_coef:
+    value: 1

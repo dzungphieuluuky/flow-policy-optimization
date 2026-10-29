@@ -1,6 +1,6 @@
 """Owns: online loop, checkpointing, metrics, log backends. NOT: policy
 architecture. Key: run_training_loop, configure_run.
-myfpo online training entry (LeRobot-native, MuJoCo-only).
+myfpo online training entry (PyTorch, MuJoCo-only).
 """
 
 from __future__ import annotations
@@ -20,10 +20,12 @@ from typing import Any
 
 import numpy as np
 import torch
-from lerobot.configs.types import FeatureType, PolicyFeature
-from lerobot.utils.random_utils import set_seed
 
-from myfpo.checkpointing import load_policy_checkpoint, save_policy_checkpoint
+from myfpo.checkpointing import (
+    CHECKPOINT_FILE,
+    load_policy_checkpoint,
+    save_policy_checkpoint,
+)
 from myfpo.rollout import resolve_action_bounds
 from myfpo.configuration import MyfpoConfig
 from myfpo.evaluator import (
@@ -35,9 +37,16 @@ from myfpo.evaluator import (
 from myfpo.modeling import TrainingAborted, MyfpoPolicy, make_optimizer
 from myfpo.fpo_core import compute_eval_summary_metrics, subsampled_min
 from myfpo.processor import squash_to_env_bounds
-from lerobot.utils.constants import CHECKPOINTS_DIR, OBS_STATE
-from myfpo.layers import autocast_context, cudagraph_step_begin, resolve_device, rms
+from myfpo.layers import (
+    autocast_context,
+    cudagraph_step_begin,
+    resolve_device,
+    rms,
+    set_seed,
+)
 from tqdm.auto import tqdm
+
+CHECKPOINTS_DIR = "checkpoints"
 
 
 class EvalPolicy:
@@ -76,7 +85,7 @@ class EvalPolicy:
         self.policy.eval()
         try:
             return self.policy.predict_action_chunk(
-                {OBS_STATE: window}, start_from_zero=self.start
+                {"observation.state": window}, start_from_zero=self.start
             )
         finally:
             self.policy.train(was)
@@ -128,14 +137,10 @@ def make_policy(
     action_low: np.ndarray | None = None,
     action_high: np.ndarray | None = None,
 ) -> MyfpoPolicy:
-    """Attach runtime features, then build the policy."""
+    """Attach the runtime dims, then build the policy."""
     device = torch.device(device) if device is not None else resolve_device()
     policy_cfg = dataclasses.replace(
-        cfg,
-        input_features={
-            "observation.state": PolicyFeature(FeatureType.STATE, (obs_dim,))
-        },
-        output_features={"action": PolicyFeature(FeatureType.ACTION, (action_dim,))},
+        cfg, obs_dim=obs_dim, action_dim=action_dim
     )
     policy = MyfpoPolicy(policy_cfg).to(device)
     if action_low is not None and action_high is not None:
@@ -404,6 +409,8 @@ def policy_update_step(policy, optimizer, batch, backends, cfg, grad_groups):
             else:
                 loss = policy(minibatch, check_finite=False)
                 epoch_info = None
+            if epoch_info is not None:
+                epoch_infos.append(epoch_info)
             if loss.dim() != 0:
                 raise ValueError(f"Loss must be scalar before backward; got {tuple(loss.shape)}.")
             if not bool(torch.isfinite(loss).all()):
@@ -494,7 +501,7 @@ def save_checkpoint(out_dir, policy, optimizer, global_step, name, use_ema=False
     finally:
         if displaced:
             policy.swap_out_ema(displaced)
-    return str(ckpt_dir / "model.safetensors"), ckpt_dir
+    return str(ckpt_dir / CHECKPOINT_FILE), ckpt_dir
 
 
 @dataclasses.dataclass
