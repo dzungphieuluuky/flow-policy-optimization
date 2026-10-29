@@ -28,13 +28,14 @@ from myfpo.rollout import resolve_action_bounds
 from myfpo.configuration import MyfpoConfig
 from myfpo.evaluator import (
     Evaluator,
+    VectorEvaluator,
     compute_mean_chunk_jerk,
     compute_seam_jerk,
 )
 from myfpo.modeling import MyfpoAborted, MyfpoPolicy, build_optimizer
 from myfpo.fpo_core import compute_eval_summary_metrics, subsampled_min
 from myfpo.processor import squash_to_env_bounds
-from lerobot.utils.constants import CHECKPOINTS_DIR
+from lerobot.utils.constants import CHECKPOINTS_DIR, OBS_STATE
 from myfpo.layers import autocast_context, cudagraph_step_begin, resolve_device, rms
 from tqdm.auto import tqdm
 
@@ -59,6 +60,23 @@ class EvalPolicy:
         finally:
             self.policy.train(was)
         return np.atleast_1d(r.detach().cpu().numpy())
+
+    def plan(self, window):
+        """A batched raw chunk for the GPU evaluator: ``window`` is ``[E, T, obs]``.
+
+        ``select_action`` is single-env by construction (one action buffer, one
+        frame buffer), so the vectorised path plans a whole chunk per env
+        instead of one action at a time. The evaluator executes it open-loop,
+        which is what the collector does during training.
+        """
+        was = self.policy.training
+        self.policy.eval()
+        try:
+            return self.policy.predict_action_chunk(
+                {OBS_STATE: window}, start_from_zero=self.start
+            )
+        finally:
+            self.policy.train(was)
 
 ABOVE_CLAMP_ABORT_UPDATES = 5
 
@@ -248,18 +266,13 @@ def measure_value_drift(policy, batch, device) -> tuple[torch.Tensor, torch.Tens
 def sample_random_baseline(
     evaluator: Evaluator, env: Any, max_episodes: int = 30, seed: int | None = None
 ) -> float:
-    """Random-policy return, the divergence reference."""
-    if seed is not None:
-        env.action_space.seed(int(seed))
-    baseline_evaluator = Evaluator(
-        env,
-        eval_seed=evaluator.eval_seed,
-        max_episodes=max_episodes,
-        max_steps=evaluator.max_steps,
-    )
-    results = baseline_evaluator.evaluate(
-        lambda _obs: env.action_space.sample(), out_dir=None
-    )
+    """Random-policy return, the divergence reference.
+
+    The evaluator builds the baseline, so the same code covers the single-env
+    numpy path and the batched GPU path.
+    """
+    baseline = evaluator.cloned(max_episodes=max_episodes)
+    results = baseline.evaluate(baseline.random_policy(env, seed), out_dir=None)
     if not results:
         return 0.0
     return float(np.mean([r["return"] for r in results]))
@@ -772,10 +785,17 @@ class RunSetup:
     backends: list
     env_name: str
     global_step: int
+    eval_env: Any = None
 
 
 def make_train_env(cfg, env, env_name, runtime: dict | None):
     """The env the policy collects from. A vector env when the config asks."""
+    if callable(getattr(env, "step_torch", None)):
+        # A torch env already batches its own envs on the device. Forking
+        # workers for it would start one SAPIEN context per worker.
+        if runtime is not None:
+            runtime["vector_env"] = "maniskill_gpu"
+        return env
     if cfg.num_envs > 1 and env_name != "unknown":
         return make_vec_env(env_name, cfg.num_envs, record=runtime)
     if runtime is not None:
@@ -841,14 +861,26 @@ def configure_run(
     print(policy, file=sys.stderr)
 
     eval_seed = 10000 + seed
-    evaluator = Evaluator(
-        env, eval_seed=eval_seed, max_episodes=cfg.eval_max_episodes
-    )
+    eval_env = None
+    if callable(getattr(train_env, "make_eval_env", None)):
+        eval_env = train_env.make_eval_env()
+        evaluator = VectorEvaluator(
+            eval_env,
+            n_obs_steps=cfg.n_obs_steps,
+            n_action_steps=cfg.n_action_steps,
+            action_horizon=cfg.action_horizon,
+            eval_seed=eval_seed,
+            max_episodes=cfg.eval_max_episodes,
+        )
+    else:
+        evaluator = Evaluator(
+            env, eval_seed=eval_seed, max_episodes=cfg.eval_max_episodes
+        )
     eval_policies = {
         "zero_start": EvalPolicy(policy, start_from_zero=True),
         "noise_start": EvalPolicy(policy, start_from_zero=False),
     }
-    r_rand = sample_random_baseline(evaluator, env, seed=seed)
+    r_rand = sample_random_baseline(evaluator, train_env, seed=seed)
     backends = build_backends(
         cfg,
         out_dir=out_dir,
@@ -870,6 +902,7 @@ def configure_run(
         backends=backends,
         env_name=env_name,
         global_step=global_step,
+        eval_env=eval_env,
     )
 
 
@@ -1060,6 +1093,8 @@ def run_training(
     finally:
         if train_env is not env:
             train_env.close()
+        if setup.eval_env is not None and setup.eval_env is not train_env:
+            setup.eval_env.close()
         finish_backends(backends)
 
     return finalize_run(out_dir, policy, optimizer, state, env_name, seed, fps)

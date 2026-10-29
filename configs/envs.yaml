@@ -31,3 +31,9 @@ Humanoid-v5: {obs_dim: 348, action_dim: 17, tier: hard}
 AdroitHandDoor-v1: {obs_dim: 39, action_dim: 28, tier: dexterous, requires: gymnasium-robotics}
 AdroitHandPen-v1: {obs_dim: 45, action_dim: 24, tier: dexterous, requires: gymnasium-robotics}
 AdroitHandHammer-v1: {obs_dim: 46, action_dim: 26, tier: dexterous, requires: gymnasium-robotics}
+# ManiSkill 3. The MS- prefix marks the GPU-parallel path built by
+# src/myfpo/maniskill_gpu.py; scripts/play.py registers the same ids against a
+# single-env CPU sim. Measured on 2026-10-29 with mani_skill 3.0.1 + sapien
+# 3.0.3, obs_mode="state", control_mode="pd_joint_delta_pos": the obs is the
+# flat state (qpos/qvel + task extras), so the dim moves if either changes.
+MS-PickCube-v1: {obs_dim: 42, action_dim: 8, tier: manipulation, requires: mani_skill}

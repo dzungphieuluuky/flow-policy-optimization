@@ -206,7 +206,15 @@ def run_single(
                 f"{env_id} needs gymnasium-robotics (pip install gymnasium-robotics)"
             ) from exc
 
-    env = gym.make(env_id)
+    if env_id.startswith("MS-"):
+        # ManiSkill's GPU env batches its own sims on one device, so it is built
+        # here rather than through gym.make/make_vec_env. The spaces it exposes
+        # are the single-env ones, which is what the checks below size from.
+        from myfpo.maniskill_gpu import build_train_env
+
+        env = build_train_env(env_id, num_envs=cfg.num_envs)
+    else:
+        env = gym.make(env_id)
     try:
         # The registry fills the dims that the config leaves unset. The live
         # space is the ground truth on a mismatch.
@@ -264,7 +272,7 @@ def main(argv: list[str] | None = None) -> int:
     total = args.total_steps or 2000
 
     eval_s = default_intervals(total, args.eval_steps, 1000)
-    ckpt_i = default_intervals(total, args.save_steps, 1000)
+    ckpt_i = default_intervals(total, args.save_steps, 1000000)
     cfg = args.myfpo
 
     if args.resume and args.method != "myfpo":

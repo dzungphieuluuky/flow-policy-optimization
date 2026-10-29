@@ -81,6 +81,11 @@ def main(argv: list[str] | None = None) -> int:
 
     import gymnasium as gym
 
+    if args.env.startswith("MS-"):
+        from myfpo.maniskill_gpu import register_gym_envs
+
+        register_gym_envs()  # the single-env CPU path, for this CLI only
+
     # The evaluator steps the env itself. No render_mode is needed.
     env = gym.make(args.env)
     try:

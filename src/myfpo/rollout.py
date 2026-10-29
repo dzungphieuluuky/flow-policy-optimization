@@ -6,7 +6,6 @@ from __future__ import annotations
 import torch
 import contextlib
 import dataclasses
-from typing import NamedTuple
 from collections.abc import Callable
 import numpy as np
 from myfpo.processor import squash_to_env_bounds
@@ -159,16 +158,11 @@ REWARD_DTYPE = torch.float32
 INDEX_DTYPE = torch.int64
 
 
-class InFlightChunk(NamedTuple):
-    """What one env is executing right now, while it holds a chunk.
-
-    ``actions_raw`` is the chunk the flow produced, in the policy's own action
-    space. The env received its squash.
-    """
-
-    actions_raw: torch.Tensor
-    start_state: torch.Tensor
-    step_limit: int
+# What one env is executing right now used to live in a per-env named tuple
+# (`actions_raw`, `start_state`, `step_limit`). It is now four registers on
+# `CollectState` -- `raw_plan`, `start_window`, `step_limits`, `active` -- so a
+# closing step can gather every finished chunk with one index, instead of
+# touching one Python object per env per step.
 
 
 class RolloutBuffer:
@@ -304,6 +298,72 @@ class RolloutBuffer:
         self.n_steps += n_exec
         return chunk_index
 
+    def write_chunks(
+        self,
+        *,
+        start_window: torch.Tensor,
+        next_window: torch.Tensor,
+        actions: torch.Tensor,
+        lengths: torch.Tensor,
+        frames: torch.Tensor,
+        rewards: torch.Tensor,
+        terminated: torch.Tensor,
+        truncated: torch.Tensor,
+        env_ids: torch.Tensor,
+        n_steps: int,
+    ) -> None:
+        """Append ``k`` executed chunks with one write each, not one per chunk.
+
+        ``add_chunk`` costs ~11 device launches per chunk, which at 1024 envs is
+        the collector's ceiling. Every row here is gathered by the caller, so
+        the whole batch is ~11 launches per *step*.
+
+        The packing rule matches ``add_chunk`` exactly: chunk ``j`` starts at
+        the running offset, and its first ``lengths[j]`` frames are copied
+        verbatim. ``n_steps`` is the host-side sum of ``lengths``, passed in
+        rather than computed, so the guard does not sync the device.
+        """
+        k = int(lengths.numel())
+        if k == 0:
+            return
+        if self.n_chunks + k > self.max_chunks:
+            raise RuntimeError("RolloutBuffer chunk capacity exceeded")
+        if n_steps < 1 or self.n_steps + n_steps > self.max_steps:
+            raise RuntimeError("RolloutBuffer step capacity exceeded")
+        if start_window.shape != (k, self.obs_steps, self.obs_dim):
+            raise ValueError(f"start_window shape {tuple(start_window.shape)} does not fit buffer")
+        if next_window.shape != (k, self.obs_steps, self.obs_dim):
+            raise ValueError(f"next_window shape {tuple(next_window.shape)} does not fit buffer")
+        if actions.shape != (k, self.action_horizon, self.action_dim):
+            raise ValueError(f"actions shape {tuple(actions.shape)} does not fit buffer")
+        if frames.shape != (k, self.action_horizon, self.obs_dim):
+            raise ValueError(f"frames shape {tuple(frames.shape)} does not fit buffer")
+
+        lo = self.n_chunks
+        hi = lo + k
+        # Chunk blocks are contiguous and in row order, so the step rows they
+        # land on are simply the next n_steps rows.
+        offsets = self.n_steps + torch.cumsum(lengths, 0) - lengths
+        mask = (
+            torch.arange(self.action_horizon, device=frames.device)[None, :]
+            < lengths[:, None]
+        ).reshape(-1)
+        step_lo = self.n_steps
+        step_hi = self.n_steps + n_steps
+
+        self.chunk_state[lo:hi] = start_window
+        self.chunk_next_state[lo:hi] = next_window
+        self.chunk_actions[lo:hi] = actions
+        self.chunk_starts[lo:hi] = offsets
+        self.chunk_lengths[lo:hi] = lengths
+        self.chunk_terminated[lo:hi] = terminated
+        self.chunk_truncated[lo:hi] = truncated
+        self.chunk_env_id[lo:hi] = env_ids
+        self.step_frames[step_lo:step_hi] = frames.reshape(-1, self.obs_dim)[mask]
+        self.step_rewards[step_lo:step_hi] = rewards.reshape(-1)[mask]
+        self.n_chunks = hi
+        self.n_steps = step_hi
+
     def copy_to(self, other: "RolloutBuffer", *, non_blocking: bool = False) -> None:
         """Copy the active prefix into a compatible buffer, e.g. onto a GPU."""
         names = (
@@ -400,17 +460,30 @@ def validate_autoreset_mode(envs) -> None:
 
 @dataclasses.dataclass
 class CollectState:
-    """The per-env state of the collection loop."""
+    """The per-env state of the collection loop.
+
+    The chunk an env is executing is held in registers indexed by env row
+    (``raw_plan``, ``start_window``, ``step_limits``), not in one Python object
+    per env. That is what lets a closing step gather every finished chunk at
+    once.
+
+    The control-flow bookkeeping (``pos_t``, ``active``, ``awaiting``,
+    ``executed_total``, ``roll_table``) is host memory: it decides what the
+    Python loop does next, and reading it must not sync the device.
+    """
 
     windows: torch.Tensor
     reward_windows: torch.Tensor
     step_frames: torch.Tensor
-    in_flight: list[InFlightChunk | None]
+    active: np.ndarray
+    step_limits: np.ndarray
+    raw_plan: torch.Tensor
+    start_window: torch.Tensor
     pos_t: torch.Tensor
     plan: torch.Tensor
     actions_t: torch.Tensor
-    executed_total: list[int]
-    awaiting: list[bool]
+    executed_total: np.ndarray
+    awaiting: np.ndarray
     remaining: int
     env_rows: torch.Tensor
     idle_row: torch.Tensor
@@ -425,18 +498,26 @@ def make_state(
     act_dim: int,
     obs0: torch.Tensor,
     remaining: int,
+    device: torch.device | str = "cpu",
 ) -> CollectState:
-    """The state the collection loop starts with."""
+    """The state the collection loop starts with.
+
+    The observation, reward, plan and action storage live on ``device``: on a
+    GPU sim they never leave it. The index bookkeeping (``pos_t``, ``env_rows``,
+    ``roll_table``) stays on the host, because it drives Python control flow:
+    moving it would turn one sync per env per step into the common case.
+    """
+    device = torch.device(device)
     if obs0.dim() == 3:
         if tuple(obs0.shape) != (n, n_obs_steps, obs_dim):
             raise ValueError(
                 f"obs0 window shape {tuple(obs0.shape)} != "
                 f"{(n, n_obs_steps, obs_dim)}"
             )
-        windows = obs0.clone()
+        windows = obs0.to(device=device, dtype=OBS_DTYPE).clone()
     elif obs0.dim() == 2:
-        windows = torch.zeros(n, n_obs_steps, obs_dim, dtype=OBS_DTYPE)
-        windows.copy_(obs0[:, None, :].expand_as(windows))
+        windows = torch.zeros(n, n_obs_steps, obs_dim, dtype=OBS_DTYPE, device=device)
+        windows.copy_(obs0.to(device=device, dtype=OBS_DTYPE)[:, None, :].expand_as(windows))
     else:
         raise ValueError(
             "obs0 must have shape [n, obs_dim] or [n, n_obs_steps, obs_dim], "
@@ -445,14 +526,23 @@ def make_state(
     env_rows = torch.arange(n)
     return CollectState(
         windows=windows,
-        reward_windows=torch.zeros(n, action_horizon, dtype=REWARD_DTYPE),
-        step_frames=torch.zeros(n, action_horizon, obs_dim, dtype=OBS_DTYPE),
-        in_flight=[None] * n,
+        reward_windows=torch.zeros(n, action_horizon, dtype=REWARD_DTYPE, device=device),
+        step_frames=torch.zeros(
+            n, action_horizon, obs_dim, dtype=OBS_DTYPE, device=device
+        ),
+        active=np.zeros(n, dtype=bool),
+        step_limits=np.zeros(n, dtype=np.int64),
+        raw_plan=torch.zeros(
+            n, action_horizon, act_dim, dtype=torch.float32, device=device
+        ),
+        start_window=torch.zeros(n, n_obs_steps, obs_dim, dtype=OBS_DTYPE, device=device),
         pos_t=torch.zeros(n, dtype=torch.long),
-        plan=torch.zeros(n + 1, action_horizon, act_dim, dtype=torch.float32),
-        actions_t=torch.zeros((n, act_dim), dtype=torch.float32),
-        executed_total=[0] * n,
-        awaiting=[False] * n,
+        plan=torch.zeros(
+            n + 1, action_horizon, act_dim, dtype=torch.float32, device=device
+        ),
+        actions_t=torch.zeros((n, act_dim), dtype=torch.float32, device=device),
+        executed_total=np.zeros(n, dtype=np.int64),
+        awaiting=np.zeros(n, dtype=bool),
         remaining=remaining,
         env_rows=env_rows,
         idle_row=torch.full_like(env_rows, n),
@@ -474,28 +564,40 @@ def plan_chunks(
     n_action_steps: int,
 ) -> None:
     """Give every idle env a new chunk, and hold it until it runs out."""
-    states = state.windows[envs_needing_a_chunk]
+    if not envs_needing_a_chunk:
+        return
+    wavefront = torch.as_tensor(envs_needing_a_chunk, dtype=torch.long)
+    states = state.windows[wavefront]
     # The policy returns the raw chunk. The env receives the squash
     # of it, and the buffer keeps the raw chunk: the flow is
     # trained on what it produced, not on the squash of it.
     raw_all = policy(states).detach().to(OBS_DTYPE)
     executed_all = squash_to_env_bounds(raw_all, low, high)
-    wavefront = torch.as_tensor(envs_needing_a_chunk)
     state.plan[wavefront] = executed_all
+    # The chunk is held in registers rather than in one object per env, so a
+    # closing step can gather all finished chunks with a single index.
+    state.raw_plan[wavefront] = raw_all
+    state.start_window[wavefront] = states
     state.pos_t[wavefront] = 0
-    for k, i in enumerate(envs_needing_a_chunk):
-        state.in_flight[i] = InFlightChunk(
-            actions_raw=raw_all[k],
-            start_state=states[k],
-            step_limit=min(n_action_steps, targets[i] - state.executed_total[i]),
-        )
+    rows = np.asarray(envs_needing_a_chunk, dtype=np.int64)
+    targets_np = (
+        targets.detach().cpu().numpy() if torch.is_tensor(targets)
+        else np.asarray(targets, dtype=np.int64)
+    )
+    state.step_limits[rows] = np.minimum(
+        n_action_steps, targets_np[rows] - state.executed_total[rows]
+    )
+    state.active[rows] = True
+
+
+def is_torch_env(envs) -> bool:
+    """True when the env hands back its own tensors instead of numpy arrays."""
+    return callable(getattr(envs, "step_torch", None))
 
 
 def step_envs(state: CollectState, envs, action_horizon: int):
     """Send the next action of every env, and record what came back."""
-    stepping = torch.tensor(
-        [held is not None for held in state.in_flight], dtype=torch.bool
-    )
+    stepping = torch.from_numpy(state.active)
     live_idx = state.env_rows[stepping]
     state.actions_t.copy_(
         state.plan[
@@ -503,16 +605,29 @@ def step_envs(state: CollectState, envs, action_horizon: int):
             state.pos_t.clamp(max=action_horizon - 1),
         ]
     )
-    obs, rew, term, trunc, _ = envs.step(state.actions_t.cpu().numpy())
-    term_np = np.asarray(term, dtype=bool)
-    trunc_np = np.asarray(trunc, dtype=bool)
+    if is_torch_env(envs):
+        # A GPU env keeps its frames on the device. Only the three done flags
+        # cross to the host, and only because they drive the chunk-close loop.
+        obs_t, rew_t, term_t, trunc_t, _ = envs.step_torch(state.actions_t)
+        obs_t = obs_t.to(device=state.windows.device, dtype=OBS_DTYPE)
+        term_np = term_t.cpu().numpy()
+        trunc_np = trunc_t.cpu().numpy()
+        rew_t = rew_t.to(device=state.windows.device, dtype=REWARD_DTYPE)
+    else:
+        obs, rew, term, trunc, _ = envs.step(state.actions_t.cpu().numpy())
+        term_np = np.asarray(term, dtype=bool)
+        trunc_np = np.asarray(trunc, dtype=bool)
+        obs_t = torch.from_numpy(np.asarray(obs, dtype=np.float32)).to(
+            device=state.windows.device
+        )
+        rew_t = torch.from_numpy(np.asarray(rew, dtype=np.float32)).to(
+            device=state.windows.device
+        )
     done_np = term_np | trunc_np
-    rew_np = np.asarray(rew, dtype=np.float32)
-    obs_t = torch.from_numpy(np.asarray(obs, dtype=np.float32))
 
     if live_idx.numel():
         p = state.pos_t[live_idx]
-        state.reward_windows[live_idx, p] = torch.from_numpy(rew_np)[live_idx]
+        state.reward_windows[live_idx, p] = rew_t[live_idx]
         state.step_frames[live_idx, p] = obs_t[live_idx]
         state.windows[live_idx, p] = obs_t[live_idx]
         state.pos_t[live_idx] = p + 1
@@ -527,20 +642,31 @@ def close_chunks(
     done_np: np.ndarray,
     buffer: RolloutBuffer,
     n_obs_steps: int,
+    *,
+    batched: bool = False,
 ) -> None:
-    """Close every chunk that ran to its limit or hit a terminal."""
-    for i in range(len(state.in_flight)):
+    """Close every chunk that ran to its limit or hit a terminal.
+
+    ``batched`` picks the writer. A torch env keeps its rows on one device, so
+    the closes are gathered and written a launch per column; a numpy env keeps
+    the original per-chunk loop, untouched, because its numerics are pinned.
+    """
+    if batched:
+        close_chunks_batched(
+            state, obs_t, term_np, trunc_np, done_np, buffer, n_obs_steps
+        )
+        return
+    for i in range(len(state.active)):
         if state.awaiting[i]:
             state.windows[i].copy_(obs_t[i].expand_as(state.windows[i]))
             state.awaiting[i] = False
             continue
-        if state.in_flight[i] is None:
+        if not state.active[i]:
             continue
         n_exec = int(state.pos_t[i])
-        held = state.in_flight[i]
-        if done_np[i] or n_exec >= held.step_limit:
-            raw = held.actions_raw
-            start_state = held.start_state
+        if done_np[i] or n_exec >= state.step_limits[i]:
+            raw = state.raw_plan[i]
+            start_state = state.start_window[i]
             state.windows[i].copy_(
                 state.windows[i][state.roll_table[int(state.pos_t[i]) % n_obs_steps]]
             )
@@ -556,9 +682,71 @@ def close_chunks(
                 truncated=bool(trunc_np[i]),
                 env_id=i,
             )
-            state.in_flight[i] = None
+            state.active[i] = False
             if done_np[i]:
                 state.awaiting[i] = True
+
+
+def close_chunks_batched(
+    state: CollectState,
+    obs_t: torch.Tensor,
+    term_np: np.ndarray,
+    trunc_np: np.ndarray,
+    done_np: np.ndarray,
+    buffer: RolloutBuffer,
+    n_obs_steps: int,
+) -> None:
+    """``close_chunks`` for a device-resident env: one gather per column.
+
+    The classification stays on the host (it is the loop's control flow), but
+    every write is a single index operation over all closing rows at once.
+    """
+    device = state.windows.device
+
+    # An env that resets this step takes the reset frame for its whole window.
+    waiting = np.flatnonzero(state.awaiting)
+    if waiting.size:
+        w = torch.as_tensor(waiting, device=device)
+        state.windows[w] = obs_t[w].unsqueeze(1).expand(-1, n_obs_steps, -1)
+        state.awaiting[waiting] = False
+
+    pos = state.pos_t.numpy()
+    closing = np.flatnonzero(state.active & (done_np | (pos >= state.step_limits)))
+    if closing.size == 0:
+        return
+
+    rows = torch.as_tensor(closing, device=device)
+    lengths_np = pos[closing]
+    n_new = int(lengths_np.sum())
+    lengths = torch.as_tensor(lengths_np, device=device)
+    # The ring holds the last n_obs_steps frames; `next_state` wants them in
+    # chronological order, which is what the roll table permutes them into.
+    perm = state.roll_table[
+        torch.as_tensor(pos[closing] % n_obs_steps)
+    ].to(device)
+    next_window = torch.gather(
+        state.windows[rows], 1, perm[:, :, None].expand(-1, -1, state.windows.shape[-1])
+    )
+
+    buffer.write_chunks(
+        start_window=state.start_window[rows],
+        next_window=next_window,
+        actions=state.raw_plan[rows],
+        lengths=lengths,
+        frames=state.step_frames[rows],
+        rewards=state.reward_windows[rows],
+        terminated=torch.from_numpy(term_np).to(device)[rows],
+        truncated=torch.from_numpy(trunc_np).to(device)[rows],
+        env_ids=rows,
+        n_steps=n_new,
+    )
+
+    state.windows[rows] = next_window
+    state.executed_total[closing] += lengths_np
+    state.remaining -= n_new
+    state.active[closing] = False
+    state.awaiting[closing] |= done_np[closing]
+
 
 
 def init_collect_state(
@@ -567,17 +755,21 @@ def init_collect_state(
     try:
         if carry is None:
             obs, _ = envs.reset(seed=[seed + i for i in range(n)])
-            obs0 = torch.from_numpy(np.asarray(obs, dtype=np.float32))
+            if torch.is_tensor(obs):
+                obs0 = obs.to(dtype=OBS_DTYPE)
+            else:
+                obs0 = torch.from_numpy(np.asarray(obs, dtype=np.float32))
             state = make_state(
                 n, n_obs_steps, int(obs0.shape[-1]), action_horizon, act_dim,
-                obs0, remaining=sum(targets),
+                obs0, remaining=sum(targets), device=obs0.device,
             )
         else:
             state = make_state(
                 n, n_obs_steps, int(carry.windows.shape[-1]), action_horizon,
                 act_dim, carry.windows, remaining=sum(targets),
+                device=carry.windows.device,
             )
-            state.awaiting[:] = carry.awaiting
+            state.awaiting[:] = np.asarray(carry.awaiting, dtype=bool)
     except (ValueError, RuntimeError, KeyError):
         raise
     return state
@@ -587,15 +779,12 @@ def run_collect_loop(
     state, envs, policy, low, high, targets, n_action_steps, buffer,
     n_obs_steps, action_horizon,
 ):
+    # The writer is chosen once per rollout, not once per step.
+    batched = is_torch_env(envs)
+    targets_np = targets.numpy()
     while state.remaining:
-        envs_needing_a_chunk = [
-            i for i in range(len(state.windows))
-            if (
-                state.in_flight[i] is None
-                and not state.awaiting[i]
-                and state.executed_total[i] < targets[i]
-            )
-        ]
+        ready = (~state.active) & (~state.awaiting) & (state.executed_total < targets_np)
+        envs_needing_a_chunk = np.flatnonzero(ready).tolist()
         if envs_needing_a_chunk:
             plan_chunks(
                 state, envs_needing_a_chunk, policy, low, high,
@@ -606,7 +795,7 @@ def run_collect_loop(
         )
         close_chunks(
             state, obs_t, term_np, trunc_np, done_np,
-            buffer, n_obs_steps,
+            buffer, n_obs_steps, batched=batched,
         )
 
 def collect_chunks_vec(
@@ -825,6 +1014,15 @@ def collect_chunks(
     """Run the env, and return the views of the populated buffer."""
     cfg = policy.config
 
+    # A torch env keeps its frames on its own device, so the buffer is built
+    # there and the rollout never touches host memory. A numpy env collects on
+    # the host and pays one H2D after the rollout, overlapped with the update.
+    buffer_device = (
+        torch.device(getattr(env, "device", "cpu"))
+        if is_torch_env(env)
+        else torch.device("cpu")
+    )
+
     def propose_batch(states: torch.Tensor) -> torch.Tensor:
         # One chunk is one cudagraph step: the previous chunk's graphs are
         # dead here, so the manager may recycle their memory.
@@ -832,7 +1030,9 @@ def collect_chunks(
         chunk = policy.predict_action_chunk(
             {OBS_STATE: to_device_async(states, device)}, start_from_zero=not noisy
         )
-        return chunk.cpu()
+        # The buffer decides the destination: a GPU rollout keeps the chunk on
+        # the device instead of a D2H followed by an H2D.
+        return chunk.to(buffer_device)
 
     if buffers.h2d_event is not None:
         buffers.h2d_event.synchronize()
@@ -862,7 +1062,10 @@ def collect_chunks(
         return RolloutBuffer(**shape_args, **extra)
 
     if buffers.host is None or buffers.host.shape_key() != buffer_key:
-        buffers.host = make_buffer(pin_memory=device.type == "cuda")
+        buffers.host = make_buffer(
+            device=buffer_device,
+            pin_memory=buffer_device.type == "cpu" and device.type == "cuda",
+        )
     buffer = buffers.host
     buffer.reset()
 
@@ -875,7 +1078,7 @@ def collect_chunks(
         buffer=buffer,
         carry=buffer.carry,
     )
-    if num_envs == 1:
+    if num_envs == 1 and not is_torch_env(env):
         if buffers.env_wrapper is None:
             import gymnasium as gym
 
@@ -887,7 +1090,11 @@ def collect_chunks(
         envs = env
     collect_chunks_vec(envs, propose_batch, **collect_kwargs)
 
-    if device.type == "cuda":
+    if buffer.device.type == "cuda":
+        # Collected on the device already: the host copy would be a round trip.
+        buffers.device = buffer
+        active = buffer.active()
+    elif device.type == "cuda":
         if buffers.device is None or buffers.device.shape_key() != buffer.shape_key():
             buffers.device = make_buffer(device=device)
         buffer.copy_to(buffers.device, non_blocking=True)

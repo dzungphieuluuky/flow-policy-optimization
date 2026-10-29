@@ -1,5 +1,10 @@
 """myfpo evaluator. The module runs deterministic rollouts and writes a per-eval
 CSV, and computes the jerk diagnostics that expose chunk-boundary artifacts.
+
+Two evaluators, one result schema. :class:`Evaluator` steps a single numpy env
+(MuJoCo, and the ManiSkill CPU path). :class:`VectorEvaluator` steps a batched
+torch env and never leaves the device, which is what the ManiSkill GPU path
+uses.
 """
 
 from __future__ import annotations
@@ -10,6 +15,10 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import torch
+
+from myfpo.processor import squash_to_env_bounds
+from myfpo.rollout import resolve_action_bounds
 
 
 CSV_FIELDS = ["episode", "return", "length", "success", "jerk"]
@@ -127,6 +136,24 @@ def compute_mean_chunk_jerk(actions: np.ndarray, action_is_pad: np.ndarray) -> f
 
 
 
+def summarize_results(results: list[dict[str, Any]], seed: int = 0) -> dict[str, float]:
+    """The mean, the median, the interval, and the count for one eval.
+
+    Shared by both evaluators so a reported number means the same thing on the
+    CPU path and on the GPU path.
+    """
+    returns = [float(r["return"]) for r in results if r.get("return") is not None]
+    mean, low, high = bootstrap_interval(returns, seed=seed)
+    finite = sum(1 for r in returns if np.isfinite(r))
+    return {
+        "return_mean": mean,
+        "return_median": median_of(returns),
+        "return_ci_low": low,
+        "return_ci_high": high,
+        "return_n": float(finite),
+    }
+
+
 class Evaluator:
     """Deterministic evaluator for flat-obs (MuJoCo) envs."""
 
@@ -224,15 +251,172 @@ class Evaluator:
         self, results: list[dict[str, Any]], seed: int = 0
     ) -> dict[str, float]:
         """The mean, the median, the interval, and the count for one eval."""
-        returns = [
-            float(r["return"]) for r in results if r.get("return") is not None
-        ]
-        mean, low, high = bootstrap_interval(returns, seed=seed)
-        finite = sum(1 for r in returns if np.isfinite(r))
-        return {
-            "return_mean": mean,
-            "return_median": median_of(returns),
-            "return_ci_low": low,
-            "return_ci_high": high,
-            "return_n": float(finite),
-        }
+        return summarize_results(results, seed=seed)
+
+    def cloned(self, max_episodes: int) -> Evaluator:
+        """The same evaluator, with a different episode budget."""
+        return Evaluator(
+            self.env,
+            eval_seed=self.eval_seed,
+            max_episodes=max_episodes,
+            max_steps=self.max_steps,
+        )
+
+    def random_policy(self, env: Any, seed: int | None = None) -> Callable:
+        """A uniform-random baseline policy for this env."""
+        if seed is not None:
+            env.action_space.seed(int(seed))
+        return lambda _obs: env.action_space.sample()
+
+
+class VectorEvaluator:
+    """Deterministic batched evaluator for a torch vector env (ManiSkill GPU).
+
+    Every row runs in lockstep and only stops at the time limit
+    (``ignore_terminations=True`` on the env), so one rolling observation window
+    is valid for the whole batch: what a per-env window would hold is the same
+    frames for every row. Episodes start and end together, which is also what
+    makes the episode metrics comparable row to row.
+
+    ``max_steps`` caps the length of a single episode, not the whole eval: the
+    budget is spent in rounds of ``num_envs`` episodes.
+    """
+
+    def __init__(
+        self,
+        env: Any,
+        *,
+        n_obs_steps: int,
+        n_action_steps: int,
+        action_horizon: int,
+        eval_seed: int = 0,
+        max_episodes: int = 12,
+        max_steps: int | None = None,
+    ):
+        if env is None:
+            raise ValueError("VectorEvaluator requires a non-None env")
+        if n_obs_steps < 1:
+            raise ValueError(f"n_obs_steps={n_obs_steps} must be >= 1")
+        if not 1 <= n_action_steps <= action_horizon:
+            raise ValueError(
+                f"n_action_steps={n_action_steps} must satisfy "
+                f"1 <= n <= action_horizon={action_horizon}"
+            )
+        if max_episodes < 0:
+            raise ValueError(f"max_episodes={max_episodes} must be >= 0")
+        if max_steps is not None and max_steps < 0:
+            raise ValueError(f"max_steps={max_steps} must be >= 0 or None")
+        self.env = env
+        self.n_obs_steps = n_obs_steps
+        self.n_action_steps = n_action_steps
+        self.action_horizon = action_horizon
+        self.eval_seed = eval_seed
+        self.max_episodes = max_episodes
+        self.max_steps = max_steps
+        self.action_low, self.action_high = resolve_action_bounds(
+            env.single_action_space.low, env.single_action_space.high
+        )
+
+    def _plan(self, policy: Any, window: torch.Tensor) -> torch.Tensor:
+        """One raw chunk from the policy, however it is packaged."""
+        planner = getattr(policy, "plan", None)
+        return planner(window) if planner is not None else policy(window)
+
+    def evaluate(
+        self,
+        policy: Any,
+        *,
+        out_dir: str | Path | None = None,
+        append_csv: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Deterministic batched rollouts, optionally writing ``eval_history.csv``."""
+        rng = np.random.default_rng(self.eval_seed)
+        n = int(self.env.num_envs)
+        device = torch.device(self.env.device)
+        # A forked RNG keeps the noise-start sampling reproducible without
+        # shifting the training loop's stream.
+        fork_devices = [device.index or 0] if device.type == "cuda" else []
+        results: list[dict[str, Any]] = []
+        with torch.random.fork_rng(devices=fork_devices), torch.inference_mode():
+            torch.manual_seed(self.eval_seed)
+            while len(results) < self.max_episodes:
+                seeds = [int(rng.integers(0, 2**31)) for _ in range(n)]
+                obs, _ = self.env.reset(seed=seeds)
+                if hasattr(policy, "reset"):
+                    policy.reset()
+                window = obs[:, None, :].repeat(1, self.n_obs_steps, 1)
+                ep_return = torch.zeros(n, device=device)
+                success = torch.zeros(n, dtype=torch.bool, device=device)
+                saw_success = False
+                frames: list[torch.Tensor] = []
+                steps = 0
+                chunk: torch.Tensor | None = None
+                while True:
+                    if chunk is None or steps % self.n_action_steps == 0:
+                        chunk = squash_to_env_bounds(
+                            self._plan(policy, window), self.action_low, self.action_high
+                        )
+                    action = chunk[:, steps % self.n_action_steps]
+                    obs, reward, terminated, truncated, info = self.env.step_torch(action)
+                    frames.append(action)
+                    ep_return += reward
+                    if isinstance(info, dict) and "success" in info:
+                        success = success | info["success"]
+                        saw_success = True
+                    steps += 1
+                    window = torch.cat((window[:, 1:], obs[:, None, :]), dim=1)
+                    if bool(truncated.all()) or bool(terminated.all()):
+                        break
+                    if self.max_steps is not None and steps >= self.max_steps:
+                        break
+                actions = torch.stack(frames, dim=1).cpu().numpy()
+                returns = ep_return.cpu().numpy()
+                successes = success.cpu().numpy()
+                for row in range(n):
+                    if len(results) >= self.max_episodes:
+                        break
+                    results.append(
+                        {
+                            "episode": len(results),
+                            "return": float(returns[row]),
+                            "length": steps,
+                            "success": float(successes[row]) if saw_success else None,
+                            "jerk": compute_action_jerk(actions[row]),
+                        }
+                    )
+        if out_dir is not None:
+            write_eval_csv(results, out_dir, append=append_csv)
+        return results
+
+    def summarize(
+        self, results: list[dict[str, Any]], seed: int = 0
+    ) -> dict[str, float]:
+        """The mean, the median, the interval, and the count for one eval."""
+        return summarize_results(results, seed=seed)
+
+    def cloned(self, max_episodes: int) -> VectorEvaluator:
+        """The same evaluator, with a different episode budget."""
+        return VectorEvaluator(
+            self.env,
+            n_obs_steps=self.n_obs_steps,
+            n_action_steps=self.n_action_steps,
+            action_horizon=self.action_horizon,
+            eval_seed=self.eval_seed,
+            max_episodes=max_episodes,
+            max_steps=self.max_steps,
+        )
+
+    def random_policy(self, env: Any, seed: int | None = None) -> Callable:
+        """A uniform-random baseline chunk policy for this env.
+
+        The chunk is raw, so the evaluator's squash still bounds it. The torch
+        RNG is seeded by :meth:`evaluate`, which is why ``seed`` is unused.
+        """
+        del seed
+
+        def plan(_window: torch.Tensor) -> torch.Tensor:
+            horizon = int(self.action_horizon)
+            return env.random_chunk(horizon)
+
+        return plan
+
