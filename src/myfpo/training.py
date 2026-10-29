@@ -1019,25 +1019,6 @@ def configure_run(
     )
 
 
-def train_loop(
-    setup: RunSetup,
-    state: RunState,
-    out_dir: Path,
-    *,
-    total_steps: int,
-    eval_steps: int,
-    save_steps: int,
-) -> float:
-    """Hand the setup to ``run_training_loop`` and return the fps."""
-    return run_training_loop(
-        setup,
-        state,
-        out_dir,
-        total_steps=total_steps,
-        eval_steps=eval_steps,
-        save_steps=save_steps,
-    )
-# LOOP
 
 
 def run_training_loop(
@@ -1210,7 +1191,7 @@ def run_training(
         global_step=setup.global_step, next_eval=eval_steps, next_save=save_steps
     )
     try:
-        fps = train_loop(
+        fps = run_training_loop(
             setup,
             state,
             out_dir,

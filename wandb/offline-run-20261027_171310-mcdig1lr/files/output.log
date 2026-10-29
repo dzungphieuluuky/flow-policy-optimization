@@ -1,3 +1,0 @@
-train:   0%|          | 0/200 [00:00<?, ?step/s]/run/media/dung-pham/DATA/Personal/myfpo/.venv/lib/python3.12/site-packages/torch/nn/modules/module.py:1790: UserWarning: RunningMeanStd: forward before the first update(); returning raw input
-  return forward_call(*args, **kwargs)
-train: 100%|██████████| 200/200 [00:13<00:00, 14.63step/s] 

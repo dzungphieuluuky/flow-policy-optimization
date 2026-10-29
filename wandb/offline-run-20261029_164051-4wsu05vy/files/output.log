@@ -1,6 +1,0 @@
-train:   0%|                                                                                                                                             | 0/1000000 [00:00<?, ?step/s]/home/vr-tts27/Downloads/myfpo/.venv/lib/python3.12/site-packages/torch/nn/modules/module.py:1790: UserWarning: RunningMeanStd: forward before the first update(); returning raw input
-  return forward_call(*args, **kwargs)
-/home/vr-tts27/Downloads/myfpo/.venv/lib/python3.12/site-packages/torch/nn/modules/module.py:1790: UserWarning: RunningMeanStd: forward before the first update(); returning raw input
-  return forward_call(*args, **kwargs)
-train:  20%|██████████████████████████                                                                                                     | 204800/1000000 [04:53<21:13, 624.21step/s]W1029 16:45:50.098000 430037 torch/_inductor/utils.py:1731] [1/4] Not enough SMs to use max_autotune_gemm mode
-train:  77%|██████████████████████████████████████████████████████████████████████████████████████████████████▎                            | 774144/1000000 [18:46<05:28, 686.97step/s]
