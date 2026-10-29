@@ -22,6 +22,24 @@ from myfpo.layers import (
     resolve_storage_dtype,
     to_device_async,
 )
+class TorchEnvAdapter:
+    """Wrap a numpy gym env so step() returns torch tensors (Tier 2)."""
+    def __init__(self, env):
+        self.env = env
+    def step_torch(self, actions_t):
+        obs, rew, term, trunc, info = self.env.step(actions_t.cpu().numpy())
+        device = actions_t.device
+        obs_t = torch.from_numpy(np.asarray(obs, dtype=np.float32)).to(device=device, dtype=OBS_DTYPE)
+        rew_t = torch.from_numpy(np.asarray(rew, dtype=np.float32)).to(device=device, dtype=REWARD_DTYPE)
+        term_t = torch.from_numpy(np.asarray(term, dtype=bool)).to(device=device)
+        trunc_t = torch.from_numpy(np.asarray(trunc, dtype=bool)).to(device=device)
+        return obs_t, rew_t, term_t, trunc_t, info
+    def reset(self, **kw):
+        return self.env.reset(**kw)
+    @property
+    def observation_space(self): return self.env.observation_space
+    @property
+    def action_space(self): return self.env.action_space
 
 __all__ = [
     "EnvCarry",
