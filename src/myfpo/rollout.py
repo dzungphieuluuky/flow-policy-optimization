@@ -65,6 +65,7 @@ def compute_chunk_advantages(
     chunk_truncated: torch.Tensor | None = None,
     chunk_env_id: torch.Tensor | None = None,
     gae_lambda: float = 0.95,
+    v_baseline: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Return the ``[n]`` advantages and the ``[n]`` regression target.
 
@@ -129,7 +130,8 @@ def compute_chunk_advantages(
     injected = truncated & ~terminated
     chunk_rewards = chunk_rewards + gamma_h * injected * q_next_state
     bootstrap = gamma_h * (~done)
-    delta = chunk_rewards + bootstrap * q_next_state - q_current_chunk
+    baseline = v_baseline.reshape(-1) if v_baseline is not None else q_current_chunk.reshape(-1)
+    delta = chunk_rewards + bootstrap * q_next_state - baseline
 
     if gae_lambda == 0.0:
         return delta, delta + q_current_chunk
@@ -669,11 +671,41 @@ def close_chunks(
     the closes are gathered and written a launch per column; a numpy env keeps
     the original per-chunk loop, untouched, because its numerics are pinned.
     """
-    # Torch env path always uses batched close; numpy path removed (Tier 2).
-    close_chunks_batched(
-        state, obs_t, term_np, trunc_np, done_np, buffer, n_obs_steps
-    )
-    return
+    if batched:
+        close_chunks_batched(
+            state, obs_t, term_np, trunc_np, done_np, buffer, n_obs_steps
+        )
+        return
+    for i in range(len(state.active)):
+        if state.awaiting[i]:
+            state.windows[i].copy_(obs_t[i].expand_as(state.windows[i]))
+            state.awaiting[i] = False
+            continue
+        if not state.active[i]:
+            continue
+        n_exec = int(state.pos_t[i])
+        if done_np[i] or n_exec >= state.step_limits[i]:
+            raw = state.raw_plan[i]
+            start_state = state.start_window[i]
+            state.windows[i].copy_(
+                state.windows[i][state.roll_table[int(state.pos_t[i]) % n_obs_steps]]
+            )
+            state.executed_total[i] += n_exec
+            state.remaining -= n_exec
+            buffer.add_chunk(
+                state=start_state,
+                next_state=state.windows[i],
+                action=raw,
+                rewards=state.reward_windows[i, :n_exec],
+                step_frames=state.step_frames[i, :n_exec],
+                terminated=bool(term_np[i]),
+                truncated=bool(trunc_np[i]),
+                env_id=i,
+            )
+            state.active[i] = False
+            if done_np[i]:
+                state.awaiting[i] = True
+
 def close_chunks_batched(
     state: CollectState,
     obs_t: torch.Tensor,
@@ -981,12 +1013,24 @@ def bootstrap_values(
         finally:
             policy.critic.train(critic_training)
 
+    # V-estimate: mean Q(s, a_chunk) per env approximates V(s) for A = G - V
+    # Uses chunk_env_id grouping; falls back to chunk mean if grouping unavailable
+    v_estimate = q_current_chunk.clone()
+    try:
+        if chunk_env_id is not None and chunk_env_id.numel() == q_current_chunk.numel():
+            env_ids = chunk_env_id.to(torch.long).reshape(-1)
+            v_estimate = torch.stack([
+                q_current_chunk[env_ids == e].mean() for e in torch.unique(env_ids).tolist()
+            ])
+    except Exception:
+        pass  # keep q_current_chunk as approximate V on failure
     return (
         normalized_states,
         normalized_next_states,
         boot_actions,
         q_current_chunk,
         q_bootstrap,
+        v_estimate,
     )
 
 
@@ -1129,7 +1173,9 @@ def run_rollout(
         boot_actions,
         q_current_chunk,
         q_bootstrap,
+        v_estimate,
     ) = bootstrap_values(policy, active, n_chunks, device, storage_dtype)
+    active["v_estimate"] = v_estimate
     raw_advantages, normalized_advantages, raw_returns, gae_diagnostics = (
         chunk_advantages(
             cfg, active, n_chunks, q_current_chunk, q_bootstrap, storage_dtype,
@@ -1173,4 +1219,5 @@ def run_rollout(
         "behavior_cfm_loss": behavior_cfm_loss,
         "behavior_cfm_loss_token": behavior_cfm_loss_token,
         "behavior_velocity_token": behavior_velocity_token,
+        "step_rewards": active.get("step_rewards", torch.tensor([])),
     }

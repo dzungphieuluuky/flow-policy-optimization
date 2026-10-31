@@ -49,7 +49,7 @@ Exit codes: 0 success, 1 usage error, 2 runtime/divergence abort or draccus pars
 
 `configs/envs.yaml` is the only dim source and drives `KNOWN_ENVS`. `scripts/train.py` checks the live env spaces against it at startup. Add an env there before passing its id.
 
-`docs/` no longer exists. `README.md:11`, `README.md:36`, and `tests/test_block_contract.py:6` still cite `docs/architecture.md`.
+`docs/` no longer exists. `tests/test_block_contract.py` previously cited `docs/architecture.md` (cleaned). No source files reference it now.
 
 `myfpo_online.md` / `.ipynb` are one file in two formats. Edit the `.md`, then `jupytext --sync`. Never hand-edit the `.ipynb`.
 

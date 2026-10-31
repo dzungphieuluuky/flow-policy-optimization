@@ -2,8 +2,7 @@
 
 ``DiTBlock`` (a SwiGLU) and ``ResMLPBlock`` (the paper's residual MLP) used to
 be the same block written twice. They are one class now, so the parameter
-counts and the state_dict keys are pinned here: the counts are the ones
-``docs/architecture.md`` quotes, and the keys are the checkpoint contract.
+counts and the state_dict keys are pinned here.
 """
 
 import pytest
