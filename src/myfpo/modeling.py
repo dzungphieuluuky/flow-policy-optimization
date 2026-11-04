@@ -866,15 +866,20 @@ class MyfpoPolicy(nn.Module):
             self._compiled_compute_loss = fn
         return fn, True
 
-    def loss_and_info(
+    def compute_loss_and_probes(
         self,
         batch: dict[str, torch.Tensor],
         reduction: str,
         check_finite: bool,
         *,
         compute_info: bool = True,
-    ) -> tuple[torch.Tensor, dict[str, float] | None]:
-        """The shared body. ``compute_info`` picks the metrics pass."""
+    ) -> tuple[torch.Tensor, dict[str, object] | None]:
+        """Forward, probes, and the clamp fractions. No host transfer.
+
+        Returns ``(loss, staged)``. ``staged`` holds the tensors that
+        :meth:`pack_metrics` reads, so the one device-to-host move happens
+        after ``backward``. ``staged`` is None when ``compute_info`` is off.
+        """
         cfg = self.config
         device = next(self.actor.parameters()).device
 
@@ -950,26 +955,66 @@ class MyfpoPolicy(nn.Module):
         if not compute_info:
             return loss, None
 
+        staged = {
+            "above_clamp_frac": self.cfm_above_clamp_frac,
+            "both_clamped_frac": self.cfm_both_clamped_frac,
+            "cfm_loss_old": aux["cfm_loss_old"],
+            "cfm_loss_new": aux["cfm_loss_new"],
+            "ratio": aux["ratio"],
+            "ratio_token": aux["ratio_token"],
+            "delta": aux["delta"],
+            "action_is_pad": aux["action_is_pad"],
+            "chunk_truncated": aux["chunk_truncated"],
+            "target_velocity": aux["target_velocity"],
+            # Detached: the metrics read values, never gradients, so the staged
+            # row must not keep the graph alive across backward.
+            "raw_value_pred": aux["raw_value_pred"].detach(),
+            "raw_returns_flat": aux["raw_returns_flat"],
+            "policy_per_chunk": aux["policy_per_chunk"],
+            "value_loss_per_chunk": aux["value_loss_per_chunk"],
+            "cond_stats": cond_stats,
+            "sensitivity": sensitivity,
+        }
+        return loss, staged
+
+    def pack_metrics(self, staged: dict[str, object]) -> dict[str, float]:
+        """Pack the staged tensors into one device-to-host transfer."""
         info = compute_policy_info(
-            above_clamp_frac=self.cfm_above_clamp_frac,
-            both_clamped_frac=self.cfm_both_clamped_frac,
-            cfm_loss_old=aux["cfm_loss_old"],
-            cfm_loss_new=aux["cfm_loss_new"],
-            ratio=aux["ratio"],
-            ratio_token=aux["ratio_token"],
-            delta=aux["delta"],
-            action_is_pad=aux["action_is_pad"],
-            chunk_truncated=aux["chunk_truncated"],
-            target_velocity=aux["target_velocity"],
-            raw_value_pred=aux["raw_value_pred"],
-            raw_returns_flat=aux["raw_returns_flat"],
-            policy_per_chunk=aux["policy_per_chunk"],
-            value_loss_per_chunk=aux["value_loss_per_chunk"],
-            cond_stats=cond_stats,
-            cfg=cfg,
+            above_clamp_frac=staged["above_clamp_frac"],
+            both_clamped_frac=staged["both_clamped_frac"],
+            cfm_loss_old=staged["cfm_loss_old"],
+            cfm_loss_new=staged["cfm_loss_new"],
+            ratio=staged["ratio"],
+            ratio_token=staged["ratio_token"],
+            delta=staged["delta"],
+            action_is_pad=staged["action_is_pad"],
+            chunk_truncated=staged["chunk_truncated"],
+            target_velocity=staged["target_velocity"],
+            raw_value_pred=staged["raw_value_pred"],
+            raw_returns_flat=staged["raw_returns_flat"],
+            policy_per_chunk=staged["policy_per_chunk"],
+            value_loss_per_chunk=staged["value_loss_per_chunk"],
+            cond_stats=staged["cond_stats"],
+            cfg=self.config,
         )
-        info.update(sensitivity)
-        return loss, info
+        info.update(staged["sensitivity"])
+        return info
+
+    def loss_and_info(
+        self,
+        batch: dict[str, torch.Tensor],
+        reduction: str,
+        check_finite: bool,
+        *,
+        compute_info: bool = True,
+    ) -> tuple[torch.Tensor, dict[str, float] | None]:
+        """The loss, then its metrics in one host transfer. Kept for the pins."""
+        loss, staged = self.compute_loss_and_probes(
+            batch, reduction, check_finite, compute_info=compute_info
+        )
+        if staged is None:
+            return loss, None
+        return loss, self.pack_metrics(staged)
 
     @torch.compiler.disable
     def temporal_sensitivity(

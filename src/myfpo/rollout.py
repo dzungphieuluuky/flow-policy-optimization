@@ -141,7 +141,9 @@ def compute_chunk_advantages(
     if env_id.numel() != n_chunks:
         raise ValueError(f"chunk_env_id must have {n_chunks} entries, got {env_id.numel()}")
 
-    successor = chunk_successors(env_id)
+    # The trace index is a Python int per node. Keeping the successor vector on
+    # the host turns one CUDA sync per node into none.
+    successor = chunk_successors(env_id).cpu()
     trace = gamma_h * (~done) * gae_lambda
     adv = gae_trace(delta, trace, successor)
     return adv, adv + q_current_chunk
@@ -167,7 +169,7 @@ def gae_trace(
     """The advantage of each chunk, traced back over its successors."""
     adv = delta.clone()
     for i in range(delta.numel() - 1, -1, -1):
-        j = int(successor[i].item())
+        j = int(successor[i])
         if j >= 0:
             adv[i] = delta[i] + trace[i] * adv[j]
     return adv

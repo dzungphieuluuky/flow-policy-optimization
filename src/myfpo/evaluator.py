@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import csv
 from collections.abc import Callable
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +28,27 @@ CSV_FIELDS = ["episode", "return", "length", "success", "jerk"]
 BOOTSTRAP_RESAMPLES = 10_000
 BOOTSTRAP_LOW_Q = 0.025
 BOOTSTRAP_HIGH_Q = 0.975
+
+
+@contextmanager
+def _pinned_eval_mode(policy: Any):
+    """Pin the wrapped module to eval mode for a whole eval window.
+
+    The adapter used to toggle the mode on every action. The flag is cheap in
+    eager mode, but a per-call toggle is the pattern the perf guidance warns
+    about, and it defeats a compiled eval path. Restore the mode in ``finally``
+    so a failed episode still leaves the module as it was found.
+    """
+    module = getattr(policy, "policy", None)
+    if not isinstance(module, torch.nn.Module):
+        yield
+        return
+    was = module.training
+    module.eval()
+    try:
+        yield
+    finally:
+        module.train(was)
 
 
 def bootstrap_interval(
@@ -272,14 +294,15 @@ class Evaluator:
         rng = np.random.default_rng(self.eval_seed)
         results: list[dict[str, Any]] = []
         total_steps = 0
-        for ep in range(self.max_episodes):
-            if self.max_steps is not None and total_steps >= self.max_steps:
-                break
-            seed = int(rng.integers(0, 2**31))
-            budget = None if self.max_steps is None else self.max_steps - total_steps
-            result, taken = self.rollout_single_episode(policy, seed, ep, budget)
-            results.append(result)
-            total_steps += taken
+        with _pinned_eval_mode(policy):
+            for ep in range(self.max_episodes):
+                if self.max_steps is not None and total_steps >= self.max_steps:
+                    break
+                seed = int(rng.integers(0, 2**31))
+                budget = None if self.max_steps is None else self.max_steps - total_steps
+                result, taken = self.rollout_single_episode(policy, seed, ep, budget)
+                results.append(result)
+                total_steps += taken
         return _finish_eval(out_dir, append_csv, results)
 
     def summarize(
@@ -398,7 +421,7 @@ class VectorEvaluator:
         # shifting the training loop's stream.
         fork_devices = [device.index or 0] if device.type == "cuda" else []
         results: list[dict[str, Any]] = []
-        with torch.random.fork_rng(devices=fork_devices), torch.inference_mode():
+        with torch.random.fork_rng(devices=fork_devices), torch.inference_mode(), _pinned_eval_mode(policy):
             torch.manual_seed(self.eval_seed)
             while len(results) < self.max_episodes:
                 seeds = [int(rng.integers(0, 2**31)) for _ in range(n)]

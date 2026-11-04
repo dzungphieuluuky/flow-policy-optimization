@@ -65,13 +65,8 @@ class EvalPolicy:
         self.policy.reset()
 
     def __call__(self, obs):
-        """Select one action in eval mode, and restore the training mode after."""
-        was = self.policy.training
-        self.policy.eval()
-        try:
-            r = self.policy.select_action({"observation.state": obs}, start_from_zero=self.start)
-        finally:
-            self.policy.train(was)
+        """Select one action. The evaluator pins eval mode for the whole run."""
+        r = self.policy.select_action({"observation.state": obs}, start_from_zero=self.start)
         return np.atleast_1d(r.detach().cpu().numpy())
 
     def plan(self, window):
@@ -80,16 +75,12 @@ class EvalPolicy:
         ``select_action`` is single-env by construction (one action buffer, one
         frame buffer), so the vectorized path plans a whole chunk per env
         instead of one action at a time. The evaluator executes it open-loop,
-        which is what the collector does during training.
+        which is what the collector does during training. The evaluator pins
+        eval mode for the whole run.
         """
-        was = self.policy.training
-        self.policy.eval()
-        try:
-            return self.policy.predict_action_chunk(
-                {"observation.state": window}, start_from_zero=self.start
-            )
-        finally:
-            self.policy.train(was)
+        return self.policy.predict_action_chunk(
+            {"observation.state": window}, start_from_zero=self.start
+        )
 
 ABOVE_CLAMP_ABORT_UPDATES = 5
 
@@ -455,12 +446,12 @@ def policy_update_step(policy, optimizer, batch, backends, cfg, grad_groups):
             # next forward, so the manager may recycle the step's memory.
             cudagraph_step_begin()
             if backends:
-                loss, epoch_info = policy.loss_and_info(minibatch, reduction="mean", check_finite=False)
+                loss, staged = policy.compute_loss_and_probes(
+                    minibatch, reduction="mean", check_finite=False
+                )
             else:
                 loss = policy(minibatch, check_finite=False)
-                epoch_info = None
-            if epoch_info is not None:
-                epoch_infos.append(epoch_info)
+                staged = None
             if loss.dim() != 0:
                 raise ValueError(f"Loss must be scalar before backward; got {tuple(loss.shape)}.")
             # bool(isfinite(...).all()) syncs the device. One check per update,
@@ -470,6 +461,10 @@ def policy_update_step(policy, optimizer, batch, backends, cfg, grad_groups):
             ) and not bool(torch.isfinite(loss).all()):
                 raise TrainingAborted(f"Non-finite loss at step {micro_step}: {loss}")
             (loss / group_size).backward()
+            # The metrics' host transfer runs after backward, never between the
+            # forward and the backward.
+            if staged is not None:
+                epoch_infos.append(policy.pack_metrics(staged))
             is_boundary = (
                 (micro_step + 1) % accumulation_steps == 0 or micro_step + 1 == len(microbatches)
             )
