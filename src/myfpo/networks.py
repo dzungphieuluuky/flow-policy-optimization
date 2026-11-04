@@ -31,12 +31,10 @@ def effective_rank(features: torch.Tensor) -> torch.Tensor:
     matrix = features.contiguous().reshape(-1, features.shape[-1]).float()
     sigma = torch.linalg.svdvals(matrix)
     p = sigma / sigma.sum().clamp_min(1e-12)
-    # A zero component contributes nothing to the entropy. Dropping it keeps
-    # the logarithm finite, which is the whole point of not using
-    # torch.special.entr.
+    # Drop zero components so the log stays finite.
     p = p[p > 0]
     if p.numel() == 0:
-        # A zero spectrum has zero entropy, and exp of zero is one.
+        # exp(0) = 1 for an all-zero spectrum.
         return torch.ones((), device=features.device, dtype=torch.float32)
     entropy = -(p * torch.log(p)).sum()
     return torch.exp(entropy)
@@ -121,7 +119,7 @@ class FlowActor(nn.Module):
         *,
         collect_stats: bool,
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor] | None]:
-        """Embed ``t``, condition the tokens, run the blocks, and decode. ``collect_stats`` adds the per-block diagnostics."""
+        """Run the actor. ``collect_stats`` adds the block diagnostics."""
         if x_t.dim() != 3 or x_t.shape[2] != self.action_dim:
             raise ValueError(f"x_t must have shape [B, K, {self.action_dim}], got {tuple(x_t.shape)}")
         if condition.dim() != 2 or condition.shape[0] != x_t.shape[0] or condition.shape[1] != self.hidden_dim:
@@ -156,7 +154,7 @@ class FlowActor(nn.Module):
         h = self.in_proj(x_t)
 
         def decode(hidden: torch.Tensor) -> torch.Tensor:
-            """Modulate the final hidden state and apply the output projection."""
+            """Modulate and project to the action dimension."""
             shift, scale = self.adaLN_out(c).chunk(2, dim=-1)
             if not token_axis:
                 shift, scale = shift[:, None, :], scale[:, None, :]
@@ -256,7 +254,7 @@ class ResidualMLP(nn.Module):
         nn.init.zeros_(self.out.bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """``x + residual(x)``. The residual is zero at init, so this is the identity."""
+        """``x + residual(x)``. Zero at init, so the block starts as identity."""
         h = x
         for dense, norm in zip(self.denses, self.norms, strict=True):
             h = norm(dense(h))
@@ -316,9 +314,8 @@ class FlowResMLP(FlowActor):
 
 
 class ActionAffine(nn.Module):
-    """Per-element affine over the chunk. No chunk statistics (no LayerNorm),
-    so sustained pushes and raw magnitude drift survive. State dict matches
-    ``nn.LayerNorm`` (weight/bias) for checkpoint compatibility."""
+    """Per-element affine. No mean subtraction, so chunk magnitude survives.
+    Keeps the LayerNorm state-dict keys for old checkpoints."""
 
     def __init__(self, dim: int):
         super().__init__()
@@ -331,11 +328,9 @@ class ActionAffine(nn.Module):
 
 
 class StateAffine(nn.Module):
-    """One RMS scale over the whole window, no mean subtraction, so constant
-    offsets survive. The weight and bias stay per element. The caller has
-    already z-scored each dim through RunningMeanStd, so this adds a window
-    level scale, not the first normalization. Matches ``nn.LayerNorm`` state
-    dict."""
+    """Window RMS scale plus a per-element affine, with no mean subtraction.
+    The obs is already z-scored, so this adds one window-level scale.
+    Keeps the LayerNorm state-dict keys for old checkpoints."""
 
     def __init__(self, dim: int, eps: float = 1e-5):
         super().__init__()
@@ -344,7 +339,7 @@ class StateAffine(nn.Module):
         self.bias = nn.Parameter(torch.zeros(dim))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Apply the window RMS scale, then the learned per-element scale and shift."""
+        """RMS scale, then the per-element affine."""
         scale = torch.mean(x.float() * x.float(), dim=-1, keepdim=True)
         scale = torch.rsqrt(scale + self.eps).to(x.dtype)
         return x * scale * self.weight + self.bias
@@ -353,9 +348,8 @@ class StateAffine(nn.Module):
 def make_mlp_layers(
     in_dim: int, hidden_dim: int, num_layers: int, dropout: float
 ) -> nn.Module:
-    """The critic trunk. Each layer is ``Linear -> LayerNorm -> Mish``, and
-    the first layer adds ``Dropout`` when ``dropout > 0``. One final linear
-    maps to the scalar."""
+    """``Linear -> LayerNorm -> Mish`` per layer, with optional dropout on the
+    first. One final linear maps to the scalar."""
     layers: list[nn.Module] = []
     for i in range(num_layers):
         layers.append(nn.Linear(in_dim if i == 0 else hidden_dim, hidden_dim))
@@ -366,23 +360,10 @@ def make_mlp_layers(
     return nn.Sequential(*layers)
 
 class CriticMember(nn.Module):
-    """One Q(s, chunk) head: two token streams that condition each other.
-
-    The state window enters as one token per frame, the action chunk as one
-    token per step. Each stream queries the other in parallel, both read the
-    raw streams, then the last state token and the mean action token go to
-    the trunk. The trunk is ``Linear -> LayerNorm -> Mish`` per layer, and the
-    first layer adds ``Dropout`` when ``dropout > 0``. The output layer stays
-    linear.
-
-    Inside the chunk one causal ``SelfAttention`` layer mixes the steps, and
-    its RoPE codes carry the step position. Token ``i`` reads the prefix only,
-    the same rule the actor's chunk attention uses. The cross blocks stay
-    bidirectional: the critic reads a chunk it has already executed.
-    The action tokens carry no norm of the chunk: a chunk of all +5 and a chunk
-    of all 0 must reach the critic different. State and action keep the same
-    affine normalizers the concat head used, for the same reason.
-    """
+    """One Q(s, chunk) head. The state window is one token per frame and the
+    action chunk one token per step. Each stream cross-attends to the other,
+    then the last state token and the mean action token enter the trunk.
+    The chunk self-attention is causal and carries RoPE."""
 
     def __init__(
         self,
@@ -411,9 +392,7 @@ class CriticMember(nn.Module):
             if condition_dim is not None
             else (state_hidden if state_hidden is not None else hidden_dim)
         )
-        # Four heads on the attention width. StateEncoder requires width % 4,
-        # which gives an even head width for two heads. validate_critic also
-        # requires width % 8, so four even heads always fit.
+        # validate_critic requires width % 8, so four even heads fit.
         attn_heads = 4
         self.attn_heads = attn_heads
 
@@ -422,49 +401,32 @@ class CriticMember(nn.Module):
                 f"condition_dim is set, so n_obs_steps must be 1 (unused), got "
                 f"{n_obs_steps}"
             )
-        # The pool is 2 * state_dim. The first MLP layer does the resize when
-        # state_dim != hidden_dim.
+        # Pool is 2 * state_dim. The first MLP layer resizes to hidden_dim.
         self.input_dim = 2 * state_dim + (
             1 if condition_on_exec_length else 0
         )
-        # Normalise state and action separately. One norm over the whole
-        # concat would couple state dims to action dims, and they are unrelated
-        # quantities. The state norm divides by the window RMS and keeps the
-        # mean, so the critic still sees how high the state sits. The obs
-        # normalizer already z-scores each dim, so this adds one per-window
-        # scale on top, not the first fixed scale. When ``condition_dim``
-        # is set, the norm is skipped: the caller already encoded the window.
+        # Separate norms: one over the concat would couple unrelated quantities.
+        # The state norm keeps the mean.
         self.norm_state = (
             StateAffine(n_obs_steps * obs_dim) if condition_dim is None else None
         )
-        # The window trunk is the actor's: one shared per-frame projection and
-        # one causal attention pass, then the last frame. The old first layer
-        # read the flat window, 5568 -> 512 on Humanoid, and that one layer was
-        # 5.1M of the 6.4M critic. Now the first layer reads state_hidden.
+        # Reuse the actor's window trunk. The old flat first layer was 5.1M of
+        # the 6.4M critic on Humanoid.
         self.state_encoder = (
             StateEncoder(obs_dim, state_dim, n_obs_steps)
             if condition_dim is None
             else None
         )
-        # The action gets a learned affine, not a LayerNorm. A LayerNorm over
-        # the chunk subtracts the chunk's mean, so a chunk of all +5 and a
-        # chunk of all 0 would reach the critic as the same input. The affine
-        # keeps the name and the state dict of the LayerNorm it replaces.
+        # An affine, not LayerNorm: LayerNorm subtracts the chunk mean, so all
+        # +5 and all 0 would look the same.
         self.norm_action = ActionAffine(action_horizon * action_dim)
-        # One token per action step, projected to the stream width. The affine
-        # above already ran on the flat chunk, so a constant chunk stays
-        # constant and the tokens keep its offset.
+        # One token per action step, projected to the stream width.
         self.act_in = nn.Linear(action_dim, state_dim)
-        # The chunk is pooled by its mean, which is order-blind, and the cross
-        # pass is position-wise. A causal self-attention layer over the steps
-        # restores the order: it carries RoPE, so token i knows its step, and it
-        # reads the prefix only. The state side needs none: its trunk carries
-        # RoPE already.
+        # The chunk is pooled by its mean, so a causal attention pass restores
+        # step order. RoPE carries the position.
         self.act_attn = SelfAttention(state_dim, attn_heads)
         self.act_attn_norm = make_rms_norm(state_dim)
-        # Both directions read the same input streams, so neither pass sees the
-        # other's output. Chaining them would make the second pass read a
-        # half-mixed stream.
+        # Both passes read the raw streams; neither sees the other's output.
         self.obs_to_act = CrossAttention(state_dim, attn_heads)
         self.act_to_obs = CrossAttention(state_dim, attn_heads)
         self.cross_norm_obs = make_rms_norm(state_dim)
@@ -482,15 +444,12 @@ class CriticMember(nn.Module):
         """
         if self.condition_dim is None:
             window = self.norm_state(states.flatten(1)).view(states.shape)
-            # The encoder's output norm runs on every token, the same way it
-            # runs on the pooled vector in StateEncoder.forward. Leaving it
-            # out would keep a parameter that never sees a gradient.
+            # Run the output norm on every token so its parameters see a gradient.
             obs_tokens = self.state_encoder.out_norm(
                 self.state_encoder.encode_tokens(window)
             )
         else:
             obs_tokens = states.unsqueeze(1)
-        # The affine runs on the flat chunk in step-major order.
         chunk_flat = self.norm_action(actions.flatten(1))
         act_tokens = self.act_in(chunk_flat.view(actions.shape))
         act_tokens = act_tokens + self.act_attn(
@@ -518,9 +477,8 @@ class CriticMember(nn.Module):
 
 
 class Critic(nn.Module):
-    """Q(s_t, a_{t:t+h}) over the full window. The chunk is the executed action
-    sequence, and the executed-length fraction says how much of it ran.
-    """
+    """Q(s_t, a_{t:t+h}) over the full window. ``exec_length_frac`` says how
+    much of the chunk ran."""
 
     def __init__(
         self,
