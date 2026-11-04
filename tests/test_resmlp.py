@@ -183,8 +183,11 @@ def test_resmlp_reports_the_same_conditioning_stats_as_the_dit():
     """``loss_with_info`` reads ``cond_*``. The keys must match across actors."""
     keys = {"temb", "fused", "c", "gate_msa", "gate_mlp", "scale_msa",
             "scale_mlp", "effective_rank", "weight_magnitude"}
-    _, stats = _resmlp().forward_with_stats(
-        torch.randn(2, HORIZON, ACT), torch.rand(2, HORIZON, 1), torch.randn(2, HIDDEN)
+    _, stats = _resmlp()(
+        torch.randn(2, HORIZON, ACT),
+        torch.rand(2, HORIZON, 1),
+        torch.randn(2, HIDDEN),
+        collect_stats=True,
     )
     assert set(stats) == keys, set(stats) ^ keys
 

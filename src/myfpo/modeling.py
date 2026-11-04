@@ -818,10 +818,11 @@ class MyfpoPolicy(nn.Module):
         if compute_info:
             with torch.inference_mode(), autocast_context(device):
                 probe = max(1, cfg.hidden_dim // cfg.action_horizon)
-                _, cond_stats = self.actor.forward_with_stats(
+                _, cond_stats = self.actor(
                     b.x_t[:probe],
                     b.actor_t[:probe],
                     b.condition_flat[:probe],
+                    collect_stats=True,
                 )
 
         terms = self.policy_loss(b, v_new, device)

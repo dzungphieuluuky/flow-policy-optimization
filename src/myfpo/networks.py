@@ -97,29 +97,10 @@ class FlowActor(nn.Module):
         x_t: torch.Tensor,
         t: torch.Tensor | float,
         condition: torch.Tensor,
-    ) -> torch.Tensor:
-        """Predict the velocity from the token actions and the per-token times."""
-        out, _ = self.forward_core(x_t, t, condition, collect_stats=False)
-        return out
-
-    def forward_with_stats(
-        self,
-        x_t: torch.Tensor,
-        t: torch.Tensor | float,
-        condition: torch.Tensor,
-    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-        """The same forward, plus the per-block and conditioning diagnostics."""
-        return self.forward_core(x_t, t, condition, collect_stats=True)
-
-    def forward_core(
-        self,
-        x_t: torch.Tensor,
-        t: torch.Tensor | float,
-        condition: torch.Tensor,
         *,
-        collect_stats: bool,
-    ) -> tuple[torch.Tensor, dict[str, torch.Tensor] | None]:
-        """Run the actor. ``collect_stats`` adds the block diagnostics."""
+        collect_stats: bool = False,
+    ) -> torch.Tensor | tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        """Predict the velocity. ``collect_stats=True`` returns ``(velocity, stats)``."""
         if x_t.dim() != 3 or x_t.shape[2] != self.action_dim:
             raise ValueError(f"x_t must have shape [B, K, {self.action_dim}], got {tuple(x_t.shape)}")
         if condition.dim() != 2 or condition.shape[0] != x_t.shape[0] or condition.shape[1] != self.hidden_dim:
@@ -163,7 +144,7 @@ class FlowActor(nn.Module):
         if not collect_stats:
             for block in self.blocks:
                 h = block(h, c)
-            return decode(h), None
+            return decode(h)
 
         block_stats: list[dict[str, torch.Tensor]] = []
         for block in self.blocks:
