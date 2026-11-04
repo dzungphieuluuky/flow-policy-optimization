@@ -138,15 +138,20 @@ def test_a_tracked_run_works():
     assert any(k.startswith("cond_") for k in info)
 
 
-def test_the_actor_output_layer_skips_weight_decay_when_compiled():
-    """``torch.compile`` renames params, so the ``out.`` test must still match."""
+def test_the_loss_compile_shares_param_identity():
+    """Compiling the loss graph must not copy the actor parameters, or the
+    ``out.`` weight-decay exclusion stops matching. The compile happens on the
+    loss path (``MyfpoPolicy._compiled_compute_loss``), not on the actor."""
     policy = make_policy(
         OBS, ACT, _cfg(compile=True), device="cpu",
         action_low=[-1.0] * ACT, action_high=[1.0] * ACT,
     )
-    assert hasattr(policy.actor, "_orig_mod"), "the actor must be compiled"
+    batch = make_batch(policy, obs_dim=OBS, action_dim=ACT, horizon=HORIZON)
+    loss, _ = policy.loss_with_info(batch)
+    assert torch.isfinite(loss).all()
+    assert getattr(policy, "_compiled_compute_loss", None) is not None
     no_decay = {id(p) for p in policy.get_actor_optim_params()["params"][1]["params"]}
-    out = policy.actor._orig_mod.out
+    out = policy.actor.out
     assert id(out.weight) in no_decay
     assert id(out.bias) in no_decay
 
