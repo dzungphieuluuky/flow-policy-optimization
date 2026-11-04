@@ -129,15 +129,6 @@ def to_device_async(x: torch.Tensor, device) -> torch.Tensor:
     return x.to(device)
 
 
-def to_tensor_1d(
-    x: torch.Tensor | np.ndarray | float,
-    dtype: torch.dtype | None = torch.float32,
-    device: torch.device | str | None = None,
-) -> torch.Tensor:
-    """To a tensor, always at least 1-D. A singleton stays ``[1]``, never ``()``."""
-    return torch.atleast_1d(torch.as_tensor(x, dtype=dtype, device=device))
-
-
 # A width of 1 gives the norm nothing to normalize, so every hidden width in
 # the model has to clear this. One constant keeps the five checks in step.
 MIN_WIDTH = 2

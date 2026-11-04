@@ -22,6 +22,15 @@ with ENV_REGISTRY_PATH.open() as f:
 KNOWN_ENVS = tuple(_ENV_REGISTRY.keys())
 
 
+def validate_n_action_steps(n: int, action_horizon: int) -> None:
+    """Check that the executed span fits the chunk. Used by the config, the GPU evaluator, and the collector."""
+    if not 1 <= n <= action_horizon:
+        raise ValueError(
+            f"n_action_steps={n} must satisfy "
+            f"1 <= n <= action_horizon={action_horizon}"
+        )
+
+
 def get_observation_action_dim(env_id: str) -> tuple[int, int]:
     """Obs and action dims for ``env_id``, from ``configs/envs.yaml``."""
     if not _ENV_REGISTRY:
@@ -160,11 +169,7 @@ class MyfpoConfig:
             raise ValueError(f"n_obs_steps={self.n_obs_steps} must be >= 1")
         if self.action_horizon < 1:
             raise ValueError(f"action_horizon={self.action_horizon} must be >= 1")
-        if not 0 < self.n_action_steps <= self.action_horizon:
-            raise ValueError(
-                f"n_action_steps={self.n_action_steps} must satisfy "
-                f"0 < n <= action_horizon={self.action_horizon}"
-            )
+        validate_n_action_steps(self.n_action_steps, self.action_horizon)
         if self.hidden_dim < 1:
             raise ValueError(f"hidden_dim={self.hidden_dim} must be >= 1")
         if self.action_perturb_std < 0:

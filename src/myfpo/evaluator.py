@@ -17,6 +17,7 @@ from typing import Any
 import numpy as np
 import torch
 
+from myfpo.configuration import validate_n_action_steps
 from myfpo.processor import squash_to_env_bounds
 from myfpo.rollout import resolve_action_bounds
 
@@ -64,6 +65,27 @@ def median_of(returns: list[float]) -> float:
     return float(np.median(values))
 
 
+def _check_eval_counts(max_episodes: int, max_steps: int | None) -> None:
+    """Validate the two eval budgets shared by both evaluators."""
+    if max_episodes < 0:
+        raise ValueError(f"max_episodes={max_episodes} must be >= 0")
+    if max_steps is not None and max_steps < 0:
+        raise ValueError(f"max_steps={max_steps} must be >= 0 or None")
+
+
+def _mean_squared_second_diff(rows: np.ndarray) -> float:
+    """Mean squared second difference. ``rows`` needs at least three rows."""
+    second_diff = rows[2:] - 2.0 * rows[1:-1] + rows[:-2]
+    return float(np.square(second_diff).mean())
+
+
+def _finish_eval(out_dir, append_csv, results):
+    """Write ``eval_history.csv`` when asked, and return the results."""
+    if out_dir is not None:
+        write_eval_csv(results, out_dir, append=append_csv)
+    return results
+
+
 def write_eval_csv(
     results: list[dict[str, Any]],
     out_dir: str | Path,
@@ -89,8 +111,7 @@ def compute_action_jerk(actions: np.ndarray) -> float | None:
     a = np.asarray(actions, dtype=np.float32)
     if a.ndim != 2 or a.shape[0] < 3:
         return None
-    second_diff = a[2:] - 2.0 * a[1:-1] + a[:-2]
-    return float(np.square(second_diff).mean())
+    return _mean_squared_second_diff(a)
 
 
 def compute_seam_jerk(
@@ -123,7 +144,7 @@ def compute_seam_jerk(
         if tail.size < 2 or head.size < 1:
             continue
         window = np.stack([a[i, tail[-2]], a[i, tail[-1]], a[j, head[0]]])
-        seams.append(float(np.square(window[2:] - 2.0 * window[1:-1] + window[:-2]).mean()))
+        seams.append(_mean_squared_second_diff(window))
     return float(np.mean(seams)) if seams else None
 
 
@@ -195,10 +216,7 @@ class Evaluator:
                 ) from e
             if isinstance(env.observation_space, gym.spaces.Dict):
                 raise AssertionError("Evaluator expects flat Box obs")
-        if max_episodes < 0:
-            raise ValueError(f"max_episodes={max_episodes} must be >= 0")
-        if max_steps is not None and max_steps < 0:
-            raise ValueError(f"max_steps={max_steps} must be >= 0 or None")
+        _check_eval_counts(max_episodes, max_steps)
         self.env = env
         self.eval_seed = eval_seed
         self.max_episodes = max_episodes
@@ -262,9 +280,7 @@ class Evaluator:
             result, taken = self.rollout_single_episode(policy, seed, ep, budget)
             results.append(result)
             total_steps += taken
-        if out_dir is not None:
-            write_eval_csv(results, out_dir, append=append_csv)
-        return results
+        return _finish_eval(out_dir, append_csv, results)
 
     def summarize(
         self, results: list[dict[str, Any]], seed: int = 0
@@ -316,15 +332,8 @@ class VectorEvaluator:
             raise ValueError("VectorEvaluator requires a non-None env")
         if n_obs_steps < 1:
             raise ValueError(f"n_obs_steps={n_obs_steps} must be >= 1")
-        if not 1 <= n_action_steps <= action_horizon:
-            raise ValueError(
-                f"n_action_steps={n_action_steps} must satisfy "
-                f"1 <= n <= action_horizon={action_horizon}"
-            )
-        if max_episodes < 0:
-            raise ValueError(f"max_episodes={max_episodes} must be >= 0")
-        if max_steps is not None and max_steps < 0:
-            raise ValueError(f"max_steps={max_steps} must be >= 0 or None")
+        validate_n_action_steps(n_action_steps, action_horizon)
+        _check_eval_counts(max_episodes, max_steps)
         self.env = env
         self.n_obs_steps = n_obs_steps
         self.n_action_steps = n_action_steps
@@ -444,9 +453,7 @@ class VectorEvaluator:
                             "jerk": compute_action_jerk(actions[row]),
                         }
                     )
-        if out_dir is not None:
-            write_eval_csv(results, out_dir, append=append_csv)
-        return results
+        return _finish_eval(out_dir, append_csv, results)
 
     def summarize(
         self, results: list[dict[str, Any]], seed: int = 0

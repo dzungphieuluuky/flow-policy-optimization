@@ -37,13 +37,12 @@ from myfpo.fpo_core import (
 )
 from myfpo.networks import Critic, FlowModel, FlowResMLP
 from myfpo.processor import RunningMeanStd, StateEncoder, squash_to_env_bounds
-from myfpo.rollout import RolloutBuffers, run_rollout
+from myfpo.rollout import RolloutBuffers, resolve_action_bounds, run_rollout
 from myfpo.layers import (
     autocast_context,
     cudagraph_safe,
     resolve_storage_dtype,
     to_device_async,
-    to_tensor_1d,
 )
 
 class TrainingAborted(RuntimeError):
@@ -188,16 +187,12 @@ class MyfpoPolicy(nn.Module):
     ) -> None:
         """Set the env action bounds that ``select_action`` squashes into.
 
-        The bounds keep the buffer's dtype, which is fp32. Rounding them to the
-        compute dtype would quantise the bound the env receives, while the
-        diagnostics rebuild it in fp32 and report the exact one.
+        The bounds keep the buffer's dtype. Rounding them to the
+        compute dtype would quantise the bound the env receives.
         """
-        low_t = to_tensor_1d(
-            low, dtype=self.action_low.dtype, device=self.action_low.device
-        ).reshape(-1)
-        high_t = to_tensor_1d(
-            high, dtype=self.action_high.dtype, device=self.action_high.device
-        ).reshape(-1)
+        low_t, high_t = resolve_action_bounds(
+            low, high, dtype=self.action_low.dtype
+        )
         if (
             low_t.shape != self.action_low.shape
             or high_t.shape != self.action_high.shape
@@ -206,8 +201,6 @@ class MyfpoPolicy(nn.Module):
                 f"action bounds must match action_dim={self.action_low.numel()}: "
                 f"low={tuple(low_t.shape)}, high={tuple(high_t.shape)}"
             )
-        if not bool((high_t > low_t).all()):
-            raise ValueError("action_high must be strictly greater than action_low")
 
         self.action_low.copy_(low_t)
         self.action_high.copy_(high_t)

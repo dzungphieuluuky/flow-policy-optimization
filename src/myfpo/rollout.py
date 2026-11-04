@@ -8,6 +8,7 @@ import contextlib
 import dataclasses
 from collections.abc import Callable
 import numpy as np
+from myfpo.configuration import validate_n_action_steps
 from myfpo.processor import squash_to_env_bounds
 from dataclasses import dataclass
 from myfpo.fpo_core import (
@@ -432,14 +433,18 @@ class RolloutBuffer:
 def resolve_action_bounds(
     low: float | np.ndarray | torch.Tensor,
     high: float | np.ndarray | torch.Tensor,
+    *,
+    dtype: torch.dtype = torch.float32,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Coerce env action bounds into fp32 tensors, strict ``high > low``."""
-    lo = torch.as_tensor(
-        np.asarray(low, dtype=np.float32), dtype=torch.float32
-    ).reshape(-1)
-    hi = torch.as_tensor(
-        np.asarray(high, dtype=np.float32), dtype=torch.float32
-    ).reshape(-1)
+    """Coerce env action bounds into ``dtype`` tensors, strict ``high > low``."""
+
+    def _coerce(x):
+        if isinstance(x, torch.Tensor):
+            return x
+        return np.asarray(x, dtype=np.float32)
+
+    lo = torch.as_tensor(_coerce(low), dtype=dtype).reshape(-1)
+    hi = torch.as_tensor(_coerce(high), dtype=dtype).reshape(-1)
     if lo.shape != hi.shape:
         raise ValueError(
             f"action_low shape {tuple(lo.shape)} != action_high shape {tuple(hi.shape)}"
@@ -455,11 +460,7 @@ def resolve_chunk_args(
     action_horizon: int,
 ) -> tuple[int, int]:
     """Check the window width and the execution span."""
-    if not 1 <= n_action_steps <= action_horizon:
-        raise ValueError(
-            f"n_action_steps={n_action_steps} must satisfy "
-            f"1 <= n <= action_horizon={action_horizon}"
-        )
+    validate_n_action_steps(n_action_steps, action_horizon)
     return n_obs_steps, action_horizon
 
 
