@@ -41,6 +41,7 @@ def make_batch(
         "observation.state": torch.zeros(n, policy.config.n_obs_steps, obs_dim),
         "action": torch.zeros(n, horizon, action_dim),
         "action_is_pad": torch.zeros(n, horizon, dtype=torch.bool),
+        "chunk_truncated": torch.zeros(n, dtype=torch.bool),
         "normalized_advantages": torch.ones(n),
         "raw_returns": torch.ones(n),
         "mc_t": torch.ones(n, mc, horizon, 1),

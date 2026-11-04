@@ -93,17 +93,36 @@ def compute_action_jerk(actions: np.ndarray) -> float | None:
     return float(np.square(second_diff).mean())
 
 
-def compute_seam_jerk(actions: np.ndarray, action_is_pad: np.ndarray) -> float | None:
-    """Mean squared second-difference across consecutive chunk boundaries."""
+def compute_seam_jerk(
+    actions: np.ndarray, action_is_pad: np.ndarray, env_id=None
+) -> float | None:
+    """Mean squared second-difference across consecutive chunk boundaries.
+
+    ``env_id`` keeps every seam inside one env. Chunk rows are written in
+    closing order, so with several envs two adjacent rows are usually two
+    different trajectories, and a seam across them is not a seam.
+    """
     a, pad = jerk_inputs(actions, action_is_pad)
     n = a.shape[0]
+    order = np.arange(n)
+    same_env = np.ones(max(n - 1, 0), dtype=bool)
+    if env_id is not None:
+        ids = np.asarray(env_id)
+        if ids.shape != (n,):
+            raise ValueError(f"expected env_id with shape ({n},), got {ids.shape}")
+        order = np.argsort(ids, kind="stable")
+        ids = ids[order]
+        same_env = ids[:-1] == ids[1:]
     seams: list[float] = []
-    for i in range(n - 1):
+    for k in range(n - 1):
+        if not same_env[k]:
+            continue
+        i, j = order[k], order[k + 1]
         tail = np.nonzero(~pad[i])[0]
-        head = np.nonzero(~pad[i + 1])[0]
+        head = np.nonzero(~pad[j])[0]
         if tail.size < 2 or head.size < 1:
             continue
-        window = np.stack([a[i, tail[-2]], a[i, tail[-1]], a[i + 1, head[0]]])
+        window = np.stack([a[i, tail[-2]], a[i, tail[-1]], a[j, head[0]]])
         seams.append(float(np.square(window[2:] - 2.0 * window[1:-1] + window[:-2]).mean()))
     return float(np.mean(seams)) if seams else None
 

@@ -169,3 +169,21 @@ def test_boot_actions_live_in_the_stored_actions_space():
     assert float(batch["boot_actions"].abs().max()) > float(
         torch.tensor(HIGH).abs().max()
     ), "the backup is in the env's bounds, so it is in a different space"
+
+
+def test_the_bounds_keep_their_exact_values_on_a_bf16_device(monkeypatch):
+    """A bf16 bound is quantised, while the diagnostics rebuild it in fp32.
+
+    The env would then be squashed onto one set of bounds and the logged
+    action checked against another. The bounds are values, not activations, so
+    they keep the buffer's dtype.
+    """
+    import myfpo.modeling as M
+
+    monkeypatch.setattr(M, "resolve_storage_dtype", lambda _device: torch.bfloat16)
+    policy = _policy()
+    policy.set_action_bounds([-0.1] * ACT, [0.1] * ACT)
+
+    assert policy.action_low.dtype == torch.float32
+    assert policy.action_low[0].item() == torch.tensor(-0.1).item()
+    assert policy.action_high[0].item() == torch.tensor(0.1).item()

@@ -5,6 +5,8 @@ import collections
 import dataclasses
 from pathlib import Path
 
+import pytest
+
 from myfpo.configuration import MyfpoConfig
 
 CONFIG_PATH = (
@@ -62,6 +64,12 @@ def test_the_noise_marginal_is_normal_and_uniform_only():
     assert cfg.noise_sampling_mode == "normal"
     flipped = dataclasses.replace(cfg, noise_sampling_mode="uniform")
     assert flipped.noise_sampling_mode == "uniform"
+
+
+def test_a_zero_head_count_is_a_value_error_not_a_division_by_zero():
+    """``hidden_dim % 0`` raised ZeroDivisionError before the field was checked."""
+    with pytest.raises(ValueError, match="dit_heads"):
+        MyfpoConfig(dit_heads=0)
 
 
 def test_no_spectral_survives_in_the_config():

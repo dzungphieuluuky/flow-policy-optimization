@@ -22,6 +22,7 @@ from myfpo.fpo_core import (
     clamp_saturation,
     clip_velocity,
     compute_aspo_surrogate,
+    compute_cfm_log_ratio,
     compute_cfm_loss,
     compute_policy_ratio,
     group_cfm_loss,
@@ -77,6 +78,7 @@ class TrainingBatch:
     advantages: torch.Tensor
     returns: torch.Tensor
     action_is_pad: torch.Tensor
+    chunk_truncated: torch.Tensor
     t: torch.Tensor
     eps: torch.Tensor
     x_t: torch.Tensor
@@ -184,13 +186,17 @@ class MyfpoPolicy(nn.Module):
         low: np.ndarray | torch.Tensor,
         high: np.ndarray | torch.Tensor,
     ) -> None:
-        """Set the env action bounds that ``select_action`` squashes into."""
-        storage_dtype = resolve_storage_dtype(self.action_low.device)
+        """Set the env action bounds that ``select_action`` squashes into.
+
+        The bounds keep the buffer's dtype, which is fp32. Rounding them to the
+        compute dtype would quantise the bound the env receives, while the
+        diagnostics rebuild it in fp32 and report the exact one.
+        """
         low_t = to_tensor_1d(
-            low, dtype=storage_dtype, device=self.action_low.device
+            low, dtype=self.action_low.dtype, device=self.action_low.device
         ).reshape(-1)
         high_t = to_tensor_1d(
-            high, dtype=storage_dtype, device=self.action_high.device
+            high, dtype=self.action_high.dtype, device=self.action_high.device
         ).reshape(-1)
         if (
             low_t.shape != self.action_low.shape
@@ -559,6 +565,9 @@ class MyfpoPolicy(nn.Module):
         action_is_pad = self.to_device_tensor(
             batch, "action_is_pad", device, torch.bool
         )
+        chunk_truncated = self.to_device_tensor(
+            batch, "chunk_truncated", device, torch.bool
+        )
 
         if states.shape[-2] != cfg.n_obs_steps:
             raise ValueError(
@@ -611,6 +620,7 @@ class MyfpoPolicy(nn.Module):
             advantages=advantages,
             returns=returns,
             action_is_pad=action_is_pad,
+            chunk_truncated=chunk_truncated,
             t=t,
             eps=eps,
             x_t=x_t,
@@ -718,8 +728,11 @@ class MyfpoPolicy(nn.Module):
             self.cfm_both_clamped_frac = clamp_saturation(
                 loss_old, loss_new, cfg
             ).detach()
-            delta = loss_old - loss_new
-            adv_ratio = adv.reshape(-1, *([1] * (delta.dim() - 1)))
+            adv_ratio = adv.reshape(-1, *([1] * (loss_old.dim() - 1)))
+            # The ratio clamps delta at cfm_clamp and at the negative-advantage
+            # bound. The diagnostic must report that same delta, or it describes
+            # a trust region the update never used.
+            delta = compute_cfm_log_ratio(loss_old, loss_new, cfg, adv_ratio)
             surrogate = compute_aspo_surrogate(ratio, adv_ratio, cfg)
             if surrogate.dim() == 3:
                 keep = (~b.action_is_pad).to(surrogate.dtype)
@@ -846,6 +859,7 @@ class MyfpoPolicy(nn.Module):
             ratio_token=terms.ratio_token,
             delta=terms.delta,
             action_is_pad=b.action_is_pad,
+            chunk_truncated=b.chunk_truncated,
             target_velocity=terms.target_velocity,
             raw_value_pred=raw_value_pred,
             raw_returns_flat=raw_returns_flat,
@@ -864,11 +878,14 @@ class MyfpoPolicy(nn.Module):
     ) -> dict[str, float]:
         """Diagnostic: Q gradient wrt chunk tokens / obs frames.
         Measures temporal filter quality; prices full plan, not executed prefix."""
-        if b.actions.grad_fn is None and b.actions.requires_grad:
+        # ``to_device_batch(grad_inputs=True)`` makes the two leaves, so their
+        # ``grad_fn`` is None by construction and says nothing about the graph.
+        # What the probe needs is that both leaves still require a gradient.
+        if not (b.actions.requires_grad and b.states.requires_grad):
             import warnings
             warnings.warn(
-                "temporal_sensitivity: b.actions requires_grad=True but grad_fn is None; "
-                "autograd graph is dead. Check backward() was not called before this probe.",
+                "temporal_sensitivity: the probe leaves do not require a "
+                "gradient; build the batch with grad_inputs=True.",
                 RuntimeWarning,
                 stacklevel=2,
             )

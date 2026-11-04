@@ -29,6 +29,7 @@ class FakeVecEnv:
         self.t = np.zeros(n, dtype=np.int64)
         self.rng = np.random.default_rng(1234)
         self.actions_seen: list[np.ndarray] = []
+        self.obs_seen: list[np.ndarray] = []
 
     def _obs(self):
         return self.rng.standard_normal(
@@ -44,7 +45,9 @@ class FakeVecEnv:
         done = self.t >= self.episode
         self.t = np.where(done, 0, self.t + 1)
         rew = self.rng.standard_normal(self.num_envs).astype(np.float32)
-        return self._obs(), rew, done, np.zeros_like(done), {}
+        obs = self._obs()
+        self.obs_seen.append(obs)
+        return obs, rew, done, np.zeros_like(done), {}
 
 
 def collect(
@@ -166,6 +169,20 @@ def test_autoreset_refills_the_window_with_the_reset_observation():
             assert torch.equal(w, w[:1].expand_as(w)), (e, j)
             checked += 1
     assert checked > 0, "expected terminal-cut chunks at episode=4"
+
+
+def test_a_row_that_hit_its_target_still_tracks_the_env():
+    """A finished env keeps stepping for the other rows.
+
+    Its chunk is closed, so nothing writes its window any more, and the next
+    rollout would start from a state up to ``n_action_steps - 1`` steps old.
+    The carry must hold the last ``n_obs_steps`` frames the env returned.
+    """
+    total = TOTAL_STEPS + 1  # one env draws one more step than the rest
+    buf, env = collect(episode=1000, total_steps=total)
+    assert buf.n_steps == total
+    recent = torch.from_numpy(np.stack(env.obs_seen[-N_OBS:], axis=1))
+    assert torch.equal(buf.carry.windows, recent)
 
 
 def test_actions_sent_to_the_env_match_the_stored_chunks():

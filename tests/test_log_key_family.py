@@ -47,7 +47,6 @@ def _summary(**kw):
             {"return": r, "length": 10, "success": None, "jerk": None} for r in (10.0,)
         ],
         all_eval_returns=[5.0, 10.0],
-        eval_count=2,
     )
     base.update(kw)
     return compute_eval_summary_metrics(**base)
@@ -128,10 +127,25 @@ def test_the_return_mean_key_matches_the_summarizer():
 
 
 
+def test_the_episode_count_is_the_window_not_an_eval_counter():
+    """It logged the eval-window index, passed before the increment."""
+    episode = {"return": 1.0, "length": 1, "success": None, "jerk": None}
+    out = compute_eval_summary_metrics(
+        mean_return=1.0,
+        eval_results=[episode] * 3,
+        all_eval_returns=[1.0],
+    )
+    assert out["eval/episode_count"] == 3
+    empty = compute_eval_summary_metrics(
+        mean_return=0.0, eval_results=[], all_eval_returns=[0.0]
+    )
+    assert empty["eval/episode_count"] == 0
+
+
 def test_an_empty_window_is_still_nan_not_zero():
     """The rename must not change what a missing measurement looks like."""
     out = compute_eval_summary_metrics(
-        mean_return=0.0, eval_results=[], all_eval_returns=[0.0], eval_count=0
+        mean_return=0.0, eval_results=[], all_eval_returns=[0.0]
     )
     for key in ("eval/return_min", "eval/return_max", "eval/return_std"):
         assert out[key] != out[key], key  # NaN

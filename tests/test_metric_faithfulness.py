@@ -7,8 +7,25 @@ import pytest
 import torch
 
 from myfpo.configuration import MyfpoConfig
-from myfpo.fpo_core import compute_gae_diagnostics
+from myfpo.fpo_core import compute_gae_diagnostics, compute_ratio_metrics
 from myfpo.training import compute_rollout_diagnostics
+
+from fixtures import make_batch, make_test_policy
+
+
+def _ratio_metrics(**kw):
+    cfg = MyfpoConfig()
+    n, mc, h = 2, 4, cfg.action_horizon
+    args = dict(
+        ratio=torch.ones(n, 1),
+        ratio_token=torch.ones(n, mc, h),
+        delta=torch.zeros(n, 1),
+        action_is_pad=torch.zeros(n, h, dtype=torch.bool),
+        chunk_truncated=torch.zeros(n, dtype=torch.bool),
+        cfg=cfg,
+    )
+    args.update(kw)
+    return compute_ratio_metrics(**args)
 
 
 def _gae(n=8, **kw):
@@ -75,6 +92,41 @@ def test_the_key_states_the_denominator_it_divides_by():
 
 
 # --- names must not overstate ---------------------------------------------.
+
+
+def test_log_ratio_clip_frac_counts_both_sides_of_the_cap():
+    """Only the positive side was counted, so a saturated negative read as 0."""
+    cap = MyfpoConfig().log_ratio_cap
+    out = _ratio_metrics(delta=torch.tensor([[-(cap + 0.5)], [-(cap + 1.5)]]))
+    assert float(out["log_ratio_clip_frac"]) == 1.0
+
+
+def test_truncated_chunk_frac_counts_env_truncations_not_short_chunks():
+    """A chunk cut by ``n_action_steps`` or the step budget is short, not truncated."""
+    cfg = MyfpoConfig()
+    n, h = 2, cfg.action_horizon
+    short = torch.zeros(n, h, dtype=torch.bool)
+    short[:, 1:] = True
+    out = _ratio_metrics(
+        action_is_pad=short,
+        chunk_truncated=torch.tensor([False, True]),
+    )
+    assert float(out["truncated_chunk_frac"]) == 0.5
+    assert float(out["executed_action_step_frac"]) == 1.0 / h
+
+
+def test_a_padded_chunk_is_not_reported_as_truncated():
+    """End to end: the policy must read the flag, not the pad mask."""
+    policy = make_test_policy()
+    cfg = policy.config
+    batch = make_batch(
+        policy, obs_dim=cfg.obs_dim, action_dim=cfg.action_dim,
+        horizon=cfg.action_horizon,
+    )
+    batch["action_is_pad"][:] = True   # every chunk cut short
+    batch["chunk_truncated"][:] = False  # none of them by the env
+    _, info = policy.loss_with_info(batch)
+    assert info["truncated_chunk_frac"] == 0.0
 
 
 def test_action_abs_mean_is_mean_absolute_value_not_an_l2_norm():

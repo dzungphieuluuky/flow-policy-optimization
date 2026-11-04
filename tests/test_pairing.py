@@ -46,6 +46,7 @@ def _batch(policy, states, actions, t, eps):
         "observation.state": states,
         "action": actions,
         "action_is_pad": pad,
+        "chunk_truncated": torch.zeros(states.shape[0], dtype=torch.bool),
         "normalized_advantages": torch.ones(states.shape[0]),
         "raw_returns": torch.ones(states.shape[0]),
         "mc_t": t,

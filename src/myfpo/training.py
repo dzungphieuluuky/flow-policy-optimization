@@ -134,7 +134,9 @@ def make_scheduler(optimizer, cfg, total_steps: int):
     if cfg.lr_schedule == "none":
         return None
     per_update = updates_per_env_steps(cfg)
-    total_updates = max(1, total_steps // per_update)
+    # The loop runs one update per collected batch, so a partial batch at the
+    # end is still an update. A floor here would decay the LR to zero on it.
+    total_updates = max(1, math.ceil(total_steps / per_update))
     # Round up to one update: an env-step warmup shorter than a single update
     # would otherwise disable the warmup completely.
     warmup_steps = int(cfg.lr_warmup_steps)
@@ -409,8 +411,11 @@ def rollout_with_diagnostics(
     # on the env-facing action, not on the raw chunk.
     jerk_action = env_action.detach().cpu().numpy()
     jerk_pad = batch["action_is_pad"].detach().cpu().numpy()
+    # Chunks are written in closing order, so adjacent rows cross envs once
+    # more than one env runs. A seam only exists within one env.
+    jerk_env = batch["chunk_env_id"].detach().cpu().numpy()
     rollout_jerk = compute_mean_chunk_jerk(jerk_action, jerk_pad)
-    rollout_seam_jerk = compute_seam_jerk(jerk_action, jerk_pad)
+    rollout_seam_jerk = compute_seam_jerk(jerk_action, jerk_pad, jerk_env)
     return RolloutStep(
         batch=batch,
         diagnostics=rollout,
@@ -562,7 +567,6 @@ class RunState:
     next_save: int = 0
     best_return: float | None = None
     steps_to_best: int | None = None
-    eval_count: int = 0
     above_clamp_updates: int = 0
     both_clamped_updates: int = 0
     best_artifact: str | None = None
@@ -782,7 +786,6 @@ def log_eval_window(
             result.get("mean_return", 0.0),
             result.get("eval_results", []),
             state.all_eval_returns,
-            state.eval_count,
             r_rand=r_rand,
             best_return=state.best_return,
             steps_to_best=state.steps_to_best,
@@ -822,7 +825,6 @@ def eval_window(
     stop_return = result.get("stop_return", mean_return)
     state.all_eval_returns.append(mean_return)
     state.recent_eval_returns.append(mean_return)
-    state.eval_count += 1
     if result.get("improved", False):
         state.best_return, state.steps_to_best = stop_return, state.global_step
         best_artifact_path, _ = save_checkpoint(
@@ -987,6 +989,18 @@ def configure_run(
         action_high,
         resume_from_checkpoint,
     )
+    # A resume takes the checkpoint's config. Every later build here must read
+    # that one, not the CLI's, or the scheduler and the evaluators disagree
+    # with the policy they wrap. The train env is already built, so say so.
+    if resume_from_checkpoint is not None:
+        if policy.config.num_envs != cfg.num_envs:
+            print(
+                f"myfpo: resume: the checkpoint trained with num_envs="
+                f"{policy.config.num_envs}, the CLI asked for {cfg.num_envs}; "
+                f"the train env keeps {cfg.num_envs}.",
+                file=sys.stderr,
+            )
+        cfg = policy.config
     scheduler = make_scheduler(optimizer, cfg, total_steps)
     if scheduler_state is not None or global_step > 0:
         restore_scheduler(scheduler, scheduler_state, global_step, cfg)
@@ -1102,13 +1116,17 @@ def invalidate_shared_env_carry(policy, evaluator, train_env) -> bool:
     evaluator resets it and steps whole episodes, so the cached windows and
     autoreset flags describe a state that no longer exists. Returning True
     means the carry was dropped.
+
+    The carry lives on the host rollout buffer, which is the object the
+    collector reads it from. ``RolloutBuffers`` holds no copy of it.
     """
     if getattr(evaluator, "env", None) is not train_env:
         return False
     buffers = getattr(policy, "rollout_buffers", None)
-    if buffers is None:
+    host = getattr(buffers, "host", None)
+    if host is None:
         return False
-    buffers.carry = None
+    host.carry = None
     return True
 
 

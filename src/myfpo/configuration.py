@@ -172,6 +172,10 @@ class MyfpoConfig:
 
     def validate_actor(self) -> None:
         """Actor widths, depths, the resmlp variant, and the EMA."""
+        # Before any modulo: a zero head count divides by zero instead of
+        # reporting the field.
+        if self.dit_heads < 1:
+            raise ValueError(f"dit_heads={self.dit_heads} must be >= 1")
         if self.hidden_dim % self.dit_heads != 0:
             raise ValueError(
                 f"hidden_dim={self.hidden_dim} must be divisible by "
@@ -189,8 +193,6 @@ class MyfpoConfig:
             )
         if self.dit_depth < 1:
             raise ValueError(f"dit_depth={self.dit_depth} must be >= 1")
-        if self.dit_heads < 1:
-            raise ValueError(f"dit_heads={self.dit_heads} must be >= 1")
         if self.dit_mlp_ratio <= 0:
             raise ValueError(f"dit_mlp_ratio={self.dit_mlp_ratio} must be > 0")
         for name, value in (

@@ -46,6 +46,7 @@ def _policy_and_batch(cfg, seed=0, pad_from=None):
             rng.standard_normal((N, HORIZON, ACT), dtype=np.float32)
         ),
         "action_is_pad": torch.zeros(N, HORIZON, dtype=torch.bool),
+        "chunk_truncated": torch.zeros(N, dtype=torch.bool),
         "normalized_advantages": torch.from_numpy(
             rng.standard_normal(N, dtype=np.float32)
         ),

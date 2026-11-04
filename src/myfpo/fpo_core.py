@@ -442,11 +442,17 @@ def compute_ratio_metrics(
     ratio_token: torch.Tensor,
     delta: torch.Tensor,
     action_is_pad: torch.Tensor,
+    chunk_truncated: torch.Tensor,
     cfg: MyfpoConfig,
 ) -> dict[str, torch.Tensor]:
     """Trust-region diagnostics, with a per-token axis split."""
+    if chunk_truncated.shape != action_is_pad.shape[:1]:
+        raise ValueError(
+            f"chunk_truncated shape {tuple(chunk_truncated.shape)} != "
+            f"one flag per chunk {tuple(action_is_pad.shape[:1])}"
+        )
     log_ratio_abs = delta.abs()
-    log_ratio_clip_frac = (delta > cfg.log_ratio_cap).float().mean()
+    log_ratio_clip_frac = (log_ratio_abs > cfg.log_ratio_cap).float().mean()
 
     ratio_token_mean_per_step = ratio_token.mean(dim=(0, 1))
     num_tokens = ratio_token_mean_per_step.numel()
@@ -482,7 +488,7 @@ def compute_ratio_metrics(
         "flow_ratio_token_early_half_outside_frac": early_outside,
         "flow_ratio_token_late_half_outside_frac": late_outside,
         "flow_ratio_token_outside_frac": outside(ratio_token),
-        "truncated_chunk_frac": action_is_pad.any(dim=1).float().mean(),
+        "truncated_chunk_frac": chunk_truncated.float().mean(),
         "executed_action_step_frac": (~action_is_pad).float().mean(),
     }
 
@@ -551,7 +557,6 @@ def compute_eval_summary_metrics(
     mean_return: float,
     eval_results: list[dict],
     all_eval_returns: list[float],
-    eval_count: int,
     *,
     r_rand: float | None = None,
     best_return: float | None = None,
@@ -590,7 +595,7 @@ def compute_eval_summary_metrics(
             "eval/mean_length": stat(lengths, np.mean),
             "eval/max_length": stat(lengths, np.max),
             "eval/std_length": stat(lengths, np.std),
-            "eval/episode_count": int(eval_count),
+            "eval/episode_count": len(returns),
         }
     )
     if successes:
@@ -635,6 +640,7 @@ def compute_policy_info(
     ratio_token,
     delta,
     action_is_pad,
+    chunk_truncated,
     target_velocity,
     raw_value_pred,
     raw_returns_flat,
@@ -652,6 +658,7 @@ def compute_policy_info(
             ratio_token=ratio_token,
             delta=delta,
             action_is_pad=action_is_pad,
+            chunk_truncated=chunk_truncated,
             cfg=cfg,
         ),
         **compute_value_metrics(

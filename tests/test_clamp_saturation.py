@@ -191,6 +191,7 @@ def _policy_and_batch(cfm_clamp):
     )
     batch = {
         "observation.state": states, "action": actions, "action_is_pad": pad,
+        "chunk_truncated": torch.zeros(n, dtype=torch.bool),
         "normalized_advantages": torch.randn(n, generator=torch.Generator().manual_seed(7)),
         "raw_returns": torch.randn(n, generator=torch.Generator().manual_seed(8)),
         "mc_t": t, "mc_eps": eps,

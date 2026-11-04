@@ -70,6 +70,21 @@ def test_the_decay_is_monotone_after_the_warmup():
     assert all(a >= b - 1e-12 for a, b in itertools.pairwise(tail))
 
 
+def test_the_last_partial_update_keeps_a_positive_lr():
+    """The loop runs ceil(steps / per_update) updates, so the schedule must too.
+
+    With a floor, the last update sat past the cosine's end and got lr = 0.
+    """
+    optimizer = _optimizer()
+    scheduler = make_scheduler(optimizer, _cfg(), TOTAL_STEPS + 16)
+    seen = []
+    for _ in range(101):        # 3216 env steps = 100.5 updates
+        seen.append(_lr(optimizer))
+        scheduler.step()
+    assert seen[-1] > 0.0
+    assert seen[-2] > seen[-1]
+
+
 def test_zero_warmup_starts_at_the_full_lr():
     optimizer = _optimizer()
     make_scheduler(optimizer, _cfg(lr_warmup_steps=0), TOTAL_STEPS)

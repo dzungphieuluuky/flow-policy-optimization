@@ -724,6 +724,15 @@ def close_chunks(
             state.awaiting[i] = False
             continue
         if not state.active[i]:
+            # A finished row still steps until every row hits its target. Treat
+            # each extra step as a one-step chunk, so the window the next
+            # rollout starts from is not stale. A done step resets the env, so
+            # it waits for the awaiting branch on the next step instead.
+            if done_np[i]:
+                state.awaiting[i] = True
+            else:
+                state.windows[i, :-1] = state.windows[i, 1:].clone()
+                state.windows[i, -1] = obs_t[i]
             continue
         n_exec = int(state.pos_t[i])
         if done_np[i] or n_exec >= state.step_limits[i]:
@@ -770,6 +779,21 @@ def close_chunks_batched(
         w = torch.as_tensor(waiting, device=device)
         state.windows[w] = obs_t[w].unsqueeze(1).expand(-1, n_obs_steps, -1)
         state.awaiting[waiting] = False
+
+    # A finished row still steps until every row hits its target. Treat each
+    # extra step as a one-step chunk, or the carried window goes stale; a done
+    # step resets the env, so it waits for the awaiting branch next step.
+    idle = np.flatnonzero(~(state.active | state.awaiting))
+    if idle.size:
+        done_idle = done_np[idle]
+        moved = idle[~done_idle]
+        if moved.size:
+            rows = torch.as_tensor(moved, device=device)
+            w = state.windows[rows]
+            w[:, :-1] = w[:, 1:].clone()
+            w[:, -1] = obs_t[rows]
+            state.windows[rows] = w
+        state.awaiting[idle[done_idle]] = True
 
     pos = state.pos_t.numpy()
     closing = np.flatnonzero(state.active & (done_np | (pos >= state.step_limits)))
@@ -934,11 +958,15 @@ class EnvCarry:
 
 @dataclass
 class RolloutBuffers:
-    """The buffers a rollout reuses between calls."""
+    """The buffers a rollout reuses between calls.
+
+    The env carry is not held here: it lives on ``host``, the buffer the
+    collector reads it from, so one object owns it.
+    """
+
     host: RolloutBuffer | None = None
     device: RolloutBuffer | None = None
     h2d_event: torch.cuda.Event | None = None
-    carry: EnvCarry | None = None
     env_wrapper: object | None = None
 
 
@@ -1234,6 +1262,8 @@ def run_rollout(
         "observation.state": states,
         "action": actions,
         "action_is_pad": action_is_pad,
+        "chunk_truncated": active["chunk_truncated"],
+        "chunk_env_id": active["chunk_env_id"],
         "raw_advantages": raw_advantages,
         "normalized_advantages": normalized_advantages,
         "raw_returns": raw_returns,

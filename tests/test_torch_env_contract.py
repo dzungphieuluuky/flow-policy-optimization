@@ -144,7 +144,7 @@ FIELD_NAMES = (
 )
 
 
-def _collect_once(monkeypatch, *, force_legacy: bool):
+def _collect_once(monkeypatch, *, force_legacy: bool, total_steps: int = 12):
     """One collector run on the fake env, with the writer forced either way.
 
     ``original_close`` is bound at module import, not read off the module here:
@@ -183,7 +183,7 @@ def _collect_once(monkeypatch, *, force_legacy: bool):
     collect_chunks_vec(
         env,
         lambda states: torch.ones(states.shape[0], HORIZON, ACT_DIM),
-        total_steps=12,
+        total_steps=total_steps,
         n_action_steps=HORIZON,
         action_low=-1.0,
         action_high=1.0,
@@ -208,6 +208,18 @@ def test_the_batched_writer_matches_the_per_chunk_writer(monkeypatch):
         got = getattr(fast, name)[: fast.max_chunks]
         want = getattr(slow, name)[: slow.max_chunks]
         assert torch.equal(got, want), f"{name} differs between the two writers"
+    assert fast.carry.awaiting == slow.carry.awaiting
+    assert torch.equal(fast.carry.windows, slow.carry.windows)
+
+
+def test_the_two_writers_agree_when_a_row_goes_idle(monkeypatch):
+    """13 steps over 2 envs: one row hits its target first and keeps stepping.
+
+    The batched writer must still put that row's late frames into the carry,
+    or the next rollout starts from a state the env has left.
+    """
+    fast = _collect_once(monkeypatch, force_legacy=False, total_steps=13)
+    slow = _collect_once(monkeypatch, force_legacy=True, total_steps=13)
     assert fast.carry.awaiting == slow.carry.awaiting
     assert torch.equal(fast.carry.windows, slow.carry.windows)
 

@@ -59,7 +59,6 @@ def _windows():
             sum(block) / len(block),
             _episodes(block),
             list(block),
-            1,
         ))
     return windows
 
@@ -74,11 +73,11 @@ def collect() -> dict:
     from myfpo.fpo_core import compute_eval_summary_metrics
 
     out: dict = {}
-    for index, (mean, episodes, all_returns, count) in enumerate(_windows()):
+    for index, (mean, episodes, all_returns) in enumerate(_windows()):
         for r_rand in (None, 0.0, 25.0):
             tag = f"summary.w{index}.rand{r_rand}"
             out.update(flatten(compute_eval_summary_metrics(
-                mean, episodes, all_returns, count,
+                mean, episodes, all_returns,
                 r_rand=r_rand,
                 best_return=max(all_returns),
                 steps_to_best=all_returns.index(max(all_returns)),
