@@ -382,6 +382,14 @@ class MyfpoConfig:
             )
         if self.value_loss_coef < 0:
             raise ValueError(f"value_loss_coef={self.value_loss_coef} must be >= 0")
+        if self.lr_schedule not in ("none", "cosine"):
+            raise ValueError(
+                f"lr_schedule={self.lr_schedule!r} must be 'none' or 'cosine'"
+            )
+        if self.lr_warmup_steps < 0:
+            raise ValueError(
+                f"lr_warmup_steps={self.lr_warmup_steps} must be >= 0"
+            )
 
     def validate_eval(self) -> None:
         """The tracking backend and the two named flow starts."""

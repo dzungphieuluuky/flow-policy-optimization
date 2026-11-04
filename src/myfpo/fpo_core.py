@@ -525,7 +525,9 @@ def compute_value_metrics(
             unit = centred / norms
             corr = unit @ unit.t()
             n_members = raw_value_pred.shape[0]
-            off_diagonal = corr[~torch.eye(n_members, dtype=torch.bool)]
+            off_diagonal = corr[
+                ~torch.eye(n_members, dtype=torch.bool, device=corr.device)
+            ]
             member_corr = off_diagonal.mean()
     return {
         "policy_loss": policy_per_chunk.mean(),

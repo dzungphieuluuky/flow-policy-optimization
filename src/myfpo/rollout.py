@@ -615,6 +615,44 @@ def is_torch_env(envs) -> bool:
     return callable(getattr(envs, "step_torch", None))
 
 
+def take_final_observations(info, done_np, reference, device):
+    """Replace the done rows of ``reference`` with the true terminal frame.
+
+    A done step must report ``o_T``: the collector stores it as the chunk's
+    ``next_state``, and the truncation bootstrap reads it. Gymnasium exposes it
+    as ``info["final_obs"]`` and ManiSkill as ``info["final_observation"]``
+    when the env resets inside the step and returns the reset frame instead.
+    Under NEXT_STEP autoreset the step's own observation is already final and
+    neither key is present, so the reference passes through unchanged.
+    """
+    if not isinstance(info, dict):
+        return reference
+    final = info.get("final_obs")
+    if final is None:
+        final = info.get("final_observation")
+    if final is None:
+        return reference
+    rows = np.flatnonzero(done_np)
+    if rows.size == 0:
+        return reference
+    idx = torch.from_numpy(rows).to(device=device)
+    out = reference.clone()
+    if torch.is_tensor(final):
+        out[idx] = final.to(device=device, dtype=reference.dtype)[idx]
+        return out
+    array = np.asarray(final)
+    if array.dtype == object:
+        for i in rows:
+            if array[i] is None:
+                continue
+            out[i] = torch.as_tensor(
+                np.asarray(array[i], dtype=np.float32), device=device
+            )
+        return out
+    out[idx] = torch.as_tensor(array, dtype=reference.dtype, device=device)[idx]
+    return out
+
+
 def step_envs(state: CollectState, envs, action_horizon: int):
     """Send the next action of every env, and record what came back."""
     stepping = torch.from_numpy(state.active)
@@ -628,13 +666,13 @@ def step_envs(state: CollectState, envs, action_horizon: int):
     if is_torch_env(envs):
         # A GPU env keeps its frames on the device. Only the three done flags
         # cross to the host, and only because they drive the chunk-close loop.
-        obs_t, rew_t, term_t, trunc_t, _ = envs.step_torch(state.actions_t)
+        obs_t, rew_t, term_t, trunc_t, info = envs.step_torch(state.actions_t)
         obs_t = obs_t.to(device=state.windows.device, dtype=OBS_DTYPE)
         term_np = term_t.cpu().numpy()
         trunc_np = trunc_t.cpu().numpy()
         rew_t = rew_t.to(device=state.windows.device, dtype=REWARD_DTYPE)
     else:
-        obs, rew, term, trunc, _ = envs.step(state.actions_t.cpu().numpy())
+        obs, rew, term, trunc, info = envs.step(state.actions_t.cpu().numpy())
         term_np = np.asarray(term, dtype=bool)
         trunc_np = np.asarray(trunc, dtype=bool)
         obs_t = torch.from_numpy(np.asarray(obs, dtype=np.float32)).to(
@@ -644,6 +682,10 @@ def step_envs(state: CollectState, envs, action_horizon: int):
             device=state.windows.device
         )
     done_np = term_np | trunc_np
+    if done_np.any():
+        obs_t = take_final_observations(
+            info, done_np, obs_t, state.windows.device
+        )
 
     if live_idx.numel():
         p = state.pos_t[live_idx]
@@ -997,9 +1039,9 @@ def bootstrap_values(
         # the critic re-rolls the value on every call, so the critic reads in
         # eval mode. The actor proposal above stays in train mode on purpose:
         # its dropout is part of the behavior noise.
+        critic_training = policy.critic.training
         policy.critic.eval()
         policy.critic_target.eval()  # invariant: target always eval
-        critic_training = policy.critic.training
         try:
             with autocast_context(device):
                 actions_squashed = squash_to_env_bounds(actions, policy.action_low, policy.action_high)
@@ -1013,24 +1055,12 @@ def bootstrap_values(
         finally:
             policy.critic.train(critic_training)
 
-    # V-estimate: mean Q(s, a_chunk) per env approximates V(s) for A = G - V
-    # Uses chunk_env_id grouping; falls back to chunk mean if grouping unavailable
-    v_estimate = q_current_chunk.clone()
-    try:
-        if chunk_env_id is not None and chunk_env_id.numel() == q_current_chunk.numel():
-            env_ids = chunk_env_id.to(torch.long).reshape(-1)
-            v_estimate = torch.stack([
-                q_current_chunk[env_ids == e].mean() for e in torch.unique(env_ids).tolist()
-            ])
-    except Exception:
-        pass  # keep q_current_chunk as approximate V on failure
     return (
         normalized_states,
         normalized_next_states,
         boot_actions,
         q_current_chunk,
         q_bootstrap,
-        v_estimate,
     )
 
 
@@ -1173,9 +1203,7 @@ def run_rollout(
         boot_actions,
         q_current_chunk,
         q_bootstrap,
-        v_estimate,
     ) = bootstrap_values(policy, active, n_chunks, device, storage_dtype)
-    active["v_estimate"] = v_estimate
     raw_advantages, normalized_advantages, raw_returns, gae_diagnostics = (
         chunk_advantages(
             cfg, active, n_chunks, q_current_chunk, q_bootstrap, storage_dtype,

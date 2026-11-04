@@ -456,12 +456,11 @@ class MyfpoPolicy(nn.Module):
         """
         cfg = self.config
         # The behavior loss and the training loss are two readings of the same
-        # flow point, so they must see the same numbers. The rollout samples
-        # the noise and the timestep in fp32, while the training pass reloads
-        # them in the storage dtype, so the triple is aligned here, in the
-        # storage dtype, before anything is computed from it.
+        # flow point, so they must see the same numbers. The training pass
+        # reloads the action in fp32 and the noise and timestep in the storage
+        # dtype, so do the same here. Rounding the action to the storage dtype
+        # would move the CFM target the ratio divides by.
         storage_dtype = resolve_storage_dtype(actions.device)
-        actions = actions.to(storage_dtype)
         eps = eps.to(storage_dtype)
         t = t.to(storage_dtype)
         x_t, actor_t, flow_shape, num_mc = expand_mc_samples(actions, eps, t)

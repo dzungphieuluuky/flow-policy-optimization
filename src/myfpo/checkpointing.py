@@ -55,8 +55,10 @@ def save_policy_checkpoint(
     optimizer: torch.optim.Optimizer | None,
     global_step: int,
     ema_state: dict | None = None,
+    scheduler_state: dict | None = None,
 ) -> None:
-    """Save the policy, the optimizer, the EMA shadow, the counters, and the RNG."""
+    """Save the policy, the optimizer, the EMA shadow, the counters, the
+    optional scheduler state, and the RNG."""
     d = Path(dir_path)
     d.mkdir(parents=True, exist_ok=True)
 
@@ -75,6 +77,10 @@ def save_policy_checkpoint(
             "step_count": int(getattr(policy, "step_count", 0)),
         },
         "ema": ema_state,
+        # Optional: a run that uses no schedule, and every checkpoint written
+        # before this field existed, carries None. Both load as "restart the
+        # curve from global_step".
+        "scheduler": scheduler_state,
         "rng": rng,
     }
     save_atomically(
@@ -120,7 +126,8 @@ def load_policy_checkpoint(
     action_high=None,
 ):
     """Load a checkpoint from :func:`save_policy_checkpoint`. Restores the policy,
-    the optimizer, the EMA shadow, and the counters.
+    the optimizer, the EMA shadow, and the counters. A checkpoint that carries
+    scheduler state adds it to ``counters["scheduler"]``.
     """
     from myfpo.modeling import MyfpoPolicy
 
@@ -196,4 +203,6 @@ def load_policy_checkpoint(
     restore_rng(payload.get("rng"))
 
     counters = {"global_step": global_step, "step_count": step_count}
+    if payload.get("scheduler") is not None:
+        counters["scheduler"] = payload["scheduler"]
     return policy, optimizer, counters

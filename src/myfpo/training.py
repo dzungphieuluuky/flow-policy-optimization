@@ -116,18 +116,62 @@ def generate_mini_batch_indices(
 
 
 
+def updates_per_env_steps(cfg) -> int:
+    """Env steps one scheduler update covers.
+
+    One update collects ``chunks_per_update`` chunks of ``action_horizon``
+    actions, so the loop steps the scheduler once per that many env steps.
+    """
+    return max(1, int(cfg.chunks_per_update) * int(cfg.action_horizon))
+
+
 def make_scheduler(optimizer, cfg, total_steps: int):
-    """Build the warmup and cosine ``LambdaLR``. Return None when the config turns the schedule off."""
-    if cfg.lr_schedule == "none" or cfg.lr_warmup_steps <= 0 or total_steps <= cfg.lr_warmup_steps:
+    """Build the warmup and cosine ``LambdaLR``. Return None when the schedule is off.
+
+    ``total_steps`` and ``lr_warmup_steps`` count env steps. The scheduler
+    steps once per update, so both convert to update counts here.
+    """
+    if cfg.lr_schedule == "none":
         return None
-    warmup = max(1, cfg.lr_warmup_steps)
+    per_update = updates_per_env_steps(cfg)
+    total_updates = max(1, total_steps // per_update)
+    # Round up to one update: an env-step warmup shorter than a single update
+    # would otherwise disable the warmup completely.
+    warmup_steps = int(cfg.lr_warmup_steps)
+    warmup = max(1, warmup_steps // per_update) if warmup_steps > 0 else 0
+    if total_updates <= warmup:
+        # The run ends inside its warmup. A constant LR is the honest reading,
+        # and a smoke run must not train at a near-zero LR.
+        return None
+
     def lr_lambda(step):
-        """Scale the LR linearly during warmup, then apply the cosine decay over the remaining steps."""
-        if step < warmup:
+        """Scale the LR linearly during warmup, then apply the cosine decay."""
+        if warmup and step < warmup:
             return float(step) / float(warmup)
-        progress = float(step - warmup) / float(max(1, total_steps - warmup))
-        return 0.5 * (1.0 + math.cos(math.pi * progress))
+        progress = float(step - warmup) / float(max(1, total_updates - warmup))
+        return 0.5 * (1.0 + math.cos(math.pi * min(1.0, progress)))
+
     return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+
+
+def restore_scheduler(scheduler, state, global_step: int, cfg) -> None:
+    """Put a resumed run back on its LR curve.
+
+    ``state`` is the saved scheduler state. A checkpoint written before the
+    scheduler was persisted has none, so the curve restarts from the counter
+    instead. Either way the LR for the next update is applied now, because
+    ``LambdaLR`` starts at epoch 0 and the loop applies the LR before it steps.
+    """
+    if scheduler is None:
+        return
+    if state is not None:
+        # load_state_dict pops a key, so do not hand it the caller's dict.
+        scheduler.load_state_dict(dict(state))
+    else:
+        scheduler.last_epoch = global_step // updates_per_env_steps(cfg)
+    for i, group in enumerate(scheduler.optimizer.param_groups):
+        group["lr"] = scheduler.base_lrs[i] * scheduler.lr_lambdas[i](scheduler.last_epoch)
+
 
 def make_policy(
     obs_dim: int,
@@ -275,24 +319,17 @@ def measure_value_drift(policy, batch, device) -> tuple[torch.Tensor, torch.Tens
 
 
 def sample_random_baseline(
-    evaluator: Evaluator, env: Any, max_episodes: int = 30, seed: int | None = None
+    evaluator: Evaluator | VectorEvaluator, max_episodes: int = 30
 ) -> float:
     """Random-policy return, the divergence reference.
 
     The evaluator builds the baseline, so the same code covers the single-env
-    numpy path and the batched GPU path.
+    numpy path and the batched GPU path. Each evaluator knows how to make a
+    random policy for its own env: a per-step action for a numpy env, a raw
+    chunk for a torch env.
     """
     baseline = evaluator.clone(max_episodes=max_episodes)
-    # #5 fix: use single-action-space sample regardless of vector env; avoid [32,A] crash
-    policy_env = getattr(baseline, "env", None) or env
-    # Force single-env sampling: use unwrapped single space if vector, else direct
-    try:
-        single_space = getattr(policy_env, "single_action_space", None) or getattr(policy_env.unwrapped if hasattr(policy_env, "unwrapped") else policy_env, "action_space", None)
-    except Exception:
-        single_space = getattr(policy_env, "action_space", None)
-    def safe_random_policy(_obs):
-        return single_space.sample() if single_space is not None else policy_env.action_space.sample()
-    results = baseline.evaluate(safe_random_policy, out_dir=None)
+    results = baseline.evaluate(baseline.random_policy(baseline.env), out_dir=None)
     if not results:
         return 0.0
     return float(np.mean([r["return"] for r in results]))
@@ -493,7 +530,9 @@ def evaluate_policy(
     return result, summaries
 
 
-def save_checkpoint(out_dir, policy, optimizer, global_step, name, use_ema=False):
+def save_checkpoint(
+    out_dir, policy, optimizer, global_step, name, use_ema=False, scheduler=None
+):
     """Save one checkpoint, with the live model weights and the EMA shadow."""
     ckpt_dir = out_dir / CHECKPOINTS_DIR / name
     # The best and final scores are measured on the EMA weights. Saving the
@@ -506,6 +545,7 @@ def save_checkpoint(out_dir, policy, optimizer, global_step, name, use_ema=False
             optimizer=optimizer,
             global_step=global_step,
             ema_state=policy.ema_state_dict(),
+            scheduler_state=scheduler.state_dict() if scheduler is not None else None,
         )
     finally:
         if displaced:
@@ -542,7 +582,7 @@ def make_or_resume(
     action_high,
     resume_from_checkpoint,
 ):
-    """The policy and the optimizer. A resume takes the checkpoint's config."""
+    """The policy, the optimizer, and any saved scheduler state. A resume takes the checkpoint's config."""
     if resume_from_checkpoint is not None:
         policy, optimizer, counters = load_policy_checkpoint(
             resume_from_checkpoint,
@@ -551,7 +591,12 @@ def make_or_resume(
             action_high=action_high,
         )
         policy.train()
-        return policy, optimizer, int(counters["global_step"])
+        return (
+            policy,
+            optimizer,
+            int(counters["global_step"]),
+            counters.get("scheduler"),
+        )
     policy = make_policy(
         obs_dim,
         action_dim,
@@ -560,7 +605,7 @@ def make_or_resume(
         action_low=action_low,
         action_high=action_high,
     )
-    return policy, make_optimizer(policy), 0
+    return policy, make_optimizer(policy), 0, None
 
 
 
@@ -760,6 +805,7 @@ def eval_window(
     eval_steps: int,
     r_rand: float,
     video=None,
+    scheduler=None,
 ) -> None:
     """Evaluate both flow starts, log the window, and keep the best checkpoint."""
     result, summaries = evaluate_policy(
@@ -780,7 +826,13 @@ def eval_window(
     if result.get("improved", False):
         state.best_return, state.steps_to_best = stop_return, state.global_step
         best_artifact_path, _ = save_checkpoint(
-            out_dir, policy, optimizer, state.global_step, "best", use_ema=True
+            out_dir,
+            policy,
+            optimizer,
+            state.global_step,
+            "best",
+            use_ema=True,
+            scheduler=scheduler,
         )
         state.best_artifact = best_artifact_path
     if backends:
@@ -792,10 +844,18 @@ def eval_window(
     )
 
 
-def finalize_run(out_dir, policy, optimizer, state: RunState, env_name, seed, fps):
+def finalize_run(
+    out_dir, policy, optimizer, state: RunState, env_name, seed, fps, scheduler=None
+):
     """The final checkpoint, the artifact list, and the run summary."""
     final_path, _ = save_checkpoint(
-        out_dir, policy, optimizer, state.global_step, "final", use_ema=True
+        out_dir,
+        policy,
+        optimizer,
+        state.global_step,
+        "final",
+        use_ema=True,
+        scheduler=scheduler,
     )
     state.artifacts.append(final_path)
     if state.best_artifact is not None and state.best_artifact not in state.artifacts:
@@ -847,6 +907,7 @@ class RunSetup:
     video_env: Any = None
     video_evaluator: Any = None
     video_dir: Path | None = None
+    scheduler: Any = None
 
 
 # Rows in the recording env. ``render()`` renders every row, so this is kept
@@ -917,7 +978,7 @@ def configure_run(
     action_low = np.atleast_1d(np.asarray(env.action_space.low, dtype=np.float32))
     action_high = np.atleast_1d(np.asarray(env.action_space.high, dtype=np.float32))
 
-    policy, optimizer, global_step = make_or_resume(
+    policy, optimizer, global_step, scheduler_state = make_or_resume(
         cfg,
         device,
         obs_dim,
@@ -926,6 +987,9 @@ def configure_run(
         action_high,
         resume_from_checkpoint,
     )
+    scheduler = make_scheduler(optimizer, cfg, total_steps)
+    if scheduler_state is not None or global_step > 0:
+        restore_scheduler(scheduler, scheduler_state, global_step, cfg)
 
     print(
         f"myfpo policy: actor_depth={cfg.dit_depth} hidden={cfg.hidden_dim} "
@@ -999,7 +1063,7 @@ def configure_run(
         "zero_start": EvalPolicy(policy, start_from_zero=True),
         "noise_start": EvalPolicy(policy, start_from_zero=False),
     }
-    r_rand = sample_random_baseline(evaluator, train_env, seed=seed)
+    r_rand = sample_random_baseline(evaluator)
     backends = make_backends(
         cfg,
         out_dir=out_dir,
@@ -1025,9 +1089,27 @@ def configure_run(
         video_env=video_env,
         video_evaluator=video_evaluator,
         video_dir=Path(video_dir) if video_dir is not None else None,
+        scheduler=scheduler,
     )
 
 
+
+
+def invalidate_shared_env_carry(policy, evaluator, train_env) -> bool:
+    """Drop the collector's carry when the evaluator used the training env.
+
+    A single-env run evaluates on the same env the collector drives. The
+    evaluator resets it and steps whole episodes, so the cached windows and
+    autoreset flags describe a state that no longer exists. Returning True
+    means the carry was dropped.
+    """
+    if getattr(evaluator, "env", None) is not train_env:
+        return False
+    buffers = getattr(policy, "rollout_buffers", None)
+    if buffers is None:
+        return False
+    buffers.carry = None
+    return True
 
 
 def run_training_loop(
@@ -1051,7 +1133,7 @@ def run_training_loop(
     grad_groups = split_grad_params(policy)
     t_start = time.time()
 
-    scheduler = make_scheduler(optimizer, cfg, total_steps)
+    scheduler = setup.scheduler
     with tqdm(total=total_steps, desc="train", unit="step") as pbar:
         while state.global_step < total_steps:
             steps_to_go = total_steps - state.global_step
@@ -1075,10 +1157,7 @@ def run_training_loop(
                 policy, optimizer, batch, backends, cfg, grad_groups
             )
             if scheduler is not None:
-                # Option A: apply LR from env-step lambda directly
-                step_env = global_step if 'global_step' in locals() else (int(update_step) if 'update_step' in locals() else 0)
-                # Use LambdaLR's internal step count as approximation; full env-step requires refactoring
-                scheduler.step()  # kept; full env-step migration deferred to structural pass
+                scheduler.step()
 
             drift = None
             if cfg.log_drift_diagnostics and backends:
@@ -1130,11 +1209,18 @@ def run_training_loop(
                     if setup.video_evaluator is not None
                     else None
                 ),
+                scheduler=scheduler,
                 )
+                invalidate_shared_env_carry(policy, evaluator, train_env)
 
             if state.global_step >= state.next_save or state.global_step >= total_steps:
                 artifact_path, _ = save_checkpoint(
-                    out_dir, policy, optimizer, state.global_step, f"step_{state.global_step}"
+                    out_dir,
+                    policy,
+                    optimizer,
+                    state.global_step,
+                    f"step_{state.global_step}",
+                    scheduler=scheduler,
                 )
                 state.artifacts.append(artifact_path)
                 state.next_save = max(
@@ -1220,7 +1306,16 @@ def run_training(
             setup.video_env.close()
         finish_backends(backends)
 
-    return finalize_run(out_dir, policy, optimizer, state, env_name, seed, fps)
+    return finalize_run(
+        out_dir,
+        policy,
+        optimizer,
+        state,
+        env_name,
+        seed,
+        fps,
+        scheduler=setup.scheduler,
+    )
 
 # TRACKING
 

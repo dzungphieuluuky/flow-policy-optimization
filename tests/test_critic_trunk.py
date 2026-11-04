@@ -402,6 +402,25 @@ def test_the_nan_branch_sits_on_the_input_device():
     assert out["value_pred_member_corr"].is_cuda
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="device mixing bites on cuda")
+def test_the_member_correlation_mask_sits_on_the_input_device():
+    """The off-diagonal mask must be built on the input device.
+
+    A cpu bool mask indexing a cuda correlation matrix raises, so the metric
+    aborts on the first training update. This is a regression test for that
+    abort, so it only runs where the failure can.
+    """
+    n = 16
+    values = torch.randn(2, n, device="cuda")
+    out = compute_value_metrics(
+        raw_value_pred=values,
+        raw_returns_flat=torch.zeros(n, device="cuda"),
+        policy_per_chunk=torch.zeros(n, device="cuda"),
+        value_loss_per_chunk=torch.zeros(n, device="cuda"),
+    )
+    assert math.isfinite(float(out["value_pred_member_corr"]))
+
+
 def test_a_constant_member_has_no_correlation_to_measure():
     """A member that gives the same value on every state has no spread."""
     pred = torch.randn(2, 8)

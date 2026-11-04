@@ -102,7 +102,7 @@ class FlowActor(nn.Module):
     ) -> torch.Tensor:
         """Predict the velocity from the token actions and the per-token times."""
         out, _ = self.forward_core(x_t, t, condition, collect_stats=False)
-        return torch.tanh(out)
+        return out
 
     def forward_with_stats(
         self,
