@@ -112,6 +112,8 @@ class MyfpoConfig:
     transported_clip_value: float | None = None
 
     compile: bool = False
+    compile_mode: str = "default"
+    """torch.compile mode for the loss path: 'default' or 'reduce-overhead'."""
 
     actor_arch: str = "dit"
     dit_depth: int = 4
@@ -402,6 +404,10 @@ class MyfpoConfig:
         if self.lr_schedule not in ("none", "cosine"):
             raise ValueError(
                 f"lr_schedule={self.lr_schedule!r} must be 'none' or 'cosine'"
+            )
+        if self.compile_mode not in ("default", "reduce-overhead"):
+            raise ValueError(
+                f"compile_mode={self.compile_mode!r} must be 'default' or 'reduce-overhead'"
             )
         if self.lr_warmup_steps < 0:
             raise ValueError(

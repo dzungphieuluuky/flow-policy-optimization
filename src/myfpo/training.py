@@ -192,10 +192,8 @@ def make_policy(
     policy = MyfpoPolicy(policy_cfg).to(device)
     if action_low is not None and action_high is not None:
         policy.set_action_bounds(action_low, action_high)
-    if cfg.compile:
-        policy.actor = torch.compile(policy.actor, mode="default")
-        policy.encoder = torch.compile(policy.encoder, mode="default")
-        policy.critic = torch.compile(policy.critic, mode="default")
+    # MyfpoPolicy compiles the whole loss path lazily (loss_and_info), so
+    # there is nothing to wrap at build time.
     return policy
 
 
@@ -465,7 +463,11 @@ def policy_update_step(policy, optimizer, batch, backends, cfg, grad_groups):
                 epoch_infos.append(epoch_info)
             if loss.dim() != 0:
                 raise ValueError(f"Loss must be scalar before backward; got {tuple(loss.shape)}.")
-            if not bool(torch.isfinite(loss).all()):
+            # bool(isfinite(...).all()) syncs the device. One check per update,
+            # or on every microbatch when MYFPO_CHECK_FINITE=1.
+            if (
+                micro_step == 0 or os.environ.get("MYFPO_CHECK_FINITE") == "1"
+            ) and not bool(torch.isfinite(loss).all()):
                 raise TrainingAborted(f"Non-finite loss at step {micro_step}: {loss}")
             (loss / group_size).backward()
             is_boundary = (

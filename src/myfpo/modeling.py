@@ -8,7 +8,7 @@ import copy
 from collections import deque
 
 import dataclasses
-import time
+import os
 
 import numpy as np
 import torch
@@ -102,6 +102,8 @@ class PolicyTerms:
     ratio_token: torch.Tensor
     delta: torch.Tensor
     target_velocity: torch.Tensor
+    cfm_above_clamp_frac: torch.Tensor
+    cfm_both_clamped_frac: torch.Tensor
 
 
 # ARCHITECTURE
@@ -552,11 +554,13 @@ class MyfpoPolicy(nn.Module):
         frame and each chunk token. The values do not change.
         """
         cfg = self.config
-        states = self.to_device_tensor(batch, "observation.state", device, storage_dtype, async_=True)
+        # No pinned async copies on the loss path: under torch.compile the H2D
+        # is a graph node, and pin_memory has no place inside a CUDA graph.
         # The action is the flow's raw output, and it is the CFM regression
         # target. It stays fp32: the raw values are unbounded, so a bf16
         # rounding would put a 0.4% error on the target the flow is fit to.
-        actions = self.to_device_tensor(batch, "action", device, torch.float32, async_=True)
+        states = self.to_device_tensor(batch, "observation.state", device, storage_dtype)
+        actions = self.to_device_tensor(batch, "action", device, torch.float32)
         advantages = self.to_device_tensor(
             batch, "normalized_advantages", device, storage_dtype
         )
@@ -721,12 +725,8 @@ class MyfpoPolicy(nn.Module):
                 loss_new = group_cfm_loss(
                     cfm_loss_new_token, cfg.cfm_average_group_size
                 )
-            self.cfm_above_clamp_frac = (
-                (loss_new > cfg.cfm_clamp).float().mean().detach()
-            )
-            self.cfm_both_clamped_frac = clamp_saturation(
-                loss_old, loss_new, cfg
-            ).detach()
+            cfm_above_clamp_frac = (loss_new > cfg.cfm_clamp).float().mean().detach()
+            cfm_both_clamped_frac = clamp_saturation(loss_old, loss_new, cfg).detach()
             adv_ratio = adv.reshape(-1, *([1] * (loss_old.dim() - 1)))
             # The ratio clamps delta at cfm_clamp and at the negative-advantage
             # bound. The diagnostic must report that same delta, or it describes
@@ -750,6 +750,8 @@ class MyfpoPolicy(nn.Module):
             ratio_token=ratio_token,
             delta=delta,
             target_velocity=target_velocity,
+            cfm_above_clamp_frac=cfm_above_clamp_frac,
+            cfm_both_clamped_frac=cfm_both_clamped_frac,
         )
 
     def value_loss(
@@ -776,6 +778,94 @@ class MyfpoPolicy(nn.Module):
         return value_loss_per_chunk, raw_value_pred, raw_returns_flat
 
 # LOSS
+    def compute_loss(
+        self,
+        batch: dict[str, torch.Tensor],
+        reduction: str = "mean",
+        *,
+        grad_inputs: bool = False,
+        timers=None,
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        """The pure loss path. Tensor ops only: no host transfer, no float().
+
+        Returns ``(loss, aux)`` where ``aux`` carries the tensors the metrics
+        and the probes read. ``grad_inputs`` makes the obs and action leaves
+        require a gradient for the temporal probe. ``timers`` is an optional
+        tuple of CUDA events ``(a0, a1, c0, c1)``; the compiled path is called
+        without them.
+        """
+        cfg = self.config
+        device = next(self.actor.parameters()).device
+        storage_dtype = resolve_storage_dtype(device)
+
+        b = self.to_device_batch(batch, device, storage_dtype, grad_inputs=grad_inputs)
+
+        if timers is not None:
+            timers[0].record()
+        with autocast_context(device):
+            v_new = self.compute_predicted_velocity(
+                b.x_t, b.actor_t, b.condition_flat
+            ).float()
+        if timers is not None:
+            timers[1].record()
+
+        terms = self.policy_loss(b, v_new, device)
+        if timers is not None:
+            timers[2].record()
+        value_loss_per_chunk, raw_value_pred, raw_returns_flat = self.value_loss(
+            b, device
+        )
+        if timers is not None:
+            timers[3].record()
+
+        if reduction == "mean":
+            policy_loss = terms.policy_per_chunk.mean()
+            value_loss = value_loss_per_chunk.mean()
+            loss = policy_loss + cfg.value_loss_coef * value_loss
+        elif reduction == "none":
+            loss = terms.policy_per_chunk + cfg.value_loss_coef * value_loss_per_chunk
+        else:
+            raise ValueError(f"reduction={reduction!r} must be 'mean' or 'none'")
+
+        aux = {
+            "cfm_loss_old": b.cfm_loss_old.detach(),
+            "cfm_loss_new": terms.cfm_loss_new.detach(),
+            "ratio": terms.ratio.detach(),
+            "ratio_token": terms.ratio_token.detach(),
+            "delta": terms.delta.detach(),
+            "target_velocity": terms.target_velocity.detach(),
+            "action_is_pad": b.action_is_pad,
+            "chunk_truncated": b.chunk_truncated,
+            "policy_per_chunk": terms.policy_per_chunk.detach(),
+            "value_loss_per_chunk": value_loss_per_chunk.detach(),
+            # raw_value_pred keeps its grad: the temporal probe backprops
+            # through it. The metrics pass calls detach() internally.
+            "raw_value_pred": raw_value_pred,
+            "raw_returns_flat": raw_returns_flat.detach(),
+            "policy_loss": terms.policy_per_chunk.mean().detach(),
+            "value_loss": value_loss_per_chunk.mean().detach(),
+            "cfm_above_clamp_frac": terms.cfm_above_clamp_frac,
+            "cfm_both_clamped_frac": terms.cfm_both_clamped_frac,
+            # The probes read these. They stay tensors; no host transfer here.
+            "x_t": b.x_t,
+            "actor_t": b.actor_t,
+            "condition_flat": b.condition_flat,
+            "states": b.states,
+            "actions": b.actions,
+        }
+        return loss, aux
+
+    def _loss_impl(self):
+        """Return ``(impl, compiled)`` for the loss path under the current config."""
+        cfg = self.config
+        if not cfg.compile:
+            return self.compute_loss, False
+        fn = getattr(self, "_compiled_compute_loss", None)
+        if fn is None:
+            fn = torch.compile(self.compute_loss, mode=cfg.compile_mode)
+            self._compiled_compute_loss = fn
+        return fn, True
+
     def loss_and_info(
         self,
         batch: dict[str, torch.Tensor],
@@ -787,7 +877,6 @@ class MyfpoPolicy(nn.Module):
         """The shared body. ``compute_info`` picks the metrics pass."""
         cfg = self.config
         device = next(self.actor.parameters()).device
-        storage_dtype = resolve_storage_dtype(device)
 
         self.probe_counter += 1
         probe_on = (
@@ -795,56 +884,67 @@ class MyfpoPolicy(nn.Module):
             and self.probe_counter % cfg.temporal_probe_every == 0
             and torch.is_grad_enabled()
         )
+        timing = os.environ.get("MYFPO_TIMING") == "1"
 
-        b = self.to_device_batch(batch, device, storage_dtype, grad_inputs=probe_on)
+        # The temporal probe backprops leaves; it always runs eager.
+        if cfg.compile and not probe_on:
+            impl, compiled = self._loss_impl()
+            timers = None
+        else:
+            impl, compiled = self.compute_loss, False
+            timers = (
+                (
+                    torch.cuda.Event(enable_timing=True),
+                    torch.cuda.Event(enable_timing=True),
+                    torch.cuda.Event(enable_timing=True),
+                    torch.cuda.Event(enable_timing=True),
+                )
+                if timing and device.type == "cuda"
+                else None
+            )
 
-        t0 = time.perf_counter()
-        with autocast_context(device):
-            v_new = self.compute_predicted_velocity(
-                b.x_t, b.actor_t, b.condition_flat
-            ).float()
-        if device.type == "cuda":
-            torch.cuda.synchronize()
-        actor_s = time.perf_counter() - t0
+        loss, aux = impl(batch, reduction, grad_inputs=probe_on, timers=timers)
+
+        if compiled:
+            # A compiled graph hands out pool-owned outputs; clone before any
+            # consumer keeps them.
+            aux = {
+                k: (cudagraph_safe(v, True) if torch.is_tensor(v) else v)
+                for k, v in aux.items()
+            }
+
+        if timers is not None:
+            self.actor_step_s = timers[0].elapsed_time(timers[1]) / 1e3
+            self.critic_step_s = timers[2].elapsed_time(timers[3]) / 1e3
+        else:
+            self.actor_step_s = 0.0
+            self.critic_step_s = 0.0
+
+        self.cfm_above_clamp_frac = aux["cfm_above_clamp_frac"]
+        self.cfm_both_clamped_frac = aux["cfm_both_clamped_frac"]
 
         cond_stats = None
         if compute_info:
             with torch.inference_mode(), autocast_context(device):
                 probe = max(1, cfg.hidden_dim // cfg.action_horizon)
                 _, cond_stats = self.actor(
-                    b.x_t[:probe],
-                    b.actor_t[:probe],
-                    b.condition_flat[:probe],
+                    aux["x_t"][:probe],
+                    aux["actor_t"][:probe],
+                    aux["condition_flat"][:probe],
                     collect_stats=True,
                 )
 
-        terms = self.policy_loss(b, v_new, device)
-        t0 = time.perf_counter()
-        value_loss_per_chunk, raw_value_pred, raw_returns_flat = self.value_loss(
-            b, device
-        )
-        if device.type == "cuda":
-            torch.cuda.synchronize()
-        critic_s = time.perf_counter() - t0
-
         sensitivity = (
-            self.temporal_sensitivity(raw_value_pred, b) if probe_on else {}
+            self.temporal_sensitivity(aux["raw_value_pred"], aux["states"], aux["actions"])
+            if probe_on
+            else {}
         )
-
-        if reduction == "mean":
-            policy_loss = terms.policy_per_chunk.mean()
-            value_loss = value_loss_per_chunk.mean()
-            loss = policy_loss + cfg.value_loss_coef * value_loss
-        elif reduction == "none":
-            loss = terms.policy_per_chunk + cfg.value_loss_coef * value_loss_per_chunk
-        else:
-            raise ValueError(f"reduction={reduction!r} must be 'mean' or 'none'")
 
         if check_finite and not bool(torch.isfinite(loss).all()):
             raise TrainingAborted(
                 f"Non-finite loss: "
-                f"policy_loss={float(terms.policy_per_chunk.mean().detach())}, "
-                f"value_loss={float(value_loss_per_chunk.mean().detach())}"
+                f"policy_loss={float(aux['policy_loss'])}, "
+                f"value_loss={float(aux['value_loss'])}"
             )
 
         if not compute_info:
@@ -853,35 +953,36 @@ class MyfpoPolicy(nn.Module):
         info = compute_policy_info(
             above_clamp_frac=self.cfm_above_clamp_frac,
             both_clamped_frac=self.cfm_both_clamped_frac,
-            cfm_loss_old=b.cfm_loss_old,
-            cfm_loss_new=terms.cfm_loss_new,
-            ratio=terms.ratio,
-            ratio_token=terms.ratio_token,
-            delta=terms.delta,
-            action_is_pad=b.action_is_pad,
-            chunk_truncated=b.chunk_truncated,
-            target_velocity=terms.target_velocity,
-            raw_value_pred=raw_value_pred,
-            raw_returns_flat=raw_returns_flat,
-            policy_per_chunk=terms.policy_per_chunk,
-            value_loss_per_chunk=value_loss_per_chunk,
+            cfm_loss_old=aux["cfm_loss_old"],
+            cfm_loss_new=aux["cfm_loss_new"],
+            ratio=aux["ratio"],
+            ratio_token=aux["ratio_token"],
+            delta=aux["delta"],
+            action_is_pad=aux["action_is_pad"],
+            chunk_truncated=aux["chunk_truncated"],
+            target_velocity=aux["target_velocity"],
+            raw_value_pred=aux["raw_value_pred"],
+            raw_returns_flat=aux["raw_returns_flat"],
+            policy_per_chunk=aux["policy_per_chunk"],
+            value_loss_per_chunk=aux["value_loss_per_chunk"],
             cond_stats=cond_stats,
             cfg=cfg,
         )
-        self.actor_step_s = actor_s
-        self.critic_step_s = critic_s
         info.update(sensitivity)
         return loss, info
 
+    @torch.compiler.disable
     def temporal_sensitivity(
-        self, raw_value_pred: torch.Tensor, b: TrainingBatch
+        self,
+        raw_value_pred: torch.Tensor,
+        states: torch.Tensor,
+        actions: torch.Tensor,
     ) -> dict[str, float]:
         """Diagnostic: Q gradient wrt chunk tokens / obs frames.
         Measures temporal filter quality; prices full plan, not executed prefix."""
-        # ``to_device_batch(grad_inputs=True)`` makes the two leaves, so their
-        # ``grad_fn`` is None by construction and says nothing about the graph.
-        # What the probe needs is that both leaves still require a gradient.
-        if not (b.actions.requires_grad and b.states.requires_grad):
+        # ``grad_inputs=True`` makes the two leaves require a gradient. What
+        # the probe needs is that both leaves still require a gradient.
+        if not (actions.requires_grad and states.requires_grad):
             import warnings
             warnings.warn(
                 "temporal_sensitivity: the probe leaves do not require a "
@@ -892,12 +993,12 @@ class MyfpoPolicy(nn.Module):
             return {}
         out = {}
         grads = torch.autograd.grad(
-            raw_value_pred.sum(), b.actions, retain_graph=True
+            raw_value_pred.sum(), actions, retain_graph=True
         )[0]
         for i, value in enumerate(grads.norm(dim=-1).mean(dim=0).tolist()):
             out[f"critic_action_grad_norm_pos{i}"] = value
         grads = torch.autograd.grad(
-            raw_value_pred.sum(), b.states, retain_graph=True
+            raw_value_pred.sum(), states, retain_graph=True
         )[0]
         for j, value in enumerate(grads.norm(dim=-1).mean(dim=0).tolist()):
             out[f"obs_frame_grad_norm_pos{j}"] = value
