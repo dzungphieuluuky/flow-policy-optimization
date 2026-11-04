@@ -60,3 +60,15 @@ def test_config_accepts_an_even_head_dim():
 def test_config_still_rejects_hidden_dim_that_does_not_split_over_heads():
     with pytest.raises(ValueError, match="must be divisible by"):
         dataclasses.replace(MyfpoConfig(), hidden_dim=128, dit_heads=5).validate()
+
+
+def test_config_rejects_a_width_the_critic_cannot_split():
+    # 12 splits over 3 actor heads with an even head width. The critic's four
+    # heads need width % 8, so this config cannot build.
+    with pytest.raises(ValueError, match="must be divisible by 8"):
+        dataclasses.replace(MyfpoConfig(), hidden_dim=12, dit_heads=3)
+
+
+def test_config_accepts_a_width_the_critic_can_split():
+    cfg = dataclasses.replace(MyfpoConfig(), hidden_dim=24, dit_heads=3)
+    assert cfg.hidden_dim % 8 == 0

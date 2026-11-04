@@ -127,7 +127,8 @@ def load_policy_checkpoint(
 ):
     """Load a checkpoint from :func:`save_policy_checkpoint`. Restores the policy,
     the optimizer, the EMA shadow, and the counters. A checkpoint that carries
-    scheduler state adds it to ``counters["scheduler"]``.
+    scheduler state adds it to ``counters["scheduler"]``. A policy-only
+    checkpoint (``optimizer=None``) loads with ``optimizer=None``.
     """
     from myfpo.modeling import MyfpoPolicy
 
@@ -171,9 +172,10 @@ def load_policy_checkpoint(
         policy.set_action_bounds(action_low, action_high)
 
     opt_state = payload.get("optimizer")
-    if opt_state is None:
-        raise ResumeError(f"{path} carries no optimizer state")
-    optimizer = load_optimizer(policy, opt_state)
+    # A policy-only checkpoint (saved with ``optimizer=None``) is still valid
+    # for inference and for a determinism probe. A training resume must add its
+    # own guard, because it needs the optimizer state.
+    optimizer = load_optimizer(policy, opt_state) if opt_state is not None else None
 
     if payload.get("ema") is not None:
         restored = policy.load_ema_state_dict(payload["ema"])

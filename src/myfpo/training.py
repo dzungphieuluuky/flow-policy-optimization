@@ -23,6 +23,7 @@ import torch
 
 from myfpo.checkpointing import (
     CHECKPOINT_FILE,
+    ResumeError,
     load_policy_checkpoint,
     save_policy_checkpoint,
 )
@@ -140,7 +141,7 @@ def make_scheduler(optimizer, cfg, total_steps: int):
     # Round up to one update: an env-step warmup shorter than a single update
     # would otherwise disable the warmup completely.
     warmup_steps = int(cfg.lr_warmup_steps)
-    warmup = max(1, warmup_steps // per_update) if warmup_steps > 0 else 0
+    warmup = max(1, math.ceil(warmup_steps / per_update)) if warmup_steps > 0 else 0
     if total_updates <= warmup:
         # The run ends inside its warmup. A constant LR is the honest reading,
         # and a smoke run must not train at a near-zero LR.
@@ -594,6 +595,11 @@ def make_or_resume(
             action_low=action_low,
             action_high=action_high,
         )
+        if optimizer is None:
+            raise ResumeError(
+                f"{resume_from_checkpoint} carries no optimizer state, so it "
+                "cannot resume training. Load it for inference instead."
+            )
         policy.train()
         return (
             policy,

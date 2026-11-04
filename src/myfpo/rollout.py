@@ -838,26 +838,23 @@ def init_collect_state(
     carry, envs, seed, n, n_obs_steps, action_horizon, act_dim, targets
 ):
     """Build the collector state. An empty carry resets the env rows. Otherwise rebuild from the carried windows."""
-    try:
-        if carry is None:
-            obs, _ = envs.reset(seed=[seed + i for i in range(n)])
-            if torch.is_tensor(obs):
-                obs0 = obs.to(dtype=OBS_DTYPE)
-            else:
-                obs0 = torch.from_numpy(np.asarray(obs, dtype=np.float32))
-            state = make_state(
-                n, n_obs_steps, int(obs0.shape[-1]), action_horizon, act_dim,
-                obs0, remaining=sum(targets), device=obs0.device,
-            )
+    if carry is None:
+        obs, _ = envs.reset(seed=[seed + i for i in range(n)])
+        if torch.is_tensor(obs):
+            obs0 = obs.to(dtype=OBS_DTYPE)
         else:
-            state = make_state(
-                n, n_obs_steps, int(carry.windows.shape[-1]), action_horizon,
-                act_dim, carry.windows, remaining=sum(targets),
-                device=carry.windows.device,
-            )
-            state.awaiting[:] = np.asarray(carry.awaiting, dtype=bool)
-    except (ValueError, RuntimeError, KeyError):
-        raise
+            obs0 = torch.from_numpy(np.asarray(obs, dtype=np.float32))
+        state = make_state(
+            n, n_obs_steps, int(obs0.shape[-1]), action_horizon, act_dim,
+            obs0, remaining=sum(targets), device=obs0.device,
+        )
+    else:
+        state = make_state(
+            n, n_obs_steps, int(carry.windows.shape[-1]), action_horizon,
+            act_dim, carry.windows, remaining=sum(targets),
+            device=carry.windows.device,
+        )
+        state.awaiting[:] = np.asarray(carry.awaiting, dtype=bool)
     return state
 
 

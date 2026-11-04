@@ -37,3 +37,14 @@ def test_an_old_style_directory_says_what_is_missing(tmp_path):
     (tmp_path / "config.json").write_text("{}")
     with pytest.raises(ResumeError, match=CHECKPOINT_FILE):
         load_policy_checkpoint(tmp_path)
+
+
+def test_a_policy_only_checkpoint_loads_without_an_optimizer(tmp_path):
+    policy = make_test_policy()
+    save_policy_checkpoint(tmp_path, policy=policy, optimizer=None, global_step=3)
+
+    loaded, optimizer, counters = load_policy_checkpoint(tmp_path)
+    assert optimizer is None
+    assert counters["global_step"] == 3
+    for name, value in policy.state_dict().items():
+        assert torch.equal(value, loaded.state_dict()[name]), name

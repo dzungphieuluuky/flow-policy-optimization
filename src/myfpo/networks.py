@@ -411,9 +411,9 @@ class CriticMember(nn.Module):
             if condition_dim is not None
             else (state_hidden if state_hidden is not None else hidden_dim)
         )
-        # Four heads on the attention width. The actor's window encoder already
-        # requires a width that splits over its two heads with an even head
-        # width, so state_dim divides by four on every reachable config.
+        # Four heads on the attention width. StateEncoder requires width % 4,
+        # which gives an even head width for two heads. validate_critic also
+        # requires width % 8, so four even heads always fit.
         attn_heads = 4
         self.attn_heads = attn_heads
 

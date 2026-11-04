@@ -239,6 +239,16 @@ class MyfpoConfig:
             )
         if self.critic_lr <= 0:
             raise ValueError(f"critic_lr={self.critic_lr} must be > 0")
+        # The critic runs four attention heads over the state window, and
+        # ``make_policy_head`` passes ``hidden_dim`` as that window's width.
+        # Each head width must be even for RoPE, so the width divides by eight.
+        # The actor's rule (2 * dit_heads) is weaker and does not imply this.
+        if self.hidden_dim % 8 != 0:
+            raise ValueError(
+                f"hidden_dim={self.hidden_dim} must be divisible by 8: the "
+                "critic uses 4 attention heads on the state window, and each "
+                "head width must be even"
+            )
 
     def validate_trust_region(self) -> None:
         """Discounts, clipping, the ASPO mode, and the CFM ratio terms."""

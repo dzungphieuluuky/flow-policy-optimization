@@ -8,11 +8,12 @@ CLI config. A resumed run then wrapped one policy in another run's settings.
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from myfpo import training
-from myfpo.checkpointing import save_policy_checkpoint
+from myfpo.checkpointing import ResumeError, save_policy_checkpoint
 from myfpo.modeling import make_optimizer
-from myfpo.training import configure_run
+from myfpo.training import configure_run, make_or_resume
 
 from fixtures import ACT_DIM, OBS_DIM, cfg as fixture_cfg, make_test_policy
 
@@ -56,6 +57,23 @@ def test_a_resume_takes_the_checkpoint_config(tmp_path, monkeypatch, capsys):
     assert setup.evaluator.max_episodes == 3
     props = capsys.readouterr().err
     assert "num_envs=2" in props and "asked for 1" in props
+
+
+def test_a_policy_only_checkpoint_cannot_resume_training(tmp_path):
+    trained = make_test_policy()
+    ckpt = tmp_path / "ckpt"
+    save_policy_checkpoint(ckpt, policy=trained, optimizer=None, global_step=0)
+
+    with pytest.raises(ResumeError, match="carries no optimizer state"):
+        make_or_resume(
+            fixture_cfg(),
+            "cpu",
+            OBS_DIM,
+            ACT_DIM,
+            -np.ones(ACT_DIM, dtype=np.float32),
+            np.ones(ACT_DIM, dtype=np.float32),
+            ckpt,
+        )
 
 
 def test_a_fresh_run_keeps_the_cli_config(tmp_path, monkeypatch):

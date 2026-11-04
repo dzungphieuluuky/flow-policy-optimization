@@ -59,6 +59,22 @@ def test_the_lr_leaves_the_warmup_at_the_env_step_warmup_budget():
     assert seen[-1] < seen[50] < seen[10]
 
 
+def test_a_partial_warmup_rounds_up_to_a_whole_update():
+    """48 env steps of warmup at 32 steps per update is 1.5 updates, so 2.
+
+    A floor made the warmup reach the full LR after one update, half a
+    window early.
+    """
+    optimizer = _optimizer()
+    scheduler = make_scheduler(optimizer, _cfg(lr_warmup_steps=48), TOTAL_STEPS)
+    seen = []
+    for _ in range(4):
+        seen.append(_lr(optimizer))
+        scheduler.step()
+    assert seen[1] == pytest.approx(0.5 * LR)
+    assert seen[2] == pytest.approx(LR)
+
+
 def test_the_decay_is_monotone_after_the_warmup():
     optimizer = _optimizer()
     scheduler = make_scheduler(optimizer, _cfg(), TOTAL_STEPS)
