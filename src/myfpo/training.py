@@ -1555,7 +1555,7 @@ def make_train_metrics(
     for key in ROLLOUT_ABS_KEYS:
         data[f"train/{key}"] = rollout[key]
     for key in ("collect_s", "actor_step_s", "critic_step_s"):
-        data[f"train/{key}"] = rollout.get(key, 0.0)
+        data[f"train/{key}"] = rollout[key]
     gae_diag = batch.get("gae_diagnostics")
     if gae_diag:
         data.update(

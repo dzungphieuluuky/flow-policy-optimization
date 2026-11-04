@@ -1274,5 +1274,5 @@ def run_rollout(
         "behavior_cfm_loss": behavior_cfm_loss,
         "behavior_cfm_loss_token": behavior_cfm_loss_token,
         "behavior_velocity_token": behavior_velocity_token,
-        "step_rewards": active.get("step_rewards", torch.tensor([])),
+        "step_rewards": active["step_rewards"],
     }

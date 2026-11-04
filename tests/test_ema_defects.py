@@ -4,6 +4,7 @@ Found from a Humanoid run that peaked at 131k and decayed 46%."""
 
 import warnings
 
+import pytest
 import torch
 
 from fixtures import make_test_policy
@@ -82,6 +83,22 @@ def test_a_matching_shadow_is_restored():
     fresh = make_test_policy()
     assert fresh.load_ema_state_dict(state) is True
     assert set(fresh.ema_shadow) == set(p.ema_shadow)
+
+
+def test_a_state_without_the_init_flag_raises():
+    p = make_test_policy()
+    state = p.ema_state_dict()
+    del state["initialised"]
+    with pytest.raises(ValueError, match="initialised"):
+        p.load_ema_state_dict(state)
+
+
+def test_a_state_with_a_none_init_flag_raises():
+    p = make_test_policy()
+    state = p.ema_state_dict()
+    state["initialised"] = None
+    with pytest.raises(ValueError, match="None"):
+        p.load_ema_state_dict(state)
 
 
 # --- state dict -----------------------------------------------------------.

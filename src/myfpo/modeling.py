@@ -291,7 +291,13 @@ class MyfpoPolicy(nn.Module):
 
     def load_ema_state_dict(self, state: dict) -> bool:
         """Restore the shadow. Return False if the function re-seeded it instead."""
-        stored = state.get("shadow_params", {})
+        if "shadow_params" not in state or "initialised" not in state:
+            raise ValueError("EMA state needs shadow_params and initialised")
+        stored = state["shadow_params"]
+        initialised = state["initialised"]
+        # A default here hid a malformed payload. Read the flag and fail loudly.
+        if stored is None or initialised is None:
+            raise ValueError("EMA state carries a None value")
         current = self.ema_named_params()
         if set(stored) != set(current):
             self.ema_shadow = {}
@@ -304,7 +310,7 @@ class MyfpoPolicy(nn.Module):
             for name, value in stored.items()
         }
         # Encoder updated with actor; ratio compares encoder_old vs encoder_new.
-        self.ema_initialized = bool(state.get("initialised", True))
+        self.ema_initialized = bool(initialised)
         return True
 
     def get_actor_optim_params(self) -> dict:
