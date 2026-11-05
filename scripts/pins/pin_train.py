@@ -15,7 +15,7 @@ Usage
     PYTHONPATH=src .venv/bin/python scripts/pins/pin_train.py --write
     PYTHONPATH=src .venv/bin/python scripts/pins/pin_train.py
 
-The baseline is a binary file and is not tracked. See ``README.md``.
+See ``README.md`` for which baseline is tracked and how to regenerate it.
 """
 
 from __future__ import annotations

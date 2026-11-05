@@ -15,7 +15,7 @@ pins catch it. The suite does not.
 
 | Script | Covers | Baseline |
 |---|---|---|
-| `pin_train.py` | one `SJFPOPolicy.forward`, the whole `info` dict, and the gradient of every parameter, for both `dit` and `resmlp` | `train_old.pt` |
+| `pin_train.py` | one `MyfpoPolicy.loss_with_info` call, the whole `info` dict, and the gradient of every parameter, for the three pin arms (`dit`, `resmlp`, `dit.clamp0.5`) | `train_old.pt` |
 | `pin_eval.py` | eval summary metrics, the bootstrap interval, the three jerk measures, and both stop guards | `eval_old.pt` |
 
 `_shared.py` holds the setup and the comparison. Do not import anything from
@@ -53,10 +53,12 @@ PYTHONPATH=src .venv/bin/python scripts/pins/pin_train.py --write
 PYTHONPATH=src .venv/bin/python scripts/pins/pin_eval.py --write
 ```
 
-The baselines are binary and are not tracked. `.gitignore` covers them. A clone
-has the scripts and no baselines, so the first check on a fresh clone fails with
-"no baseline. Run with --write first." Generate the baseline on the branch that
-needs it and record the key counts in the commit message.
+The two baselines are tracked differently. `train_old.pt` is checked in and
+ships with a clone. `eval_old.pt` is not tracked; the `.gitignore` rule
+`scripts/pins/*.pt` covers it. A fresh clone passes `pin_train.py` and fails
+`pin_eval.py` with "no baseline. Run with --write first." Generate the eval
+baseline on the branch that needs it and record the key counts in the commit
+message. A change to `train_old.pt` is a re-pin and belongs in its own commit.
 
 ## What the pins do not cover
 
