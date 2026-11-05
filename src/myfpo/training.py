@@ -37,7 +37,7 @@ from myfpo.evaluator import (
 )
 from myfpo.modeling import TrainingAborted, MyfpoPolicy, make_optimizer
 from myfpo.fpo_core import compute_eval_summary_metrics, subsampled_min
-from myfpo.processor import squash_to_env_bounds
+from myfpo.processor import masked_squash_to_env_bounds, squash_to_env_bounds
 from myfpo.layers import (
     autocast_context,
     cudagraph_step_begin,
@@ -141,7 +141,9 @@ def make_scheduler(optimizer, cfg, total_steps: int):
     def lr_lambda(step):
         """Scale the LR linearly during warmup, then apply the cosine decay."""
         if warmup and step < warmup:
-            return float(step) / float(warmup)
+            # ``LambdaLR`` steps once in its constructor, so update 0 must
+            # already carry a nonzero LR.
+            return float(step + 1) / float(warmup)
         progress = float(step - warmup) / float(max(1, total_updates - warmup))
         return 0.5 * (1.0 + math.cos(math.pi * min(1.0, progress)))
 
@@ -288,12 +290,11 @@ def measure_value_drift(policy, batch, device) -> tuple[torch.Tensor, torch.Tens
     )
     # Match the masking in bootstrap_values: squash, then zero out steps
     # beyond n_action_steps, so live and target critics read the same chunk.
-    boot_actions = squash_to_env_bounds(boot_actions_raw, policy.action_low, policy.action_high)
     boot_mask = (
         torch.arange(cfg.action_horizon, device=boot_obs.device)
         .unsqueeze(0) < cfg.n_action_steps
     ).unsqueeze(-1).float()
-    boot_actions = boot_actions * boot_mask
+    boot_actions = masked_squash_to_env_bounds(boot_actions_raw, policy.action_low, policy.action_high, boot_mask)
     critic_was_training = policy.critic.training
     policy.critic.eval()
     try:

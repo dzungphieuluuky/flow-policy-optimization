@@ -204,3 +204,21 @@ def test_no_clamp_survives_on_the_collector_path():
     # names it while explaining the removal.
     names = {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
     assert "chunk_clip_counts" not in names, "the clip counter is back"
+
+
+def test_masked_squash_zeroes_only_the_masked_steps():
+    from myfpo.processor import masked_squash_to_env_bounds, squash_to_env_bounds
+
+    torch.manual_seed(0)
+    raw = torch.randn(2, 4, 3)
+    low = torch.tensor([-1.0, -1.0, -1.0])
+    high = torch.tensor([1.0, 1.0, 1.0])
+    mask = torch.ones(2, 4, 1)
+    mask[0, 2:] = 0.0
+    mask[1, 0] = 0.0
+
+    out = masked_squash_to_env_bounds(raw, low, high, mask)
+    squashed = squash_to_env_bounds(raw, low, high)
+    live = mask.expand_as(raw).to(dtype=bool)
+    assert torch.equal(out[live], squashed[live])
+    assert float(out[~live].abs().max()) == 0.0

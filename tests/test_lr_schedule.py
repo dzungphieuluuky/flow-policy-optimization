@@ -52,7 +52,8 @@ def test_the_lr_leaves_the_warmup_at_the_env_step_warmup_budget():
     for _ in range(100):
         seen.append(_lr(optimizer))
         scheduler.step()
-    assert seen[0] == pytest.approx(0.0)
+    # 10 updates of warmup, and update 0 already carries its share.
+    assert seen[0] == pytest.approx(LR / 10)
     assert seen[10] == pytest.approx(LR)
     # The cosine tail is reached, and it decays from there.
     assert seen[-1] < 0.01 * LR
@@ -71,8 +72,16 @@ def test_a_partial_warmup_rounds_up_to_a_whole_update():
     for _ in range(4):
         seen.append(_lr(optimizer))
         scheduler.step()
-    assert seen[1] == pytest.approx(0.5 * LR)
+    assert seen[0] == pytest.approx(0.5 * LR)
+    assert seen[1] == pytest.approx(LR)
     assert seen[2] == pytest.approx(LR)
+
+
+def test_the_first_update_does_not_train_at_zero_lr():
+    """``LambdaLR`` steps once in its constructor, so update 0 used to run at LR 0."""
+    optimizer = _optimizer()
+    make_scheduler(optimizer, _cfg(), TOTAL_STEPS)
+    assert _lr(optimizer) == pytest.approx(LR / 10)
 
 
 def test_the_decay_is_monotone_after_the_warmup():

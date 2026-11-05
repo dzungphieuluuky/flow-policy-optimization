@@ -154,4 +154,16 @@ def squash_to_env_bounds(
     """
     scale, bias = env_squash_terms(low, high)
     return squash_to_env(raw, scale, bias)
+def masked_squash_to_env_bounds(
+    raw: torch.Tensor,
+    low: torch.Tensor,
+    high: torch.Tensor,
+    mask: torch.Tensor,
+) -> torch.Tensor:
+    """Squash into the env's action bounds, then zero masked steps.
+
+    The mask carries the zeroed steps the caller already decided on; this
+    helper only places the multiply, so the callers cannot drift apart.
+    """
+    return squash_to_env_bounds(raw, low, high) * mask
 
