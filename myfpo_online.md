@@ -208,6 +208,88 @@ else:
     subprocess.call(["python", "scripts/determinism_probe.py", "--env", FEAS_ENV,
                      "--checkpoint", ckpts[0], "--episodes", "50", "--repeats", "3"])
 ```
+## Performance sweep
+
+Test the current algorithm under different runner configs on Hopper-v5 and
+compare frames-per-second against the final return. These numbers are
+wall-clock over the whole run (compile warmup included), so they are only
+comparable within this notebook at fixed `PERF_STEPS`.
+
+Sweep grid:
+- num euler steps: 1, 4, 16 (set via `--myfpo.num_steps_zero_start` and
+  `--myfpo.num_steps_noise_start`)
+- mc samples: 8, 16, 64 (set via `--myfpo.num_mc_samples`)
+- learning rates: 1e-4, 3e-4 (default), 1e-3 (set via `--myfpo.policy_lr`)
+
+That is 3 × 3 × 3 = 27 arms, each one seed (3407) at `PERF_STEPS`.
+
+```python
+PERF_ENV = "Hopper-v5"
+PERF_STEPS = 200_000
+PERF_SEEDS = "3407"
+
+EULER_STEPS = [1, 4, 16]
+MC_SAMPLES = [8, 16, 64]
+LEARNING_RATES = [1e-4, 3e-4, 1e-3]
+
+
+def perf_arm_tag(euler, mc, lr):
+    return f"perf_e{euler}_mc{mc}_lr{lr:g}"
+
+
+PERF_ARMS = {}
+for euler in EULER_STEPS:
+    for mc in MC_SAMPLES:
+        for lr in LEARNING_RATES:
+            tag = perf_arm_tag(euler, mc, lr)
+            PERF_ARMS[tag] = [
+                "--myfpo.num_steps_zero_start", str(euler),
+                "--myfpo.num_steps_noise_start", str(euler),
+                "--myfpo.num_mc_samples", str(mc),
+                "--myfpo.policy_lr", str(lr),
+            ]
+```
+
+```python
+def perf_sweep(tag, extra):
+    """Run one arm and print its exit code."""
+    if len(read_rows(tag)) >= 1:
+        print(f"{tag}: done, skipping")
+        return
+    cmd = ["python", "scripts/multiseed.py", "run", "--env", PERF_ENV,
+           "--seeds", PERF_SEEDS, "--total_steps", str(PERF_STEPS),
+           "--out", f"outputs/{tag}", "--method", "myfpo", *extra]
+    print(f"\n=== {tag} ===\n{' '.join(cmd)}\n", flush=True)
+    print(f"=== {tag} exit={subprocess.call(cmd)} ===", flush=True)
+
+
+def perf_rows(tag):
+    """Summary rows of one arm; [] when the file is absent."""
+    return read_rows(tag)
+```
+
+```python
+for tag, extra in PERF_ARMS.items():
+    perf_sweep(tag, extra)
+```
+
+```python
+# Compare fps and final return across arms, sorted by reward.
+records = []
+for tag in PERF_ARMS:
+    rows = perf_rows(tag)
+    if not rows:
+        print(f"{tag:>24}  (no summary yet)")
+        continue
+    row = rows[0]
+    records.append((tag, float(row["fps"]), float(row["reward_mean_last10"]), int(row["global_step"])))
+records.sort(key=lambda r: r[2], reverse=True)
+print(f"{'arm':>24}  {'fps':>6}  {'reward':>9}  {'step':>7}")
+for tag, fps, reward, step in records:
+    print(f"{tag:>24}  {fps:>6.0f}  {reward:>9.1f}  {step:>7}")
+```
+
+```
 
 ## Gate
 
