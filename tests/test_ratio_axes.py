@@ -9,6 +9,7 @@ import torch
 from fixtures import cfg
 
 import myfpo.modeling as M
+from myfpo.layers import autocast_context, resolve_storage_dtype
 from myfpo.training import make_policy
 
 OBS, ACT, N, MC, HORIZON = 11, 2, 6, 4, 16
@@ -67,15 +68,12 @@ def _policy_and_batch(cfg, seed=0, pad_from=None):
     if pad_from is not None:
         batch["action_is_pad"][1, pad_from:] = True
     normalized = policy.obs_normalizer(batch["observation.state"])
-    cfm_loss_old, cfm_loss_old_token, velocity_old_token = (
-        policy.compute_behavior_cfm_losses(
-            normalized, batch["action"], batch["mc_t"], batch["mc_eps"],
-            batch["action_is_pad"],
-        )
+    cfm_loss_old, cfm_loss_old_token = policy.compute_behavior_cfm_losses(
+        normalized, batch["action"], batch["mc_t"], batch["mc_eps"],
+        batch["action_is_pad"],
     )
     batch["behavior_cfm_loss"] = cfm_loss_old
     batch["behavior_cfm_loss_token"] = cfm_loss_old_token
-    batch["behavior_velocity_token"] = velocity_old_token
 
     # Stands in for the optimizer step. The live actor now differs from the
     # behavior policy that collected the batch.
@@ -147,6 +145,34 @@ def test_per_sample_clips_per_token():
     """Finer than either paper: one ratio per (chunk, pair, token)."""
     _, surrogate_inputs, _ = _recorded(per_sample())
     assert surrogate_inputs == [(N, MC, HORIZON)]
+
+
+@pytest.mark.parametrize(
+    "do_average, group", [(False, 2), (True, 2), (False, 1), (True, 1)]
+)
+def test_the_reported_delta_is_the_log_of_the_ratio_used(do_average, group):
+    """The diagnostic must read the same losses that built the ratio."""
+    policy, batch = _policy_and_batch(
+        _cfg(
+            do_average_cfm_loss_in_chunk=do_average,
+            cfm_average_group_size=group,
+        )
+    )
+    device = next(policy.parameters()).device
+    b = policy.to_device_batch(batch, device, resolve_storage_dtype(device))
+    with autocast_context(device):
+        v_new = policy.compute_predicted_velocity(
+            b.x_t, b.actor_t, b.condition_flat
+        ).float()
+    terms = policy.policy_loss(b, v_new, device)
+
+    cap = policy.config.log_ratio_cap
+    torch.testing.assert_close(
+        torch.log(terms.ratio.detach()),
+        terms.delta.detach().clamp(-cap, cap),
+        rtol=1e-5,
+        atol=1e-6,
+    )
 
 
 def _padded_per_sample_batch(pad_from=HORIZON // 2):

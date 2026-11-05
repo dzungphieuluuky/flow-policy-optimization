@@ -55,6 +55,16 @@ def test_a_rollout_leaves_the_critic_in_the_mode_it_found(config):
     assert policy.critic.training is True
 
 
+def test_train_keeps_the_target_critic_in_eval(config):
+    """``policy.train()`` must not switch dropout on in the bootstrap target."""
+    policy = make_policy(
+        3, 1, config, device="cpu", action_low=[-2.0], action_high=[2.0]
+    )
+    policy.train()
+    assert policy.critic.training is True
+    assert policy.critic_target.training is False
+
+
 def test_a_rollout_leaves_the_critic_target_in_eval(config):
     policy, _ = _rollout(config)
     assert policy.critic_target.training is False
@@ -65,3 +75,9 @@ def test_the_batch_carries_no_dead_v_estimate(config):
     nothing consumed."""
     _, batch = _rollout(config)
     assert "v_estimate" not in batch
+
+
+def test_the_batch_carries_no_behavior_velocity(config):
+    """The behavior velocity is used inside the loss, never by the training step."""
+    _, batch = _rollout(config)
+    assert "behavior_velocity_token" not in batch

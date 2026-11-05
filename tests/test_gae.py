@@ -2,7 +2,7 @@
 import pytest
 import torch
 
-from myfpo.rollout import compute_chunk_advantages
+from myfpo.rollout import compute_chunk_advantages, gae_trace
 
 GAMMA, H = 0.99, 4
 
@@ -274,6 +274,17 @@ def test_truncation_stops_the_trace_but_keeps_the_bootstrap():
     assert ret[1].item() == pytest.approx(r + GAMMA**H * 2.0, abs=1e-5)
     two_free = gae([H] * 2, lam=0.9, q_next_state=2.0)[0]
     assert adv[2].item() == pytest.approx(two_free[1].item(), abs=1e-5)
+
+
+def test_trace_returns_the_input_dtype_and_device():
+    """The host loop must hand back a tensor the caller can add to its own."""
+    delta = torch.tensor([1.0, 2.0])
+    trace = torch.tensor([0.5, 0.5])
+    successor = torch.tensor([1, -1])
+    out = gae_trace(delta, trace, successor)
+    assert out.dtype == delta.dtype
+    assert out.device == delta.device
+    assert out.tolist() == pytest.approx([2.0, 2.0])
 
 
 def test_termination_still_zeroes_the_bootstrap_and_the_trace():

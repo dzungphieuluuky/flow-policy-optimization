@@ -83,7 +83,7 @@ def fixed_batch(policy, n: int = 3, seed: int = 1) -> dict:
     pad = torch.zeros(n, HORIZON, dtype=torch.bool)
 
     pre = policy.obs_normalizer(states)
-    old, old_token, old_velocity = policy.compute_behavior_cfm_losses(
+    old, old_token = policy.compute_behavior_cfm_losses(
         pre, actions, t, eps, pad
     )
     return {
@@ -97,7 +97,6 @@ def fixed_batch(policy, n: int = 3, seed: int = 1) -> dict:
         "mc_eps": eps,
         "behavior_cfm_loss": old,
         "behavior_cfm_loss_token": old_token,
-        "behavior_velocity_token": old_velocity,
     }
 
 def flatten(obj, prefix: str = "") -> dict:

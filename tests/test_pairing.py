@@ -39,7 +39,7 @@ def _pairs(policy, n):
 def _batch(policy, states, actions, t, eps):
     pre = policy.obs_normalizer(states)
     pad = torch.zeros(states.shape[0], HORIZON, dtype=torch.bool)
-    old, old_token, old_velocity = policy.compute_behavior_cfm_losses(
+    old, old_token = policy.compute_behavior_cfm_losses(
         pre, actions, t, eps, pad
     )
     return {
@@ -53,7 +53,6 @@ def _batch(policy, states, actions, t, eps):
         "mc_eps": eps,
         "behavior_cfm_loss": old,
         "behavior_cfm_loss_token": old_token,
-        "behavior_velocity_token": old_velocity,
     }
 
 

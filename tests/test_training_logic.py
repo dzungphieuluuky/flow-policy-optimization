@@ -39,7 +39,6 @@ def test_training_logic():
         "mc_eps": torch.randn(1, cfg.num_mc_samples, cfg.action_horizon, 3),
         "behavior_cfm_loss": torch.ones(1, cfg.num_mc_samples),
         "behavior_cfm_loss_token": torch.ones(1, cfg.num_mc_samples, cfg.action_horizon),
-        "behavior_velocity_token": torch.zeros(1, cfg.num_mc_samples, cfg.action_horizon, 3),
         "normalizer_observations": torch.zeros(10, 5),
     }
     loss = policy(batch)
@@ -83,9 +82,6 @@ def test_one_policy_update_runs():
         "mc_eps": torch.randn(n, cfg.num_mc_samples, cfg.action_horizon, 3),
         "behavior_cfm_loss": torch.ones(n, cfg.num_mc_samples),
         "behavior_cfm_loss_token": torch.ones(n, cfg.num_mc_samples, cfg.action_horizon),
-        "behavior_velocity_token": torch.zeros(
-            n, cfg.num_mc_samples, cfg.action_horizon, 3
-        ),
     }
     optimizer = make_optimizer(policy)
     _, grad_norms_pre, _, _ = policy_update_step(

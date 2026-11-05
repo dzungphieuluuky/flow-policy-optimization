@@ -56,8 +56,8 @@ def test_the_action_is_not_rounded_to_the_storage_dtype(monkeypatch):
     rounded[0, 0, 0] = 1.0 + 1e-4  # bf16 rounds this back to 1.0
     assert rounded[0, 0, 0].to(torch.bfloat16).float().item() == 1.0
 
-    loss_a, _, _ = first.compute_behavior_cfm_losses(states, actions, t, eps, pad)
-    loss_b, _, _ = first.compute_behavior_cfm_losses(states, rounded, t, eps, pad)
+    loss_a, _ = first.compute_behavior_cfm_losses(states, actions, t, eps, pad)
+    loss_b, _ = first.compute_behavior_cfm_losses(states, rounded, t, eps, pad)
     assert loss_a.dtype == torch.float32
     assert not torch.equal(loss_a, loss_b)
 
@@ -65,9 +65,8 @@ def test_the_action_is_not_rounded_to_the_storage_dtype(monkeypatch):
 def test_the_behavior_loss_matches_the_training_pass_inputs():
     """A fp32 action gives an fp32 loss even when the storage dtype is bf16."""
     policy, states, actions, t, eps, pad = _inputs(1.0)
-    loss, loss_token, velocity = policy.compute_behavior_cfm_losses(
+    loss, loss_token = policy.compute_behavior_cfm_losses(
         states, actions, t, eps, pad
     )
     assert loss.dtype == torch.float32
     assert loss_token.dtype == torch.float32
-    assert velocity.dtype == torch.float32

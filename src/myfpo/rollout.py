@@ -9,7 +9,7 @@ import dataclasses
 from collections.abc import Callable
 import numpy as np
 from myfpo.configuration import validate_n_action_steps
-from myfpo.processor import squash_to_env_bounds
+from myfpo.processor import masked_squash_to_env_bounds, squash_to_env_bounds
 from dataclasses import dataclass
 from myfpo.fpo_core import (
     compute_gae_diagnostics,
@@ -166,13 +166,19 @@ def chunk_successors(env_id: torch.Tensor) -> torch.Tensor:
 def gae_trace(
     delta: torch.Tensor, trace: torch.Tensor, successor: torch.Tensor
 ) -> torch.Tensor:
-    """The advantage of each chunk, traced back over its successors."""
-    adv = delta.clone()
-    for i in range(delta.numel() - 1, -1, -1):
+    """The advantage of each chunk, traced back over its successors.
+
+    The recursion is sequential, so it runs on the host. On the GPU it is one
+    kernel launch per node, about 6k per 1024-chunk rollout.
+    """
+    d = delta.detach().cpu()
+    t = trace.detach().cpu()
+    adv = d.clone()
+    for i in range(d.numel() - 1, -1, -1):
         j = int(successor[i])
         if j >= 0:
-            adv[i] = delta[i] + trace[i] * adv[j]
-    return adv
+            adv[i] = d[i] + t[i] * adv[j]
+    return adv.to(device=delta.device, dtype=delta.dtype)
 
 # ---- from collector.py ----
 OBS_DTYPE = torch.float32
@@ -1072,13 +1078,11 @@ def bootstrap_values(
         policy.critic_target.eval()  # invariant: target always eval
         try:
             with autocast_context(device):
-                actions_squashed = squash_to_env_bounds(actions, policy.action_low, policy.action_high)
                 chunk_len_mask = (torch.arange(cfg.action_horizon, device=actions.device).unsqueeze(0) < active["chunk_lengths"].unsqueeze(1)).unsqueeze(-1).float()
-                actions_squashed = actions_squashed * chunk_len_mask
+                actions_squashed = masked_squash_to_env_bounds(actions, policy.action_low, policy.action_high, chunk_len_mask)
                 q_current_chunk = subsampled_min(policy.critic(normalized_states, actions_squashed, exec_length_frac).float())
-                boot_actions_squashed = squash_to_env_bounds(boot_actions, policy.action_low, policy.action_high)
                 boot_mask = (torch.arange(cfg.action_horizon, device=boot_actions.device).unsqueeze(0) < cfg.n_action_steps).unsqueeze(-1).float()
-                boot_actions_squashed = boot_actions_squashed * boot_mask
+                boot_actions_squashed = masked_squash_to_env_bounds(boot_actions, policy.action_low, policy.action_high, boot_mask)
                 q_bootstrap = subsampled_min(policy.critic_target(normalized_next_states, boot_actions_squashed, boot_exec_frac).float())
         finally:
             policy.critic.train(critic_training)
@@ -1250,11 +1254,7 @@ def run_rollout(
     t = sample_mc_timesteps(cfg, n_chunks, device)
     eps = sample_eps(cfg, n_chunks, int(cfg.action_dim), device)
 
-    (
-        behavior_cfm_loss,
-        behavior_cfm_loss_token,
-        behavior_velocity_token,
-    ) = policy.compute_behavior_cfm_losses(
+    behavior_cfm_loss, behavior_cfm_loss_token = policy.compute_behavior_cfm_losses(
         normalized_states, actions, t, eps, action_is_pad
     )
 
@@ -1276,6 +1276,5 @@ def run_rollout(
         "gae_diagnostics": gae_diagnostics,
         "behavior_cfm_loss": behavior_cfm_loss,
         "behavior_cfm_loss_token": behavior_cfm_loss_token,
-        "behavior_velocity_token": behavior_velocity_token,
         "step_rewards": active["step_rewards"],
     }

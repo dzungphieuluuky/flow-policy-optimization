@@ -157,7 +157,7 @@ def test_the_default_run_is_not_saturated():
     assert float(clamp_saturation(loss.detach(), loss.detach() + 0.1, cfg)) == 0.0
     assert float(np.asarray(loss.detach()).max()) < cfg.cfm_clamp
 
-def _policy_and_batch(cfm_clamp):
+def _policy_and_batch(cfm_clamp, **overrides):
     """A policy on a fixed batch, with the clamp low enough to bite.
 
     The bound 2.0 matters. At the default 20.0 both readings are 0.0, so a
@@ -171,7 +171,7 @@ def _policy_and_batch(cfm_clamp):
         obs_dim=obs, act_dim=act,
         action_horizon=horizon, n_action_steps=horizon, num_mc_samples=mc,
         hidden_dim=32, time_embed_dim=16, dit_depth=1, dit_heads=2, n_obs_steps=2,
-        compile=False, report_to="none", cfm_clamp=cfm_clamp,
+        compile=False, report_to="none", cfm_clamp=cfm_clamp, **overrides,
     )
     torch.manual_seed(0)
     policy = make_policy(
@@ -186,7 +186,7 @@ def _policy_and_batch(cfm_clamp):
     eps = torch.randn(n, mc, horizon, act)
     pad = torch.zeros(n, horizon, dtype=torch.bool)
     pre = policy.obs_normalizer(states)
-    old, old_token, old_velocity = policy.compute_behavior_cfm_losses(
+    old, old_token = policy.compute_behavior_cfm_losses(
         pre, actions, t, eps, pad
     )
     batch = {
@@ -196,7 +196,6 @@ def _policy_and_batch(cfm_clamp):
         "raw_returns": torch.randn(n, generator=torch.Generator().manual_seed(8)),
         "mc_t": t, "mc_eps": eps,
         "behavior_cfm_loss": old, "behavior_cfm_loss_token": old_token,
-        "behavior_velocity_token": old_velocity,
     }
     return policy, batch, pcfg
 
@@ -256,6 +255,45 @@ def test_above_clamp_frac_reads_the_tensor_the_ratio_actually_clamps(monkeypatch
             f"cfm_clamp={bound}: share {truth} is saturated, so this bound "
             "cannot discriminate between the two axes"
         )
+
+
+def test_the_diagnostics_read_the_token_pair_when_grouping_is_off(monkeypatch):
+    """With grouping off the ratio is per token, so the diagnostics must be too.
+
+    The defect: the diagnostics always read a grouped loss, even when
+    ``do_average_cfm_loss_in_chunk`` was false and the ratio stayed per token.
+    A non-default group size then made the two axes disagree.
+    """
+    import myfpo.modeling as modeling
+
+    real = modeling.compute_policy_ratio
+    pairs = []
+
+    def spy(old, new, cfg, advantage=None, **kwargs):
+        pairs.append((old.detach(), new.detach()))
+        return real(old, new, cfg, advantage=advantage, **kwargs)
+
+    monkeypatch.setattr(modeling, "compute_policy_ratio", spy)
+
+    policy, batch, _ = _policy_and_batch(
+        2.0, do_average_cfm_loss_in_chunk=False, cfm_average_group_size=2
+    )
+    policy.loss_with_info(batch)
+
+    assert pairs, "the ratio was never called, so nothing was clamped"
+    old, new = pairs[0]
+    token_shape = tuple(batch["behavior_cfm_loss_token"].shape)
+    assert tuple(new.shape) == token_shape, (
+        f"the clamped tensor has shape {tuple(new.shape)}, expected {token_shape}"
+    )
+
+    above = float(policy.cfm_above_clamp_frac)
+    both = float(policy.cfm_both_clamped_frac)
+    truth_above = float((new > 2.0).float().mean())
+    truth_both = float(((old > 2.0) & (new > 2.0)).float().mean())
+    assert above == pytest.approx(truth_above, abs=0.0)
+    assert both == pytest.approx(truth_both, abs=0.0)
+    assert 0.0 < truth_above < 1.0, "the bound saturates, so it cannot discriminate"
 
 
 def test_both_clamped_frac_and_above_clamp_frac_read_the_same_pair():

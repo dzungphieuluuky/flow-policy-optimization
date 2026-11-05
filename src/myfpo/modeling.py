@@ -36,7 +36,7 @@ from myfpo.fpo_core import (
     compute_value_loss,
 )
 from myfpo.networks import Critic, FlowModel, FlowResMLP
-from myfpo.processor import RunningMeanStd, StateEncoder, squash_to_env_bounds
+from myfpo.processor import RunningMeanStd, StateEncoder, masked_squash_to_env_bounds, squash_to_env_bounds
 from myfpo.rollout import RolloutBuffers, resolve_action_bounds, run_rollout
 from myfpo.layers import (
     autocast_context,
@@ -89,7 +89,6 @@ class TrainingBatch:
     condition_flat: torch.Tensor
     cfm_loss_old: torch.Tensor
     cfm_loss_old_token: torch.Tensor
-    velocity_old_token: torch.Tensor
 
 
 @dataclasses.dataclass
@@ -163,6 +162,16 @@ class MyfpoPolicy(nn.Module):
         self.register_buffer("action_low", torch.full((action_dim,), -1.0), persistent=False)
         self.register_buffer("action_high", torch.full((action_dim,), 1.0), persistent=False)
         init_ema_buffers(self, config)
+
+    def train(self, mode: bool = True):
+        """Set the module mode, and keep the target critic in eval.
+
+        ``critic_target`` is the bootstrap read. Dropout there would corrupt
+        the target values, so it never trains.
+        """
+        super().train(mode)
+        self.critic_target.eval()
+        return self
 
     def reset(self):
         """Drop the cached obs and action buffers."""
@@ -447,6 +456,44 @@ class MyfpoPolicy(nn.Module):
         """Normalise an executed-step count to ``[0, 1]``."""
         return executed_steps.to(torch.float32) / float(self.config.action_horizon)
 
+    def _token_cfm_loss(
+        self,
+        v: torch.Tensor,
+        x_t: torch.Tensor,
+        t: torch.Tensor,
+        actions: torch.Tensor,
+        eps: torch.Tensor,
+        mask: torch.Tensor,
+        *,
+        n: int,
+        num_mc: int,
+        flow_shape,
+        device_type: str,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """The shared token-level CFM loss chain.
+
+        Behavior and training read the same flow point, so the prologue is
+        identical and lives here once: parametrize the velocity, form the
+        target, and score both at sample and token level. ``v`` is the
+        parametrized velocity (``v_old`` at rollout, ``v_new`` at training).
+        Callers keep their outer autocast/no-grad contexts; this opens the
+        fp32 window inside.
+        """
+        cfg = self.config
+        with torch.autocast(device_type=device_type, enabled=False):
+            v_param = velocity_to_target_param(
+                v.reshape(n, num_mc, *flow_shape),
+                x_t.reshape(n, num_mc, *flow_shape),
+                t,
+                cfg,
+            )
+            target = cfm_target(actions, eps, cfg).float()
+            loss, loss_token = compute_cfm_loss(
+                v_param, target, cfg, "sample_and_token", mask, cfm_loss_weight(t, cfg)
+            )
+        return loss, loss_token, target, v_param
+
+
     def compute_behavior_cfm_losses(
         self,
         normalized_states: torch.Tensor,
@@ -454,14 +501,13 @@ class MyfpoPolicy(nn.Module):
         t: torch.Tensor,
         eps: torch.Tensor,
         action_is_pad: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """The CFM loss of the behavior policy.
 
         That is the ``cfm_loss_old`` of the FPO ratio, evaluated against the
         frozen snapshot at rollout time. It is computed once per rollout and
         must not be recomputed here.
         """
-        cfg = self.config
         # The behavior loss and the training loss are two readings of the same
         # flow point, so they must see the same numbers. The training pass
         # reloads the action in fp32 and the noise and timestep in the storage
@@ -478,20 +524,12 @@ class MyfpoPolicy(nn.Module):
                 v_old = self.compute_predicted_velocity(
                     x_t, actor_t, condition_flat
                 ).float()
-            with torch.autocast(device_type=actions.device.type, enabled=False):
-                v_star = cfm_target(actions, eps, cfg).float()
-                v_old = v_old.reshape(eps.shape[0], num_mc, *flow_shape)
-                v_old = velocity_to_target_param(
-                    v_old,
-                    x_t.reshape(eps.shape[0], num_mc, *flow_shape),
-                    t,
-                    cfg,
-                )
-                loss_mask = action_is_pad
-                loss, loss_token = compute_cfm_loss(
-                    v_old, v_star, cfg, "sample_and_token", loss_mask, cfm_loss_weight(t, cfg)
-                )
-                return loss, loss_token, v_old
+            loss, loss_token, _target, _v_old = self._token_cfm_loss(
+                v_old, x_t, t, actions, eps, action_is_pad,
+                n=eps.shape[0], num_mc=num_mc, flow_shape=flow_shape,
+                device_type=actions.device.type,
+            )
+            return loss, loss_token
 
     def generate_rollout(
         self,
@@ -613,8 +651,8 @@ class MyfpoPolicy(nn.Module):
             condition = cudagraph_safe(self.encoder(states), self.config.compile)
             condition_flat = broadcast_condition(condition, num_mc)
 
-        cfm_loss_old, cfm_loss_old_token, velocity_old_token = (
-            self.to_device_behavior_losses(batch, device, n, num_mc, action_dim)
+        cfm_loss_old, cfm_loss_old_token = self.to_device_behavior_losses(
+            batch, device, n, num_mc
         )
 
         return TrainingBatch(
@@ -635,7 +673,6 @@ class MyfpoPolicy(nn.Module):
             condition_flat=condition_flat,
             cfm_loss_old=cfm_loss_old,
             cfm_loss_old_token=cfm_loss_old_token,
-            velocity_old_token=velocity_old_token,
         )
 
     def to_device_behavior_losses(
@@ -644,14 +681,12 @@ class MyfpoPolicy(nn.Module):
         device,
         n: int,
         num_mc: int,
-        action_dim: int,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """The frozen behavior CFM losses and velocity, computed once per rollout."""
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """The frozen behavior CFM losses, computed once per rollout."""
         cfg = self.config
         required = (
             "behavior_cfm_loss",
             "behavior_cfm_loss_token",
-            "behavior_velocity_token",
         )
         if any(key not in batch for key in required):
             raise KeyError(
@@ -665,9 +700,6 @@ class MyfpoPolicy(nn.Module):
         cfm_loss_old_token = torch.as_tensor(
             batch["behavior_cfm_loss_token"], dtype=torch.float32, device=device
         )
-        velocity_old_token = torch.as_tensor(
-            batch["behavior_velocity_token"], dtype=torch.float32, device=device
-        )
         if tuple(cfm_loss_old.shape) != (n, num_mc):
             raise ValueError(
                 f"behavior_cfm_loss shape {tuple(cfm_loss_old.shape)} != {(n, num_mc)}"
@@ -678,60 +710,55 @@ class MyfpoPolicy(nn.Module):
                 f"behavior_cfm_loss_token shape {tuple(cfm_loss_old_token.shape)} != "
                 f"{(n, num_mc, expected_tokens)}"
             )
-        expected_velocity = (n, num_mc, expected_tokens, action_dim)
-        if tuple(velocity_old_token.shape) != expected_velocity:
-            raise ValueError(
-                f"behavior_velocity_token shape {tuple(velocity_old_token.shape)} != "
-                f"{expected_velocity}"
-            )
-        return cfm_loss_old, cfm_loss_old_token, velocity_old_token
+        return cfm_loss_old, cfm_loss_old_token
 
     def policy_loss(self, b: TrainingBatch, v_new: torch.Tensor, device) -> PolicyTerms:
         """The ASPO surrogate loss, one value per chunk."""
         cfg = self.config
         n, num_mc, flow_shape = b.n, b.num_mc, b.flow_shape
         with torch.autocast(device_type=device.type, enabled=False):
-            v_new_r_f = velocity_to_target_param(
-                v_new.reshape(n, num_mc, *flow_shape),
-                b.x_t.reshape(n, num_mc, *flow_shape),
-                b.t,
-                cfg,
-            )
-            target_velocity = cfm_target(b.actions, b.eps, cfg).float()
             loss_mask = b.action_is_pad
+            cfm_loss_new, cfm_loss_new_token, target_velocity, _v_new_r_f = self._token_cfm_loss(
+                v_new, b.x_t, b.t, b.actions, b.eps, loss_mask,
+                n=n, num_mc=num_mc, flow_shape=flow_shape,
+                device_type=device.type,
+            )
 
             adv = b.advantages.float()
             adv_mc = adv.unsqueeze(1)
-            weight = cfm_loss_weight(b.t, cfg)
-            cfm_loss_new, cfm_loss_new_token = compute_cfm_loss(
-                v_new_r_f, target_velocity, cfg, "sample_and_token", loss_mask, weight,
-            )
             ratio_token = compute_policy_ratio(
                 b.cfm_loss_old_token, cfm_loss_new_token, cfg,
                 advantage=adv_mc.unsqueeze(-1),
             )
 
             if cfg.do_average_cfm_loss_in_chunk:
-                loss_old = group_cfm_loss(b.cfm_loss_old, cfg.cfm_average_group_size)
-                loss_new = group_cfm_loss(cfm_loss_new, cfg.cfm_average_group_size)
+                ratio_loss_old = group_cfm_loss(
+                    b.cfm_loss_old, cfg.cfm_average_group_size
+                )
+                ratio_loss_new = group_cfm_loss(
+                    cfm_loss_new, cfg.cfm_average_group_size
+                )
+                adv_ratio = adv.reshape(-1, 1)
                 ratio = compute_policy_ratio(
-                    loss_old, loss_new, cfg, advantage=adv.reshape(-1, 1)
+                    ratio_loss_old, ratio_loss_new, cfg, advantage=adv_ratio
                 )
             else:
+                ratio_loss_old = b.cfm_loss_old_token
+                ratio_loss_new = cfm_loss_new_token
+                adv_ratio = adv_mc.unsqueeze(-1)
                 ratio = ratio_token
-                loss_old = group_cfm_loss(
-                    b.cfm_loss_old_token, cfg.cfm_average_group_size
-                )
-                loss_new = group_cfm_loss(
-                    cfm_loss_new_token, cfg.cfm_average_group_size
-                )
-            cfm_above_clamp_frac = (loss_new > cfg.cfm_clamp).float().mean().detach()
-            cfm_both_clamped_frac = clamp_saturation(loss_old, loss_new, cfg).detach()
-            adv_ratio = adv.reshape(-1, *([1] * (loss_old.dim() - 1)))
             # The ratio clamps delta at cfm_clamp and at the negative-advantage
-            # bound. The diagnostic must report that same delta, or it describes
-            # a trust region the update never used.
-            delta = compute_cfm_log_ratio(loss_old, loss_new, cfg, adv_ratio)
+            # bound. The diagnostics must read the same losses that built the
+            # ratio, or they describe a trust region the update never used.
+            cfm_above_clamp_frac = (
+                ratio_loss_new > cfg.cfm_clamp
+            ).float().mean().detach()
+            cfm_both_clamped_frac = clamp_saturation(
+                ratio_loss_old, ratio_loss_new, cfg
+            ).detach()
+            delta = compute_cfm_log_ratio(
+                ratio_loss_old, ratio_loss_new, cfg, adv_ratio
+            )
             surrogate = compute_aspo_surrogate(ratio, adv_ratio, cfg)
             if surrogate.dim() == 3:
                 keep = (~b.action_is_pad).to(surrogate.dtype)
@@ -760,10 +787,9 @@ class MyfpoPolicy(nn.Module):
         """Score the critic on the executed chunk. Return the loss, the values, and the returns."""
         with autocast_context(device):
             chunk_exec_frac = self.exec_length_frac((~b.action_is_pad).sum(dim=-1))
-            b_actions_squashed = squash_to_env_bounds(b.actions, self.action_low, self.action_high)
             # Zero out padded steps so critic doesn't condition on arbitrary values.
             pad_mask = (~b.action_is_pad).unsqueeze(-1).float()
-            b_actions_squashed = b_actions_squashed * pad_mask
+            b_actions_squashed = masked_squash_to_env_bounds(b.actions, self.action_low, self.action_high, pad_mask)
             raw_value_pred = self.critic(b.states, b_actions_squashed, chunk_exec_frac).float()  # [num_critics, n]
         raw_returns_flat = b.returns.reshape(-1)
         if raw_value_pred.shape[-1] != raw_returns_flat.shape[0]:
