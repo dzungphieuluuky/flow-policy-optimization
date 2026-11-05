@@ -214,6 +214,11 @@ def summarize_results(results: list[dict[str, Any]], seed: int = 0) -> dict[str,
         "return_ci_high": high,
         "return_n": float(finite),
     }
+def _summarize(results: list[dict[str, Any]], seed: int = 0) -> dict[str, float]:
+    """Shared summary pass-through for both evaluators."""
+    return summarize_results(results, seed=seed)
+
+
 
 
 class Evaluator:
@@ -309,7 +314,7 @@ class Evaluator:
         self, results: list[dict[str, Any]], seed: int = 0
     ) -> dict[str, float]:
         """The mean, the median, the interval, and the count for one eval."""
-        return summarize_results(results, seed=seed)
+        return _summarize(results, seed=seed)
 
     def clone(self, max_episodes: int) -> Evaluator:
         """The same evaluator, with a different episode budget."""
@@ -482,7 +487,7 @@ class VectorEvaluator:
         self, results: list[dict[str, Any]], seed: int = 0
     ) -> dict[str, float]:
         """The mean, the median, the interval, and the count for one eval."""
-        return summarize_results(results, seed=seed)
+        return _summarize(results, seed=seed)
 
     def clone(self, max_episodes: int) -> VectorEvaluator:
         """The same evaluator, with a different episode budget."""

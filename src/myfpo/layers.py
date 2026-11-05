@@ -154,12 +154,31 @@ def make_rms_norm(hidden_dim: int, eps: float = 1e-6) -> nn.RMSNorm:
     return RMSNorm(hidden_dim, eps=eps)
 
 
+def _check_positive_dims(in_dim: int, hidden_dim: int, out_dim: int, module: str) -> None:
+    """One spelling of the positive-width guard for two-layer MLPs."""
+    if in_dim < 1 or hidden_dim < 1 or out_dim < 1:
+        raise ValueError(f"{module} dimensions must be positive")
+
+
+def _check_attention_dims(hidden_dim: int, n_heads: int) -> None:
+    """One spelling of the attention head-split guard.
+
+    The even-head_dim (RoPE) check stays with ``SelfAttention``; only that
+    module uses RoPE.
+    """
+    if hidden_dim < 1:
+        raise ValueError(f"hidden_dim must be positive, got {hidden_dim}")
+    if n_heads < 1:
+        raise ValueError(f"n_heads must be positive, got {n_heads}")
+    if hidden_dim % n_heads != 0:
+        raise ValueError(f"hidden_dim={hidden_dim} must split over {n_heads} heads")
+
+
 class MishFFN(nn.Module):
     """``Linear -> LayerNorm -> Mish -> Linear``. The DiT block's feed-forward unit."""
     def __init__(self, in_dim: int, hidden_dim: int, out_dim: int):
         super().__init__()
-        if in_dim < 1 or hidden_dim < 1 or out_dim < 1:
-            raise ValueError("MishFFN dimensions must be positive")
+        _check_positive_dims(in_dim, hidden_dim, out_dim, "MishFFN")
         self.fc = nn.Linear(in_dim, hidden_dim)
         self.norm = nn.LayerNorm(hidden_dim)
         self.out = nn.Linear(hidden_dim, out_dim)
@@ -173,8 +192,7 @@ class CondMLP(nn.Module):
 
     def __init__(self, in_dim: int, hidden_dim: int, out_dim: int):
         super().__init__()
-        if in_dim < 1 or hidden_dim < 1 or out_dim < 1:
-            raise ValueError("CondMLP dimensions must be positive")
+        _check_positive_dims(in_dim, hidden_dim, out_dim, "CondMLP")
         self.fc1 = nn.Linear(in_dim, hidden_dim)
         self.fc2 = nn.Linear(hidden_dim, out_dim)
 
@@ -240,12 +258,7 @@ class SelfAttention(nn.Module):
 
     def __init__(self, hidden_dim: int, n_heads: int):
         super().__init__()
-        if hidden_dim < 1:
-            raise ValueError(f"hidden_dim must be positive, got {hidden_dim}")
-        if n_heads < 1:
-            raise ValueError(f"n_heads must be positive, got {n_heads}")
-        if hidden_dim % n_heads != 0:
-            raise ValueError(f"hidden_dim={hidden_dim} must split over {n_heads} heads")
+        _check_attention_dims(hidden_dim, n_heads)
         head_dim = hidden_dim // n_heads
         if head_dim % 2 != 0:
             # RoPE rotates (even, odd) pairs. An odd head_dim leaves a trailing
@@ -298,12 +311,7 @@ class CrossAttention(nn.Module):
 
     def __init__(self, hidden_dim: int, n_heads: int):
         super().__init__()
-        if hidden_dim < 1:
-            raise ValueError(f"hidden_dim must be positive, got {hidden_dim}")
-        if n_heads < 1:
-            raise ValueError(f"n_heads must be positive, got {n_heads}")
-        if hidden_dim % n_heads != 0:
-            raise ValueError(f"hidden_dim={hidden_dim} must split over {n_heads} heads")
+        _check_attention_dims(hidden_dim, n_heads)
         self.n_heads = n_heads
         self.head_dim = hidden_dim // n_heads
         self.q_proj = nn.Linear(hidden_dim, hidden_dim)
