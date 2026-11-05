@@ -43,10 +43,10 @@ def compute_chunk_advantages(
     *,
     chunk_terminated: torch.Tensor,
     chunk_size: int,
-    gamma: float = 0.99,
+    gamma: float,
     chunk_truncated: torch.Tensor | None = None,
     chunk_env_id: torch.Tensor | None = None,
-    gae_lambda: float = 0.95,
+    gae_lambda: float,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Return the ``[n]`` advantages and the ``[n]`` regression target.
 

@@ -1,4 +1,6 @@
 """GAE backup."""
+import inspect
+
 import pytest
 import torch
 
@@ -408,6 +410,8 @@ def test_rejects_value_arrays_of_the_wrong_length():
         chunk_lengths=torch.full((n,), 4, dtype=torch.long),
         chunk_terminated=torch.zeros(n, dtype=torch.bool),
         chunk_size=4,
+        gamma=GAMMA,
+        gae_lambda=0.95,
     )
     with pytest.raises(ValueError, match="chunk tensors must have"):
         compute_chunk_advantages(
@@ -425,5 +429,16 @@ def test_rejects_mismatched_chunk_lengths():
             torch.ones(H), torch.zeros(2), torch.zeros(2),
             torch.zeros(2, dtype=torch.long), torch.tensor([H]),
             chunk_terminated=torch.zeros(2, dtype=torch.bool),
-            chunk_size=H, gamma=GAMMA,
+            chunk_size=H, gamma=GAMMA, gae_lambda=0.95,
         )
+
+
+def test_discount_and_lambda_have_no_defaults():
+    """The config owns the 0.99/0.95 defaults; the function must not restate them.
+
+    It used to carry its own defaults, which could silently disagree with
+    ``MyfpoConfig``. A call without them is a TypeError now.
+    """
+    params = inspect.signature(compute_chunk_advantages).parameters
+    assert params["gamma"].default is inspect.Parameter.empty
+    assert params["gae_lambda"].default is inspect.Parameter.empty

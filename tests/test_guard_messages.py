@@ -134,6 +134,8 @@ def _gae(**kw):
         chunk_lengths=torch.ones(2, dtype=torch.long),
         chunk_terminated=torch.zeros(2, dtype=torch.bool),
         chunk_size=2,
+        gamma=0.99,
+        gae_lambda=0.95,
     )
     base.update(kw)
     return compute_chunk_advantages(**base)
