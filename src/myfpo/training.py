@@ -195,10 +195,15 @@ def sample_minibatch(
     indices: torch.Tensor,
     out: dict[str, torch.Tensor] | None = None,
 ) -> dict[str, torch.Tensor]:
-    """Slice the leading dimension of every per-chunk batch value."""
+    """Slice the leading dimension of every per-chunk batch value.
+
+    ``step_rewards`` is a flat per-step array, not per chunk, so a minibatch
+    indexes it with chunk ids. Nothing in the update reads the slice, and
+    slicing it every minibatch is both waste and a trap for a future reader.
+    """
     if out is None:
         out = {}
-    passthrough = ("normalizer_observations", "gae_diagnostics")
+    passthrough = ("normalizer_observations", "gae_diagnostics", "step_rewards")
     for k, v in batch.items():
         if k in passthrough:
             out[k] = v

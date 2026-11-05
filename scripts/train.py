@@ -210,7 +210,9 @@ def run_single(
                 f"{env_id} needs gymnasium-robotics (pip install gymnasium-robotics)"
             ) from exc
 
-    if env_id.startswith("MS-"):
+    from myfpo.maniskill_gpu import is_maniskill_id
+
+    if is_maniskill_id(env_id):
         # ManiSkill's GPU env batches its own sims on one device, so it is built
         # here rather than through gym.make/make_vec_env. The spaces it exposes
         # are the single-env ones, which is what the checks below size from.

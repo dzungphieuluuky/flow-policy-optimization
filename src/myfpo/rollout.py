@@ -23,25 +23,6 @@ from myfpo.layers import (
     resolve_storage_dtype,
     to_device_async,
 )
-class TorchEnvAdapter:
-    """Wrap a numpy gym env so step() returns torch tensors (Tier 2)."""
-    def __init__(self, env):
-        self.env = env
-    def step_torch(self, actions_t):
-        obs, rew, term, trunc, info = self.env.step(actions_t.cpu().numpy())
-        device = actions_t.device
-        obs_t = torch.from_numpy(np.asarray(obs, dtype=np.float32)).to(device=device, dtype=OBS_DTYPE)
-        rew_t = torch.from_numpy(np.asarray(rew, dtype=np.float32)).to(device=device, dtype=REWARD_DTYPE)
-        term_t = torch.from_numpy(np.asarray(term, dtype=bool)).to(device=device)
-        trunc_t = torch.from_numpy(np.asarray(trunc, dtype=bool)).to(device=device)
-        return obs_t, rew_t, term_t, trunc_t, info
-    def reset(self, **kw):
-        return self.env.reset(**kw)
-    @property
-    def observation_space(self): return self.env.observation_space
-    @property
-    def action_space(self): return self.env.action_space
-
 __all__ = [
     "EnvCarry",
     "RolloutBuffer",
@@ -66,7 +47,6 @@ def compute_chunk_advantages(
     chunk_truncated: torch.Tensor | None = None,
     chunk_env_id: torch.Tensor | None = None,
     gae_lambda: float = 0.95,
-    v_baseline: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Return the ``[n]`` advantages and the ``[n]`` regression target.
 
@@ -131,8 +111,7 @@ def compute_chunk_advantages(
     injected = truncated & ~terminated
     chunk_rewards = chunk_rewards + gamma_h * injected * q_next_state
     bootstrap = gamma_h * (~done)
-    baseline = v_baseline.reshape(-1) if v_baseline is not None else q_current_chunk.reshape(-1)
-    delta = chunk_rewards + bootstrap * q_next_state - baseline
+    delta = chunk_rewards + bootstrap * q_next_state - q_current_chunk
 
     if gae_lambda == 0.0:
         return delta, delta + q_current_chunk

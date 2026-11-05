@@ -81,7 +81,9 @@ def main(argv: list[str] | None = None) -> int:
 
     import gymnasium as gym
 
-    if args.env.startswith("MS-"):
+    from myfpo.maniskill_gpu import is_maniskill_id
+
+    if is_maniskill_id(args.env):
         from myfpo.maniskill_gpu import register_gym_envs
 
         register_gym_envs()  # the single-env CPU path, for this CLI only
