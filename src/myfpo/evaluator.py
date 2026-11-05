@@ -19,7 +19,7 @@ import numpy as np
 import torch
 
 from myfpo.configuration import validate_n_action_steps
-from myfpo.processor import squash_to_env_bounds
+from myfpo.processor import env_action_chunk
 from myfpo.rollout import resolve_action_bounds
 
 
@@ -446,7 +446,7 @@ class VectorEvaluator:
                 chunk: torch.Tensor | None = None
                 while True:
                     if chunk is None or steps % self.n_action_steps == 0:
-                        chunk = squash_to_env_bounds(
+                        chunk = env_action_chunk(
                             self._plan(policy, window), self.action_low, self.action_high
                         )
                     action = chunk[:, steps % self.n_action_steps]

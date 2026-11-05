@@ -134,6 +134,11 @@ class MyfpoConfig:
     lr_warmup_steps: int = 10000
     lr_schedule: str = "cosine"
     normalize_rewards: bool = True
+    # Default on. The flow regresses on a z-scored action target (running
+    # mean/std, checkpointed), the same frozen-per-cycle contract as the obs
+    # and reward normalizers. Set to False for pre-flag checkpoints, which
+    # were trained in raw space and cannot load with this on.
+    normalize_actions: bool = True
     eval_max_episodes: int = 50
     eval_sampling: str = "noise_start"
     stop_eval_sampling: str = "noise_start"

@@ -82,6 +82,14 @@ def fixed_batch(policy, n: int = 3, seed: int = 1) -> dict:
     eps = torch.randn(n, MC, HORIZON, ACT)
     pad = torch.zeros(n, HORIZON, dtype=torch.bool)
 
+    if policy.config.normalize_actions:
+        # The normalizer starts uninitialized; the pin needs stats or it pins
+        # the identity path, which proves nothing. Seeded, so deterministic.
+        gen = torch.Generator().manual_seed(9)
+        fake = torch.randn(64, cfg.action_horizon, cfg.action_dim, generator=gen)
+        fake_mask = torch.zeros(64, cfg.action_horizon, dtype=torch.bool)
+        policy.update_action_stats(fake, fake_mask)
+
     pre = policy.obs_normalizer(states)
     old, old_token = policy.compute_behavior_cfm_losses(
         pre, actions, t, eps, pad

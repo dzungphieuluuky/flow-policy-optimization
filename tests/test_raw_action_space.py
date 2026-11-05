@@ -1,9 +1,10 @@
 """The action the flow is trained on is the action the flow produces.
 
 The flow samples a raw action. The env receives the squash of it. The buffer
-must keep the raw value, because the CFM regression target is built from it:
-if the buffer kept the squash, the flow would be trained on the squash of its
-own output, and the two would never be the same quantity.
+must keep the raw value, because the CFM regression target is built from it
+(z-scored by the default ``normalize_actions``): if the buffer kept the squash,
+the flow would be trained on the squash of its own output, and the two would
+never be the same quantity.
 
 These tests pin that one invariant, and they are the regression guard for the
 whole action-space change.

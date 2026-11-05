@@ -133,8 +133,9 @@ def squash_to_env(
     """Map a raw policy output into the env's action bounds.
 
     ``bias + scale * tanh(raw)``. The ``tanh`` is the only thing that bounds
-    the action, and it is applied exactly once, on the way to the env: the
-    flow is trained on the raw value, not on the squash of its own output.
+    the action, and it is applied exactly once, on the way to the env. The
+    flow regresses on z-scored targets (the default); it never trains on the
+    env-facing squash of its own output.
 
     ``scale`` and ``bias`` are the affine terms of the env's bounds, from
     :func:`env_squash_terms`.
@@ -154,16 +155,23 @@ def squash_to_env_bounds(
     """
     scale, bias = env_squash_terms(low, high)
     return squash_to_env(raw, scale, bias)
-def masked_squash_to_env_bounds(
+
+
+def env_action_chunk(
     raw: torch.Tensor,
     low: torch.Tensor,
     high: torch.Tensor,
-    mask: torch.Tensor,
+    mask: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Squash into the env's action bounds, then zero masked steps.
+    """The env-facing action: squashed into the env's bounds.
 
-    The mask carries the zeroed steps the caller already decided on; this
-    helper only places the multiply, so the callers cannot drift apart.
+    Every action payload the env receives, and the env-space action the
+    critic reads, goes through this one function, so the bound invariant
+    has a single home. ``mask`` zeroes padded steps; it is applied after
+    the squash.
     """
-    return squash_to_env_bounds(raw, low, high) * mask
+    squashed = squash_to_env_bounds(raw, low, high)
+    if mask is not None:
+        squashed = squashed * mask
+    return squashed
 

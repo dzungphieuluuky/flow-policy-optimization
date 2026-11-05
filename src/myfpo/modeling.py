@@ -36,7 +36,7 @@ from myfpo.fpo_core import (
     compute_value_loss,
 )
 from myfpo.networks import Critic, FlowModel, FlowResMLP
-from myfpo.processor import RunningMeanStd, StateEncoder, masked_squash_to_env_bounds, squash_to_env_bounds
+from myfpo.processor import RunningMeanStd, StateEncoder, env_action_chunk
 from myfpo.rollout import RolloutBuffers, resolve_action_bounds, run_rollout
 from myfpo.layers import (
     autocast_context,
@@ -159,6 +159,8 @@ class MyfpoPolicy(nn.Module):
         self.critic_target.eval()
         self.reward_normalizer = RunningMeanStd(1)
         self.obs_normalizer = RunningMeanStd(obs_dim)
+        if config.normalize_actions:
+            self.action_normalizer = RunningMeanStd(action_dim)
         self.register_buffer("action_low", torch.full((action_dim,), -1.0), persistent=False)
         self.register_buffer("action_high", torch.full((action_dim,), 1.0), persistent=False)
         init_ema_buffers(self, config)
@@ -190,6 +192,22 @@ class MyfpoPolicy(nn.Module):
                 f"{tuple(observations.shape)}"
             )
         self.obs_normalizer.update(observations)
+
+    @torch.inference_mode()
+    def update_action_stats(
+        self, actions: torch.Tensor, action_is_pad: torch.Tensor | None = None
+    ) -> None:
+        """Update live stats from raw executed actions (padded tokens skipped)."""
+        if not self.config.normalize_actions:
+            return
+        if actions.shape[-1] != self.action_normalizer.mean.numel():
+            raise ValueError(
+                f"actions must end in action_dim={self.action_normalizer.mean.numel()}, "
+                f"got {tuple(actions.shape)}"
+            )
+        executed = actions[~action_is_pad] if action_is_pad is not None else actions
+        if executed.numel() > 0:
+            self.action_normalizer.update(executed)
 
     def set_action_bounds(
         self,
@@ -414,12 +432,19 @@ class MyfpoPolicy(nn.Module):
                 t_max=cfg.max_sampled_timestep,
             ).float()
 
+        if self.config.normalize_actions:
+            # The flow predicts in z-scored action space; map it back to the
+            # env-scale raw units before the squash runs on the way to the env.
+            stats = self.action_normalizer
+            if not stats.uninitialized:
+                action_chunk = action_chunk * (stats.var + stats.eps).sqrt() + stats.mean
+
         proposal = action_chunk
         if self.training and cfg.action_perturb_std > 0:
             proposal = proposal + cfg.action_perturb_std * torch.randn_like(proposal)
-        # The raw chunk, in the policy's own action space. The env-facing
-        # action is the squash of this, and the squash is applied on the way
-        # to the env, not here: the flow is trained on the raw value.
+        # The chunk here is env-scale raw, denormalized from the z-scored
+        # flow; the env-facing action is the squash of it, applied on the way
+        # to the env, not here.
         return proposal
 
     def select_action(self, batch: dict[str, torch.Tensor], **kwargs) -> torch.Tensor:
@@ -446,7 +471,7 @@ class MyfpoPolicy(nn.Module):
         if not self.action_buffer:
             chunk = self.predict_action_chunk({"observation.state": window}, **kwargs)
             n_execute = max(1, min(self.config.n_action_steps, chunk.shape[1]))
-            squashed = squash_to_env_bounds(chunk, self.action_low, self.action_high)
+            squashed = env_action_chunk(chunk, self.action_low, self.action_high)
             for i in range(n_execute):
                 self.action_buffer.append(squashed[0, i])
         return self.action_buffer.popleft()
@@ -516,6 +541,10 @@ class MyfpoPolicy(nn.Module):
         storage_dtype = resolve_storage_dtype(actions.device)
         eps = eps.to(storage_dtype)
         t = t.to(storage_dtype)
+        if self.config.normalize_actions:
+            # The flow regresses on z-scored targets. Normalize here so the
+            # behavior losses sit in the same frame the training pass will use.
+            actions = self.action_normalizer(actions)
         x_t, actor_t, flow_shape, num_mc = expand_mc_samples(actions, eps, t)
         with torch.no_grad():
             with autocast_context(actions.device):
@@ -571,7 +600,7 @@ class MyfpoPolicy(nn.Module):
         reduction: str = "mean",
         check_finite: bool = True,
     ) -> torch.Tensor:
-        """ASPO policy loss + MSE value loss. See ``loss_with_info`` for diagnostics."""
+        """Surrogate policy loss + MSE value loss. See ``loss_with_info`` for diagnostics."""
         loss, _ = self.loss_and_info(batch, reduction, check_finite, compute_info=False)
         return loss
 
@@ -594,9 +623,9 @@ class MyfpoPolicy(nn.Module):
         cfg = self.config
         # No pinned async copies on the loss path: under torch.compile the H2D
         # is a graph node, and pin_memory has no place inside a CUDA graph.
-        # The action is the flow's raw output, and it is the CFM regression
-        # target. It stays fp32: the raw values are unbounded, so a bf16
-        # rounding would put a 0.4% error on the target the flow is fit to.
+        # The regression target is built from the stored fp32 action (z-scored
+        # by default). A bf16 rounding would put a 0.4% error on the target
+        # the flow is fit to.
         states = self.to_device_tensor(batch, "observation.state", device, storage_dtype)
         actions = self.to_device_tensor(batch, "action", device, torch.float32)
         advantages = self.to_device_tensor(
@@ -626,6 +655,10 @@ class MyfpoPolicy(nn.Module):
             )
 
         states = self.obs_normalizer(states)
+        if self.config.normalize_actions:
+            # z-scored targets, same frame as the behavior losses. The critic
+            # still reads the env-space squashed action downstream.
+            actions = self.action_normalizer(actions)
         if grad_inputs:
             states = states.detach().requires_grad_(True)
             actions = actions.detach().requires_grad_(True)
@@ -713,7 +746,7 @@ class MyfpoPolicy(nn.Module):
         return cfm_loss_old, cfm_loss_old_token
 
     def policy_loss(self, b: TrainingBatch, v_new: torch.Tensor, device) -> PolicyTerms:
-        """The ASPO surrogate loss, one value per chunk."""
+        """The trust-region surrogate loss, one value per chunk."""
         cfg = self.config
         n, num_mc, flow_shape = b.n, b.num_mc, b.flow_shape
         with torch.autocast(device_type=device.type, enabled=False):
@@ -789,7 +822,9 @@ class MyfpoPolicy(nn.Module):
             chunk_exec_frac = self.exec_length_frac((~b.action_is_pad).sum(dim=-1))
             # Zero out padded steps so critic doesn't condition on arbitrary values.
             pad_mask = (~b.action_is_pad).unsqueeze(-1).float()
-            b_actions_squashed = masked_squash_to_env_bounds(b.actions, self.action_low, self.action_high, pad_mask)
+            b_actions_squashed = env_action_chunk(
+                b.actions, self.action_low, self.action_high, pad_mask
+            )
             raw_value_pred = self.critic(b.states, b_actions_squashed, chunk_exec_frac).float()  # [num_critics, n]
         raw_returns_flat = b.returns.reshape(-1)
         if raw_value_pred.shape[-1] != raw_returns_flat.shape[0]:

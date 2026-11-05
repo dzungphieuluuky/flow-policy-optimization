@@ -134,6 +134,31 @@ def test_the_collector_no_longer_clamps():
     assert float(executed.abs().max()) < 2.0, "the value was clamped to the bound"
 
 
+def test_infinite_or_nan_bounds_are_rejected():
+    """An unbounded Box must raise, not produce an infinite scale.
+
+    ``high - low > 0`` passes for +inf/-inf boxes, so the comparison check
+    alone cannot catch them. The env-facing action would be NaN.
+    """
+    from myfpo.rollout import resolve_action_bounds
+
+    with pytest.raises(ValueError, match="finite"):
+        resolve_action_bounds([float("-inf"), -1.0], [1.0, float("inf")])
+    with pytest.raises(ValueError, match="finite"):
+        resolve_action_bounds([float("nan")], [1.0])
+    with pytest.raises(ValueError, match="finite"):
+        resolve_action_bounds([1.0], [float("inf")])
+
+
+def test_inverted_bounds_are_rejected():
+    from myfpo.rollout import resolve_action_bounds
+
+    with pytest.raises(ValueError, match="high > low"):
+        resolve_action_bounds([1.0], [1.0])
+    with pytest.raises(ValueError, match="high > low"):
+        resolve_action_bounds([2.0, -1.0], [2.0, -1.0])
+
+
 def test_the_stored_action_is_bounded_because_of_the_squash():
     """The whole chain: actor output to the value the env receives.
 
@@ -206,8 +231,8 @@ def test_no_clamp_survives_on_the_collector_path():
     assert "chunk_clip_counts" not in names, "the clip counter is back"
 
 
-def test_masked_squash_zeroes_only_the_masked_steps():
-    from myfpo.processor import masked_squash_to_env_bounds, squash_to_env_bounds
+def test_env_action_chunk_zeroes_only_the_masked_steps():
+    from myfpo.processor import env_action_chunk, squash_to_env_bounds
 
     torch.manual_seed(0)
     raw = torch.randn(2, 4, 3)
@@ -217,7 +242,7 @@ def test_masked_squash_zeroes_only_the_masked_steps():
     mask[0, 2:] = 0.0
     mask[1, 0] = 0.0
 
-    out = masked_squash_to_env_bounds(raw, low, high, mask)
+    out = env_action_chunk(raw, low, high, mask)
     squashed = squash_to_env_bounds(raw, low, high)
     live = mask.expand_as(raw).to(dtype=bool)
     assert torch.equal(out[live], squashed[live])

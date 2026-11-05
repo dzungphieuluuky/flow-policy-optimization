@@ -9,7 +9,7 @@ import dataclasses
 from collections.abc import Callable
 import numpy as np
 from myfpo.configuration import validate_n_action_steps
-from myfpo.processor import masked_squash_to_env_bounds, squash_to_env_bounds
+from myfpo.processor import env_action_chunk
 from dataclasses import dataclass
 from myfpo.fpo_core import (
     compute_gae_diagnostics,
@@ -457,6 +457,11 @@ def resolve_action_bounds(
         raise ValueError(
             f"action_low shape {tuple(lo.shape)} != action_high shape {tuple(hi.shape)}"
         )
+    if not (torch.isfinite(lo).all() and torch.isfinite(hi).all()):
+        raise ValueError(
+            "action bounds must be finite in every dim; an unbounded Box maps "
+            "to an infinite scale and the env would get NaN actions"
+        )
     if not bool(((hi - lo) > 0).all()):
         raise ValueError("action bounds must satisfy high > low in every dim")
     return lo, hi
@@ -601,7 +606,7 @@ def plan_chunks(
     # of it, and the buffer keeps the raw chunk: the flow is
     # trained on what it produced, not on the squash of it.
     raw_all = policy(states).detach().to(OBS_DTYPE)
-    executed_all = squash_to_env_bounds(raw_all, low, high)
+    executed_all = env_action_chunk(raw_all, low, high)
     state.plan[wavefront] = executed_all
     # The chunk is held in registers rather than in one object per env, so a
     # closing step can gather all finished chunks with a single index.
@@ -1079,10 +1084,14 @@ def bootstrap_values(
         try:
             with autocast_context(device):
                 chunk_len_mask = (torch.arange(cfg.action_horizon, device=actions.device).unsqueeze(0) < active["chunk_lengths"].unsqueeze(1)).unsqueeze(-1).float()
-                actions_squashed = masked_squash_to_env_bounds(actions, policy.action_low, policy.action_high, chunk_len_mask)
+                actions_squashed = env_action_chunk(
+                    actions, policy.action_low, policy.action_high, chunk_len_mask
+                )
                 q_current_chunk = subsampled_min(policy.critic(normalized_states, actions_squashed, exec_length_frac).float())
                 boot_mask = (torch.arange(cfg.action_horizon, device=boot_actions.device).unsqueeze(0) < cfg.n_action_steps).unsqueeze(-1).float()
-                boot_actions_squashed = masked_squash_to_env_bounds(boot_actions, policy.action_low, policy.action_high, boot_mask)
+                boot_actions_squashed = env_action_chunk(
+                    boot_actions, policy.action_low, policy.action_high, boot_mask
+                )
                 q_bootstrap = subsampled_min(policy.critic_target(normalized_next_states, boot_actions_squashed, boot_exec_frac).float())
         finally:
             policy.critic.train(critic_training)

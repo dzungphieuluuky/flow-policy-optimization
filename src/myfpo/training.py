@@ -37,7 +37,7 @@ from myfpo.evaluator import (
 )
 from myfpo.modeling import TrainingAborted, MyfpoPolicy, make_optimizer
 from myfpo.fpo_core import compute_eval_summary_metrics, subsampled_min
-from myfpo.processor import masked_squash_to_env_bounds, squash_to_env_bounds
+from myfpo.processor import env_action_chunk
 from myfpo.layers import (
     autocast_context,
     cudagraph_step_begin,
@@ -233,7 +233,7 @@ def executed_chunk(
     low, high = resolve_action_bounds(action_low, action_high)
     action = batch["action"]
     device = action.device
-    return squash_to_env_bounds(
+    return env_action_chunk(
         action.float(),
         low.to(device=device, dtype=torch.float32),
         high.to(device=device, dtype=torch.float32),
@@ -294,7 +294,9 @@ def measure_value_drift(policy, batch, device) -> tuple[torch.Tensor, torch.Tens
         torch.arange(cfg.action_horizon, device=boot_obs.device)
         .unsqueeze(0) < cfg.n_action_steps
     ).unsqueeze(-1).float()
-    boot_actions = masked_squash_to_env_bounds(boot_actions_raw, policy.action_low, policy.action_high, boot_mask)
+    boot_actions = env_action_chunk(
+        boot_actions_raw, policy.action_low, policy.action_high, boot_mask
+    )
     critic_was_training = policy.critic.training
     policy.critic.eval()
     try:
@@ -1188,6 +1190,7 @@ def run_training_loop(
             policy.update_ema(state.global_step)
             # Normaliser updated at end of cycle: rollout + update used frozen stats.
             policy.update_observation_stats(batch["normalizer_observations"])
+            policy.update_action_stats(batch["action"], batch["action_is_pad"])
             policy.update_target_critic()
 
             update = update_metrics(
