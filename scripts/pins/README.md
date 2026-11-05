@@ -5,8 +5,8 @@ the same computation and compares at `atol=0`.
 
 ## Why these exist
 
-The refactor series that follows moves code between files without changing what
-it computes. That claim needs a check. `pytest` is not that check. On
+The refactor series moved code between files without changing what it
+computes. That claim needs a check. `pytest` is not that check. On
 2026-10-17 the full suite passed 588 tests while a deliberate change to
 parameter construction order silently changed every weight in the actor. The
 pins catch it. The suite does not.
