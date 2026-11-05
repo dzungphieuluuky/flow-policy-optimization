@@ -78,7 +78,13 @@ class NextStepShim:
         )
         done = terminated | truncated
         if bool(done.any()):
-            obs = torch.where(done.unsqueeze(-1), info["final_observation"], obs)
+            # NEXT_STEP autoreset already returns the final frame, and a future
+            # ManiSkill may drop the key. Pass through when it is absent.
+            final = info.get("final_observation")
+            if final is None:
+                final = info.get("final_obs")
+            if final is not None:
+                obs = torch.where(done.unsqueeze(-1), final, obs)
         return obs, reward, terminated, truncated, info
 
     def render(self):

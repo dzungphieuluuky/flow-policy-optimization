@@ -12,6 +12,7 @@ from __future__ import annotations
 import numpy as np
 import torch
 
+from myfpo.maniskill_gpu import NextStepShim
 from myfpo.rollout import RolloutBuffer, collect_chunks_vec, take_final_observations
 
 OBS, ACT, H = 3, 2, 4
@@ -109,3 +110,36 @@ def test_no_info_key_leaves_the_observation_alone():
     reference = torch.full((2, OBS), RESET)
     out = take_final_observations({}, np.array([True, False]), reference, torch.device("cpu"))
     assert torch.equal(out, reference)
+
+
+class _TorchVec:
+    """A SAME_STEP torch env whose info dict is fixed by the test."""
+
+    num_envs = 2
+    device = "cpu"
+    single_observation_space = None
+    single_action_space = None
+
+    def __init__(self, info):
+        self.info = info
+
+    def step(self, actions):  # noqa: ARG002 - the frame does not depend on it
+        obs = torch.full((2, OBS), RESET)
+        reward = torch.zeros(2)
+        terminated = torch.tensor([True, False])
+        truncated = torch.zeros(2, dtype=torch.bool)
+        return obs, reward, terminated, truncated, self.info
+
+
+def test_the_shim_uses_whichever_final_key_the_env_supplies():
+    final = torch.full((2, OBS), FINAL)
+    for info in ({"final_observation": final}, {"final_obs": final}):
+        obs, *_ = NextStepShim(_TorchVec(info)).step_torch(torch.zeros(2, ACT))
+        assert torch.equal(obs[0], final[0])
+        assert torch.equal(obs[1], torch.full((OBS,), RESET))
+
+
+def test_the_shim_passes_a_done_step_through_without_a_final_key():
+    """A NEXT_STEP env already returns the final frame, so the key is absent."""
+    obs, *_ = NextStepShim(_TorchVec({})).step_torch(torch.zeros(2, ACT))
+    assert torch.equal(obs, torch.full((2, OBS), RESET))
