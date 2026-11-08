@@ -86,7 +86,7 @@ ABOVE_CLAMP_ABORT_UPDATES = 5
 
 BOTH_CLAMPED_ABORT_FRAC = 0.5
 
-def generate_mini_batch_indices(
+def generate_minibatch_indices(
     n: int,
     num_mini_batches: int,
     device: torch.device | str,
@@ -447,7 +447,7 @@ def policy_update_step(policy, optimizer, batch, backends, cfg, grad_groups):
     both_clamped_fracs: list[torch.Tensor] = []
     n_chunks = batch["raw_advantages"].shape[0]
     microbatches = list(
-        generate_mini_batch_indices(
+        generate_minibatch_indices(
             n_chunks,
             cfg.num_mini_batches,
             batch["raw_advantages"].device,
@@ -537,7 +537,7 @@ def evaluate_policy(
     window_obj = summarize_window(
         results_by_sampling,
         reported_name=cfg.eval_sampling,
-        stop_name=cfg.stop_eval_sampling,
+        stop_name=cfg.final_eval_sampling,
         eval_seed=evaluator.eval_seed,
         summarize=evaluator.summarize,
         best_return=best_return,
@@ -998,7 +998,7 @@ def configure_run(
     train_env = make_train_env(cfg, env, env_name, runtime)
     if runtime is not None:
         runtime["eval_sampling"] = cfg.eval_sampling
-        runtime["stop_eval_sampling"] = cfg.stop_eval_sampling
+        runtime["final_eval_sampling"] = cfg.final_eval_sampling
         (out_dir / "run_metadata.json").write_text(
             json.dumps(runtime, indent=2, sort_keys=True), encoding="utf-8"
         )

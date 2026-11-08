@@ -126,12 +126,12 @@ def test_the_behavior_and_training_losses_agree_in_the_normalized_frame():
     )
     with autocast_context(torch.device("cpu")):
         v_new = policy.compute_predicted_velocity(
-            b.x_t, b.actor_t, b.condition_flat
+            b.x_t, b.flat_timesteps, b.condition_flat
         ).float()
     terms = policy.policy_loss(b, v_new, torch.device("cpu"))
 
     loss_b, _ = policy.compute_behavior_cfm_losses(
-        b.states, batch["action"], b.t, b.eps, b.action_is_pad
+        b.states, batch["action"], b.timesteps, b.eps, b.action_is_pad
     )
     assert torch.equal(loss_b.detach(), terms.cfm_loss_new.detach())
 

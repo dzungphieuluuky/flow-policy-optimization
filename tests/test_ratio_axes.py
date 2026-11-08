@@ -86,7 +86,7 @@ def _recorded(cfg):
     """What the surrogate was handed, and what each ratio was built from."""
     policy, batch = _policy_and_batch(cfg)
     ratios, surrogate_inputs = [], []
-    real_ratio, real_surrogate = M.compute_policy_ratio, M.compute_aspo_surrogate
+    real_ratio, real_surrogate = M.compute_policy_ratio, M.compute_trust_region_surrogate
 
     def ratio_spy(cfm_loss_old, cfm_loss_new, *args, **kwargs):
         ratios.append(cfm_loss_old.detach().clone())
@@ -96,29 +96,29 @@ def _recorded(cfg):
         surrogate_inputs.append(tuple(ratio.shape))
         return real_surrogate(ratio, advantage, *args, **kwargs)
 
-    M.compute_policy_ratio, M.compute_aspo_surrogate = ratio_spy, surrogate_spy
+    M.compute_policy_ratio, M.compute_trust_region_surrogate = ratio_spy, surrogate_spy
     try:
         # loss_with_info: the metric pass reads the same delta, so a branch.
         policy.loss_with_info(batch, check_finite=False)
     finally:
         M.compute_policy_ratio = real_ratio
-        M.compute_aspo_surrogate = real_surrogate
+        M.compute_trust_region_surrogate = real_surrogate
     return ratios, surrogate_inputs, batch
 
 
 def per_chunk(**kw):
     """FPO Eq 9: tokens averaged, then all MC pairs in one group."""
-    return _cfg(do_average_cfm_loss_in_chunk=True, cfm_average_group_size=-1, **kw)
+    return _cfg(group_mc_loss=True, mc_loss_group_size=-1, **kw)
 
 
 def per_action(**kw):
     """FPO++ Eq 10: tokens averaged, one ratio per (t, eps) pair."""
-    return _cfg(do_average_cfm_loss_in_chunk=True, cfm_average_group_size=1, **kw)
+    return _cfg(group_mc_loss=True, mc_loss_group_size=1, **kw)
 
 
 def per_sample(**kw):
     """Finer than either paper: one ratio per (chunk, pair, token)."""
-    return _cfg(do_average_cfm_loss_in_chunk=False, cfm_average_group_size=1, **kw)
+    return _cfg(group_mc_loss=False, mc_loss_group_size=1, **kw)
 
 
 def test_per_chunk_averages_the_mc_losses_before_exponentiating():
@@ -154,15 +154,15 @@ def test_the_reported_delta_is_the_log_of_the_ratio_used(do_average, group):
     """The diagnostic must read the same losses that built the ratio."""
     policy, batch = _policy_and_batch(
         _cfg(
-            do_average_cfm_loss_in_chunk=do_average,
-            cfm_average_group_size=group,
+            group_mc_loss=do_average,
+            mc_loss_group_size=group,
         )
     )
     device = next(policy.parameters()).device
     b = policy.to_device_batch(batch, device, resolve_storage_dtype(device))
     with autocast_context(device):
         v_new = policy.compute_predicted_velocity(
-            b.x_t, b.actor_t, b.condition_flat
+            b.x_t, b.flat_timesteps, b.condition_flat
         ).float()
     terms = policy.policy_loss(b, v_new, device)
 
@@ -183,18 +183,18 @@ def _padded_per_sample_batch(pad_from=HORIZON // 2):
 def _per_sample_surrogate(policy, batch):
     """The per-token surrogate ``forward`` built, captured at the call."""
     captured = []
-    real = M.compute_aspo_surrogate
+    real = M.compute_trust_region_surrogate
 
     def spy(ratio, advantage, *args, **kwargs):
         out = real(ratio, advantage, *args, **kwargs)
         captured.append(out.detach().clone())
         return out
 
-    M.compute_aspo_surrogate = spy
+    M.compute_trust_region_surrogate = spy
     try:
         losses = policy(batch, reduction="none", check_finite=False)
     finally:
-        M.compute_aspo_surrogate = real
+        M.compute_trust_region_surrogate = real
     return losses, captured[-1]
 
 
@@ -248,10 +248,10 @@ def test_per_chunk_and_per_action_disagree_once_the_actor_moves():
 
 
 def test_an_unknown_granularity_is_rejected():
-    with pytest.raises(ValueError, match="cfm_average_group_size"):
-        _cfg(cfm_average_group_size=0).validate()
+    with pytest.raises(ValueError, match="mc_loss_group_size"):
+        _cfg(mc_loss_group_size=0).validate()
     with pytest.raises(ValueError, match="divide evenly"):
-        _cfg(num_mc_samples=6, cfm_average_group_size=4).validate()
+        _cfg(num_mc_samples=6, mc_loss_group_size=4).validate()
 
 
 def test_the_paper_configs_validate_their_trust_region_mapping():
@@ -259,7 +259,7 @@ def test_the_paper_configs_validate_their_trust_region_mapping():
     for mode, group, reduction in (("ppo", -1, "sum"), ("aspo", 1, "mean")):
         _cfg(
             trust_region_mode=mode,
-            do_average_cfm_loss_in_chunk=True,
-            cfm_average_group_size=group,
+            group_mc_loss=True,
+            mc_loss_group_size=group,
             cfm_loss_reduction=reduction,
         ).validate()

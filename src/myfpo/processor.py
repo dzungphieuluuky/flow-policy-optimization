@@ -163,7 +163,7 @@ def squash_to_env_bounds(
     return out
 
 
-def scale_and_clip_chunk(
+def clamp_and_rescale_to_unit(
     raw: torch.Tensor,
     low: torch.Tensor,
     high: torch.Tensor,
@@ -187,7 +187,7 @@ def unscale_to_env(
 ) -> torch.Tensor:
     """Map a bounded ``[-1, 1]`` action back to env scale.
 
-    Inverse of :func:`scale_and_clip_chunk`: ``low + (scaled + 1) / 2 * (high - low)``.
+    Inverse of :func:`clamp_and_rescale_to_unit`: ``low + (scaled + 1) / 2 * (high - low)``.
     """
     scale = (high - low).to(device=scaled.device, dtype=scaled.dtype)
     low_t = low.to(device=scaled.device, dtype=scaled.dtype)

@@ -8,7 +8,7 @@ import torch
 from myfpo.configuration import MyfpoConfig
 from myfpo.fpo_core import velocity_to_target_param, cfm_target, compute_cfm_loss
 
-MODES = ("velocity", "action", "noise")
+MODES = ("velocity", "action", "eps")
 
 
 def _cfg(**kw):

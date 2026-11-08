@@ -81,7 +81,7 @@ def test_a_done_step_stores_the_final_frame_not_the_reset_frame():
     starts = active["chunk_starts"].to(torch.long)
     for i in range(buffer.n_chunks):
         end = starts[i] + lengths[i] - 1
-        assert torch.equal(active["step_frames"][end], torch.full((OBS,), FINAL))
+        assert torch.equal(active["normalizer_observations"][end], torch.full((OBS,), FINAL))
 
 
 def test_the_gymnasium_key_and_the_maniskill_key_both_work():

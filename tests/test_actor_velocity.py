@@ -55,7 +55,7 @@ def test_the_velocity_can_exceed_one():
 
 
 def test_the_opt_in_clip_is_the_only_bound():
-    policy = _policy(transported_clip_value=0.5)
+    policy = _policy(velocity_clip_value=0.5)
     with torch.no_grad():
         policy.actor.out.weight.zero_()
         policy.actor.out.bias.fill_(3.0)

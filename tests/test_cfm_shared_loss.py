@@ -33,12 +33,12 @@ def test_behavior_and_training_read_one_token_loss():
 
     with autocast_context(device):
         v_new = policy.compute_predicted_velocity(
-            b.x_t, b.actor_t, b.condition_flat
+            b.x_t, b.flat_timesteps, b.condition_flat
         ).float()
     terms = policy.policy_loss(b, v_new, device)
 
     loss_b, token_b = policy.compute_behavior_cfm_losses(
-        b.states, b.actions, b.t, b.eps, b.action_is_pad
+        b.states, b.actions, b.timesteps, b.eps, b.action_is_pad
     )
 
     assert torch.equal(loss_b.detach(), terms.cfm_loss_new.detach())

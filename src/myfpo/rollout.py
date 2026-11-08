@@ -204,7 +204,7 @@ class RolloutBuffer:
         self.action_dim = action_dim
         self.pin_memory = pin_memory
 
-        self.step_frames = self.zeros_for((max_steps, obs_dim), OBS_DTYPE)
+        self.normalizer_observations = self.zeros_for((max_steps, obs_dim), OBS_DTYPE)
         self.step_rewards = self.zeros_for((max_steps,), REWARD_DTYPE)
 
         self.chunk_state = self.zeros_for(
@@ -264,7 +264,7 @@ class RolloutBuffer:
         next_state: torch.Tensor,
         action: torch.Tensor,
         rewards: list[float] | np.ndarray | torch.Tensor,
-        step_frames: torch.Tensor,
+        normalizer_observations: torch.Tensor,
         terminated: bool,
         truncated: bool,
         env_id: int = 0,
@@ -284,16 +284,16 @@ class RolloutBuffer:
             )
         if action.shape != (self.action_horizon, self.action_dim):
             raise ValueError(f"action shape {tuple(action.shape)} does not fit buffer")
-        if tuple(step_frames.shape) != (n_exec, self.obs_dim):
+        if tuple(normalizer_observations.shape) != (n_exec, self.obs_dim):
             raise ValueError(
-                f"step_frames shape {tuple(step_frames.shape)} does not fit buffer"
+                f"normalizer_observations shape {tuple(normalizer_observations.shape)} does not fit buffer"
             )
 
         chunk_index = self.n_chunks
         offset = self.n_steps
         self.chunk_state[chunk_index].copy_(state)
         self.chunk_next_state[chunk_index].copy_(next_state)
-        self.step_frames[offset : offset + n_exec].copy_(step_frames)
+        self.normalizer_observations[offset : offset + n_exec].copy_(normalizer_observations)
         self.step_rewards[offset : offset + n_exec].copy_(reward_t)
         self.chunk_actions[chunk_index].copy_(action)
         self.chunk_starts[chunk_index] = offset
@@ -366,7 +366,7 @@ class RolloutBuffer:
         self.chunk_terminated[lo:hi] = terminated
         self.chunk_truncated[lo:hi] = truncated
         self.chunk_env_id[lo:hi] = env_ids
-        self.step_frames[step_lo:step_hi] = frames.reshape(-1, self.obs_dim)[mask]
+        self.normalizer_observations[step_lo:step_hi] = frames.reshape(-1, self.obs_dim)[mask]
         self.step_rewards[step_lo:step_hi] = rewards.reshape(-1)[mask]
         self.n_chunks = hi
         self.n_steps = step_hi
@@ -374,7 +374,7 @@ class RolloutBuffer:
     def copy_to(self, other: "RolloutBuffer", *, non_blocking: bool = False) -> None:
         """Copy the active prefix into a compatible buffer, e.g. onto a GPU."""
         names = (
-            "step_frames",
+            "normalizer_observations",
             "step_rewards",
             "chunk_state",
             "chunk_next_state",
@@ -387,7 +387,7 @@ class RolloutBuffer:
         )
         def prefix(buffer, name):
             """Slice one field to the rows this buffer wrote."""
-            n = self.n_steps if name.startswith("step_") else self.n_chunks
+            n = self.n_steps if name in ("normalizer_observations", "step_rewards") else self.n_chunks
             return getattr(buffer, name)[:n]
 
         # The copy runs first: a destination too small raises here, and its
@@ -404,7 +404,7 @@ class RolloutBuffer:
         """Contiguous views of the populated prefix."""
         n_chunks, n_steps = self.n_chunks, self.n_steps
         return {
-            "step_frames": self.step_frames[:n_steps],
+            "normalizer_observations": self.normalizer_observations[:n_steps],
             "step_rewards": self.step_rewards[:n_steps],
             "chunk_state": self.chunk_state[:n_chunks],
             "chunk_next_state": self.chunk_next_state[:n_chunks],
@@ -446,7 +446,7 @@ def resolve_action_bounds(
     return lo, hi
 
 
-def resolve_chunk_args(
+def check_chunk_dims(
     n_obs_steps: int,
     n_action_steps: int,
     action_horizon: int,
@@ -480,21 +480,21 @@ class CollectState:
     per env. That is what lets a closing step gather every finished chunk at
     once.
 
-    The control-flow bookkeeping (``pos_t``, ``active``, ``awaiting``,
+    The control-flow bookkeeping (``chunk_pos``, ``active``, ``awaiting``,
     ``executed_total``, ``roll_table``) is host memory: it decides what the
     Python loop does next, and reading it must not sync the device.
     """
 
     windows: torch.Tensor
     reward_windows: torch.Tensor
-    step_frames: torch.Tensor
+    normalizer_observations: torch.Tensor
     active: np.ndarray
     step_limits: np.ndarray
     raw_plan: torch.Tensor
     start_window: torch.Tensor
-    pos_t: torch.Tensor
-    plan: torch.Tensor
-    actions_t: torch.Tensor
+    chunk_pos: torch.Tensor
+    executed_plan: torch.Tensor
+    next_actions: torch.Tensor
     executed_total: np.ndarray
     awaiting: np.ndarray
     remaining: int
@@ -518,7 +518,7 @@ def make_state(
     """The state the collection loop starts with.
 
     The observation, reward, plan and action storage live on ``device``: on a
-    GPU sim they never leave it. The index bookkeeping (``pos_t``, ``env_rows``,
+    GPU sim they never leave it. The index bookkeeping (``chunk_pos``, ``env_rows``,
     ``roll_table``) stays on the host, because it drives Python control flow:
     moving it would turn one sync per env per step into the common case.
     """
@@ -542,7 +542,7 @@ def make_state(
     return CollectState(
         windows=windows,
         reward_windows=torch.zeros(n, action_horizon, dtype=REWARD_DTYPE, device=device),
-        step_frames=torch.zeros(
+        normalizer_observations=torch.zeros(
             n, action_horizon, obs_dim, dtype=OBS_DTYPE, device=device
         ),
         active=np.zeros(n, dtype=bool),
@@ -551,11 +551,11 @@ def make_state(
             n, action_horizon, act_dim, dtype=torch.float32, device=device
         ),
         start_window=torch.zeros(n, n_obs_steps, obs_dim, dtype=OBS_DTYPE, device=device),
-        pos_t=torch.zeros(n, dtype=torch.long),
-        plan=torch.zeros(
+        chunk_pos=torch.zeros(n, dtype=torch.long),
+        executed_plan=torch.zeros(
             n + 1, action_horizon, act_dim, dtype=torch.float32, device=device
         ),
-        actions_t=torch.zeros((n, act_dim), dtype=torch.float32, device=device),
+        next_actions=torch.zeros((n, act_dim), dtype=torch.float32, device=device),
         executed_total=np.zeros(n, dtype=np.int64),
         awaiting=np.zeros(n, dtype=bool),
         remaining=remaining,
@@ -592,12 +592,12 @@ def plan_chunks(
         executed_all = unscale_to_env(raw_all, low, high)
     else:
         executed_all = squash_to_env_bounds(raw_all, low, high)
-    state.plan[wavefront] = executed_all
+    state.executed_plan[wavefront] = executed_all
     # The chunk is held in registers rather than in one object per env, so a
     # closing step can gather all finished chunks with a single index.
     state.raw_plan[wavefront] = raw_all
     state.start_window[wavefront] = states
-    state.pos_t[wavefront] = 0
+    state.chunk_pos[wavefront] = 0
     rows = np.asarray(envs_needing_a_chunk, dtype=np.int64)
     targets_np = (
         targets.detach().cpu().numpy() if torch.is_tensor(targets)
@@ -656,22 +656,22 @@ def step_envs(state: CollectState, envs, action_horizon: int):
     """Send the next action of every env, and record what came back."""
     stepping = torch.from_numpy(state.active)
     live_idx = state.env_rows[stepping]
-    state.actions_t.copy_(
-        state.plan[
+    state.next_actions.copy_(
+        state.executed_plan[
             torch.where(stepping, state.env_rows, state.idle_row),
-            state.pos_t.clamp(max=action_horizon - 1),
+            state.chunk_pos.clamp(max=action_horizon - 1),
         ]
     )
     if is_torch_env(envs):
         # A GPU env keeps its frames on the device. Only the three done flags
         # cross to the host, and only because they drive the chunk-close loop.
-        obs_t, rew_t, term_t, trunc_t, info = envs.step_torch(state.actions_t)
+        obs_t, rew_t, term_t, trunc_t, info = envs.step_torch(state.next_actions)
         obs_t = obs_t.to(device=state.windows.device, dtype=OBS_DTYPE)
         term_np = term_t.cpu().numpy()
         trunc_np = trunc_t.cpu().numpy()
         rew_t = rew_t.to(device=state.windows.device, dtype=REWARD_DTYPE)
     else:
-        obs, rew, term, trunc, info = envs.step(state.actions_t.cpu().numpy())
+        obs, rew, term, trunc, info = envs.step(state.next_actions.cpu().numpy())
         term_np = np.asarray(term, dtype=bool)
         trunc_np = np.asarray(trunc, dtype=bool)
         obs_t = torch.from_numpy(np.asarray(obs, dtype=np.float32)).to(
@@ -687,11 +687,11 @@ def step_envs(state: CollectState, envs, action_horizon: int):
         )
 
     if live_idx.numel():
-        p = state.pos_t[live_idx]
+        p = state.chunk_pos[live_idx]
         state.reward_windows[live_idx, p] = rew_t[live_idx]
-        state.step_frames[live_idx, p] = obs_t[live_idx]
+        state.normalizer_observations[live_idx, p] = obs_t[live_idx]
         state.windows[live_idx, p] = obs_t[live_idx]
-        state.pos_t[live_idx] = p + 1
+        state.chunk_pos[live_idx] = p + 1
     return obs_t, term_np, trunc_np, done_np
 
 
@@ -733,12 +733,12 @@ def close_chunks(
                 state.windows[i, :-1] = state.windows[i, 1:].clone()
                 state.windows[i, -1] = obs_t[i]
             continue
-        n_exec = int(state.pos_t[i])
+        n_exec = int(state.chunk_pos[i])
         if done_np[i] or n_exec >= state.step_limits[i]:
             raw = state.raw_plan[i]
             start_state = state.start_window[i]
             state.windows[i].copy_(
-                state.windows[i][state.roll_table[int(state.pos_t[i]) % n_obs_steps]]
+                state.windows[i][state.roll_table[int(state.chunk_pos[i]) % n_obs_steps]]
             )
             state.executed_total[i] += n_exec
             state.remaining -= n_exec
@@ -747,7 +747,7 @@ def close_chunks(
                 next_state=state.windows[i],
                 action=raw,
                 rewards=state.reward_windows[i, :n_exec],
-                step_frames=state.step_frames[i, :n_exec],
+                normalizer_observations=state.normalizer_observations[i, :n_exec],
                 terminated=bool(term_np[i]),
                 truncated=bool(trunc_np[i]),
                 env_id=i,
@@ -794,7 +794,7 @@ def close_chunks_batched(
             state.windows[rows] = w
         state.awaiting[idle[done_idle]] = True
 
-    pos = state.pos_t.numpy()
+    pos = state.chunk_pos.numpy()
     closing = np.flatnonzero(state.active & (done_np | (pos >= state.step_limits)))
     if closing.size == 0:
         return
@@ -817,7 +817,7 @@ def close_chunks_batched(
         next_window=next_window,
         actions=state.raw_plan[rows],
         lengths=lengths,
-        frames=state.step_frames[rows],
+        frames=state.normalizer_observations[rows],
         rewards=state.reward_windows[rows],
         terminated=torch.from_numpy(term_np).to(device)[rows],
         truncated=torch.from_numpy(trunc_np).to(device)[rows],
@@ -906,7 +906,7 @@ def collect_chunks_vec(
     boundaries. A carried ``awaiting`` env gets its reset observation through
     the vec env's autoreset step.
     """
-    n_obs_steps, action_horizon = resolve_chunk_args(
+    n_obs_steps, action_horizon = check_chunk_dims(
         n_obs_steps, n_action_steps, buffer.action_horizon
     )
 
@@ -1274,7 +1274,7 @@ def run_rollout(
         "normalized_advantages": normalized_advantages,
         "raw_returns": raw_returns,
         "old_values": q_current_chunk,
-        "normalizer_observations": active["step_frames"].detach(),
+        "normalizer_observations": active["normalizer_observations"].detach(),
         "boot_observations": normalized_next_states.to(storage_dtype),
         "boot_actions": boot_actions.to(storage_dtype),
         "boot_values_start": q_bootstrap.unsqueeze(1),

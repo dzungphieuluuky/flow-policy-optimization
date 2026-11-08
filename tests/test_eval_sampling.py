@@ -27,7 +27,7 @@ def test_both_fields_default_to_the_trained_distribution():
     assert cfg.eval_sampling == "noise_start", (
         "the reported score must read the distribution training optimizes"
     )
-    assert cfg.stop_eval_sampling == "noise_start", (
+    assert cfg.final_eval_sampling == "noise_start", (
         "the stopper must read the distribution training optimizes"
     )
 
@@ -35,20 +35,20 @@ def test_both_fields_default_to_the_trained_distribution():
 def test_the_two_fields_are_independent():
     """Reporting one start and stopping on the other is a valid request."""
     cfg = dataclasses.replace(
-        MyfpoConfig(), eval_sampling="zero_start", stop_eval_sampling="noise_start"
+        MyfpoConfig(), eval_sampling="zero_start", final_eval_sampling="noise_start"
     )
     cfg.validate()
     assert cfg.eval_sampling == "zero_start"
-    assert cfg.stop_eval_sampling == "noise_start"
+    assert cfg.final_eval_sampling == "noise_start"
 
 
-@pytest.mark.parametrize("field", ["eval_sampling", "stop_eval_sampling"])
+@pytest.mark.parametrize("field", ["eval_sampling", "final_eval_sampling"])
 def test_an_unknown_sampling_is_rejected(field):
     with pytest.raises(ValueError, match=field):
         dataclasses.replace(MyfpoConfig(), **{field: "noise"}).validate()
 
 
-@pytest.mark.parametrize("field", ["eval_sampling", "stop_eval_sampling"])
+@pytest.mark.parametrize("field", ["eval_sampling", "final_eval_sampling"])
 @pytest.mark.parametrize("value", SAMPLINGS)
 def test_both_named_values_are_accepted(field, value):
     dataclasses.replace(MyfpoConfig(), **{field: value}).validate()
@@ -136,7 +136,7 @@ def test_the_trainer_copies_both_names_into_evaluate_policy():
 
     src = inspect.getsource(evaluate_policy)
     assert "reported_name=cfg.eval_sampling" in src
-    assert "stop_name=cfg.stop_eval_sampling" in src
+    assert "stop_name=cfg.final_eval_sampling" in src
 
 
 
@@ -164,7 +164,7 @@ def test_the_names_go_to_the_run_metadata_instead():
     """A string constant cannot be a per-step scalar. It belongs in the metadata."""
     src = _trainer_source()
     assert 'runtime["eval_sampling"] = cfg.eval_sampling' in src
-    assert 'runtime["stop_eval_sampling"] = cfg.stop_eval_sampling' in src
+    assert 'runtime["final_eval_sampling"] = cfg.final_eval_sampling' in src
 
 
 def test_the_tracker_rejects_no_key_after_this_change():
@@ -223,7 +223,7 @@ def test_both_fields_are_config_fields():
     """The two names are config fields, so the CLI can set either."""
     cfg = MyfpoConfig()
     assert cfg.eval_sampling in ("zero_start", "noise_start")
-    assert cfg.stop_eval_sampling in ("zero_start", "noise_start")
+    assert cfg.final_eval_sampling in ("zero_start", "noise_start")
 
 def test_summarize_window_peaks_on_the_stop_distribution():
     """The rule, executed rather than scanned.

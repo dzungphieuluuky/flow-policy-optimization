@@ -115,7 +115,7 @@ def test_obs_windows_slide_by_exactly_one_frame_per_step():
             # and the frames that entered are the ones the chunk recorded.
             s = int(a["chunk_starts"][i])
             assert torch.equal(a["chunk_next_state"][i, -1],
-                               a["step_frames"][s + n - 1]), (episode, i)
+                               a["normalizer_observations"][s + n - 1]), (episode, i)
             checked += 1
     assert checked > 40, f"only {checked} windows checked"
 
@@ -132,7 +132,7 @@ def test_ring_wraps_and_still_yields_the_right_window():
             assert 1 <= n_exec <= 2, (e, i, n_exec)
             s = int(a["chunk_starts"][i])
             assert torch.equal(a["chunk_next_state"][i][-1],
-                               a["step_frames"][s + n_exec - 1]), (e, i)
+                               a["normalizer_observations"][s + n_exec - 1]), (e, i)
 
 
 def test_next_state_chains_only_across_continue_chunks():
@@ -186,7 +186,7 @@ def test_a_row_that_hit_its_target_still_tracks_the_env():
 
 
 def test_actions_sent_to_the_env_match_the_stored_chunks():
-    """Guards the batched actions_t gather.
+    """Guards the batched next_actions gather.
 
     The env receives the squash of the stored chunk: the stored chunk is the
     flow's raw output, and the squash is applied on the way to the env.
@@ -248,7 +248,7 @@ def test_a_chunk_as_deep_as_the_window_still_lands_chronologically():
         n = int(a["chunk_lengths"][i])
         s = int(a["chunk_starts"][i])
         assert torch.equal(
-            a["chunk_next_state"][i], a["step_frames"][s : s + n]
+            a["chunk_next_state"][i], a["normalizer_observations"][s : s + n]
         ), i
 
 

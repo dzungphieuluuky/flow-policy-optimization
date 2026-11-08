@@ -195,7 +195,7 @@ def test_no_clamp_survives_on_the_collector_path():
     tree = ast.parse(src)
     # The action path now lives in its own step function, so the check walks
     # the whole module instead of one function body.
-    action_names = {"plan", "raw_all", "executed_all", "actions_t"}
+    action_names = {"executed_plan", "raw_all", "executed_all", "next_actions"}
 
     def assigned_names(node):
         names = set()

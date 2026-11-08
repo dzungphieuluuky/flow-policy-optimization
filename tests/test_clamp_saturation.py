@@ -15,7 +15,7 @@ import torch
 from fixtures import cfg
 
 from myfpo.configuration import MyfpoConfig
-from myfpo.fpo_core import clamp_saturation, compute_aspo_surrogate, compute_policy_ratio
+from myfpo.fpo_core import clamp_saturation, compute_trust_region_surrogate, compute_policy_ratio
 
 N, MC, ACT = 6, 4, 2
 
@@ -45,7 +45,7 @@ def test_the_pinned_ratio_leaves_the_actor_without_a_gradient():
     loss_old = torch.full((N, MC), 25.0)
     ratio = compute_policy_ratio(loss_old, loss_new, cfg)
     adv = torch.tensor([2.0, -2.0, 1.0, -1.0, 0.5, -0.5])
-    surrogate = compute_aspo_surrogate(ratio, adv.unsqueeze(-1).expand(N, MC), cfg)
+    surrogate = compute_trust_region_surrogate(ratio, adv.unsqueeze(-1).expand(N, MC), cfg)
     surrogate.sum().backward()
     assert torch.equal(loss_new.grad, torch.zeros_like(loss_new)), (
         "the saturated loss still received a gradient; check that "
@@ -261,7 +261,7 @@ def test_the_diagnostics_read_the_token_pair_when_grouping_is_off(monkeypatch):
     """With grouping off the ratio is per token, so the diagnostics must be too.
 
     The defect: the diagnostics always read a grouped loss, even when
-    ``do_average_cfm_loss_in_chunk`` was false and the ratio stayed per token.
+    ``group_mc_loss`` was false and the ratio stayed per token.
     A non-default group size then made the two axes disagree.
     """
     import myfpo.modeling as modeling
@@ -276,7 +276,7 @@ def test_the_diagnostics_read_the_token_pair_when_grouping_is_off(monkeypatch):
     monkeypatch.setattr(modeling, "compute_policy_ratio", spy)
 
     policy, batch, _ = _policy_and_batch(
-        2.0, do_average_cfm_loss_in_chunk=False, cfm_average_group_size=2
+        2.0, group_mc_loss=False, mc_loss_group_size=2
     )
     policy.loss_with_info(batch)
 

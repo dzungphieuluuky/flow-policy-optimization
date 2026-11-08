@@ -64,7 +64,7 @@ def test_shapes_match_their_consumers():
     n = buf.n_chunks
     assert buf.chunk_state[:n].shape == (n, OBS_STEPS, OBS_DIM)
     assert buf.chunk_next_state[:n].shape == (n, OBS_STEPS, OBS_DIM)
-    assert buf.step_frames[: buf.n_steps].shape == (buf.n_steps, OBS_DIM)
+    assert buf.normalizer_observations[: buf.n_steps].shape == (buf.n_steps, OBS_DIM)
 
 
 def test_step_frames_are_the_per_step_observations():
@@ -72,8 +72,8 @@ def test_step_frames_are_the_per_step_observations():
     buf = _collect()
     assert buf.n_steps == int(buf.chunk_lengths[: buf.n_chunks].sum())
     # Frames are raw observations, so they are unbounded but finite and not all identical.
-    assert torch.isfinite(buf.step_frames).all()
-    assert buf.step_frames.std(dim=0).max() > 0
+    assert torch.isfinite(buf.normalizer_observations).all()
+    assert buf.normalizer_observations.std(dim=0).max() > 0
 
 
 def test_chunk_state_is_the_window_the_policy_saw():
@@ -115,7 +115,7 @@ def test_chunk_next_state_is_the_final_window():
     last_step = (starts + lengths - 1).to(torch.long)
     torch.testing.assert_close(
         buf.chunk_next_state[: buf.n_chunks, -1, :],
-        buf.step_frames.index_select(0, last_step),
+        buf.normalizer_observations.index_select(0, last_step),
     )
 
 
@@ -154,14 +154,14 @@ def test_single_step_chunk():
         next_state=next_window,
         action=torch.zeros(HORIZON, ACT_DIM),
         rewards=np.array([1.0], dtype=np.float32),
-        step_frames=next_window[-1:],
+        normalizer_observations=next_window[-1:],
         terminated=True,
         truncated=False,
         env_id=0,
     )
     assert buf.n_steps == 1
     torch.testing.assert_close(buf.chunk_next_state[0], next_window)
-    torch.testing.assert_close(buf.step_frames[0], next_window[-1, :])
+    torch.testing.assert_close(buf.normalizer_observations[0], next_window[-1, :])
     torch.testing.assert_close(buf.chunk_state[0], window)
 
 
@@ -197,7 +197,7 @@ def test_the_buffer_is_the_only_source_of_the_row_width():
     """
     import inspect
 
-    from myfpo.rollout import resolve_chunk_args
+    from myfpo.rollout import check_chunk_dims
 
     params = inspect.signature(collect_chunks_vec).parameters
     assert "chunk_size" not in params, (
@@ -205,7 +205,7 @@ def test_the_buffer_is_the_only_source_of_the_row_width():
     )
 
     # The horizon is required, so there is no silent fallback to the config.
-    horizon = inspect.signature(resolve_chunk_args).parameters["action_horizon"]
+    horizon = inspect.signature(check_chunk_dims).parameters["action_horizon"]
     assert horizon.default is inspect.Parameter.empty, (
         "action_horizon became optional again, which restores the second source"
     )
@@ -318,7 +318,7 @@ def _row() -> dict:
         next_state=window,
         action=torch.zeros(HORIZON, ACT_DIM),
         rewards=np.zeros(1, dtype=np.float32),
-        step_frames=torch.zeros(1, OBS_DIM),
+        normalizer_observations=torch.zeros(1, OBS_DIM),
         terminated=False,
         truncated=False,
     )

@@ -67,11 +67,11 @@ class MyfpoConfig:
     action_perturb_std: float = 0.0
     hidden_dim: int = 128
 
-    num_envs: int = 32
+    num_envs: int = 64
     num_mc_samples: int = 8
     num_learning_epochs: int = 4
-    chunks_per_update: int = 1024
-    chunks_per_minibatch: int = 256
+    chunks_per_update: int = 2048
+    chunks_per_minibatch: int = 512
     grad_accum_steps: int = 1
 
     num_steps_zero_start: int = 4
@@ -84,8 +84,8 @@ class MyfpoConfig:
 
     gamma: float = 0.99
     gae_lambda: float = 0.95
-    do_average_cfm_loss_in_chunk: bool = False
-    cfm_average_group_size: int = 1
+    group_mc_loss: bool = False
+    mc_loss_group_size: int = 1
     clip_param: float = 0.05
     spo_clip_param: float = 0.01
     trust_region_mode: str = "ppo"
@@ -114,7 +114,7 @@ class MyfpoConfig:
 
     cfm_loss_use_huber: bool = True
     cfm_loss_huber_delta: float = 0.5
-    transported_clip_value: float | None = None
+    velocity_clip_value: float | None = None
 
     compile: bool = False
     compile_mode: str = "default"
@@ -131,8 +131,8 @@ class MyfpoConfig:
     resmlp_hidden_mult: float = 2.0
     time_embed_dim: int = 32
 
-    policy_lr: float = 3e-4
-    critic_lr: float = 3e-4
+    policy_lr: float = 2e-5
+    critic_lr: float = 2e-5
     optimizer_weight_decay: float = 1e-4
     adam_betas: tuple[float, float] = (0.9, 0.99)
     max_grad_norm: float = 1.0
@@ -148,7 +148,7 @@ class MyfpoConfig:
     normalize_actions: bool = True
     eval_max_episodes: int = 50
     eval_sampling: str = "noise_start"
-    stop_eval_sampling: str = "noise_start"
+    final_eval_sampling: str = "noise_start"
 
     # Costs one extra critic forward on every update when a backend logs.
     log_drift_diagnostics: bool = False
@@ -233,11 +233,11 @@ class MyfpoConfig:
                 f"cfm_loss_huber_delta={self.cfm_loss_huber_delta} must be > 0"
             )
         if (
-            self.transported_clip_value is not None
-            and self.transported_clip_value <= 0
+            self.velocity_clip_value is not None
+            and self.velocity_clip_value <= 0
         ):
             raise ValueError(
-                f"transported_clip_value={self.transported_clip_value} must be > 0"
+                f"velocity_clip_value={self.velocity_clip_value} must be > 0"
             )
         if not 0.0 <= self.ema_decay < 1.0:
             raise ValueError("ema_decay must be in [0, 1)")
@@ -261,7 +261,7 @@ class MyfpoConfig:
         if self.critic_lr <= 0:
             raise ValueError(f"critic_lr={self.critic_lr} must be > 0")
         # The critic runs four attention heads over the state window, and
-        # ``make_policy_head`` passes ``hidden_dim`` as that window's width.
+        # ``make_policy_networks`` passes ``hidden_dim`` as that window's width.
         # Each head width must be even for RoPE, so the width divides by eight.
         # The actor's rule (2 * dit_heads) is weaker and does not imply this.
         if self.hidden_dim % 8 != 0:
@@ -288,26 +288,26 @@ class MyfpoConfig:
             )
         if self.trust_region_mode not in {"ppo", "spo", "aspo"}:
             raise ValueError("trust_region_mode must be 'ppo', 'spo', or 'aspo'")
-        if self.cfm_average_group_size == 0 or self.cfm_average_group_size < -1:
+        if self.mc_loss_group_size == 0 or self.mc_loss_group_size < -1:
             raise ValueError(
-                f"cfm_average_group_size={self.cfm_average_group_size} must be -1 "
+                f"mc_loss_group_size={self.mc_loss_group_size} must be -1 "
                 "(one group over every MC sample) or a positive divisor of "
                 f"num_mc_samples={self.num_mc_samples}"
             )
         if (
-            self.cfm_average_group_size != -1
-            and self.num_mc_samples % self.cfm_average_group_size != 0
+            self.mc_loss_group_size != -1
+            and self.num_mc_samples % self.mc_loss_group_size != 0
         ):
             raise ValueError(
                 f"num_mc_samples={self.num_mc_samples} must divide evenly by "
-                f"cfm_average_group_size={self.cfm_average_group_size}"
+                f"mc_loss_group_size={self.mc_loss_group_size}"
             )
         if self.cfm_loss_reduction not in {"mean", "sum"}:
             raise ValueError("cfm_loss_reduction must be 'mean' or 'sum'")
-        if self.cfm_loss_target not in {"velocity", "action", "noise"}:
+        if self.cfm_loss_target not in {"velocity", "action", "eps"}:
             raise ValueError(
                 "cfm_loss_target must be 'velocity' (FPO++'s cfm_loss_mode='u'), "
-                "'action' (='x0'), or 'noise' (='eps')"
+                "'action' (='x0'), or 'eps'"
             )
         if self.cfm_loss_weight_from_t not in {
             "constant",
@@ -449,7 +449,7 @@ class MyfpoConfig:
             raise ValueError(f"eval_max_episodes={self.eval_max_episodes} must be >= 1")
         for name, value in (
             ("eval_sampling", self.eval_sampling),
-            ("stop_eval_sampling", self.stop_eval_sampling),
+            ("final_eval_sampling", self.final_eval_sampling),
         ):
             if value not in FLOW_STARTS:
                 raise ValueError(

@@ -87,7 +87,7 @@ def broadcast_over_mc_axis(
 
 
 def clip_velocity(velocity: torch.Tensor, bound: float | None) -> torch.Tensor:
-    """Bound the actor's raw velocity output (FPO++ ``transported_clip_value``). ``None`` does nothing."""
+    """Bound the actor's raw velocity output (FPO++ ``velocity_clip_value``). ``None`` does nothing."""
     if bound is None:
         return velocity
     return velocity.clamp(-bound, bound)
@@ -209,7 +209,9 @@ def velocity_to_target_param(
         return v
     if mode == "action":
         return x_t + (1.0 - t) * v
-    return x_t - t * v
+    if mode == "eps":
+        return x_t - t * v
+    raise ValueError(f"cfm_loss_target={mode!r} unknown; expected 'velocity', 'action', or 'eps'")
 
 
 def cfm_target(
@@ -221,10 +223,12 @@ def cfm_target(
         return a.unsqueeze(1) - eps
     if mode == "action":
         return a.unsqueeze(1).expand_as(eps)
-    return eps
+    if mode == "eps":
+        return eps
+    raise ValueError(f"cfm_loss_target={mode!r} unknown; expected 'velocity', 'action', or 'eps'")
 
 
-def compute_aspo_surrogate(
+def compute_trust_region_surrogate(
     ratio: torch.Tensor,
     advantage: torch.Tensor,
     cfg: MyfpoConfig,

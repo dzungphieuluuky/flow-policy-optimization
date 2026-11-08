@@ -11,7 +11,7 @@ Two entry points, on purpose:
 
 The collector requires one thing from autoreset: **a done step must report the
 true ``o_{t+1}``**. Its chunks store that frame as ``next_state`` and as the
-terminal ``step_frames``. ManiSkill hardcodes SAME_STEP, where the done step
+terminal ``normalizer_observations``. ManiSkill hardcodes SAME_STEP, where the done step
 already holds the *reset* frame and the real ``o_{t+1}`` is in
 ``info["final_observation"]``. The shim below swaps them back. Without it the
 truncation bootstrap (``compute_chunk_advantages``) reads the first frame of a

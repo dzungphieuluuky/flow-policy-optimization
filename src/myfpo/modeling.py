@@ -21,7 +21,7 @@ from myfpo.fpo_core import (
     cfm_target,
     clamp_saturation,
     clip_velocity,
-    compute_aspo_surrogate,
+    compute_trust_region_surrogate,
     compute_cfm_log_ratio,
     compute_cfm_loss,
     compute_policy_ratio,
@@ -36,7 +36,7 @@ from myfpo.fpo_core import (
     compute_value_loss,
 )
 from myfpo.networks import Critic, FlowModel, FlowResMLP
-from myfpo.processor import RunningMeanStd, StateEncoder, squash_to_env_bounds, scale_and_clip_chunk, unscale_to_env
+from myfpo.processor import RunningMeanStd, StateEncoder, squash_to_env_bounds, clamp_and_rescale_to_unit, unscale_to_env
 from myfpo.rollout import RolloutBuffers, resolve_action_bounds, run_rollout
 from myfpo.layers import (
     autocast_context,
@@ -78,10 +78,10 @@ class TrainingBatch:
     returns: torch.Tensor
     action_is_pad: torch.Tensor
     chunk_truncated: torch.Tensor
-    t: torch.Tensor
+    timesteps: torch.Tensor
     eps: torch.Tensor
     x_t: torch.Tensor
-    actor_t: torch.Tensor
+    flat_timesteps: torch.Tensor
     flow_shape: tuple[int, ...]
     n: int
     num_mc: int
@@ -107,7 +107,7 @@ class PolicyTerms:
 
 # ARCHITECTURE
 
-def make_policy_head(config: MyfpoConfig):
+def make_policy_networks(config: MyfpoConfig):
     """Build the actor, the state encoder, and the critic from the config, and return the dims."""
     config.validate_dims()
     obs_dim = int(config.obs_dim)
@@ -153,7 +153,7 @@ class MyfpoPolicy(nn.Module):
     def __init__(self, config: MyfpoConfig):
         super().__init__()
         self.config = config
-        self.actor, self.encoder, self.critic, obs_dim, action_dim = make_policy_head(config)
+        self.actor, self.encoder, self.critic, obs_dim, action_dim = make_policy_networks(config)
         self.critic_target = copy.deepcopy(self.critic)
         self.critic_target.requires_grad_(False)
         self.critic_target.eval()
@@ -380,7 +380,7 @@ class MyfpoPolicy(nn.Module):
     ) -> torch.Tensor:
         """Actor on a flow point."""
         cfg = self.config
-        return clip_velocity(self.actor(x_t, t, condition), cfg.transported_clip_value)
+        return clip_velocity(self.actor(x_t, t, condition), cfg.velocity_clip_value)
 
 
     def predict_action_chunk(
@@ -444,7 +444,7 @@ class MyfpoPolicy(nn.Module):
             proposal = proposal + cfg.action_perturb_std * torch.randn_like(proposal)
         if cfg.action_processing_mode == "linear_rescale":
             # Old behavior: bounded [-1, 1] stored actions; flow trains on them.
-            proposal = scale_and_clip_chunk(proposal, self.action_low, self.action_high)
+            proposal = clamp_and_rescale_to_unit(proposal, self.action_low, self.action_high)
         # The chunk here is env-scale raw, denormalized from the z-scored
         # flow; the env-facing action is the squash of it, applied on the way
         # to the env, not here.
@@ -551,13 +551,13 @@ class MyfpoPolicy(nn.Module):
             # The flow regresses on z-scored targets. Normalize here so the
             # behavior losses sit in the same frame the training pass will use.
             actions = self.action_normalizer(actions)
-        x_t, actor_t, flow_shape, num_mc = expand_mc_samples(actions, eps, t)
+        x_t, flat_timesteps, flow_shape, num_mc = expand_mc_samples(actions, eps, t)
         with torch.no_grad():
             with autocast_context(actions.device):
                 condition = self.encoder(normalized_states)
                 condition_flat = broadcast_condition(condition, num_mc)
                 v_old = self.compute_predicted_velocity(
-                    x_t, actor_t, condition_flat
+                    x_t, flat_timesteps, condition_flat
                 ).float()
             loss, loss_token, _target, _v_old = self._token_cfm_loss(
                 v_old, x_t, t, actions, eps, action_is_pad,
@@ -685,7 +685,7 @@ class MyfpoPolicy(nn.Module):
         if tuple(eps.shape) != expected_eps:
             raise ValueError(f"stored MC noise shape {tuple(eps.shape)} != {expected_eps}")
 
-        x_t, actor_t, flow_shape, num_mc = expand_mc_samples(actions, eps, t)
+        x_t, flat_timesteps, flow_shape, num_mc = expand_mc_samples(actions, eps, t)
 
         with autocast_context(device):
             condition = cudagraph_safe(self.encoder(states), self.config.compile)
@@ -702,10 +702,10 @@ class MyfpoPolicy(nn.Module):
             returns=returns,
             action_is_pad=action_is_pad,
             chunk_truncated=chunk_truncated,
-            t=t,
+            timesteps=t,
             eps=eps,
             x_t=x_t,
-            actor_t=actor_t,
+            flat_timesteps=flat_timesteps,
             flow_shape=flow_shape,
             n=n,
             num_mc=num_mc,
@@ -760,7 +760,7 @@ class MyfpoPolicy(nn.Module):
         with torch.autocast(device_type=device.type, enabled=False):
             loss_mask = b.action_is_pad
             cfm_loss_new, cfm_loss_new_token, target_velocity, _v_new_r_f = self._token_cfm_loss(
-                v_new, b.x_t, b.t, b.actions, b.eps, loss_mask,
+                v_new, b.x_t, b.timesteps, b.actions, b.eps, loss_mask,
                 n=n, num_mc=num_mc, flow_shape=flow_shape,
                 device_type=device.type,
             )
@@ -772,12 +772,12 @@ class MyfpoPolicy(nn.Module):
                 advantage=adv_mc.unsqueeze(-1),
             )
 
-            if cfg.do_average_cfm_loss_in_chunk:
+            if cfg.group_mc_loss:
                 ratio_loss_old = group_cfm_loss(
-                    b.cfm_loss_old, cfg.cfm_average_group_size
+                    b.cfm_loss_old, cfg.mc_loss_group_size
                 )
                 ratio_loss_new = group_cfm_loss(
-                    cfm_loss_new, cfg.cfm_average_group_size
+                    cfm_loss_new, cfg.mc_loss_group_size
                 )
                 adv_ratio = adv.reshape(-1, 1)
                 ratio = compute_policy_ratio(
@@ -800,7 +800,7 @@ class MyfpoPolicy(nn.Module):
             delta = compute_cfm_log_ratio(
                 ratio_loss_old, ratio_loss_new, cfg, adv_ratio
             )
-            surrogate = compute_aspo_surrogate(ratio, adv_ratio, cfg)
+            surrogate = compute_trust_region_surrogate(ratio, adv_ratio, cfg)
             if surrogate.dim() == 3:
                 keep = (~b.action_is_pad).to(surrogate.dtype)
                 surrogate = surrogate * keep[:, None, :]
@@ -884,7 +884,7 @@ class MyfpoPolicy(nn.Module):
             timers[0].record()
         with autocast_context(device):
             v_new = self.compute_predicted_velocity(
-                b.x_t, b.actor_t, b.condition_flat
+                b.x_t, b.flat_timesteps, b.condition_flat
             ).float()
         if timers is not None:
             timers[1].record()
@@ -928,7 +928,7 @@ class MyfpoPolicy(nn.Module):
             "cfm_both_clamped_frac": terms.cfm_both_clamped_frac,
             # The probes read these. They stay tensors; no host transfer here.
             "x_t": b.x_t,
-            "actor_t": b.actor_t,
+            "flat_timesteps": b.flat_timesteps,
             "condition_flat": b.condition_flat,
             "states": b.states,
             "actions": b.actions,
@@ -1014,7 +1014,7 @@ class MyfpoPolicy(nn.Module):
                 probe = max(1, cfg.hidden_dim // cfg.action_horizon)
                 _, cond_stats = self.actor(
                     aux["x_t"][:probe],
-                    aux["actor_t"][:probe],
+                    aux["flat_timesteps"][:probe],
                     aux["condition_flat"][:probe],
                     collect_stats=True,
                 )

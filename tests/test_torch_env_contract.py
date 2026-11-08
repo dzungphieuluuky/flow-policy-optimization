@@ -120,18 +120,18 @@ def test_collector_stores_the_true_terminal_frame():
     # The fake marks it with RESET_MARKER, so any leak is exact, not approximate.
     # A window may legitimately *start* on a reset frame, so only the step
     # frames (recorded observations) and the bootstrap frame are checked.
-    assert not (buffer.step_frames[: buffer.n_steps] == RESET_MARKER).any()
+    assert not (buffer.normalizer_observations[: buffer.n_steps] == RESET_MARKER).any()
     for row in terminated.nonzero().flatten().tolist():
         start = int(buffer.chunk_starts[row])
         length = int(buffer.chunk_lengths[row])
-        step_frame = buffer.step_frames[start + length - 1]
+        step_frame = buffer.normalizer_observations[start + length - 1]
         next_frame = buffer.chunk_next_state[row, -1]
         assert torch.equal(next_frame, step_frame)
         assert not torch.equal(next_frame, torch.full_like(next_frame, RESET_MARKER))
 
 
 FIELD_NAMES = (
-    "step_frames",
+    "normalizer_observations",
     "step_rewards",
     "chunk_state",
     "chunk_next_state",
@@ -308,4 +308,4 @@ def test_a_numpy_env_still_takes_the_numpy_path():
     )
     envs.close()
     assert buffer.n_chunks > 0
-    assert buffer.step_frames[: buffer.n_steps].shape == (buffer.n_steps, 3)
+    assert buffer.normalizer_observations[: buffer.n_steps].shape == (buffer.n_steps, 3)
