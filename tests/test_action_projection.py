@@ -100,7 +100,7 @@ def test_the_perturbation_is_bounded_by_the_squash():
     """
     policy = _policy(action_perturb_std=50.0)
     policy.train()
-    states = {"observation.state": torch.randn(64, 16, 11) * 3.0}
+    states = {"observation.state": torch.randn(64, 4, 11) * 3.0}
     for _ in range(8):
         raw = policy.predict_action_chunk(states, start_from_zero=False)
         # Env bounds for this fixture are [-2, 2].
@@ -170,7 +170,7 @@ def test_the_stored_action_is_bounded_because_of_the_squash():
     """
     policy = _policy(action_perturb_std=5.0)
     policy.train()
-    states = {"observation.state": torch.randn(64, 16, 11) * 3.0}
+    states = {"observation.state": torch.randn(64, 4, 11) * 3.0}
     for _ in range(8):
         raw = policy.predict_action_chunk(states, start_from_zero=False)
         executed = squash_to_env_bounds(raw, policy.action_low, policy.action_high)
@@ -231,8 +231,8 @@ def test_no_clamp_survives_on_the_collector_path():
     assert "chunk_clip_counts" not in names, "the clip counter is back"
 
 
-def test_env_action_chunk_zeroes_only_the_masked_steps():
-    from myfpo.processor import env_action_chunk, squash_to_env_bounds
+def test_squash_zeroes_only_the_masked_steps():
+    from myfpo.processor import squash_to_env_bounds
 
     torch.manual_seed(0)
     raw = torch.randn(2, 4, 3)
@@ -242,7 +242,7 @@ def test_env_action_chunk_zeroes_only_the_masked_steps():
     mask[0, 2:] = 0.0
     mask[1, 0] = 0.0
 
-    out = env_action_chunk(raw, low, high, mask)
+    out = squash_to_env_bounds(raw, low, high, mask=mask)
     squashed = squash_to_env_bounds(raw, low, high)
     live = mask.expand_as(raw).to(dtype=bool)
     assert torch.equal(out[live], squashed[live])

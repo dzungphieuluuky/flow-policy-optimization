@@ -37,7 +37,7 @@ from myfpo.evaluator import (
 )
 from myfpo.modeling import TrainingAborted, MyfpoPolicy, make_optimizer
 from myfpo.fpo_core import compute_eval_summary_metrics, subsampled_min
-from myfpo.processor import env_action_chunk
+from myfpo.processor import squash_to_env_bounds, unscale_to_env
 from myfpo.layers import (
     autocast_context,
     cudagraph_step_begin,
@@ -92,17 +92,24 @@ def generate_mini_batch_indices(
     device: torch.device | str,
     num_learning_epochs: int = 1,
 ):
-    """Yield shuffled minibatch indices, one tensor per epoch."""
+    """Yield shuffled minibatch indices, one tensor per epoch.
+
+    Indices are generated on pinned CPU memory and transferred to ``device``
+    non-blocking so the host-device copy overlaps the forward pass.
+    """
     if n < 1:
         raise ValueError(f"n={n} must be >= 1")
     n_mb = max(1, min(int(num_mini_batches), n))
     device = torch.device(device)
     for _ in range(max(1, int(num_learning_epochs))):
-        perm = torch.randperm(n, device=device)
+        perm = torch.randperm(n, device="cpu")
+        if device.type == "cuda":
+            perm = perm.pin_memory()
         for i in range(n_mb):
             start = (i * n) // n_mb
             stop = ((i + 1) * n) // n_mb
-            yield perm[start:stop]
+            yield perm[start:stop].to(device, non_blocking=True)
+
 
 
 
@@ -228,27 +235,29 @@ def split_grad_params(policy) -> dict[str, list[torch.nn.Parameter]]:
 
 
 def executed_chunk(
-    batch: dict[str, torch.Tensor], action_low, action_high
+    batch: dict[str, torch.Tensor], action_low, action_high,
+    action_processing_mode: str = "tanh_squash",
 ) -> torch.Tensor:
-    """The env-facing action of a stored raw chunk.
+    """The env-facing action of a stored chunk.
 
-    The batch holds the flow's raw output, which is what the policy was
-    trained on. The env received the squash of it.
+    The batch holds the flow's output, which is what the policy was
+    trained on. The env received it mapped into env bounds.
     """
     low, high = resolve_action_bounds(action_low, action_high)
     action = batch["action"]
     device = action.device
-    return env_action_chunk(
-        action.float(),
-        low.to(device=device, dtype=torch.float32),
-        high.to(device=device, dtype=torch.float32),
-    )
+    low_f = low.to(device=device, dtype=torch.float32)
+    high_f = high.to(device=device, dtype=torch.float32)
+    if action_processing_mode == "linear_rescale":
+        return unscale_to_env(action.float(), low_f, high_f)
+    return squash_to_env_bounds(action.float(), low_f, high_f)
 
 
 @torch.no_grad()
 def compute_rollout_diagnostics(
     batch: dict[str, torch.Tensor], *, action_low, action_high,
     env_action: torch.Tensor | None = None,
+    action_processing_mode: str = "tanh_squash",
 ) -> dict[str, float]:
     """Read the post-rollout scalars with one device-to-host transfer.
 
@@ -259,7 +268,8 @@ def compute_rollout_diagnostics(
     is_pad = batch["action_is_pad"]
     executed = ~is_pad
     if env_action is None:
-        env_action = executed_chunk(batch, action_low, action_high)
+        env_action = executed_chunk(batch, action_low, action_high, action_processing_mode)
+
     exec_action = env_action[executed]
     scalars = [
         executed.sum(),
@@ -299,9 +309,13 @@ def measure_value_drift(policy, batch, device) -> tuple[torch.Tensor, torch.Tens
         torch.arange(cfg.action_horizon, device=boot_obs.device)
         .unsqueeze(0) < cfg.n_action_steps
     ).unsqueeze(-1).float()
-    boot_actions = env_action_chunk(
-        boot_actions_raw, policy.action_low, policy.action_high, boot_mask
-    )
+    _mode = getattr(cfg, "action_processing_mode", "tanh_squash")
+    if _mode == "linear_rescale":
+        boot_actions = boot_actions_raw * boot_mask
+    else:
+        boot_actions = squash_to_env_bounds(
+            boot_actions_raw, policy.action_low, policy.action_high, mask=boot_mask
+        )
     critic_was_training = policy.critic.training
     policy.critic.eval()
     try:
@@ -389,9 +403,10 @@ def rollout_with_diagnostics(
     batch = policy.generate_rollout(
         train_env, collect_steps, action_low=action_low, action_high=action_high,
     )
-    env_action = executed_chunk(batch, action_low, action_high)
+    env_action = executed_chunk(batch, action_low, action_high, cfg.action_processing_mode)
     rollout = compute_rollout_diagnostics(
-        batch, action_low=action_low, action_high=action_high, env_action=env_action
+        batch, action_low=action_low, action_high=action_high, env_action=env_action,
+        action_processing_mode=cfg.action_processing_mode,
     )
     steps_this_rollout = int(rollout["executed_action_steps"])
     if steps_this_rollout <= 0:

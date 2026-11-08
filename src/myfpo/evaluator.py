@@ -19,7 +19,7 @@ import numpy as np
 import torch
 
 from myfpo.configuration import validate_n_action_steps
-from myfpo.processor import env_action_chunk
+from myfpo.processor import squash_to_env_bounds, unscale_to_env
 from myfpo.rollout import resolve_action_bounds
 
 
@@ -441,9 +441,14 @@ class VectorEvaluator:
                 chunk: torch.Tensor | None = None
                 while True:
                     if chunk is None or steps % self.n_action_steps == 0:
-                        chunk = env_action_chunk(
-                            self._plan(policy, window), self.action_low, self.action_high
-                        )
+                        planned = self._plan(policy, window)
+                        mode = getattr(getattr(policy, "policy", policy), "config", {}).action_processing_mode if hasattr(policy, "policy") or hasattr(policy, "config") else "tanh_squash"
+                        if mode == "linear_rescale":
+                            chunk = unscale_to_env(planned, self.action_low, self.action_high)
+                        else:
+                            chunk = squash_to_env_bounds(
+                                planned, self.action_low, self.action_high
+                            )
                     action = chunk[:, steps % self.n_action_steps]
                     obs, reward, terminated, truncated, info = self.env.step_torch(action)
                     frames.append(action)

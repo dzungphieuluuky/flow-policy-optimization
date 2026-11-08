@@ -127,18 +127,16 @@ def env_squash_terms(
     return scale, low + scale
 
 
-def squash_to_env(
+def _squash(
     raw: torch.Tensor, scale: torch.Tensor, bias: torch.Tensor
 ) -> torch.Tensor:
-    """Map a raw policy output into the env's action bounds.
+    """Core tanh map: ``bias + scale * tanh(raw)``.
 
-    ``bias + scale * tanh(raw)``. The ``tanh`` is the only thing that bounds
-    the action, and it is applied exactly once, on the way to the env. The
-    flow regresses on z-scored targets (the default); it never trains on the
-    env-facing squash of its own output.
-
-    ``scale`` and ``bias`` are the affine terms of the env's bounds, from
-    :func:`env_squash_terms`.
+    Private. ``scale`` and ``bias`` are the affine terms of the env's
+    bounds, from :func:`env_squash_terms`. The ``tanh`` is the only thing
+    that bounds the action, and it is applied exactly once, on the way to
+    the env. The flow regresses on z-scored targets (the default); it never
+    trains on the env-facing squash of its own output.
     """
     scale = scale.to(device=raw.device, dtype=raw.dtype)
     bias = bias.to(device=raw.device, dtype=raw.dtype)
@@ -146,32 +144,56 @@ def squash_to_env(
 
 
 def squash_to_env_bounds(
-    raw: torch.Tensor, low: torch.Tensor, high: torch.Tensor
-) -> torch.Tensor:
-    """Map a raw policy output into the env's action bounds.
-
-    One place computes the affine terms, so the collector, the training
-    diagnostics and the policy cannot drift apart.
-    """
-    scale, bias = env_squash_terms(low, high)
-    return squash_to_env(raw, scale, bias)
-
-
-def env_action_chunk(
     raw: torch.Tensor,
     low: torch.Tensor,
     high: torch.Tensor,
+    *,
     mask: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """The env-facing action: squashed into the env's bounds.
+    """Map a raw policy output into the env's action bounds.
 
-    Every action payload the env receives, and the env-space action the
-    critic reads, goes through this one function, so the bound invariant
-    has a single home. ``mask`` zeroes padded steps; it is applied after
-    the squash.
+    The single env-facing squash: derive the affine terms once, apply the
+    tanh, and optionally zero padded steps. Collector, training diagnostics
+    and critic all read through here, so the bound invariant has one home.
     """
-    squashed = squash_to_env_bounds(raw, low, high)
+    scale, bias = env_squash_terms(low, high)
+    out = _squash(raw, scale, bias)
     if mask is not None:
-        squashed = squashed * mask
-    return squashed
+        out = out * mask
+    return out
+
+
+def scale_and_clip_chunk(
+    raw: torch.Tensor,
+    low: torch.Tensor,
+    high: torch.Tensor,
+) -> torch.Tensor:
+    """Clamp raw to env bounds, then linearly rescale to ``[-1, 1]`` (old ``sjfpo`` behavior).
+
+    The stored action is the bounded scaled value; the flow trains on it directly.
+    """
+    scale = (high - low).to(device=raw.device, dtype=raw.dtype)
+    low_t = low.to(device=raw.device, dtype=raw.dtype)
+    executed = torch.clamp(raw, min=low_t, max=low_t + scale)
+    return 2.0 * (executed - low_t) / scale - 1.0
+
+
+def unscale_to_env(
+    scaled: torch.Tensor,
+    low: torch.Tensor,
+    high: torch.Tensor,
+    *,
+    mask: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """Map a bounded ``[-1, 1]`` action back to env scale.
+
+    Inverse of :func:`scale_and_clip_chunk`: ``low + (scaled + 1) / 2 * (high - low)``.
+    """
+    scale = (high - low).to(device=scaled.device, dtype=scaled.dtype)
+    low_t = low.to(device=scaled.device, dtype=scaled.dtype)
+    out = low_t + (scaled + 1.0) * 0.5 * scale
+    if mask is not None:
+        out = out * mask
+    return out
+
 
