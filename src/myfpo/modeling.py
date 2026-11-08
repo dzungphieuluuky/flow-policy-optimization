@@ -36,7 +36,7 @@ from myfpo.fpo_core import (
     compute_value_loss,
 )
 from myfpo.networks import Critic, FlowModel, FlowResMLP
-from myfpo.processor import RunningMeanStd, StateEncoder, env_action_chunk
+from myfpo.processor import RunningMeanStd, StateEncoder, squash_to_env_bounds, scale_and_clip_chunk, unscale_to_env
 from myfpo.rollout import RolloutBuffers, resolve_action_bounds, run_rollout
 from myfpo.layers import (
     autocast_context,
@@ -89,7 +89,7 @@ class TrainingBatch:
     condition_flat: torch.Tensor
     cfm_loss_old: torch.Tensor
     cfm_loss_old_token: torch.Tensor
-
+    old_values: torch.Tensor | None
 
 @dataclasses.dataclass
 class PolicyTerms:
@@ -442,6 +442,9 @@ class MyfpoPolicy(nn.Module):
         proposal = action_chunk
         if self.training and cfg.action_perturb_std > 0:
             proposal = proposal + cfg.action_perturb_std * torch.randn_like(proposal)
+        if cfg.action_processing_mode == "linear_rescale":
+            # Old behavior: bounded [-1, 1] stored actions; flow trains on them.
+            proposal = scale_and_clip_chunk(proposal, self.action_low, self.action_high)
         # The chunk here is env-scale raw, denormalized from the z-scored
         # flow; the env-facing action is the squash of it, applied on the way
         # to the env, not here.
@@ -471,9 +474,12 @@ class MyfpoPolicy(nn.Module):
         if not self.action_buffer:
             chunk = self.predict_action_chunk({"observation.state": window}, **kwargs)
             n_execute = max(1, min(self.config.n_action_steps, chunk.shape[1]))
-            squashed = env_action_chunk(chunk, self.action_low, self.action_high)
+            if self.config.action_processing_mode == "linear_rescale":
+                env_chunk = unscale_to_env(chunk, self.action_low, self.action_high)
+            else:
+                env_chunk = squash_to_env_bounds(chunk, self.action_low, self.action_high)
             for i in range(n_execute):
-                self.action_buffer.append(squashed[0, i])
+                self.action_buffer.append(env_chunk[0, i])
         return self.action_buffer.popleft()
 
 
@@ -638,6 +644,7 @@ class MyfpoPolicy(nn.Module):
         chunk_truncated = self.to_device_tensor(
             batch, "chunk_truncated", device, torch.bool
         )
+        old_values = self.to_device_tensor(batch, "old_values", device, torch.float32) if "old_values" in batch else None
 
         if states.shape[-2] != cfg.n_obs_steps:
             raise ValueError(
@@ -706,6 +713,7 @@ class MyfpoPolicy(nn.Module):
             condition_flat=condition_flat,
             cfm_loss_old=cfm_loss_old,
             cfm_loss_old_token=cfm_loss_old_token,
+            old_values=old_values,
         )
 
     def to_device_behavior_losses(
@@ -820,12 +828,14 @@ class MyfpoPolicy(nn.Module):
         """Score the critic on the executed chunk. Return the loss, the values, and the returns."""
         with autocast_context(device):
             chunk_exec_frac = self.exec_length_frac((~b.action_is_pad).sum(dim=-1))
-            # Zero out padded steps so critic doesn't condition on arbitrary values.
             pad_mask = (~b.action_is_pad).unsqueeze(-1).float()
-            b_actions_squashed = env_action_chunk(
-                b.actions, self.action_low, self.action_high, pad_mask
-            )
-            raw_value_pred = self.critic(b.states, b_actions_squashed, chunk_exec_frac).float()  # [num_critics, n]
+            if self.config.action_processing_mode == "linear_rescale":
+                b_actions_for_critic = b.actions * pad_mask
+            else:
+                b_actions_for_critic = squash_to_env_bounds(
+                    b.actions, self.action_low, self.action_high, mask=pad_mask
+                )
+            raw_value_pred = self.critic(b.states, b_actions_for_critic, chunk_exec_frac).float()  # [num_critics, n]
         raw_returns_flat = b.returns.reshape(-1)
         if raw_value_pred.shape[-1] != raw_returns_flat.shape[0]:
             raise ValueError(
@@ -833,9 +843,18 @@ class MyfpoPolicy(nn.Module):
                 f"{tuple(raw_value_pred.shape)}, raw_returns="
                 f"{tuple(raw_returns_flat.shape)}"
             )
+        cfg = self.config
         value_loss_per_chunk = compute_value_loss(
-            raw_value_pred, raw_returns_flat
-        ).mean(dim=0)
+            raw_value_pred, raw_returns_flat, cfg
+        )
+        if cfg.use_clipped_value_loss and b.old_values is not None:
+            old_values_expanded = b.old_values.reshape(1, -1).expand_as(raw_value_pred)
+            v_clipped = old_values_expanded + (raw_value_pred - old_values_expanded).clamp(
+                -cfg.value_clip_param, cfg.value_clip_param
+            )
+            clipped_se = compute_value_loss(v_clipped, raw_returns_flat, cfg)
+            value_loss_per_chunk = torch.maximum(value_loss_per_chunk, clipped_se)
+        value_loss_per_chunk = value_loss_per_chunk.mean(dim=0)
         return value_loss_per_chunk, raw_value_pred, raw_returns_flat
 
 # LOSS

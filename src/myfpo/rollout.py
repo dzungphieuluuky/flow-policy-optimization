@@ -9,7 +9,7 @@ import dataclasses
 from collections.abc import Callable
 import numpy as np
 from myfpo.configuration import validate_n_action_steps
-from myfpo.processor import env_action_chunk
+from myfpo.processor import squash_to_env_bounds, unscale_to_env
 from dataclasses import dataclass
 from myfpo.fpo_core import (
     compute_gae_diagnostics,
@@ -501,6 +501,7 @@ class CollectState:
     env_rows: torch.Tensor
     idle_row: torch.Tensor
     roll_table: torch.Tensor
+    action_processing_mode: str
 
 
 def make_state(
@@ -512,6 +513,7 @@ def make_state(
     obs0: torch.Tensor,
     remaining: int,
     device: torch.device | str = "cpu",
+    action_processing_mode: str = "tanh_squash",
 ) -> CollectState:
     """The state the collection loop starts with.
 
@@ -564,6 +566,7 @@ def make_state(
             + torch.arange(n_obs_steps)[None, :]
         )
         % n_obs_steps,
+        action_processing_mode=action_processing_mode,
     )
 
 
@@ -581,11 +584,14 @@ def plan_chunks(
         return
     wavefront = torch.as_tensor(envs_needing_a_chunk, dtype=torch.long)
     states = state.windows[wavefront]
-    # The policy returns the raw chunk. The env receives the squash
-    # of it, and the buffer keeps the raw chunk: the flow is
-    # trained on what it produced, not on the squash of it.
+    # The policy returns the chunk in policy space. The env receives it
+    # mapped to env bounds, and the buffer keeps the policy-space chunk:
+    # the flow is trained on what it produced, not on the env mapping.
     raw_all = policy(states).detach().to(OBS_DTYPE)
-    executed_all = env_action_chunk(raw_all, low, high)
+    if state.action_processing_mode == "linear_rescale":
+        executed_all = unscale_to_env(raw_all, low, high)
+    else:
+        executed_all = squash_to_env_bounds(raw_all, low, high)
     state.plan[wavefront] = executed_all
     # The chunk is held in registers rather than in one object per env, so a
     # closing step can gather all finished chunks with a single index.
@@ -828,7 +834,8 @@ def close_chunks_batched(
 
 
 def init_collect_state(
-    carry, envs, seed, n, n_obs_steps, action_horizon, act_dim, targets
+    carry, envs, seed, n, n_obs_steps, action_horizon, act_dim, targets,
+    action_processing_mode: str = "tanh_squash",
 ):
     """Build the collector state. An empty carry resets the env rows. Otherwise rebuild from the carried windows."""
     if carry is None:
@@ -840,12 +847,14 @@ def init_collect_state(
         state = make_state(
             n, n_obs_steps, int(obs0.shape[-1]), action_horizon, act_dim,
             obs0, remaining=sum(targets), device=obs0.device,
+            action_processing_mode=action_processing_mode,
         )
     else:
         state = make_state(
             n, n_obs_steps, int(carry.windows.shape[-1]), action_horizon,
             act_dim, carry.windows, remaining=sum(targets),
             device=carry.windows.device,
+            action_processing_mode=action_processing_mode,
         )
         state.awaiting[:] = np.asarray(carry.awaiting, dtype=bool)
     return state
@@ -888,6 +897,7 @@ def collect_chunks_vec(
     on_error_flush: Callable[[], None] | None = None,
     buffer: RolloutBuffer,
     carry: EnvCarry | None = None,
+    action_processing_mode: str = "tanh_squash",
 ) -> RolloutBuffer:
     """Collect executed action chunks from a vectorized env into ``buffer``.
 
@@ -919,7 +929,8 @@ def collect_chunks_vec(
     act_dim = int(np.asarray(envs.single_action_space.shape).prod())
 
     state = init_collect_state(
-        carry, envs, seed, n, n_obs_steps, action_horizon, act_dim, targets
+        carry, envs, seed, n, n_obs_steps, action_horizon, act_dim, targets,
+        action_processing_mode=action_processing_mode,
     )
     try:
         run_collect_loop(
@@ -1063,15 +1074,21 @@ def bootstrap_values(
         try:
             with autocast_context(device):
                 chunk_len_mask = (torch.arange(cfg.action_horizon, device=actions.device).unsqueeze(0) < active["chunk_lengths"].unsqueeze(1)).unsqueeze(-1).float()
-                actions_squashed = env_action_chunk(
-                    actions, policy.action_low, policy.action_high, chunk_len_mask
-                )
-                q_current_chunk = subsampled_min(policy.critic(normalized_states, actions_squashed, exec_length_frac).float())
+                if cfg.action_processing_mode == "linear_rescale":
+                    actions_for_critic = actions * chunk_len_mask
+                else:
+                    actions_for_critic = squash_to_env_bounds(
+                        actions, policy.action_low, policy.action_high, mask=chunk_len_mask
+                    )
+                q_current_chunk = subsampled_min(policy.critic(normalized_states, actions_for_critic, exec_length_frac).float())
                 boot_mask = (torch.arange(cfg.action_horizon, device=boot_actions.device).unsqueeze(0) < cfg.n_action_steps).unsqueeze(-1).float()
-                boot_actions_squashed = env_action_chunk(
-                    boot_actions, policy.action_low, policy.action_high, boot_mask
-                )
-                q_bootstrap = subsampled_min(policy.critic_target(normalized_next_states, boot_actions_squashed, boot_exec_frac).float())
+                if cfg.action_processing_mode == "linear_rescale":
+                    boot_actions_for_critic = boot_actions * boot_mask
+                else:
+                    boot_actions_for_critic = squash_to_env_bounds(
+                        boot_actions, policy.action_low, policy.action_high, mask=boot_mask
+                    )
+                q_bootstrap = subsampled_min(policy.critic_target(normalized_next_states, boot_actions_for_critic, boot_exec_frac).float())
         finally:
             policy.critic.train(critic_training)
 
@@ -1161,6 +1178,7 @@ def collect_chunks(
         n_action_steps=cfg.n_action_steps,
         buffer=buffer,
         carry=buffer.carry,
+        action_processing_mode=cfg.action_processing_mode,
     )
     if num_envs == 1 and not is_torch_env(env):
         if buffers.env_wrapper is None:
@@ -1255,6 +1273,7 @@ def run_rollout(
         "raw_advantages": raw_advantages,
         "normalized_advantages": normalized_advantages,
         "raw_returns": raw_returns,
+        "old_values": q_current_chunk,
         "normalizer_observations": active["step_frames"].detach(),
         "boot_observations": normalized_next_states.to(storage_dtype),
         "boot_actions": boot_actions.to(storage_dtype),

@@ -1,8 +1,9 @@
 """Single home for every hyperparameter."""
 
-from __future__ import annotations
+import torch
 from pathlib import Path
 import yaml
+import os
 import warnings
 from dataclasses import dataclass
 
@@ -106,6 +107,10 @@ class MyfpoConfig:
     advantage_clamp_neg: float = 100.0
     advantage_clamp_pos: float = 100.0
     value_loss_coef: float = 1.0
+    value_loss_beta: float = 1.0
+    use_clipped_value_loss: bool = True
+    value_clip_param: float = 0.2
+    action_processing_mode: str = "linear_rescale"
 
     cfm_loss_use_huber: bool = True
     cfm_loss_huber_delta: float = 0.5
@@ -113,7 +118,9 @@ class MyfpoConfig:
 
     compile: bool = False
     compile_mode: str = "default"
-    """torch.compile mode for the loss path: 'default' or 'reduce-overhead'."""
+    """torch.compile mode for the loss path: 'default' or 'reduce-overhead'.
+    Enabled by default on CUDA via MYFPO_COMPILE=1; disabled on CPU unless
+    MYFPO_COMPILE is set explicitly."""
 
     actor_arch: str = "dit"
     dit_depth: int = 4
@@ -154,6 +161,8 @@ class MyfpoConfig:
         """Set the derived fields, then run every validation check."""
         if self.n_action_steps is None:
             self.n_action_steps = self.action_horizon
+        if os.environ.get("MYFPO_COMPILE") is not None:
+            self.compile = bool(int(os.environ["MYFPO_COMPILE"])) and torch.cuda.is_available()
         self.validate()
 
     def validate(self) -> None:
@@ -406,6 +415,17 @@ class MyfpoConfig:
             )
         if self.value_loss_coef < 0:
             raise ValueError(f"value_loss_coef={self.value_loss_coef} must be >= 0")
+        if self.value_loss_beta <= 0:
+            raise ValueError(f"value_loss_beta={self.value_loss_beta} must be > 0")
+        if not 0.0 < self.value_clip_param < 1.0:
+            raise ValueError(
+                f"value_clip_param={self.value_clip_param} must satisfy 0 < eps < 1"
+            )
+        if self.action_processing_mode not in ("tanh_squash", "linear_rescale"):
+            raise ValueError(
+                f"action_processing_mode={self.action_processing_mode!r} must be "
+                "'tanh_squash' or 'linear_rescale'"
+            )
         if self.lr_schedule not in ("none", "cosine"):
             raise ValueError(
                 f"lr_schedule={self.lr_schedule!r} must be 'none' or 'cosine'"

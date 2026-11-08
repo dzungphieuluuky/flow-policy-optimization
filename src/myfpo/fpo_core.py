@@ -361,10 +361,18 @@ def sample_action(
 
 # ---- from metrics.py ----
 def compute_value_loss(
-    pred: torch.Tensor, target: torch.Tensor
+    pred: torch.Tensor, target: torch.Tensor, cfg, beta: float | None = None
 ) -> torch.Tensor:
-    """Squared error against the return. ``target`` broadcasts over the members."""
-    return torch.square(pred - target.expand_as(pred))
+    """Huber loss against the return. ``target`` broadcasts over the members.
+
+    beta defaults to ``cfg.value_loss_beta`` (1.0 restores the pre-release
+    squared-error knee where |error| > beta is linear instead of quadratic).
+    """
+    if beta is None:
+        beta = cfg.value_loss_beta
+    return torch.nn.functional.smooth_l1_loss(
+        pred, target.expand_as(pred), reduction="none", beta=beta
+    )
 
 
 def subsampled_min(q: torch.Tensor, size: int = 2) -> torch.Tensor:
