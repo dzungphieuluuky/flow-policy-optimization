@@ -16,6 +16,7 @@ dependencies = [
     # The simulator version decides the physics, so it is pinned here instead
     # of being inherited from gymnasium-robotics.
     "mujoco>=3.13.0",
+    "metaworld>=3.0.0",
 ]
 
 # The gates and the notebook tools. They must be declared or `uv sync` prunes

@@ -219,6 +219,13 @@ def run_single(
         from myfpo.maniskill_gpu import make_maniskill_env
 
         env = make_maniskill_env(env_id, num_envs=cfg.num_envs)
+    elif env_id.startswith("Meta-World/"):
+        # Meta-World tasks are not individually registered; they are built via
+        # the MT1 benchmark wrapper with the task name as env_name.
+        import metaworld  # noqa: F401 - registers the Meta-World namespace
+
+        task = env_id[len("Meta-World/"):]
+        env = gym.make("Meta-World/MT1", env_name=task)
     else:
         env = gym.make(env_id)
     try:
@@ -244,6 +251,7 @@ def run_single(
 
         return run_training(
             env=env,
+            env_id=env_id,
             out_dir=out_dir,
             cfg=cfg,
             seed=seed,

@@ -109,7 +109,7 @@ class MyfpoConfig:
     advantage_clamp_neg: float = 100.0
     advantage_clamp_pos: float = 100.0
     value_loss_coef: float = 1.0
-    value_loss_beta: float = 1.0
+    value_loss_beta: float = 10.0
     use_clipped_value_loss: bool = False
     value_clip_param: float = 0.2
     action_processing_mode: str = "linear_rescale"

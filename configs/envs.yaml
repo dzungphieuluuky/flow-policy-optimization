@@ -36,3 +36,7 @@ AdroitHandHammer-v1: {obs_dim: 46, action_dim: 26, tier: dexterous, requires: gy
 # 3.0.3, obs_mode="state", control_mode="pd_joint_delta_pos": the obs is the
 # flat state (qpos/qvel + task extras), so the dim moves if either changes.
 MS-PickCube-v1: {obs_dim: 42, action_dim: 8, tier: manipulation, requires: mani_skill}
+Meta-World/reach-v3: {obs_dim: 39, action_dim: 4, tier: manipulation, requires: metaworld}
+Meta-World/push-v3: {obs_dim: 39, action_dim: 4, tier: manipulation, requires: metaworld}
+Meta-World/pick-place-v3: {obs_dim: 39, action_dim: 4, tier: manipulation, requires: metaworld}
+Meta-World/door-open-v3: {obs_dim: 39, action_dim: 4, tier: manipulation, requires: metaworld}

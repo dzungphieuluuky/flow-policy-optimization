@@ -809,11 +809,15 @@ class MyfpoPolicy(nn.Module):
         with autocast_context(device):
             chunk_exec_frac = self.exec_length_frac((~b.action_is_pad).sum(dim=-1))
             pad_mask = (~b.action_is_pad).unsqueeze(-1).float()
+            # b.actions is in flow (scaled) space for the CFM target; the critic
+            # reads the raw policy output to match the rollout bootstrap (which
+            # uses the stored raw action). Recover it before the env mapping.
+            raw_actions = b.actions * self.config.actor_scale
             if self.config.action_processing_mode == "linear_rescale":
-                b_actions_for_critic = b.actions * pad_mask
+                b_actions_for_critic = raw_actions * pad_mask
             else:
                 b_actions_for_critic = squash_to_env_bounds(
-                    b.actions, self.action_low, self.action_high, mask=pad_mask
+                    raw_actions, self.action_low, self.action_high, mask=pad_mask
                 )
             raw_value_pred = self.critic(b.states, b_actions_for_critic, chunk_exec_frac).float()  # [num_critics, n]
         raw_returns_flat = b.returns.reshape(-1)

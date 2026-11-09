@@ -354,6 +354,11 @@ def make_vec_env(env_name: str, num_envs: int, record: dict | None = None):
 
     def make_one():
         """Build one worker env, registering third-party namespaces locally."""
+        if env_name.startswith("Meta-World/"):
+            import metaworld  # noqa: F401
+
+            task = env_name[len("Meta-World/"):]
+            return gym.make("Meta-World/MT1", env_name=task)
         if env_name.startswith("AdroitHand"):
             try:
                 import gymnasium_robotics  # noqa: F401
@@ -364,6 +369,11 @@ def make_vec_env(env_name: str, num_envs: int, record: dict | None = None):
         return gym.make(env_name)
 
     env_fns = [make_one for _ in range(num_envs)]
+    if env_name.startswith("Meta-World/"):
+        # Sync (serial in-process) for low-compute CPU runs.
+        if record is not None:
+            record["vector_env"] = "sync"
+        return gym.vector.SyncVectorEnv(env_fns)
     try:
         env = gym.vector.AsyncVectorEnv(env_fns, context="forkserver")
         if record is not None:
@@ -995,11 +1005,12 @@ def configure_run(
     resume_from_checkpoint,
     runtime: dict | None,
     video_dir: Path | None = None,
+    env_id: str | None = None,
 ) -> RunSetup:
     """The env, the policy, the evaluator, and the log backends."""
     unwrapped = getattr(env, "unwrapped", env)
     spec = getattr(unwrapped, "spec", None)
-    env_name = getattr(spec, "id", "unknown") if spec is not None else "unknown"
+    env_name = env_id if env_id is not None else (getattr(spec, "id", "unknown") if spec is not None else "unknown")
 
     set_seed(seed)
     device = resolve_device()
@@ -1304,6 +1315,7 @@ def run_training(
     resume_from_checkpoint: str | Path | None = None,
     runtime: dict | None = None,
     video_dir: str | Path | None = None,
+    env_id: str | None = None,
 ) -> dict[str, Any]:
     """One myfpo training run. Env builds before any CUDA init, so forked
     vector-env workers inherit the right device state.
@@ -1331,6 +1343,7 @@ def run_training(
         resume_from_checkpoint=resume_from_checkpoint,
         runtime=runtime,
         video_dir=video_dir,
+        env_id=env_id,
     )
     policy = setup.policy
     optimizer = setup.optimizer
