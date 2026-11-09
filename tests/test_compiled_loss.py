@@ -24,7 +24,7 @@ def _cfg(compile: bool, **kw) -> MyfpoConfig:
     base = dict(
         obs_dim=OBS, action_dim=ACT,
         action_horizon=HORIZON, hidden_dim=HIDDEN, time_embed_dim=TIME_EMBED,
-        dit_depth=1, dit_heads=2, n_obs_steps=2,
+        dit_depth=1, dit_heads=2, num_obs_steps=2,
         # Dropout draws differ between eager and compiled graphs; the math
         # under test is the same. Disable it for equivalence comparisons.
         critic_dropout=0.0,
@@ -54,7 +54,7 @@ def _batch(policy):
     batch = make_batch(policy, obs_dim=OBS, action_dim=ACT, horizon=HORIZON, n=2)
     g = torch.Generator().manual_seed(1)
     batch["observation.state"] = torch.randn(
-        2, policy.config.n_obs_steps, OBS, generator=g
+        2, policy.config.num_obs_steps, OBS, generator=g
     )
     batch["action"] = torch.randn(2, HORIZON, ACT, generator=g)
     return batch

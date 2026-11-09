@@ -35,7 +35,7 @@ class _FixedCritic:
 
 
 class _FixedConfig:
-    n_action_steps = 4
+    num_action_steps = 4
     action_horizon = 4
 
 

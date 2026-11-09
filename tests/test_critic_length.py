@@ -10,8 +10,8 @@ from myfpo.networks import Critic
 def _cfg(**kw) -> MyfpoConfig:
     base = dict(
         action_horizon=8,
-        n_action_steps=4,
-        n_obs_steps=4,
+        num_action_steps=4,
+        num_obs_steps=4,
     )
     base.update(kw)
     cfg = MyfpoConfig(**base)
@@ -30,7 +30,7 @@ def _policy_with_critic(cfg: MyfpoConfig):
         5,
         cfg.critic_hidden_dim if cfg.critic_hidden_dim is not None else cfg.hidden_dim,
         2,
-        cfg.n_obs_steps,
+        cfg.num_obs_steps,
         cfg.action_horizon,
         cfg.num_critics,
         condition_on_exec_length=cfg.critic_condition_on_exec_length,
@@ -53,9 +53,9 @@ def test_exec_frac_is_fp32_even_from_a_long_tensor():
     assert got.dtype == torch.float32
 
 
-def test_bootstrap_uses_n_action_steps_not_the_whole_horizon():
+def test_bootstrap_uses_num_action_steps_not_the_whole_horizon():
     """The regression guard for the row that is easiest to get wrong."""
-    policy = _policy_with_critic(_cfg(action_horizon=8, n_action_steps=4))
+    policy = _policy_with_critic(_cfg(action_horizon=8, num_action_steps=4))
     boot = policy.exec_length_frac(torch.full((3,), 4))
     torch.testing.assert_close(boot, torch.full((3,), 0.5))
     assert not torch.allclose(boot, torch.ones(3))

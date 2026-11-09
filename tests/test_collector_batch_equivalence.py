@@ -54,7 +54,7 @@ def collect(
     episode: int,
     n_envs: int = N_ENVS,
     total_steps: int = TOTAL_STEPS,
-    n_obs_steps: int = N_OBS,
+    num_obs_steps: int = N_OBS,
 ):
     """Run the real collector on a deterministic env. Return the buffer + env."""
     env = FakeVecEnv(n=n_envs, episode=episode)
@@ -68,13 +68,13 @@ def collect(
         return torch.addmm(flat.new_zeros(n, ACT_DIM), flat, w).unsqueeze(1) * ramp
 
     buf = RolloutBuffer(
-        max_chunks=total_steps, max_steps=total_steps, obs_steps=n_obs_steps,
+        max_chunks=total_steps, max_steps=total_steps, obs_steps=num_obs_steps,
         obs_dim=OBS_DIM, action_horizon=HORIZON, action_dim=ACT_DIM,
     )
     collect_chunks_vec(
         env, policy, total_steps,
         -torch.ones(ACT_DIM), torch.ones(ACT_DIM),
-        n_obs_steps=n_obs_steps, n_action_steps=HORIZON,
+        num_obs_steps=num_obs_steps, num_action_steps=HORIZON,
         buffer=buf, seed=0,
     )
     return buf, env
@@ -175,8 +175,8 @@ def test_a_row_that_hit_its_target_still_tracks_the_env():
     """A finished env keeps stepping for the other rows.
 
     Its chunk is closed, so nothing writes its window any more, and the next
-    rollout would start from a state up to ``n_action_steps - 1`` steps old.
-    The carry must hold the last ``n_obs_steps`` frames the env returned.
+    rollout would start from a state up to ``num_action_steps - 1`` steps old.
+    The carry must hold the last ``num_obs_steps`` frames the env returned.
     """
     total = TOTAL_STEPS + 1  # one env draws one more step than the rest
     buf, env = collect(episode=1000, total_steps=total)
@@ -218,7 +218,7 @@ def test_a_buffer_is_required_and_returns_itself():
         return torch.zeros(states.shape[0], HORIZON, ACT_DIM)
 
     kwargs = {
-        "n_obs_steps": N_OBS, "n_action_steps": HORIZON,
+        "num_obs_steps": N_OBS, "num_action_steps": HORIZON,
         "seed": 0,
     }
     with pytest.raises(TypeError):
@@ -238,7 +238,7 @@ def test_a_buffer_is_required_and_returns_itself():
 
 
 def test_a_chunk_as_deep_as_the_window_still_lands_chronologically():
-    """n_action_steps == n_obs_steps: the cursor reaches n_obs_steps."""
+    """num_action_steps == num_obs_steps: the cursor reaches num_obs_steps."""
     assert HORIZON == N_OBS, "this test is the boundary case"
     buf, _ = collect(1000)  # no terminal: every chunk runs the full horizon.
     a = buf.active_prefix()
@@ -254,5 +254,5 @@ def test_a_chunk_as_deep_as_the_window_still_lands_chronologically():
 
 def test_a_chunk_longer_than_the_obs_window_is_rejected():
     """The ring buffer cannot hold a chunk deeper than itself."""
-    with pytest.raises(ValueError, match="exceeds n_obs_steps"):
-        collect(50, n_obs_steps=N_OBS // 4)
+    with pytest.raises(ValueError, match="exceeds num_obs_steps"):
+        collect(50, num_obs_steps=N_OBS // 4)

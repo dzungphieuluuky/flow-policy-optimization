@@ -252,7 +252,7 @@ class SelfAttention(nn.Module):
 
     Token ``k`` sees only tokens ``0..k``. This is a deliberate deviation from
     ACT and Diffusion Policy, which attend bidirectionally over the chunk. It
-    buys prefix consistency: the first ``n_action_steps`` tokens a chunk will
+    buys prefix consistency: the first ``num_action_steps`` tokens a chunk will
     execute do not depend on the tail that will be discarded.
     """
 

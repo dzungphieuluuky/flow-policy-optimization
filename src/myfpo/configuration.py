@@ -23,11 +23,11 @@ with ENV_REGISTRY_PATH.open() as f:
 KNOWN_ENVS = tuple(_ENV_REGISTRY.keys())
 
 
-def validate_n_action_steps(n: int, action_horizon: int) -> None:
+def validate_num_action_steps(n: int, action_horizon: int) -> None:
     """Check that the executed span fits the chunk. Used by the config, the GPU evaluator, and the collector."""
     if not 1 <= n <= action_horizon:
         raise ValueError(
-            f"n_action_steps={n} must satisfy "
+            f"num_action_steps={n} must satisfy "
             f"1 <= n <= action_horizon={action_horizon}"
         )
 
@@ -61,26 +61,27 @@ class MyfpoConfig:
     action_dim: int | None = None
 
     report_to: str = "all"
-    n_obs_steps: int = 4
+    num_obs_steps: int = 4
     action_horizon: int = 4
-    n_action_steps: int = 4
-    action_perturb_std: float = 0.0
+    num_action_steps: int = 4
+    action_perturb_std: float = 0.02
+    storage_action_noise_std: float = 0.0
     hidden_dim: int = 128
 
     num_envs: int = 64
-    num_mc_samples: int = 8
-    num_learning_epochs: int = 4
+    num_mc_samples: int = 16
+    num_learning_epochs: int = 16
     chunks_per_update: int = 2048
     chunks_per_minibatch: int = 512
     grad_accum_steps: int = 1
 
-    num_steps_zero_start: int = 4
-    num_steps_noise_start: int = 4
+    num_steps_zero_start: int = 10
+    num_steps_noise_start: int = 10
     min_sampled_timestep: float = 0.1
     max_sampled_timestep: float = 0.9
     timestep_sampling_mode: str = "uniform"
     noise_sampling_mode: str = "normal"
-    timestep_inverse_cdf_beta: float = 2.0
+    timestep_inverse_cdf_beta: float = 1.0
 
     gamma: float = 0.99
     gae_lambda: float = 0.95
@@ -88,7 +89,7 @@ class MyfpoConfig:
     mc_loss_group_size: int = 1
     clip_param: float = 0.05
     spo_clip_param: float = 0.01
-    trust_region_mode: str = "ppo"
+    trust_region_mode: str = "aspo"
     cfm_loss_reduction: str = "sqrt"
     cfm_loss_target: str = "velocity"
     cfm_loss_weight_from_t: str = "constant"
@@ -104,6 +105,7 @@ class MyfpoConfig:
     critic_num_layers: int = 2
     critic_dropout: float = 0.01
     normalize_advantage: bool = True
+    normalize_advantage_per_minibatch: bool = True
     advantage_clamp_neg: float = 100.0
     advantage_clamp_pos: float = 100.0
     value_loss_coef: float = 1.0
@@ -129,15 +131,15 @@ class MyfpoConfig:
     resmlp_blocks: int = 2
     resmlp_units: int = 4
     resmlp_hidden_mult: float = 2.0
-    time_embed_dim: int = 32
+    time_embed_dim: int = 8
 
-    policy_lr: float = 2e-5
-    critic_lr: float = 2e-5
+    policy_lr: float = 1e-4
+    critic_lr: float = 1e-4
     optimizer_weight_decay: float = 1e-4
-    adam_betas: tuple[float, float] = (0.9, 0.99)
+    adam_betas: tuple[float, float] = (0.9, 0.999)
     max_grad_norm: float = 1.0
     ema_decay: float = 0.95
-    ema_warmup_steps: int = 100
+    ema_warmup_steps: int = 500
     lr_warmup_steps: int = 10000
     lr_schedule: str = "fixed"
     normalize_rewards: bool = True
@@ -158,8 +160,8 @@ class MyfpoConfig:
 
     def __post_init__(self) -> None:
         """Set the derived fields, then run every validation check."""
-        if self.n_action_steps is None:
-            self.n_action_steps = self.action_horizon
+        if self.num_action_steps is None:
+            self.num_action_steps = self.action_horizon
         if os.environ.get("MYFPO_COMPILE") is not None:
             self.compile = bool(int(os.environ["MYFPO_COMPILE"])) and torch.cuda.is_available()
         self.validate()
@@ -180,15 +182,17 @@ class MyfpoConfig:
             raise ValueError(
                 f"temporal_probe_every={self.temporal_probe_every} must be >= 0"
             )
-        if self.n_obs_steps < 1:
-            raise ValueError(f"n_obs_steps={self.n_obs_steps} must be >= 1")
+        if self.num_obs_steps < 1:
+            raise ValueError(f"num_obs_steps={self.num_obs_steps} must be >= 1")
         if self.action_horizon < 1:
             raise ValueError(f"action_horizon={self.action_horizon} must be >= 1")
-        validate_n_action_steps(self.n_action_steps, self.action_horizon)
+        validate_num_action_steps(self.num_action_steps, self.action_horizon)
         if self.hidden_dim < 1:
             raise ValueError(f"hidden_dim={self.hidden_dim} must be >= 1")
         if self.action_perturb_std < 0:
             raise ValueError("action_perturb_std must be >= 0")
+        if self.storage_action_noise_std < 0:
+            raise ValueError("storage_action_noise_std must be >= 0")
 
     def validate_actor(self) -> None:
         """Actor widths, depths, the resmlp variant, and the EMA."""
@@ -470,6 +474,6 @@ class MyfpoConfig:
             )
 
     @property
-    def num_mini_batches(self) -> int:
+    def num_minibatches(self) -> int:
         """The minibatch count in one update, at least 1."""
         return max(1, self.chunks_per_update // self.chunks_per_minibatch)

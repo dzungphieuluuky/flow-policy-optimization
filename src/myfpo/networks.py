@@ -351,7 +351,7 @@ class CriticMember(nn.Module):
         obs_dim: int,
         action_dim: int,
         hidden_dim: int,
-        n_obs_steps: int,
+        num_obs_steps: int,
         action_horizon: int,
         *,
         condition_on_exec_length: bool = True,
@@ -364,7 +364,7 @@ class CriticMember(nn.Module):
 
         self.obs_dim = obs_dim
         self.action_dim = action_dim
-        self.n_obs_steps = n_obs_steps
+        self.num_obs_steps = num_obs_steps
         self.action_horizon = action_horizon
         self.condition_on_exec_length = condition_on_exec_length
         self.condition_dim = condition_dim
@@ -377,10 +377,10 @@ class CriticMember(nn.Module):
         attn_heads = 4
         self.attn_heads = attn_heads
 
-        if condition_dim is not None and n_obs_steps != 1:
+        if condition_dim is not None and num_obs_steps != 1:
             raise ValueError(
-                f"condition_dim is set, so n_obs_steps must be 1 (unused), got "
-                f"{n_obs_steps}"
+                f"condition_dim is set, so num_obs_steps must be 1 (unused), got "
+                f"{num_obs_steps}"
             )
         # Pool is 2 * state_dim. The first MLP layer resizes to hidden_dim.
         self.input_dim = 2 * state_dim + (
@@ -389,12 +389,12 @@ class CriticMember(nn.Module):
         # Separate norms: one over the concat would couple unrelated quantities.
         # The state norm keeps the mean.
         self.norm_state = (
-            StateAffine(n_obs_steps * obs_dim) if condition_dim is None else None
+            StateAffine(num_obs_steps * obs_dim) if condition_dim is None else None
         )
         # Reuse the actor's window trunk. The old flat first layer was 5.1M of
         # the 6.4M critic on Humanoid.
         self.state_encoder = (
-            StateEncoder(obs_dim, state_dim, n_obs_steps)
+            StateEncoder(obs_dim, state_dim, num_obs_steps)
             if condition_dim is None
             else None
         )
@@ -466,7 +466,7 @@ class Critic(nn.Module):
         obs_dim: int,
         hidden_dim: int,
         action_dim: int,
-        n_obs_steps: int,
+        num_obs_steps: int,
         action_horizon: int,
         num_critics: int,
         *,
@@ -481,7 +481,7 @@ class Critic(nn.Module):
             raise ValueError("condition_dim must be >= 1 when set")
         self.obs_dim = obs_dim
         self.action_dim = action_dim
-        self.n_obs_steps = n_obs_steps
+        self.num_obs_steps = num_obs_steps
         self.action_horizon = action_horizon
         self.num_critics = num_critics
         self.condition_on_exec_length = condition_on_exec_length
@@ -494,7 +494,7 @@ class Critic(nn.Module):
                     obs_dim,
                     action_dim,
                     hidden_dim,
-                    1 if condition_dim is not None else n_obs_steps,
+                    1 if condition_dim is not None else num_obs_steps,
                     action_horizon,
                     condition_on_exec_length=condition_on_exec_length,
                     num_layers=num_layers,
@@ -528,9 +528,9 @@ class Critic(nn.Module):
                 )
         else:
             if states.dim() != 3 or states.shape[2] != self.obs_dim:
-                raise ValueError(f"states must have shape [B, {self.n_obs_steps}, {self.obs_dim}], got {tuple(states.shape)}")
-            if states.shape[1] != self.n_obs_steps:
-                raise ValueError(f"states has {states.shape[1]} time steps but the critic was built for n_obs_steps={self.n_obs_steps}")
+                raise ValueError(f"states must have shape [B, {self.num_obs_steps}, {self.obs_dim}], got {tuple(states.shape)}")
+            if states.shape[1] != self.num_obs_steps:
+                raise ValueError(f"states has {states.shape[1]} time steps but the critic was built for num_obs_steps={self.num_obs_steps}")
         if actions.dim() != 3:
             raise ValueError(f"actions must have shape [B, H, action_dim], got {tuple(actions.shape)}")
         if actions.shape[2] != self.action_dim:

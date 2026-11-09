@@ -169,8 +169,8 @@ def _policy_and_batch(cfm_clamp, **overrides):
     obs, act, horizon, mc = 6, 3, 4, 4
     pcfg = cfg(
         obs_dim=obs, act_dim=act,
-        action_horizon=horizon, n_action_steps=horizon, num_mc_samples=mc,
-        hidden_dim=32, time_embed_dim=16, dit_depth=1, dit_heads=2, n_obs_steps=2,
+        action_horizon=horizon, num_action_steps=horizon, num_mc_samples=mc,
+        hidden_dim=32, time_embed_dim=16, dit_depth=1, dit_heads=2, num_obs_steps=2,
         compile=False, report_to="none", cfm_clamp=cfm_clamp, **overrides,
     )
     torch.manual_seed(0)
@@ -180,7 +180,7 @@ def _policy_and_batch(cfm_clamp, **overrides):
     )
     n = 3
     torch.manual_seed(1)
-    states = torch.randn(n, pcfg.n_obs_steps, obs)
+    states = torch.randn(n, pcfg.num_obs_steps, obs)
     actions = torch.randn(n, horizon, act)
     t = sample_timesteps((n, mc, horizon), pcfg, "cpu", None).unsqueeze(-1)
     eps = torch.randn(n, mc, horizon, act)

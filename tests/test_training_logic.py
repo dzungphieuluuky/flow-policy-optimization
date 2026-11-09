@@ -23,12 +23,12 @@ def test_observation_stats_land_before_the_update():
 def test_training_logic():
     cfg = MyfpoConfig(
         action_horizon=4,
-        n_action_steps=2,
+        num_action_steps=2,
         hidden_dim=16,
     )
     policy = make_policy(5, 3, cfg, device="cpu")
     batch = {
-        "observation.state": torch.zeros(1, cfg.n_obs_steps, 5),
+        "observation.state": torch.zeros(1, cfg.num_obs_steps, 5),
         "action": torch.zeros(1, cfg.action_horizon, 3),
         "action_is_pad": torch.zeros(1, cfg.action_horizon, dtype=torch.bool),
         "chunk_truncated": torch.zeros(1, dtype=torch.bool),
@@ -58,8 +58,8 @@ def test_one_policy_update_runs():
     """
     cfg = MyfpoConfig(
         action_horizon=2,
-        n_action_steps=2,
-        n_obs_steps=2,
+        num_action_steps=2,
+        num_obs_steps=2,
         hidden_dim=16,
         dit_depth=1,
         dit_heads=2,
@@ -71,7 +71,7 @@ def test_one_policy_update_runs():
     policy = make_policy(5, 3, cfg, device="cpu")
     n = 2
     batch = {
-        "observation.state": torch.zeros(n, cfg.n_obs_steps, 5),
+        "observation.state": torch.zeros(n, cfg.num_obs_steps, 5),
         "action": torch.zeros(n, cfg.action_horizon, 3),
         "action_is_pad": torch.zeros(n, cfg.action_horizon, dtype=torch.bool),
         "chunk_truncated": torch.zeros(n, dtype=torch.bool),
@@ -87,6 +87,6 @@ def test_one_policy_update_runs():
     _, grad_norms_pre, _, _ = policy_update_step(
         policy, optimizer, batch, None, cfg, split_grad_params(policy)
     )
-    assert len(grad_norms_pre) == cfg.num_mini_batches
+    assert len(grad_norms_pre) == cfg.num_minibatches
     assert set(grad_norms_pre[0]) == {"actor", "critic", "total"}
-    assert policy.step_count == cfg.num_mini_batches
+    assert policy.step_count == cfg.num_minibatches

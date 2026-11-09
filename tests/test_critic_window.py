@@ -56,8 +56,8 @@ def test_output_is_one_value_per_sample(batch: int):
 
 
 def test_window_length_must_match_the_declared_one():
-    """The collector builds windows to n_obs_steps, so a mismatch is a real error."""
-    with pytest.raises(ValueError, match=f"built for n_obs_steps={STEPS}"):
+    """The collector builds windows to num_obs_steps, so a mismatch is a real error."""
+    with pytest.raises(ValueError, match=f"built for num_obs_steps={STEPS}"):
         _q(_critic(), torch.randn(2, 4, OBS), _chunk())
 
 
@@ -312,7 +312,7 @@ def test_parameter_count_is_proportionate():
     assert n == pytest.approx(672_514, abs=50), f"critic is {n} params"
 
 
-def test_n_obs_steps_must_be_positive():
+def test_num_obs_steps_must_be_positive():
     with pytest.raises(ValueError, match="max_obs_steps must be >= 1"):
         Critic(OBS, HIDDEN, ACT, 0, H, 2)
 

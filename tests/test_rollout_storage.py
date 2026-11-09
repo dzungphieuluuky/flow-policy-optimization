@@ -47,10 +47,10 @@ def _collect(total_steps: int = 240, n: int = NUM_ENVS):
         envs,
         lambda s: torch.zeros(s.shape[0], HORIZON, ACT_DIM),
         total_steps=total_steps,
-        n_action_steps=HORIZON,
+        num_action_steps=HORIZON,
         action_low=-2.0,
         action_high=2.0,
-        n_obs_steps=OBS_STEPS,
+        num_obs_steps=OBS_STEPS,
         buffer=buffer,
         seed=0,
     )
@@ -91,10 +91,10 @@ def test_chunk_state_is_the_window_the_policy_saw():
         envs,
         recording_policy,
         total_steps=120,
-        n_action_steps=HORIZON,
+        num_action_steps=HORIZON,
         action_low=-2.0,
         action_high=2.0,
-        n_obs_steps=OBS_STEPS,
+        num_obs_steps=OBS_STEPS,
         buffer=buffer,
         seed=0,
     )
@@ -228,10 +228,10 @@ def test_chunks_span_rollouts_when_carry_is_passed():
     envs = _pendulum_vec(1)
     try:
         kwargs = dict(
-            n_action_steps=HORIZON,
+            num_action_steps=HORIZON,
             action_low=-2.0,
             action_high=2.0,
-            n_obs_steps=OBS_STEPS,
+            num_obs_steps=OBS_STEPS,
             seed=0,
         )
         buf1 = _buffer()
@@ -276,10 +276,10 @@ def _collect_limited(n: int, total: int, limit: int) -> RolloutBuffer:
             envs,
             lambda s: torch.zeros(s.shape[0], HORIZON, ACT_DIM),
             total_steps=total,
-            n_action_steps=HORIZON,
+            num_action_steps=HORIZON,
             action_low=-2.0,
             action_high=2.0,
-            n_obs_steps=OBS_STEPS,
+            num_obs_steps=OBS_STEPS,
             buffer=buffer,
             seed=0,
         )

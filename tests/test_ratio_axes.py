@@ -41,7 +41,7 @@ def _policy_and_batch(cfg, seed=0, pad_from=None):
 
     batch = {
         "observation.state": torch.from_numpy(
-            rng.standard_normal((N, cfg.n_obs_steps, OBS), dtype=np.float32)
+            rng.standard_normal((N, cfg.num_obs_steps, OBS), dtype=np.float32)
         ),
         "action": torch.from_numpy(
             rng.standard_normal((N, HORIZON, ACT), dtype=np.float32)

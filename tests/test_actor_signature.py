@@ -36,8 +36,8 @@ def test_the_dit_prefix_is_the_contract():
 def test_the_third_argument_is_the_encoder_output_width():
     """cfg.hidden_dim is the value at that position, and the encoder matches."""
     cfg = MyfpoConfig()
-    encoder = StateEncoder(3, cfg.hidden_dim, cfg.n_obs_steps)
-    out = encoder(torch.zeros(1, cfg.n_obs_steps, 3))
+    encoder = StateEncoder(3, cfg.hidden_dim, cfg.num_obs_steps)
+    out = encoder(torch.zeros(1, cfg.num_obs_steps, 3))
     assert out.shape[-1] == cfg.hidden_dim, (
         "the actor's third argument is the encoder output width"
     )

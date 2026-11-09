@@ -55,8 +55,8 @@ class FakeRenderVec:
 def _evaluator(env, *, max_episodes=2):
     return VectorEvaluator(
         env,
-        n_obs_steps=OBS_STEPS,
-        n_action_steps=HORIZON,
+        num_obs_steps=OBS_STEPS,
+        num_action_steps=HORIZON,
         action_horizon=HORIZON,
         eval_seed=0,
         max_episodes=max_episodes,

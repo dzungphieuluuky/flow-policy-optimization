@@ -66,8 +66,8 @@ def test_a_done_step_stores_the_final_frame_not_the_reset_frame():
         2,
         -torch.ones(ACT),
         torch.ones(ACT),
-        n_obs_steps=H,
-        n_action_steps=H,
+        num_obs_steps=H,
+        num_action_steps=H,
         buffer=buffer,
         seed=0,
     )

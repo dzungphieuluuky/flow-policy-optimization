@@ -13,8 +13,8 @@ OBS, ACT, HORIZON, MC = 6, 3, 4, 4
 def _cfg(**kw):
     base = dict(
         obs_dim=OBS, act_dim=ACT,
-        action_horizon=HORIZON, n_action_steps=HORIZON, num_mc_samples=MC,
-        hidden_dim=32, time_embed_dim=16, dit_depth=1, dit_heads=2, n_obs_steps=2,
+        action_horizon=HORIZON, num_action_steps=HORIZON, num_mc_samples=MC,
+        hidden_dim=32, time_embed_dim=16, dit_depth=1, dit_heads=2, num_obs_steps=2,
         compile=False,
     )
     base.update(kw)
@@ -61,7 +61,7 @@ def test_same_weights_and_same_pairs_give_ratio_one():
     policy = _policy()
     n = 2
     torch.manual_seed(1)
-    states = torch.randn(n, policy.config.n_obs_steps, OBS)
+    states = torch.randn(n, policy.config.num_obs_steps, OBS)
     actions = torch.randn(n, HORIZON, ACT)
     t, eps = _pairs(policy, n)
     _, info = policy.loss_with_info(_batch(policy, states, actions, t, eps))
@@ -74,7 +74,7 @@ def test_swapped_pairs_move_the_ratio():
     policy = _policy()
     n = 2
     torch.manual_seed(1)
-    states = torch.randn(n, policy.config.n_obs_steps, OBS)
+    states = torch.randn(n, policy.config.num_obs_steps, OBS)
     actions = torch.randn(n, HORIZON, ACT)
     t, eps = _pairs(policy, n)
     batch = _batch(policy, states, actions, t, eps)
@@ -88,7 +88,7 @@ def test_a_misshapen_stored_timestep_raises():
     """The stored branch runs, so a bad stored shape cannot fall through."""
     policy = _policy()
     n = 2
-    states = torch.zeros(n, policy.config.n_obs_steps, OBS)
+    states = torch.zeros(n, policy.config.num_obs_steps, OBS)
     actions = torch.zeros(n, HORIZON, ACT)
     t, eps = _pairs(policy, n)
     batch = _batch(policy, states, actions, t, eps)
@@ -102,7 +102,7 @@ def test_the_frozen_pass_is_deterministic():
     policy = _policy()
     n = 2
     torch.manual_seed(2)
-    states = torch.randn(n, policy.config.n_obs_steps, OBS)
+    states = torch.randn(n, policy.config.num_obs_steps, OBS)
     actions = torch.randn(n, HORIZON, ACT)
     pre = policy.obs_normalizer(states)
     pad = torch.zeros(n, HORIZON, dtype=torch.bool)

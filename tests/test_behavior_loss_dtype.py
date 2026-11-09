@@ -27,9 +27,9 @@ def _policy():
         hidden_dim=32,
         dit_depth=1,
         dit_heads=2,
-        n_obs_steps=4,
+        num_obs_steps=4,
         action_horizon=HORIZON,
-        n_action_steps=HORIZON,
+        num_action_steps=HORIZON,
     )
     return make_policy(
         OBS, ACT, cfg, device="cpu", action_low=[-1.0] * ACT, action_high=[1.0] * ACT
@@ -39,7 +39,7 @@ def _policy():
 def _inputs(action_value: float):
     policy = _policy()
     mc = policy.config.num_mc_samples
-    states = torch.zeros(N, policy.config.n_obs_steps, OBS)
+    states = torch.zeros(N, policy.config.num_obs_steps, OBS)
     actions = torch.zeros(N, HORIZON, ACT)
     actions[0, 0, 0] = action_value
     t = torch.full((N, mc, HORIZON, 1), 0.5)

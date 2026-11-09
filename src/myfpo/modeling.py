@@ -123,10 +123,10 @@ def make_policy_networks(config: MyfpoConfig):
             action_dim, config.action_horizon, config.hidden_dim,
             config.dit_depth, config.dit_heads, config.dit_mlp_ratio, config.time_embed_dim,
         )
-    encoder = StateEncoder(obs_dim, config.hidden_dim, config.n_obs_steps)
+    encoder = StateEncoder(obs_dim, config.hidden_dim, config.num_obs_steps)
     critic_width = config.critic_hidden_dim if config.critic_hidden_dim is not None else config.hidden_dim
     critic = Critic(
-        obs_dim, critic_width, action_dim, config.n_obs_steps, config.action_horizon,
+        obs_dim, critic_width, action_dim, config.num_obs_steps, config.action_horizon,
         config.num_critics, condition_on_exec_length=config.critic_condition_on_exec_length,
         num_layers=config.critic_num_layers,
         dropout=config.critic_dropout, state_hidden=config.hidden_dim,
@@ -143,7 +143,7 @@ def init_ema_buffers(obj, config: MyfpoConfig):
     obj.probe_counter = 0
     obj.actor_step_s = 0.0
     obj.critic_step_s = 0.0
-    obj.frame_buffer = deque(maxlen=config.n_obs_steps)
+    obj.frame_buffer = deque(maxlen=config.num_obs_steps)
     obj.action_buffer = deque()
     obj.step_count = 0
 
@@ -381,7 +381,7 @@ class MyfpoPolicy(nn.Module):
 
         states = torch.as_tensor(batch["observation.state"])
         states = states.to(dtype=resolve_storage_dtype(states.device))
-        if states.dim() == 2 and states.shape[0] == cfg.n_obs_steps:
+        if states.dim() == 2 and states.shape[0] == cfg.num_obs_steps:
             states = states.unsqueeze(0)
         elif states.dim() != 3:
             raise ValueError(
@@ -441,7 +441,7 @@ class MyfpoPolicy(nn.Module):
         obs = obs.to(dtype=resolve_storage_dtype(obs.device))
         if obs.dim() == 1:
             if not self.frame_buffer:
-                for _ in range(self.config.n_obs_steps):
+                for _ in range(self.config.num_obs_steps):
                     self.frame_buffer.append(obs.detach().clone())
             else:
                 self.frame_buffer.append(obs.detach())
@@ -454,7 +454,7 @@ class MyfpoPolicy(nn.Module):
             )
         if not self.action_buffer:
             chunk = self.predict_action_chunk({"observation.state": window}, **kwargs)
-            n_execute = max(1, min(self.config.n_action_steps, chunk.shape[1]))
+            n_execute = max(1, min(self.config.num_action_steps, chunk.shape[1]))
             if self.config.action_processing_mode == "linear_rescale":
                 env_chunk = unscale_to_env(chunk, self.action_low, self.action_high)
             else:
@@ -626,9 +626,9 @@ class MyfpoPolicy(nn.Module):
         )
         old_values = self.to_device_tensor(batch, "old_values", device, torch.float32) if "old_values" in batch else None
 
-        if states.shape[-2] != cfg.n_obs_steps:
+        if states.shape[-2] != cfg.num_obs_steps:
             raise ValueError(
-                f"state length {states.shape[-2]} != n_obs_steps {cfg.n_obs_steps}"
+                f"state length {states.shape[-2]} != num_obs_steps {cfg.num_obs_steps}"
             )
         if actions.shape[-2] != cfg.action_horizon:
             raise ValueError(

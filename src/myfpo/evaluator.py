@@ -18,7 +18,7 @@ from typing import Any
 import numpy as np
 import torch
 
-from myfpo.configuration import validate_n_action_steps
+from myfpo.configuration import validate_num_action_steps
 from myfpo.processor import squash_to_env_bounds, unscale_to_env
 from myfpo.rollout import resolve_action_bounds
 
@@ -344,8 +344,8 @@ class VectorEvaluator:
         self,
         env: Any,
         *,
-        n_obs_steps: int,
-        n_action_steps: int,
+        num_obs_steps: int,
+        num_action_steps: int,
         action_horizon: int,
         eval_seed: int = 0,
         max_episodes: int = 12,
@@ -353,13 +353,13 @@ class VectorEvaluator:
     ):
         if env is None:
             raise ValueError("VectorEvaluator requires a non-None env")
-        if n_obs_steps < 1:
-            raise ValueError(f"n_obs_steps={n_obs_steps} must be >= 1")
-        validate_n_action_steps(n_action_steps, action_horizon)
+        if num_obs_steps < 1:
+            raise ValueError(f"num_obs_steps={num_obs_steps} must be >= 1")
+        validate_num_action_steps(num_action_steps, action_horizon)
         _check_eval_counts(max_episodes, max_steps)
         self.env = env
-        self.n_obs_steps = n_obs_steps
-        self.n_action_steps = n_action_steps
+        self.num_obs_steps = num_obs_steps
+        self.num_action_steps = num_action_steps
         self.action_horizon = action_horizon
         self.eval_seed = eval_seed
         self.max_episodes = max_episodes
@@ -428,7 +428,7 @@ class VectorEvaluator:
                 obs, _ = self.env.reset(seed=seeds)
                 if hasattr(policy, "reset"):
                     policy.reset()
-                window = obs[:, None, :].repeat(1, self.n_obs_steps, 1)
+                window = obs[:, None, :].repeat(1, self.num_obs_steps, 1)
                 ep_return = torch.zeros(n, device=device)
                 success = torch.zeros(n, dtype=torch.bool, device=device)
                 saw_success = False
@@ -440,7 +440,7 @@ class VectorEvaluator:
                 images: list[np.ndarray] = [self._grab_frame()] if recording else []
                 chunk: torch.Tensor | None = None
                 while True:
-                    if chunk is None or steps % self.n_action_steps == 0:
+                    if chunk is None or steps % self.num_action_steps == 0:
                         planned = self._plan(policy, window)
                         mode = getattr(getattr(policy, "policy", policy), "config", {}).action_processing_mode if hasattr(policy, "policy") or hasattr(policy, "config") else "tanh_squash"
                         if mode == "linear_rescale":
@@ -449,7 +449,7 @@ class VectorEvaluator:
                             chunk = squash_to_env_bounds(
                                 planned, self.action_low, self.action_high
                             )
-                    action = chunk[:, steps % self.n_action_steps]
+                    action = chunk[:, steps % self.num_action_steps]
                     obs, reward, terminated, truncated, info = self.env.step_torch(action)
                     frames.append(action)
                     if recording:
@@ -493,8 +493,8 @@ class VectorEvaluator:
         """The same evaluator, with a different episode budget."""
         return VectorEvaluator(
             self.env,
-            n_obs_steps=self.n_obs_steps,
-            n_action_steps=self.n_action_steps,
+            num_obs_steps=self.num_obs_steps,
+            num_action_steps=self.num_action_steps,
             action_horizon=self.action_horizon,
             eval_seed=self.eval_seed,
             max_episodes=max_episodes,

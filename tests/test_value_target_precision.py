@@ -73,11 +73,11 @@ def test_generate_rollout_does_not_cast_the_value_target():
 def test_drift_diagnostics_take_the_bf16_observations_they_stored():
     """generate_rollout stores boot_observations/boot_actions in storage_dtype."""
     policy = make_test_policy()
-    obs = torch.randn(3, policy.config.n_obs_steps, 5)
+    obs = torch.randn(3, policy.config.num_obs_steps, 5)
     actions = torch.randn(3, policy.config.action_horizon, 2)
-    # Same fraction generate_rollout bootstrapped with: a full-horizon proposal that only runs for n_action_steps.
+    # Same fraction generate_rollout bootstrapped with: a full-horizon proposal that only runs for num_action_steps.
     boot_frac = policy.exec_length_frac(
-        torch.full((3,), policy.config.n_action_steps, dtype=torch.long)
+        torch.full((3,), policy.config.num_action_steps, dtype=torch.long)
     )
     batch = {
         "boot_observations": obs.to(torch.bfloat16),

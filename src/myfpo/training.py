@@ -88,7 +88,7 @@ BOTH_CLAMPED_ABORT_FRAC = 0.5
 
 def generate_minibatch_indices(
     n: int,
-    num_mini_batches: int,
+    num_minibatches: int,
     device: torch.device | str,
     num_learning_epochs: int = 1,
 ):
@@ -99,7 +99,7 @@ def generate_minibatch_indices(
     """
     if n < 1:
         raise ValueError(f"n={n} must be >= 1")
-    n_mb = max(1, min(int(num_mini_batches), n))
+    n_mb = max(1, min(int(num_minibatches), n))
     device = torch.device(device)
     for _ in range(max(1, int(num_learning_epochs))):
         perm = torch.randperm(n, device="cpu")
@@ -299,15 +299,15 @@ def measure_value_drift(policy, batch, device) -> tuple[torch.Tensor, torch.Tens
     start = batch["boot_values_start"].to(device).reshape(-1)
     boot_exec_frac = torch.full(
         (boot_obs.shape[0],),
-        cfg.n_action_steps / float(cfg.action_horizon),
+        cfg.num_action_steps / float(cfg.action_horizon),
         device=boot_obs.device,
         dtype=torch.float32,
     )
     # Match the masking in bootstrap_values: squash, then zero out steps
-    # beyond n_action_steps, so live and target critics read the same chunk.
+    # beyond num_action_steps, so live and target critics read the same chunk.
     boot_mask = (
         torch.arange(cfg.action_horizon, device=boot_obs.device)
-        .unsqueeze(0) < cfg.n_action_steps
+        .unsqueeze(0) < cfg.num_action_steps
     ).unsqueeze(-1).float()
     _mode = getattr(cfg, "action_processing_mode", "tanh_squash")
     if _mode == "linear_rescale":
@@ -449,7 +449,7 @@ def policy_update_step(policy, optimizer, batch, backends, cfg, grad_groups):
     microbatches = list(
         generate_minibatch_indices(
             n_chunks,
-            cfg.num_mini_batches,
+            cfg.num_minibatches,
             batch["raw_advantages"].device,
             num_learning_epochs=cfg.num_learning_epochs,
         )
@@ -465,6 +465,15 @@ def policy_update_step(policy, optimizer, batch, backends, cfg, grad_groups):
         for micro_step, mb_idx in enumerate(microbatches):
             group_size = group_sizes[micro_step // accumulation_steps]
             minibatch = sample_minibatch(batch, mb_idx, minibatch)
+            if cfg.normalize_advantage_per_minibatch:
+                # Restandardize this minibatch's raw advantages on its own
+                # statistics (reference per-minibatch mode), then clamp.
+                with torch.no_grad():
+                    adv = minibatch["raw_advantages"]
+                    adv = (adv - adv.mean()) / (adv.std(correction=0) + 1e-8)
+                    minibatch["normalized_advantages"] = adv.clamp(
+                        -cfg.advantage_clamp_neg, cfg.advantage_clamp_pos
+                    )
             # One minibatch is one cudagraph step. Its backward runs before the
             # next forward, so the manager may recycle the step's memory.
             cudagraph_step_begin()
@@ -1046,8 +1055,8 @@ def configure_run(
         eval_env = train_env.make_eval_env()
         evaluator = VectorEvaluator(
             eval_env,
-            n_obs_steps=cfg.n_obs_steps,
-            n_action_steps=cfg.n_action_steps,
+            num_obs_steps=cfg.num_obs_steps,
+            num_action_steps=cfg.num_action_steps,
             action_horizon=cfg.action_horizon,
             eval_seed=eval_seed,
             max_episodes=cfg.eval_max_episodes,
@@ -1080,8 +1089,8 @@ def configure_run(
             if video_env is not None:
                 video_evaluator = VectorEvaluator(
                     video_env,
-                    n_obs_steps=cfg.n_obs_steps,
-                    n_action_steps=cfg.n_action_steps,
+                    num_obs_steps=cfg.num_obs_steps,
+                    num_action_steps=cfg.num_action_steps,
                     action_horizon=cfg.action_horizon,
                     eval_seed=eval_seed,
                     # One round of rows is one episode each: enough for a video.

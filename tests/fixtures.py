@@ -38,7 +38,7 @@ def make_batch(
     """One training batch with the paired MC draws the policy expects."""
     mc = policy.config.num_mc_samples
     return {
-        "observation.state": torch.zeros(n, policy.config.n_obs_steps, obs_dim),
+        "observation.state": torch.zeros(n, policy.config.num_obs_steps, obs_dim),
         "action": torch.zeros(n, horizon, action_dim),
         "action_is_pad": torch.zeros(n, horizon, dtype=torch.bool),
         "chunk_truncated": torch.zeros(n, dtype=torch.bool),

@@ -26,9 +26,9 @@ def _policy(**kw):
         hidden_dim=32,
         dit_depth=1,
         dit_heads=2,
-        n_obs_steps=4,
+        num_obs_steps=4,
         action_horizon=HORIZON,
-        n_action_steps=HORIZON,
+        num_action_steps=HORIZON,
         **kw,
     )
     return make_policy(

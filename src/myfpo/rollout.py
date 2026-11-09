@@ -8,7 +8,7 @@ import contextlib
 import dataclasses
 from collections.abc import Callable
 import numpy as np
-from myfpo.configuration import validate_n_action_steps
+from myfpo.configuration import validate_num_action_steps
 from myfpo.processor import squash_to_env_bounds, unscale_to_env
 from dataclasses import dataclass
 from myfpo.fpo_core import (
@@ -447,13 +447,13 @@ def resolve_action_bounds(
 
 
 def check_chunk_dims(
-    n_obs_steps: int,
-    n_action_steps: int,
+    num_obs_steps: int,
+    num_action_steps: int,
     action_horizon: int,
 ) -> tuple[int, int]:
     """Check the window width and the execution span."""
-    validate_n_action_steps(n_action_steps, action_horizon)
-    return n_obs_steps, action_horizon
+    validate_num_action_steps(num_action_steps, action_horizon)
+    return num_obs_steps, action_horizon
 
 
 def validate_autoreset_mode(envs) -> None:
@@ -502,11 +502,12 @@ class CollectState:
     idle_row: torch.Tensor
     roll_table: torch.Tensor
     action_processing_mode: str
+    action_noise_std: float
 
 
 def make_state(
     n: int,
-    n_obs_steps: int,
+    num_obs_steps: int,
     obs_dim: int,
     action_horizon: int,
     act_dim: int,
@@ -514,6 +515,7 @@ def make_state(
     remaining: int,
     device: torch.device | str = "cpu",
     action_processing_mode: str = "tanh_squash",
+    action_noise_std: float = 0.0,
 ) -> CollectState:
     """The state the collection loop starts with.
 
@@ -524,18 +526,18 @@ def make_state(
     """
     device = torch.device(device)
     if obs0.dim() == 3:
-        if tuple(obs0.shape) != (n, n_obs_steps, obs_dim):
+        if tuple(obs0.shape) != (n, num_obs_steps, obs_dim):
             raise ValueError(
                 f"obs0 window shape {tuple(obs0.shape)} != "
-                f"{(n, n_obs_steps, obs_dim)}"
+                f"{(n, num_obs_steps, obs_dim)}"
             )
         windows = obs0.to(device=device, dtype=OBS_DTYPE).clone()
     elif obs0.dim() == 2:
-        windows = torch.zeros(n, n_obs_steps, obs_dim, dtype=OBS_DTYPE, device=device)
+        windows = torch.zeros(n, num_obs_steps, obs_dim, dtype=OBS_DTYPE, device=device)
         windows.copy_(obs0.to(device=device, dtype=OBS_DTYPE)[:, None, :].expand_as(windows))
     else:
         raise ValueError(
-            "obs0 must have shape [n, obs_dim] or [n, n_obs_steps, obs_dim], "
+            "obs0 must have shape [n, obs_dim] or [n, num_obs_steps, obs_dim], "
             f"got {tuple(obs0.shape)}"
         )
     env_rows = torch.arange(n)
@@ -550,7 +552,7 @@ def make_state(
         raw_plan=torch.zeros(
             n, action_horizon, act_dim, dtype=torch.float32, device=device
         ),
-        start_window=torch.zeros(n, n_obs_steps, obs_dim, dtype=OBS_DTYPE, device=device),
+        start_window=torch.zeros(n, num_obs_steps, obs_dim, dtype=OBS_DTYPE, device=device),
         chunk_pos=torch.zeros(n, dtype=torch.long),
         executed_plan=torch.zeros(
             n + 1, action_horizon, act_dim, dtype=torch.float32, device=device
@@ -562,11 +564,12 @@ def make_state(
         env_rows=env_rows,
         idle_row=torch.full_like(env_rows, n),
         roll_table=(
-            torch.arange(n_obs_steps)[:, None]
-            + torch.arange(n_obs_steps)[None, :]
+            torch.arange(num_obs_steps)[:, None]
+            + torch.arange(num_obs_steps)[None, :]
         )
-        % n_obs_steps,
+        % num_obs_steps,
         action_processing_mode=action_processing_mode,
+        action_noise_std=action_noise_std,
     )
 
 
@@ -577,7 +580,7 @@ def plan_chunks(
     low: torch.Tensor,
     high: torch.Tensor,
     targets: list[int],
-    n_action_steps: int,
+    num_action_steps: int,
 ) -> None:
     """Give every idle env a new chunk, and hold it until it runs out."""
     if not envs_needing_a_chunk:
@@ -604,7 +607,7 @@ def plan_chunks(
         else np.asarray(targets, dtype=np.int64)
     )
     state.step_limits[rows] = np.minimum(
-        n_action_steps, targets_np[rows] - state.executed_total[rows]
+        num_action_steps, targets_np[rows] - state.executed_total[rows]
     )
     state.active[rows] = True
 
@@ -702,7 +705,7 @@ def close_chunks(
     trunc_np: np.ndarray,
     done_np: np.ndarray,
     buffer: RolloutBuffer,
-    n_obs_steps: int,
+    num_obs_steps: int,
     *,
     batched: bool = False,
 ) -> None:
@@ -714,7 +717,7 @@ def close_chunks(
     """
     if batched:
         close_chunks_batched(
-            state, obs_t, term_np, trunc_np, done_np, buffer, n_obs_steps
+            state, obs_t, term_np, trunc_np, done_np, buffer, num_obs_steps
         )
         return
     for i in range(len(state.active)):
@@ -736,9 +739,13 @@ def close_chunks(
         n_exec = int(state.chunk_pos[i])
         if done_np[i] or n_exec >= state.step_limits[i]:
             raw = state.raw_plan[i]
+            if state.action_noise_std > 0:
+                # Perturb only the stored copy feeding the CFM ratio (ratio-level
+                # entropy regularization); the executed plan is untouched.
+                raw = raw + state.action_noise_std * torch.randn_like(raw)
             start_state = state.start_window[i]
             state.windows[i].copy_(
-                state.windows[i][state.roll_table[int(state.chunk_pos[i]) % n_obs_steps]]
+                state.windows[i][state.roll_table[int(state.chunk_pos[i]) % num_obs_steps]]
             )
             state.executed_total[i] += n_exec
             state.remaining -= n_exec
@@ -763,7 +770,7 @@ def close_chunks_batched(
     trunc_np: np.ndarray,
     done_np: np.ndarray,
     buffer: RolloutBuffer,
-    n_obs_steps: int,
+    num_obs_steps: int,
 ) -> None:
     """``close_chunks`` for a device-resident env: one gather per column.
 
@@ -776,7 +783,7 @@ def close_chunks_batched(
     waiting = np.flatnonzero(state.awaiting)
     if waiting.size:
         w = torch.as_tensor(waiting, device=device)
-        state.windows[w] = obs_t[w].unsqueeze(1).expand(-1, n_obs_steps, -1)
+        state.windows[w] = obs_t[w].unsqueeze(1).expand(-1, num_obs_steps, -1)
         state.awaiting[waiting] = False
 
     # A finished row still steps until every row hits its target. Treat each
@@ -803,19 +810,24 @@ def close_chunks_batched(
     lengths_np = pos[closing]
     n_new = int(lengths_np.sum())
     lengths = torch.as_tensor(lengths_np, device=device)
-    # The ring holds the last n_obs_steps frames; `next_state` wants them in
+    # The ring holds the last num_obs_steps frames; `next_state` wants them in
     # chronological order, which is what the roll table permutes them into.
     perm = state.roll_table[
-        torch.as_tensor(pos[closing] % n_obs_steps)
+        torch.as_tensor(pos[closing] % num_obs_steps)
     ].to(device)
     next_window = torch.gather(
         state.windows[rows], 1, perm[:, :, None].expand(-1, -1, state.windows.shape[-1])
     )
 
+    stored_actions = state.raw_plan[rows]
+    if state.action_noise_std > 0:
+        # Perturb only the stored copy feeding the CFM ratio; the executed plan
+        # is untouched (ratio-level entropy regularization).
+        stored_actions = stored_actions + state.action_noise_std * torch.randn_like(stored_actions)
     buffer.write_chunks(
         start_window=state.start_window[rows],
         next_window=next_window,
-        actions=state.raw_plan[rows],
+        actions=stored_actions,
         lengths=lengths,
         frames=state.normalizer_observations[rows],
         rewards=state.reward_windows[rows],
@@ -834,8 +846,9 @@ def close_chunks_batched(
 
 
 def init_collect_state(
-    carry, envs, seed, n, n_obs_steps, action_horizon, act_dim, targets,
+    carry, envs, seed, n, num_obs_steps, action_horizon, act_dim, targets,
     action_processing_mode: str = "tanh_squash",
+    action_noise_std: float = 0.0,
 ):
     """Build the collector state. An empty carry resets the env rows. Otherwise rebuild from the carried windows."""
     if carry is None:
@@ -845,24 +858,26 @@ def init_collect_state(
         else:
             obs0 = torch.from_numpy(np.asarray(obs, dtype=np.float32))
         state = make_state(
-            n, n_obs_steps, int(obs0.shape[-1]), action_horizon, act_dim,
+            n, num_obs_steps, int(obs0.shape[-1]), action_horizon, act_dim,
             obs0, remaining=sum(targets), device=obs0.device,
             action_processing_mode=action_processing_mode,
+            action_noise_std=action_noise_std,
         )
     else:
         state = make_state(
-            n, n_obs_steps, int(carry.windows.shape[-1]), action_horizon,
+            n, num_obs_steps, int(carry.windows.shape[-1]), action_horizon,
             act_dim, carry.windows, remaining=sum(targets),
             device=carry.windows.device,
             action_processing_mode=action_processing_mode,
+            action_noise_std=action_noise_std,
         )
         state.awaiting[:] = np.asarray(carry.awaiting, dtype=bool)
     return state
 
 
 def run_collect_loop(
-    state, envs, policy, low, high, targets, n_action_steps, buffer,
-    n_obs_steps, action_horizon,
+    state, envs, policy, low, high, targets, num_action_steps, buffer,
+    num_obs_steps, action_horizon,
 ):
     """Plan chunks, step the envs, and close chunks until every row reaches its step target."""
     # The writer is chosen once per rollout, not once per step.
@@ -874,14 +889,14 @@ def run_collect_loop(
         if envs_needing_a_chunk:
             plan_chunks(
                 state, envs_needing_a_chunk, policy, low, high,
-                targets, n_action_steps,
+                targets, num_action_steps,
             )
         obs_t, term_np, trunc_np, done_np = step_envs(
             state, envs, action_horizon
         )
         close_chunks(
             state, obs_t, term_np, trunc_np, done_np,
-            buffer, n_obs_steps, batched=batched,
+            buffer, num_obs_steps, batched=batched,
         )
 
 def collect_chunks_vec(
@@ -891,13 +906,14 @@ def collect_chunks_vec(
     action_low: float | np.ndarray,
     action_high: float | np.ndarray,
     *,
-    n_obs_steps: int,
-    n_action_steps: int,
+    num_obs_steps: int,
+    num_action_steps: int,
     seed: int | None = None,
     on_error_flush: Callable[[], None] | None = None,
     buffer: RolloutBuffer,
     carry: EnvCarry | None = None,
     action_processing_mode: str = "tanh_squash",
+    action_noise_std: float = 0.0,
 ) -> RolloutBuffer:
     """Collect executed action chunks from a vectorized env into ``buffer``.
 
@@ -906,8 +922,8 @@ def collect_chunks_vec(
     boundaries. A carried ``awaiting`` env gets its reset observation through
     the vec env's autoreset step.
     """
-    n_obs_steps, action_horizon = check_chunk_dims(
-        n_obs_steps, n_action_steps, buffer.action_horizon
+    num_obs_steps, action_horizon = check_chunk_dims(
+        num_obs_steps, num_action_steps, buffer.action_horizon
     )
 
     validate_autoreset_mode(envs)
@@ -918,10 +934,10 @@ def collect_chunks_vec(
 
     low, high = resolve_action_bounds(action_low, action_high)
 
-    if n_action_steps > n_obs_steps:
+    if num_action_steps > num_obs_steps:
         raise ValueError(
-            f"n_action_steps={n_action_steps} exceeds n_obs_steps={n_obs_steps}: "
-            "the vec obs window is a ring of n_obs_steps rows and cannot hold a "
+            f"num_action_steps={num_action_steps} exceeds num_obs_steps={num_obs_steps}: "
+            "the vec obs window is a ring of num_obs_steps rows and cannot hold a "
             "chunk longer than itself"
         )
     if seed is None:
@@ -929,13 +945,14 @@ def collect_chunks_vec(
     act_dim = int(np.asarray(envs.single_action_space.shape).prod())
 
     state = init_collect_state(
-        carry, envs, seed, n, n_obs_steps, action_horizon, act_dim, targets,
+        carry, envs, seed, n, num_obs_steps, action_horizon, act_dim, targets,
         action_processing_mode=action_processing_mode,
+        action_noise_std=action_noise_std,
     )
     try:
         run_collect_loop(
-            state, envs, policy, low, high, targets, n_action_steps,
-            buffer, n_obs_steps, action_horizon,
+            state, envs, policy, low, high, targets, num_action_steps,
+            buffer, num_obs_steps, action_horizon,
         )
     except (ValueError, RuntimeError, KeyError):
         if on_error_flush is not None:
@@ -1060,7 +1077,7 @@ def bootstrap_values(
         exec_length_frac = policy.exec_length_frac(lengths)
         boot_exec_frac = torch.full(
             (lengths.shape[0],),
-            cfg.n_action_steps / float(cfg.action_horizon),
+            cfg.num_action_steps / float(cfg.action_horizon),
             device=lengths.device,
             dtype=torch.float32,
         )
@@ -1081,7 +1098,7 @@ def bootstrap_values(
                         actions, policy.action_low, policy.action_high, mask=chunk_len_mask
                     )
                 q_current_chunk = subsampled_min(policy.critic(normalized_states, actions_for_critic, exec_length_frac).float())
-                boot_mask = (torch.arange(cfg.action_horizon, device=boot_actions.device).unsqueeze(0) < cfg.n_action_steps).unsqueeze(-1).float()
+                boot_mask = (torch.arange(cfg.action_horizon, device=boot_actions.device).unsqueeze(0) < cfg.num_action_steps).unsqueeze(-1).float()
                 if cfg.action_processing_mode == "linear_rescale":
                     boot_actions_for_critic = boot_actions * boot_mask
                 else:
@@ -1151,7 +1168,7 @@ def collect_chunks(
     shape_args = dict(
         max_chunks=max_chunks,
         max_steps=total_steps,
-        obs_steps=cfg.n_obs_steps,
+        obs_steps=cfg.num_obs_steps,
         obs_dim=obs_dim,
         action_horizon=cfg.action_horizon,
         action_dim=action_dim,
@@ -1174,11 +1191,12 @@ def collect_chunks(
         total_steps=total_steps,
         action_low=action_low,
         action_high=action_high,
-        n_obs_steps=cfg.n_obs_steps,
-        n_action_steps=cfg.n_action_steps,
+        num_obs_steps=cfg.num_obs_steps,
+        num_action_steps=cfg.num_action_steps,
         buffer=buffer,
         carry=buffer.carry,
         action_processing_mode=cfg.action_processing_mode,
+        action_noise_std=cfg.storage_action_noise_std,
     )
     if num_envs == 1 and not is_torch_env(env):
         if buffers.env_wrapper is None:

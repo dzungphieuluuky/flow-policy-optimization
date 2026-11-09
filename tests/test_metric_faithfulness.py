@@ -102,7 +102,7 @@ def test_log_ratio_clip_frac_counts_above_the_cap():
 
 
 def test_truncated_chunk_frac_counts_env_truncations_not_short_chunks():
-    """A chunk cut by ``n_action_steps`` or the step budget is short, not truncated."""
+    """A chunk cut by ``num_action_steps`` or the step budget is short, not truncated."""
     cfg = MyfpoConfig()
     n, h = 2, cfg.action_horizon
     short = torch.zeros(n, h, dtype=torch.bool)
