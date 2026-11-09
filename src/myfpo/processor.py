@@ -161,21 +161,17 @@ def squash_to_env_bounds(
     if mask is not None:
         out = out * mask
     return out
+def bound_to_unit(x: torch.Tensor) -> torch.Tensor:
+    """Clamp to the unit hypercube ``[-1, 1]`` (the linear-mode stored space).
 
-
-def clamp_and_rescale_to_unit(
-    raw: torch.Tensor,
-    low: torch.Tensor,
-    high: torch.Tensor,
-) -> torch.Tensor:
-    """Clamp raw to env bounds, then linearly rescale to ``[-1, 1]`` (old ``sjfpo`` behavior).
-
-    The stored action is the bounded scaled value; the flow trains on it directly.
+    The stored action under linear processing is bounded in ``[-1, 1]``; this
+    only bounds outliers, it does not rescale. Bounding lives here, not in the
+    policy, so there is one home for the bound invariant.
     """
-    scale = (high - low).to(device=raw.device, dtype=raw.dtype)
-    low_t = low.to(device=raw.device, dtype=raw.dtype)
-    executed = torch.clamp(raw, min=low_t, max=low_t + scale)
-    return 2.0 * (executed - low_t) / scale - 1.0
+    return x.clamp(-1.0, 1.0)
+
+
+
 
 
 def unscale_to_env(
@@ -187,7 +183,7 @@ def unscale_to_env(
 ) -> torch.Tensor:
     """Map a bounded ``[-1, 1]`` action back to env scale.
 
-    Inverse of :func:`clamp_and_rescale_to_unit`: ``low + (scaled + 1) / 2 * (high - low)``.
+    ``low + (scaled + 1) / 2 * (high - low)``.
     """
     scale = (high - low).to(device=scaled.device, dtype=scaled.dtype)
     low_t = low.to(device=scaled.device, dtype=scaled.dtype)

@@ -36,7 +36,7 @@ from myfpo.fpo_core import (
     compute_value_loss,
 )
 from myfpo.networks import Critic, FlowModel, FlowResMLP
-from myfpo.processor import RunningMeanStd, StateEncoder, squash_to_env_bounds, clamp_and_rescale_to_unit, unscale_to_env
+from myfpo.processor import RunningMeanStd, StateEncoder, squash_to_env_bounds, bound_to_unit, unscale_to_env
 from myfpo.rollout import RolloutBuffers, resolve_action_bounds, run_rollout
 from myfpo.layers import (
     autocast_context,
@@ -443,8 +443,11 @@ class MyfpoPolicy(nn.Module):
         if self.training and cfg.action_perturb_std > 0:
             proposal = proposal + cfg.action_perturb_std * torch.randn_like(proposal)
         if cfg.action_processing_mode == "linear_rescale":
-            # Old behavior: bounded [-1, 1] stored actions; flow trains on them.
-            proposal = clamp_and_rescale_to_unit(proposal, self.action_low, self.action_high)
+            # The denormalized value is already in the normalizer's [-1, 1]
+            # stored space (update_action_stats tracks batch["action"]); only
+            # bound outliers. Rescaling here would assume env scale and
+            # double-rescale, collapsing actions toward 0 over training.
+            proposal = bound_to_unit(proposal)
         # The chunk here is env-scale raw, denormalized from the z-scored
         # flow; the env-facing action is the squash of it, applied on the way
         # to the env, not here.
