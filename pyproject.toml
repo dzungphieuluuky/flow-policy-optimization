@@ -15,7 +15,7 @@ dependencies = [
     "wandb",
     # The simulator version decides the physics, so it is pinned here instead
     # of being inherited from gymnasium-robotics.
-    "mujoco>=3.13.0",
+    "mujoco>=3.13.0,<3.15",
     "metaworld>=3.0.0",
 ]
 
