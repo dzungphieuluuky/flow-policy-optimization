@@ -130,7 +130,7 @@ def make_scheduler(optimizer, cfg, total_steps: int):
     ``total_steps`` and ``lr_warmup_steps`` count env steps. The scheduler
     steps once per update, so both convert to update counts here.
     """
-    if cfg.lr_schedule == "none":
+    if cfg.lr_schedule == "fixed":
         return None
     per_update = updates_per_env_steps(cfg)
     # The loop runs one update per collected batch, so a partial batch at the
@@ -1210,7 +1210,6 @@ def run_training_loop(
             policy.update_ema(state.global_step)
             # Normaliser updated at end of cycle: rollout + update used frozen stats.
             policy.update_observation_stats(batch["normalizer_observations"])
-            policy.update_action_stats(batch["action"], batch["action_is_pad"])
             policy.update_target_critic()
 
             update = update_metrics(

@@ -167,6 +167,8 @@ def compute_cfm_loss(
         flat = sq.flatten(2)
         if cfg.cfm_loss_reduction == "sum":
             sample = flat.sum(dim=-1)
+        elif cfg.cfm_loss_reduction == "sqrt":
+            sample = flat.sum(dim=-1) / math.sqrt(flat.shape[-1])
         else:
             sample = flat.mean(dim=-1) if n_valid is None else flat.sum(dim=-1) / n_valid
         if reduce_mode == "sample":
@@ -310,7 +312,7 @@ def compute_policy_ratio(
     the function operates on already-grouped tensors.
     """
     delta = compute_cfm_log_ratio(cfm_loss_old, cfm_loss_new, cfg, advantage)
-    safe_delta = delta.clamp(min=-cfg.log_ratio_cap, max=cfg.log_ratio_cap)  # cap=2.0; ST lets raw delta backprop
+    safe_delta = delta.clamp(max=cfg.cfm_diff_clamp_max)  # one-sided; ST lets raw delta backprop
     delta_st = safe_delta.detach() + delta - delta.detach()
     return torch.exp(delta_st)
 
@@ -464,7 +466,7 @@ def compute_ratio_metrics(
             f"one flag per chunk {tuple(action_is_pad.shape[:1])}"
         )
     log_ratio_abs = delta.abs()
-    log_ratio_clip_frac = (log_ratio_abs > cfg.log_ratio_cap).float().mean()
+    log_ratio_clip_frac = (delta > cfg.cfm_diff_clamp_max).float().mean()
 
     ratio_token_mean_per_step = ratio_token.mean(dim=(0, 1))
     num_tokens = ratio_token_mean_per_step.numel()

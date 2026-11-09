@@ -166,10 +166,10 @@ def test_the_reported_delta_is_the_log_of_the_ratio_used(do_average, group):
         ).float()
     terms = policy.policy_loss(b, v_new, device)
 
-    cap = policy.config.log_ratio_cap
+    cap = policy.config.cfm_diff_clamp_max
     torch.testing.assert_close(
         torch.log(terms.ratio.detach()),
-        terms.delta.detach().clamp(-cap, cap),
+        terms.delta.detach().clamp(max=cap),
         rtol=1e-5,
         atol=1e-6,
     )

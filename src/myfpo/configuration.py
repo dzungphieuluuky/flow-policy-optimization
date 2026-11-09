@@ -89,14 +89,14 @@ class MyfpoConfig:
     clip_param: float = 0.05
     spo_clip_param: float = 0.01
     trust_region_mode: str = "ppo"
-    cfm_loss_reduction: str = "mean"
+    cfm_loss_reduction: str = "sqrt"
     cfm_loss_target: str = "velocity"
     cfm_loss_weight_from_t: str = "constant"
     cfm_clamp: float = 20.0
     ratio_mode: str = "cfm"
     cfm_loss_clamp_negative_advantages: bool = True
     cfm_loss_clamp_negative_advantages_max: float = 20.0
-    log_ratio_cap: float = 2.0
+    cfm_diff_clamp_max: float = 10.0
 
     num_critics: int = 2
     critic_condition_on_exec_length: bool = True
@@ -108,7 +108,7 @@ class MyfpoConfig:
     advantage_clamp_pos: float = 100.0
     value_loss_coef: float = 1.0
     value_loss_beta: float = 1.0
-    use_clipped_value_loss: bool = True
+    use_clipped_value_loss: bool = False
     value_clip_param: float = 0.2
     action_processing_mode: str = "linear_rescale"
 
@@ -139,13 +139,12 @@ class MyfpoConfig:
     ema_decay: float = 0.95
     ema_warmup_steps: int = 100
     lr_warmup_steps: int = 10000
-    lr_schedule: str = "cosine"
+    lr_schedule: str = "fixed"
     normalize_rewards: bool = True
-    # Default on. The flow regresses on a z-scored action target (running
-    # mean/std, checkpointed), the same frozen-per-cycle contract as the obs
-    # and reward normalizers. Set to False for pre-flag checkpoints, which
-    # were trained in raw space and cannot load with this on.
-    normalize_actions: bool = True
+    # Fixed action scaling for the flow (reference actor_scale). The flow
+    # operates in scaled space (target = action / actor_scale); inference
+    # multiplies back. 1.0 is a no-op (raw actions).
+    actor_scale: float = 1.0
     eval_max_episodes: int = 50
     eval_sampling: str = "noise_start"
     final_eval_sampling: str = "noise_start"
@@ -302,8 +301,8 @@ class MyfpoConfig:
                 f"num_mc_samples={self.num_mc_samples} must divide evenly by "
                 f"mc_loss_group_size={self.mc_loss_group_size}"
             )
-        if self.cfm_loss_reduction not in {"mean", "sum"}:
-            raise ValueError("cfm_loss_reduction must be 'mean' or 'sum'")
+        if self.cfm_loss_reduction not in {"mean", "sum", "sqrt"}:
+            raise ValueError("cfm_loss_reduction must be 'mean', 'sum', or 'sqrt'")
         if self.cfm_loss_target not in {"velocity", "action", "eps"}:
             raise ValueError(
                 "cfm_loss_target must be 'velocity' (FPO++'s cfm_loss_mode='u'), "
@@ -329,8 +328,8 @@ class MyfpoConfig:
             raise ValueError(f"cfm_clamp={self.cfm_clamp} must be > 0")
         if self.cfm_loss_clamp_negative_advantages_max <= 0:
             raise ValueError("cfm_loss_clamp_negative_advantages_max must be > 0")
-        if self.log_ratio_cap <= 0:
-            raise ValueError(f"log_ratio_cap={self.log_ratio_cap} must be > 0")
+        if self.cfm_diff_clamp_max <= 0:
+            raise ValueError(f"cfm_diff_clamp_max={self.cfm_diff_clamp_max} must be > 0")
         for name, value in (
             ("advantage_clamp_neg", self.advantage_clamp_neg),
             ("advantage_clamp_pos", self.advantage_clamp_pos),
@@ -426,9 +425,9 @@ class MyfpoConfig:
                 f"action_processing_mode={self.action_processing_mode!r} must be "
                 "'tanh_squash' or 'linear_rescale'"
             )
-        if self.lr_schedule not in ("none", "cosine"):
+        if self.lr_schedule not in ("fixed", "cosine"):
             raise ValueError(
-                f"lr_schedule={self.lr_schedule!r} must be 'none' or 'cosine'"
+                f"lr_schedule={self.lr_schedule!r} must be 'fixed' or 'cosine'"
             )
         if self.compile_mode not in ("default", "reduce-overhead"):
             raise ValueError(

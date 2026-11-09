@@ -94,10 +94,10 @@ def test_the_key_states_the_denominator_it_divides_by():
 # --- names must not overstate ---------------------------------------------.
 
 
-def test_log_ratio_clip_frac_counts_both_sides_of_the_cap():
-    """Only the positive side was counted, so a saturated negative read as 0."""
-    cap = MyfpoConfig().log_ratio_cap
-    out = _ratio_metrics(delta=torch.tensor([[-(cap + 0.5)], [-(cap + 1.5)]]))
+def test_log_ratio_clip_frac_counts_above_the_cap():
+    """One-sided cap: only deltas above the cap count as clipped."""
+    cap = MyfpoConfig().cfm_diff_clamp_max
+    out = _ratio_metrics(delta=torch.tensor([[(cap + 0.5)], [(cap + 1.5)]]))
     assert float(out["log_ratio_clip_frac"]) == 1.0
 
 

@@ -160,13 +160,7 @@ def load_policy_checkpoint(
         )
 
     try:
-        # A checkpoint written before ``normalize_actions`` existed has no key
-        # in its saved config. Such a run was trained in raw space, so resume
-        # it exactly as it trained: no normalizer. The strict shape of the
-        # state dict matches, loudly, if that is violated.
         cfg_payload = dict(payload["config"])
-        if "normalize_actions" not in cfg_payload:
-            cfg_payload["normalize_actions"] = False
         policy = MyfpoPolicy(MyfpoConfig(**cfg_payload))
         policy.load_state_dict(payload["state_dict"])
     except (KeyError, TypeError, ValueError, RuntimeError) as e:

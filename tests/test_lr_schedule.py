@@ -125,7 +125,7 @@ def test_a_run_too_short_for_its_warmup_keeps_a_constant_lr(total_steps):
 
 def test_the_schedule_is_off_when_the_config_says_none():
     optimizer = _optimizer()
-    assert make_scheduler(optimizer, _cfg(lr_schedule="none"), TOTAL_STEPS) is None
+    assert make_scheduler(optimizer, _cfg(lr_schedule="fixed"), TOTAL_STEPS) is None
 
 
 def test_a_saved_scheduler_state_restores_the_same_lr():

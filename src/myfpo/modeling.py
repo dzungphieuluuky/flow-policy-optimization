@@ -159,8 +159,6 @@ class MyfpoPolicy(nn.Module):
         self.critic_target.eval()
         self.reward_normalizer = RunningMeanStd(1)
         self.obs_normalizer = RunningMeanStd(obs_dim)
-        if config.normalize_actions:
-            self.action_normalizer = RunningMeanStd(action_dim)
         self.register_buffer("action_low", torch.full((action_dim,), -1.0), persistent=False)
         self.register_buffer("action_high", torch.full((action_dim,), 1.0), persistent=False)
         init_ema_buffers(self, config)
@@ -193,21 +191,6 @@ class MyfpoPolicy(nn.Module):
             )
         self.obs_normalizer.update(observations)
 
-    @torch.inference_mode()
-    def update_action_stats(
-        self, actions: torch.Tensor, action_is_pad: torch.Tensor | None = None
-    ) -> None:
-        """Update live stats from raw executed actions (padded tokens skipped)."""
-        if not self.config.normalize_actions:
-            return
-        if actions.shape[-1] != self.action_normalizer.mean.numel():
-            raise ValueError(
-                f"actions must end in action_dim={self.action_normalizer.mean.numel()}, "
-                f"got {tuple(actions.shape)}"
-            )
-        executed = actions[~action_is_pad] if action_is_pad is not None else actions
-        if executed.numel() > 0:
-            self.action_normalizer.update(executed)
 
     def set_action_bounds(
         self,
@@ -432,25 +415,20 @@ class MyfpoPolicy(nn.Module):
                 t_max=cfg.max_sampled_timestep,
             ).float()
 
-        if self.config.normalize_actions:
-            # The flow predicts in z-scored action space; map it back to the
-            # env-scale raw units before the squash runs on the way to the env.
-            stats = self.action_normalizer
-            if not stats.uninitialized:
-                action_chunk = action_chunk * (stats.var + stats.eps).sqrt() + stats.mean
+        # The flow operates in scaled space (target = action / actor_scale);
+        # multiply back to raw actions on the way to the env.
+        action_chunk = action_chunk * cfg.actor_scale
 
         proposal = action_chunk
         if self.training and cfg.action_perturb_std > 0:
             proposal = proposal + cfg.action_perturb_std * torch.randn_like(proposal)
         if cfg.action_processing_mode == "linear_rescale":
-            # The denormalized value is already in the normalizer's [-1, 1]
-            # stored space (update_action_stats tracks batch["action"]); only
+            # Stored actions are bounded in [-1, 1] (linear processing); only
             # bound outliers. Rescaling here would assume env scale and
             # double-rescale, collapsing actions toward 0 over training.
             proposal = bound_to_unit(proposal)
-        # The chunk here is env-scale raw, denormalized from the z-scored
-        # flow; the env-facing action is the squash of it, applied on the way
-        # to the env, not here.
+        # The chunk here is raw (scaled-space flow output x actor_scale); the
+        # env-facing action is produced on the way to the env, not here.
         return proposal
 
     def select_action(self, batch: dict[str, torch.Tensor], **kwargs) -> torch.Tensor:
@@ -550,10 +528,9 @@ class MyfpoPolicy(nn.Module):
         storage_dtype = resolve_storage_dtype(actions.device)
         eps = eps.to(storage_dtype)
         t = t.to(storage_dtype)
-        if self.config.normalize_actions:
-            # The flow regresses on z-scored targets. Normalize here so the
-            # behavior losses sit in the same frame the training pass will use.
-            actions = self.action_normalizer(actions)
+        # Flow operates in scaled space (target = action / actor_scale); keep
+        # the behavior losses in the same frame the training pass will use.
+        actions = actions / self.config.actor_scale
         x_t, flat_timesteps, flow_shape, num_mc = expand_mc_samples(actions, eps, t)
         with torch.no_grad():
             with autocast_context(actions.device):
@@ -632,9 +609,9 @@ class MyfpoPolicy(nn.Module):
         cfg = self.config
         # No pinned async copies on the loss path: under torch.compile the H2D
         # is a graph node, and pin_memory has no place inside a CUDA graph.
-        # The regression target is built from the stored fp32 action (z-scored
-        # by default). A bf16 rounding would put a 0.4% error on the target
-        # the flow is fit to.
+        # The regression target is built from the stored fp32 action (scaled by
+        # actor_scale). A bf16 rounding would put a 0.4% error on the target the
+        # flow is fit to.
         states = self.to_device_tensor(batch, "observation.state", device, storage_dtype)
         actions = self.to_device_tensor(batch, "action", device, torch.float32)
         advantages = self.to_device_tensor(
@@ -665,10 +642,10 @@ class MyfpoPolicy(nn.Module):
             )
 
         states = self.obs_normalizer(states)
-        if self.config.normalize_actions:
-            # z-scored targets, same frame as the behavior losses. The critic
-            # still reads the env-space squashed action downstream.
-            actions = self.action_normalizer(actions)
+        # Flow operates in scaled space (target = action / actor_scale), same
+        # frame as the behavior losses. The critic still reads the env-space
+        # squashed action downstream.
+        actions = actions / cfg.actor_scale
         if grad_inputs:
             states = states.detach().requires_grad_(True)
             actions = actions.detach().requires_grad_(True)
