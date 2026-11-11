@@ -426,19 +426,27 @@ def check_chunk_dims(
     return num_obs_steps, action_horizon
 
 
-def validate_autoreset_mode(envs) -> None:
-    """Reject a vec env whose autoreset mode breaks the awaiting machine."""
+def validate_autoreset_mode(envs) -> str | None:
+    """Accept the two autoreset contracts the collector implements.
+
+    Returns the mode name ("NEXT_STEP" or "SAME_STEP"), or None when the env
+    does not declare one — then the collector assumes NEXT_STEP, as gymnasium
+    does. SAME_STEP envs (ManiSkill) reset inside the done step() and hand
+    the reset frame back as the done step's observation; the collector
+    adopts that frame as the new episode's o₀ natively, with no forced
+    extra step.
+    """
     mode = getattr(envs, "autoreset_mode", None)
     if mode is None:
-        return
+        return None
     name = getattr(mode, "name", None) or str(mode)
-    if name != "NEXT_STEP":
-        raise ValueError(
-            f"collect_chunks_vec requires AutoresetMode.NEXT_STEP (the "
-            f"gymnasium default), got {mode!r}. The awaiting/reset state "
-            "machine assumes the reset observation arrives on the step() "
-            "call after done=True."
-        )
+    if name in ("NEXT_STEP", "SAME_STEP"):
+        return name
+    raise ValueError(
+        f"collect_chunks_vec requires AutoresetMode NEXT_STEP or SAME_STEP "
+        f"(gymnasium default NEXT_STEP), got {mode!r}. The collector can only "
+        "interpret the reset protocol of these two modes."
+    )
 
 
 @dataclasses.dataclass
@@ -471,6 +479,7 @@ class CollectState:
     roll_table: torch.Tensor
     action_processing_mode: str
     action_noise_std: float
+    autoreset_mode: str | None = None
 
 
 def make_state(
@@ -484,6 +493,7 @@ def make_state(
     device: torch.device | str = "cpu",
     action_processing_mode: str = "tanh_squash",
     action_noise_std: float = 0.0,
+    autoreset_mode: str | None = None,
 ) -> CollectState:
     """The state the collection loop starts with.
 
@@ -535,6 +545,7 @@ def make_state(
         % num_obs_steps,
         action_processing_mode=action_processing_mode,
         action_noise_std=action_noise_std,
+        autoreset_mode=autoreset_mode,
     )
 
 
@@ -582,7 +593,7 @@ def is_torch_env(envs) -> bool:
     return callable(getattr(envs, "step_torch", None))
 
 
-def take_final_observations(info, done_np, reference, device):
+def take_final_observations(info, done_np, reference, device, strict: bool = False):
     """Replace the done rows of ``reference`` with the true terminal frame.
 
     A done step must report ``o_T``: the collector stores it as the chunk's
@@ -590,18 +601,24 @@ def take_final_observations(info, done_np, reference, device):
     as ``info["final_obs"]`` and ManiSkill as ``info["final_observation"]``
     when the env resets inside the step and returns the reset frame instead.
     Under NEXT_STEP autoreset the step's own observation is already final and
-    neither key is present, so the reference passes through unchanged.
+    neither key is present, so the reference passes through unchanged. When
+    ``strict`` (SAME_STEP envs), a done row without a final frame raises:
+    storing the reset frame as ``o_T`` corrupts the truncation bootstrap.
     """
-    if not isinstance(info, dict):
+    rows = np.flatnonzero(done_np)
+    if rows.size == 0:
+        return reference
+    if not isinstance(info, dict) or (info.get("final_obs") is None and info.get("final_observation") is None):
+        if strict:
+            raise ValueError(
+                f"SAME_STEP env reset inside step() but supplied no final "
+                f"observation for done rows {rows.tolist()}; refusing to store the "
+                "reset frame as o_T"
+            )
         return reference
     final = info.get("final_obs")
     if final is None:
         final = info.get("final_observation")
-    if final is None:
-        return reference
-    rows = np.flatnonzero(done_np)
-    if rows.size == 0:
-        return reference
     idx = torch.from_numpy(rows).to(device=device)
     out = reference.clone()
     if torch.is_tensor(final):
@@ -611,6 +628,12 @@ def take_final_observations(info, done_np, reference, device):
     if array.dtype == object:
         for i in rows:
             if array[i] is None:
+                if strict:
+                    raise ValueError(
+                        f"SAME_STEP env reset inside step() but the final "
+                        f"observation for done row {i} is None; refusing to "
+                        "store the reset frame as o_T"
+                    )
                 continue
             out[i] = torch.as_tensor(
                 np.asarray(array[i], dtype=np.float32), device=device
@@ -621,7 +644,13 @@ def take_final_observations(info, done_np, reference, device):
 
 
 def step_envs(state: CollectState, envs, action_horizon: int):
-    """Send the next action of every env, and record what came back."""
+    """Send the next action of every env, and record what came back.
+
+    Returns ``(obs_t, term_np, trunc_np, done_np, reset_frames)``.
+    ``reset_frames`` is the raw returned observation of the done rows under
+    SAME_STEP autoreset (the env resets inside the done step, so it is the
+    first frame of the new episode); ``None`` under NEXT_STEP/undeclared.
+    """
     n = len(state.active)
     stepping = torch.from_numpy(state.active)
     rows = torch.arange(n)
@@ -636,7 +665,8 @@ def step_envs(state: CollectState, envs, action_horizon: int):
         # A GPU env keeps its frames on the device. Only the three done flags
         # cross to the host, and only because they drive the chunk-close loop.
         obs_t, rew_t, term_t, trunc_t, info = envs.step_torch(state.next_actions)
-        obs_t = obs_t.to(device=state.windows.device, dtype=OBS_DTYPE)
+        raw_obs = obs_t.to(device=state.windows.device, dtype=OBS_DTYPE)
+        obs_t = raw_obs
         term_np = term_t.cpu().numpy()
         trunc_np = trunc_t.cpu().numpy()
         rew_t = rew_t.to(device=state.windows.device, dtype=REWARD_DTYPE)
@@ -644,16 +674,19 @@ def step_envs(state: CollectState, envs, action_horizon: int):
         obs, rew, term, trunc, info = envs.step(state.next_actions.cpu().numpy())
         term_np = np.asarray(term, dtype=bool)
         trunc_np = np.asarray(trunc, dtype=bool)
-        obs_t = torch.from_numpy(np.asarray(obs, dtype=np.float32)).to(
+        raw_obs = torch.from_numpy(np.asarray(obs, dtype=np.float32)).to(
             device=state.windows.device
         )
+        obs_t = raw_obs
         rew_t = torch.from_numpy(np.asarray(rew, dtype=np.float32)).to(
             device=state.windows.device
         )
     done_np = term_np | trunc_np
+    strict = state.autoreset_mode == "SAME_STEP"
+    reset_frames = raw_obs if (strict and done_np.any()) else None
     if done_np.any():
         obs_t = take_final_observations(
-            info, done_np, obs_t, state.windows.device
+            info, done_np, obs_t, state.windows.device, strict=strict
         )
 
     if live_idx.numel():
@@ -662,7 +695,7 @@ def step_envs(state: CollectState, envs, action_horizon: int):
         state.normalizer_observations[live_idx, p] = obs_t[live_idx]
         state.windows[live_idx, p] = obs_t[live_idx]
         state.chunk_pos[live_idx] = p + 1
-    return obs_t, term_np, trunc_np, done_np
+    return obs_t, term_np, trunc_np, done_np, reset_frames
 
 
 
@@ -674,6 +707,9 @@ def close_chunks(
     done_np: np.ndarray,
     buffer: RolloutBuffer,
     num_obs_steps: int,
+    *,
+    reset_frames: torch.Tensor | None = None,
+    autoreset_mode: str | None = None,
 ) -> None:
     """Close every chunk that ran to its limit or hit a terminal.
 
@@ -681,6 +717,18 @@ def close_chunks(
     every write is a single index operation over all closing rows at once.
     """
     device = state.windows.device
+    same_step = autoreset_mode == "SAME_STEP"
+
+    def fill_window(rows_t: torch.Tensor) -> None:
+        """Seed a fresh episode's window from the done step's returned frame."""
+        if reset_frames is None:
+            raise RuntimeError(
+                "SAME_STEP env reported a done row but the step carried no "
+                "reset frame to seed the next episode's window"
+            )
+        state.windows[rows_t] = reset_frames[rows_t].unsqueeze(1).expand(
+            -1, num_obs_steps, -1
+        )
 
     # An env that resets this step takes the reset frame for its whole window.
     waiting = np.flatnonzero(state.awaiting)
@@ -702,7 +750,12 @@ def close_chunks(
             w[:, :-1] = w[:, 1:].clone()
             w[:, -1] = obs_t[rows]
             state.windows[rows] = w
-        state.awaiting[idle[done_idle]] = True
+        if same_step:
+            done_rows = idle[done_idle]
+            if done_rows.size:
+                fill_window(torch.as_tensor(done_rows, device=device))
+        else:
+            state.awaiting[idle[done_idle]] = True
 
     pos = state.chunk_pos.numpy()
     closing = np.flatnonzero(state.active & (done_np | (pos >= state.step_limits)))
@@ -744,7 +797,15 @@ def close_chunks(
     state.executed_total[closing] += lengths_np
     state.remaining -= n_new
     state.active[closing] = False
-    state.awaiting[closing] |= done_np[closing]
+    if same_step:
+        # The done step already carried the new episode's o₀ (the env resets
+        # inside the done step). Adopt it instead of idling one step.
+        closing_done = closing[done_np[closing]]
+        if closing_done.size:
+            rows = torch.as_tensor(closing_done, device=device)
+            fill_window(rows)
+    else:
+        state.awaiting[closing] |= done_np[closing]
 
 
 
@@ -752,6 +813,7 @@ def init_collect_state(
     carry, envs, seed, n, num_obs_steps, action_horizon, act_dim, targets,
     action_processing_mode: str = "tanh_squash",
     action_noise_std: float = 0.0,
+    autoreset_mode: str | None = None,
 ):
     """Build the collector state. An empty carry resets the env rows. Otherwise rebuild from the carried windows."""
     if carry is None:
@@ -765,6 +827,7 @@ def init_collect_state(
             obs0, remaining=sum(targets), device=obs0.device,
             action_processing_mode=action_processing_mode,
             action_noise_std=action_noise_std,
+            autoreset_mode=autoreset_mode,
         )
     else:
         state = make_state(
@@ -773,6 +836,7 @@ def init_collect_state(
             device=carry.windows.device,
             action_processing_mode=action_processing_mode,
             action_noise_std=action_noise_std,
+            autoreset_mode=autoreset_mode,
         )
         state.awaiting[:] = np.asarray(carry.awaiting, dtype=bool)
     return state
@@ -781,6 +845,7 @@ def init_collect_state(
 def run_collect_loop(
     state, envs, policy, low, high, targets, num_action_steps, buffer,
     num_obs_steps, action_horizon,
+    autoreset_mode: str | None = None,
 ):
     """Plan chunks, step the envs, and close chunks until every row reaches its step target."""
     targets_np = targets.numpy()
@@ -792,11 +857,12 @@ def run_collect_loop(
                 state, envs_needing_a_chunk, policy, low, high,
                 targets, num_action_steps,
             )
-        obs_t, term_np, trunc_np, done_np = step_envs(
+        obs_t, term_np, trunc_np, done_np, reset_frames = step_envs(
             state, envs, action_horizon
         )
         close_chunks(
-            state, obs_t, term_np, trunc_np, done_np, buffer, num_obs_steps
+            state, obs_t, term_np, trunc_np, done_np, buffer, num_obs_steps,
+            reset_frames=reset_frames, autoreset_mode=autoreset_mode,
         )
 
 def collect_chunks_vec(
@@ -826,7 +892,7 @@ def collect_chunks_vec(
         num_obs_steps, num_action_steps, buffer.action_horizon
     )
 
-    validate_autoreset_mode(envs)
+    mode = validate_autoreset_mode(envs)
 
     n = int(envs.num_envs)
     base_target, remainder = divmod(total_steps, n)
@@ -848,11 +914,13 @@ def collect_chunks_vec(
         carry, envs, seed, n, num_obs_steps, action_horizon, act_dim, targets,
         action_processing_mode=action_processing_mode,
         action_noise_std=action_noise_std,
+        autoreset_mode=mode,
     )
     try:
         run_collect_loop(
             state, envs, policy, low, high, targets, num_action_steps,
             buffer, num_obs_steps, action_horizon,
+            autoreset_mode=mode,
         )
     except (ValueError, RuntimeError, KeyError):
         if on_error_flush is not None:
@@ -892,20 +960,25 @@ def chunk_advantages(
     cfg,
     active: dict[str, torch.Tensor],
     n_chunks: int,
-    q_current_chunk: torch.Tensor,
-    q_bootstrap: torch.Tensor,
+    v_current: torch.Tensor,
+    v_next: torch.Tensor,
     storage_dtype: torch.dtype,
     reward_normalizer=None,
     ):
-    """The advantages, the regression targets, and the GAE diagnostics."""
+    """The advantages, the regression targets, and the GAE diagnostics.
+
+    ``v_current``/``v_next`` are the state baselines (mean of K fresh policy
+    chunks per state). The regression target is the lambda-return against
+    those baselines; it remains an unbiased estimate of Q^π(s, a).
+    """
     if cfg.normalize_rewards and reward_normalizer is not None:
         step_rewards = reward_normalizer(active["step_rewards"].reshape(-1, 1)).reshape(active["step_rewards"].shape)
     else:
         step_rewards = active["step_rewards"]
     raw_advantages, raw_returns = compute_chunk_advantages(
         step_rewards,
-        q_current_chunk,
-        q_bootstrap,
+        v_current,
+        v_next,
         active["chunk_starts"],
         active["chunk_lengths"],
         chunk_terminated=active["chunk_terminated"],
@@ -938,6 +1011,44 @@ def chunk_advantages(
     )
 
 
+def estimate_state_values(
+    policy,
+    raw_states: torch.Tensor,
+    normalized_states: torch.Tensor,
+    *,
+    exec_length_frac: torch.Tensor,
+    mask: torch.Tensor,
+    critic,
+    device,
+) -> torch.Tensor:
+    """V̂(s): the subsampled-min critic averaged over fresh policy chunks.
+
+    The advantage needs a state baseline. A taken-chunk baseline makes the
+    advantage zero-mean given (s, a) under a calibrated critic, so the actor
+    trains on critic error; here each state's baseline averages K fresh
+    policy samples, estimating V^π(s) with the same critic reduction the Q
+    reads use. ``raw_states`` are pre-normalizer (predict_action_chunk
+    normalizes internally); ``normalized_states`` must be the same tensors
+    the critic reads for the taken chunk.
+    """
+    cfg = policy.config
+    qs = []
+    for _ in range(cfg.num_baseline_samples):
+        proposed = policy.predict_action_chunk(
+            {"observation.state": to_device_async(raw_states, device)},
+            start_from_zero=False,
+        )
+        if cfg.action_processing_mode == "linear_rescale":
+            proposed = proposed * mask
+        else:
+            proposed = squash_to_env_bounds(
+                proposed, policy.action_low, policy.action_high, mask=mask
+            )
+        qs.append(
+            subsampled_min(critic(normalized_states, proposed, exec_length_frac).float())
+        )
+    return torch.stack(qs).mean(0)
+
 
 def bootstrap_values(
     policy,
@@ -946,7 +1057,13 @@ def bootstrap_values(
     device,
     storage_dtype: torch.dtype,
 ):
-    """The bootstrap action, the normalized states, and the two critic reads."""
+    """The bootstrap action, the normalized states, the V(s) baseline reads, and the Q snapshot for the clipped value loss.
+
+    The advantage baseline is a state value, not Q(s, a_taken): each read
+    averages ``cfg.num_baseline_samples`` fresh policy chunks. ``q_current_chunk``
+    is no longer the baseline; it stays only as the rollout-time snapshot the
+    clipped value loss clips against when ``use_clipped_value_loss`` is set.
+    """
     cfg = policy.config
     lengths = active["chunk_lengths"]
     actions = active["chunk_actions"]
@@ -1006,7 +1123,19 @@ def bootstrap_values(
                     boot_actions_for_critic = squash_to_env_bounds(
                         boot_actions, policy.action_low, policy.action_high, mask=boot_mask
                     )
+                # Diagnostic-only snapshot for measure_value_drift
+                # (log_drift_diagnostics); never feeds the advantage.
                 q_bootstrap = subsampled_min(policy.critic_target(normalized_next_states, boot_actions_for_critic, boot_exec_frac).float())
+                v_current = estimate_state_values(
+                    policy, states, normalized_states,
+                    exec_length_frac=exec_length_frac, mask=chunk_len_mask,
+                    critic=policy.critic, device=device,
+                )
+                v_next = estimate_state_values(
+                    policy, next_states, normalized_next_states,
+                    exec_length_frac=boot_exec_frac, mask=boot_mask,
+                    critic=policy.critic_target, device=device,
+                )
         finally:
             policy.critic.train(critic_training)
 
@@ -1015,6 +1144,8 @@ def bootstrap_values(
         normalized_next_states,
         boot_actions,
         q_current_chunk,
+        v_current,
+        v_next,
         q_bootstrap,
     )
 
@@ -1157,11 +1288,13 @@ def run_rollout(
         normalized_next_states,
         boot_actions,
         q_current_chunk,
+        v_current,
+        v_next,
         q_bootstrap,
     ) = bootstrap_values(policy, active, n_chunks, device, storage_dtype)
     raw_advantages, normalized_advantages, raw_returns, gae_diagnostics = (
         chunk_advantages(
-            cfg, active, n_chunks, q_current_chunk, q_bootstrap, storage_dtype,
+            cfg, active, n_chunks, v_current, v_next, storage_dtype,
             reward_normalizer=getattr(policy, "reward_normalizer", None),
         )
     )

@@ -161,14 +161,20 @@ def compute_cfm_loss(
         sq = sq * weight
 
     if reduce_mode == "scalar":
-        return sq.mean() if n_valid is None else sq.sum() / n_valid.sum()
+        return sq.mean() if n_valid is None else sq.sum() / (n_valid.sum() * sq.shape[1])
 
     if reduce_mode in ("sample", "sample_and_token"):
         flat = sq.flatten(2)
         if cfg.cfm_loss_reduction == "sum":
             sample = flat.sum(dim=-1)
         elif cfg.cfm_loss_reduction == "sqrt":
-            sample = flat.sum(dim=-1) / math.sqrt(flat.shape[-1])
+            if n_valid is not None:
+                # Under a mask, sqrt behaves like mean: dividing by
+                # sqrt(tokens*dim) would shrink a chunk's loss in proportion
+                # to its padded fraction. The key stays for compatibility.
+                sample = flat.sum(dim=-1) / n_valid
+            else:
+                sample = flat.sum(dim=-1) / math.sqrt(flat.shape[-1])
         else:
             sample = flat.mean(dim=-1) if n_valid is None else flat.sum(dim=-1) / n_valid
         if reduce_mode == "sample":

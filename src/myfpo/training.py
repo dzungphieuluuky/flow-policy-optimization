@@ -1195,6 +1195,7 @@ def run_training_loop(
     device = setup.device
     grad_groups = split_grad_params(policy)
     t_start = time.time()
+    elapsed = 0.0
 
     scheduler = setup.scheduler
     with tqdm(total=total_steps, desc="train", unit="step") as pbar:
@@ -1285,7 +1286,7 @@ def run_training_loop(
                     state.global_step + save_steps, state.next_save + save_steps
                 )
             elapsed = time.time() - t_start
-        fps = state.global_step / max(elapsed, 1e-6)
+        fps = state.global_step / elapsed if elapsed > 0.0 else 0.0
         if backends:
             log_metrics(
                 backends,

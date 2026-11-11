@@ -81,3 +81,52 @@ def test_the_batch_carries_no_behavior_velocity(config):
     """The behavior velocity is used inside the loss, never by the training step."""
     _, batch = _rollout(config)
     assert "behavior_velocity_token" not in batch
+
+
+def test_estimate_state_values_averages_fresh_policy_samples(config):
+    """The advantage baseline is E_a[Q(s, a)] over fresh chunks, not Q(s, a_taken).
+
+    With a calibrated critic, Q(s, a_taken) is zero-mean as an advantage given
+    (s, a), so the actor would train on critic error. The helper must draw
+    ``num_baseline_samples`` fresh proposals and average their critic scores.
+    """
+    import torch
+
+    from myfpo.processor import squash_to_env_bounds
+    from myfpo.rollout import estimate_state_values
+
+    cfg = dataclasses.replace(config, num_baseline_samples=3, action_processing_mode="tanh_squash")
+    policy = make_policy(
+        3, 1, cfg, device="cpu", action_low=[-2.0], action_high=[2.0]
+    )
+    n, horizon = 2, cfg.action_horizon
+    proposals = [
+        torch.full((n, horizon, 1), 0.2),
+        torch.full((n, horizon, 1), 0.6),
+        torch.full((n, horizon, 1), 1.0),
+    ]
+    remaining = iter(proposals)
+    policy.predict_action_chunk = lambda *a, **k: next(remaining)
+
+    class StateIndependentCritic(torch.nn.Module):
+        def forward(self, states, actions, exec_length_frac=None):
+            del states, exec_length_frac
+            member = actions.mean(dim=(1, 2))
+            return torch.stack([member, member])  # min of identical members is the member
+
+    states = torch.zeros(n, cfg.num_obs_steps, 3)
+    mask = torch.ones(n, horizon, 1)
+    frac = torch.ones(n)
+    v = estimate_state_values(
+        policy, states, states,
+        exec_length_frac=frac, mask=mask,
+        critic=StateIndependentCritic(), device="cpu",
+    )
+    squashed = [
+        squash_to_env_bounds(p, policy.action_low, policy.action_high) for p in proposals
+    ]
+    expected = torch.stack([a.mean(dim=(1, 2)) for a in squashed]).mean(dim=0)
+    torch.testing.assert_close(v, expected)
+    # A baseline that silently fell back to one proposal (or the taken chunk)
+    # would not equal the three-proposal mean, and its sign would differ here.
+    assert float(v.mean()) > 0.0

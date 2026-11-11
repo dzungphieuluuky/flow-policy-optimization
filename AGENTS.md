@@ -60,7 +60,7 @@ The path is chosen by capability, not by name.
 - numpy gym env: `step()`; `make_vec_env` forks workers when `num_envs > 1`.
 - torch env: `step_torch()` (ManiSkill). It batches its own sims, so `make_train_env` must return it unwrapped. Forking would start one SAPIEN context per worker.
 - Eval: `Evaluator` for CPU envs, `VectorEvaluator` for torch envs. `VectorEvaluator` needs lockstep rows, which is why `make_eval_env` sets `ignore_terminations=True`.
-- `maniskill_gpu.NextStepShim` converts ManiSkill's SAME_STEP autoreset to NEXT_STEP. Without it the collector rejects the env, and the done-step `o_{t+1}` is a reset frame.
+- ManiSkill envs are SAME_STEP: the done `step()` returns the reset frame of the new episode, with the true `o_T` in `info["final_observation"]`. The collector consumes SAME_STEP natively (no forced zero-action step); a declared SAME_STEP env without the final frame raises instead of storing the reset frame as `o_T`.
 - `MS-*` ids are registered only by `scripts/play.py` (CPU, single env). A bare `gym.make("MS-...")` elsewhere fails.
 
 ## Known traps

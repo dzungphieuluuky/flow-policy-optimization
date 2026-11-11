@@ -1,9 +1,10 @@
 """The collector on a torch env: the done step must report the true ``o_{t+1}``.
 
 ManiSkill resets a finished env inside the done ``step()`` and hands the real
-next observation through ``info["final_observation"]``. These tests pin the shim
-that swaps them, and pin the collector storing the swapped frame, without
-needing SAPIEN: the fake below has ManiSkill's autoreset behavior.
+next observation through ``info["final_observation"]``. The collector
+consumes that SAME_STEP contract natively, without a forced reset step.
+These tests pin it without SAPIEN: the fake below has ManiSkill's autoreset
+behavior.
 """
 
 import numpy as np
@@ -34,6 +35,8 @@ class FakeSameStepVec:
         self.steps = torch.zeros(n, dtype=torch.long)
         self.state = torch.zeros(n, obs_dim)
         self.resets = 0
+        self.actions: list[torch.Tensor] = []
+        self.autoreset_mode = type("M", (), {"name": "SAME_STEP"})()
 
     def reset(self, *, seed=None, options=None):
         del seed, options
@@ -44,6 +47,7 @@ class FakeSameStepVec:
     def step(self, actions):
         action = torch.as_tensor(actions, dtype=torch.float32)
         self.steps += 1
+        self.actions.append(action.clone())
         self.state = self.state + action
         obs = self.state.clone()
         final = obs.clone()
@@ -63,35 +67,10 @@ class FakeSameStepVec:
         return None
 
 
-def _shim(vec):
-    from myfpo.maniskill_gpu import NextStepShim
-
-    return NextStepShim(vec)
-
-
-def test_done_step_reports_the_true_next_observation():
-    """The one frame the collector stores must not be the reset frame."""
-    vec = FakeSameStepVec(n=1, obs_dim=2, episode_len=2)
-    env = _shim(vec)
-    env.reset(seed=[0])
-    action = torch.ones(1, 2)
-    env.step_torch(action)
-    obs, _, terminated, _, info = env.step_torch(action)
-    assert bool(terminated[0])
-    assert torch.equal(obs, info["final_observation"])
-    # Two accumulated actions from the marker, not the marker itself.
-    assert torch.allclose(obs, torch.full((1, 2), RESET_MARKER + 2.0))
-
-
-def test_the_shim_declares_the_contract_the_collector_checks():
-    """`validate_autoreset_mode` reads this attribute; ManiSkill has none."""
-    env = _shim(FakeSameStepVec())
-    assert env.autoreset_mode.name == "NEXT_STEP"
-
 
 def test_collector_stores_the_true_terminal_frame():
     """A chunk closed by a termination stores o_{t+1}, not the reset frame."""
-    env = _shim(FakeSameStepVec())
+    env = FakeSameStepVec()
     buffer = RolloutBuffer(
         max_chunks=64,
         max_steps=64,
@@ -114,7 +93,7 @@ def test_collector_stores_the_true_terminal_frame():
     n = buffer.n_chunks
     terminated = buffer.chunk_terminated[:n]
     assert bool(terminated.any()), "the fake terminates every three steps"
-    assert env.vec.resets > 0, "the fake never reset, so nothing was tested"
+    assert env.resets > 0, "the fake never reset, so nothing was tested"
     # The defect this guards: a SAME_STEP env puts the reset frame in the buffer.
     # The fake marks it with RESET_MARKER, so any leak is exact, not approximate.
     # A window may legitimately *start* on a reset frame, so only the step
@@ -162,3 +141,82 @@ def test_a_numpy_env_still_takes_the_numpy_path():
     envs.close()
     assert buffer.n_chunks > 0
     assert buffer.normalizer_observations[: buffer.n_steps].shape == (buffer.n_steps, 3)
+
+
+def test_same_step_env_never_gets_a_forced_reset_step():
+    """A done step resets the env inside the call; no zero action is forced."""
+    env = FakeSameStepVec()
+    buffer = RolloutBuffer(
+        max_chunks=64,
+        max_steps=64,
+        obs_steps=OBS_STEPS,
+        obs_dim=OBS_DIM,
+        action_horizon=HORIZON,
+        action_dim=ACT_DIM,
+    )
+    collect_chunks_vec(
+        env,
+        lambda states: torch.ones(states.shape[0], HORIZON, ACT_DIM),
+        total_steps=12,
+        num_action_steps=HORIZON,
+        action_low=-1.0,
+        action_high=1.0,
+        num_obs_steps=OBS_STEPS,
+        buffer=buffer,
+        seed=0,
+    )
+    assert buffer.n_steps == 12
+    # Both rows step together and hit their target on the same call, so no
+    # row is ever parked while it still owes steps. Every executed action is
+    # the policy's nonzero ones; an all-zero row means a forced reset step
+    # leaked back in.
+    for call in env.actions:
+        assert not bool((call == 0).all(dim=-1).any())
+
+
+class NoFinalSameStepVec(FakeSameStepVec):
+    """SAME_STEP env whose info carries no final observation."""
+
+    def step(self, actions):
+        obs, rew, term, trunc, _info = super().step(actions)
+        return obs, rew, term, trunc, {}
+
+
+def test_same_step_env_without_final_observation_raises():
+    """A missing final frame must not be patched over with the reset frame."""
+    env = NoFinalSameStepVec(n=1)
+    buffer = RolloutBuffer(
+        max_chunks=4,
+        max_steps=4,
+        obs_steps=OBS_STEPS,
+        obs_dim=OBS_DIM,
+        action_horizon=HORIZON,
+        action_dim=ACT_DIM,
+    )
+    with pytest.raises(ValueError, match="done rows"):
+        collect_chunks_vec(
+            env,
+            lambda states: torch.ones(states.shape[0], HORIZON, ACT_DIM),
+            total_steps=4,
+            num_action_steps=HORIZON,
+            action_low=-1.0,
+            action_high=1.0,
+            num_obs_steps=OBS_STEPS,
+            buffer=buffer,
+            seed=0,
+        )
+
+
+def test_validate_autoreset_mode_returns_the_declared_name():
+    from types import SimpleNamespace
+
+    from myfpo.rollout import validate_autoreset_mode
+
+    for name in ("NEXT_STEP", "SAME_STEP"):
+        env = SimpleNamespace(autoreset_mode=SimpleNamespace(name=name))
+        assert validate_autoreset_mode(env) == name
+    with pytest.raises(ValueError, match="SAME_STEP"):
+        validate_autoreset_mode(
+            SimpleNamespace(autoreset_mode=SimpleNamespace(name="DISABLED"))
+        )
+    assert validate_autoreset_mode(SimpleNamespace()) is None

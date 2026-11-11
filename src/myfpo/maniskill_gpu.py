@@ -9,13 +9,12 @@ Two entry points, on purpose:
   single-env CPU path (``scripts/play.py``, the registry test). ``gym.make``
   there is NOT the training path.
 
-The collector requires one thing from autoreset: **a done step must report the
-true ``o_{t+1}``**. Its chunks store that frame as ``next_state`` and as the
-terminal ``normalizer_observations``. ManiSkill hardcodes SAME_STEP, where the done step
-already holds the *reset* frame and the real ``o_{t+1}`` is in
-``info["final_observation"]``. The shim below swaps them back. Without it the
-truncation bootstrap (``compute_chunk_advantages``) reads the first frame of a
-fresh episode, and every terminal frame in the buffer is a foreign episode's.
+The collector speaks the native SAME_STEP contract. ManiSkill resets a
+finished env inside the done ``step()``: the done step returns the *reset*
+frame of the new episode and reports the true ``o_T`` in
+``info["final_observation"]``. ``close_chunks`` stores that final frame as
+the chunk's ``next_state`` and adopts the returned frame as the new
+episode's first frame instead of stepping a forced zero action.
 """
 
 from __future__ import annotations
@@ -42,80 +41,21 @@ def is_maniskill_id(env_id: str) -> bool:
     return env_id in MANISKILL_TASKS
 
 
-class NextStepShim:
-    """A SAME_STEP torch vector env, re-exposed as NEXT_STEP.
-
-    ManiSkill both resets a finished env inside the done ``step()`` and reports
-    the true next observation in ``info["final_observation"]``. The collector
-    needs the second half of that: the done step is the only place where a
-    chunk's ``next_state`` and terminal frames are read. So the shim swaps the
-    reset frame for the final observation on the done step, and leaves the
-    following step alone: the env has already advanced one step into the new
-    episode, and the collector's awaiting branch takes whatever frame arrives
-    next. Holding the reset frame back would skip that frame instead.
-    """
-
-    def __init__(self, vec):
-        self.vec = vec
-        self.num_envs = int(vec.num_envs)
-        self.device = torch.device(vec.device)
-        self.single_observation_space = vec.single_observation_space
-        self.single_action_space = vec.single_action_space
-        # What the collector validates against. The done step below is the part
-        # of the NEXT_STEP contract the collector's bookkeeping depends on.
-        self.autoreset_mode = AutoresetMode.NEXT_STEP
-
-    def reset(self, *, seed=None, options=None):
-        """Reset every row through the wrapped env, with the seed and options passed on."""
-        return self.vec.reset(seed=seed, options=options)
-
-    def step_torch(
-        self, actions: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, dict]:
-        """One batched step. Every value is a torch tensor on ``self.device``."""
-        obs, reward, terminated, truncated, info = self.vec.step(
-            actions.to(device=self.device, dtype=torch.float32)
-        )
-        done = terminated | truncated
-        if bool(done.any()):
-            # NEXT_STEP autoreset already returns the final frame, and a future
-            # ManiSkill may drop the key. Pass through when it is absent.
-            final = info.get("final_observation")
-            if final is None:
-                final = info.get("final_obs")
-            if final is not None:
-                obs = torch.where(done.unsqueeze(-1), final, obs)
-        return obs, reward, terminated, truncated, info
-
-    def render(self):
-        """Pass through to the wrapped env's batched renderer."""
-        return self.vec.render()
-
-    def step(self, actions):
-        """Numpy in/out, for callers that are not the collector."""
-        obs, reward, terminated, truncated, info = self.step_torch(
-            torch.as_tensor(actions, dtype=torch.float32, device=self.device)
-        )
-        return (
-            obs.cpu().numpy(),
-            reward.cpu().numpy(),
-            terminated.cpu().numpy(),
-            truncated.cpu().numpy(),
-            info,
-        )
-
-    def close(self) -> None:
-        """Close the wrapped simulator."""
-        self.vec.close()
 
 
-class ManiSkillTorchEnv(NextStepShim):
+class ManiSkillTorchEnv:
     """The GPU-parallel training env for one ManiSkill task.
 
     The spaces exposed as ``observation_space``/``action_space`` are the
     *single*-env spaces, not the batched ones: the runner sizes the policy and
     validates the registry dims from them (``scripts/train.py``), and the
     evaluator rejects anything that is not a flat Box.
+
+    ManiSkill is SAME_STEP: the done ``step()`` resets the finished envs
+    inside the call, and the returned observation is the first frame of the
+    new episode, with the true terminal frame in
+    ``info["final_observation"]``. The collector consumes this contract
+    natively — see ``close_chunks`` in ``myfpo.rollout``.
     """
 
     def __init__(
@@ -123,7 +63,10 @@ class ManiSkillTorchEnv(NextStepShim):
         alias: str,
         num_envs: int,
         *,
-        ignore_terminations: bool = False,
+        # Training stops only at the time limit, like eval: PickCube's dense
+        # hold reward continues past success, so ending the episode at success
+        # would forfeit it. Aligns train with the eval-side lockstep protocol.
+        ignore_terminations: bool = True,
         obs_mode: str = DEFAULT_OBS_MODE,
         control_mode: str = DEFAULT_CONTROL_MODE,
         render_mode: str | None = None,
@@ -150,13 +93,55 @@ class ManiSkillTorchEnv(NextStepShim):
         vec = ManiSkillVectorEnv(
             base, auto_reset=True, ignore_terminations=ignore_terminations
         )
-        super().__init__(vec)
+        self.vec = vec
+        self.num_envs = int(vec.num_envs)
+        self.device = torch.device(vec.device)
+        self.single_observation_space = vec.single_observation_space
+        self.single_action_space = vec.single_action_space
+        # What the collector validates against. ManiSkill resets a finished
+        # env inside the done step(), so it is declared SAME_STEP and the
+        # collector handles the reset frame natively.
+        self.autoreset_mode = AutoresetMode.SAME_STEP
         self.observation_space = self.single_observation_space
         self.action_space = self.single_action_space
         self.metadata = {"render_modes": []}
         # `configure_run` names the run from spec.id, and the alias is the id
         # the user passed, not the ManiSkill task id.
         self.spec = types.SimpleNamespace(id=alias)
+
+    def reset(self, *, seed=None, options=None):
+        """Reset every row through the wrapped env, with the seed and options passed on."""
+        return self.vec.reset(seed=seed, options=options)
+
+    def step_torch(
+        self, actions: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, dict]:
+        """One batched step. Every value is a torch tensor on ``self.device``.
+
+        Raw SAME_STEP frames: done rows hold the first frame of the new
+        episode, and ``info["final_observation"]`` carries the true terminal
+        frame. The collector splits them itself.
+        """
+        return self.vec.step(
+            actions.to(device=self.device, dtype=torch.float32)
+        )
+
+    def step(self, actions):
+        """Numpy in/out, for callers that are not the collector."""
+        obs, reward, terminated, truncated, info = self.step_torch(
+            torch.as_tensor(actions, dtype=torch.float32, device=self.device)
+        )
+        return (
+            obs.cpu().numpy(),
+            reward.cpu().numpy(),
+            terminated.cpu().numpy(),
+            truncated.cpu().numpy(),
+            info,
+        )
+
+    def close(self) -> None:
+        """Close the wrapped simulator."""
+        self.vec.close()
 
     def make_eval_env(
         self, *, num_envs: int | None = None, render_mode: str | None = None

@@ -112,3 +112,33 @@ def test_the_old_misleading_names_are_rejected():
     for old in ("linear_1_to_0.1", "linear_1_to_0.01"):
         with pytest.raises(ValueError, match="cfm_loss_weight_from_t"):
             _cfg(cfm_loss_weight_from_t=old).validate()
+
+def test_scalar_mode_divides_by_the_mc_axis_when_padded():
+    """The masked denominator must also cover the MC axis (was M times too large)."""
+    cfg = _cfg()
+    pred = torch.zeros(2, 4, 2, 1)
+    target = torch.ones(2, 4, 2, 1)
+    pad = torch.tensor([[False, True], [True, False]])
+    loss = compute_cfm_loss(pred, target, cfg, "scalar", action_is_pad=pad)
+    # Masked sum: 2 rows x 4 samples x 1 valid token x 1 dim of squared unit errors = 8;
+    # denominator: n_valid.sum() = 2 x 4 samples (M) = 8.
+    assert float(loss) == pytest.approx(1.0)
+
+
+def test_sqrt_reduction_divides_by_the_valid_count_when_padded():
+    """sqrt behaves like mean under a mask; partial chunks keep full-scale losses."""
+    cfg = _cfg(cfm_loss_reduction="sqrt")
+    pred = torch.zeros(2, 4, 2, 1)
+    target = torch.ones(2, 4, 2, 1)
+    pad = torch.tensor([[False, True], [True, False]])
+    loss = compute_cfm_loss(pred, target, cfg, "sample", action_is_pad=pad)
+    assert torch.allclose(loss, torch.ones(2, 4))
+
+
+def test_sqrt_reduction_without_a_mask_still_uses_sqrt():
+    """The unmasked branch keeps the classic scaling."""
+    cfg = _cfg(cfm_loss_reduction="sqrt")
+    pred = torch.zeros(2, 4, 2, 1)
+    target = torch.ones(2, 4, 2, 1)
+    loss = compute_cfm_loss(pred, target, cfg, "sample")
+    assert torch.allclose(loss, torch.full((2, 4), 2.0**0.5))

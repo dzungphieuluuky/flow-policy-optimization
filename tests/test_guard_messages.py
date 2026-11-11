@@ -10,7 +10,7 @@ import pytest
 import torch
 
 # : Guard count the table below is expected to cover.
-EXPECTED_CASES = 72
+EXPECTED_CASES = 73
 
 _CASES: list[tuple[str, object]] = []
 
@@ -57,6 +57,7 @@ _BAD_CONFIG = {
     "num_envs": 0,
     "num_steps_zero_start": 0,
     "num_learning_epochs": 0,
+    "num_baseline_samples": 0,
     "num_mc_samples": 0,
     "optimizer_weight_decay": -1.0,
     "policy_lr": 0.0,
@@ -253,6 +254,7 @@ KEYWORDS = {
     'config:num_mc_samples-odd': 'num_mc_samples',
     'config:num_steps_noise_start': 'num_steps_noise_start',
     'config:num_steps_zero_start': 'num_steps_zero_start',
+    'config:num_baseline_samples': 'num_baseline_samples',
     'config:optimizer_weight_decay': 'optimizer_weight_decay',
     'config:policy_lr': 'policy_lr',
     'config:ratio_mode': 'ratio_mode',

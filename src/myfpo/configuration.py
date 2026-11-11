@@ -77,6 +77,8 @@ class MyfpoConfig:
 
     num_steps_zero_start: int = 10
     num_steps_noise_start: int = 10
+    # Fresh policy chunks averaged per state for the V(s) advantage baseline.
+    num_baseline_samples: int = 4
     min_sampled_timestep: float = 0.1
     max_sampled_timestep: float = 0.9
     timestep_sampling_mode: str = "uniform"
@@ -377,6 +379,10 @@ class MyfpoConfig:
         if self.num_steps_noise_start < 1:
             raise ValueError(
                 f"num_steps_noise_start={self.num_steps_noise_start} must be >= 1"
+            )
+        if self.num_baseline_samples < 1:
+            raise ValueError(
+                f"num_baseline_samples={self.num_baseline_samples} must be >= 1"
             )
 
     def validate_optim_and_batching(self) -> None:
