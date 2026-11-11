@@ -442,7 +442,12 @@ class VectorEvaluator:
                 while True:
                     if chunk is None or steps % self.num_action_steps == 0:
                         planned = self._plan(policy, window)
-                        mode = getattr(getattr(policy, "policy", policy), "config", {}).action_processing_mode if hasattr(policy, "policy") or hasattr(policy, "config") else "tanh_squash"
+                        unwrapped = getattr(policy, "policy", policy)
+                        mode = getattr(
+                            getattr(unwrapped, "config", None),
+                            "action_processing_mode",
+                            "tanh_squash",
+                        )
                         if mode == "linear_rescale":
                             chunk = unscale_to_env(planned, self.action_low, self.action_high)
                         else:

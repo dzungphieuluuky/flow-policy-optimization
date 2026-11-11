@@ -45,7 +45,7 @@ def compute_chunk_advantages(
     chunk_size: int,
     gamma: float,
     chunk_truncated: torch.Tensor | None = None,
-    chunk_env_id: torch.Tensor | None = None,
+    chunk_prev: torch.Tensor | None = None,
     gae_lambda: float,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Return the ``[n]`` advantages and the ``[n]`` regression target.
@@ -53,7 +53,7 @@ def compute_chunk_advantages(
     The target is ``advantage + q_current_chunk``: a TD(lambda) backup over the
     macro-transitions defined by ``chunk_starts`` / ``chunk_lengths``. Chunks
     from different envs interleave in the buffer, so adjacency is resolved
-    through ``chunk_env_id`` rather than by buffer position.
+    through ``chunk_prev`` rather than by buffer position.
     """
     if not 0.0 <= gamma <= 1.0:
         raise ValueError(f"gamma must be in [0, 1], got {gamma}")
@@ -71,7 +71,10 @@ def compute_chunk_advantages(
     terminated = chunk_terminated.to(device=device, dtype=torch.bool).reshape(-1)
 
     n_chunks = starts.numel()
-    if lengths.numel() != n_chunks or terminated.numel() != n_chunks or q_current_chunk.numel() != n_chunks or q_next_state.numel() != n_chunks:
+    if any(
+        t.numel() != n_chunks
+        for t in (lengths, terminated, q_current_chunk, q_next_state)
+    ):
         raise ValueError(f"chunk tensors must have {n_chunks} entries")
 
     if chunk_truncated is None:
@@ -89,9 +92,9 @@ def compute_chunk_advantages(
                 "chunk_truncated is required when gae_lambda > 0: without it the "
                 "advantage trace crosses an episode reset"
             )
-        if chunk_env_id is None:
+        if chunk_prev is None:
             raise ValueError(
-                "chunk_env_id is required when gae_lambda > 0: chunks from different "
+                "chunk_prev is required when gae_lambda > 0: chunks from different "
                 "envs interleave in the buffer, so buffer adjacency is not trajectory "
                 "adjacency"
             )
@@ -116,30 +119,18 @@ def compute_chunk_advantages(
     if gae_lambda == 0.0:
         return delta, delta + q_current_chunk
 
-    env_id = chunk_env_id.to(device=device, dtype=torch.long).reshape(-1)
-    if env_id.numel() != n_chunks:
-        raise ValueError(f"chunk_env_id must have {n_chunks} entries, got {env_id.numel()}")
-
+    prev = chunk_prev.to(device=device, dtype=torch.long).reshape(-1)
+    if prev.numel() != n_chunks:
+        raise ValueError(f"chunk_prev must have {n_chunks} entries, got {prev.numel()}")
     # The trace index is a Python int per node. Keeping the successor vector on
     # the host turns one CUDA sync per node into none.
-    successor = chunk_successors(env_id).cpu()
+    linked = prev >= 0
+    successor = torch.full((n_chunks,), -1, dtype=torch.long, device=prev.device)
+    successor[prev[linked]] = torch.arange(n_chunks, device=prev.device)[linked]
+    successor = successor.cpu()
     trace = gamma_h * (~done) * gae_lambda
     adv = gae_trace(delta, trace, successor)
     return adv, adv + q_current_chunk
-
-
-def chunk_successors(env_id: torch.Tensor) -> torch.Tensor:
-    """The next chunk of each chunk, inside the same env. ``-1`` means none.
-
-    The chunks of different envs interleave in the buffer, so adjacency is
-    resolved through the env id, not through the buffer position.
-    """
-    order = torch.argsort(env_id, stable=True)
-    sorted_env = env_id[order]
-    same_env = sorted_env[:-1] == sorted_env[1:]
-    successor = torch.full_like(order, -1)
-    successor[order[:-1][same_env]] = order[1:][same_env]
-    return successor
 
 
 def gae_trace(
@@ -193,7 +184,7 @@ class RolloutBuffer:
         if obs_steps < 1 or obs_dim < 1 or action_horizon < 1 or action_dim < 1:
             raise ValueError("observation and action dimensions must be positive")
         self.device = torch.device(device)
-        # max_chunks owns both the chunk rows and the add_chunk guard. Two
+        # max_chunks owns both the chunk rows and the write guard. Two
         # capacities once disagreed, so the guard passed and the row write
         # raised IndexError outside collect_chunks_vec's flush handler.
         self.max_chunks = max_chunks
@@ -221,6 +212,10 @@ class RolloutBuffer:
         self.chunk_terminated = self.zeros_for((max_chunks,), torch.bool)
         self.chunk_truncated = self.zeros_for((max_chunks,), torch.bool)
         self.chunk_env_id = self.zeros_for((max_chunks,), torch.int16)
+        # Previous chunk in the same env, recorded at write time. GAE adjacency,
+        # not a reconstruction from env_id.
+        self.chunk_prev = self.zeros_for((max_chunks,), INDEX_DTYPE).fill_(-1)
+        self._last_chunk: dict[int, int] = {}
         self.n_chunks = 0
         self.n_steps = 0
         # The env-side state one rollout hands to the next. reset() keeps it.
@@ -241,9 +236,21 @@ class RolloutBuffer:
             pin_memory=self.pin_memory and nbytes >= self.PIN_MIN_BYTES,
         )
 
+    @staticmethod
+    def layout_key(
+        max_chunks: int,
+        max_steps: int,
+        obs_steps: int,
+        obs_dim: int,
+        action_horizon: int,
+        action_dim: int,
+    ) -> tuple[int, ...]:
+        """The buffer layout signature: the six shape fields, and nothing else."""
+        return (max_chunks, max_steps, obs_steps, obs_dim, action_horizon, action_dim)
+
     def shape_key(self) -> tuple[int, ...]:
         """The buffer layout signature: the six shape fields, and nothing else."""
-        return (
+        return RolloutBuffer.layout_key(
             self.max_chunks,
             self.max_steps,
             self.obs_steps,
@@ -256,54 +263,8 @@ class RolloutBuffer:
         """Reset cursors, keep pre-allocated storage."""
         self.n_chunks = 0
         self.n_steps = 0
+        self._last_chunk.clear()
 
-    def add_chunk(
-        self,
-        *,
-        state: torch.Tensor,
-        next_state: torch.Tensor,
-        action: torch.Tensor,
-        rewards: list[float] | np.ndarray | torch.Tensor,
-        normalizer_observations: torch.Tensor,
-        terminated: bool,
-        truncated: bool,
-        env_id: int = 0,
-    ) -> int:
-        """Append one executed chunk."""
-        if self.n_chunks >= self.max_chunks:
-            raise RuntimeError("RolloutBuffer chunk capacity exceeded")
-        reward_t = torch.as_tensor(rewards, dtype=REWARD_DTYPE, device=self.device).reshape(-1)
-        n_exec = int(reward_t.numel())
-        if n_exec < 1 or self.n_steps + n_exec > self.max_steps:
-            raise RuntimeError("RolloutBuffer step capacity exceeded")
-        if state.shape != (self.obs_steps, self.obs_dim):
-            raise ValueError(f"state shape {tuple(state.shape)} does not fit buffer")
-        if next_state.shape != (self.obs_steps, self.obs_dim):
-            raise ValueError(
-                f"next_state shape {tuple(next_state.shape)} does not fit buffer"
-            )
-        if action.shape != (self.action_horizon, self.action_dim):
-            raise ValueError(f"action shape {tuple(action.shape)} does not fit buffer")
-        if tuple(normalizer_observations.shape) != (n_exec, self.obs_dim):
-            raise ValueError(
-                f"normalizer_observations shape {tuple(normalizer_observations.shape)} does not fit buffer"
-            )
-
-        chunk_index = self.n_chunks
-        offset = self.n_steps
-        self.chunk_state[chunk_index].copy_(state)
-        self.chunk_next_state[chunk_index].copy_(next_state)
-        self.normalizer_observations[offset : offset + n_exec].copy_(normalizer_observations)
-        self.step_rewards[offset : offset + n_exec].copy_(reward_t)
-        self.chunk_actions[chunk_index].copy_(action)
-        self.chunk_starts[chunk_index] = offset
-        self.chunk_lengths[chunk_index] = n_exec
-        self.chunk_terminated[chunk_index] = terminated
-        self.chunk_truncated[chunk_index] = truncated
-        self.chunk_env_id[chunk_index] = int(env_id)
-        self.n_chunks += 1
-        self.n_steps += n_exec
-        return chunk_index
 
     def write_chunks(
         self,
@@ -319,16 +280,12 @@ class RolloutBuffer:
         env_ids: torch.Tensor,
         n_steps: int,
     ) -> None:
-        """Append ``k`` executed chunks with one write each, not one per chunk.
+        """Append ``k`` executed chunks in one gathered write.
 
-        ``add_chunk`` costs ~11 device launches per chunk, which at 1024 envs is
-        the collector's ceiling. Every row here is gathered by the caller, so
-        the whole batch is ~11 launches per *step*.
-
-        The packing rule matches ``add_chunk`` exactly: chunk ``j`` starts at
-        the running offset, and its first ``lengths[j]`` frames are copied
-        verbatim. ``n_steps`` is the host-side sum of ``lengths``, passed in
-        rather than computed, so the guard does not sync the device.
+        Chunk ``j`` starts at the running offset, and its first ``lengths[j]``
+        frames are copied verbatim. ``n_steps`` is the host-side sum of
+        ``lengths``, passed in rather than computed, so the guard does not sync
+        the device.
         """
         k = int(lengths.numel())
         if k == 0:
@@ -366,6 +323,17 @@ class RolloutBuffer:
         self.chunk_terminated[lo:hi] = terminated
         self.chunk_truncated[lo:hi] = truncated
         self.chunk_env_id[lo:hi] = env_ids
+        # Chain each env's chunks in row order. One host pass (env_ids come from
+        # Python control flow on the caller side), one device copy.
+        prev_list: list[int] = []
+        for j, raw_e in enumerate(env_ids.tolist()):
+            e = int(raw_e)
+            prev_list.append(self._last_chunk.get(e, -1))
+            self._last_chunk[e] = lo + j
+        prev_t = torch.tensor(prev_list, dtype=INDEX_DTYPE)
+        if self.chunk_prev.device != prev_t.device:
+            prev_t = prev_t.to(device=self.chunk_prev.device, non_blocking=True)
+        self.chunk_prev[lo:hi] = prev_t
         self.normalizer_observations[step_lo:step_hi] = frames.reshape(-1, self.obs_dim)[mask]
         self.step_rewards[step_lo:step_hi] = rewards.reshape(-1)[mask]
         self.n_chunks = hi
@@ -384,6 +352,7 @@ class RolloutBuffer:
             "chunk_terminated",
             "chunk_truncated",
             "chunk_env_id",
+            "chunk_prev",
         )
         def prefix(buffer, name):
             """Slice one field to the rows this buffer wrote."""
@@ -414,6 +383,7 @@ class RolloutBuffer:
             "chunk_terminated": self.chunk_terminated[:n_chunks],
             "chunk_truncated": self.chunk_truncated[:n_chunks],
             "chunk_env_id": self.chunk_env_id[:n_chunks],
+            "chunk_prev": self.chunk_prev[:n_chunks],
         }
 
 
@@ -498,8 +468,6 @@ class CollectState:
     executed_total: np.ndarray
     awaiting: np.ndarray
     remaining: int
-    env_rows: torch.Tensor
-    idle_row: torch.Tensor
     roll_table: torch.Tensor
     action_processing_mode: str
     action_noise_std: float
@@ -520,7 +488,7 @@ def make_state(
     """The state the collection loop starts with.
 
     The observation, reward, plan and action storage live on ``device``: on a
-    GPU sim they never leave it. The index bookkeeping (``chunk_pos``, ``env_rows``,
+    GPU sim they never leave it. The index bookkeeping (``chunk_pos``,
     ``roll_table``) stays on the host, because it drives Python control flow:
     moving it would turn one sync per env per step into the common case.
     """
@@ -540,7 +508,6 @@ def make_state(
             "obs0 must have shape [n, obs_dim] or [n, num_obs_steps, obs_dim], "
             f"got {tuple(obs0.shape)}"
         )
-    env_rows = torch.arange(n)
     return CollectState(
         windows=windows,
         reward_windows=torch.zeros(n, action_horizon, dtype=REWARD_DTYPE, device=device),
@@ -561,8 +528,6 @@ def make_state(
         executed_total=np.zeros(n, dtype=np.int64),
         awaiting=np.zeros(n, dtype=bool),
         remaining=remaining,
-        env_rows=env_rows,
-        idle_row=torch.full_like(env_rows, n),
         roll_table=(
             torch.arange(num_obs_steps)[:, None]
             + torch.arange(num_obs_steps)[None, :]
@@ -657,11 +622,13 @@ def take_final_observations(info, done_np, reference, device):
 
 def step_envs(state: CollectState, envs, action_horizon: int):
     """Send the next action of every env, and record what came back."""
+    n = len(state.active)
     stepping = torch.from_numpy(state.active)
-    live_idx = state.env_rows[stepping]
+    rows = torch.arange(n)
+    live_idx = rows[stepping]
     state.next_actions.copy_(
         state.executed_plan[
-            torch.where(stepping, state.env_rows, state.idle_row),
+            torch.where(stepping, rows, torch.full_like(rows, n)),
             state.chunk_pos.clamp(max=action_horizon - 1),
         ]
     )
@@ -698,6 +665,7 @@ def step_envs(state: CollectState, envs, action_horizon: int):
     return obs_t, term_np, trunc_np, done_np
 
 
+
 def close_chunks(
     state: CollectState,
     obs_t: torch.Tensor,
@@ -706,73 +674,8 @@ def close_chunks(
     done_np: np.ndarray,
     buffer: RolloutBuffer,
     num_obs_steps: int,
-    *,
-    batched: bool = False,
 ) -> None:
     """Close every chunk that ran to its limit or hit a terminal.
-
-    ``batched`` picks the writer. A torch env keeps its rows on one device, so
-    the closes are gathered and written a launch per column; a numpy env keeps
-    the original per-chunk loop, untouched, because its numerics are pinned.
-    """
-    if batched:
-        close_chunks_batched(
-            state, obs_t, term_np, trunc_np, done_np, buffer, num_obs_steps
-        )
-        return
-    for i in range(len(state.active)):
-        if state.awaiting[i]:
-            state.windows[i].copy_(obs_t[i].expand_as(state.windows[i]))
-            state.awaiting[i] = False
-            continue
-        if not state.active[i]:
-            # A finished row still steps until every row hits its target. Treat
-            # each extra step as a one-step chunk, so the window the next
-            # rollout starts from is not stale. A done step resets the env, so
-            # it waits for the awaiting branch on the next step instead.
-            if done_np[i]:
-                state.awaiting[i] = True
-            else:
-                state.windows[i, :-1] = state.windows[i, 1:].clone()
-                state.windows[i, -1] = obs_t[i]
-            continue
-        n_exec = int(state.chunk_pos[i])
-        if done_np[i] or n_exec >= state.step_limits[i]:
-            raw = state.raw_plan[i]
-            if state.action_noise_std > 0:
-                # Perturb only the stored copy feeding the CFM ratio (ratio-level
-                # entropy regularization); the executed plan is untouched.
-                raw = raw + state.action_noise_std * torch.randn_like(raw)
-            start_state = state.start_window[i]
-            state.windows[i].copy_(
-                state.windows[i][state.roll_table[int(state.chunk_pos[i]) % num_obs_steps]]
-            )
-            state.executed_total[i] += n_exec
-            state.remaining -= n_exec
-            buffer.add_chunk(
-                state=start_state,
-                next_state=state.windows[i],
-                action=raw,
-                rewards=state.reward_windows[i, :n_exec],
-                normalizer_observations=state.normalizer_observations[i, :n_exec],
-                terminated=bool(term_np[i]),
-                truncated=bool(trunc_np[i]),
-                env_id=i,
-            )
-            state.active[i] = False
-            if done_np[i]:
-                state.awaiting[i] = True
-
-def close_chunks_batched(
-    state: CollectState,
-    obs_t: torch.Tensor,
-    term_np: np.ndarray,
-    trunc_np: np.ndarray,
-    done_np: np.ndarray,
-    buffer: RolloutBuffer,
-    num_obs_steps: int,
-) -> None:
-    """``close_chunks`` for a device-resident env: one gather per column.
 
     The classification stays on the host (it is the loop's control flow), but
     every write is a single index operation over all closing rows at once.
@@ -880,8 +783,6 @@ def run_collect_loop(
     num_obs_steps, action_horizon,
 ):
     """Plan chunks, step the envs, and close chunks until every row reaches its step target."""
-    # The writer is chosen once per rollout, not once per step.
-    batched = is_torch_env(envs)
     targets_np = targets.numpy()
     while state.remaining:
         ready = (~state.active) & (~state.awaiting) & (state.executed_total < targets_np)
@@ -895,8 +796,7 @@ def run_collect_loop(
             state, envs, action_horizon
         )
         close_chunks(
-            state, obs_t, term_np, trunc_np, done_np,
-            buffer, num_obs_steps, batched=batched,
+            state, obs_t, term_np, trunc_np, done_np, buffer, num_obs_steps
         )
 
 def collect_chunks_vec(
@@ -1012,7 +912,7 @@ def chunk_advantages(
         chunk_size=cfg.action_horizon,
         gamma=cfg.gamma,
         chunk_truncated=active["chunk_truncated"],
-        chunk_env_id=active["chunk_env_id"],
+        chunk_prev=active["chunk_prev"],
         gae_lambda=cfg.gae_lambda,
     )
     normalized_advantages = raw_advantages
@@ -1036,6 +936,7 @@ def chunk_advantages(
         raw_returns,
         gae_diagnostics,
     )
+
 
 
 def bootstrap_values(
@@ -1163,8 +1064,6 @@ def collect_chunks(
     # A normal rollout writes total_steps / action_horizon (1024 of 8192 at the
     # defaults). A shorter cap aborts on an off-boundary episode length.
     max_chunks = max(1, total_steps)
-    # The field order must match RolloutBuffer.shape_key, which the reuse
-    # check below compares against.
     shape_args = dict(
         max_chunks=max_chunks,
         max_steps=total_steps,
@@ -1173,7 +1072,7 @@ def collect_chunks(
         action_horizon=cfg.action_horizon,
         action_dim=action_dim,
     )
-    buffer_key = tuple(shape_args.values())
+    buffer_key = RolloutBuffer.layout_key(**shape_args)
 
     def make_buffer(**extra) -> RolloutBuffer:
         """Host and device buffers share every shape argument."""

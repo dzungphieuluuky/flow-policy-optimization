@@ -35,13 +35,13 @@ def pin_config(**kw) -> MyfpoConfig:
     """
     base = dict(
         action_horizon=HORIZON,
-        n_action_steps=HORIZON,
+        num_action_steps=HORIZON,
         num_mc_samples=MC,
         hidden_dim=HIDDEN,
         time_embed_dim=TIME_EMBED,
         dit_depth=DEPTH,
         dit_heads=HEADS,
-        n_obs_steps=N_OBS,
+        num_obs_steps=N_OBS,
         compile=False,
         report_to="none",
         obs_dim=OBS,
@@ -76,19 +76,11 @@ def fixed_batch(policy, n: int = 3, seed: int = 1) -> dict:
 
     cfg = policy.config
     torch.manual_seed(seed)
-    states = torch.randn(n, cfg.n_obs_steps, OBS)
+    states = torch.randn(n, cfg.num_obs_steps, OBS)
     actions = torch.randn(n, HORIZON, ACT)
     t = sample_timesteps((n, MC, HORIZON), cfg, "cpu", None).unsqueeze(-1)
     eps = torch.randn(n, MC, HORIZON, ACT)
     pad = torch.zeros(n, HORIZON, dtype=torch.bool)
-
-    if policy.config.normalize_actions:
-        # The normalizer starts uninitialized; the pin needs stats or it pins
-        # the identity path, which proves nothing. Seeded, so deterministic.
-        gen = torch.Generator().manual_seed(9)
-        fake = torch.randn(64, cfg.action_horizon, cfg.action_dim, generator=gen)
-        fake_mask = torch.zeros(64, cfg.action_horizon, dtype=torch.bool)
-        policy.update_action_stats(fake, fake_mask)
 
     pre = policy.obs_normalizer(states)
     old, old_token = policy.compute_behavior_cfm_losses(

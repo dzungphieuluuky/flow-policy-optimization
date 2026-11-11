@@ -2,7 +2,6 @@
 
 import inspect
 
-import numpy as np
 import pytest
 import torch
 
@@ -144,20 +143,39 @@ def test_next_state_frames_agree_across_chunks():
     assert checked > 0, "no same-env successor pairs; the test proved nothing"
 
 
+def test_chunk_prev_links_each_chunk_to_its_envs_previous_chunk():
+    """The buffer records GAE's adjacency at write time, not at the backup."""
+    buf = _collect()
+    env_id = buf.chunk_env_id[: buf.n_chunks].to(torch.long)
+    prev = buf.chunk_prev[: buf.n_chunks].to(torch.long)
+    last: dict[int, int] = {}
+    for c in range(buf.n_chunks):
+        e = int(env_id[c])
+        assert int(prev[c]) == last.get(e, -1), f"chunk {c} (env {e})"
+        last[e] = c
+    assert len(last) > 1, "single env; the test proved nothing"
+
+
 def test_single_step_chunk():
     """n_exec == 1: chunk_next_state[c] is the one and only step window."""
     buf = _buffer()
     window = torch.full((OBS_STEPS, OBS_DIM), 0.25)
     next_window = torch.full((OBS_STEPS, OBS_DIM), 0.75)
-    buf.add_chunk(
-        state=window,
-        next_state=next_window,
-        action=torch.zeros(HORIZON, ACT_DIM),
-        rewards=np.array([1.0], dtype=np.float32),
-        normalizer_observations=next_window[-1:],
-        terminated=True,
-        truncated=False,
-        env_id=0,
+    frames = torch.zeros(1, HORIZON, OBS_DIM)
+    frames[0, 0] = next_window[-1]
+    rewards = torch.zeros(1, HORIZON)
+    rewards[0, 0] = 1.0
+    buf.write_chunks(
+        start_window=window.unsqueeze(0),
+        next_window=next_window.unsqueeze(0),
+        actions=torch.zeros(1, HORIZON, ACT_DIM),
+        lengths=torch.tensor([1], dtype=torch.int64),
+        frames=frames,
+        rewards=rewards,
+        terminated=torch.tensor([True], dtype=torch.bool),
+        truncated=torch.tensor([False], dtype=torch.bool),
+        env_ids=torch.tensor([0], dtype=torch.int64),
+        n_steps=1,
     )
     assert buf.n_steps == 1
     torch.testing.assert_close(buf.chunk_next_state[0], next_window)
@@ -310,17 +328,21 @@ def test_an_off_boundary_episode_writes_more_chunks_than_the_planned_count():
     assert buffer.n_steps == 128
 
 
-def _row() -> dict:
-    """One chunk's worth of arguments for ``add_chunk``."""
+
+def _write_one(buf: RolloutBuffer, *, env_id: int = 0) -> None:
+    """One chunk's worth of arguments for ``write_chunks`` with k=1."""
     window = torch.zeros(OBS_STEPS, OBS_DIM)
-    return dict(
-        state=window,
-        next_state=window,
-        action=torch.zeros(HORIZON, ACT_DIM),
-        rewards=np.zeros(1, dtype=np.float32),
-        normalizer_observations=torch.zeros(1, OBS_DIM),
-        terminated=False,
-        truncated=False,
+    buf.write_chunks(
+        start_window=window.unsqueeze(0),
+        next_window=window.unsqueeze(0),
+        actions=torch.zeros(1, HORIZON, ACT_DIM),
+        lengths=torch.tensor([1], dtype=torch.int64),
+        frames=torch.zeros(1, HORIZON, OBS_DIM),
+        rewards=torch.zeros(1, HORIZON),
+        terminated=torch.tensor([False], dtype=torch.bool),
+        truncated=torch.tensor([False], dtype=torch.bool),
+        env_ids=torch.tensor([env_id], dtype=torch.int64),
+        n_steps=1,
     )
 
 
@@ -342,10 +364,10 @@ def test_the_guard_and_the_row_count_are_one_capacity():
     )
     assert buf.chunk_state.shape[0] == buf.max_chunks
     assert buf.chunk_env_id.shape[0] == buf.max_chunks
-    buf.add_chunk(**_row())
-    buf.add_chunk(**_row())
+    _write_one(buf)
+    _write_one(buf)
     with pytest.raises(RuntimeError, match="chunk capacity exceeded"):
-        buf.add_chunk(**_row())
+        _write_one(buf)
     assert buf.n_chunks == 2 and buf.n_steps == 2
 
 
@@ -356,8 +378,8 @@ def test_a_failed_copy_leaves_the_destination_cursors_alone():
     small reported rows of earlier data.
     """
     src = _buffer()
-    src.add_chunk(**_row())
-    src.add_chunk(**_row())
+    _write_one(src)
+    _write_one(src)
     small = RolloutBuffer(
         max_chunks=1,
         max_steps=1,

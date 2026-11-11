@@ -9,6 +9,15 @@ from myfpo.rollout import compute_chunk_advantages, gae_trace
 GAMMA, H = 0.99, 4
 
 
+def prev_chain(env_id):
+    """Previous chunk index per chunk, the buffer's ``chunk_prev`` layout."""
+    last, prev = {}, []
+    for i, e in enumerate(env_id):
+        prev.append(last.get(e, -1))
+        last[e] = i
+    return torch.tensor(prev, dtype=torch.long)
+
+
 def gae(lengths, terminated=None, truncated=None, env_id=None, lam=0.0,
         q_current_chunk=0.0, q_next_state=2.0, reward=1.0, chunk_size=H):
     """One rollout through the backup. ``lam=0`` gives the QC path."""
@@ -30,8 +39,7 @@ def gae(lengths, terminated=None, truncated=None, env_id=None, lam=0.0,
         chunk_terminated=flags(terminated),
         chunk_size=chunk_size, gamma=GAMMA,
         chunk_truncated=flags(truncated),
-        chunk_env_id=(torch.zeros(n, dtype=torch.long) if env_id is None
-                      else torch.tensor(env_id, dtype=torch.long)),
+        chunk_prev=prev_chain([0] * n if env_id is None else list(env_id)),
         gae_lambda=lam,
     )
 
@@ -234,7 +242,7 @@ def test_trace_matches_the_reference_recursion_by_hand():
         chunk_terminated=torch.tensor(terminated),
         chunk_size=H, gamma=GAMMA,
         chunk_truncated=torch.tensor(truncated),
-        chunk_env_id=torch.zeros(4, dtype=torch.long),
+        chunk_prev=prev_chain([0, 0, 0, 0]),
         gae_lambda=lam,
     )
     r = [sum(GAMMA**k for k in range(h)) for h in lengths]
@@ -315,7 +323,7 @@ def test_chunks_from_different_envs_do_not_interact():
         chunk_terminated=torch.zeros(6, dtype=torch.bool),
         chunk_size=H, gamma=GAMMA,
         chunk_truncated=torch.zeros(6, dtype=torch.bool),
-        chunk_env_id=torch.tensor(env_id),
+        chunk_prev=prev_chain(env_id),
         gae_lambda=lam,
     )
     for i in (0, 2, 4):
@@ -375,7 +383,7 @@ def test_trace_requires_its_inputs():
     )
     with pytest.raises(ValueError, match="chunk_truncated is required"):
         compute_chunk_advantages(**common)
-    with pytest.raises(ValueError, match="chunk_env_id is required"):
+    with pytest.raises(ValueError, match="chunk_prev is required"):
         compute_chunk_advantages(
             chunk_truncated=torch.zeros(1, dtype=torch.bool), **common
         )

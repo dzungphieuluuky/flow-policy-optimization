@@ -803,7 +803,6 @@ def log_eval_window(
     eval_summary = summaries.get(cfg.eval_sampling, {})
     log_metrics(
         backends,
-# SETUP
         {
             "eval/ema_active": float(bool(result.get("displaced", False))),
             "eval/return_ci_low": eval_summary.get("return_ci_low", 0.0),
@@ -1210,9 +1209,7 @@ def run_training_loop(
             rollout_jerk, rollout_seam_jerk = collected.jerk, collected.seam_jerk
             rollout["collect_s"] = time.perf_counter() - t0
             if cfg.normalize_rewards and hasattr(policy, "reward_normalizer"):
-                rew = rollout.get("step_rewards") or batch.get("step_rewards")
-                if rew is not None:
-                    policy.reward_normalizer.update(rew.reshape(-1, 1))
+                policy.reward_normalizer.update(batch["step_rewards"].reshape(-1, 1))
             state.global_step += steps_this_rollout
             pbar.update(steps_this_rollout)
 
@@ -1253,27 +1250,24 @@ def run_training_loop(
                 state,
             )
 
-
-
-
             if state.global_step >= state.next_eval or state.global_step >= total_steps:
                 eval_window(
-                policy,
-                optimizer,
-                state,
-                out_dir,
-                evaluator,
-                eval_policies,
-                cfg,
-                backends,
-                eval_steps,
-                r_rand,
-                video=(
-                    (setup.video_evaluator, setup.video_dir)
-                    if setup.video_evaluator is not None
-                    else None
-                ),
-                scheduler=scheduler,
+                    policy,
+                    optimizer,
+                    state,
+                    out_dir,
+                    evaluator,
+                    eval_policies,
+                    cfg,
+                    backends,
+                    eval_steps,
+                    r_rand,
+                    video=(
+                        (setup.video_evaluator, setup.video_dir)
+                        if setup.video_evaluator is not None
+                        else None
+                    ),
+                    scheduler=scheduler,
                 )
                 invalidate_shared_env_carry(policy, evaluator, train_env)
 

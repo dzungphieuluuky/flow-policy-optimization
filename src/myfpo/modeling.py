@@ -68,6 +68,14 @@ def make_optimizer(policy: MyfpoPolicy) -> torch.optim.Optimizer:
     ]
     return torch.optim.AdamW(groups, **kwargs)
 
+
+def _require_shape(name: str, tensor: torch.Tensor, expected: tuple[int, ...]) -> None:
+    """One spelling of the batch shape guard: raise when ``tensor`` is not ``expected``."""
+    got = tuple(tensor.shape)
+    if got != tuple(expected):
+        raise ValueError(f"{name} shape {got} != {tuple(expected)}")
+
+
 @dataclasses.dataclass
 class TrainingBatch:
     """The tensors one training step reads. Loaded and shape-checked."""
@@ -138,6 +146,7 @@ def init_ema_buffers(obj, config: MyfpoConfig):
     obj.ema_shadow = {}
     obj.ema_initialized = False
     obj.rollout_buffers = RolloutBuffers()
+    obj._ema_param_cache = None
     obj.cfm_above_clamp_frac = torch.zeros(())
     obj.cfm_both_clamped_frac = torch.zeros(())
     obj.probe_counter = 0
@@ -221,14 +230,26 @@ class MyfpoPolicy(nn.Module):
         """List every parameter that the EMA shadow covers.
 
         The names carry the module prefix, so the shadow can be matched back to
-        a live parameter without holding a second reference to the modules.
+        a live parameter without holding a second reference to the modules. The
+        parameter set is fixed after construction, so the list is built once.
         """
-        out: dict[str, torch.nn.Parameter] = {}
-        for prefix, module in (("actor", self.actor), ("encoder", self.encoder)):
-            for name, param in module.named_parameters():
-                if param.requires_grad:
-                    out[f"{prefix}.{name}"] = param
-        return out
+        cache = self._ema_param_cache
+        if cache is None:
+            cache = []
+            for prefix, module in (("actor", self.actor), ("encoder", self.encoder)):
+                cache.extend(
+                    (f"{prefix}.{name}", param)
+                    for name, param in module.named_parameters()
+                    if param.requires_grad
+                )
+            self._ema_param_cache = cache
+        return dict(cache)
+
+
+    def _live_params(self, names) -> list[torch.nn.Parameter]:
+        """The live parameters for ``names``, in order."""
+        params = self.ema_named_params()
+        return [params[name] for name in names]
 
     @torch.inference_mode()
     def update_ema(self, global_step: int) -> None:
@@ -267,10 +288,10 @@ class MyfpoPolicy(nn.Module):
         """Copy the EMA shadow in, and return the displaced live weights."""
         if not self.ema_ready(global_step):
             return {}
-        params = self.ema_named_params()
         names = list(self.ema_shadow)
         shadow = [self.ema_shadow[name] for name in names]
-        values = [params[name].detach() for name in names]
+        values = self._live_params(names)
+        values = [value.detach() for value in values]
         displaced = {name: value.clone() for name, value in zip(names, values)}
         torch._foreach_copy_(values, shadow)
         return displaced
@@ -280,10 +301,9 @@ class MyfpoPolicy(nn.Module):
         """Put back the weights :meth:`swap_in_ema` displaced."""
         if not displaced:
             return
-        params = self.ema_named_params()
         names = list(displaced)
         torch._foreach_copy_(
-            [params[name] for name in names], [displaced[name] for name in names]
+            self._live_params(names), [displaced[name] for name in names]
         )
 
     def ema_state_dict(self) -> dict:
@@ -367,7 +387,7 @@ class MyfpoPolicy(nn.Module):
 
 
     def predict_action_chunk(
-        self, batch: dict[str, torch.Tensor], **kwargs
+        self, batch: dict[str, torch.Tensor], *, start_from_zero: bool = True
     ) -> torch.Tensor:
         """Predict ``[B, H, action_dim]``, in the policy's raw action space.
 
@@ -375,7 +395,6 @@ class MyfpoPolicy(nn.Module):
         produce. The env-facing action is the squash of this chunk, applied
         by the collector on the way to the env.
         """
-        start_from_zero = kwargs.get("start_from_zero", True)
         cfg = self.config
         device = next(self.actor.parameters()).device
 
@@ -417,7 +436,7 @@ class MyfpoPolicy(nn.Module):
 
         # The flow operates in scaled space (target = action / actor_scale);
         # multiply back to raw actions on the way to the env.
-        action_chunk = action_chunk * cfg.actor_scale
+        action_chunk = self._from_flow_space(action_chunk)
 
         proposal = action_chunk
         if self.training and cfg.action_perturb_std > 0:
@@ -431,7 +450,7 @@ class MyfpoPolicy(nn.Module):
         # env-facing action is produced on the way to the env, not here.
         return proposal
 
-    def select_action(self, batch: dict[str, torch.Tensor], **kwargs) -> torch.Tensor:
+    def select_action(self, batch: dict[str, torch.Tensor], *, start_from_zero: bool = True) -> torch.Tensor:
         """Next action, receding through a cached chunk.
 
         The action handed out is the env-facing one: the raw chunk the policy
@@ -453,7 +472,7 @@ class MyfpoPolicy(nn.Module):
                 f"select_action expects [obs] or [T, obs]; got {tuple(obs.shape)}"
             )
         if not self.action_buffer:
-            chunk = self.predict_action_chunk({"observation.state": window}, **kwargs)
+            chunk = self.predict_action_chunk({"observation.state": window}, start_from_zero=start_from_zero)
             n_execute = max(1, min(self.config.num_action_steps, chunk.shape[1]))
             if self.config.action_processing_mode == "linear_rescale":
                 env_chunk = unscale_to_env(chunk, self.action_low, self.action_high)
@@ -463,6 +482,14 @@ class MyfpoPolicy(nn.Module):
                 self.action_buffer.append(env_chunk[0, i])
         return self.action_buffer.popleft()
 
+
+    def _to_flow_space(self, actions: torch.Tensor) -> torch.Tensor:
+        """The CFM regression frame: the raw action divided by ``actor_scale``."""
+        return actions / self.config.actor_scale
+
+    def _from_flow_space(self, actions: torch.Tensor) -> torch.Tensor:
+        """Undo :meth:`_to_flow_space`."""
+        return actions * self.config.actor_scale
 
     def exec_length_frac(self, executed_steps: torch.Tensor) -> torch.Tensor:
         """Normalise an executed-step count to ``[0, 1]``."""
@@ -530,7 +557,7 @@ class MyfpoPolicy(nn.Module):
         t = t.to(storage_dtype)
         # Flow operates in scaled space (target = action / actor_scale); keep
         # the behavior losses in the same frame the training pass will use.
-        actions = actions / self.config.actor_scale
+        actions = self._to_flow_space(actions)
         x_t, flat_timesteps, flow_shape, num_mc = expand_mc_samples(actions, eps, t)
         with torch.no_grad():
             with autocast_context(actions.device):
@@ -573,12 +600,9 @@ class MyfpoPolicy(nn.Module):
         key: str,
         device,
         dtype: torch.dtype,
-        *,
-        async_: bool = False,
     ) -> torch.Tensor:
         """One spelling of 'coerce to device and dtype'."""
-        tensor = torch.as_tensor(batch[key], dtype=dtype, device=device)
-        return to_device_async(tensor, device) if async_ else tensor
+        return torch.as_tensor(batch[key], dtype=dtype, device=device)
 
     def forward(
         self,
@@ -635,17 +659,13 @@ class MyfpoPolicy(nn.Module):
                 f"action horizon {actions.shape[-2]} != action_horizon {cfg.action_horizon}"
             )
         expected_action_mask_shape = (states.shape[0], cfg.action_horizon)
-        if tuple(action_is_pad.shape) != expected_action_mask_shape:
-            raise ValueError(
-                f"action_is_pad shape {tuple(action_is_pad.shape)} != "
-                f"{(states.shape[0], cfg.action_horizon)}"
-            )
+        _require_shape("action_is_pad", action_is_pad, expected_action_mask_shape)
 
         states = self.obs_normalizer(states)
         # Flow operates in scaled space (target = action / actor_scale), same
         # frame as the behavior losses. The critic still reads the env-space
         # squashed action downstream.
-        actions = actions / cfg.actor_scale
+        actions = self._to_flow_space(actions)
         if grad_inputs:
             states = states.detach().requires_grad_(True)
             actions = actions.detach().requires_grad_(True)
@@ -658,12 +678,10 @@ class MyfpoPolicy(nn.Module):
             raise ValueError("Mandatory paired reuse: batch must contain 'mc_t' and 'mc_eps' (coupled draws for both old/new CFM loss)")
         t = torch.as_tensor(batch["mc_t"], dtype=storage_dtype, device=device)
         expected_t = (n, cfg.num_mc_samples, horizon, 1)
-        if tuple(t.shape) != expected_t:
-            raise ValueError(f"mc_t shape {tuple(t.shape)} != {expected_t}")
+        _require_shape("mc_t", t, expected_t)
         eps = torch.as_tensor(batch["mc_eps"], dtype=storage_dtype, device=device)
         expected_eps = (n, cfg.num_mc_samples, horizon, action_dim)
-        if tuple(eps.shape) != expected_eps:
-            raise ValueError(f"stored MC noise shape {tuple(eps.shape)} != {expected_eps}")
+        _require_shape("mc_eps", eps, expected_eps)
 
         x_t, flat_timesteps, flow_shape, num_mc = expand_mc_samples(actions, eps, t)
 
@@ -721,16 +739,9 @@ class MyfpoPolicy(nn.Module):
         cfm_loss_old_token = torch.as_tensor(
             batch["behavior_cfm_loss_token"], dtype=torch.float32, device=device
         )
-        if tuple(cfm_loss_old.shape) != (n, num_mc):
-            raise ValueError(
-                f"behavior_cfm_loss shape {tuple(cfm_loss_old.shape)} != {(n, num_mc)}"
-            )
+        _require_shape("behavior_cfm_loss", cfm_loss_old, (n, num_mc))
         expected_tokens = cfg.action_horizon
-        if tuple(cfm_loss_old_token.shape) != (n, num_mc, expected_tokens):
-            raise ValueError(
-                f"behavior_cfm_loss_token shape {tuple(cfm_loss_old_token.shape)} != "
-                f"{(n, num_mc, expected_tokens)}"
-            )
+        _require_shape("behavior_cfm_loss_token", cfm_loss_old_token, (n, num_mc, expected_tokens))
         return cfm_loss_old, cfm_loss_old_token
 
     def policy_loss(self, b: TrainingBatch, v_new: torch.Tensor, device) -> PolicyTerms:
@@ -812,7 +823,7 @@ class MyfpoPolicy(nn.Module):
             # b.actions is in flow (scaled) space for the CFM target; the critic
             # reads the raw policy output to match the rollout bootstrap (which
             # uses the stored raw action). Recover it before the env mapping.
-            raw_actions = b.actions * self.config.actor_scale
+            raw_actions = self._from_flow_space(b.actions)
             if self.config.action_processing_mode == "linear_rescale":
                 b_actions_for_critic = raw_actions * pad_mask
             else:
