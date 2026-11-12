@@ -207,10 +207,17 @@ def sample_minibatch(
     ``step_rewards`` is a flat per-step array, not per chunk, so a minibatch
     indexes it with chunk ids. Nothing in the update reads the slice, and
     slicing it every minibatch is both waste and a trap for a future reader.
+    ``chunk_env_id`` is the same: the jerk diagnostic reads it from the whole
+    batch, before the update starts.
     """
     if out is None:
         out = {}
-    passthrough = ("normalizer_observations", "gae_diagnostics", "step_rewards")
+    passthrough = (
+        "normalizer_observations",
+        "gae_diagnostics",
+        "step_rewards",
+        "chunk_env_id",
+    )
     for k, v in batch.items():
         if k in passthrough:
             out[k] = v
@@ -294,6 +301,11 @@ def compute_rollout_diagnostics(
 def measure_value_drift(policy, batch, device) -> tuple[torch.Tensor, torch.Tensor]:
     """Return the RMS of the bootstrap delta relative to the start values and to the raw returns."""
     cfg = policy.config
+    if "boot_values_start" not in batch or "boot_actions" not in batch:
+        raise ValueError(
+            "the batch carries no bootstrap values; the rollout only builds "
+            "them when log_drift_diagnostics is on"
+        )
     boot_obs = batch["boot_observations"].to(device=device, dtype=torch.float32)
     boot_actions_raw = batch["boot_actions"].to(device=device, dtype=torch.float32)
     start = batch["boot_values_start"].to(device).reshape(-1)
@@ -406,12 +418,14 @@ class RolloutStep:
 
 
 def rollout_with_diagnostics(
-    policy, train_env, cfg, action_low, action_high, steps_to_go
+    policy, train_env, cfg, action_low, action_high, steps_to_go,
+    *, need_bootstrap: bool = False,
 ):
     """Run one rollout, run its diagnostics, and guard the env-facing action magnitude."""
     collect_steps = min(cfg.chunks_per_update * cfg.action_horizon, steps_to_go)
     batch = policy.generate_rollout(
         train_env, collect_steps, action_low=action_low, action_high=action_high,
+        need_bootstrap=need_bootstrap,
     )
     env_action = executed_chunk(batch, action_low, action_high, cfg.action_processing_mode)
     rollout = compute_rollout_diagnostics(
@@ -477,7 +491,10 @@ def policy_update_step(policy, optimizer, batch, backends, cfg, grad_groups):
             minibatch = sample_minibatch(batch, mb_idx, minibatch)
             if cfg.normalize_advantage_per_minibatch:
                 # Restandardize this minibatch's raw advantages on its own
-                # statistics (reference per-minibatch mode), then clamp.
+                # statistics (reference per-minibatch mode), then clamp. Off
+                # by default: the rollout already standardized the whole
+                # population, and one scale for the update is what the
+                # gradient clip expects.
                 with torch.no_grad():
                     adv = minibatch["raw_advantages"]
                     adv = (adv - adv.mean()) / (adv.std(correction=0) + 1e-8)
@@ -781,9 +798,10 @@ def check_clamp_guards(
                 f"{ABOVE_CLAMP_ABORT_UPDATES} consecutive updates with >50% "
                 f"of CFM samples above cfm_clamp={cfg.cfm_clamp} "
                 f"(frac={above_clamp_frac:.2f}, "
-                f"cfm_loss_reduction={cfg.cfm_loss_reduction!r}). The policy "
-                "ratio is pinned at 1 and gets no gradient. Raise "
-                "cfm_clamp, or use a reduction whose scale fits under it."
+                f"cfm_loss_reduction={cfg.cfm_loss_reduction!r}). The ratio "
+                "clamps the new loss at the bound, so the actor loses the "
+                "gradient it needs. Raise cfm_clamp, or use a reduction whose "
+                "scale fits under it."
             )
     else:
         state.above_clamp_updates = 0
@@ -1198,12 +1216,17 @@ def run_training_loop(
     elapsed = 0.0
 
     scheduler = setup.scheduler
+    # The bootstrap values exist only for the drift diagnostic. Building them
+    # costs one flow integration and one critic read per rollout, so the
+    # rollout only pays for them when the diagnostic runs.
+    need_bootstrap = bool(cfg.log_drift_diagnostics and backends)
     with tqdm(total=total_steps, desc="train", unit="step") as pbar:
         while state.global_step < total_steps:
             steps_to_go = total_steps - state.global_step
             t0 = time.perf_counter()
             collected = rollout_with_diagnostics(
-                policy, train_env, cfg, action_low, action_high, steps_to_go
+                policy, train_env, cfg, action_low, action_high, steps_to_go,
+                need_bootstrap=need_bootstrap,
             )
             batch, rollout = collected.batch, collected.diagnostics
             steps_this_rollout = collected.executed_steps

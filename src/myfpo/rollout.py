@@ -277,7 +277,7 @@ class RolloutBuffer:
         rewards: torch.Tensor,
         terminated: torch.Tensor,
         truncated: torch.Tensor,
-        env_ids: torch.Tensor,
+        env_ids,
         n_steps: int,
     ) -> None:
         """Append ``k`` executed chunks in one gathered write.
@@ -285,7 +285,9 @@ class RolloutBuffer:
         Chunk ``j`` starts at the running offset, and its first ``lengths[j]``
         frames are copied verbatim. ``n_steps`` is the host-side sum of
         ``lengths``, passed in rather than computed, so the guard does not sync
-        the device.
+        the device. ``env_ids`` is the chunk's env id per row, and it stays on
+        the host: the chunk chain is host bookkeeping, and reading the ids off
+        the device would sync the collector once per closing step.
         """
         k = int(lengths.numel())
         if k == 0:
@@ -322,11 +324,16 @@ class RolloutBuffer:
         self.chunk_lengths[lo:hi] = lengths
         self.chunk_terminated[lo:hi] = terminated
         self.chunk_truncated[lo:hi] = truncated
-        self.chunk_env_id[lo:hi] = env_ids
+        # The ids come in on the host. The chunk chain below reads them there,
+        # and only the id column crosses to the device, once.
+        ids = torch.as_tensor(env_ids).detach().cpu().tolist()
+        self.chunk_env_id[lo:hi] = torch.as_tensor(
+            ids, dtype=self.chunk_env_id.dtype
+        ).to(self.chunk_env_id.device)
         # Chain each env's chunks in row order. One host pass (env_ids come from
         # Python control flow on the caller side), one device copy.
         prev_list: list[int] = []
-        for j, raw_e in enumerate(env_ids.tolist()):
+        for j, raw_e in enumerate(ids):
             e = int(raw_e)
             prev_list.append(self._last_chunk.get(e, -1))
             self._last_chunk[e] = lo + j
@@ -604,6 +611,9 @@ def take_final_observations(info, done_np, reference, device, strict: bool = Fal
     neither key is present, so the reference passes through unchanged. When
     ``strict`` (SAME_STEP envs), a done row without a final frame raises:
     storing the reset frame as ``o_T`` corrupts the truncation bootstrap.
+
+    The frame may carry one row per env or one row per done row. A shape the
+    collector cannot map onto the done rows raises.
     """
     rows = np.flatnonzero(done_np)
     if rows.size == 0:
@@ -621,13 +631,31 @@ def take_final_observations(info, done_np, reference, device, strict: bool = Fal
         final = info.get("final_observation")
     idx = torch.from_numpy(rows).to(device=device)
     out = reference.clone()
+    n_envs = reference.shape[0]
+
+    def select(values: torch.Tensor) -> torch.Tensor:
+        """Pick the done rows out of ``values``.
+
+        The env may report one row per env, or one row per done row. Any
+        other shape is a frame the collector cannot read.
+        """
+        if values.shape[0] == n_envs:
+            return values[idx]
+        if values.shape[0] == rows.size:
+            return values
+        raise ValueError(
+            f"the final observation has {values.shape[0]} rows; the collector "
+            f"needs {n_envs} (one per env) or {rows.size} (one per done row)"
+        )
+
     if torch.is_tensor(final):
-        out[idx] = final.to(device=device, dtype=reference.dtype)[idx]
+        out[idx] = select(final.to(device=device, dtype=reference.dtype))
         return out
     array = np.asarray(final)
     if array.dtype == object:
-        for i in rows:
-            if array[i] is None:
+        for k, i in enumerate(rows):
+            value = array[i] if array.shape[0] == n_envs else array[k]
+            if value is None:
                 if strict:
                     raise ValueError(
                         f"SAME_STEP env reset inside step() but the final "
@@ -636,10 +664,10 @@ def take_final_observations(info, done_np, reference, device, strict: bool = Fal
                     )
                 continue
             out[i] = torch.as_tensor(
-                np.asarray(array[i], dtype=np.float32), device=device
+                np.asarray(value, dtype=np.float32), device=device
             )
         return out
-    out[idx] = torch.as_tensor(array, dtype=reference.dtype, device=device)[idx]
+    out[idx] = select(torch.as_tensor(array, dtype=reference.dtype, device=device))
     return out
 
 
@@ -731,11 +759,23 @@ def close_chunks(
         )
 
     # An env that resets this step takes the reset frame for its whole window.
-    waiting = np.flatnonzero(state.awaiting)
-    if waiting.size:
-        w = torch.as_tensor(waiting, device=device)
-        state.windows[w] = obs_t[w].unsqueeze(1).expand(-1, num_obs_steps, -1)
-        state.awaiting[waiting] = False
+    # This is the NEXT_STEP contract only. A SAME_STEP env never waits: its
+    # done step already carries the new episode's o₀, and obs_t holds o_T for a
+    # done row, so seeding a window from it would store the previous episode's
+    # terminal frame as the new episode's first observation.
+    if same_step:
+        if state.awaiting.any():
+            raise RuntimeError(
+                f"SAME_STEP env has awaiting rows "
+                f"{np.flatnonzero(state.awaiting).tolist()}; the state machine "
+                "and the carry disagree with the autoreset mode."
+            )
+    else:
+        waiting = np.flatnonzero(state.awaiting)
+        if waiting.size:
+            w = torch.as_tensor(waiting, device=device)
+            state.windows[w] = obs_t[w].unsqueeze(1).expand(-1, num_obs_steps, -1)
+            state.awaiting[waiting] = False
 
     # A finished row still steps until every row hits its target. Treat each
     # extra step as a one-step chunk, or the carried window goes stale; a done
@@ -789,7 +829,7 @@ def close_chunks(
         rewards=state.reward_windows[rows],
         terminated=torch.from_numpy(term_np).to(device)[rows],
         truncated=torch.from_numpy(trunc_np).to(device)[rows],
-        env_ids=rows,
+        env_ids=closing,
         n_steps=n_new,
     )
 
@@ -838,7 +878,18 @@ def init_collect_state(
             action_noise_std=action_noise_std,
             autoreset_mode=autoreset_mode,
         )
-        state.awaiting[:] = np.asarray(carry.awaiting, dtype=bool)
+        awaiting = np.asarray(carry.awaiting, dtype=bool)
+        # A SAME_STEP env never parks a row on a reset. A carry that claims one
+        # comes from a run whose autoreset mode changed, or from an edited
+        # checkpoint. Taking it would seed the new episode's window from the
+        # previous episode's terminal frame.
+        if autoreset_mode == "SAME_STEP" and awaiting.any():
+            raise RuntimeError(
+                f"SAME_STEP env carries awaiting rows "
+                f"{np.flatnonzero(awaiting).tolist()}; the carry and the "
+                "autoreset mode disagree."
+            )
+        state.awaiting[:] = awaiting
     return state
 
 
@@ -1004,7 +1055,9 @@ def chunk_advantages(
         raw_returns,
     )
     return (
-        raw_advantages.to(storage_dtype),
+        # raw_advantages stays fp32. The per-minibatch restandardization reads
+        # it, and a bf16 standard deviation is only good to about 0.4%.
+        raw_advantages,
         normalized_advantages.to(storage_dtype),
         raw_returns,
         gae_diagnostics,
@@ -1019,7 +1072,6 @@ def estimate_state_values(
     exec_length_frac: torch.Tensor,
     mask: torch.Tensor,
     critic,
-    device,
 ) -> torch.Tensor:
     """V̂(s): the subsampled-min critic averaged over fresh policy chunks.
 
@@ -1027,17 +1079,25 @@ def estimate_state_values(
     advantage zero-mean given (s, a) under a calibrated critic, so the actor
     trains on critic error; here each state's baseline averages K fresh
     policy samples, estimating V^π(s) with the same critic reduction the Q
-    reads use. ``raw_states`` are pre-normalizer (predict_action_chunk
-    normalizes internally); ``normalized_states`` must be the same tensors
-    the critic reads for the taken chunk.
+    reads use. ``raw_states`` are pre-normalizer (encode_states normalizes
+    internally); ``normalized_states`` must be the same tensors the critic
+    reads for the taken chunk.
+
+    The baseline is drawn from the behaviour distribution, not from the bare
+    flow: the proposal carries the exploration perturbation, and the stored
+    chunks carry the same perturbation. The baseline and the data therefore
+    come from the same distribution, which is what makes the advantage
+    centred. The min over the critic members is the REDQ pessimism; it biases
+    the baseline down, on purpose.
     """
     cfg = policy.config
+    # The encoder runs once for the whole sample set: the window is the same
+    # for every sample, so re-encoding it per sample is a repeated read of
+    # identical data.
+    condition = policy.encode_states(raw_states)
     qs = []
     for _ in range(cfg.num_baseline_samples):
-        proposed = policy.predict_action_chunk(
-            {"observation.state": to_device_async(raw_states, device)},
-            start_from_zero=False,
-        )
+        proposed = policy.sample_chunk(condition, start_from_zero=False)
         if cfg.action_processing_mode == "linear_rescale":
             proposed = proposed * mask
         else:
@@ -1056,6 +1116,8 @@ def bootstrap_values(
     n_chunks: int,
     device,
     storage_dtype: torch.dtype,
+    *,
+    need_bootstrap: bool = False,
 ):
     """The bootstrap action, the normalized states, the V(s) baseline reads, and the Q snapshot for the clipped value loss.
 
@@ -1063,6 +1125,11 @@ def bootstrap_values(
     averages ``cfg.num_baseline_samples`` fresh policy chunks. ``q_current_chunk``
     is no longer the baseline; it stays only as the rollout-time snapshot the
     clipped value loss clips against when ``use_clipped_value_loss`` is set.
+
+    ``need_bootstrap`` turns on the diagnostic-only bootstrap: the fresh
+    proposal for the next state and its Q snapshot. Only
+    ``measure_value_drift`` reads them, and the proposal costs one flow
+    integration over every chunk. Without the flag both come back as None.
     """
     cfg = policy.config
     lengths = active["chunk_lengths"]
@@ -1071,16 +1138,18 @@ def bootstrap_values(
 
     with torch.inference_mode():
         next_states = active["chunk_next_state"]
-        boot_actions = actions.clone()
-        needs_proposal = ~active["chunk_terminated"]
-        if bool(needs_proposal.any()):
-            proposed = policy.predict_action_chunk(
-                {"observation.state": to_device_async(next_states[needs_proposal], device)},
-                start_from_zero=False,
-            )
-            # The backup's action lives in the same space as the stored
-            # chunks: the policy's raw action space.
-            boot_actions[needs_proposal] = proposed
+        boot_actions = None
+        if need_bootstrap:
+            boot_actions = actions.clone()
+            needs_proposal = ~active["chunk_terminated"]
+            if bool(needs_proposal.any()):
+                proposed = policy.predict_action_chunk(
+                    {"observation.state": to_device_async(next_states[needs_proposal], device)},
+                    start_from_zero=False,
+                )
+                # The backup's action lives in the same space as the stored
+                # chunks: the policy's raw action space.
+                boot_actions[needs_proposal] = proposed
 
         # The training pass reloads the batch in the storage dtype before it
         # normalizes, so the rollout normalizes the same values it will train
@@ -1116,25 +1185,29 @@ def bootstrap_values(
                         actions, policy.action_low, policy.action_high, mask=chunk_len_mask
                     )
                 q_current_chunk = subsampled_min(policy.critic(normalized_states, actions_for_critic, exec_length_frac).float())
-                boot_mask = (torch.arange(cfg.action_horizon, device=boot_actions.device).unsqueeze(0) < cfg.num_action_steps).unsqueeze(-1).float()
-                if cfg.action_processing_mode == "linear_rescale":
-                    boot_actions_for_critic = boot_actions * boot_mask
-                else:
-                    boot_actions_for_critic = squash_to_env_bounds(
-                        boot_actions, policy.action_low, policy.action_high, mask=boot_mask
-                    )
-                # Diagnostic-only snapshot for measure_value_drift
-                # (log_drift_diagnostics); never feeds the advantage.
-                q_bootstrap = subsampled_min(policy.critic_target(normalized_next_states, boot_actions_for_critic, boot_exec_frac).float())
+                # The next state's proposal runs for num_action_steps, so its
+                # mask is the executed prefix, not the chunk length.
+                boot_mask = (torch.arange(cfg.action_horizon, device=actions.device).unsqueeze(0) < cfg.num_action_steps).unsqueeze(-1).float()
+                q_bootstrap = None
+                if need_bootstrap:
+                    if cfg.action_processing_mode == "linear_rescale":
+                        boot_actions_for_critic = boot_actions * boot_mask
+                    else:
+                        boot_actions_for_critic = squash_to_env_bounds(
+                            boot_actions, policy.action_low, policy.action_high, mask=boot_mask
+                        )
+                    # Diagnostic-only snapshot for measure_value_drift
+                    # (log_drift_diagnostics); never feeds the advantage.
+                    q_bootstrap = subsampled_min(policy.critic_target(normalized_next_states, boot_actions_for_critic, boot_exec_frac).float())
                 v_current = estimate_state_values(
                     policy, states, normalized_states,
                     exec_length_frac=exec_length_frac, mask=chunk_len_mask,
-                    critic=policy.critic, device=device,
+                    critic=policy.critic,
                 )
                 v_next = estimate_state_values(
                     policy, next_states, normalized_next_states,
                     exec_length_frac=boot_exec_frac, mask=boot_mask,
-                    critic=policy.critic_target, device=device,
+                    critic=policy.critic_target,
                 )
         finally:
             policy.critic.train(critic_training)
@@ -1265,8 +1338,14 @@ def run_rollout(
     action_low: float = -1.0,
     action_high: float = 1.0,
     noisy: bool = True,
+    need_bootstrap: bool = False,
 ) -> dict[str, torch.Tensor]:
-    """Roll out open-loop chunks, build a training batch."""
+    """Roll out open-loop chunks, build a training batch.
+
+    ``need_bootstrap`` adds the diagnostic-only bootstrap values to the batch.
+    Without them the batch carries no ``boot_actions`` and no
+    ``boot_values_start``, so the drift diagnostic cannot run.
+    """
     if total_steps <= 0:
         raise ValueError(f"total_steps={total_steps} must be positive")
     cfg = policy.config
@@ -1291,7 +1370,10 @@ def run_rollout(
         v_current,
         v_next,
         q_bootstrap,
-    ) = bootstrap_values(policy, active, n_chunks, device, storage_dtype)
+    ) = bootstrap_values(
+        policy, active, n_chunks, device, storage_dtype,
+        need_bootstrap=need_bootstrap,
+    )
     raw_advantages, normalized_advantages, raw_returns, gae_diagnostics = (
         chunk_advantages(
             cfg, active, n_chunks, v_current, v_next, storage_dtype,
@@ -1314,7 +1396,7 @@ def run_rollout(
         normalized_states, actions, t, eps, action_is_pad
     )
 
-    return {
+    batch = {
         "observation.state": states,
         "action": actions,
         "action_is_pad": action_is_pad,
@@ -1326,8 +1408,6 @@ def run_rollout(
         "old_values": q_current_chunk,
         "normalizer_observations": active["normalizer_observations"].detach(),
         "boot_observations": normalized_next_states.to(storage_dtype),
-        "boot_actions": boot_actions.to(storage_dtype),
-        "boot_values_start": q_bootstrap.unsqueeze(1),
         "mc_t": t,
         "mc_eps": eps,
         "gae_diagnostics": gae_diagnostics,
@@ -1335,3 +1415,9 @@ def run_rollout(
         "behavior_cfm_loss_token": behavior_cfm_loss_token,
         "step_rewards": active["step_rewards"],
     }
+    if need_bootstrap:
+        # The diagnostic reads these two. They cost one flow integration and
+        # one critic read, so they are only built when the diagnostic runs.
+        batch["boot_actions"] = boot_actions.to(storage_dtype)
+        batch["boot_values_start"] = q_bootstrap.unsqueeze(1)
+    return batch

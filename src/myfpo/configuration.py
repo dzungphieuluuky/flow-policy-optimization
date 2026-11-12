@@ -107,7 +107,12 @@ class MyfpoConfig:
     critic_num_layers: int = 2
     critic_dropout: float = 0.01
     normalize_advantage: bool = True
-    normalize_advantage_per_minibatch: bool = True
+    # Off by default: the rollout-level normalization is the standard PPO
+    # contract, and it is the only one that keeps one scale for the whole
+    # update. This flag re-standardizes each minibatch on its own statistics,
+    # which overrides the rollout-level pass and makes `normalize_advantage`
+    # unreadable while it is on.
+    normalize_advantage_per_minibatch: bool = False
     advantage_clamp_neg: float = 100.0
     advantage_clamp_pos: float = 100.0
     value_loss_coef: float = 1.0
@@ -153,7 +158,8 @@ class MyfpoConfig:
     eval_sampling: str = "noise_start"
     final_eval_sampling: str = "noise_start"
 
-    # Costs one extra critic forward on every update when a backend logs.
+    # Costs one flow integration and one critic read on every rollout when a
+    # backend logs.
     log_drift_diagnostics: bool = False
 
     # How often the policy measures the per-position gradient norms. 0 = never.

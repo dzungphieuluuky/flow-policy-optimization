@@ -66,8 +66,11 @@ def test_generate_rollout_does_not_cast_the_value_target():
             f"{name} must not pass through the storage dtype in any form"
         )
     # The tensors that ride storage_dtype legitimately must still do so.
-    assert "raw_advantages.to(storage_dtype)" in src
     assert "normalized_advantages.to(storage_dtype)" in src
+    # raw_advantages stays fp32. The per-minibatch restandardization reads its
+    # mean and standard deviation, and a bf16 standard deviation is only good
+    # to about 0.4%.
+    assert "raw_advantages.to(storage_dtype)" not in src
 
 
 def test_drift_diagnostics_take_the_bf16_observations_they_stored():

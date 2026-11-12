@@ -386,10 +386,28 @@ class MyfpoPolicy(nn.Module):
         return clip_velocity(self.actor(x_t, t, condition), cfg.velocity_clip_value)
 
 
-    def predict_action_chunk(
-        self, batch: dict[str, torch.Tensor], *, start_from_zero: bool = True
+    def encode_states(self, states: torch.Tensor) -> torch.Tensor:
+        """The actor's condition for a batch of observation windows.
+
+        The window is normalized and encoded once. A caller that samples
+        several chunks from the same window calls this once and reuses the
+        condition, so the encoder does not run again per chunk.
+        """
+        cfg = self.config
+        device = next(self.actor.parameters()).device
+        # The storage dtype of the compute device, not of the input. The
+        # training pass normalizes in that dtype, so the rollout must give
+        # the actor the same condition the training pass does.
+        states = states.to(dtype=resolve_storage_dtype(device))
+        states = to_device_async(states, device)
+        states = self.obs_normalizer(states)
+        with torch.inference_mode(), autocast_context(device):
+            return cudagraph_safe(self.encoder(states), cfg.compile)
+
+    def sample_chunk(
+        self, condition: torch.Tensor, *, start_from_zero: bool = True
     ) -> torch.Tensor:
-        """Predict ``[B, H, action_dim]``, in the policy's raw action space.
+        """Sample one action chunk from a condition. ``[B, H, action_dim]``.
 
         The values are unbounded: they are what the flow was trained to
         produce. The env-facing action is the squash of this chunk, applied
@@ -397,26 +415,8 @@ class MyfpoPolicy(nn.Module):
         """
         cfg = self.config
         device = next(self.actor.parameters()).device
-
-        states = torch.as_tensor(batch["observation.state"])
-        states = states.to(dtype=resolve_storage_dtype(states.device))
-        if states.dim() == 2 and states.shape[0] == cfg.num_obs_steps:
-            states = states.unsqueeze(0)
-        elif states.dim() != 3:
-            raise ValueError(
-                f"observation.state must be [B, T, obs] or [T, obs]; "
-                f"got {tuple(states.shape)}. A bare [obs] frame goes through "
-                "select_action, which buffers it into a window."
-            )
-        states = to_device_async(states, device)
-        states = self.obs_normalizer(states)
-
-        horizon = cfg.action_horizon
-        action_dim = int(cfg.action_dim)
-
+        shape = (condition.shape[0], cfg.action_horizon, int(cfg.action_dim))
         with torch.inference_mode(), autocast_context(device):
-            condition = cudagraph_safe(self.encoder(states), self.config.compile)
-            shape = (states.shape[0], horizon, action_dim)
             if start_from_zero:
                 eps = torch.zeros(*shape, device=device)
                 num_steps = cfg.num_steps_zero_start
@@ -449,6 +449,28 @@ class MyfpoPolicy(nn.Module):
         # The chunk here is raw (scaled-space flow output x actor_scale); the
         # env-facing action is produced on the way to the env, not here.
         return proposal
+
+    def predict_action_chunk(
+        self, batch: dict[str, torch.Tensor], *, start_from_zero: bool = True
+    ) -> torch.Tensor:
+        """Predict ``[B, H, action_dim]``, in the policy's raw action space.
+
+        The values are unbounded: they are what the flow was trained to
+        produce. The env-facing action is the squash of this chunk, applied
+        by the collector on the way to the env.
+        """
+        cfg = self.config
+        states = torch.as_tensor(batch["observation.state"])
+        if states.dim() == 2 and states.shape[0] == cfg.num_obs_steps:
+            states = states.unsqueeze(0)
+        elif states.dim() != 3:
+            raise ValueError(
+                f"observation.state must be [B, T, obs] or [T, obs]; "
+                f"got {tuple(states.shape)}. A bare [obs] frame goes through "
+                "select_action, which buffers it into a window."
+            )
+        condition = self.encode_states(states)
+        return self.sample_chunk(condition, start_from_zero=start_from_zero)
 
     def select_action(self, batch: dict[str, torch.Tensor], *, start_from_zero: bool = True) -> torch.Tensor:
         """Next action, receding through a cached chunk.
@@ -581,8 +603,14 @@ class MyfpoPolicy(nn.Module):
         action_low: float = -1.0,
         action_high: float = 1.0,
         noisy: bool = True,
+        need_bootstrap: bool = False,
     ) -> dict[str, torch.Tensor]:
-        """Roll out open-loop chunks and build a training batch."""
+        """Roll out open-loop chunks and build a training batch.
+
+        ``need_bootstrap`` adds the diagnostic-only bootstrap values. Without
+        them the batch carries no ``boot_actions`` and no
+        ``boot_values_start``.
+        """
         return run_rollout(
             self,
             self.rollout_buffers,
@@ -591,6 +619,7 @@ class MyfpoPolicy(nn.Module):
             action_low=action_low,
             action_high=action_high,
             noisy=noisy,
+            need_bootstrap=need_bootstrap,
         )
 
 

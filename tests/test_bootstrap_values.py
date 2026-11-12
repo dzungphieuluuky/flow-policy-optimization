@@ -106,7 +106,8 @@ def test_estimate_state_values_averages_fresh_policy_samples(config):
         torch.full((n, horizon, 1), 1.0),
     ]
     remaining = iter(proposals)
-    policy.predict_action_chunk = lambda *a, **k: next(remaining)
+    policy.encode_states = lambda states: torch.zeros(states.shape[0], cfg.hidden_dim)
+    policy.sample_chunk = lambda _condition, **k: next(remaining)
 
     class StateIndependentCritic(torch.nn.Module):
         def forward(self, states, actions, exec_length_frac=None):
@@ -120,7 +121,7 @@ def test_estimate_state_values_averages_fresh_policy_samples(config):
     v = estimate_state_values(
         policy, states, states,
         exec_length_frac=frac, mask=mask,
-        critic=StateIndependentCritic(), device="cpu",
+        critic=StateIndependentCritic(),
     )
     squashed = [
         squash_to_env_bounds(p, policy.action_low, policy.action_high) for p in proposals
@@ -130,3 +131,35 @@ def test_estimate_state_values_averages_fresh_policy_samples(config):
     # A baseline that silently fell back to one proposal (or the taken chunk)
     # would not equal the three-proposal mean, and its sign would differ here.
     assert float(v.mean()) > 0.0
+
+
+def test_the_baseline_encodes_the_window_once(config):
+    """The window is the same for every sample, so the encoder runs once.
+
+    The encoder is a read of identical data per sample otherwise: the same
+    window goes through it ``num_baseline_samples`` times.
+    """
+    import torch
+
+    from myfpo.rollout import estimate_state_values
+
+    cfg = dataclasses.replace(config, num_baseline_samples=4)
+    policy = make_policy(3, 1, cfg, device="cpu", action_low=[-2.0], action_high=[2.0])
+    calls = []
+    original = policy.encode_states
+
+    def counting(states):
+        calls.append(states)
+        return original(states)
+
+    policy.encode_states = counting
+    n = 2
+    estimate_state_values(
+        policy,
+        torch.zeros(n, cfg.num_obs_steps, 3),
+        torch.zeros(n, cfg.num_obs_steps, 3),
+        exec_length_frac=torch.ones(n),
+        mask=torch.ones(n, cfg.action_horizon, 1),
+        critic=policy.critic,
+    )
+    assert len(calls) == 1, f"the encoder ran {len(calls)} times for one window"

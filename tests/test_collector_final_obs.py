@@ -112,6 +112,33 @@ def test_no_info_key_leaves_the_observation_alone():
     assert torch.equal(out, reference)
 
 
+def test_a_final_frame_with_one_row_per_done_row_is_read():
+    """The env may report only the done rows, not one row per env."""
+    reference = torch.full((3, OBS), RESET)
+    final = torch.full((2, OBS), FINAL)
+    done = np.array([True, False, True])
+
+    out = take_final_observations(
+        {"final_observation": final}, done, reference, torch.device("cpu")
+    )
+    assert torch.equal(out[0], final[0])
+    assert torch.equal(out[1], reference[1])
+    assert torch.equal(out[2], final[1])
+
+
+def test_a_final_frame_with_an_unusable_shape_raises():
+    """A shape the collector cannot map onto the done rows is an error."""
+    reference = torch.full((3, OBS), RESET)
+    final = torch.full((5, OBS), FINAL)
+    with pytest.raises(ValueError, match="rows"):
+        take_final_observations(
+            {"final_observation": final},
+            np.array([True, False, True]),
+            reference,
+            torch.device("cpu"),
+        )
+
+
 def test_take_final_observations_strict_mode_requires_the_final_frame():
     reference = torch.full((2, OBS), RESET)
     final = torch.full((2, OBS), FINAL)

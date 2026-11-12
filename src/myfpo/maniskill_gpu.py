@@ -32,6 +32,17 @@ MANISKILL_TASKS = {
     "MS-PickCube-v1": "PickCube-v1",
 }
 
+# Per-task env options. The training env runs the task the way the eval env
+# does: the episode ends only at the time limit. PickCube's reward is a dense
+# hold reward, so cutting the episode at success would forfeit the remaining
+# hold reward, and the eval env already runs this way. A task with a true
+# terminal, or with a success reward that only fires once, must set
+# ``ignore_terminations`` to False: with it on, the critic never sees a
+# terminal, and every chunk bootstraps from V(s_T).
+MANISKILL_TASK_OPTIONS = {
+    "MS-PickCube-v1": {"ignore_terminations": True},
+}
+
 DEFAULT_OBS_MODE = "state"
 DEFAULT_CONTROL_MODE = "pd_joint_delta_pos"
 
@@ -63,10 +74,10 @@ class ManiSkillTorchEnv:
         alias: str,
         num_envs: int,
         *,
-        # Training stops only at the time limit, like eval: PickCube's dense
-        # hold reward continues past success, so ending the episode at success
-        # would forfeit it. Aligns train with the eval-side lockstep protocol.
-        ignore_terminations: bool = True,
+        # None reads the task's own entry in MANISKILL_TASK_OPTIONS. A task
+        # with a true terminal keeps the ManiSkill default: the episode ends
+        # at the terminal, and the critic learns that the terminal is worth 0.
+        ignore_terminations: bool | None = None,
         obs_mode: str = DEFAULT_OBS_MODE,
         control_mode: str = DEFAULT_CONTROL_MODE,
         render_mode: str | None = None,
@@ -83,6 +94,9 @@ class ManiSkillTorchEnv:
         self.obs_mode = obs_mode
         self.control_mode = control_mode
         self.render_mode = render_mode
+        if ignore_terminations is None:
+            options = MANISKILL_TASK_OPTIONS.get(alias, {})
+            ignore_terminations = bool(options.get("ignore_terminations", False))
         base = gym.make(
             self.task_id,
             num_envs=int(num_envs),
