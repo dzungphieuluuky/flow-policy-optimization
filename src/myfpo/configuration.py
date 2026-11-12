@@ -71,8 +71,8 @@ class MyfpoConfig:
     num_envs: int = 64
     num_mc_samples: int = 16
     num_learning_epochs: int = 16
-    chunks_per_update: int = 256
-    chunks_per_minibatch: int = 64
+    chunks_per_update: int = 2048
+    chunks_per_minibatch: int = 512
     grad_accum_steps: int = 1
 
     num_steps_zero_start: int = 10
@@ -140,7 +140,7 @@ class MyfpoConfig:
     resmlp_hidden_mult: float = 2.0
     time_embed_dim: int = 8
 
-    policy_lr: float = 3e-4
+    policy_lr: float = 1e-4
     critic_lr: float = 1e-4
     optimizer_weight_decay: float = 1e-4
     adam_betas: tuple[float, float] = (0.9, 0.999)
