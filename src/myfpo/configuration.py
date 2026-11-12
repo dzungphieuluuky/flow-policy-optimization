@@ -71,8 +71,8 @@ class MyfpoConfig:
     num_envs: int = 64
     num_mc_samples: int = 16
     num_learning_epochs: int = 16
-    chunks_per_update: int = 2048
-    chunks_per_minibatch: int = 512
+    chunks_per_update: int = 256
+    chunks_per_minibatch: int = 64
     grad_accum_steps: int = 1
 
     num_steps_zero_start: int = 10
@@ -106,12 +106,12 @@ class MyfpoConfig:
     critic_hidden_dim: int = 512
     critic_num_layers: int = 2
     critic_dropout: float = 0.01
-    normalize_advantage: bool = False
-    # Off by default: the rollout-level normalization is the standard PPO
-    # contract, and it is the only one that keeps one scale for the whole
-    # update. This flag re-standardizes each minibatch on its own statistics,
-    # which overrides the rollout-level pass and makes `normalize_advantage`
-    # unreadable while it is on.
+    # Rollout-level standardization is the standard PPO contract: one scale
+    # for the whole update. Off only for ablations.
+    normalize_advantage: bool = True
+    # Off by default: re-standardizes each minibatch on its own statistics.
+    # Overrides the rollout-level pass and gives every minibatch its own
+    # scale; the two are mutually exclusive.
     normalize_advantage_per_minibatch: bool = False
     advantage_clamp_neg: float = 100.0
     advantage_clamp_pos: float = 100.0
@@ -140,7 +140,7 @@ class MyfpoConfig:
     resmlp_hidden_mult: float = 2.0
     time_embed_dim: int = 8
 
-    policy_lr: float = 1e-4
+    policy_lr: float = 3e-4
     critic_lr: float = 1e-4
     optimizer_weight_decay: float = 1e-4
     adam_betas: tuple[float, float] = (0.9, 0.999)
@@ -149,8 +149,10 @@ class MyfpoConfig:
     ema_warmup_steps: int = 500
     lr_warmup_steps: int = 10000
     lr_schedule: str = "fixed"
-    # Off by default: a scalar reward stream has no usable variance, and the
-    # normalizer maps it to 0, deleting the only learning signal the critic has.
+    # Off by default: the running statistics rescale the rewards every
+    # rollout, so the critic's regression targets and the advantage scale
+    # drift over training. Late in training, shrinking reward variance
+    # amplifies the normalized rewards (rsqrt of a shrinking variance).
     normalize_rewards: bool = False
     # Fixed action scaling for the flow (reference actor_scale). The flow
     # operates in scaled space (target = action / actor_scale); inference
