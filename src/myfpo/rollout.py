@@ -9,7 +9,7 @@ import dataclasses
 from collections.abc import Callable
 import numpy as np
 from myfpo.configuration import validate_num_action_steps
-from myfpo.processor import squash_to_env_bounds, unscale_to_env
+from myfpo.processor import squash_to_env_bounds, unscale_to_env, bound_to_unit
 from dataclasses import dataclass
 from myfpo.fpo_core import (
     compute_gae_diagnostics,
@@ -818,8 +818,11 @@ def close_chunks(
     stored_actions = state.raw_plan[rows]
     if state.action_noise_std > 0:
         # Perturb only the stored copy feeding the CFM ratio; the executed plan
-        # is untouched (ratio-level entropy regularization).
+        # is untouched (ratio-level entropy regularization). The bound applies
+        # after the noise: the stored chunk must stay in the flow's domain.
         stored_actions = stored_actions + state.action_noise_std * torch.randn_like(stored_actions)
+        if state.action_processing_mode == "linear_rescale":
+            stored_actions = bound_to_unit(stored_actions)
     buffer.write_chunks(
         start_window=state.start_window[rows],
         next_window=next_window,

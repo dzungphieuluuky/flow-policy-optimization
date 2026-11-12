@@ -91,7 +91,7 @@ class MyfpoConfig:
     mc_loss_group_size: int = 1
     clip_param: float = 0.05
     spo_clip_param: float = 0.01
-    trust_region_mode: str = "aspo"
+    trust_region_mode: str = "ppo"
     cfm_loss_reduction: str = "sqrt"
     cfm_loss_target: str = "velocity"
     cfm_loss_weight_from_t: str = "constant"
@@ -106,7 +106,7 @@ class MyfpoConfig:
     critic_hidden_dim: int = 512
     critic_num_layers: int = 2
     critic_dropout: float = 0.01
-    normalize_advantage: bool = True
+    normalize_advantage: bool = False
     # Off by default: the rollout-level normalization is the standard PPO
     # contract, and it is the only one that keeps one scale for the whole
     # update. This flag re-standardizes each minibatch on its own statistics,
@@ -149,7 +149,9 @@ class MyfpoConfig:
     ema_warmup_steps: int = 500
     lr_warmup_steps: int = 10000
     lr_schedule: str = "fixed"
-    normalize_rewards: bool = True
+    # Off by default: a scalar reward stream has no usable variance, and the
+    # normalizer maps it to 0, deleting the only learning signal the critic has.
+    normalize_rewards: bool = False
     # Fixed action scaling for the flow (reference actor_scale). The flow
     # operates in scaled space (target = action / actor_scale); inference
     # multiplies back. 1.0 is a no-op (raw actions).
