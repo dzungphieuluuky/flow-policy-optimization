@@ -1,0 +1,166 @@
+# SIMPLIFICATION PLAN — myfpo → rsl‑rl scale
+
+Goal: make the repo as simple and fast as `rsl_rl` while changing **zero algorithmic
+semantics**. rsl‑rl ships PPO + SAC + distillation in ~6.4k lines; skrl's torch‑only
+slice is ~900 lines for PPO+trainer+models; Isaac Lab implements no RL math at all.
+myfpo `src/myfpo/` is ~7.6k lines for one algorithm. The delta is dead weight, not
+essence — this plan deletes it without touching the math.
+
+Evidence and rationale: see the code-review thread (2026‑11) and the reference repos
+(`leggedrobotics/rsl_rl`, `Toni-SM/skrl`, `isaac-sim/IsaacLab`).
+
+## Non‑negotiables
+
+1. **Behavior pins (`pin_train`/`pin_eval`, atol=0) pass with NO `--write`.** Any float
+   that moves is a behavior change; revert, do not re-pin. (`scripts/pins/pin_eval.py`,
+   `scripts/pins/pin_train.py`)
+2. All four gates in `AGENTS.md` pass after every phase: pytest, ruff, pin_train, pin_eval.
+3. Throughput (env steps/s, from `outputs/*/run_metadata.json` or the training logger)
+   stays within ±2% of the phase‑0 baseline. No phase may trade speed for elegance.
+4. **Algorithm is out of scope**: V‑anchored advantage, λ‑return target, `linear_rescale`
+   default, `policy_lr=1e-4`, `num_learning_epochs=16`, `clip_param=0.05`,
+   `gae_lambda=0.95`, `time_embed_dim=8`, `normalize_advantage=True`. Structural changes only.
+5. Resume/checkpoint semantics (`--resume`, `_resume` dir, config‑wins warning) unchanged.
+6. No new dependencies; no `torch.compile` enablement changes.
+
+## Phase 0 — Baseline and safety net
+
+- Record per‑file line counts (`wc -l src/myfpo/*.py scripts/*.py`), test module count
+  (`ls tests | wc -l` = 64), and a 2k‑step Hopper‑v5 smoke run `fps` for reference.
+- Confirm all four gates green on `main` before any edit.
+- Tag `simplify-start`.
+
+Acceptance: green gates; numbers recorded in this file's Appendix A.
+
+## Phase 1 — One action map (P1)
+
+Nine call sites re‑implement the `linear_rescale`/`tanh_squash` branch:
+`rollout.py:576`, `:1103`, `:1183`, `:1196`, `modeling.py:444`, `:497`, `:854`,
+`training.py:258`, `:325`, `evaluator.py:450`. Each carries a comment re-deriving the
+contract — the bug class that keeps reappearing.
+
+- New module `myfpo/actions.py` exporting exactly:
+  - `bound_to_unit(x)` (clamp, moved from `processor.py`)
+  - `to_env_action(raw, low, high, *, mask=None)` — the ONLY squash
+  - `to_env_action_` semantics for eval/rollout read sites
+- Every consumer calls `to_env_action` / `bound_to_unit`; zero inline `if mode ==`.
+- The unit‑bound semantics for stored actions stay *at the buffer write* exactly as today.
+
+Acceptance: `grep -rn "linear_rescale" src scripts` matches only `actions.py`,
+`configuration.py` (the flag), and pins/tests; gates green; pins unchanged.
+
+## Phase 2 — Diagnostics behind one flag (P3)
+
+Move out of the hot path into `myfpo/diagnostics.py`, imported lazily:
+`measure_value_drift` (`training.py:301`), `compute_gae_diagnostics` (`fpo_core.py`),
+`effective_rank`/spectral probes (`networks.py`), `temporal_probe_every` plumbing,
+drift timers/tables in `training.py`.
+
+- Single flag `cfg.diagnostics: bool = False`; when off, zero diagnostic imports execute.
+- Default config stays `False` (current behavior: only explicit `log_drift_diagnostics`
+  triggers the expensive path; GAE diagnostics keep cheap key logging).
+
+Acceptance: update loop emits identical metrics with `diagnostics=True` vs before
+(compare logged tags); gates green; `diagnostics=False` removes measurable overhead.
+
+## Phase 3 — Delete dead modes (P2, P6)
+
+Delete, and delete their tests/pins accordingly:
+
+- `ratio_mode: cfm_raw` (keep `cfm`) — delete the branch in `fpo_core.compute_cfm_log_ratio`.
+- `timestep_sampling_mode: fpo_beta` / `timestep_inverse_cdf_beta` (keep `uniform`).
+- `noise_sampling_mode: uniform` (keep `normal`).
+- `cfm_loss_clamp_negative_advantages` (+ `_max`) — always the reference behavior.
+- `normalize_advantage_per_minibatch` (documented mutually exclusive with the default).
+- `advantage_clamp_neg/pos` at 100 (== no clamp) — replace with unconditional `.std`‑normalized clamp only if a gate ever needs it; otherwise delete.
+- `use_clipped_value_loss=False` default: delete unless a gate turns it on (pin decides).
+- `configuration.py` validators: keep ONLY the env‑dim gate (the `KNOWN_ENVS`/startup
+  check) and the cross‑field invariants that `test_guard_messages.py` pins deliberately;
+  drop the per‑field `ValueError` lattice (~250 lines). Keep `KNOWN_ENVS` untouched.
+
+Acceptance: `rg` for each deleted symbol returns nothing outside `outputs/`;
+`guard_messages`/`pin` tests updated to match; gates green; pins unchanged.
+
+## Phase 4 — One eval path (P4)
+
+`evaluator.py` (523 lines) duplicates collection for `Evaluator` and `VectorEvaluator`.
+
+- Reuse `collect_chunks`/`predict_action_chunk` for both; `VectorEvaluator` keeps only its
+  lockstep/`ignore_terminations` contract and per‑row return accounting (~150 lines total).
+- Keep public names/CLIs (`scripts/play.py`, eval hooks in `training.py`) stable.
+- Identical eval returns on a fixed checkpoint, verified by the gate run.
+
+Acceptance: `evaluator.py` ≤ 200 lines; gate eval identical bitwise on the same weights;
+gates green.
+
+## Phase 5 — Optimizer and buffer compression (P5, P7)
+
+- `make_optimizer`: fixed three groups (decay actor / no‑decay actor+adaLN / critic),
+  one `clip_grad_norm` per group, drop the group‑table logging machinery
+  (`training.py` grad_groups plumbing); keep **independent actor/critic norms** (non‑negotiable).
+- `RolloutBuffers` class attributes → instance state constructed alongside `RolloutBuffer`;
+  merge `layout_key` call sites into one constructor; drop the dual factory/classmethod split.
+- No behavior change: same storage dtypes, same h2d overlap event.
+
+Acceptance: gates green; pins unchanged; `fps` within ±2% of baseline.
+
+## Phase 6 — Module re‑lay (P8, optional, last)
+
+Only after Phases 1–5 are green. Mechanical rename/moves, no edits:
+
+```
+config.py        (from configuration.py, minus pruned validators)
+nn.py            (layers.py + networks.py + processor.py merge)
+flow.py          (fpo_core.py, diagnostics removed)
+algo.py          (modeling.py surrogate/value losses)
+collect.py       (rollout.py)
+env.py           (processor + registry/normalizer reads)
+train.py         (loop; checkpointing.py inlined or kept as checkpoint.py)
+```
+Target: `src/myfpo/` ≈ 2.7–3.2k lines, mirroring rsl‑rl's file economy
+(`algorithms/ppo.py` 502, `runners/on_policy_runner.py` 260, `storage` 359).
+
+Acceptance: gates green; pins unchanged; `scripts/train.py` untouched except imports.
+
+## Phase 7 — Test suite prune
+
+51→ ≤ 30 modules: delete tests for deleted modes; merge thin wording‑pin tests into the
+module they exercise; keep all behavior tests, guard‑message tests for retained invariants,
+checkpoint‑roundtrip, SAME_STEP, GAE, bootstrap, and pins.
+
+Acceptance: `pytest -q` count reduced, all behavior coverage for retained modes intact;
+gates green.
+
+## Phase 8 — Housekeeping and report
+
+- Update `AGENTS.md` (structure section: file names, line budgets, diagnostics flag)
+  and `README.md` if commands/paths moved.
+- Final report: line counts before/after per file, test count, gates verbatim, `fps`
+  before/after on Hopper‑v5 smoke, list of deleted symbols.
+- Commit per phase (`refactor: unify action map`, `refactor: drop dead modes`, …),
+  one commit per phase, no squashes.
+
+## Appendix A — Baseline (filled in Phase 0, 2026-11-13, branch `simplify` @ `cf6d405` + user WIP)
+
+| metric | before | after (final) |
+|---|---|---|
+| `wc -l src/myfpo/*.py scripts/*.py` | 8561 | |
+| `src/myfpo/*.py` only | ~7.6k | |
+| test modules (`ls tests/*.py`) | 63 | |
+| tests collected / pass / skip | 606 / 601 / 3 | |
+| pre-existing failures (mani_skill absent) | 2 (`test_eval_video.py`) | |
+| Hopper-v5 2k-step smoke `fps` (CPU) | 51.94 | |
+| pin_train / pin_eval | 817 / 218 keys, 0 mismatches | |
+| ruff | pass | |
+
+Note: working tree carried user WIP (`configuration.py`, `fpo_core.py`, AGENTS/README) not owned by this plan; gates were run against it. Smoke used the default `outputs/` dir and overwrote the prior local seed‑0 run artifacts (untracked, gitignored). Later smokes must use `--out_dir /tmp/...`.
+
+## Risks and rollback
+
+- Pin failure in Phases 1–5 → `git restore` the phase, file an issue with the two
+  floats that moved; never `--write` to make it pass.
+- `fps` regression > 2% → revert the phase; the only suspect in Phases 1–5 is lazy
+  diagnostics import (should be a win) or no‑op branch removal (should be neutral).
+- Phase 6 is pure moves; if imports churn too much, split into two commits
+  (`nn/flow`, then `algo/collect/eval`) rather than abandon.
+- Any test that survives only because of a deleted mode is deleted, not ported.
