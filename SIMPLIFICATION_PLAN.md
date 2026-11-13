@@ -170,21 +170,34 @@ Acceptance: gates green; pins unchanged; `scripts/train.py` untouched except imp
 
 ## Phase 7 — Test suite prune
 
-51→ ≤ 30 modules: delete tests for deleted modes; merge thin wording‑pin tests into the
-module they exercise; keep all behavior tests, guard‑message tests for retained invariants,
-checkpoint‑roundtrip, SAME_STEP, GAE, bootstrap, and pins.
+As built (scope per user confirmation: wording-only modules deleted, 8 small modules merged into 3 themed files).
 
-Acceptance: `pytest -q` count reduced, all behavior coverage for retained modes intact;
-gates green.
+Deleted modules (source-text/AST/name enforcement, no numeric behavior):
+`test_time_variable_name.py`, `test_actor_signature.py`, `test_log_key_family.py`,
+`test_ratio_axes.py` (user opted in), `test_config_surface.py`.
+
+Merged into themed modules:
+`test_cfm_grouping.py` + `test_cfm_shared_loss.py` + `test_fpo_baseline.py` -> `test_cfm.py`;
+`test_cudagraph_safe.py` + `test_temporal_sensitivity.py` + `test_update_metrics.py` -> `test_training_logic.py`;
+`test_checkpoint_roundtrip.py` + `test_random_baseline.py` -> `test_checkpoint_eval.py`.
+
+Keep: all behavior tests (GAE, bootstrap, guard messages, metrics faithfulness,
+encoder, critic, clamp saturation, action projection, etc.) and pins.
+
+Deviation vs the ≤30-module acceptance: 50 .py files remain (48 test modules +
+conftest.py + fixtures.py); collected tests 606 -> 541; 2 pre-existing mani_skill
+failures unchanged. Reaching ≤30 would require merging mid-size modules with no
+coverage gain — not done without explicit approval.
+
+Status: done — pytest 539 passed / 2 pre-existing mani_skill failures; pins 817/218,
+0 mismatches; seeded smoke eval CSV byte-identical.
 
 ## Phase 8 — Housekeeping and report
 
-- Update `AGENTS.md` (structure section: file names, line budgets, diagnostics flag)
-  and `README.md` if commands/paths moved.
-- Final report: line counts before/after per file, test count, gates verbatim, `fps`
-  before/after on Hopper‑v5 smoke, list of deleted symbols.
-- Commit per phase (`refactor: unify action map`, `refactor: drop dead modes`, …),
-  one commit per phase, no squashes.
+- Update `AGENTS.md` (structure section: actions.py/diagnostics.py, pins/gone names,
+  test-module count, diagnostics lazy import note) and `README.md` (stale processor.py
+  references).
+- `myfpo_online.md` untouched (user research notes).
 
 ## Appendix A — Baseline (filled in Phase 0, 2026-11-13, branch `simplify` @ `cf6d405` + user WIP)
 
