@@ -199,18 +199,19 @@ Status: done — pytest 539 passed / 2 pre-existing mani_skill failures; pins 81
   references).
 - `myfpo_online.md` untouched (user research notes).
 
-## Appendix A — Baseline (filled in Phase 0, 2026-11-13, branch `simplify` @ `cf6d405` + user WIP)
+## Appendix A — Baseline (Phase 0) and outcome (Phase 8, 2026-11-13, branch `simplify`)
 
 | metric | before | after (final) |
 |---|---|---|
-| `wc -l src/myfpo/*.py scripts/*.py` | 8561 | |
-| `src/myfpo/*.py` only | ~7.6k | |
-| test modules (`ls tests/*.py`) | 63 | |
-| tests collected / pass / skip | 606 / 601 / 3 | |
-| pre-existing failures (mani_skill absent) | 2 (`test_eval_video.py`) | |
-| Hopper-v5 2k-step smoke `fps` (CPU) | 51.94 | |
-| pin_train / pin_eval | 817 / 218 keys, 0 mismatches | |
-| ruff | pass | |
+| `wc -l src/myfpo/*.py scripts/*.py` | 8561 | 8480 |
+| `src/myfpo/*.py` only | ~7.6k | 7509 |
+| test .py files (`ls tests/*.py`) | 63 | 50 (48 test modules + conftest + fixtures) |
+| tests collected / pass / skip | 606 / 601 / 3 | 541 / 539 / 3 |
+| pre-existing failures (mani_skill absent) | 2 (`test_eval_video.py`) | 2 (unchanged) |
+| Hopper-v5 2k-step smoke `fps` (CPU) | 51.94 | 43–52 across phases (single samples; seed-identical output each phase) |
+| pin_train / pin_eval | 817 / 218 keys, 0 mismatches | 817 / 218 keys, 0 mismatches |
+| ruff | pass | pass |
+| eval_history.csv on smoke (seed 0) | — | byte-identical pre/post phases 4, 5, 7 |
 
 Note: working tree carried user WIP (`configuration.py`, `fpo_core.py`, AGENTS/README) not owned by this plan; gates were run against it. Smoke used the default `outputs/` dir and overwrote the prior local seed‑0 run artifacts (untracked, gitignored). Later smokes must use `--out_dir /tmp/...`.
 
