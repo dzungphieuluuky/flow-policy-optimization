@@ -129,8 +129,8 @@ from myfpo.rollout import compute_chunk_advantages  # noqa: E402
 def _gae(**kw):
     base = dict(
         step_rewards=torch.zeros(4),
-        q_current_chunk=torch.zeros(2),
-        q_next_state=torch.zeros(2),
+        v_current=torch.zeros(2),
+        v_next=torch.zeros(2),
         chunk_starts=torch.zeros(2, dtype=torch.long),
         chunk_lengths=torch.ones(2, dtype=torch.long),
         chunk_terminated=torch.zeros(2, dtype=torch.bool),

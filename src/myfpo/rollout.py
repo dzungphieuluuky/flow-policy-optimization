@@ -36,8 +36,8 @@ __all__ = [
 @torch.no_grad()
 def compute_chunk_advantages(
     step_rewards: torch.Tensor,
-    q_current_chunk: torch.Tensor,
-    q_next_state: torch.Tensor,
+    v_current: torch.Tensor,
+    v_next: torch.Tensor,
     chunk_starts: torch.Tensor,
     chunk_lengths: torch.Tensor,
     *,
@@ -50,22 +50,24 @@ def compute_chunk_advantages(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Return the ``[n]`` advantages and the ``[n]`` regression target.
 
-    The target is ``advantage + q_current_chunk``: a TD(lambda) backup over the
-    macro-transitions defined by ``chunk_starts`` / ``chunk_lengths``. Chunks
-    from different envs interleave in the buffer, so adjacency is resolved
-    through ``chunk_prev`` rather than by buffer position.
+    ``v_current``/``v_next`` are state baselines (estimates of V^π, not the
+    Q read of the taken chunk). The target is ``advantage + v_current``: a
+    TD(lambda) backup whose value equals the lambda-return, an unbiased
+    estimate of Q^π(s, a) at the taken chunk. Chunks from different envs
+    interleave in the buffer, so adjacency is resolved through ``chunk_prev``
+    rather than by buffer position.
     """
     if not 0.0 <= gamma <= 1.0:
         raise ValueError(f"gamma must be in [0, 1], got {gamma}")
     if not 0.0 <= gae_lambda <= 1.0:
         raise ValueError(f"gae_lambda must be in [0, 1], got {gae_lambda}")
 
-    device = q_current_chunk.device
+    device = v_current.device
     dtype = torch.float32
 
     rewards = step_rewards.to(device=device, dtype=dtype).reshape(-1)
-    q_current_chunk = q_current_chunk.to(device=device, dtype=dtype).reshape(-1)
-    q_next_state = q_next_state.to(device=device, dtype=dtype).reshape(-1)
+    v_current = v_current.to(device=device, dtype=dtype).reshape(-1)
+    v_next = v_next.to(device=device, dtype=dtype).reshape(-1)
     starts = chunk_starts.to(device=device, dtype=torch.long).reshape(-1)
     lengths = chunk_lengths.to(device=device, dtype=torch.long).reshape(-1)
     terminated = chunk_terminated.to(device=device, dtype=torch.bool).reshape(-1)
@@ -73,7 +75,7 @@ def compute_chunk_advantages(
     n_chunks = starts.numel()
     if any(
         t.numel() != n_chunks
-        for t in (lengths, terminated, q_current_chunk, q_next_state)
+        for t in (lengths, terminated, v_current, v_next)
     ):
         raise ValueError(f"chunk tensors must have {n_chunks} entries")
 
@@ -112,12 +114,12 @@ def compute_chunk_advantages(
     gamma_h = gamma ** lengths.to(dtype)
     done = terminated | truncated
     injected = truncated & ~terminated
-    chunk_rewards = chunk_rewards + gamma_h * injected * q_next_state
+    chunk_rewards = chunk_rewards + gamma_h * injected * v_next
     bootstrap = gamma_h * (~done)
-    delta = chunk_rewards + bootstrap * q_next_state - q_current_chunk
+    delta = chunk_rewards + bootstrap * v_next - v_current
 
     if gae_lambda == 0.0:
-        return delta, delta + q_current_chunk
+        return delta, delta + v_current
 
     prev = chunk_prev.to(device=device, dtype=torch.long).reshape(-1)
     if prev.numel() != n_chunks:
@@ -130,7 +132,7 @@ def compute_chunk_advantages(
     successor = successor.cpu()
     trace = gamma_h * (~done) * gae_lambda
     adv = gae_trace(delta, trace, successor)
-    return adv, adv + q_current_chunk
+    return adv, adv + v_current
 
 
 def gae_trace(
