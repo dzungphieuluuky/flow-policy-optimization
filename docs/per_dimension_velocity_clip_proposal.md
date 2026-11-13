@@ -317,3 +317,172 @@ the heterogeneous math is pinned independently of homogeneous QF3.
    the method's relevance on tasks QF3 is known to struggle with.
 4. All code, configs, seeds, eval scripts, and thresholds are released; behavior is pinned at
    `atol=0` for the homogeneous path.
+
+---
+
+## Appendix C — Stage 0 implementation sketch (what “port QF3” actually means here)
+
+This is the part the viability of the whole proposal hinges on, so it needs to be honest
+before anyone writes code: **myfpo today is an on-policy PPO/FPO trainer, not an off-policy
+actor-critic.** There is no replay buffer, no Bellman vacuum, no TD target that lives for more
+than one rollout. “Porting QF3” therefore means *adding an off-policy update path*, not
+remapping function calls. That is the single hardest and longest part of Stage 0, and the
+timeline only holds if it is treated as its own unit of work with its own tests.
+
+### C.1 Module map after Stage 0
+
+```
+config.py        + update_impl, qf3_* scalars, replay buffer knobs
+qf3.py           NEW ~400 lines — QF3 update (actor clip path, critic backup, replay)
+train.py         dispatch on cfg.update_impl; FPO path untouched and still default
+critic.py        unchanged (already an ensemble with target critic + polyak)
+collect.py       unchanged (FPO path keeps using it)
+replay.py        NEW ~150 lines — flat replay deque + sampling; does NOT reuse RolloutBuffer
+checkpointing.py + replay buffer state (count, cursor, tensors) for resume
+scripts/pins/pin_qclip_uniform.py   NEW — pins the homogeneous path
+tests/test_qf3.py                   NEW — clip path unit tests + toy-buffer integration
+```
+
+### C.2 What carries over vs. what does not
+
+| Piece                  | From where        | Notes                                                    |
+|------------------------|-------------------|----------------------------------------------------------|
+| Flow head `v_θ`        | existing          | reused as the actor; same signature `v(s, t, ε)`          |
+| Flat-MLP trunk         | existing          | QF3 is MLP-ish anyway; fine for a first implementation   |
+| Ensemble critic        | existing          | double-Q via the 2-member ensemble (TD3/SAC trick)       |
+| Target critic          | existing          | soft-updated at rate τ = 0.005 as today                  |
+| obs / reward normalizer| existing          | reused as-is; no new normalizer                          |
+| `RolloutBuffer`        | **not reusable**  | on-policy chunks, no TD; do not bend it into a replay    |
+| `RolloutBuffers`       | **not reusable**  | same reason                                              |
+| `raw_returns` / GAE    | **not reusable**  | QF3 targets come from `Q_target(s', a')`, not from GAE   |
+| `normalized_advantages`| **not reusable**  | actor signal comes from `Q(s, x̂₁_clip)` directly          |
+| `collect.py` pipeline  | **not reusable**  | QF3 never needs a rollout pass to build a batch          |
+| eval pipeline          | reused            | unchanged; paired seeds, same CSVs                        |
+
+### C.3 The new replay buffer — minimal viable shape
+
+```python
+@dataclass
+class ReplayBuffer:
+    obs_dim: int; action_dim: int; horizon: int
+    obs: torch.Tensor        # [cap, obs_dim]
+    action: torch.Tensor     # [cap, horizon, action_dim]
+    reward: torch.Tensor     # [cap]
+    next_obs: torch.Tensor   # [cap, obs_dim]
+    done: torch.Tensor       # [cap, bool]
+    pos: int = 0; size: int = 0
+    def __init__(..., capacity: int): ...
+    def add(...): ...
+    def sample(self, batch_size: int, device): ...
+```
+
+Observations are **raw** (normalizer applied at read time) so `config.obs_normalizer` can keep
+a single writer and remain the same object the policy is built on. Reward stays unnormalized
+for critic targets (`gamma` is what it is); advantage scaling is not needed in QF3.
+
+### C.4 The new update — actor side (the actual QF3 clip)
+
+```python
+def qf3_actor_update(batch, policy, critic, critic_target, cfg):
+    s   = normalizer(batch.obs); s_ = normalizer(batch.next_obs)
+    eps = torch.randn_like(batch.action)                       # same noise distribution as training
+    t   = torch.rand(batch.action.size(0)).expand_as(batch.action[..., :1]).squeeze(-1)
+    a   = batch.action
+    # One-step Euler predictor from the replay action (NOT a full ODE solve):
+    # x_1 ≈ a + v(s, 1, eps) * 1.0  -- from the noise endpoint, not from a_buf;
+    # here the *clip* is applied around the replay action, not around x_1.
+    # (Exact Euler form to confirm against the paper/repo's released code in Stage 0,
+    #  this is the one open implementation detail flagged to resolve before Stage 1.)
+    v    = policy.flow.velocity(s, t, eps)
+    delta = (v - a)  # replay-anchored delta; the clip region centers on a
+    # homogeneous baseline
+    alpha = cfg.velocity_clip_alpha             # scalar, QF3-faithful
+    delta_clip = delta.clamp(-alpha, +alpha)
+    x1_clip = a + delta_clip                    # [B, H, D], stays inside the trust region
+    # actor objective
+    q = critic(s, x1_clip)                      # [num_critics, B] or [B]
+    q = q.mean(0) if q.dim() == 2 else q
+    flow_anchor = (v - flow_target(s, eps, a)) ** 2     # `flow_match` to replay data
+    actor_loss  = -q.mean() + cfg.qf3_cfm_weight * flow_anchor.mean()
+    actor_loss.backward()
+```
+
+Notes on the clip mechanics:
+
+- The clip acts on **velocity space** (`v − u_buf`), matching the QF3 paper rather than clipping
+  action space directly.
+- Exact form of `x̂_{1,clip}` (whether one Euler step from `a_buf` at `t=0` velocity, or from
+  the noise side) is an **implementation detail to verify against the QF3 release** before Stage
+  1 — not a research degree of freedom to tune away. It is deliberately flagged, not silently
+  resolved, because getting it wrong invalidates the Stage 0 fidelity gate.
+
+### C.5 The new update — critic side (and what is genuinely borrowed)
+
+The critic needs SARSA-style targets from replay, not GAE returns. The safest starting point,
+picked deliberately over inventing something:
+
+```python
+with torch.no_grad():
+    eps_  = torch.randn_like(batch.action)
+    t_    = torch.rand(batch.action.size(0))
+    a_    = policy.flow.sample_action(s_, t_, eps_, num_steps=1)  # one-step proxy, SAC-ish
+    q_next = critic_target(s_, a_)               # target critic, polyak-updated as today
+    target  = batch.reward + cfg.gamma * (1 - batch.done.float()) * q_next
+pred   = critic(s, batch.action)
+critic_loss = huber(pred - target, beta=cfg.value_loss_beta)
+critic_loss.mean().backward()
+```
+
+This deliberately borrows: ensemble double-Q, target critic with polyak, Huber loss. This is the
+*smallest* actor-critic that is recognizable as "QF3-like" without inventing new value machinery
+on top of an unproven clip. If Stage 0 reveals the paper wants a plain SAC single-critic instead,
+the delta is one line (drop the ensemble, share state dict), not a design change.
+
+### C.6 Config surface added in Stage 0
+
+```python
+update_impl: str = "fpo"                 # {"fpo", "qf3", "qf3_het"} — flag gates everything
+qf3_update_every: int = 1                # gradient steps per env step
+qf3_cfm_weight: float = 1.0              # λ_cfm; homogenous reference suggests ~1.0
+qf3_batch_size: int = 256                # replay minibatch
+qf3_replay_capacity: int = 100_000
+qf3_min_buffer: int = 10_000             # don't start updates until this filled
+qf3_alpha: float = 1.0                   # homogeneous clip-magnitude (tuned per task)
+velocity_clip_scale: str = "uniform"     # becomes "rms_ema" | "critic_curvature" | "clip_adapt" in Stage 1
+velocity_clip_alpha_max: float = 3.0
+qf3_cfm_weight: float = 1.0
+```
+
+(Config field names may shift to match house style during implementation; the semantic set is
+fixed. `qf3_cfm_weight` doubles as the λ_cfm knob for the homogeneous re-implementation.)
+
+### C.7 The order of work inside Stage 0
+
+1. **ReplayBuffer + sampling tests** — knock on the simplest door first: buffer add/sample,
+   wrap-around, `min_buffer` gate, done-masking correctness. 4 tests, pure CPU, fast.
+2. **One-step Euler predictor** — test that `policy.flow.predict(s, t, ε)` returns the right
+   shape and that a *full* ODE solve at `t=0 → 1` produces the same vector as the one-step call
+   up to the clip (algebraic consistency check, not a bitwise assert). 2 tests.
+3. **Homogeneous QF3 update** — one update, tiny buffer, tiny net: verify no NaNs, actor loss
+   finite, critic loss decreases on a toy fixed buffer over 100 steps. 2 tests.
+4. **Dispatch wiring** — training loop's FPO path unchanged; smoke run with
+   `--myfpo.update_impl qf3` for 200 steps end-to-end on Hopper; pins re-baked if off by intent.
+5. **Fidelity gate** — the real test: one full seed on Hopper-v5, `α` swept on the reported grid,
+   result must land within ~10% of the QF3 paper's behaviour at matched `α`. Treat this as
+   pass/fail, not "about as good as we can do." If it fails, Stage 1 does not start.
+
+### C.8 Cost estimate, itemized
+
+| Item                                     | Est. lines | Est. time |
+|------------------------------------------|-----------|-----------|
+| `replay.py`                              | ~150      | 1 day     |
+| `qf3.py` actor+critic updates            | ~350–450  | 3–4 days  |
+| `config.py` + validation                 | ~30       | ½ day     |
+| `train.py` dispatch                      | ~40       | 1 day     |
+| `checkpointing.py` replay state          | ~30       | ½ day     |
+| `tests/test_qf3.py`                      | ~250      | 1–2 days  |
+| smoke + tune `α` for Hopper              | —         | 1 day     |
+| **Total**                                |          | **8–10 days** |
+
+Buffer and update paths each get their own test file from day one — this is where the
+Stage 0 risk lives, and the pins are the floor, not the ceiling.
