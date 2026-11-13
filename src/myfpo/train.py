@@ -950,17 +950,12 @@ def configure_run(
     if scheduler_state is not None or global_step > 0:
         restore_scheduler(scheduler, scheduler_state, global_step, cfg)
 
-    parts = {
-        name: sum(p.numel() for p in getattr(policy, name).parameters())
-        for name in ("actor", "encoder", "critic")
-    }
-    total = sum(parts.values())
     print(
         f"myfpo policy: actor=FlowMLP hidden={cfg.hidden_dim} "
-        f"params actor={parts['actor']:,} encoder={parts['encoder']:,} "
-        f"critic={parts['critic']:,} total={total:,}",
+        f"params={sum(p.numel() for p in policy.parameters() if p.requires_grad):,}",
         file=sys.stderr,
     )
+    print(policy, file=sys.stderr)
 
     eval_seed = 10000 + seed
     eval_env = None
