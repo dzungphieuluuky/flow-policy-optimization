@@ -90,7 +90,10 @@ class MyfpoConfig:
     group_mc_loss: bool = False
     mc_loss_group_size: int = 1
     clip_param: float = 0.05
-    spo_clip_param: float = 0.01
+    # SPO quadratic width, Eq. 10 in FPO++: SPO shares the PPO clip as its
+    # epsilon, so it matches clip_param. A smaller value only weakens the
+    # negative-advantage branch (ratio pinned ~1% per update instead of ~5%).
+    spo_clip_param: float = 0.05
     trust_region_mode: str = "ppo"
     cfm_loss_reduction: str = "sqrt"
     cfm_loss_target: str = "velocity"

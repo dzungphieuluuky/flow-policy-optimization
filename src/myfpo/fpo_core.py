@@ -199,7 +199,7 @@ def group_cfm_loss(loss: torch.Tensor, group_size: int) -> torch.Tensor:
 
 
 def cfm_loss_weight(t: torch.Tensor, cfg: MyfpoConfig) -> torch.Tensor:
-    """Per-token CFM loss weight (broadcasts over action dims). Weight rises linearly to 1.0 at t=1 (0.01 + 0.99*t); no verified 'reversed vs reference' claim."""
+    """Per-token CFM loss weight (broadcasts over action dims). Weight rises linearly to 1.0 at t=1 (0.01 + 0.99*t), as pinned by tests/test_cfm_loss_weight.py."""
     mode = cfg.cfm_loss_weight_from_t
     if mode == "constant":
         return torch.ones_like(t)
@@ -291,9 +291,22 @@ def compute_cfm_log_ratio(cfm_loss_old, cfm_loss_new, cfg, advantage):
     if mode in ("cfm", "cfm_raw"):
         if mode == "cfm":
             old = torch.clamp(cfm_loss_old, max=cfg.cfm_clamp)
-            new = torch.clamp(cfm_loss_new, max=cfg.cfm_clamp)
-            if cfg.cfm_loss_clamp_negative_advantages and advantage is not None:
-                new = torch.where(advantage < 0, torch.clamp(new, max=cfg.cfm_loss_clamp_negative_advantages_max), new)
+            # The negative-advantage branch caps the new loss at the tighter of the two
+            # bounds; at the equal reference default this collapses into the upper
+            # clamp, so the branch only exists when a tighter cap is configured.
+            neg_cap = cfg.cfm_loss_clamp_negative_advantages_max
+            if (
+                cfg.cfm_loss_clamp_negative_advantages
+                and advantage is not None
+                and neg_cap < cfg.cfm_clamp
+            ):
+                new = torch.where(
+                    advantage < 0,
+                    torch.clamp(cfm_loss_new, max=neg_cap),
+                    torch.clamp(cfm_loss_new, max=cfg.cfm_clamp),
+                )
+            else:
+                new = torch.clamp(cfm_loss_new, max=cfg.cfm_clamp)
         else:
             old, new = cfm_loss_old, cfm_loss_new
         return old - new

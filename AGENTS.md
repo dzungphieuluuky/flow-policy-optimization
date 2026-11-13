@@ -67,5 +67,5 @@ The path is chosen by capability, not by name.
 
 - `scripts/pins/_shared.py` must not import from `src` beyond what it already builds. A pin sharing code with the code it checks cannot catch defects in the shared part.
 - Actor and critic gradient clipping are independent (`training.py`). A joint clip silently shrinks whichever side has the larger gradient.
-- The stored action is the raw flow output. The CFM target is z-scored by default (`normalize_actions`, running mean/std, checkpointed — same frozen-per-cycle contract as the obs/reward normalizers). The `tanh` squash happens only on the way to the env (`processor.py`). The env receives a different value than what is stored.
+- The stored action is the flow's raw output; the CFM target fits it in flow space (`action / actor_scale`), with no separate action normalizer. The bound (`tanh` or `linear_rescale`'s unit clip) happens only on the way to the env (`processor.py`). The env receives a different value than what is stored.
 - A SAPIEN GPU context is budgeted at 1.5 GiB (`VIDEO_CONTEXT_BYTES`). Training, eval, and video are three contexts. Do not drop the free-memory check before the video env.
