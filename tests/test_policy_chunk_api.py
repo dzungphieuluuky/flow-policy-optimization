@@ -31,8 +31,6 @@ def _config() -> MyfpoConfig:
         obs_dim=3,
         action_dim=1,
         hidden_dim=32,
-        dit_depth=1,
-        dit_heads=2,
         num_obs_steps=4,
         action_horizon=4,
         num_action_steps=4,

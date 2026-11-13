@@ -35,7 +35,7 @@ from myfpo.flow import (
     compute_policy_info,
     compute_value_loss,
 )
-from myfpo.nn import Critic, FlowModel, FlowResMLP
+from myfpo.nn import Critic, FlowMLP
 from myfpo.env import RunningMeanStd
 from myfpo.nn import StateEncoder
 from myfpo.actions import bound_for_storage, to_critic_action, to_env_action
@@ -122,17 +122,9 @@ def make_policy_networks(config: MyfpoConfig):
     config.validate_dims()
     obs_dim = int(config.obs_dim)
     action_dim = int(config.action_dim)
-    if config.actor_arch == "resmlp":
-        actor = FlowResMLP(
-            action_dim, config.action_horizon, config.hidden_dim,
-            config.resmlp_blocks, config.resmlp_units, config.resmlp_hidden_mult,
-            config.dit_heads, config.time_embed_dim,
-        )
-    else:
-        actor = FlowModel(
-            action_dim, config.action_horizon, config.hidden_dim,
-            config.dit_depth, config.dit_heads, config.dit_mlp_ratio, config.time_embed_dim,
-        )
+    actor = FlowMLP(
+        action_dim, config.action_horizon, config.hidden_dim, config.time_embed_dim,
+    )
     encoder = StateEncoder(obs_dim, config.hidden_dim, config.num_obs_steps)
     critic_width = config.critic_hidden_dim if config.critic_hidden_dim is not None else config.hidden_dim
     critic = Critic(

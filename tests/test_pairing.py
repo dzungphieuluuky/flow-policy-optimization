@@ -14,7 +14,7 @@ def _cfg(**kw):
     base = dict(
         obs_dim=OBS, act_dim=ACT,
         action_horizon=HORIZON, num_action_steps=HORIZON, num_mc_samples=MC,
-        hidden_dim=32, time_embed_dim=16, dit_depth=1, dit_heads=2, num_obs_steps=2,
+        hidden_dim=32, time_embed_dim=16, num_obs_steps=2,
         compile=False,
     )
     base.update(kw)

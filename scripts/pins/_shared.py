@@ -20,7 +20,7 @@ from myfpo.config import MyfpoConfig
 # The shape of the pin problem. Small on purpose: a pin must run in seconds so
 # it can be the gate on every commit.
 OBS, ACT, HORIZON, MC, N_OBS = 6, 3, 4, 4, 2
-HIDDEN, TIME_EMBED, HEADS, DEPTH = 32, 16, 2, 1
+HIDDEN, TIME_EMBED = 32, 16
 
 __all__ = [
     "ACT", "HORIZON", "MC", "N_OBS", "OBS",
@@ -39,8 +39,6 @@ def pin_config(**kw) -> MyfpoConfig:
         num_mc_samples=MC,
         hidden_dim=HIDDEN,
         time_embed_dim=TIME_EMBED,
-        dit_depth=DEPTH,
-        dit_heads=HEADS,
         num_obs_steps=N_OBS,
         compile=False,
         report_to="none",

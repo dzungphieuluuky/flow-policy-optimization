@@ -10,7 +10,7 @@ import pytest
 import torch
 
 # : Guard count the table below is expected to cover.
-EXPECTED_CASES = 66
+EXPECTED_CASES = 57
 
 _CASES: list[tuple[str, object]] = []
 
@@ -77,14 +77,12 @@ def _missing_dims() -> None:
     MyfpoConfig().validate_dims()
 
 # --- network constructors ----------------------------------------------------.
-from myfpo.nn import CrossAttention, DiTBlock, SelfAttention  # noqa: E402
+from myfpo.nn import CrossAttention, SelfAttention  # noqa: E402
 from myfpo.nn import CriticMember  # noqa: E402
 from myfpo.env import RunningMeanStd  # noqa: E402
 from myfpo.nn import StateEncoder  # noqa: E402
-from myfpo.nn import FlowModel  # noqa: E402
-from myfpo.nn import CondMLP, SinusoidalEncoding, MishFFN  # noqa: E402
+from myfpo.nn import CondMLP, SinusoidalEncoding  # noqa: E402
 
-case("layers:MishFFN:zero-dims")(lambda: MishFFN(0, 4, 4))
 case("layers:CondMLP:zero-dims")(lambda: CondMLP(0, 4, 4))
 case("layers:SinusoidalEncoding:dim")(lambda: SinusoidalEncoding(1))
 case("encoder:RunningMeanStd:dim")(lambda: RunningMeanStd(0))
@@ -96,21 +94,9 @@ case("attention:SelfAttention:split")(lambda: SelfAttention(8, 3))
 case("attention:CrossAttention:hidden")(lambda: CrossAttention(0, 2))
 case("attention:CrossAttention:heads")(lambda: CrossAttention(8, 0))
 case("attention:CrossAttention:split")(lambda: CrossAttention(8, 3))
-case("attention:DiTBlock:hidden")(lambda: DiTBlock(1, 2, 2.0))
-case("attention:DiTBlock:ratio")(lambda: DiTBlock(8, 2, 0.0))
-case("flow:actor:action_dim")(lambda: FlowModel(0, 8, 128, 3, 2, 2.0, 64))
-case("flow:actor:horizon")(lambda: FlowModel(3, 0, 128, 3, 2, 2.0, 64))
-case("flow:actor:depth")(lambda: FlowModel(3, 8, 128, 0, 2, 2.0, 64))
-case("flow:actor:mlp_ratio")(lambda: FlowModel(3, 8, 128, 3, 2, 0.0, 64))
 case("critic:member:hidden")(lambda: CriticMember(3, 2, 0, 4, 8, num_layers=2))
 
 # DiTBlock.forward, not the constructor: a batch disagreement between x and c.
-case("attention:DiTBlock:forward:token-batch")(
-    lambda: DiTBlock(8, 2, 2.0)(torch.randn(2, 4, 8), torch.randn(3, 4, 8))
-)
-case("attention:DiTBlock:forward:cond-batch")(
-    lambda: DiTBlock(8, 2, 2.0)(torch.randn(2, 4, 8), torch.randn(3, 8))
-)
 
 # --- pure functions ----------------------------------------------------------.
 from myfpo.flow import (  # noqa: E402
@@ -204,10 +190,6 @@ _THUNKS = dict(_CASES)
 # The word each message has to carry. The field or condition it names is the
 # contract; the wording around it is not.
 KEYWORDS = {
-    'attention:DiTBlock:forward:cond-batch': 'batch',
-    'attention:DiTBlock:forward:token-batch': 'batch',
-    'attention:DiTBlock:hidden': 'hidden_dim',
-    'attention:DiTBlock:ratio': 'mlp_ratio',
     'attention:SelfAttention:heads': 'n_heads',
     'attention:SelfAttention:hidden': 'hidden_dim',
     'attention:SelfAttention:split': 'split',
@@ -259,10 +241,6 @@ KEYWORDS = {
     'encoder:RunningMeanStd:dim': 'dim',
     'encoder:StateEncoder:hidden': 'hidden_dim',
     'encoder:StateEncoder:steps': 'max_obs_steps',
-    'flow:actor:action_dim': 'action_dim',
-    'flow:actor:depth': 'dit_depth',
-    'flow:actor:horizon': 'action_horizon',
-    'flow:actor:mlp_ratio': 'dit_mlp_ratio',
     'fpo_core:cfm:reduce-mode': 'reduce_mode',
     'fpo_core:cfm:vhat-mismatch': 'v_hat shape',
     'fpo_core:mc:eps-shape': 'eps shape',
@@ -276,7 +254,6 @@ KEYWORDS = {
     'gae:requires-truncated': 'chunk_truncated',
     'layers:CondMLP:zero-dims': 'dimensions must be positive',
     'layers:SinusoidalEncoding:dim': 'SinusoidalEncoding',
-    'layers:MishFFN:zero-dims': 'dimensions must be positive',
 }
 
 def test_every_case_has_a_keyword():

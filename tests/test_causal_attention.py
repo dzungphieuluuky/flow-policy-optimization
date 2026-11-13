@@ -7,7 +7,6 @@ module pins the behavior so the docstring and the code cannot drift again.
 
 from __future__ import annotations
 
-import dataclasses
 
 import pytest
 import torch
@@ -45,30 +44,13 @@ def test_even_head_dim_is_accepted():
     assert SelfAttention(12, 2).head_dim == 6
 
 
-def test_config_rejects_an_odd_head_dim():
-    # 6 splits evenly over 2 heads, but head_dim=3 is odd.
-    with pytest.raises(ValueError, match="must be even for RoPE"):
-        dataclasses.replace(MyfpoConfig(), hidden_dim=6, dit_heads=2)
-
-
-def test_config_accepts_an_even_head_dim():
-    cfg = dataclasses.replace(MyfpoConfig(), hidden_dim=128, dit_heads=4)
-    cfg.validate()
-    assert cfg.hidden_dim // cfg.dit_heads == 32
-
-
-def test_config_still_rejects_hidden_dim_that_does_not_split_over_heads():
-    with pytest.raises(ValueError, match="must be divisible by"):
-        dataclasses.replace(MyfpoConfig(), hidden_dim=128, dit_heads=5).validate()
-
-
 def test_config_rejects_a_width_the_critic_cannot_split():
-    # 12 splits over 3 actor heads with an even head width. The critic's four
-    # heads need width % 8, so this config cannot build.
+    # A width that is not a multiple of 8 cannot build: the critic's four
+    # heads need width % 8.
     with pytest.raises(ValueError, match="must be divisible by 8"):
-        dataclasses.replace(MyfpoConfig(), hidden_dim=12, dit_heads=3)
+        MyfpoConfig(hidden_dim=12).validate()
 
 
 def test_config_accepts_a_width_the_critic_can_split():
-    cfg = dataclasses.replace(MyfpoConfig(), hidden_dim=24, dit_heads=3)
+    cfg = MyfpoConfig(hidden_dim=24)
     assert cfg.hidden_dim % 8 == 0

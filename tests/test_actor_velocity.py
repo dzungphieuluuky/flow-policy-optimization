@@ -24,8 +24,6 @@ def _policy(**kw):
         obs_dim=OBS,
         action_dim=ACT,
         hidden_dim=32,
-        dit_depth=1,
-        dit_heads=2,
         num_obs_steps=4,
         action_horizon=HORIZON,
         num_action_steps=HORIZON,

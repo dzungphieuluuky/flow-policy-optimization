@@ -1,7 +1,7 @@
 """Neural building blocks and the two networks that read the obs window.
 
 Generic layers (attention, adaLN, norms, activations), the observation encoder,
-and the actor flow model + ensemble chunk-Q critic. Key: FlowModel, Critic,
+and the actor flow model + ensemble chunk-Q critic. Key: FlowMLP, Critic,
 StateEncoder.
 """
 
@@ -182,19 +182,6 @@ def _check_attention_dims(hidden_dim: int, n_heads: int) -> None:
         raise ValueError(f"hidden_dim={hidden_dim} must split over {n_heads} heads")
 
 
-class MishFFN(nn.Module):
-    """``Linear -> LayerNorm -> Mish -> Linear``. The DiT block's feed-forward unit."""
-    def __init__(self, in_dim: int, hidden_dim: int, out_dim: int):
-        super().__init__()
-        _check_positive_dims(in_dim, hidden_dim, out_dim, "MishFFN")
-        self.fc = nn.Linear(in_dim, hidden_dim)
-        self.norm = nn.LayerNorm(hidden_dim)
-        self.out = nn.Linear(hidden_dim, out_dim)
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Project to the hidden width, norm, apply Mish, and project to out_dim."""
-        return self.out(F.mish(self.norm(self.fc(x))))
-
-
 class CondMLP(nn.Module):
     """SiLU MLP for conditioning regression."""
 
@@ -247,11 +234,6 @@ class SinusoidalEncoding(nn.Module):
         if self.dim % 2:
             emb = F.pad(emb, (0, 1))
         return emb
-
-
-def modulate(x: torch.Tensor, shift: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
-    """adaLN. Compute ``x * (1 + scale) + shift``."""
-    return torch.addcmul(shift, x, 1.0 + scale)
 
 
 # ---- from attention.py ----
@@ -354,92 +336,6 @@ class CrossAttention(nn.Module):
         v = v.view(b, lk, h, d).transpose(1, 2)
         y = F.scaled_dot_product_attention(q, k, v)
         return self.out(y.transpose(1, 2).reshape(b, lq, h * d))
-class AdaLNBlock(nn.Module):
-    """Pre-norm adaLN-Zero block: self-attention and one MLP, conditioned on ``c``.
-
-    ``DiTBlock`` and ``ResMLPBlock`` are this block with a different MLP. The
-    block lives here once, so a fix to the adaLN path reaches both actors.
-    """
-
-    def __init__(self, hidden_dim: int, n_heads: int, mlp: nn.Module):
-        super().__init__()
-        if hidden_dim < MIN_WIDTH:
-            raise ValueError("hidden_dim must be at least 2")
-        self.norm1 = make_rms_norm(hidden_dim)
-        self.attn = SelfAttention(hidden_dim, n_heads)
-        self.norm2 = make_rms_norm(hidden_dim)
-        self.mlp = mlp
-        self.adaLN = CondMLP(hidden_dim, hidden_dim, 6 * hidden_dim)
-        nn.init.constant_(self.adaLN.fc2.weight, 0.0)
-        nn.init.constant_(self.adaLN.fc2.bias, 0.0)
-
-    def forward(
-        self, x: torch.Tensor, c: torch.Tensor
-    ) -> torch.Tensor:
-        """``[B, K, H]`` action tokens, with adaLN conditioning on ``c``. ``c`` is
-        ``[B, H]`` for a whole chunk or ``[B, K, H]`` for per-token time.
-        """
-        out, _ = self.forward_parts(x, c)
-        return out
-
-    def forward_with_stats(
-        self, x: torch.Tensor, c: torch.Tensor
-    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-        """The same block, plus the adaLN gate and scale diagnostics."""
-        out, (gate_msa, gate_mlp, scale_msa, scale_mlp) = self.forward_parts(x, c)
-        with torch.inference_mode():
-            stats = {
-                "gate_msa": rms(gate_msa),
-                "gate_mlp": rms(gate_mlp),
-                "scale_msa": rms(1.0 + scale_msa),
-                "scale_mlp": rms(1.0 + scale_mlp),
-            }
-        return out, stats
-
-    def forward_parts(
-        self, x: torch.Tensor, c: torch.Tensor
-    ) -> tuple[torch.Tensor, tuple[torch.Tensor, ...]]:
-        """The block itself, with the adaLN parts the diagnostics read."""
-        if x.dim() != 3:
-            raise ValueError(f"x must have shape [B, K, H], got {tuple(x.shape)}")
-        b = x.shape[0]
-        if c.shape[0] != b:
-            raise ValueError(f"c has batch {c.shape[0]} but x has {b}")
-        token_axis = c.dim() == 3
-        if token_axis:
-            k = x.shape[1]
-            if c.shape[1] != k:
-                raise ValueError(f"c has {c.shape[1]} conditioning tokens but x has {k}")
-        else:
-            if c.dim() != 2 or c.shape[1] != self.adaLN.fc1.in_features:
-                raise ValueError(f"c must have shape [{b}, {self.adaLN.fc1.in_features}], got {tuple(c.shape)}")
-            c = c[:, None, :]
-
-        parts = self.adaLN(c).view(b, c.shape[1], 6, -1)
-        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = parts.unbind(
-            dim=2
-        )
-        h = modulate(self.norm1(x), shift_msa, scale_msa)
-        x = x + gate_msa * self.attn(h)
-        out = x + gate_mlp * self.mlp(
-            modulate(self.norm2(x), shift_mlp, scale_mlp)
-        )
-        return out, (gate_msa, gate_mlp, scale_msa, scale_mlp)
-
-
-class DiTBlock(AdaLNBlock):
-    """The DiT block: attention, one MishFFN, adaLN."""
-
-    def __init__(self, hidden_dim: int, n_heads: int, mlp_ratio: float):
-        if not math.isfinite(mlp_ratio) or mlp_ratio <= 0 or int(hidden_dim * mlp_ratio) < 1:
-            raise ValueError("mlp_ratio must produce a positive hidden width")
-        super().__init__(
-            hidden_dim,
-            n_heads,
-            MishFFN(hidden_dim, int(hidden_dim * mlp_ratio), hidden_dim),
-        )
-
-
 # ---- networks.py ----
 # ACTOR
 
@@ -457,8 +353,15 @@ def effective_rank(features: torch.Tensor) -> torch.Tensor:
     return torch.exp(entropy)
 
 
-class FlowActor(nn.Module):
-    """The stem both actors share: embed, project, condition, decode."""
+class FlowMLP(nn.Module):
+    """Flat MLP flow head.
+
+    Velocity prediction over the flattened chunk: input is
+    ``[x_flat | t_flat | cond]`` where ``t_flat`` is the per-token timestep
+    embedding per chunk position, concatenated rather than permuted through
+    attention. Mish-like SiLU MLP, ``4 * hidden_dim`` inner width, out-projected
+    with a zero-initialized head so the velocity starts at 0.
+    """
 
     def __init__(
         self,
@@ -466,9 +369,7 @@ class FlowActor(nn.Module):
         action_horizon: int,
         hidden_dim: int,
         time_embed_dim: int,
-        num_blocks: int,
-        block_cls: type[nn.Module],
-        block_kwargs: dict,
+        num_layers: int = 4,
     ):
         super().__init__()
         if action_dim < 1 or hidden_dim < MIN_WIDTH:
@@ -477,24 +378,21 @@ class FlowActor(nn.Module):
             raise ValueError("action_horizon must be positive")
         if time_embed_dim < MIN_WIDTH:
             raise ValueError(f"time_embed_dim={time_embed_dim} must be at least 2")
-        if num_blocks < 1:
-            raise ValueError(f"an actor needs >= 1 block, got {num_blocks}")
+        if num_layers < 1:
+            raise ValueError(f"num_layers={num_layers} must be >= 1")
         self.action_dim = action_dim
         self.hidden_dim = hidden_dim
         self.action_horizon = action_horizon
         self.time_embed_dim = time_embed_dim
-        self.num_blocks = num_blocks
+        self.num_layers = num_layers
+        flat = action_horizon * action_dim
         self.timestep_embedder = SinusoidalEncoding(self.time_embed_dim)
-        self.in_proj = nn.Linear(action_dim, hidden_dim)
-        self.time_mlp = CondMLP(time_embed_dim, 4 * hidden_dim, hidden_dim)
+        self.in_block = CondMLP(flat + action_horizon * time_embed_dim + hidden_dim, 4 * hidden_dim, hidden_dim)
         self.blocks = nn.ModuleList(
-            block_cls(**block_kwargs) for _ in range(self.num_blocks)
+            CondMLP(hidden_dim, 4 * hidden_dim, hidden_dim) for _ in range(num_layers)
         )
         self.norm_out = make_rms_norm(hidden_dim)
-        self.adaLN_out = nn.Linear(hidden_dim, 2 * hidden_dim)
-        nn.init.constant_(self.adaLN_out.weight, 0.0)
-        nn.init.constant_(self.adaLN_out.bias, 0.0)
-        self.out = nn.Linear(hidden_dim, action_dim)
+        self.out = nn.Linear(hidden_dim, flat)
         nn.init.constant_(self.out.weight, 0.0)
         nn.init.constant_(self.out.bias, 0.0)
 
@@ -509,6 +407,56 @@ class FlowActor(nn.Module):
             count += param.numel()
         return total / max(count, 1)
 
+    def _condition(self, x_t, t, condition):
+        """Fold the timestep per token and the condition into the flat input."""
+        if x_t.dim() != 3 or x_t.shape[2] != self.action_dim:
+            raise ValueError(
+                f"x_t must have shape [B, K, {self.action_dim}], got {tuple(x_t.shape)}"
+            )
+        if condition.dim() != 2 or condition.shape[0] != x_t.shape[0] or condition.shape[1] != self.hidden_dim:
+            raise ValueError(
+                f"condition must have shape [{x_t.shape[0]}, {self.hidden_dim}], "
+                f"got {tuple(condition.shape)}"
+            )
+        if x_t.shape[1] > self.action_horizon:
+            raise ValueError(
+                f"action token count {x_t.shape[1]} exceeds action_horizon {self.action_horizon}"
+            )
+        t = torch.as_tensor(t, dtype=torch.float32, device=x_t.device)
+        temb = self._embed_times(t, x_t)
+        cond = condition.to(device=x_t.device, dtype=x_t.dtype)
+        t_flat = temb.reshape(x_t.shape[0], -1).to(device=x_t.device, dtype=x_t.dtype)
+        x_flat = x_t.reshape(x_t.shape[0], -1).to(
+            device=x_t.device, dtype=x_t.dtype
+        )
+        h = torch.cat([x_flat, t_flat, cond], dim=-1)
+        return h, temb, cond
+
+    def _embed_times(self, t, x_t):
+        """Encode scalar, [B] or [B, K, 1] timesteps into [B, K, emb]."""
+        if t.dim() in (2, 3) and tuple(t.shape[:2]) == tuple(x_t.shape[:2]):
+            if t.dim() == 3 and t.shape[-1] != 1:
+                raise ValueError(f"t must end in a singleton action-dimension axis, got {tuple(t.shape)}")
+            t = t.squeeze(-1) if t.dim() == 3 else t
+            K = x_t.shape[1]
+            B = x_t.shape[0]
+            if t.dim() == 1:  # [B] shared scalar per chunk
+                t = t[:, None].expand(B, K)
+            temb = self.timestep_embedder.encode_times(t.reshape(-1))
+            return temb.reshape(B, K, -1)
+        if t.dim() <= 1:
+            t = t.reshape(-1)
+            B, K = x_t.shape[0], x_t.shape[1]
+            if t.numel() == 1:
+                t = t.expand(B * K).reshape(B, K)
+            elif t.numel() == B:
+                t = t[:, None].expand(B, K)
+            else:
+                raise ValueError(f"t must contain 1 or {B} values, got {t.numel()}")
+            temb = self.timestep_embedder.encode_times(t.reshape(-1))
+            return temb.reshape(B, K, -1)
+        raise ValueError(f"t must be scalar, [B], or [B, K, 1], got {tuple(t.shape)}")
+
     def forward(
         self,
         x_t: torch.Tensor,
@@ -518,195 +466,32 @@ class FlowActor(nn.Module):
         collect_stats: bool = False,
     ) -> torch.Tensor | tuple[torch.Tensor, dict[str, torch.Tensor]]:
         """Predict the velocity. ``collect_stats=True`` returns ``(velocity, stats)``."""
-        if x_t.dim() != 3 or x_t.shape[2] != self.action_dim:
-            raise ValueError(f"x_t must have shape [B, K, {self.action_dim}], got {tuple(x_t.shape)}")
-        if condition.dim() != 2 or condition.shape[0] != x_t.shape[0] or condition.shape[1] != self.hidden_dim:
-            raise ValueError(f"condition must have shape [{x_t.shape[0]}, {self.hidden_dim}], got {tuple(condition.shape)}")
-        if x_t.shape[1] > self.action_horizon:
-            raise ValueError(f"action token count {x_t.shape[1]} exceeds action_horizon {self.action_horizon}")
-
-        t = torch.as_tensor(t, dtype=torch.float32, device=x_t.device)
-        cond = condition.to(device=x_t.device, dtype=x_t.dtype)
-        token_axis = t.dim() in (2, 3) and tuple(t.shape[:2]) == tuple(x_t.shape[:2])
-        if token_axis:
-            if t.dim() == 3:
-                if t.shape[-1] != 1:
-                    raise ValueError(f"t must end in a singleton action-dimension axis, got {tuple(t.shape)}")
-                t = t.squeeze(-1)
-            temb = self.timestep_embedder.encode_times(t.reshape(-1))
-            temb = temb.reshape(x_t.shape[0], x_t.shape[1], -1).to(
-                device=x_t.device, dtype=x_t.dtype
-            )
-            c = self.time_mlp(temb) + cond[:, None, :]
-        elif t.dim() <= 1:
-            t = t.reshape(-1)
-            if t.numel() not in (1, x_t.shape[0]):
-                raise ValueError(f"t must contain 1 or {x_t.shape[0]} values, got {t.numel()}")
-            temb = self.timestep_embedder.encode_times(t).to(
-                device=x_t.device, dtype=x_t.dtype
-            )
-            c = self.time_mlp(temb) + cond
-        else:
-            raise ValueError(f"t must be scalar, [B], or [B, K, 1], got {tuple(t.shape)}")
-
-        h = self.in_proj(x_t)
-
-        def decode(hidden: torch.Tensor) -> torch.Tensor:
-            """Modulate and project to the action dimension."""
-            shift, scale = self.adaLN_out(c).chunk(2, dim=-1)
-            if not token_axis:
-                shift, scale = shift[:, None, :], scale[:, None, :]
-            return self.out(modulate(self.norm_out(hidden), shift, scale))
-
-        if not collect_stats:
-            for block in self.blocks:
-                h = block(h, c)
-            return decode(h)
-
-        block_stats: list[dict[str, torch.Tensor]] = []
+        h, temb, cond = self._condition(x_t, t, condition)
+        h = self.in_block(h)
         for block in self.blocks:
-            h, s = block.forward_with_stats(h, c)
-            block_stats.append(s)
-        stats = self.collect_stats(temb, condition, c, h, block_stats)
-        return decode(h), stats
+            h = block(h)
+        v = self.out(self.norm_out(h)).reshape_as(x_t)
+        if not collect_stats:
+            return v
+        stats = self.collect_stats(temb, cond, h)
+        return v, stats
 
     @torch.compiler.disable
     def collect_stats(
         self,
         temb: torch.Tensor,
         condition: torch.Tensor,
-        c: torch.Tensor,
         h: torch.Tensor,
-        block_stats: list[dict[str, torch.Tensor]],
     ) -> dict[str, torch.Tensor]:
         """Diagnostics, deliberately outside any compiled graph."""
         with torch.inference_mode():
             return {
                 "temb": rms(temb),
                 "fused": rms(condition),
-                "c": rms(c),
-                **{
-                    k: torch.stack([s[k] for s in block_stats]).mean()
-                    for k in ("gate_msa", "gate_mlp", "scale_msa", "scale_mlp")
-                },
                 "effective_rank": effective_rank(h),
                 "weight_magnitude": self.weight_magnitude(),
             }
 
-
-class FlowModel(FlowActor):
-    """The DiT actor. One block is self-attention, one MishFFN, and adaLN."""
-
-    def __init__(
-        self,
-        action_dim: int,
-        action_horizon: int,
-        hidden_dim: int,
-        dit_depth: int,
-        dit_heads: int,
-        dit_mlp_ratio: float,
-        time_embed_dim: int,
-    ):
-        if dit_depth < 1 or dit_heads < 1:
-            raise ValueError(
-                f"dit_depth={dit_depth} and dit_heads={dit_heads} must be >= 1"
-            )
-        if (
-            not math.isfinite(dit_mlp_ratio)
-            or dit_mlp_ratio <= 0
-            or int(hidden_dim * dit_mlp_ratio) < 1
-        ):
-            raise ValueError("dit_mlp_ratio must produce a positive hidden width")
-        super().__init__(
-            action_dim,
-            action_horizon,
-            hidden_dim,
-            time_embed_dim,
-            dit_depth,
-            DiTBlock,
-            {"hidden_dim": hidden_dim, "n_heads": dit_heads,
-             "mlp_ratio": dit_mlp_ratio},
-        )
-
-
-class ResidualMLP(nn.Module):
-    """The residual unit of Wang et al. (2025), arXiv:2503.14858, Section 3."""
-
-    def __init__(self, hidden_dim: int, hidden_mult: float, num_units: int):
-        super().__init__()
-        if hidden_dim < MIN_WIDTH:
-            raise ValueError("hidden_dim must be at least 2")
-        if num_units < 1:
-            raise ValueError(f"num_units={num_units} must be >= 1")
-        inner = int(hidden_dim * hidden_mult)
-        if inner < 1:
-            raise ValueError("resmlp_hidden_mult must produce a positive width")
-        self.denses = nn.ModuleList(
-            nn.Linear(hidden_dim if i == 0 else inner, inner)
-            for i in range(num_units)
-        )
-        self.norms = nn.ModuleList(make_rms_norm(inner) for _ in range(num_units))
-        self.out_norm = make_rms_norm(inner)
-        self.out = nn.Linear(inner, hidden_dim)
-        nn.init.zeros_(self.out.weight)
-        nn.init.zeros_(self.out.bias)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """``x + residual(x)``. Zero at init, so the block starts as identity."""
-        h = x
-        for dense, norm in zip(self.denses, self.norms, strict=True):
-            h = norm(dense(h))
-            h = F.silu(h)
-        return x + self.out(self.out_norm(h))
-
-
-class ResMLPBlock(AdaLNBlock):
-    """The ``resmlp`` block: attention, then the paper's residual MLP."""
-
-    def __init__(
-        self,
-        hidden_dim: int,
-        n_heads: int,
-        hidden_mult: float,
-        num_units: int,
-    ):
-        super().__init__(
-            hidden_dim,
-            n_heads,
-            ResidualMLP(hidden_dim, hidden_mult, num_units),
-        )
-
-
-class FlowResMLP(FlowActor):
-    """The ``resmlp`` actor. DiT's attention and adaLN, the paper's MLP unit."""
-
-    def __init__(
-        self,
-        action_dim: int,
-        action_horizon: int,
-        hidden_dim: int,
-        resmlp_blocks: int,
-        resmlp_units: int,
-        resmlp_hidden_mult: float,
-        n_heads: int,
-        time_embed_dim: int,
-    ):
-        if resmlp_blocks < 1:
-            raise ValueError(f"resmlp_blocks={resmlp_blocks} must be >= 1")
-        if resmlp_units < 1:
-            raise ValueError(f"resmlp_units={resmlp_units} must be >= 1")
-        if n_heads < 1:
-            raise ValueError(f"n_heads={n_heads} must be >= 1")
-        super().__init__(
-            action_dim,
-            action_horizon,
-            hidden_dim,
-            time_embed_dim,
-            resmlp_blocks,
-            ResMLPBlock,
-            {"hidden_dim": hidden_dim, "n_heads": n_heads,
-             "hidden_mult": resmlp_hidden_mult, "num_units": resmlp_units},
-        )
 
 # CRITIC
 

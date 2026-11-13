@@ -3,10 +3,9 @@
 What this covers
     One forward pass of ``MyfpoPolicy`` on a fixed batch, the full ``info``
     dict it returns, and the gradient of every named parameter. It runs three
-    configurations: the ``dit`` actor, the ``resmlp`` actor, and ``dit`` at a
-    clamp low enough to saturate. A change in one actor cannot pass unnoticed
-    because the other moved too, and the clamp arm exists because the default
-    bound hides every clamp diagnostic at 0.0.
+    configurations: the flat-MLP actor and the same actor at a clamp low
+    enough to saturate. The clamp arm exists because the default bound hides
+    every clamp diagnostic at 0.0.
 
 What this does not cover
     Rollout collection, or the eval loop.
@@ -72,9 +71,8 @@ def run_one(cfg) -> dict:
 # agreed only because both were zero. The 0.5 arm puts the share strictly
 # inside (0, 1), so the two axes are distinguishable.
 CONFIGS = {
-    "dit": pin_config(),
-    "resmlp": dataclasses.replace(pin_config(), actor_arch="resmlp"),
-    "dit.clamp0.5": dataclasses.replace(pin_config(), cfm_clamp=0.5),
+    "mlp": pin_config(),
+    "mlp.clamp0.5": dataclasses.replace(pin_config(), cfm_clamp=0.5),
 }
 
 

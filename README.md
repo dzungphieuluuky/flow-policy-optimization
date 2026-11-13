@@ -9,11 +9,11 @@ Trains expressive, multimodal flow-based robot policies using online reinforceme
 - Per-token ratio clipping by default; trust-region mode selectable (`ppo` default, `spo`, `aspo`) (`flow.py`)
 - Chunked rollout (`collect.py`) with boundary diagnostics (`rollout_seam_jerk`)
 - Stored actions are the flow's raw output; the CFM target fits them in flow space (`action / actor_scale`), with no separate action normalizer. The squash into the env bounds happens on the way to the env (see `actions.py` and `algo.py`)
-- AdaLN-Zero DiT actor with causal attention, RoPE, and a log-spaced time embedding (`nn.py`)
+- Flat-MLP actor over the flattened action chunk: window encoder + per-token timestep embedding concatenated into a 4-layer SiLU MLP (`nn.py`)
 - TD-MPC2-style critic: 2 members by default (`--myfpo.num_critics 5` for the full ensemble), LayerNorm + Mish, 1% dropout, REDQ min-of-2 targets (`nn.py`). The action chunk enters through a learned affine, so the chunk's offset survives
 - Independent actor and critic gradient clipping (`train.py`)
 - Metric faithfulness (`tests/test_metric_faithfulness.py`)
-- Full diagnostic suite (`tests/test_guard_messages.py`: 66 guarded conditions)
+- Full diagnostic suite (`tests/test_guard_messages.py`: 57 guarded conditions)
 
 ## Quick start
 ```bash

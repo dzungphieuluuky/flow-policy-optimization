@@ -170,7 +170,7 @@ def _policy_and_batch(cfm_clamp, **overrides):
     pcfg = cfg(
         obs_dim=obs, act_dim=act,
         action_horizon=horizon, num_action_steps=horizon, num_mc_samples=mc,
-        hidden_dim=32, time_embed_dim=16, dit_depth=1, dit_heads=2, num_obs_steps=2,
+        hidden_dim=32, time_embed_dim=16, num_obs_steps=2,
         compile=False, report_to="none", cfm_clamp=cfm_clamp, **overrides,
     )
     torch.manual_seed(0)

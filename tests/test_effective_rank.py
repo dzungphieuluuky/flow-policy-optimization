@@ -3,20 +3,17 @@
 import pytest
 import torch
 
-from myfpo.nn import FlowModel, effective_rank
+from myfpo.nn import FlowMLP, effective_rank
 
 N, HIDDEN = 128, 128
 
 
-def _flow_model(device: torch.device) -> FlowModel:
+def _flow_model(device: torch.device) -> FlowMLP:
     torch.manual_seed(0)
-    return FlowModel(
+    return FlowMLP(
         action_dim=3,
         action_horizon=16,
         hidden_dim=HIDDEN,
-        dit_depth=2,
-        dit_heads=4,
-        dit_mlp_ratio=4.0,
         time_embed_dim=128,
     ).to(device)
 
@@ -52,6 +49,8 @@ def test_the_stats_forward_returns_both_probes_on_one_device():
         torch.randn(8, HIDDEN, device=device),
         collect_stats=True,
     )
+    assert set(stats) >= {"temb", "fused", "effective_rank", "weight_magnitude"}
+    assert isinstance(model.blocks, torch.nn.ModuleList)
     devices = {v.device.type for v in stats.values()}
     assert len(devices) == 1, f"stats span {devices}"
 

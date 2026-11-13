@@ -951,7 +951,7 @@ def configure_run(
         restore_scheduler(scheduler, scheduler_state, global_step, cfg)
 
     print(
-        f"myfpo policy: actor_depth={cfg.dit_depth} hidden={cfg.hidden_dim} "
+        f"myfpo policy: actor=FlowMLP hidden={cfg.hidden_dim} "
         f"params={sum(p.numel() for p in policy.parameters() if p.requires_grad):,}",
         file=sys.stderr,
     )
@@ -1352,8 +1352,8 @@ def make_run_name(method: str, env_name: str, seed: int, cfg_dict: dict) -> str:
     get = cfg_dict.get
     if (v := get("action_horizon")) is not None:
         tags.append(f"h{v}")
-    if (v := get("hidden_dim")) is not None and (d := get("dit_depth")) is not None:
-        tags.append(f"d{v}x{d}")
+    if (v := get("hidden_dim")) is not None:
+        tags.append(f"hd{v}")
     if (v := get("num_learning_epochs")) is not None:
         tags.append(f"ep{v}")
     if (v := get("policy_lr")) is not None:

@@ -5,7 +5,6 @@ import os
 from dataclasses import dataclass
 
 __all__ = [
-    "ACTOR_ARCHITECTURES",
     "FLOW_STARTS",
     "MyfpoConfig",
 ]
@@ -17,9 +16,6 @@ def validate_num_action_steps(n: int, action_horizon: int) -> None:
             f"num_action_steps={n} must satisfy "
             f"1 <= n <= action_horizon={action_horizon}"
         )
-
-
-ACTOR_ARCHITECTURES = ("dit", "resmlp")
 
 
 FLOW_STARTS = ("zero_start", "noise_start")
@@ -94,13 +90,6 @@ class MyfpoConfig:
     Enabled by default on CUDA via MYFPO_COMPILE=1; disabled on CPU unless
     MYFPO_COMPILE is set explicitly."""
 
-    actor_arch: str = "dit"
-    dit_depth: int = 4
-    dit_heads: int = 2
-    dit_mlp_ratio: float = 2.0
-    resmlp_blocks: int = 2
-    resmlp_units: int = 4
-    resmlp_hidden_mult: float = 2.0
     time_embed_dim: int = 8
 
     policy_lr: float = 1e-4
@@ -170,40 +159,7 @@ class MyfpoConfig:
             raise ValueError("storage_action_noise_std must be >= 0")
 
     def validate_actor(self) -> None:
-        """Actor widths, depths, the resmlp variant, and the EMA."""
-        # Before any modulo: a zero head count divides by zero instead of
-        # reporting the field.
-        if self.dit_heads < 1:
-            raise ValueError(f"dit_heads={self.dit_heads} must be >= 1")
-        if self.hidden_dim % self.dit_heads != 0:
-            raise ValueError(
-                f"hidden_dim={self.hidden_dim} must be divisible by "
-                f"dit_heads={self.dit_heads}"
-            )
-        if self.hidden_dim % (2 * self.dit_heads) != 0:
-            raise ValueError(
-                f"head_dim=hidden_dim//dit_heads={self.hidden_dim // self.dit_heads} "
-                "must be even for RoPE, which rotates (even, odd) pairs"
-            )
-        if self.actor_arch not in ACTOR_ARCHITECTURES:
-            raise ValueError(
-                f"actor_arch={self.actor_arch!r} must be one of "
-                f"{', '.join(repr(k) for k in ACTOR_ARCHITECTURES)}"
-            )
-        if self.dit_depth < 1:
-            raise ValueError(f"dit_depth={self.dit_depth} must be >= 1")
-        if self.dit_mlp_ratio <= 0:
-            raise ValueError(f"dit_mlp_ratio={self.dit_mlp_ratio} must be > 0")
-        for name, value in (
-            ("resmlp_blocks", self.resmlp_blocks),
-            ("resmlp_units", self.resmlp_units),
-        ):
-            if value < 1:
-                raise ValueError(f"{name}={value} must be >= 1")
-        if self.resmlp_hidden_mult <= 0:
-            raise ValueError(
-                f"resmlp_hidden_mult={self.resmlp_hidden_mult} must be > 0"
-            )
+        """Time embedding and the Huber knee."""
         if self.time_embed_dim < 1:
             raise ValueError(f"time_embed_dim={self.time_embed_dim} must be >= 1")
         if self.cfm_loss_huber_delta <= 0:
@@ -241,7 +197,6 @@ class MyfpoConfig:
         # The critic runs four attention heads over the state window, and
         # ``make_policy_networks`` passes ``hidden_dim`` as that window's width.
         # Each head width must be even for RoPE, so the width divides by eight.
-        # The actor's rule (2 * dit_heads) is weaker and does not imply this.
         if self.hidden_dim % 8 != 0:
             raise ValueError(
                 f"hidden_dim={self.hidden_dim} must be divisible by 8: the "

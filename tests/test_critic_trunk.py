@@ -36,8 +36,6 @@ def _cfg(**kw) -> MyfpoConfig:
             num_action_steps=H,
             hidden_dim=HIDDEN,
             num_obs_steps=STEPS,
-            dit_depth=1,
-            dit_heads=2,
             obs_dim=OBS,
             action_dim=ACT,
         ),

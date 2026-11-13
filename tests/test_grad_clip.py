@@ -25,8 +25,6 @@ def _policy(**kw) -> MyfpoPolicy:
             action_horizon=HORIZON,
             hidden_dim=32,
             num_obs_steps=STEPS,
-            dit_depth=1,
-            dit_heads=2,
             num_critics=5,
             obs_dim=OBS,
             action_dim=ACT,

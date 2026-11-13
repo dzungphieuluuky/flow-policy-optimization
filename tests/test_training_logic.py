@@ -65,8 +65,6 @@ def test_one_policy_update_runs():
         num_action_steps=2,
         num_obs_steps=2,
         hidden_dim=16,
-        dit_depth=1,
-        dit_heads=2,
         num_mc_samples=2,
         num_learning_epochs=1,
         chunks_per_update=2,
