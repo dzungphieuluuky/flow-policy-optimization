@@ -103,15 +103,26 @@ smoke fps 46.9 vs 51.94 baseline (single CPU sample).
 
 ## Phase 4 — One eval path (P4)
 
-`evaluator.py` (523 lines) duplicates collection for `Evaluator` and `VectorEvaluator`.
+As built. The plan's premise was wrong: the duplication between `Evaluator`
+(gymnasium, single-env) and `VectorEvaluator` (ManiSkill GPU) is two env-stepping
+loops — unifiable only by a mode flag (forbidden) or a behavior-risky rewrite;
+AST measurement showed ~18 lines of duplicated boilerplate (budget init,
+`summarize` delegate), everything else is genuinely different.
+`collect_chunks` reuse is infeasible (it stores training batches with autoreset).
 
-- Reuse `collect_chunks`/`predict_action_chunk` for both; `VectorEvaluator` keeps only its
-  lockstep/`ignore_terminations` contract and per‑row return accounting (~150 lines total).
-- Keep public names/CLIs (`scripts/play.py`, eval hooks in `training.py`) stable.
-- Identical eval returns on a fixed checkpoint, verified by the gate run.
+As-built changes: `_BaseEvaluator` extracted (budget init `_check_eval_counts` +
+`summarize` delegate, shared by both evaluators). No env-loop rewrite; behavior
+identical — a seeded 2000-step Hopper run produced a **byte-identical**
+`eval_history.csv` before and after (compare `/tmp/myfpo_smoke/p4_{pre,post}`).
 
-Acceptance: `evaluator.py` ≤ 200 lines; gate eval identical bitwise on the same weights;
-gates green.
+Acceptance re-scoped: no `≤200 lines` claim — `evaluator.py` is 518 lines, still
+~230 lines of pinned jerk/CSV/stats helpers used externally (pins, multiseed,
+training). If a shared env protocol (Isaac Lab's `VecEnv` adapter pattern) is
+ever wanted, that is a separate, behavior-risking decision — it changes eval seeding
+for gymnasium envs and is out of scope here.
+
+Status: done — gates green (577 pass / 2 pre-existing mani_skill failures);
+pins 817/218, 0 mismatches; smoke CSV byte-identical.
 
 ## Phase 5 — Optimizer and buffer compression (P5, P7)
 

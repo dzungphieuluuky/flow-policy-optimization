@@ -216,7 +216,23 @@ def summarize_results(results: list[dict[str, Any]], seed: int = 0) -> dict[str,
     }
 
 
-class Evaluator:
+class _BaseEvaluator:
+    """The eval budget shared by the two evaluators. Holds no env logic."""
+
+    def __init__(self, eval_seed: int, max_episodes: int, max_steps: int | None) -> None:
+        _check_eval_counts(max_episodes, max_steps)
+        self.eval_seed = eval_seed
+        self.max_episodes = max_episodes
+        self.max_steps = max_steps
+
+    def summarize(
+        self, results: list[dict[str, Any]], seed: int = 0
+    ) -> dict[str, float]:
+        """The mean, the median, the interval, and the count for one eval."""
+        return summarize_results(results, seed=seed)
+
+
+class Evaluator(_BaseEvaluator):
     """Deterministic evaluator for flat-obs (MuJoCo) envs."""
 
     def __init__(
@@ -238,11 +254,8 @@ class Evaluator:
                 ) from e
             if isinstance(env.observation_space, gym.spaces.Dict):
                 raise AssertionError("Evaluator expects flat Box obs")
-        _check_eval_counts(max_episodes, max_steps)
         self.env = env
-        self.eval_seed = eval_seed
-        self.max_episodes = max_episodes
-        self.max_steps = max_steps
+        super().__init__(eval_seed, max_episodes, max_steps)
 
     def rollout_single_episode(
         self,
@@ -305,12 +318,6 @@ class Evaluator:
                 total_steps += taken
         return _finish_eval(out_dir, append_csv, results)
 
-    def summarize(
-        self, results: list[dict[str, Any]], seed: int = 0
-    ) -> dict[str, float]:
-        """The mean, the median, the interval, and the count for one eval."""
-        return summarize_results(results, seed=seed)
-
     def clone(self, max_episodes: int) -> Evaluator:
         """The same evaluator, with a different episode budget."""
         return Evaluator(
@@ -327,7 +334,7 @@ class Evaluator:
         return lambda _obs: env.action_space.sample()
 
 
-class VectorEvaluator:
+class VectorEvaluator(_BaseEvaluator):
     """Deterministic batched evaluator for a torch vector env (ManiSkill GPU).
 
     Every row runs in lockstep and only stops at the time limit
@@ -356,14 +363,11 @@ class VectorEvaluator:
         if num_obs_steps < 1:
             raise ValueError(f"num_obs_steps={num_obs_steps} must be >= 1")
         validate_num_action_steps(num_action_steps, action_horizon)
-        _check_eval_counts(max_episodes, max_steps)
         self.env = env
         self.num_obs_steps = num_obs_steps
         self.num_action_steps = num_action_steps
         self.action_horizon = action_horizon
-        self.eval_seed = eval_seed
-        self.max_episodes = max_episodes
-        self.max_steps = max_steps
+        super().__init__(eval_seed, max_episodes, max_steps)
         self.action_low, self.action_high = resolve_action_bounds(
             env.single_action_space.low, env.single_action_space.high
         )
@@ -484,12 +488,6 @@ class VectorEvaluator:
                         }
                     )
         return _finish_eval(out_dir, append_csv, results)
-
-    def summarize(
-        self, results: list[dict[str, Any]], seed: int = 0
-    ) -> dict[str, float]:
-        """The mean, the median, the interval, and the count for one eval."""
-        return summarize_results(results, seed=seed)
 
     def clone(self, max_episodes: int) -> VectorEvaluator:
         """The same evaluator, with a different episode budget."""
