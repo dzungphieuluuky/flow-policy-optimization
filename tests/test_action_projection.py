@@ -18,7 +18,7 @@ import pytest
 import torch
 
 from myfpo.configuration import MyfpoConfig
-from myfpo.processor import squash_to_env_bounds
+from myfpo.actions import squash_to_env_bounds
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -122,7 +122,7 @@ def test_the_collector_no_longer_clamps():
     them unreachable. This test fails if either comes back.
     """
     from myfpo.rollout import resolve_action_bounds
-    from myfpo.processor import squash_to_env_bounds
+    from myfpo.actions import squash_to_env_bounds
 
     lo, hi = resolve_action_bounds([-2.0, -1.0, -0.3], [2.0, 1.0, 0.3])
     raw = torch.tensor([[9.0, -9.0, 5.0]])
@@ -217,13 +217,17 @@ def test_no_clamp_survives_on_the_collector_path():
                 clamps.append(ast.unparse(inner))
     assert not clamps, f"the collector clamps an action again: {clamps}"
 
-    # The squash is what bounds the action, and it is there.
+    # The squash is what bounds the action, and it is there. Since the action
+    # map moved into ``myfpo.actions``, the collector applies it through the
+    # mappers (``to_env_action`` / ``to_critic_action``); the squash itself
+    # lives in that module and is covered there.
+    bounds = {"squash_to_env_bounds", "to_env_action", "to_critic_action"}
     squashes = [
         ast.unparse(n.func)
         for n in ast.walk(tree)
-        if isinstance(n, ast.Call) and "squash" in ast.unparse(n.func).lower()
+        if isinstance(n, ast.Call) and ast.unparse(n.func).rsplit(".", 1)[-1] in bounds
     ]
-    assert squashes, "the collector lost the squash"
+    assert squashes, "the collector lost the action map"
 
     # The clip counter must be gone from the code, though the docstring still
     # names it while explaining the removal.
@@ -232,7 +236,7 @@ def test_no_clamp_survives_on_the_collector_path():
 
 
 def test_squash_zeroes_only_the_masked_steps():
-    from myfpo.processor import squash_to_env_bounds
+    from myfpo.actions import squash_to_env_bounds
 
     torch.manual_seed(0)
     raw = torch.randn(2, 4, 3)

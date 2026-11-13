@@ -92,7 +92,7 @@ def test_estimate_state_values_averages_fresh_policy_samples(config):
     """
     import torch
 
-    from myfpo.processor import squash_to_env_bounds
+    from myfpo.actions import squash_to_env_bounds
     from myfpo.rollout import estimate_state_values
 
     cfg = dataclasses.replace(config, num_baseline_samples=3, action_processing_mode="tanh_squash")

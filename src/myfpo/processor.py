@@ -1,5 +1,5 @@
-"""myfpo pre/post helpers. The pair normalizes the obs and squashes the policy
-output into the env's action bounds.
+"""myfpo observation encoder. Normalizes obs frames and encodes the window.
+The action-processing contract lives in ``myfpo.actions``.
 """
 
 from __future__ import annotations
@@ -112,84 +112,3 @@ class StateEncoder(nn.Module):
         vector of width ``hidden_dim``.
         """
         return self.out_norm(self.encode_tokens(states)[:, -1])
-
-
-def env_squash_terms(
-    low: torch.Tensor, high: torch.Tensor
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """The scale and bias of the env's action bounds.
-
-    ``scale = (high - low) / 2`` and ``bias = low + scale``. The bias is
-    the low end plus the half width, so the two terms come from one
-    difference and cannot drift apart.
-    """
-    scale = 0.5 * (high - low)
-    return scale, low + scale
-
-
-def _squash(
-    raw: torch.Tensor, scale: torch.Tensor, bias: torch.Tensor
-) -> torch.Tensor:
-    """Core tanh map: ``bias + scale * tanh(raw)``.
-
-    Private. ``scale`` and ``bias`` are the affine terms of the env's
-    bounds, from :func:`env_squash_terms`. The ``tanh`` is the only thing
-    that bounds the action, and it is applied exactly once, on the way to
-    the env. The flow regresses on z-scored targets (the default); it never
-    trains on the env-facing squash of its own output.
-    """
-    scale = scale.to(device=raw.device, dtype=raw.dtype)
-    bias = bias.to(device=raw.device, dtype=raw.dtype)
-    return torch.addcmul(bias, scale, torch.tanh(raw))
-
-
-def squash_to_env_bounds(
-    raw: torch.Tensor,
-    low: torch.Tensor,
-    high: torch.Tensor,
-    *,
-    mask: torch.Tensor | None = None,
-) -> torch.Tensor:
-    """Map a raw policy output into the env's action bounds.
-
-    The single env-facing squash: derive the affine terms once, apply the
-    tanh, and optionally zero padded steps. Collector, training diagnostics
-    and critic all read through here, so the bound invariant has one home.
-    """
-    scale, bias = env_squash_terms(low, high)
-    out = _squash(raw, scale, bias)
-    if mask is not None:
-        out = out * mask
-    return out
-def bound_to_unit(x: torch.Tensor) -> torch.Tensor:
-    """Clamp to the unit hypercube ``[-1, 1]`` (the linear-mode stored space).
-
-    The stored action under linear processing is bounded in ``[-1, 1]``; this
-    only bounds outliers, it does not rescale. Bounding lives here, not in the
-    policy, so there is one home for the bound invariant.
-    """
-    return x.clamp(-1.0, 1.0)
-
-
-
-
-
-def unscale_to_env(
-    scaled: torch.Tensor,
-    low: torch.Tensor,
-    high: torch.Tensor,
-    *,
-    mask: torch.Tensor | None = None,
-) -> torch.Tensor:
-    """Map a bounded ``[-1, 1]`` action back to env scale.
-
-    ``low + (scaled + 1) / 2 * (high - low)``.
-    """
-    scale = (high - low).to(device=scaled.device, dtype=scaled.dtype)
-    low_t = low.to(device=scaled.device, dtype=scaled.dtype)
-    out = low_t + (scaled + 1.0) * 0.5 * scale
-    if mask is not None:
-        out = out * mask
-    return out
-
-

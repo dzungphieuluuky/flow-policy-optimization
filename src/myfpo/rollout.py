@@ -9,7 +9,7 @@ import dataclasses
 from collections.abc import Callable
 import numpy as np
 from myfpo.configuration import validate_num_action_steps
-from myfpo.processor import squash_to_env_bounds, unscale_to_env, bound_to_unit
+from myfpo.actions import bound_for_storage, to_critic_action, to_env_action
 from dataclasses import dataclass
 from myfpo.fpo_core import (
     compute_gae_diagnostics,
@@ -576,10 +576,7 @@ def plan_chunks(
     # mapped to env bounds, and the buffer keeps the policy-space chunk:
     # the flow is trained on what it produced, not on the env mapping.
     raw_all = policy(states).detach().to(OBS_DTYPE)
-    if state.action_processing_mode == "linear_rescale":
-        executed_all = unscale_to_env(raw_all, low, high)
-    else:
-        executed_all = squash_to_env_bounds(raw_all, low, high)
+    executed_all = to_env_action(raw_all, low, high, mode=state.action_processing_mode)
     state.executed_plan[wavefront] = executed_all
     # The chunk is held in registers rather than in one object per env, so a
     # closing step can gather all finished chunks with a single index.
@@ -823,8 +820,7 @@ def close_chunks(
         # is untouched (ratio-level entropy regularization). The bound applies
         # after the noise: the stored chunk must stay in the flow's domain.
         stored_actions = stored_actions + state.action_noise_std * torch.randn_like(stored_actions)
-        if state.action_processing_mode == "linear_rescale":
-            stored_actions = bound_to_unit(stored_actions)
+        stored_actions = bound_for_storage(stored_actions, state.action_processing_mode)
     buffer.write_chunks(
         start_window=state.start_window[rows],
         next_window=next_window,
@@ -1103,12 +1099,10 @@ def estimate_state_values(
     qs = []
     for _ in range(cfg.num_baseline_samples):
         proposed = policy.sample_chunk(condition, start_from_zero=False)
-        if cfg.action_processing_mode == "linear_rescale":
-            proposed = proposed * mask
-        else:
-            proposed = squash_to_env_bounds(
-                proposed, policy.action_low, policy.action_high, mask=mask
-            )
+        proposed = to_critic_action(
+            proposed, policy.action_low, policy.action_high,
+            mode=cfg.action_processing_mode, mask=mask,
+        )
         qs.append(
             subsampled_min(critic(normalized_states, proposed, exec_length_frac).float())
         )
@@ -1183,24 +1177,20 @@ def bootstrap_values(
         try:
             with autocast_context(device):
                 chunk_len_mask = (torch.arange(cfg.action_horizon, device=actions.device).unsqueeze(0) < active["chunk_lengths"].unsqueeze(1)).unsqueeze(-1).float()
-                if cfg.action_processing_mode == "linear_rescale":
-                    actions_for_critic = actions * chunk_len_mask
-                else:
-                    actions_for_critic = squash_to_env_bounds(
-                        actions, policy.action_low, policy.action_high, mask=chunk_len_mask
-                    )
+                actions_for_critic = to_critic_action(
+                    actions, policy.action_low, policy.action_high,
+                    mode=cfg.action_processing_mode, mask=chunk_len_mask,
+                )
                 q_current_chunk = subsampled_min(policy.critic(normalized_states, actions_for_critic, exec_length_frac).float())
                 # The next state's proposal runs for num_action_steps, so its
                 # mask is the executed prefix, not the chunk length.
                 boot_mask = (torch.arange(cfg.action_horizon, device=actions.device).unsqueeze(0) < cfg.num_action_steps).unsqueeze(-1).float()
                 q_bootstrap = None
                 if need_bootstrap:
-                    if cfg.action_processing_mode == "linear_rescale":
-                        boot_actions_for_critic = boot_actions * boot_mask
-                    else:
-                        boot_actions_for_critic = squash_to_env_bounds(
-                            boot_actions, policy.action_low, policy.action_high, mask=boot_mask
-                        )
+                    boot_actions_for_critic = to_critic_action(
+                        boot_actions, policy.action_low, policy.action_high,
+                        mode=cfg.action_processing_mode, mask=boot_mask,
+                    )
                     # Diagnostic-only snapshot for measure_value_drift
                     # (log_drift_diagnostics); never feeds the advantage.
                     q_bootstrap = subsampled_min(policy.critic_target(normalized_next_states, boot_actions_for_critic, boot_exec_frac).float())

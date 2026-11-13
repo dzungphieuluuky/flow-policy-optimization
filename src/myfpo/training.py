@@ -37,7 +37,7 @@ from myfpo.evaluator import (
 )
 from myfpo.modeling import TrainingAborted, MyfpoPolicy, make_optimizer
 from myfpo.fpo_core import compute_eval_summary_metrics, subsampled_min
-from myfpo.processor import squash_to_env_bounds, unscale_to_env
+from myfpo.actions import to_critic_action, to_env_action
 from myfpo.layers import (
     autocast_context,
     cudagraph_step_begin,
@@ -255,9 +255,7 @@ def executed_chunk(
     device = action.device
     low_f = low.to(device=device, dtype=torch.float32)
     high_f = high.to(device=device, dtype=torch.float32)
-    if action_processing_mode == "linear_rescale":
-        return unscale_to_env(action.float(), low_f, high_f)
-    return squash_to_env_bounds(action.float(), low_f, high_f)
+    return to_env_action(action.float(), low_f, high_f, mode=action_processing_mode)
 
 
 @torch.no_grad()
@@ -321,13 +319,10 @@ def measure_value_drift(policy, batch, device) -> tuple[torch.Tensor, torch.Tens
         torch.arange(cfg.action_horizon, device=boot_obs.device)
         .unsqueeze(0) < cfg.num_action_steps
     ).unsqueeze(-1).float()
-    _mode = getattr(cfg, "action_processing_mode", "tanh_squash")
-    if _mode == "linear_rescale":
-        boot_actions = boot_actions_raw * boot_mask
-    else:
-        boot_actions = squash_to_env_bounds(
-            boot_actions_raw, policy.action_low, policy.action_high, mask=boot_mask
-        )
+    boot_actions = to_critic_action(
+        boot_actions_raw, policy.action_low, policy.action_high,
+        mode=getattr(cfg, "action_processing_mode", "tanh_squash"), mask=boot_mask,
+    )
     critic_was_training = policy.critic.training
     policy.critic.eval()
     try:

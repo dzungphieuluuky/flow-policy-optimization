@@ -39,22 +39,24 @@ Nine call sites re‑implement the `linear_rescale`/`tanh_squash` branch:
 `training.py:258`, `:325`, `evaluator.py:450`. Each carries a comment re-deriving the
 contract — the bug class that keeps reappearing.
 
-- New module `myfpo/actions.py` exporting exactly:
-  - `bound_to_unit(x)` (clamp, moved from `processor.py`)
-  - `to_env_action(raw, low, high, *, mask=None)` — the ONLY squash
-  - `to_env_action_` semantics for eval/rollout read sites
-- Every consumer calls `to_env_action` / `bound_to_unit`; zero inline `if mode ==`.
-- The unit‑bound semantics for stored actions stay *at the buffer write* exactly as today.
+- New module `myfpo/actions.py` — the only home of the `action_processing_mode`
+  branch, exporting: `env_squash_terms`, `squash_to_env_bounds`, `bound_to_unit`,
+  `unscale_to_env` (primitives, moved from `processor.py`), and three mappers:
+  `bound_for_storage(x, mode)` (collection bound), `to_env_action(x, low, high, *, mode)`
+  (env-facing map), `to_critic_action(x, low, high, *, mode, mask=None)` (critic space;
+  linear keeps the scaled unit box, tanh reads env bounds). The plan originally sketched
+  two functions; the mode split the critic and the env genuinely need three.
+- Every consumer calls one of the mappers; zero inline `if mode ==` outside `actions.py`.
+- The unit-bound semantics for stored actions stay at the collection write exactly as today.
+- `processor.py` keeps only `RunningMeanStd` + `StateEncoder`; action math moved out.
+- Wording-only contract test updated accordingly (`test_action_projection.py` AST check
+  now accepts the mappers as the collector's bound).
 
-Acceptance: `grep -rn "linear_rescale" src scripts` matches only `actions.py`,
-`configuration.py` (the flag), and pins/tests; gates green; pins unchanged.
+Status: done — pin_train 817 / pin_eval 218 keys, 0 mismatches; smoke fps 49.5 vs 51.94
+baseline (single CPU sample, within noise; identical seed → identical eval return 16.18).
+Acceptance: `grep -rn "linear_rescale" src scripts` matches only `actions.py`, `configuration.py`, and pins/tests; gates green; pins unchanged.
 
 ## Phase 2 — Diagnostics behind one flag (P3)
-
-Move out of the hot path into `myfpo/diagnostics.py`, imported lazily:
-`measure_value_drift` (`training.py:301`), `compute_gae_diagnostics` (`fpo_core.py`),
-`effective_rank`/spectral probes (`networks.py`), `temporal_probe_every` plumbing,
-drift timers/tables in `training.py`.
 
 - Single flag `cfg.diagnostics: bool = False`; when off, zero diagnostic imports execute.
 - Default config stays `False` (current behavior: only explicit `log_drift_diagnostics`

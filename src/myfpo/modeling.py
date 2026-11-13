@@ -36,7 +36,8 @@ from myfpo.fpo_core import (
     compute_value_loss,
 )
 from myfpo.networks import Critic, FlowModel, FlowResMLP
-from myfpo.processor import RunningMeanStd, StateEncoder, squash_to_env_bounds, bound_to_unit, unscale_to_env
+from myfpo.processor import RunningMeanStd, StateEncoder
+from myfpo.actions import bound_for_storage, to_critic_action, to_env_action
 from myfpo.rollout import RolloutBuffers, resolve_action_bounds, run_rollout
 from myfpo.layers import (
     autocast_context,
@@ -441,14 +442,12 @@ class MyfpoPolicy(nn.Module):
         proposal = action_chunk
         if self.training and cfg.action_perturb_std > 0:
             proposal = proposal + cfg.action_perturb_std * torch.randn_like(proposal)
-        if cfg.action_processing_mode == "linear_rescale":
-            # Stored actions are bounded in [-1, 1] (linear processing); only
-            # bound outliers. Rescaling here would assume env scale and
-            # double-rescale, collapsing actions toward 0 over training.
-            proposal = bound_to_unit(proposal)
-        # The chunk here is raw (scaled-space flow output x actor_scale); the
+        # Stored actions are bounded in [-1, 1] under linear processing; only
+        # bound outliers. Rescaling here would assume env scale and
+        # double-rescale, collapsing actions toward 0 over training. The
+        # chunk here is raw (scaled-space flow output x actor_scale); the
         # env-facing action is produced on the way to the env, not here.
-        return proposal
+        return bound_for_storage(proposal, cfg.action_processing_mode)
 
     def predict_action_chunk(
         self, batch: dict[str, torch.Tensor], *, start_from_zero: bool = True
@@ -496,10 +495,10 @@ class MyfpoPolicy(nn.Module):
         if not self.action_buffer:
             chunk = self.predict_action_chunk({"observation.state": window}, start_from_zero=start_from_zero)
             n_execute = max(1, min(self.config.num_action_steps, chunk.shape[1]))
-            if self.config.action_processing_mode == "linear_rescale":
-                env_chunk = unscale_to_env(chunk, self.action_low, self.action_high)
-            else:
-                env_chunk = squash_to_env_bounds(chunk, self.action_low, self.action_high)
+            env_chunk = to_env_action(
+                chunk, self.action_low, self.action_high,
+                mode=self.config.action_processing_mode,
+            )
             for i in range(n_execute):
                 self.action_buffer.append(env_chunk[0, i])
         return self.action_buffer.popleft()
@@ -853,12 +852,10 @@ class MyfpoPolicy(nn.Module):
             # reads the raw policy output to match the rollout bootstrap (which
             # uses the stored raw action). Recover it before the env mapping.
             raw_actions = self._from_flow_space(b.actions)
-            if self.config.action_processing_mode == "linear_rescale":
-                b_actions_for_critic = raw_actions * pad_mask
-            else:
-                b_actions_for_critic = squash_to_env_bounds(
-                    raw_actions, self.action_low, self.action_high, mask=pad_mask
-                )
+            b_actions_for_critic = to_critic_action(
+                raw_actions, self.action_low, self.action_high,
+                mode=self.config.action_processing_mode, mask=pad_mask,
+            )
             raw_value_pred = self.critic(b.states, b_actions_for_critic, chunk_exec_frac).float()  # [num_critics, n]
         raw_returns_flat = b.returns.reshape(-1)
         if raw_value_pred.shape[-1] != raw_returns_flat.shape[0]:
