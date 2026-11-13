@@ -5,8 +5,8 @@ import dataclasses
 import pytest
 import torch
 
-from myfpo.configuration import MyfpoConfig
-from myfpo.fpo_core import velocity_to_target_param, cfm_target, compute_cfm_loss
+from myfpo.config import MyfpoConfig
+from myfpo.flow import velocity_to_target_param, cfm_target, compute_cfm_loss
 
 MODES = ("velocity", "action", "eps")
 
@@ -71,10 +71,10 @@ def test_the_map_names_the_flow_network_parameter_it_stands_in_for():
     FPO++ reaches the same three endpoints by moving ``u``, its
     ``flow_network_output_param``. The new name says which parameter.
     """
-    from myfpo import fpo_core
+    from myfpo import flow
 
-    assert hasattr(fpo_core, "velocity_to_target_param")
-    assert not hasattr(fpo_core, "cfm_prediction"), "the old name is still exported"
+    assert hasattr(flow, "velocity_to_target_param")
+    assert not hasattr(flow, "cfm_prediction"), "the old name is still exported"
 
     # The map is not a prediction: it is invertible on the straight path, so the
     # same velocity always lands on the same parameter value.

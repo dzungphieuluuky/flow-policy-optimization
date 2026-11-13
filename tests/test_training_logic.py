@@ -3,7 +3,7 @@ import inspect
 import warnings
 
 import torch
-from myfpo.training import (
+from myfpo.train import (
     make_optimizer,
     make_policy,
     policy_update_step,
@@ -11,9 +11,9 @@ from myfpo.training import (
     split_grad_params,
     update_metrics,
 )
-from myfpo.configuration import MyfpoConfig
+from myfpo.config import MyfpoConfig
 from fixtures import make_batch, make_test_policy
-from myfpo.layers import cudagraph_safe
+from myfpo.nn import cudagraph_safe
 
 
 def test_observation_stats_land_before_the_update():

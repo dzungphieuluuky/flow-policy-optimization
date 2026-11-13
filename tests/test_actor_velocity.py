@@ -12,8 +12,8 @@ import dataclasses
 
 import torch
 
-from myfpo.configuration import MyfpoConfig
-from myfpo.training import make_policy
+from myfpo.config import MyfpoConfig
+from myfpo.train import make_policy
 
 OBS, ACT, HORIZON = 3, 2, 4
 

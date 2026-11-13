@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import torch
 
-from myfpo.configuration import MyfpoConfig
-from myfpo.modeling import MyfpoPolicy
+from myfpo.config import MyfpoConfig
+from myfpo.algo import MyfpoPolicy
 
 OBS_DIM = 5
 ACT_DIM = 2

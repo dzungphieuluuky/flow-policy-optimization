@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import torch
 
-from myfpo.configuration import MyfpoConfig
+from myfpo.config import MyfpoConfig
 
 # The shape of the pin problem. Small on purpose: a pin must run in seconds so
 # it can be the gate on every commit.
@@ -57,7 +57,7 @@ def build(cfg: MyfpoConfig, seed: int = 0):
     order fixes the random stream. Moving one ``nn.Module`` to a different
     position in ``__init__`` changes every later draw. The pin catches that.
     """
-    from myfpo.training import make_policy
+    from myfpo.train import make_policy
 
     torch.manual_seed(seed)
     return make_policy(
@@ -72,7 +72,7 @@ def fixed_batch(policy, n: int = 3, seed: int = 1) -> dict:
     must report a ratio of exactly one. The pin therefore measures the training
     step only, not the learning.
     """
-    from myfpo.fpo_core import sample_timesteps
+    from myfpo.flow import sample_timesteps
 
     cfg = policy.config
     torch.manual_seed(seed)

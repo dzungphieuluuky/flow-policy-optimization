@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 import torch
 
-from myfpo.rollout import (
+from myfpo.collect import (
     RolloutBuffer,
     collect_chunks_vec,
 )

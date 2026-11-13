@@ -17,7 +17,7 @@ import numpy as np
 import pytest
 import torch
 
-from myfpo.rollout import (
+from myfpo.collect import (
     EnvCarry,
     RolloutBuffer,
     close_chunks,

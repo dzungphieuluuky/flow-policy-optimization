@@ -8,12 +8,12 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 
-from myfpo.configuration import (  # noqa: E402
+from myfpo.env import (  # noqa: E402
     ENV_REGISTRY_PATH,
     KNOWN_ENVS,
     get_observation_action_dim,
 )
-from myfpo.configuration import MyfpoConfig  # noqa: E402
+from myfpo.config import MyfpoConfig  # noqa: E402
 
 # Tier "smoke": pure gymnasium, no mujoco, so these run anywhere.
 SMOKE_ENVS = ("Pendulum-v1", "Reacher-v5")
@@ -65,7 +65,7 @@ def test_registry_dims_match_the_live_env_space(env_id):
 @pytest.mark.parametrize("env_id", SMOKE_ENVS)
 def test_make_policy_attaches_dims_from_the_registry(env_id):
     """The runner's only inputs: an env name and its resolved dims."""
-    from myfpo.training import make_policy
+    from myfpo.train import make_policy
 
     obs_dim, action_dim = get_observation_action_dim(env_id)
     cfg = MyfpoConfig()

@@ -2,7 +2,7 @@
 
 Training collects with the stochastic start, so the critic bootstraps from the
 stochastic start. The reported score used the zero start anyway, so the run
-measured a policy that training never optimized.
+measured a policy that train never optimized.
 
 The two names now cover the config, the logs, the CSV, and the return dict.
 This file pins the naming, the plumbing, and the separation of the two
@@ -14,7 +14,7 @@ import dataclasses
 import numpy as np
 import pytest
 
-from myfpo.configuration import MyfpoConfig
+from myfpo.config import MyfpoConfig
 
 SAMPLINGS = ("zero_start", "noise_start")
 
@@ -25,10 +25,10 @@ SAMPLINGS = ("zero_start", "noise_start")
 def test_both_fields_default_to_the_trained_distribution():
     cfg = MyfpoConfig()
     assert cfg.eval_sampling == "noise_start", (
-        "the reported score must read the distribution training optimizes"
+        "the reported score must read the distribution train optimizes"
     )
     assert cfg.final_eval_sampling == "noise_start", (
-        "the stopper must read the distribution training optimizes"
+        "the stopper must read the distribution train optimizes"
     )
 
 
@@ -58,7 +58,7 @@ def test_both_named_values_are_accepted(field, value):
 
 
 def test_the_adapter_maps_the_config_value_to_the_start_point():
-    from myfpo.training import EvalPolicy
+    from myfpo.train import EvalPolicy
 
     class _P:
         pass
@@ -71,9 +71,9 @@ def test_the_two_adapters_give_different_returns():
     """The whole point: the two starts must not be interchangeable."""
     import gymnasium as gym
 
-    from myfpo.configuration import MyfpoConfig
-    from myfpo.evaluator import Evaluator
-    from myfpo.training import EvalPolicy, make_policy
+    from myfpo.config import MyfpoConfig
+    from myfpo.eval import Evaluator
+    from myfpo.train import EvalPolicy, make_policy
 
     env = gym.make("Hopper-v5")
     try:
@@ -110,15 +110,15 @@ def _trainer_source() -> str:
     """The source of the trainer: the run loop and the helpers it calls."""
     import inspect
 
-    from myfpo import training
+    from myfpo import train
 
     return "\n".join(
         inspect.getsource(fn)
         for fn in (
-            training.run_training,
-            training.configure_run,
-            training.eval_window,
-            training.log_eval_window,
+            train.run_training,
+            train.configure_run,
+            train.eval_window,
+            train.log_eval_window,
         )
     )
 
@@ -132,7 +132,7 @@ def test_the_trainer_builds_both_adapters_once():
 def test_the_trainer_copies_both_names_into_evaluate_policy():
     import inspect
 
-    from myfpo.training import evaluate_policy
+    from myfpo.train import evaluate_policy
 
     src = inspect.getsource(evaluate_policy)
     assert "reported_name=cfg.eval_sampling" in src
@@ -143,7 +143,7 @@ def test_the_trainer_copies_both_names_into_evaluate_policy():
 def test_each_start_is_evaluated_once():
     import inspect
 
-    from myfpo.training import evaluate_policy
+    from myfpo.train import evaluate_policy
 
     src = inspect.getsource(evaluate_policy)
     assert src.count("evaluator.evaluate(") == 1, (
@@ -211,7 +211,7 @@ def test_the_stopper_reads_the_stop_distribution():
     """
     import inspect
 
-    from myfpo.training import evaluate_policy
+    from myfpo.train import evaluate_policy
 
     src = inspect.getsource(evaluate_policy)
     assert "stop_return = window_obj.stop_return" in src
@@ -232,7 +232,7 @@ def test_summarize_window_peaks_on_the_stop_distribution():
     reported mean, this case would report improved on the first window and
     lose the improvement on the second.
     """
-    from myfpo.training import summarize_window
+    from myfpo.train import summarize_window
 
     def summarize(rows, *, seed):
         # The seed only has to reach the call. The real summarize resamples.

@@ -66,7 +66,7 @@ class ManiSkillTorchEnv:
     inside the call, and the returned observation is the first frame of the
     new episode, with the true terminal frame in
     ``info["final_observation"]``. The collector consumes this contract
-    natively — see ``close_chunks`` in ``myfpo.rollout``.
+    natively — see ``close_chunks`` in ``myfpo.collect``.
     """
 
     def __init__(

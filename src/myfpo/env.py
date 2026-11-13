@@ -1,14 +1,48 @@
-"""myfpo observation encoder. Normalizes obs frames and encodes the window.
-The action-processing contract lives in ``myfpo.actions``.
+"""Environment-facing helpers.
+
+The env registry (dims from ``configs/envs.yaml``), the observation normalizer,
+and the action-bounds resolution. Leaf module: nothing in the package imports
+from here except factories and the collector.
 """
 
 from __future__ import annotations
-import warnings
-import torch
-from torch import nn
-from myfpo.layers import MIN_WIDTH, CondMLP, SelfAttention, make_rms_norm
 
-# ---- from encoder.py ----
+import warnings
+from pathlib import Path
+
+import numpy as np
+import torch
+import yaml
+from torch import nn
+
+__all__ = [
+    "ENV_REGISTRY_PATH",
+    "KNOWN_ENVS",
+    "RunningMeanStd",
+    "get_observation_action_dim",
+    "resolve_action_bounds",
+]
+
+# ---- from configuration.py ----
+ENV_REGISTRY_PATH = Path(__file__).resolve().parents[2] / "configs" / "envs.yaml"
+
+with ENV_REGISTRY_PATH.open() as f:
+    _ENV_REGISTRY = yaml.safe_load(f) or {}
+
+KNOWN_ENVS = tuple(_ENV_REGISTRY.keys())
+
+
+def get_observation_action_dim(env_id: str) -> tuple[int, int]:
+    """Obs and action dims for ``env_id``, from ``configs/envs.yaml``."""
+    if not _ENV_REGISTRY:
+        raise KeyError(f"registry empty at {ENV_REGISTRY_PATH}")
+    entry = _ENV_REGISTRY.get(env_id)
+    if entry is None:
+        raise KeyError(f"unknown env {env_id!r}; add it to {ENV_REGISTRY_PATH}")
+    return int(entry["obs_dim"]), int(entry["action_dim"])
+
+
+# ---- from processor.py ----
 class RunningMeanStd(nn.Module):
     """Per-dimension running mean and variance over raw obs frames."""
 
@@ -70,45 +104,32 @@ class RunningMeanStd(nn.Module):
         norm = (x - self.mean) * torch.rsqrt(self.var + self.eps)
         return norm.clamp(-self.clip, self.clip).to(x.dtype)
 
-class StateEncoder(nn.Module):
-    """Project frame, causal attention over window, read last, RMSNorm.
-    Shared projection (not flat dense); RMS (not LayerNorm) to keep mean."""
 
-    def __init__(
-        self,
-        obs_dim: int,
-        hidden_dim: int,
-        max_obs_steps: int,
-        n_heads: int = 2,
-    ):
-        super().__init__()
-        if hidden_dim < MIN_WIDTH:
-            raise ValueError("hidden_dim must be at least 2")
-        if max_obs_steps < 1:
-            raise ValueError(f"max_obs_steps must be >= 1, got {max_obs_steps}")
-        self.obs_dim = obs_dim
-        self.max_obs_steps = max_obs_steps
-        self.n_heads = n_heads
-        self.frame = CondMLP(obs_dim, hidden_dim, hidden_dim)
-        self.attn_norm = make_rms_norm(hidden_dim)
-        self.attn = SelfAttention(hidden_dim, n_heads)
-        self.out_norm = make_rms_norm(hidden_dim)
+# ---- from rollout.py ----
+def resolve_action_bounds(
+    low: float | np.ndarray | torch.Tensor,
+    high: float | np.ndarray | torch.Tensor,
+    *,
+    dtype: torch.dtype = torch.float32,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Coerce env action bounds into ``dtype`` tensors, strict ``high > low``."""
 
-    def encode_tokens(self, states: torch.Tensor) -> torch.Tensor:
-        """Return the attended window ``[B, T, hidden]``, before the pool.
+    def _coerce(x):
+        if isinstance(x, torch.Tensor):
+            return x
+        return np.asarray(x, dtype=np.float32)
 
-        The critic's cross-attention reads one token per frame, so it needs the
-        sequence. ``forward`` pools this sequence to the last frame.
-        """
-        if states.dim() != 3 or states.shape[2] != self.obs_dim:
-            raise ValueError(f"states must have shape [B, {self.max_obs_steps}, {self.obs_dim}], got {tuple(states.shape)}")
-        if states.shape[1] != self.max_obs_steps:
-            raise ValueError(f"states has {states.shape[1]} frames, built for max_obs_steps={self.max_obs_steps}")
-        h = self.frame(states)
-        return h + self.attn(self.attn_norm(h))
-
-    def forward(self, states: torch.Tensor) -> torch.Tensor:
-        """Accept the window ``[B, T, obs]``. Return one normalized conditioning
-        vector of width ``hidden_dim``.
-        """
-        return self.out_norm(self.encode_tokens(states)[:, -1])
+    lo = torch.as_tensor(_coerce(low), dtype=dtype).reshape(-1)
+    hi = torch.as_tensor(_coerce(high), dtype=dtype).reshape(-1)
+    if lo.shape != hi.shape:
+        raise ValueError(
+            f"action_low shape {tuple(lo.shape)} != action_high shape {tuple(hi.shape)}"
+        )
+    if not (torch.isfinite(lo).all() and torch.isfinite(hi).all()):
+        raise ValueError(
+            "action bounds must be finite in every dim; an unbounded Box maps "
+            "to an infinite scale and the env would get NaN actions"
+        )
+    if not bool(((hi - lo) > 0).all()):
+        raise ValueError("action bounds must satisfy high > low in every dim")
+    return lo, hi

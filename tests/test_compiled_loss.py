@@ -14,8 +14,8 @@ import torch
 
 from fixtures import make_batch
 
-from myfpo.configuration import MyfpoConfig
-from myfpo.training import make_policy
+from myfpo.config import MyfpoConfig
+from myfpo.train import make_policy
 
 OBS, ACT, HORIZON, HIDDEN, TIME_EMBED = 6, 3, 8, 32, 16
 

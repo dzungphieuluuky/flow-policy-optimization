@@ -12,8 +12,8 @@ import dataclasses
 import pytest
 import torch
 
-from myfpo.layers import SelfAttention
-from myfpo.configuration import MyfpoConfig
+from myfpo.nn import SelfAttention
+from myfpo.config import MyfpoConfig
 
 
 def test_a_later_token_cannot_change_an_earlier_one():

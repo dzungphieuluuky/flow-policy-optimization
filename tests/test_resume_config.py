@@ -10,10 +10,10 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from myfpo import training
+from myfpo import train
 from myfpo.checkpointing import ResumeError, save_policy_checkpoint
-from myfpo.modeling import make_optimizer
-from myfpo.training import configure_run, make_or_resume
+from myfpo.algo import make_optimizer
+from myfpo.train import configure_run, make_or_resume
 
 from fixtures import ACT_DIM, OBS_DIM, cfg as fixture_cfg, make_test_policy
 
@@ -40,7 +40,7 @@ def test_a_resume_takes_the_checkpoint_config(tmp_path, monkeypatch, capsys):
     )
 
     cli = fixture_cfg(num_envs=1, eval_max_episodes=99, report_to="none")
-    monkeypatch.setattr(training, "sample_random_baseline", lambda _evaluator: 0.0)
+    monkeypatch.setattr(train, "sample_random_baseline", lambda _evaluator: 0.0)
     setup = configure_run(
         FakeEnv(),
         tmp_path / "run",
@@ -78,7 +78,7 @@ def test_a_policy_only_checkpoint_cannot_resume_training(tmp_path):
 
 def test_a_fresh_run_keeps_the_cli_config(tmp_path, monkeypatch):
     cli = fixture_cfg(num_envs=1, eval_max_episodes=7, report_to="none")
-    monkeypatch.setattr(training, "sample_random_baseline", lambda _evaluator: 0.0)
+    monkeypatch.setattr(train, "sample_random_baseline", lambda _evaluator: 0.0)
     setup = configure_run(
         FakeEnv(),
         tmp_path / "run",

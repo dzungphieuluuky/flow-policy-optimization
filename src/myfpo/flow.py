@@ -7,10 +7,10 @@ import math
 from collections.abc import Callable
 from typing import Any
 import torch
-from myfpo.configuration import MyfpoConfig
-from myfpo.layers import resolve_storage_dtype
+from myfpo.config import MyfpoConfig
+from myfpo.nn import resolve_storage_dtype
 import numpy as np
-from myfpo.layers import rms
+from myfpo.nn import rms
 
 __all__ = ["compute_cfm_metrics", "compute_eval_summary_metrics", "compute_gae_diagnostics", "compute_policy_info", "compute_ratio_metrics", "compute_value_loss", "compute_value_metrics", "sample_eps", "sample_mc_timesteps", "subsampled_min"]
 

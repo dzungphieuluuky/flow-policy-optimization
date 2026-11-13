@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 import torch
 
-from myfpo.rollout import RolloutBuffer, collect_chunks_vec, take_final_observations
+from myfpo.collect import RolloutBuffer, collect_chunks_vec, take_final_observations
 
 OBS, ACT, H = 3, 2, 4
 FINAL, RESET = 7.0, -7.0

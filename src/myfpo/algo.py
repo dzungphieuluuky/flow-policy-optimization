@@ -14,8 +14,8 @@ import numpy as np
 import torch
 from torch import nn
 
-from myfpo.configuration import MyfpoConfig
-from myfpo.fpo_core import (
+from myfpo.config import MyfpoConfig
+from myfpo.flow import (
     broadcast_condition,
     cfm_loss_weight,
     cfm_target,
@@ -31,15 +31,17 @@ from myfpo.fpo_core import (
     sample_noise,
     velocity_to_target_param,
 )
-from myfpo.fpo_core import (
+from myfpo.flow import (
     compute_policy_info,
     compute_value_loss,
 )
-from myfpo.networks import Critic, FlowModel, FlowResMLP
-from myfpo.processor import RunningMeanStd, StateEncoder
+from myfpo.nn import Critic, FlowModel, FlowResMLP
+from myfpo.env import RunningMeanStd
+from myfpo.nn import StateEncoder
 from myfpo.actions import bound_for_storage, to_critic_action, to_env_action
-from myfpo.rollout import RolloutBuffers, resolve_action_bounds, run_rollout
-from myfpo.layers import (
+from myfpo.collect import RolloutBuffers, run_rollout
+from myfpo.env import resolve_action_bounds
+from myfpo.nn import (
     autocast_context,
     cudagraph_safe,
     resolve_storage_dtype,

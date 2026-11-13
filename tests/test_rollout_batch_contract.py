@@ -18,9 +18,9 @@ import gymnasium as gym
 import pytest
 import torch
 
-from myfpo.configuration import MyfpoConfig
-from myfpo.rollout import RolloutBuffers, run_rollout
-from myfpo.training import make_policy
+from myfpo.config import MyfpoConfig
+from myfpo.collect import RolloutBuffers, run_rollout
+from myfpo.train import make_policy
 from myfpo.diagnostics import measure_value_drift
 
 

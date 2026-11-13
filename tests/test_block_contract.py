@@ -7,9 +7,9 @@ counts and the state_dict keys are pinned here.
 
 import pytest
 
-from myfpo.layers import AdaLNBlock, DiTBlock
-from myfpo.configuration import MyfpoConfig
-from myfpo.networks import ResMLPBlock
+from myfpo.nn import AdaLNBlock, DiTBlock
+from myfpo.config import MyfpoConfig
+from myfpo.nn import ResMLPBlock
 
 
 def _params(module) -> int:

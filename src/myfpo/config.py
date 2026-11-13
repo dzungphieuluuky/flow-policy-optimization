@@ -1,8 +1,6 @@
 """Single home for every hyperparameter."""
 
 import torch
-from pathlib import Path
-import yaml
 import os
 from dataclasses import dataclass
 
@@ -12,15 +10,6 @@ __all__ = [
     "MyfpoConfig",
 ]
 
-# ---- from config.py ----
-ENV_REGISTRY_PATH = Path(__file__).resolve().parents[2] / "configs" / "envs.yaml"
-
-with ENV_REGISTRY_PATH.open() as f:
-    _ENV_REGISTRY = yaml.safe_load(f) or {}
-
-KNOWN_ENVS = tuple(_ENV_REGISTRY.keys())
-
-
 def validate_num_action_steps(n: int, action_horizon: int) -> None:
     """Check that the executed span fits the chunk. Used by the config, the GPU evaluator, and the collector."""
     if not 1 <= n <= action_horizon:
@@ -28,16 +17,6 @@ def validate_num_action_steps(n: int, action_horizon: int) -> None:
             f"num_action_steps={n} must satisfy "
             f"1 <= n <= action_horizon={action_horizon}"
         )
-
-
-def get_observation_action_dim(env_id: str) -> tuple[int, int]:
-    """Obs and action dims for ``env_id``, from ``configs/envs.yaml``."""
-    if not _ENV_REGISTRY:
-        raise KeyError(f"registry empty at {ENV_REGISTRY_PATH}")
-    entry = _ENV_REGISTRY.get(env_id)
-    if entry is None:
-        raise KeyError(f"unknown env {env_id!r}; add it to {ENV_REGISTRY_PATH}")
-    return int(entry["obs_dim"]), int(entry["action_dim"])
 
 
 ACTOR_ARCHITECTURES = ("dit", "resmlp")

@@ -3,11 +3,11 @@
 import torch
 
 from fixtures import make_test_policy
-from myfpo.fpo_core import subsampled_min
-from myfpo.modeling import MyfpoPolicy
-from myfpo.rollout import run_rollout
+from myfpo.flow import subsampled_min
+from myfpo.algo import MyfpoPolicy
+from myfpo.collect import run_rollout
 from myfpo.diagnostics import measure_value_drift
-from myfpo.layers import resolve_storage_dtype
+from myfpo.nn import resolve_storage_dtype
 
 
 def test_bf16_actually_destroys_a_large_target():
@@ -42,10 +42,10 @@ def test_resolve_storage_dtype_is_fp32_on_cpu():
 def test_generate_rollout_does_not_cast_the_value_target():
     import inspect
 
-    # The body moved to myfpo.rollout. The method on the policy is a wrapper,
+    # The body moved to myfpo.collect. The method on the policy is a wrapper,
     # so reading its source would find none of the casts and pass vacuously.
     # The casts live in the advantage step, so the guard reads both.
-    from myfpo.rollout import chunk_advantages
+    from myfpo.collect import chunk_advantages
 
     src = inspect.getsource(run_rollout) + inspect.getsource(chunk_advantages)
     for name in ("raw_returns", "raw_values"):

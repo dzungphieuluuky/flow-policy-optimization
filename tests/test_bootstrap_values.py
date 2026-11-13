@@ -12,9 +12,9 @@ import dataclasses
 import gymnasium as gym
 import pytest
 
-from myfpo.configuration import MyfpoConfig
-from myfpo.rollout import RolloutBuffers, run_rollout
-from myfpo.training import make_policy
+from myfpo.config import MyfpoConfig
+from myfpo.collect import RolloutBuffers, run_rollout
+from myfpo.train import make_policy
 
 
 @pytest.fixture
@@ -93,7 +93,7 @@ def test_estimate_state_values_averages_fresh_policy_samples(config):
     import torch
 
     from myfpo.actions import squash_to_env_bounds
-    from myfpo.rollout import estimate_state_values
+    from myfpo.collect import estimate_state_values
 
     cfg = dataclasses.replace(config, num_baseline_samples=3, action_processing_mode="tanh_squash")
     policy = make_policy(
@@ -141,7 +141,7 @@ def test_the_baseline_encodes_the_window_once(config):
     """
     import torch
 
-    from myfpo.rollout import estimate_state_values
+    from myfpo.collect import estimate_state_values
 
     cfg = dataclasses.replace(config, num_baseline_samples=4)
     policy = make_policy(3, 1, cfg, device="cpu", action_low=[-2.0], action_high=[2.0])

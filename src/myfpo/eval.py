@@ -18,9 +18,9 @@ from typing import Any
 import numpy as np
 import torch
 
-from myfpo.configuration import validate_num_action_steps
+from myfpo.config import validate_num_action_steps
 from myfpo.actions import to_env_action
-from myfpo.rollout import resolve_action_bounds
+from myfpo.env import resolve_action_bounds
 
 
 CSV_FIELDS = ["episode", "return", "length", "success", "jerk"]

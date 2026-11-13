@@ -9,8 +9,8 @@ from myfpo.checkpointing import (
     load_policy_checkpoint,
     save_policy_checkpoint,
 )
-from myfpo.modeling import make_optimizer
-from myfpo.training import sample_random_baseline
+from myfpo.algo import make_optimizer
+from myfpo.train import sample_random_baseline
 from fixtures import make_test_policy
 
 

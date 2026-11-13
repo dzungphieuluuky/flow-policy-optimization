@@ -31,7 +31,7 @@ if torch.cuda.is_available():
 import numpy as np
 
 from myfpo.checkpointing import load_policy_checkpoint
-from myfpo.evaluator import Evaluator
+from myfpo.eval import Evaluator
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -64,13 +64,13 @@ def _windows():
 
 
 def collect() -> dict:
-    from myfpo.evaluator import (
+    from myfpo.eval import (
         bootstrap_interval,
         compute_action_jerk,
         compute_mean_chunk_jerk,
         compute_seam_jerk,
     )
-    from myfpo.fpo_core import compute_eval_summary_metrics
+    from myfpo.flow import compute_eval_summary_metrics
 
     out: dict = {}
     for index, (mean, episodes, all_returns) in enumerate(_windows()):

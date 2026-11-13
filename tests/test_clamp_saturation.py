@@ -14,8 +14,8 @@ import torch
 
 from fixtures import cfg
 
-from myfpo.configuration import MyfpoConfig
-from myfpo.fpo_core import clamp_saturation, compute_trust_region_surrogate, compute_policy_ratio
+from myfpo.config import MyfpoConfig
+from myfpo.flow import clamp_saturation, compute_trust_region_surrogate, compute_policy_ratio
 
 N, MC, ACT = 6, 4, 2
 
@@ -110,7 +110,7 @@ def test_the_reduction_decides_whether_the_default_clamp_bites():
 
 def test_the_abort_threshold_fires_on_the_stricter_signal():
     """The trainer must prefer the both-clamped signal over the level signal."""
-    from myfpo.training import BOTH_CLAMPED_ABORT_FRAC
+    from myfpo.train import BOTH_CLAMPED_ABORT_FRAC
 
     assert BOTH_CLAMPED_ABORT_FRAC == 0.5
     cfg = _cfg(cfm_clamp=20.0)
@@ -124,7 +124,7 @@ def test_the_abort_threshold_fires_on_the_stricter_signal():
 
 def test_a_sum_reduction_run_reports_saturation_on_real_losses():
     """End to end: the ``sum`` reduction saturates the ratio above horizon 4."""
-    from myfpo.fpo_core import compute_cfm_loss
+    from myfpo.flow import compute_cfm_loss
 
     cfg = _cfg(cfm_loss_reduction="sum", cfm_loss_use_huber=False, cfm_clamp=20.0)
     torch.manual_seed(0)
@@ -148,7 +148,7 @@ def test_a_sum_reduction_run_reports_saturation_on_real_losses():
 def test_the_default_run_is_not_saturated():
     """A default config must leave the gradient alive on ordinary losses."""
     cfg = _cfg()
-    from myfpo.fpo_core import compute_cfm_loss
+    from myfpo.flow import compute_cfm_loss
 
     torch.manual_seed(0)
     v_hat = torch.randn(N, MC, cfg.action_horizon, ACT)
@@ -163,8 +163,8 @@ def _policy_and_batch(cfm_clamp, **overrides):
     The bound 2.0 matters. At the default 20.0 both readings are 0.0, so a
     wrong axis looks correct. The sweep below shows where the two axes cross.
     """
-    from myfpo.fpo_core import sample_timesteps
-    from myfpo.training import make_policy
+    from myfpo.flow import sample_timesteps
+    from myfpo.train import make_policy
 
     obs, act, horizon, mc = 6, 3, 4, 4
     pcfg = cfg(
@@ -209,7 +209,7 @@ def test_above_clamp_frac_reads_the_tensor_the_ratio_actually_clamps(monkeypatch
     so the reading was wrong in both directions: it under-reported at a high
     bound and over-reported at a low one.
     """
-    import myfpo.modeling as modeling
+    import myfpo.algo as modeling
 
     real = modeling.compute_policy_ratio
     clamped = []
@@ -264,7 +264,7 @@ def test_the_diagnostics_read_the_token_pair_when_grouping_is_off(monkeypatch):
     ``group_mc_loss`` was false and the ratio stayed per token.
     A non-default group size then made the two axes disagree.
     """
-    import myfpo.modeling as modeling
+    import myfpo.algo as modeling
 
     real = modeling.compute_policy_ratio
     pairs = []

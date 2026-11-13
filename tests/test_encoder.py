@@ -12,7 +12,7 @@ import pytest
 import torch
 from torch import nn
 
-from myfpo.processor import StateEncoder
+from myfpo.nn import StateEncoder
 
 OBS, HIDDEN, STEPS = 39, 128, 16
 

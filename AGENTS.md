@@ -47,7 +47,7 @@ Exit codes: 0 success, 1 usage error, 2 runtime/divergence abort or draccus pars
 
 `src/myfpo/` package, `scripts/` CLIs and pins, `tests/` 48 test modules, `configs/envs.yaml` the env registry.
 
-`src/myfpo/actions.py` is the single home of the `action_processing_mode` branch (storage bound, env-facing map, critic action space); `src/myfpo/diagnostics.py` holds the diagnostics, imported lazily inside `cfg.log_drift_diagnostics`.
+Module map: `nn.py` (layers + networks + observation encoder), `flow.py` (CFM math, ratio, metrics), `collect.py` (rollout, buffers, GAE), `algo.py` (policy/value losses), `eval.py` (evaluators), `train.py` (loop), `config.py` (MyfpoConfig), `env.py` (env registry, obs normalizer, action bounds), `actions.py` (single home of the `action_processing_mode` branch), `diagnostics.py` (lazily imported inside `cfg.log_drift_diagnostics`).
 
 `configs/envs.yaml` is the only dim source and drives `KNOWN_ENVS`. `scripts/train.py` checks the live env spaces against it at startup. Add an env there before passing its id.
 
@@ -68,6 +68,6 @@ The path is chosen by capability, not by name.
 ## Known traps
 
 - `scripts/pins/_shared.py` must not import from `src` beyond what it already builds. A pin sharing code with the code it checks cannot catch defects in the shared part.
-- Actor and critic gradient clipping are independent (`training.py`). A joint clip silently shrinks whichever side has the larger gradient.
+- Actor and critic gradient clipping are independent (`train.py`). A joint clip silently shrinks whichever side has the larger gradient.
 - The stored action is the flow's raw output; the CFM target fits it in flow space (`action / actor_scale`), with no separate action normalizer. The bound (`tanh` or `linear_rescale`'s unit clip) happens only on the way to the env (`actions.py`). The env receives a different value than what is stored.
 - A SAPIEN GPU context is budgeted at 1.5 GiB (`VIDEO_CONTEXT_BYTES`). Training, eval, and video are three contexts. Do not drop the free-memory check before the video env.

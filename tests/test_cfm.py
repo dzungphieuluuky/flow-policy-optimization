@@ -4,8 +4,8 @@ import torch
 
 from fixtures import ACT_DIM, OBS_DIM, make_batch, make_test_policy
 
-from myfpo.fpo_core import group_cfm_loss, sample_noise
-from myfpo.layers import autocast_context, resolve_storage_dtype
+from myfpo.flow import group_cfm_loss, sample_noise
+from myfpo.nn import autocast_context, resolve_storage_dtype
 
 
 def test_normal_mode_is_plain_randn():

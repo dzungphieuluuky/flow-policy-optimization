@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 import torch
 
-from myfpo.evaluator import VectorEvaluator
+from myfpo.eval import VectorEvaluator
 
 OBS_STEPS, HORIZON, ACT_DIM, OBS_DIM = 2, 2, 2, 2
 EPISODE_LEN = 3

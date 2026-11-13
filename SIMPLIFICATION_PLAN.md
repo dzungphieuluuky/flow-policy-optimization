@@ -150,23 +150,34 @@ run-to-run range across phases 43–52).
 Status: done — 577 passed / 2 pre-existing mani_skill failures; pins 817/218,
 0 mismatches; `/tmp/myfpo_smoke/p4_pre` and `.../p5` CSVs identical.
 
-## Phase 6 — Module re‑lay (P8, optional, last)
+## Phase 6 — Module re-lay (P8)
 
-Only after Phases 1–5 are green. Mechanical rename/moves, no edits:
+As built. Pure filing: no math, no behavior changes. Final map (`src/myfpo/`):
 
 ```
-config.py        (from configuration.py, minus pruned validators)
-nn.py            (layers.py + networks.py + processor.py merge)
-flow.py          (fpo_core.py, diagnostics removed)
-algo.py          (modeling.py surrogate/value losses)
-collect.py       (rollout.py)
-env.py           (processor + registry/normalizer reads)
-train.py         (loop; checkpointing.py inlined or kept as checkpoint.py)
+config.py       (from configuration.py; registry ejected)
+env.py          (NEW: registry + KNOWN_ENVS/dims, RunningMeanStd, resolve_action_bounds)
+nn.py           (layers.py + networks.py + StateEncoder merged)
+flow.py         (from fpo_core.py)
+collect.py      (from rollout.py)
+algo.py         (from modeling.py)
+eval.py         (from evaluator.py)
+train.py        (from training.py)
+config.py, env.py, actions.py, diagnostics.py, checkpointing.py, maniskill_gpu.py — unchanged roles
 ```
-Target: `src/myfpo/` ≈ 2.7–3.2k lines, mirroring rsl‑rl's file economy
-(`algorithms/ppo.py` 502, `runners/on_policy_runner.py` 260, `storage` 359).
 
-Acceptance: gates green; pins unchanged; `scripts/train.py` untouched except imports.
+`resolve_action_bounds` moved into `env.py`: the collector, the evaluators and the
+diagnostics all need it, and none should import the collector just for it. The env
+registry left `configuration.py` (now `config.py`), so the config leaf module is yaml-free.
+
+Acceptance: gates green; pins 817/218, 0 mismatches; `scripts/train.py` touched imports only;
+seeded Hopper smoke CSV **byte-identical** to before the re-lay.
+
+Status: done — 539 passed / 2 pre-existing mani_skill failures; ruff clean;
+pins unchanged; fps 39.3 (single CPU sample; noise band across phases 39–52).
+Deviation: the 2.7–3.2k-line target is unattainable by filing (module names sum to the
+same lines); the value is file-per-concept layout + an acyclic import ladder
+(config → env → nn → flow → collect → algo → eval → train; diagnostics/actions leaves).
 
 ## Phase 7 — Test suite prune
 
@@ -204,7 +215,7 @@ Status: done — pytest 539 passed / 2 pre-existing mani_skill failures; pins 81
 | metric | before | after (final) |
 |---|---|---|
 | `wc -l src/myfpo/*.py scripts/*.py` | 8561 | 8480 |
-| `src/myfpo/*.py` only | ~7.6k | 7509 |
+| `src/myfpo/*.py` only | ~7.6k | 7513 |
 | test .py files (`ls tests/*.py`) | 63 | 50 (48 test modules + conftest + fixtures) |
 | tests collected / pass / skip | 606 / 601 / 3 | 541 / 539 / 3 |
 | pre-existing failures (mani_skill absent) | 2 (`test_eval_video.py`) | 2 (unchanged) |

@@ -8,7 +8,7 @@ import pytest
 import torch
 
 from fixtures import make_test_policy
-from myfpo.modeling import MyfpoPolicy
+from myfpo.algo import MyfpoPolicy
 
 
 def _warm(p: MyfpoPolicy) -> MyfpoPolicy:
@@ -116,7 +116,7 @@ def test_ema_scored_checkpoints_save_the_ema_weights(monkeypatch, tmp_path):
     The save must run with the EMA weights in the living model, and must
     put the live weights back after. The equality is exact.
     """
-    import myfpo.training as training
+    import myfpo.train as training
 
     captured: dict[str, dict[str, torch.Tensor]] = {}
 
@@ -146,7 +146,7 @@ def test_ema_scored_checkpoints_save_the_ema_weights(monkeypatch, tmp_path):
 
 def test_a_plain_save_keeps_the_live_weights(monkeypatch, tmp_path):
     """The periodic resume checkpoints carry the live weights."""
-    import myfpo.training as training
+    import myfpo.train as training
 
     captured: dict[str, dict[str, torch.Tensor]] = {}
 

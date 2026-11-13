@@ -3,7 +3,7 @@
 import pytest
 import torch
 
-from myfpo.networks import Critic
+from myfpo.nn import Critic
 
 OBS, HIDDEN, STEPS, ACT, H = 11, 32, 8, 3, 6
 

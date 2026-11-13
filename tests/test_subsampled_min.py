@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from myfpo.fpo_core import subsampled_min
+from myfpo.flow import subsampled_min
 
 
 def _ensemble() -> torch.Tensor:

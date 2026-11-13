@@ -12,9 +12,9 @@ import dataclasses
 
 import torch
 
-import myfpo.modeling as modeling
-from myfpo.configuration import MyfpoConfig
-from myfpo.training import make_policy
+import myfpo.algo as modeling
+from myfpo.config import MyfpoConfig
+from myfpo.train import make_policy
 
 OBS, ACT, HORIZON, N = 5, 2, 4, 1
 

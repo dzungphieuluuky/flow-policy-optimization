@@ -13,7 +13,7 @@ from pathlib import Path
 
 import torch
 
-from myfpo.configuration import MyfpoConfig
+from myfpo.config import MyfpoConfig
 
 CHECKPOINT_FILE = "checkpoint.pt"
 
@@ -90,7 +90,7 @@ def save_policy_checkpoint(
 
 def load_optimizer(policy, opt_state: dict) -> torch.optim.Optimizer:
     """Rebuild the optimizer from the policy, then load its state."""
-    from myfpo.modeling import make_optimizer
+    from myfpo.algo import make_optimizer
 
     optimizer = make_optimizer(policy)
     saved_groups = opt_state.get("param_groups", [])
@@ -130,7 +130,7 @@ def load_policy_checkpoint(
     scheduler state adds it to ``counters["scheduler"]``. A policy-only
     checkpoint (``optimizer=None``) loads with ``optimizer=None``.
     """
-    from myfpo.modeling import MyfpoPolicy
+    from myfpo.algo import MyfpoPolicy
 
     d = Path(dir_path)
     path = d / CHECKPOINT_FILE

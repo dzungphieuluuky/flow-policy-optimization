@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 import torch
 
-from myfpo.rollout import RolloutBuffer, collect_chunks_vec
+from myfpo.collect import RolloutBuffer, collect_chunks_vec
 
 OBS_STEPS, OBS_DIM, HORIZON, ACT_DIM = 2, 2, 2, 2
 NUM_ENVS = 2
@@ -210,7 +210,7 @@ def test_same_step_env_without_final_observation_raises():
 def test_validate_autoreset_mode_returns_the_declared_name():
     from types import SimpleNamespace
 
-    from myfpo.rollout import validate_autoreset_mode
+    from myfpo.collect import validate_autoreset_mode
 
     for name in ("NEXT_STEP", "SAME_STEP"):
         env = SimpleNamespace(autoreset_mode=SimpleNamespace(name=name))

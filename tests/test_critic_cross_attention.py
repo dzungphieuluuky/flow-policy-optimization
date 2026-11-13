@@ -12,9 +12,9 @@ from __future__ import annotations
 import torch
 from fixtures import cfg
 
-from myfpo.networks import Critic, CriticMember
-from myfpo.layers import CrossAttention
-from myfpo.training import make_policy
+from myfpo.nn import Critic, CriticMember
+from myfpo.nn import CrossAttention
+from myfpo.train import make_policy
 
 OBS, HIDDEN, STEPS, ACT, H = 11, 32, 8, 3, 6
 

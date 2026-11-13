@@ -27,17 +27,17 @@ from myfpo.checkpointing import (
     load_policy_checkpoint,
     save_policy_checkpoint,
 )
-from myfpo.configuration import MyfpoConfig
-from myfpo.evaluator import (
+from myfpo.config import MyfpoConfig
+from myfpo.eval import (
     Evaluator,
     VectorEvaluator,
     compute_mean_chunk_jerk,
     compute_seam_jerk,
 )
-from myfpo.modeling import TrainingAborted, MyfpoPolicy, make_optimizer
-from myfpo.fpo_core import compute_eval_summary_metrics
+from myfpo.algo import TrainingAborted, MyfpoPolicy, make_optimizer
+from myfpo.flow import compute_eval_summary_metrics
 from myfpo.diagnostics import compute_rollout_diagnostics, executed_chunk
-from myfpo.layers import (
+from myfpo.nn import (
     autocast_context,
     cudagraph_step_begin,
     resolve_device,

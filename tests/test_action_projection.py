@@ -17,14 +17,14 @@ import numpy as np
 import pytest
 import torch
 
-from myfpo.configuration import MyfpoConfig
+from myfpo.config import MyfpoConfig
 from myfpo.actions import squash_to_env_bounds
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def _policy(action_dim: int = 3, **over):
-    from myfpo.training import make_policy
+    from myfpo.train import make_policy
 
     cfg = dataclasses.replace(MyfpoConfig(), compile=False, **over)
     return make_policy(
@@ -110,7 +110,7 @@ def test_the_perturbation_is_bounded_by_the_squash():
 
 def test_the_policy_no_longer_clamps_the_action():
     """No clamp survives in the policy path. The squash is in the processor."""
-    src = (ROOT / "src" / "myfpo" / "modeling.py").read_text()
+    src = (ROOT / "src" / "myfpo" / "algo.py").read_text()
     body = src.split("def predict_action_chunk", 1)[1].split("\n    def ", 1)[0]
     assert ".clamp(" not in body, "predict_action_chunk still clamps"
 
@@ -121,7 +121,7 @@ def test_the_collector_no_longer_clamps():
     The clamp and the clip count were removed because the squash upstream makes
     them unreachable. This test fails if either comes back.
     """
-    from myfpo.rollout import resolve_action_bounds
+    from myfpo.env import resolve_action_bounds
     from myfpo.actions import squash_to_env_bounds
 
     lo, hi = resolve_action_bounds([-2.0, -1.0, -0.3], [2.0, 1.0, 0.3])
@@ -140,7 +140,7 @@ def test_infinite_or_nan_bounds_are_rejected():
     ``high - low > 0`` passes for +inf/-inf boxes, so the comparison check
     alone cannot catch them. The env-facing action would be NaN.
     """
-    from myfpo.rollout import resolve_action_bounds
+    from myfpo.env import resolve_action_bounds
 
     with pytest.raises(ValueError, match="finite"):
         resolve_action_bounds([float("-inf"), -1.0], [1.0, float("inf")])
@@ -151,7 +151,7 @@ def test_infinite_or_nan_bounds_are_rejected():
 
 
 def test_inverted_bounds_are_rejected():
-    from myfpo.rollout import resolve_action_bounds
+    from myfpo.env import resolve_action_bounds
 
     with pytest.raises(ValueError, match="high > low"):
         resolve_action_bounds([1.0], [1.0])
@@ -191,7 +191,7 @@ def test_no_clamp_survives_on_the_collector_path():
     from pathlib import Path
 
     root = Path(__file__).resolve().parents[1]
-    src = (root / "src" / "myfpo" / "rollout.py").read_text()
+    src = (root / "src" / "myfpo" / "collect.py").read_text()
     tree = ast.parse(src)
     # The action path now lives in its own step function, so the check walks
     # the whole module instead of one function body.

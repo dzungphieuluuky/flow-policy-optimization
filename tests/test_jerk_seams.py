@@ -10,7 +10,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from myfpo.evaluator import compute_seam_jerk
+from myfpo.eval import compute_seam_jerk
 
 
 def _chunks(*rows: list[float]) -> np.ndarray:

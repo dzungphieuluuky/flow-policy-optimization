@@ -6,8 +6,8 @@ import warnings
 import pytest
 import torch
 
-from myfpo.configuration import MyfpoConfig
-from myfpo.fpo_core import compute_gae_diagnostics, compute_ratio_metrics
+from myfpo.config import MyfpoConfig
+from myfpo.flow import compute_gae_diagnostics, compute_ratio_metrics
 from myfpo.diagnostics import compute_rollout_diagnostics
 
 from fixtures import make_batch, make_test_policy
@@ -183,7 +183,7 @@ def test_rollout_diagnostics_keys_match_the_scalar_count():
 
 def test_metrics_survive_the_wandb_scalar_pack():
     """loss_with_info reshapes every metric to 0-d before one device transfer."""
-    from myfpo.fpo_core import compute_cfm_metrics
+    from myfpo.flow import compute_cfm_metrics
 
     out = compute_cfm_metrics(
         cfm_loss_old=torch.zeros(2),

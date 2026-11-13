@@ -3,7 +3,7 @@
 import torch
 
 from fixtures import make_test_policy
-from myfpo.rollout import RolloutBuffer
+from myfpo.collect import RolloutBuffer
 
 
 # --- #1 buffer reuse -------------------------------------------------------.
@@ -58,7 +58,7 @@ def test_no_caller_has_to_slice_the_key():
     from pathlib import Path
 
     root = Path(__file__).resolve().parents[1] / "src" / "myfpo"
-    for rel in ("modeling.py", "rollout.py"):
+    for rel in ("algo.py", "collect.py"):
         src = (root / rel).read_text()
         assert not re.search(r"shape_key\(\)\s*\[", src), f"{rel} slices shape_key"
         assert not re.search(r"def\s+capacity_key\b", src), f"{rel} still defines capacity_key"

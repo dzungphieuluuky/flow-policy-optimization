@@ -3,7 +3,7 @@
 import pytest
 import torch
 
-from myfpo.layers import rms
+from myfpo.nn import rms
 
 OBS_DIM, ACTION_DIM, N = 3, 1, 4
 

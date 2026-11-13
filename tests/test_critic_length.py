@@ -3,8 +3,8 @@
 import pytest
 import torch
 
-from myfpo.configuration import MyfpoConfig
-from myfpo.networks import Critic
+from myfpo.config import MyfpoConfig
+from myfpo.nn import Critic
 
 
 def _cfg(**kw) -> MyfpoConfig:
@@ -20,7 +20,7 @@ def _cfg(**kw) -> MyfpoConfig:
 
 
 def _policy_with_critic(cfg: MyfpoConfig):
-    from myfpo.modeling import MyfpoPolicy
+    from myfpo.algo import MyfpoPolicy
 
     policy = MyfpoPolicy.__new__(MyfpoPolicy)
     # nn.Module.__setattr__ refuses submodule assignment before __init__ ran.

@@ -24,14 +24,14 @@ from torch import nn
 
 from fixtures import cfg, make_batch
 
-from myfpo.configuration import ACTOR_ARCHITECTURES
-from myfpo.networks import (
+from myfpo.config import ACTOR_ARCHITECTURES
+from myfpo.nn import (
     ResidualMLP,
     ResMLPBlock,
     FlowModel,
     FlowResMLP,
 )
-from myfpo.training import make_policy
+from myfpo.train import make_policy
 
 OBS, ACT, HORIZON, HIDDEN, TIME_EMBED = 6, 3, 8, 32, 16
 HEADS = 2

@@ -12,9 +12,9 @@ import dataclasses
 import pytest
 import torch
 
-from myfpo.configuration import MyfpoConfig
-from myfpo.modeling import MyfpoPolicy
-from myfpo.training import split_grad_params
+from myfpo.config import MyfpoConfig
+from myfpo.algo import MyfpoPolicy
+from myfpo.train import split_grad_params
 
 OBS, ACT, HORIZON, STEPS = 6, 3, 8, 4
 

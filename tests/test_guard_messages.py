@@ -29,7 +29,7 @@ def _raises(thunk) -> str:
     raise AssertionError("expected ValueError, nothing was raised")
 
 # --- configuration.MyfpoConfig -----------------------------------------.
-from myfpo.configuration import MyfpoConfig  # noqa: E402
+from myfpo.config import MyfpoConfig  # noqa: E402
 
 _BAD_CONFIG = {
     "action_perturb_std": -1.0,
@@ -77,11 +77,12 @@ def _missing_dims() -> None:
     MyfpoConfig().validate_dims()
 
 # --- network constructors ----------------------------------------------------.
-from myfpo.layers import CrossAttention, DiTBlock, SelfAttention  # noqa: E402
-from myfpo.networks import CriticMember  # noqa: E402
-from myfpo.processor import RunningMeanStd, StateEncoder  # noqa: E402
-from myfpo.networks import FlowModel  # noqa: E402
-from myfpo.layers import CondMLP, SinusoidalEncoding, MishFFN  # noqa: E402
+from myfpo.nn import CrossAttention, DiTBlock, SelfAttention  # noqa: E402
+from myfpo.nn import CriticMember  # noqa: E402
+from myfpo.env import RunningMeanStd  # noqa: E402
+from myfpo.nn import StateEncoder  # noqa: E402
+from myfpo.nn import FlowModel  # noqa: E402
+from myfpo.nn import CondMLP, SinusoidalEncoding, MishFFN  # noqa: E402
 
 case("layers:MishFFN:zero-dims")(lambda: MishFFN(0, 4, 4))
 case("layers:CondMLP:zero-dims")(lambda: CondMLP(0, 4, 4))
@@ -112,12 +113,12 @@ case("attention:DiTBlock:forward:cond-batch")(
 )
 
 # --- pure functions ----------------------------------------------------------.
-from myfpo.fpo_core import (  # noqa: E402
+from myfpo.flow import (  # noqa: E402
     compute_cfm_loss,
     broadcast_over_mc_axis,
     sample_action,
 )
-from myfpo.rollout import compute_chunk_advantages  # noqa: E402
+from myfpo.collect import compute_chunk_advantages  # noqa: E402
 
 def _gae(**kw):
     base = dict(

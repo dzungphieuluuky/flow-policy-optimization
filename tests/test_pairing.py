@@ -4,8 +4,8 @@ import pytest
 import torch
 from fixtures import cfg
 
-from myfpo.fpo_core import sample_timesteps
-from myfpo.training import make_policy
+from myfpo.flow import sample_timesteps
+from myfpo.train import make_policy
 
 OBS, ACT, HORIZON, MC = 6, 3, 4, 4
 

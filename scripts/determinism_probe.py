@@ -22,9 +22,9 @@ from pathlib import Path
 import numpy as np
 
 from myfpo.checkpointing import load_policy_checkpoint
-from myfpo.evaluator import Evaluator
-from myfpo.training import EvalPolicy
-from myfpo.layers import resolve_device, set_seed
+from myfpo.eval import Evaluator
+from myfpo.train import EvalPolicy
+from myfpo.nn import resolve_device, set_seed
 
 
 def run_once(policy, evaluator, eval_seed: int) -> dict[str, float]:
@@ -55,8 +55,8 @@ def main() -> int:
     high = np.atleast_1d(np.asarray(env.action_space.high, dtype=np.float32))
 
     if args.checkpoint is None:
-        from myfpo.configuration import MyfpoConfig
-        from myfpo.training import make_policy
+        from myfpo.config import MyfpoConfig
+        from myfpo.train import make_policy
 
         obs_dim = int(np.prod(env.observation_space.shape))
         act_dim = int(np.prod(env.action_space.shape))

@@ -15,8 +15,8 @@ import dataclasses
 
 import torch
 
-from myfpo.rollout import EnvCarry, RolloutBuffer, RolloutBuffers
-from myfpo.training import invalidate_shared_env_carry
+from myfpo.collect import EnvCarry, RolloutBuffer, RolloutBuffers
+from myfpo.train import invalidate_shared_env_carry
 
 
 def make_host() -> RolloutBuffer:

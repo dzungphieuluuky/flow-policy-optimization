@@ -11,9 +11,9 @@ from __future__ import annotations
 import torch
 
 from myfpo.actions import to_critic_action, to_env_action
-from myfpo.fpo_core import subsampled_min
-from myfpo.layers import rms
-from myfpo.rollout import resolve_action_bounds
+from myfpo.flow import subsampled_min
+from myfpo.nn import rms
+from myfpo.env import resolve_action_bounds
 
 __all__ = ["compute_rollout_diagnostics", "executed_chunk", "measure_value_drift"]
 

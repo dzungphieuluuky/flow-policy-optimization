@@ -17,9 +17,9 @@ import torch
 from fixtures import cfg
 from fixtures import make_batch
 
-from myfpo.configuration import ACTOR_ARCHITECTURES, MyfpoConfig
-from myfpo.networks import FlowModel
-from myfpo.training import make_policy
+from myfpo.config import ACTOR_ARCHITECTURES, MyfpoConfig
+from myfpo.nn import FlowModel
+from myfpo.train import make_policy
 
 OBS, ACT, HORIZON, HIDDEN, TIME_EMBED = 6, 3, 8, 32, 16
 

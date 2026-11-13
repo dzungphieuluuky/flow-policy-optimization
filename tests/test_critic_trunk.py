@@ -8,7 +8,7 @@ TD-MPC2 ships 5 ensemble members; this repo runs 2, and
 The action and state inputs are the two places the trunk departs from the paper.
 The action is a learned affine, not a LayerNorm, because a LayerNorm over the
 chunk erases the chunk's offset. The state norm divides by the RMS and keeps
-the mean, for the same reason. See ``myfpo.networks.ActionAffine`` and
+the mean, for the same reason. See ``myfpo.nn.ActionAffine`` and
 ``StateAffine``.
 """
 
@@ -21,10 +21,10 @@ import pytest
 import torch
 from torch import nn
 
-from myfpo.configuration import MyfpoConfig
-from myfpo.networks import Critic, CriticMember, ActionAffine, StateAffine
-from myfpo.fpo_core import compute_value_metrics
-from myfpo.modeling import MyfpoPolicy
+from myfpo.config import MyfpoConfig
+from myfpo.nn import Critic, CriticMember, ActionAffine, StateAffine
+from myfpo.flow import compute_value_metrics
+from myfpo.algo import MyfpoPolicy
 
 OBS, HIDDEN, STEPS, ACT, H = 11, 32, 8, 3, 6
 

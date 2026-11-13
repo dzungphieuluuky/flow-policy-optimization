@@ -8,16 +8,17 @@ import contextlib
 import dataclasses
 from collections.abc import Callable
 import numpy as np
-from myfpo.configuration import validate_num_action_steps
+from myfpo.config import validate_num_action_steps
+from myfpo.env import resolve_action_bounds
 from myfpo.actions import bound_for_storage, to_critic_action, to_env_action
 from dataclasses import dataclass
-from myfpo.fpo_core import (
+from myfpo.flow import (
     compute_gae_diagnostics,
     sample_eps,
     sample_mc_timesteps,
     subsampled_min,
 )
-from myfpo.layers import (
+from myfpo.nn import (
     autocast_context,
     cudagraph_step_begin,
     resolve_storage_dtype,
@@ -394,35 +395,6 @@ class RolloutBuffer:
             "chunk_env_id": self.chunk_env_id[:n_chunks],
             "chunk_prev": self.chunk_prev[:n_chunks],
         }
-
-
-def resolve_action_bounds(
-    low: float | np.ndarray | torch.Tensor,
-    high: float | np.ndarray | torch.Tensor,
-    *,
-    dtype: torch.dtype = torch.float32,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Coerce env action bounds into ``dtype`` tensors, strict ``high > low``."""
-
-    def _coerce(x):
-        if isinstance(x, torch.Tensor):
-            return x
-        return np.asarray(x, dtype=np.float32)
-
-    lo = torch.as_tensor(_coerce(low), dtype=dtype).reshape(-1)
-    hi = torch.as_tensor(_coerce(high), dtype=dtype).reshape(-1)
-    if lo.shape != hi.shape:
-        raise ValueError(
-            f"action_low shape {tuple(lo.shape)} != action_high shape {tuple(hi.shape)}"
-        )
-    if not (torch.isfinite(lo).all() and torch.isfinite(hi).all()):
-        raise ValueError(
-            "action bounds must be finite in every dim; an unbounded Box maps "
-            "to an infinite scale and the env would get NaN actions"
-        )
-    if not bool(((hi - lo) > 0).all()):
-        raise ValueError("action bounds must satisfy high > low in every dim")
-    return lo, hi
 
 
 def check_chunk_dims(

@@ -14,10 +14,10 @@ import itertools
 import pytest
 import torch
 
-from myfpo.configuration import MyfpoConfig
+from myfpo.config import MyfpoConfig
 from myfpo.checkpointing import load_policy_checkpoint, save_policy_checkpoint
-from myfpo.modeling import make_optimizer
-from myfpo.training import make_scheduler, restore_scheduler
+from myfpo.algo import make_optimizer
+from myfpo.train import make_scheduler, restore_scheduler
 
 from fixtures import make_test_policy
 

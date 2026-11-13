@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import torch
 
-from myfpo.configuration import MyfpoConfig
-from myfpo.training import (
+from myfpo.config import MyfpoConfig
+from myfpo.train import (
     make_optimizer,
     make_policy,
     policy_update_step,

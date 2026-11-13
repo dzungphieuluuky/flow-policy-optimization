@@ -38,11 +38,8 @@ from typing import Literal
 
 import draccus
 
-from myfpo.configuration import (
-    KNOWN_ENVS,
-    get_observation_action_dim,
-)
-from myfpo.configuration import MyfpoConfig
+from myfpo.env import KNOWN_ENVS, get_observation_action_dim
+from myfpo.config import MyfpoConfig
 
 
 def configure_torch_cuda() -> bool:
@@ -76,7 +73,7 @@ def apply_runtime_settings() -> dict:
     """
     import torch
 
-    from myfpo.layers import (
+    from myfpo.nn import (
         detect_gpu,
         resolve_compute_dtype,
         resolve_storage_dtype,
@@ -247,7 +244,7 @@ def run_single(
                 f"{(live_obs, live_act)}"
             )
 
-        from myfpo.training import run_training
+        from myfpo.train import run_training
 
         return run_training(
             env=env,

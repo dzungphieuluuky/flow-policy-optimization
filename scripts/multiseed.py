@@ -36,9 +36,9 @@ import numpy as np
 
 import draccus
 
-from myfpo.configuration import KNOWN_ENVS
-from myfpo.configuration import MyfpoConfig
-from myfpo.evaluator import bootstrap_interval, median_of
+from myfpo.env import KNOWN_ENVS
+from myfpo.config import MyfpoConfig
+from myfpo.eval import bootstrap_interval, median_of
 
 from train import (
     apply_runtime_settings,
