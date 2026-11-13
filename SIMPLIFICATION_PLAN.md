@@ -126,14 +126,29 @@ pins 817/218, 0 mismatches; smoke CSV byte-identical.
 
 ## Phase 5 — Optimizer and buffer compression (P5, P7)
 
-- `make_optimizer`: fixed three groups (decay actor / no‑decay actor+adaLN / critic),
-  one `clip_grad_norm` per group, drop the group‑table logging machinery
-  (`training.py` grad_groups plumbing); keep **independent actor/critic norms** (non‑negotiable).
-- `RolloutBuffers` class attributes → instance state constructed alongside `RolloutBuffer`;
-  merge `layout_key` call sites into one constructor; drop the dual factory/classmethod split.
-- No behavior change: same storage dtypes, same h2d overlap event.
+As built. Two planned items were rejected after checking blast radius:
 
-Acceptance: gates green; pins unchanged; `fps` within ±2% of baseline.
+- **Group merge rejected.** Merging the encoder into the actor-decay group
+  (4→3 param groups) breaks resume of every pre-change checkpoint:
+  `checkpointing.load_optimizer` raises `ResumeError` on param-group count
+  mismatch (`checkpointing.py:97-101`). Resume contract beats a cosmetic group.
+  `split_grad_params` stays; the two `clip_grad_norm_` calls per boundary were
+  already one per role (independent actor/critic norms, non-negotiable).
+- **Buffer refactor a no-op.** `RolloutBuffers` is already a `@dataclass` with
+  instance state (`host`/`device`/`h2d_event`/`env_wrapper`);
+  `tests/test_shared_env_carry.py` enforces the no-duplicate-carry invariant.
+  The `layout_key`/`make_buffer` split is left alone — inlining it would add a
+  second shape-list source of truth.
+
+Actual change: total pre-clip norm via `torch.hypot` instead of
+`stack`+`vector_norm`+`reshape` (logging-only; gradients untouched).
+
+Acceptance re-scoped: gates green; pins unchanged; eval CSV byte-identical on the
+seeded smoke; `fps` within noise (43.2 vs 51.94 baseline, single CPU sample;
+run-to-run range across phases 43–52).
+
+Status: done — 577 passed / 2 pre-existing mani_skill failures; pins 817/218,
+0 mismatches; `/tmp/myfpo_smoke/p4_pre` and `.../p5` CSVs identical.
 
 ## Phase 6 — Module re‑lay (P8, optional, last)
 

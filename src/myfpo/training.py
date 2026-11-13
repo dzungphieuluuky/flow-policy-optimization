@@ -417,11 +417,10 @@ def policy_update_step(policy, optimizer, batch, backends, cfg, grad_groups):
                     ).detach()
                     for role, params in grad_groups.items()
                 }
-                # The groups partition the parameters, so this is the joint pre-clip
-                # norm. It keeps train/grad_norm_before_clip comparable with history.
-                norms["total"] = torch.linalg.vector_norm(
-                    torch.stack([n.reshape(()) for n in norms.values()])
-                )
+                # The groups partition the parameters, so hypot is the joint
+                # pre-clip norm. It keeps train/grad_norm_before_clip comparable
+                # with history.
+                norms["total"] = torch.hypot(norms["actor"], norms["critic"])
                 grad_norms_pre.append(norms)
                 above_clamp_fracs.append(policy.cfm_above_clamp_frac)
                 both_clamped_fracs.append(policy.cfm_both_clamped_frac)
