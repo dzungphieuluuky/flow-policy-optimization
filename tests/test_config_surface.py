@@ -58,12 +58,10 @@ def test_every_declared_field_exists_on_the_dataclass():
     assert not unexplained, f"fields with no declaration: {sorted(unexplained)}"
 
 
-def test_the_noise_marginal_is_normal_and_uniform_only():
-    """One knob left: which distribution, not its spectrum."""
+def test_the_noise_marginal_is_standard_normal():
+    """One law: MC noise is ``N(0, I)``; the spectrum knob is gone."""
     cfg = MyfpoConfig()
-    assert cfg.noise_sampling_mode == "normal"
-    flipped = dataclasses.replace(cfg, noise_sampling_mode="uniform")
-    assert flipped.noise_sampling_mode == "uniform"
+    assert not hasattr(cfg, "noise_sampling_mode")
 
 
 def test_a_zero_head_count_is_a_value_error_not_a_division_by_zero():

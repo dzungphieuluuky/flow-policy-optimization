@@ -98,7 +98,6 @@ class TrainingBatch:
     condition_flat: torch.Tensor
     cfm_loss_old: torch.Tensor
     cfm_loss_old_token: torch.Tensor
-    old_values: torch.Tensor | None
 
 @dataclasses.dataclass
 class PolicyTerms:
@@ -422,7 +421,7 @@ class MyfpoPolicy(nn.Module):
                 eps = torch.zeros(*shape, device=device)
                 num_steps = cfg.num_steps_zero_start
             else:
-                eps = sample_noise(shape, cfg, device, None)
+                eps = sample_noise(shape, device, None)
                 num_steps = cfg.num_steps_noise_start
             action_chunk = sample_action(
                 self.compute_predicted_velocity,
@@ -676,7 +675,6 @@ class MyfpoPolicy(nn.Module):
         chunk_truncated = self.to_device_tensor(
             batch, "chunk_truncated", device, torch.bool
         )
-        old_values = self.to_device_tensor(batch, "old_values", device, torch.float32) if "old_values" in batch else None
 
         if states.shape[-2] != cfg.num_obs_steps:
             raise ValueError(
@@ -739,7 +737,6 @@ class MyfpoPolicy(nn.Module):
             condition_flat=condition_flat,
             cfm_loss_old=cfm_loss_old,
             cfm_loss_old_token=cfm_loss_old_token,
-            old_values=old_values,
         )
 
     def to_device_behavior_losses(
@@ -788,7 +785,6 @@ class MyfpoPolicy(nn.Module):
             adv_mc = adv.unsqueeze(1)
             ratio_token = compute_policy_ratio(
                 b.cfm_loss_old_token, cfm_loss_new_token, cfg,
-                advantage=adv_mc.unsqueeze(-1),
             )
 
             if cfg.group_mc_loss:
@@ -800,15 +796,14 @@ class MyfpoPolicy(nn.Module):
                 )
                 adv_ratio = adv.reshape(-1, 1)
                 ratio = compute_policy_ratio(
-                    ratio_loss_old, ratio_loss_new, cfg, advantage=adv_ratio
+                    ratio_loss_old, ratio_loss_new, cfg
                 )
             else:
                 ratio_loss_old = b.cfm_loss_old_token
                 ratio_loss_new = cfm_loss_new_token
                 adv_ratio = adv_mc.unsqueeze(-1)
                 ratio = ratio_token
-            # The ratio clamps delta at cfm_clamp and at the negative-advantage
-            # bound. The diagnostics must read the same losses that built the
+            # The diagnostics must read the same losses that built the
             # ratio, or they describe a trust region the update never used.
             cfm_above_clamp_frac = (
                 ratio_loss_new > cfg.cfm_clamp
@@ -817,7 +812,7 @@ class MyfpoPolicy(nn.Module):
                 ratio_loss_old, ratio_loss_new, cfg
             ).detach()
             delta = compute_cfm_log_ratio(
-                ratio_loss_old, ratio_loss_new, cfg, adv_ratio
+                ratio_loss_old, ratio_loss_new, cfg
             )
             surrogate = compute_trust_region_surrogate(ratio, adv_ratio, cfg)
             if surrogate.dim() == 3:
@@ -868,13 +863,6 @@ class MyfpoPolicy(nn.Module):
         value_loss_per_chunk = compute_value_loss(
             raw_value_pred, raw_returns_flat, cfg
         )
-        if cfg.use_clipped_value_loss and b.old_values is not None:
-            old_values_expanded = b.old_values.reshape(1, -1).expand_as(raw_value_pred)
-            v_clipped = old_values_expanded + (raw_value_pred - old_values_expanded).clamp(
-                -cfg.value_clip_param, cfg.value_clip_param
-            )
-            clipped_se = compute_value_loss(v_clipped, raw_returns_flat, cfg)
-            value_loss_per_chunk = torch.maximum(value_loss_per_chunk, clipped_se)
         value_loss_per_chunk = value_loss_per_chunk.mean(dim=0)
         return value_loss_per_chunk, raw_value_pred, raw_returns_flat
 

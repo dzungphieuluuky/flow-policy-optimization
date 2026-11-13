@@ -1,9 +1,8 @@
 """One advantage scale for one update.
 
-The rollout standardizes the advantages over the whole batch. The
-per-minibatch pass restandardizes each minibatch on its own statistics, which
-overrides the rollout-level pass and gives every minibatch its own scale.
-The rollout-level pass is the default.
+The rollout standardizes the advantages over the whole batch, so every
+minibatch in the update reads one scale. The rollout-level pass is the
+only standardization in the update.
 """
 
 from __future__ import annotations
@@ -76,11 +75,6 @@ def _advantages_the_actor_reads(cfg):
     return seen
 
 
-def test_the_per_minibatch_pass_is_off_by_default():
-    """Otherwise the rollout-level normalization never reaches the actor."""
-    assert MyfpoConfig().normalize_advantage_per_minibatch is False
-
-
 def test_the_rollout_normalization_reaches_the_actor_by_default():
     cfg = _cfg()
     seen = _advantages_the_actor_reads(cfg)
@@ -91,14 +85,3 @@ def test_the_rollout_normalization_reaches_the_actor_by_default():
             torch.sort(advantages).values, torch.tensor([-0.5, 0.5])
         )
 
-
-def test_the_per_minibatch_pass_still_restandardizes_when_asked():
-    cfg = _cfg(normalize_advantage_per_minibatch=True)
-    seen = _advantages_the_actor_reads(cfg)
-    raw = torch.tensor([1.0, 2.0])
-    expected = (raw - raw.mean()) / (raw.std(correction=0) + 1e-8)
-    for advantages in seen:
-        # The minibatch rows are shuffled, so the order does not matter.
-        assert torch.allclose(
-            torch.sort(advantages).values, torch.sort(expected).values
-        )

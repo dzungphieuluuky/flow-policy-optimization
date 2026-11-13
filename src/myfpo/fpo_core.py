@@ -20,37 +20,20 @@ def sample_timesteps(
     device: torch.device | str,
     generator: torch.Generator | None,
 ):
-    """Training timesteps in ``[cfg.min_sampled_timestep, cfg.max_sampled_timestep]``.``[num_samples]``."""
+    """Uniform training timesteps in ``[cfg.min_sampled_timestep, cfg.max_sampled_timestep]``.``[num_samples]``."""
     lo, hi = cfg.min_sampled_timestep, cfg.max_sampled_timestep
-    mode = cfg.timestep_sampling_mode
-    if mode == "uniform":
-        return (
-            torch.rand(num_samples, device=device, generator=generator) * (hi - lo) + lo
-        )
-    if mode == "fpo_beta":
-        u = torch.rand(num_samples, device=device, generator=generator)
-        beta = cfg.timestep_inverse_cdf_beta
-        return lo + (hi - lo) * (
-            1.0 - torch.pow(1.0 - u, 1.0 / beta)
-        )
-    raise ValueError(
-        f"mode={mode!r} unknown; expected 'uniform' or 'fpo_beta'"
+    return (
+        torch.rand(num_samples, device=device, generator=generator) * (hi - lo) + lo
     )
 
 
 def sample_noise(
     shape,
-    cfg: MyfpoConfig,
     device: torch.device | str,
     generator: torch.Generator | None,
 ):
-    """MC noise. The marginal comes from ``noise_sampling_mode``."""
-    mode = cfg.noise_sampling_mode
-    if mode == "normal":
-        return torch.randn(*shape, device=device, generator=generator)
-    if mode == "uniform":
-        return (torch.rand(*shape, device=device, generator=generator) * 2.0 - 1.0) * math.sqrt(3.0)
-    raise ValueError(f"mode={mode!r} unknown; expected 'normal' or 'uniform'")
+    """Standard-normal MC noise. The marginal is ``N(0, I)``."""
+    return torch.randn(*shape, device=device, generator=generator)
 
 
 def broadcast_over_mc_axis(
@@ -285,52 +268,26 @@ def clamp_saturation(
 # FPO++ (arXiv:2602.02481).
 # POLICY RATIO
 
-def compute_cfm_log_ratio(cfm_loss_old, cfm_loss_new, cfg, advantage):
-    """Return the log-ratio delta between the losses, in the mode ``ratio_mode`` selects."""
-    mode = cfg.ratio_mode
-    if mode in ("cfm", "cfm_raw"):
-        if mode == "cfm":
-            old = torch.clamp(cfm_loss_old, max=cfg.cfm_clamp)
-            # The negative-advantage branch caps the new loss at the tighter of the two
-            # bounds; at the equal reference default this collapses into the upper
-            # clamp, so the branch only exists when a tighter cap is configured.
-            neg_cap = cfg.cfm_loss_clamp_negative_advantages_max
-            if (
-                cfg.cfm_loss_clamp_negative_advantages
-                and advantage is not None
-                and neg_cap < cfg.cfm_clamp
-            ):
-                new = torch.where(
-                    advantage < 0,
-                    torch.clamp(cfm_loss_new, max=neg_cap),
-                    torch.clamp(cfm_loss_new, max=cfg.cfm_clamp),
-                )
-            else:
-                new = torch.clamp(cfm_loss_new, max=cfg.cfm_clamp)
-        else:
-            old, new = cfm_loss_old, cfm_loss_new
-        return old - new
-    raise ValueError(f"ratio_mode={mode!r}")
+def compute_cfm_log_ratio(cfm_loss_old, cfm_loss_new, cfg):
+    """Return the log-ratio delta between the losses: ``clamp(L_old) - clamp(L_new)``, the FPO++ form."""
+    old = torch.clamp(cfm_loss_old, max=cfg.cfm_clamp)
+    new = torch.clamp(cfm_loss_new, max=cfg.cfm_clamp)
+    return old - new
 
 
 def compute_policy_ratio(
     cfm_loss_old: torch.Tensor,
     cfm_loss_new: torch.Tensor,
     cfg: MyfpoConfig,
-    advantage: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Return ``exp(log_delta)`` with a straight-through cap on ``log_delta``.
 
-    ``cfg.ratio_mode`` picks the log-delta:
-
-    * ``"cfm"`` (default): ``clamp(L_old) - clamp(L_new)``, the FPO++ form.
-      ``cfm_clamp`` and ``cfm_loss_clamp_negative_advantages`` apply.
-    * ``"cfm_raw"``: ``L_old - L_new`` with no clamp. Ablation only.
-
-    The MC axis is grouped by :func:`group_cfm_loss` before this call;
-    the function operates on already-grouped tensors.
+    The log-delta is ``clamp(L_old) - clamp(L_new)``, the FPO++ form; the
+    ``cfm_clamp`` bound applies to both losses. The MC axis is grouped by
+    :func:`group_cfm_loss` before this call; the function operates on
+    already-grouped tensors.
     """
-    delta = compute_cfm_log_ratio(cfm_loss_old, cfm_loss_new, cfg, advantage)
+    delta = compute_cfm_log_ratio(cfm_loss_old, cfm_loss_new, cfg)
     safe_delta = delta.clamp(max=cfg.cfm_diff_clamp_max)  # one-sided; ST lets raw delta backprop
     delta_st = safe_delta.detach() + delta - delta.detach()
     return torch.exp(delta_st)
@@ -458,7 +415,7 @@ def sample_eps(
     """Antithetic MC noise: pair eps with -eps. ``[n, 2*half, tokens, action_dim]``."""
     half = max(1, cfg.num_mc_samples // 2)
     shape_half = (n, half, cfg.action_horizon, action_dim)
-    eps_half = sample_noise(shape_half, cfg, device, None)
+    eps_half = sample_noise(shape_half, device, None)
     return torch.cat([eps_half, -eps_half], dim=1)  # [n, 2*half, ...]
 
 

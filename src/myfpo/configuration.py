@@ -4,13 +4,11 @@ import torch
 from pathlib import Path
 import yaml
 import os
-import warnings
 from dataclasses import dataclass
 
 __all__ = [
     "ACTOR_ARCHITECTURES",
     "FLOW_STARTS",
-    "RATIO_MODES",
     "MyfpoConfig",
 ]
 
@@ -48,9 +46,6 @@ ACTOR_ARCHITECTURES = ("dit", "resmlp")
 FLOW_STARTS = ("zero_start", "noise_start")
 
 
-# ``cfm`` and ``cfm_raw`` read the stored CFM losses. See ``compute_policy_ratio``.
-RATIO_MODES = ("cfm", "cfm_raw")
-
 
 @dataclass
 class MyfpoConfig:
@@ -81,9 +76,6 @@ class MyfpoConfig:
     num_baseline_samples: int = 4
     min_sampled_timestep: float = 0.1
     max_sampled_timestep: float = 0.9
-    timestep_sampling_mode: str = "uniform"
-    noise_sampling_mode: str = "normal"
-    timestep_inverse_cdf_beta: float = 1.0
 
     gamma: float = 0.99
     gae_lambda: float = 0.95
@@ -99,9 +91,6 @@ class MyfpoConfig:
     cfm_loss_target: str = "velocity"
     cfm_loss_weight_from_t: str = "constant"
     cfm_clamp: float = 20.0
-    ratio_mode: str = "cfm"
-    cfm_loss_clamp_negative_advantages: bool = True
-    cfm_loss_clamp_negative_advantages_max: float = 20.0
     cfm_diff_clamp_max: float = 10.0
 
     num_critics: int = 2
@@ -112,16 +101,8 @@ class MyfpoConfig:
     # Rollout-level standardization is the standard PPO contract: one scale
     # for the whole update. Off only for ablations.
     normalize_advantage: bool = True
-    # Off by default: re-standardizes each minibatch on its own statistics.
-    # Overrides the rollout-level pass and gives every minibatch its own
-    # scale; the two are mutually exclusive.
-    normalize_advantage_per_minibatch: bool = False
-    advantage_clamp_neg: float = 100.0
-    advantage_clamp_pos: float = 100.0
     value_loss_coef: float = 1.0
     value_loss_beta: float = 10.0
-    use_clipped_value_loss: bool = False
-    value_clip_param: float = 0.2
     action_processing_mode: str = "linear_rescale"
 
     cfm_loss_use_huber: bool = True
@@ -338,23 +319,10 @@ class MyfpoConfig:
                 "first, then the weight at t=1. Under this repo's path the "
                 "noise sits at t=0, so a rising weight is full at the action end."
             )
-        if self.ratio_mode not in RATIO_MODES:
-            raise ValueError(
-                f"ratio_mode={self.ratio_mode!r} must be one of "
-                f"{', '.join(repr(mode) for mode in RATIO_MODES)}"
-            )
         if self.cfm_clamp <= 0:
             raise ValueError(f"cfm_clamp={self.cfm_clamp} must be > 0")
-        if self.cfm_loss_clamp_negative_advantages_max <= 0:
-            raise ValueError("cfm_loss_clamp_negative_advantages_max must be > 0")
         if self.cfm_diff_clamp_max <= 0:
             raise ValueError(f"cfm_diff_clamp_max={self.cfm_diff_clamp_max} must be > 0")
-        for name, value in (
-            ("advantage_clamp_neg", self.advantage_clamp_neg),
-            ("advantage_clamp_pos", self.advantage_clamp_pos),
-        ):
-            if value <= 0:
-                raise ValueError(f"{name}={value} must be > 0")
 
     def validate_sampling(self) -> None:
         """The timestep law, the noise law, and the integration step counts."""
@@ -367,23 +335,6 @@ class MyfpoConfig:
             raise ValueError(
                 "require 0 <= min_sampled_timestep < max_sampled_timestep <= 1, got "
                 f"({self.min_sampled_timestep}, {self.max_sampled_timestep})"
-            )
-        if self.timestep_sampling_mode not in {"uniform", "fpo_beta"}:
-            raise ValueError(
-                "timestep_sampling_mode must be 'uniform' or 'fpo_beta'"
-            )
-        if self.noise_sampling_mode not in {"normal", "uniform"}:
-            raise ValueError("noise_sampling_mode must be 'normal' or 'uniform'")
-        if self.timestep_inverse_cdf_beta <= 0:
-            raise ValueError("timestep_inverse_cdf_beta must be > 0")
-        if self.timestep_inverse_cdf_beta == 1.0 and self.timestep_sampling_mode == "fpo_beta":
-            # stacklevel=3: 2 would now land inside validate() itself.
-            warnings.warn(
-                "timestep_inverse_cdf_beta=1.0 makes timestep_sampling_mode="
-                "'fpo_beta' draw the same law as 'uniform'. Choose a beta "
-                "other than 1.0 to sample a non-uniform timestep law.",
-                RuntimeWarning,
-                stacklevel=3,
             )
         if self.num_steps_zero_start < 1:
             raise ValueError(
@@ -439,10 +390,6 @@ class MyfpoConfig:
             raise ValueError(f"value_loss_coef={self.value_loss_coef} must be >= 0")
         if self.value_loss_beta <= 0:
             raise ValueError(f"value_loss_beta={self.value_loss_beta} must be > 0")
-        if not 0.0 < self.value_clip_param < 1.0:
-            raise ValueError(
-                f"value_clip_param={self.value_clip_param} must satisfy 0 < eps < 1"
-            )
         if self.action_processing_mode not in ("tanh_squash", "linear_rescale"):
             raise ValueError(
                 f"action_processing_mode={self.action_processing_mode!r} must be "

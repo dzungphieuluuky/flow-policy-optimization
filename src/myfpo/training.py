@@ -384,18 +384,6 @@ def policy_update_step(policy, optimizer, batch, backends, cfg, grad_groups):
         for micro_step, mb_idx in enumerate(microbatches):
             group_size = group_sizes[micro_step // accumulation_steps]
             minibatch = sample_minibatch(batch, mb_idx, minibatch)
-            if cfg.normalize_advantage_per_minibatch:
-                # Restandardize this minibatch's raw advantages on its own
-                # statistics (reference per-minibatch mode), then clamp. Off
-                # by default: the rollout already standardized the whole
-                # population, and one scale for the update is what the
-                # gradient clip expects.
-                with torch.no_grad():
-                    adv = minibatch["raw_advantages"]
-                    adv = (adv - adv.mean()) / (adv.std(correction=0) + 1e-8)
-                    minibatch["normalized_advantages"] = adv.clamp(
-                        -cfg.advantage_clamp_neg, cfg.advantage_clamp_pos
-                    )
             # One minibatch is one cudagraph step. Its backward runs before the
             # next forward, so the manager may recycle the step's memory.
             cudagraph_step_begin()

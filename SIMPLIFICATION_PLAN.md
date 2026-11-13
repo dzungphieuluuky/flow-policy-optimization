@@ -76,21 +76,30 @@ pin_train 817 / pin_eval 218 keys, 0 mismatches.
 
 ## Phase 3 — Delete dead modes (P2, P6)
 
-Delete, and delete their tests/pins accordingly:
+As built.
 
-- `ratio_mode: cfm_raw` (keep `cfm`) — delete the branch in `fpo_core.compute_cfm_log_ratio`.
-- `timestep_sampling_mode: fpo_beta` / `timestep_inverse_cdf_beta` (keep `uniform`).
-- `noise_sampling_mode: uniform` (keep `normal`).
-- `cfm_loss_clamp_negative_advantages` (+ `_max`) — always the reference behavior.
-- `normalize_advantage_per_minibatch` (documented mutually exclusive with the default).
-- `advantage_clamp_neg/pos` at 100 (== no clamp) — replace with unconditional `.std`‑normalized clamp only if a gate ever needs it; otherwise delete.
-- `use_clipped_value_loss=False` default: delete unless a gate turns it on (pin decides).
-- `configuration.py` validators: keep ONLY the env‑dim gate (the `KNOWN_ENVS`/startup
-  check) and the cross‑field invariants that `test_guard_messages.py` pins deliberately;
-  drop the per‑field `ValueError` lattice (~250 lines). Keep `KNOWN_ENVS` untouched.
+Deleted knobs (default reachable only as no-ops; each deleted with its tests/guard entries):
+`ratio_mode: cfm_raw` (RATIO_MODES gone), `timestep_sampling_mode: fpo_beta` +
+`timestep_inverse_cdf_beta`, `noise_sampling_mode: uniform`,
+`cfm_loss_clamp_negative_advantages(_max)` (collapses into the cfm_clamp bound at the
+reference default), `normalize_advantage_per_minibatch` (rollout-level kept),
+`advantage_clamp_neg/pos` (fixed at 100), `use_clipped_value_loss` + `value_clip_param`
+(default-off; took the `old_values` plumbing with it).
+Also deleted: the taken-chunk critic read (`q_current_chunk`) — its only consumer was
+`old_values`/clipped value loss; bootstrap_values no longer reads the critic there.
+Deliberate deviation: the plan's "drop the per-field ValueError lattice" was NOT done
+wholesale — validators for deleted fields are gone; surviving fields keep theirs
+(they catch real misconfig and are pinned by test_guard_messages).
+Tests: `test_ratio_modes.py`, `test_timestep_law.py` deleted; guard tables pruned
+(73→66 cases); `test_advantage_normalization` keeps only the rollout-level arm;
+`test_config_surface` pins the single normal noise law; `test_fpo_baseline` simplified.
 
 Acceptance: `rg` for each deleted symbol returns nothing outside `outputs/`;
-`guard_messages`/`pin` tests updated to match; gates green; pins unchanged.
+gates green; pins unchanged.
+
+Status: done — 577 passed / 2 pre-existing mani_skill failures; pin_train 817 /
+pin_eval 218 keys, 0 mismatches (seed-identical eval return 16.1835); ruff clean;
+smoke fps 46.9 vs 51.94 baseline (single CPU sample).
 
 ## Phase 4 — One eval path (P4)
 

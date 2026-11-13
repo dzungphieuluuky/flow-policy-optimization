@@ -10,7 +10,7 @@ import pytest
 import torch
 
 # : Guard count the table below is expected to cover.
-EXPECTED_CASES = 73
+EXPECTED_CASES = 66
 
 _CASES: list[tuple[str, object]] = []
 
@@ -33,10 +33,8 @@ from myfpo.configuration import MyfpoConfig  # noqa: E402
 
 _BAD_CONFIG = {
     "action_perturb_std": -1.0,
-    "advantage_clamp_pos": 0.0,
     "chunks_per_minibatch": 0,
     "cfm_clamp": 0.0,
-    "cfm_loss_clamp_negative_advantages_max": 0.0,
     "cfm_loss_reduction": "median",
     "chunks_per_update": 0,
     "clip_param": 1.0,
@@ -51,7 +49,6 @@ _BAD_CONFIG = {
     "cfm_diff_clamp_max": 0.0,
     "max_grad_norm": 0.0,
     "min_sampled_timestep": -1.0,
-    "noise_sampling_mode": "laplace",
     "num_critics": 0,
     "num_steps_noise_start": 0,
     "num_envs": 0,
@@ -61,13 +58,10 @@ _BAD_CONFIG = {
     "num_mc_samples": 0,
     "optimizer_weight_decay": -1.0,
     "policy_lr": 0.0,
-    "ratio_mode": "softmax",
     "report_to": "mlflow",
     "mc_loss_group_size": 0,
 
     "temporal_probe_every": -1,
-    "timestep_inverse_cdf_beta": 0.0,
-    "timestep_sampling_mode": "cosine",
     "velocity_clip_value": 0.0,
     "trust_region_mode": "grpo",
     "value_loss_coef": -1.0,
@@ -122,7 +116,6 @@ from myfpo.fpo_core import (  # noqa: E402
     compute_cfm_loss,
     broadcast_over_mc_axis,
     sample_action,
-    sample_timesteps,
 )
 from myfpo.rollout import compute_chunk_advantages  # noqa: E402
 
@@ -203,11 +196,6 @@ case("fpo_core:sample_action:t_min")(
         t_max=0.4,
     )
 )
-case("fpo_core:sample_timesteps:mode")(
-    lambda: sample_timesteps(
-        4, MyfpoConfig(timestep_sampling_mode="cosine"), "cpu", None
-    )
-)
 
 _IDS = [cid for cid, _ in _CASES]
 _THUNKS = dict(_CASES)
@@ -226,11 +214,9 @@ KEYWORDS = {
     'attention:CrossAttention:hidden': 'hidden_dim',
     'attention:CrossAttention:split': 'split',
     'config:action_perturb_std': 'action_perturb_std',
-    'config:advantage_clamp_pos': 'advantage_clamp_pos',
     'config:chunks_per_minibatch': 'chunks_per_minibatch',
     'config:mc_loss_group_size': 'mc_loss_group_size',
     'config:cfm_clamp': 'cfm_clamp',
-    'config:cfm_loss_clamp_negative_advantages_max': 'cfm_loss_clamp_negative_advantages_max',
     'config:cfm_loss_huber_delta': 'cfm_loss_huber_delta',
     'config:cfm_loss_reduction': 'cfm_loss_reduction',
     'config:chunks_per_update': 'chunks_per_update',
@@ -246,7 +232,6 @@ KEYWORDS = {
     'config:max_grad_norm': 'max_grad_norm',
     'config:min_sampled_timestep': 'min_sampled_timestep',
     'config:missing-dims': 'obs_dim',
-    'config:noise_sampling_mode': 'noise_sampling_mode',
     'config:num_critics': 'num_critics',
     'config:num_envs': 'num_envs',
     'config:num_learning_epochs': 'num_learning_epochs',
@@ -257,11 +242,8 @@ KEYWORDS = {
     'config:num_baseline_samples': 'num_baseline_samples',
     'config:optimizer_weight_decay': 'optimizer_weight_decay',
     'config:policy_lr': 'policy_lr',
-    'config:ratio_mode': 'ratio_mode',
     'config:report_to': 'report_to',
     'config:temporal_probe_every': 'temporal_probe_every',
-    'config:timestep_inverse_cdf_beta': 'timestep_inverse_cdf_beta',
-    'config:timestep_sampling_mode': 'timestep_sampling_mode',
     'config:velocity_clip_value': 'velocity_clip_value',
     'config:trust_region_mode': 'trust_region_mode',
     'config:value_loss_coef': 'value_loss_coef',
@@ -287,7 +269,6 @@ KEYWORDS = {
     'fpo_core:sample_action:device': 'device',
     'fpo_core:sample_action:shape': 'eps shape',
     'fpo_core:sample_action:t_min': 't_min',
-    'fpo_core:sample_timesteps:mode': 'timestep_sampling_mode',
     'gae:gae_lambda': 'gae_lambda',
     'gae:gamma': 'gamma',
     'gae:lengths': 'chunk tensors must have',

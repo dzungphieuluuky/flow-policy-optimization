@@ -214,9 +214,9 @@ def test_above_clamp_frac_reads_the_tensor_the_ratio_actually_clamps(monkeypatch
     real = modeling.compute_policy_ratio
     clamped = []
 
-    def spy(old, new, cfg, advantage=None, **kwargs):
+    def spy(old, new, cfg, **kwargs):
         clamped.append(new.detach())
-        return real(old, new, cfg, advantage=advantage, **kwargs)
+        return real(old, new, cfg, **kwargs)
 
     monkeypatch.setattr(modeling, "compute_policy_ratio", spy)
 
@@ -269,9 +269,9 @@ def test_the_diagnostics_read_the_token_pair_when_grouping_is_off(monkeypatch):
     real = modeling.compute_policy_ratio
     pairs = []
 
-    def spy(old, new, cfg, advantage=None, **kwargs):
+    def spy(old, new, cfg, **kwargs):
         pairs.append((old.detach(), new.detach()))
-        return real(old, new, cfg, advantage=advantage, **kwargs)
+        return real(old, new, cfg, **kwargs)
 
     monkeypatch.setattr(modeling, "compute_policy_ratio", spy)
 

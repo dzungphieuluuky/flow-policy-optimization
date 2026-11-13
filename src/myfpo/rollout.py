@@ -1045,9 +1045,6 @@ def chunk_advantages(
         normalized_advantages = (raw_advantages - raw_advantages.mean()) / (
             raw_advantages.std(correction=0).clamp_min(1e-8)
         )
-    normalized_advantages = normalized_advantages.clamp(
-        -cfg.advantage_clamp_neg, cfg.advantage_clamp_pos
-    )
     gae_diagnostics = compute_gae_diagnostics(
         active["chunk_env_id"][:n_chunks],
         active["chunk_terminated"][:n_chunks],
@@ -1056,8 +1053,8 @@ def chunk_advantages(
         raw_returns,
     )
     return (
-        # raw_advantages stays fp32. The per-minibatch restandardization reads
-        # it, and a bf16 standard deviation is only good to about 0.4%.
+        # raw_advantages stays fp32; a bf16 standard deviation is only good to
+        # about 0.4%.
         raw_advantages,
         normalized_advantages.to(storage_dtype),
         raw_returns,
@@ -1118,12 +1115,10 @@ def bootstrap_values(
     *,
     need_bootstrap: bool = False,
 ):
-    """The bootstrap action, the normalized states, the V(s) baseline reads, and the Q snapshot for the clipped value loss.
+    """The bootstrap action, the normalized states, and the V(s) baseline reads.
 
     The advantage baseline is a state value, not Q(s, a_taken): each read
-    averages ``cfg.num_baseline_samples`` fresh policy chunks. ``q_current_chunk``
-    is no longer the baseline; it stays only as the rollout-time snapshot the
-    clipped value loss clips against when ``use_clipped_value_loss`` is set.
+    averages ``cfg.num_baseline_samples`` fresh policy chunks.
 
     ``need_bootstrap`` turns on the diagnostic-only bootstrap: the fresh
     proposal for the next state and its Q snapshot. Only
@@ -1177,11 +1172,6 @@ def bootstrap_values(
         try:
             with autocast_context(device):
                 chunk_len_mask = (torch.arange(cfg.action_horizon, device=actions.device).unsqueeze(0) < active["chunk_lengths"].unsqueeze(1)).unsqueeze(-1).float()
-                actions_for_critic = to_critic_action(
-                    actions, policy.action_low, policy.action_high,
-                    mode=cfg.action_processing_mode, mask=chunk_len_mask,
-                )
-                q_current_chunk = subsampled_min(policy.critic(normalized_states, actions_for_critic, exec_length_frac).float())
                 # The next state's proposal runs for num_action_steps, so its
                 # mask is the executed prefix, not the chunk length.
                 boot_mask = (torch.arange(cfg.action_horizon, device=actions.device).unsqueeze(0) < cfg.num_action_steps).unsqueeze(-1).float()
@@ -1211,7 +1201,6 @@ def bootstrap_values(
         normalized_states,
         normalized_next_states,
         boot_actions,
-        q_current_chunk,
         v_current,
         v_next,
         q_bootstrap,
@@ -1361,7 +1350,6 @@ def run_rollout(
         normalized_states,
         normalized_next_states,
         boot_actions,
-        q_current_chunk,
         v_current,
         v_next,
         q_bootstrap,
@@ -1400,7 +1388,6 @@ def run_rollout(
         "raw_advantages": raw_advantages,
         "normalized_advantages": normalized_advantages,
         "raw_returns": raw_returns,
-        "old_values": q_current_chunk,
         "normalizer_observations": active["normalizer_observations"].detach(),
         "boot_observations": normalized_next_states.to(storage_dtype),
         "mc_t": t,
