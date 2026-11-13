@@ -8,7 +8,7 @@ import torch
 
 from myfpo.configuration import MyfpoConfig
 from myfpo.fpo_core import compute_gae_diagnostics, compute_ratio_metrics
-from myfpo.training import compute_rollout_diagnostics
+from myfpo.diagnostics import compute_rollout_diagnostics
 
 from fixtures import make_batch, make_test_policy
 

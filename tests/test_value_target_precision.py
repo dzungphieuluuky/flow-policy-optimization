@@ -6,9 +6,7 @@ from fixtures import make_test_policy
 from myfpo.fpo_core import subsampled_min
 from myfpo.modeling import MyfpoPolicy
 from myfpo.rollout import run_rollout
-from myfpo.training import (
-    measure_value_drift,
-)
+from myfpo.diagnostics import measure_value_drift
 from myfpo.layers import resolve_storage_dtype
 
 

@@ -1,8 +1,8 @@
-"""Tests for the batched rollout diagnostics (``myfpo.training``)."""
+"""Tests for the batched rollout diagnostics (``myfpo.diagnostics``)."""
 import pytest
 import torch
 
-from myfpo.training import compute_rollout_diagnostics
+from myfpo.diagnostics import compute_rollout_diagnostics
 
 N, H, D = 8, 4, 3
 LOW = [-1.0] * D

@@ -58,12 +58,21 @@ Acceptance: `grep -rn "linear_rescale" src scripts` matches only `actions.py`, `
 
 ## Phase 2 — Diagnostics behind one flag (P3)
 
-- Single flag `cfg.diagnostics: bool = False`; when off, zero diagnostic imports execute.
-- Default config stays `False` (current behavior: only explicit `log_drift_diagnostics`
-  triggers the expensive path; GAE diagnostics keep cheap key logging).
+As built. No new `cfg.diagnostics` flag — `log_drift_diagnostics` (default False) is
+the diagnostics master flag and already gates the expensive path (drift measure +
+bootstrap proposal, `training.py`); a second flag would duplicate it.
+`myfpo/diagnostics.py` now holds the diagnostic helpers previously in-`training.py`:
+`executed_chunk`, `compute_rollout_diagnostics` (always on; logged scalars pinned by
+`test_metric_faithfulness`/`test_rollout_diagnostics`), and `measure_value_drift`
+(imported lazily inside the drift branch).
+`compute_gae_diagnostics` stays in `fpo_core.py` (cheap; pinned by tests; file under
+concurrent edit). `effective_rank` stays in `networks.py` (pinned).
 
-Acceptance: update loop emits identical metrics with `diagnostics=True` vs before
-(compare logged tags); gates green; `diagnostics=False` removes measurable overhead.
+Acceptance: identical metrics with drift on/off vs before (same tags, same formulas);
+pins unchanged; gates green; drift off costs nothing (branch never imports the module).
+
+Status: done — 601 passed / 2 pre-existing mani_skill failures (as Phase 0);
+pin_train 817 / pin_eval 218 keys, 0 mismatches.
 
 ## Phase 3 — Delete dead modes (P2, P6)
 

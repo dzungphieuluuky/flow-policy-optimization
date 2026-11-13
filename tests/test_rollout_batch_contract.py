@@ -20,7 +20,8 @@ import torch
 
 from myfpo.configuration import MyfpoConfig
 from myfpo.rollout import RolloutBuffers, run_rollout
-from myfpo.training import make_policy, measure_value_drift
+from myfpo.training import make_policy
+from myfpo.diagnostics import measure_value_drift
 
 
 @pytest.fixture
