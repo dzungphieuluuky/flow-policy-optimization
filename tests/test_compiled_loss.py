@@ -24,10 +24,7 @@ def _cfg(compile: bool, **kw) -> MyfpoConfig:
     base = dict(
         obs_dim=OBS, action_dim=ACT,
         action_horizon=HORIZON, hidden_dim=HIDDEN, time_embed_dim=TIME_EMBED,
- num_obs_steps=2,
-        # Dropout draws differ between eager and compiled graphs; the math
-        # under test is the same. Disable it for equivalence comparisons.
-        critic_dropout=0.0,
+        num_obs_steps=2,
         compile=compile,
     )
     base.update(kw)

@@ -1134,10 +1134,8 @@ def bootstrap_values(
             device=lengths.device,
             dtype=torch.float32,
         )
-        # The critic read is a target, not exploration. A dropout layer in
-        # the critic re-rolls the value on every call, so the critic reads in
-        # eval mode. The actor proposal above stays in train mode on purpose:
-        # its dropout is part of the behavior noise.
+        # The critic read is a target, not exploration, so the critic reads in
+        # eval mode. The actor proposal above stays in train mode on purpose.
         critic_training = policy.critic.training
         policy.critic.eval()
         policy.critic_target.eval()  # invariant: target always eval

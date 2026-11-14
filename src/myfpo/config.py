@@ -72,7 +72,6 @@ class MyfpoConfig:
     critic_condition_on_exec_length: bool = True
     critic_hidden_dim: int = 512
     critic_num_layers: int = 2
-    critic_dropout: float = 0.01
     # Rollout-level standardization is the standard PPO contract: one scale
     # for the whole update. Off only for ablations.
     normalize_advantage: bool = True
@@ -179,7 +178,7 @@ class MyfpoConfig:
             raise ValueError("ema_warmup_steps must be >= 0")
 
     def validate_critic(self) -> None:
-        """Ensemble width, depth, dropout, and the critic learning rate."""
+        """Ensemble width, depth, and the critic learning rate."""
         if self.num_critics < 1:
             raise ValueError(f"num_critics={self.num_critics} must be >= 1")
         if self.critic_hidden_dim is not None and self.critic_hidden_dim < 1:
@@ -188,10 +187,6 @@ class MyfpoConfig:
             )
         if self.critic_num_layers < 1:
             raise ValueError(f"critic_num_layers={self.critic_num_layers} must be >= 1")
-        if not 0.0 <= self.critic_dropout < 1.0:
-            raise ValueError(
-                f"critic_dropout={self.critic_dropout} must be in [0, 1)"
-            )
         if self.critic_lr <= 0:
             raise ValueError(f"critic_lr={self.critic_lr} must be > 0")
         # The critic runs four attention heads over the state window, and

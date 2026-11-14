@@ -539,10 +539,10 @@ class StateAffine(nn.Module):
 
 
 def make_mlp_layers(
-    in_dim: int, hidden_dim: int, num_layers: int, dropout: float
+    in_dim: int, hidden_dim: int, num_layers: int
 ) -> nn.Module:
-    """``Linear -> LayerNorm -> Mish`` per layer, with optional dropout on the
-    first. One final linear maps to the scalar.
+    """``Linear -> LayerNorm -> Mish`` per layer. One final linear maps to the
+    scalar.
 
     Hidden trunks use He-style orthogonal init with zero bias; the final Linear
     is zero-initialized so Q starts at 0 for every input pair — the actor's
@@ -550,8 +550,6 @@ def make_mlp_layers(
     layers: list[nn.Module] = []
     for i in range(num_layers):
         layers.append(_finish_linear(nn.Linear(in_dim if i == 0 else hidden_dim, hidden_dim)))
-        if i == 0 and dropout > 0.0:
-            layers.append(nn.Dropout(dropout))
         layers += [nn.LayerNorm(hidden_dim), nn.Mish()]
     final = nn.Linear(hidden_dim, 1)
     nn.init.constant_(final.weight, 0.0)
@@ -576,7 +574,6 @@ class CriticMember(nn.Module):
         condition_on_exec_length: bool = True,
         num_layers: int = 2,
         condition_dim: int | None = None,
-        dropout: float = 0.0,
         state_hidden: int | None = None,
     ):
         super().__init__()
@@ -631,7 +628,7 @@ class CriticMember(nn.Module):
         self.act_to_obs = CrossAttention(state_dim, attn_heads)
         self.cross_norm_obs = make_rms_norm(state_dim)
         self.cross_norm_act = make_rms_norm(state_dim)
-        self.mlp = make_mlp_layers(self.input_dim, hidden_dim, num_layers, dropout)
+        self.mlp = make_mlp_layers(self.input_dim, hidden_dim, num_layers)
 
     def forward(
         self,
@@ -692,7 +689,6 @@ class Critic(nn.Module):
         condition_on_exec_length: bool = True,
         num_layers: int = 2,
         condition_dim: int | None = None,
-        dropout: float = 0.0,
         state_hidden: int | None = None,
     ):
         super().__init__()
@@ -705,7 +701,6 @@ class Critic(nn.Module):
         self.num_critics = num_critics
         self.condition_on_exec_length = condition_on_exec_length
         self.condition_dim = condition_dim
-        self.dropout = dropout
 
         self.networks = nn.ModuleList(
             [
@@ -718,7 +713,6 @@ class Critic(nn.Module):
                     condition_on_exec_length=condition_on_exec_length,
                     num_layers=num_layers,
                     condition_dim=condition_dim,
-                    dropout=dropout,
                     state_hidden=state_hidden,
                 )
                 for _ in range(num_critics)

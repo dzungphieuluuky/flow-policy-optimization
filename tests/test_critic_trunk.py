@@ -25,7 +25,6 @@ from myfpo.config import MyfpoConfig
 from myfpo.nn import Critic, CriticMember, ActionAffine, StateAffine
 from myfpo.flow import compute_value_metrics
 from conftest import unzero_critic_head
-from myfpo.algo import MyfpoPolicy
 
 OBS, HIDDEN, STEPS, ACT, H = 11, 32, 8, 3, 6
 
@@ -44,11 +43,9 @@ def _cfg(**kw) -> MyfpoConfig:
     )
 
 
-def _member(num_layers: int = 2, dropout: float = 0.0) -> CriticMember:
+def _member(num_layers: int = 2) -> CriticMember:
     torch.manual_seed(0)
-    member = CriticMember(
-        OBS, ACT, HIDDEN, STEPS, H, num_layers=num_layers, dropout=dropout
-    )
+    member = CriticMember(OBS, ACT, HIDDEN, STEPS, H, num_layers=num_layers)
     unzero_critic_head(member)
     return member
 
@@ -107,73 +104,6 @@ def test_a_saved_config_round_trips_with_the_new_ensemble():
     cfg = dataclasses.replace(MyfpoConfig(), num_critics=5)
     assert cfg.num_critics == 5
     cfg.validate()
-
-
-def test_the_dropout_sits_directly_after_the_first_linear():
-    mods = list(_member(2, dropout=0.1).mlp)
-    kinds = [type(m).__name__ for m in mods]
-    assert kinds == [
-        "Linear", "Dropout", "LayerNorm", "Mish",
-        "Linear", "LayerNorm", "Mish",
-        "Linear",
-    ]
-
-
-@pytest.mark.parametrize("num_layers", [1, 2, 3])
-def test_there_is_exactly_one_dropout(num_layers):
-    assert sum(isinstance(m, nn.Dropout) for m in _member(num_layers, 0.1).mlp) == 1
-
-
-def test_zero_dropout_leaves_no_dropout_module():
-    assert not any(isinstance(m, nn.Dropout) for m in _member(3).mlp)
-
-
-def test_the_constructors_default_to_off_so_a_bare_critic_is_deterministic():
-    """The config default is on; the bare constructor turns it off."""
-    assert Critic(OBS, HIDDEN, ACT, STEPS, H, 2).dropout == 0.0
-    assert MyfpoPolicy(_cfg()).critic.dropout == 0.01
-
-
-def test_dropout_is_active_in_train_mode_and_off_in_eval():
-    net = _member(2, dropout=0.5)
-    x = torch.randn(8, net.input_dim)
-    net.train()
-    a, b = net.mlp(x), net.mlp(x)
-    net.eval()
-    c, d = net.mlp(x), net.mlp(x)
-    assert not torch.equal(a, b)
-    assert torch.equal(c, d)
-
-
-def test_the_members_get_independent_masks_in_one_pass():
-    torch.manual_seed(0)
-    critic = Critic(OBS, HIDDEN, ACT, STEPS, H, num_critics=5, dropout=0.5).train()
-    unzero_critic_head(critic)
-    out = critic(
-        torch.randn(4, STEPS, OBS),
-        torch.randn(4, H, ACT),
-        torch.full((4,), 0.5),
-    )
-    assert out.shape == (5, 4)
-    assert not torch.equal(out[0], out[1])
-
-
-@pytest.mark.parametrize("bad", [-0.1, 1.0, 1.5])
-def test_the_config_rejects_a_dropout_outside_the_unit_interval(bad):
-    with pytest.raises(ValueError, match=r"critic_dropout=.* must be in \[0, 1\)"):
-        dataclasses.replace(MyfpoConfig(), critic_dropout=bad)
-
-
-def test_dropout_adds_no_parameters():
-    a = sum(p.numel() for p in Critic(OBS, HIDDEN, ACT, STEPS, H, 5).parameters())
-    a = sum(p.numel() for p in Critic(OBS, HIDDEN, ACT, STEPS, H, 5).parameters())
-    b = sum(
-        p.numel() for p in Critic(OBS, HIDDEN, ACT, STEPS, H, 5, dropout=0.5).parameters()
-    )
-    assert a == b
-
-
-# --- per-part input norms ------------------------------------------------------
 
 
 def test_the_state_and_the_action_are_treated_separately():

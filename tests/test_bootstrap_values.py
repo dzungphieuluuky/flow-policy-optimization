@@ -2,7 +2,7 @@
 
 ``bootstrap_values`` puts both critics in eval mode for the target read. It used
 to record ``policy.critic.training`` *after* that call, so the flag was always
-False and the training loop lost the critic's dropout for the next update.
+False and the training loop lost the critic's eval-mode invariant for the next update.
 """
 
 from __future__ import annotations
@@ -54,7 +54,7 @@ def test_a_rollout_leaves_the_critic_in_the_mode_it_found(config):
 
 
 def test_train_keeps_the_target_critic_in_eval(config):
-    """``policy.train()`` must not switch dropout on in the bootstrap target."""
+    """``policy.train()`` must keep the bootstrap target critic in eval mode."""
     policy = make_policy(
         3, 1, config, device="cpu", action_low=[-2.0], action_high=[2.0]
     )

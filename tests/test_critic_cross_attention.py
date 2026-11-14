@@ -71,7 +71,7 @@ def test_the_two_directions_are_parallel():
         tokens = tokens + m.act_attn(m.act_attn_norm(tokens))
         return state_last, tokens.mean(dim=1)
 
-    m = _member(dropout=0.0).eval()
+    m = _member().eval()
     with torch.no_grad():
         state_last, act_mean = _reference(m)
         m.act_to_obs.out.weight.zero_()
@@ -80,7 +80,7 @@ def test_the_two_directions_are_parallel():
     assert torch.allclose(pooled[:, HIDDEN : 2 * HIDDEN], act_mean)
     assert not torch.allclose(pooled[:, :HIDDEN], state_last)
 
-    m = _member(dropout=0.0).eval()
+    m = _member().eval()
     with torch.no_grad():
         state_last, act_mean = _reference(m)
         m.obs_to_act.out.weight.zero_()
@@ -92,7 +92,7 @@ def test_the_two_directions_are_parallel():
 
 def test_the_action_tokens_keep_the_affine():
     torch.manual_seed(0)
-    m = _member(dropout=0.0).eval()
+    m = _member().eval()
     with torch.no_grad():
         m.norm_action.weight.copy_(torch.linspace(0.5, 2.0, H * ACT))
         m.norm_action.bias.copy_(torch.linspace(-0.3, 0.4, H * ACT))
@@ -111,7 +111,7 @@ def test_the_action_tokens_keep_the_affine():
 def test_a_constant_chunk_survives():
     """A chunk of all +5 and a chunk of all 0 must not reach the critic equal."""
     torch.manual_seed(0)
-    m = _member(dropout=0.0).eval()
+    m = _member().eval()
     obs = torch.randn(1, STEPS, OBS)
     with torch.no_grad():
         high = _pool(m, obs, torch.full((1, H, ACT), 5.0))
@@ -132,7 +132,7 @@ def test_the_shared_encoder_branch_runs_one_token():
 def test_the_chunk_attention_is_causal():
     """A later step cannot change an earlier step's token."""
     torch.manual_seed(0)
-    m = _member(dropout=0.0).eval()
+    m = _member().eval()
     obs = torch.randn(2, STEPS, OBS)
     act = torch.randn(2, H, ACT)
     seen: dict[str, torch.Tensor] = {}
@@ -169,7 +169,7 @@ def test_a_narrow_pool_resizes_into_the_mlp():
 
 
 def test_the_param_count_identity_holds():
-    m = _member(dropout=0.0)
+    m = _member()
     parts = sum(p.numel() for p in m.parameters())
     named = {
         "mlp": sum(p.numel() for p in m.mlp.parameters()),

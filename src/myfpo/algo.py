@@ -131,7 +131,7 @@ def make_policy_networks(config: MyfpoConfig):
         obs_dim, critic_width, action_dim, config.num_obs_steps, config.action_horizon,
         config.num_critics, condition_on_exec_length=config.critic_condition_on_exec_length,
         num_layers=config.critic_num_layers,
-        dropout=config.critic_dropout, state_hidden=config.hidden_dim,
+        state_hidden=config.hidden_dim,
     )
     return actor, encoder, critic, obs_dim, action_dim
 
@@ -169,8 +169,7 @@ class MyfpoPolicy(nn.Module):
     def train(self, mode: bool = True):
         """Set the module mode, and keep the target critic in eval.
 
-        ``critic_target`` is the bootstrap read. Dropout there would corrupt
-        the target values, so it never trains.
+        ``critic_target`` is the bootstrap read, so it never trains.
         """
         super().train(mode)
         self.critic_target.eval()
