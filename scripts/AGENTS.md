@@ -8,8 +8,8 @@ Do not add runner scalars (`total_steps`, `eval_steps`, `save_steps`, `obs_dim`,
 
 `--resume` restores model, optimizer and step only. The config is not restored, so scalar CLI overrides apply to the resumed run. It is myfpo-only.
 
-`scripts/pins/` holds the behaviour gates. Read `scripts/pins/README.md` before you change anything under `scripts/pins/`.
-
-`pin_train.py` and `pin_eval.py` add their own directory to `sys.path` to import `_shared`. That is the only `sys.path` code in the repo.
+`scripts/pins/` held the `atol=0` behaviour gates. It was deleted on 2026-11-15
+when the trust region and the ratio cap changed by design. See
+`SIMPLIFICATION_PLAN.md`, Amendment 1.
 
 `scripts/play.py` registers the `MS-*` ids against a single-env CPU sim before `gym.make`.

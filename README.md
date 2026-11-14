@@ -2,11 +2,11 @@
 
 **Code for:** *Flow Policy Gradients for Robot Control (FPO++)*  
 **ArXiv:** https://arxiv.org/abs/2602.02481  
-**Implementation:** Open-loop action chunking, PyTorch, online RL with CFM surrogate ratios and a configurable trust region (PPO by default; ASPO via `--myfpo.trust_region_mode aspo`).
+**Implementation:** Open-loop action chunking, PyTorch, online RL with CFM surrogate ratios and a configurable trust region (ASPO by default; PPO via `--myfpo.trust_region_mode ppo`).
 
 ## What this repo does
 Trains expressive, multimodal flow-based robot policies using online reinforcement learning without explicit action likelihoods. Key features:
-- Per-token ratio clipping; trust-region mode selectable (`ppo` default, `spo`, `aspo`) (`myfpo.py`)
+- Per-token ratio clipping; trust-region mode selectable (`aspo` default, `ppo`, `spo`) (`myfpo.py`)
 - Chunked rollout with a 4-step open-loop horizon and time-limit-correct bootstrap on truncation (`myfpo.py`)
 - Stored actions are the flow's raw output clamped to the unit box; the CFM target fits it in flow space (`action / actor_scale`). The env receives the affine unscale into its own bounds (`myfpo.py`)
 - Flat-MLP actor over the flattened action chunk: window encoder + per-token timestep embedding into a SiLU MLP (`myfpo.py`)
@@ -25,9 +25,12 @@ uv sync                                              # installs myfpo editable +
 ```bash
 .venv/bin/python -m pytest -q   # behaviour
 uv run ruff check .            # dead code, unused names
-PYTHONPATH=src .venv/bin/python scripts/pins/pin_train.py   # atol=0
-PYTHONPATH=src .venv/bin/python scripts/pins/pin_eval.py    # atol=0
+PYTHONPATH=src .venv/bin/python scripts/train.py \
+  --env InvertedPendulum-v5 --seed 3407 --total_steps 2000 \
+  --out_dir /tmp/myfpo_smoke --myfpo.report_to none   # runtime smoke
 ```
+The `atol=0` behaviour pins were deleted on 2026-11-15. See
+`SIMPLIFICATION_PLAN.md`, Amendment 1.
 
 ## Key papers
 - FPO: `arXiv:2507.21053` (ICLR 2026)

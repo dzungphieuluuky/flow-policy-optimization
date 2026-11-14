@@ -150,11 +150,16 @@ class MyfpoConfig:
     normalize_advantage: bool = True
     value_loss_coef: float = 1.0
     value_loss_beta: float = 10.0
-    clip_param: float = 0.05
-    spo_clip_param: float = 0.05
-    trust_region_mode: str = "ppo"
+    # A loss-difference ratio moves much faster than a likelihood ratio, so a
+    # 5% clip saturates after one step. 0.2 keeps the trust region active.
+    clip_param: float = 0.2
+    spo_clip_param: float = 0.2
+    # ASPO bounds the negative-advantage branch. Sparse rewards may need "ppo".
+    trust_region_mode: str = "aspo"
     cfm_clamp: float = 20.0
-    cfm_diff_clamp_max: float = 10.0
+    # Symmetric cap: exp(2) = 7.4, not exp(10) = 22026.
+    cfm_diff_clamp_min: float = -2.0
+    cfm_diff_clamp_max: float = 2.0
     cfm_loss_reduction: str = "sqrt"
     cfm_loss_use_huber: bool = True
     cfm_loss_huber_delta: float = 0.5
@@ -180,6 +185,8 @@ class MyfpoConfig:
         if self.num_action_steps is None:
             self.num_action_steps = self.action_horizon
         self.adam_betas = tuple(self.adam_betas)
+        if not self.cfm_diff_clamp_min < 0.0 < self.cfm_diff_clamp_max:
+            raise ValueError("cfm_diff_clamp_min < 0 < cfm_diff_clamp_max is required")
 
     @property
     def num_minibatches(self) -> int:
@@ -520,7 +527,9 @@ def compute_cfm_loss(
 
 def compute_policy_ratio(cfm_loss_old: torch.Tensor, cfm_loss_new: torch.Tensor, cfg: MyfpoConfig) -> torch.Tensor:
     delta = cfm_loss_old.clamp(max=cfg.cfm_clamp) - cfm_loss_new.clamp(max=cfg.cfm_clamp)
-    safe_delta = delta.clamp(max=cfg.cfm_diff_clamp_max)
+    # Symmetric cap. The straight-through term keeps a bounded gradient past the
+    # cap instead of a dead zone. An uncapped delta gives exp(10) weights.
+    safe_delta = delta.clamp(cfg.cfm_diff_clamp_min, cfg.cfm_diff_clamp_max)
     return torch.exp(safe_delta.detach() + delta - delta.detach())
 
 
@@ -529,6 +538,8 @@ def compute_trust_region_surrogate(ratio: torch.Tensor, advantage: torch.Tensor,
     ppo = torch.min(ratio_adv, ratio.clamp(1.0 - cfg.clip_param, 1.0 + cfg.clip_param) * advantage)
     if cfg.trust_region_mode == "ppo":
         return ppo
+    # ASPO penalises a ratio spike quadratically and pulls the ratio back
+    # toward 1 - eps instead of zeroing the gradient past the clip.
     spo = ratio_adv - (advantage.abs() / (2.0 * cfg.spo_clip_param)) * (ratio - 1.0).square()
     if cfg.trust_region_mode == "spo":
         return spo
@@ -1174,7 +1185,10 @@ def compute_loss(policy: MyfpoPolicy, batch: dict[str, torch.Tensor], device) ->
             "cfm_loss_new": float(cfm_loss_new.mean().item()),
             "ratio_mean": float(ratio_fp.mean().item()),
             "ratio_std": float(ratio_fp.std(correction=0).item()),
+            "ratio_max": float(ratio_fp.max().item()),
             "clipfrac": float(((ratio_fp - 1.0).abs() > cfg.clip_param).float().mean().item()),
+            "cfm_above_clamp_frac": float((cfm_loss_new_tok > cfg.cfm_clamp).float().mean().item()),
+            "cfm_both_clamped_frac": float(((cfm_old_tok > cfg.cfm_clamp) & (cfm_loss_new_tok > cfg.cfm_clamp)).float().mean().item()),
             "explained_var": float(1.0 - (returns - value_pred).var(unbiased=False).item() / r_var),
         }
     return loss, metrics

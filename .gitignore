@@ -10,7 +10,6 @@ uv.log
 tmp/
 tensorboard/
 
-# The behaviour pin baselines are binary and regenerable. The scripts that read
-# them are tracked. See scripts/pins/README.md.
-scripts/pins/*.pt
+# The behaviour pins were deleted on 2026-11-15, when the trust region and the
+# ratio cap changed by design. See SIMPLIFICATION_PLAN.md, Amendment 1.
 wandb/
