@@ -4,7 +4,7 @@ import inspect
 import pytest
 import torch
 
-from myfpo.collect import compute_chunk_advantages, gae_trace
+from myfpo.myfpo import compute_chunk_advantages, gae_trace
 
 GAMMA, H = 0.99, 4
 
@@ -381,9 +381,9 @@ def test_trace_requires_its_inputs():
         gamma=GAMMA,
         gae_lambda=0.95,
     )
-    with pytest.raises(ValueError, match="chunk_truncated is required"):
+    with pytest.raises(ValueError, match="chunk_truncated and chunk_prev are required"):
         compute_chunk_advantages(**common)
-    with pytest.raises(ValueError, match="chunk_prev is required"):
+    with pytest.raises(ValueError, match="chunk_truncated and chunk_prev are required"):
         compute_chunk_advantages(
             chunk_truncated=torch.zeros(1, dtype=torch.bool), **common
         )

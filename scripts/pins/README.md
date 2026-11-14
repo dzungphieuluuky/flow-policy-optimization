@@ -15,8 +15,8 @@ pins catch it. The suite does not.
 
 | Script | Covers | Baseline |
 |---|---|---|
-| `pin_train.py` | one `MyfpoPolicy.loss_with_info` call, the whole `info` dict, and the gradient of every parameter, for the three pin arms (`dit`, `resmlp`, `dit.clamp0.5`) | `train_old.pt` |
-| `pin_eval.py` | eval summary metrics, the bootstrap interval, the three jerk measures, and both stop guards | `eval_old.pt` |
+| `pin_train.py` | one forward and one backward pass of the lean policy: the loss, the full metrics dict, and the gradient of every parameter (one arm: `default`) | `train_old.pt` |
+| `pin_eval.py` | eval summary metrics (windows), the bootstrap interval, `summarize_results`, and the action jerk (two measurements) | `eval_old.pt` |
 
 `_shared.py` holds the setup and the comparison. Do not import anything from
 `src` into it beyond what it already builds. A pin that shares code with the
@@ -44,6 +44,10 @@ Exit code 0 means no difference. Any other value means at least one.
 Each run takes about 3 to 6 seconds on CPU. Both pins work on CPU and skip CUDA,
 so they run anywhere the test suite runs.
 
+Both baselines were re-generated on the `reimplement-minimal` branch with the
+lean pole, because the legacy pins captured legacy behavior, not a contract.
+The re-pin is a deliberate, documented move, not drift-hiding.
+
 ## Regenerating a baseline
 
 Only when a change is meant to move the numbers.
@@ -63,8 +67,6 @@ message. A change to `train_old.pt` is a re-pin and belongs in its own commit.
 ## What the pins do not cover
 
 - Rollout collection and environment stepping. No pin runs an environment.
-- Anything under `compute_info=False`. The trainer turns the stats path off when
-  the tracker is off, so the metric set depends on the tracking mode. The pins
-  pin the full `compute_info=True` set.
-- The second optimizer step. The pins cover one forward and one backward. They
-  do not cover EMA, the LR schedule, or checkpoint round-trips.
+- The full training loop. The pins cover one forward and one backward from a
+  fresh policy. They do not cover EMA (removed in the lean pole), the LR
+  schedule (fixed LR, removed), or checkpoint round-trips.

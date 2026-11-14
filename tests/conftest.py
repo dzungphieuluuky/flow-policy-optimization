@@ -43,11 +43,7 @@ def unzero_critic_head(critic_or_member):
     it. Give those probes a non-degenerate head instead of weakening them.
     Accepts a Critic (all members) or a single CriticMember.
     """
-    members = (
-        critic_or_member.networks
-        if hasattr(critic_or_member, "networks")
-        else [critic_or_member]
-    )
+    members = getattr(critic_or_member, "networks", [critic_or_member])
     with torch.no_grad():
         for i, member in enumerate(members):
             final = member.mlp[-1]

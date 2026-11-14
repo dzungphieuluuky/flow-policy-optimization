@@ -1,7 +1,7 @@
 """The policy's chunk API: encode once, sample many.
 
 ``predict_action_chunk`` encodes the window and samples a chunk in one call.
-It is now ``encode_states`` + ``sample_chunk``, so a caller that samples many
+It is ``encode_states`` + ``sample_chunk``, so a caller that samples many
 chunks from one window encodes it once.
 
 Two invariants hold here:
@@ -15,21 +15,15 @@ Two invariants hold here:
 
 from __future__ import annotations
 
-import dataclasses
-
 import gymnasium as gym
+import numpy as np
 import torch
 
-from myfpo.config import MyfpoConfig
-from myfpo.collect import RolloutBuffers, run_rollout
-from myfpo.train import make_policy
+from myfpo.myfpo import MyfpoConfig, MyfpoPolicy, make_rollout_state, make_train_env, run_rollout
 
 
 def _config() -> MyfpoConfig:
-    return dataclasses.replace(
-        MyfpoConfig(),
-        obs_dim=3,
-        action_dim=1,
+    return MyfpoConfig(
         hidden_dim=32,
         num_obs_steps=4,
         action_horizon=4,
@@ -40,8 +34,11 @@ def _config() -> MyfpoConfig:
     )
 
 
-def _policy(cfg) -> object:
-    return make_policy(3, 1, cfg, device="cpu", action_low=[-2.0], action_high=[2.0])
+def _policy(cfg) -> MyfpoPolicy:
+    low = np.full(1, -2.0, dtype=np.float32)
+    high = np.full(1, 2.0, dtype=np.float32)
+    torch.manual_seed(0)
+    return MyfpoPolicy(cfg, 3, 1, low, high)
 
 
 def test_the_composed_and_the_split_call_agree():
@@ -52,7 +49,7 @@ def test_the_composed_and_the_split_call_agree():
     states = torch.randn(3, cfg.num_obs_steps, 3)
 
     torch.manual_seed(11)
-    composed = policy.predict_action_chunk({"observation.state": states})
+    composed = policy.predict_action_chunk(states)
     torch.manual_seed(11)
     split = policy.sample_chunk(policy.encode_states(states))
     assert torch.equal(composed, split)
@@ -62,23 +59,29 @@ def test_the_baseline_condition_is_the_window_the_critic_reads():
     """The rollout and the training pass normalize the same window.
 
     The critic reads ``normalized_states``, which the rollout builds by
-    normalizing the stored window in the storage dtype. The baseline samples
-    from a condition built the same way. A different window here would make
-    the baseline a read of a state the critic never saw.
+    normalizing the stored window. The baseline samples from a condition built
+    the same way. A different window here would make the baseline a read of a
+    state the critic never saw.
     """
     cfg = _config()
     env = gym.make("Pendulum-v1")
     policy = _policy(cfg)
     policy.train()
+    train_env = make_train_env(env, "Pendulum-v1", 1)
+    state = make_rollout_state(3, 1, cfg, total_steps_hint=8)
     try:
         batch = run_rollout(
-            policy, RolloutBuffers(), env, 2, action_low=-2.0, action_high=2.0
+            policy,
+            train_env,
+            2,
+            action_low=np.full(1, -2.0, dtype=np.float32),
+            action_high=np.full(1, 2.0, dtype=np.float32),
+            state=state,
         )
     finally:
         env.close()
 
     states = batch["observation.state"]
     condition = policy.encode_states(states)
-    # The same normalization the bootstrap applies, over the same window.
     normalized = policy.obs_normalizer(states.to(torch.float32))
     torch.testing.assert_close(condition, policy.encoder(normalized))

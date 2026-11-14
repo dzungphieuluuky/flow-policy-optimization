@@ -3,57 +3,66 @@
 import pytest
 import torch
 
-from myfpo.checkpointing import (
-    CHECKPOINT_FILE,
-    ResumeError,
-    load_policy_checkpoint,
-    save_policy_checkpoint,
-)
-from myfpo.algo import make_optimizer
-from myfpo.train import sample_random_baseline
+from myfpo.myfpo import load_checkpoint, make_optimizer, sample_random_baseline, save_checkpoint
 from fixtures import make_test_policy
 
 
-# ---- Checkpoint round trip (from test_checkpoint_roundtrip) ----
+# ---- Checkpoint round trip ----
 
-def test_a_round_trip_restores_weights_counters_and_ema(tmp_path):
+def test_a_round_trip_restores_weights_the_optimizer_and_the_step(tmp_path):
     policy = make_test_policy()
-    policy.update_ema(0)
     optimizer = make_optimizer(policy)
-    policy.step_count = 7
-    save_policy_checkpoint(
-        tmp_path,
-        policy=policy,
-        optimizer=optimizer,
-        global_step=42,
-        ema_state=policy.ema_state_dict(),
-    )
 
-    loaded, loaded_optimizer, counters = load_policy_checkpoint(tmp_path)
-    assert counters == {"global_step": 42, "step_count": 7}
+    # one real step so the optimizer carries state
+    cfg = policy.config
+    batch = {
+        "observation.state": torch.randn(2, cfg.num_obs_steps, 5),
+        "action": torch.tanh(torch.randn(2, cfg.action_horizon, 2)),
+        "action_is_pad": torch.zeros(2, cfg.action_horizon, dtype=torch.bool),
+        "normalized_advantages": torch.tensor([1.0, -1.0]),
+        "raw_returns": torch.tensor([2.0, 0.5]),
+        "mc_t": torch.rand(2, cfg.num_mc_samples, cfg.action_horizon, 1),
+        "mc_eps": torch.randn(2, cfg.num_mc_samples, cfg.action_horizon, 2),
+        "behavior_cfm_loss": torch.rand(2, cfg.num_mc_samples),
+        "behavior_cfm_loss_token": torch.rand(2, cfg.num_mc_samples, cfg.action_horizon),
+    }
+    from myfpo.myfpo import compute_loss
+
+    loss, _ = compute_loss(policy, batch, torch.device("cpu"))
+    optimizer.zero_grad(set_to_none=True)
+    loss.backward()
+    optimizer.step()
+
+    step = 42
+    save_checkpoint(tmp_path, "best", policy, optimizer, step)
+
+    fresh = make_test_policy()
+    fresh_optimizer = make_optimizer(fresh)
+    loaded_step = load_checkpoint(tmp_path / "checkpoints" / "best", fresh, fresh_optimizer)
+    assert loaded_step == step
     for name, value in policy.state_dict().items():
-        assert torch.equal(value, loaded.state_dict()[name]), name
-    assert len(loaded_optimizer.param_groups) == len(optimizer.param_groups)
+        assert torch.equal(value, fresh.state_dict()[name]), name
+    assert len(fresh_optimizer.param_groups) == len(optimizer.param_groups)
 
 
-def test_an_old_style_directory_says_what_is_missing(tmp_path):
-    (tmp_path / "config.json").write_text("{}")
-    with pytest.raises(ResumeError, match=CHECKPOINT_FILE):
-        load_policy_checkpoint(tmp_path)
+def test_a_missing_checkpoint_says_what_is_missing(tmp_path):
+    policy = make_test_policy()
+    with pytest.raises(FileNotFoundError):
+        load_checkpoint(tmp_path / "checkpoints" / "nope", policy)
 
 
 def test_a_policy_only_checkpoint_loads_without_an_optimizer(tmp_path):
     policy = make_test_policy()
-    save_policy_checkpoint(tmp_path, policy=policy, optimizer=None, global_step=3)
+    save_checkpoint(tmp_path, "step_3", policy, optimizer=None, global_step=3)
 
-    loaded, optimizer, counters = load_policy_checkpoint(tmp_path)
-    assert optimizer is None
-    assert counters["global_step"] == 3
+    fresh = make_test_policy()
+    step = load_checkpoint(tmp_path / "checkpoints" / "step_3", fresh, optimizer=None)
+    assert step == 3
     for name, value in policy.state_dict().items():
-        assert torch.equal(value, loaded.state_dict()[name]), name
+        assert torch.equal(value, fresh.state_dict()[name]), name
 
 
-# ---- Random baseline (from test_random_baseline) ----
+# ---- Random baseline ----
 
 class StubEvaluator:
     """Records what ``sample_random_baseline`` asks it to do."""

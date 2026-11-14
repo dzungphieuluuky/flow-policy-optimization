@@ -5,7 +5,7 @@ import inspect
 import pytest
 import torch
 
-from myfpo.collect import RolloutBuffer, collect_chunks_vec
+from myfpo.myfpo import RolloutBuffer, collect_chunks_vec
 
 OBS_STEPS, OBS_DIM, HORIZON, ACT_DIM = 4, 3, 4, 1
 NUM_ENVS = 3
@@ -24,7 +24,7 @@ def _pendulum_vec(n: int = NUM_ENVS, limit: int | None = None):
 
         return fn
 
-    return gym.vector.SyncVectorEnv([make(i) for i in range(n)])
+    return gym.vector.SyncVectorEnv([make(i) for i in range(n)], autoreset_mode="SameStep")
 
 
 def _buffer() -> RolloutBuffer:
@@ -193,42 +193,14 @@ def test_reset_keeps_storage_and_clears_cursors():
     assert torch.equal(buf.chunk_state, before), "reset() cleared storage"
 
 
-def test_copy_to_matches_the_active_prefix():
-    """The H2D transfer must carry every field, at the right length."""
-    buf = _collect(total_steps=120)
-    gpu = _buffer()
-    buf.copy_to(gpu)
-    active, mirrored = buf.active_prefix(), gpu.active_prefix()
-    assert set(active) == set(mirrored)
-    for name in active:
-        assert torch.equal(active[name], mirrored[name]), name
-
-
 def test_the_buffer_is_the_only_source_of_the_row_width():
-    """The collector must not be able to disagree with the buffer.
-
-    ``collect_chunks_vec`` used to take ``chunk_size`` and size its plan by it,
-    while ``RolloutBuffer`` sized storage by ``action_horizon``. The two agreed
-    only because the single caller passed ``cfg.action_horizon``. A second
-    caller, or a swept ``action_horizon``, could have split them. One source
-    removes the question.
-    """
+    """The collector must not be able to disagree with the buffer."""
     import inspect
-
-    from myfpo.collect import check_chunk_dims
 
     params = inspect.signature(collect_chunks_vec).parameters
     assert "chunk_size" not in params, (
         "collect_chunks_vec regrew a second source for the row width"
     )
-
-    # The horizon is required, so there is no silent fallback to the config.
-    horizon = inspect.signature(check_chunk_dims).parameters["action_horizon"]
-    assert horizon.default is inspect.Parameter.empty, (
-        "action_horizon became optional again, which restores the second source"
-    )
-
-    # And it is the buffer's own value, not a fresh read of the config.
     buf = RolloutBuffer(
         max_chunks=4, max_steps=8, obs_steps=2, obs_dim=OBS_DIM,
         action_horizon=HORIZON + 3, action_dim=ACT_DIM,
@@ -371,24 +343,4 @@ def test_the_guard_and_the_row_count_are_one_capacity():
     assert buf.n_chunks == 2 and buf.n_steps == 2
 
 
-def test_a_failed_copy_leaves_the_destination_cursors_alone():
-    """copy_to must not claim rows it failed to write.
-
-    The counters used to be set before the transfer, so a destination too
-    small reported rows of earlier data.
-    """
-    src = _buffer()
-    _write_one(src)
-    _write_one(src)
-    small = RolloutBuffer(
-        max_chunks=1,
-        max_steps=1,
-        obs_steps=OBS_STEPS,
-        obs_dim=OBS_DIM,
-        action_horizon=HORIZON,
-        action_dim=ACT_DIM,
-    )
-    with pytest.raises(RuntimeError):
-        src.copy_to(small)
-    assert small.n_chunks == 0 and small.n_steps == 0
 

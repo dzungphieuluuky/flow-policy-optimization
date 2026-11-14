@@ -9,23 +9,30 @@ from __future__ import annotations
 
 import torch
 
-from myfpo.config import MyfpoConfig
-from myfpo.algo import MyfpoPolicy
+import numpy as np
+
+from myfpo.myfpo import MyfpoConfig, MyfpoPolicy
 
 OBS_DIM = 5
 ACT_DIM = 2
 
 
-def cfg(
-    *, obs_dim: int = OBS_DIM, act_dim: int = ACT_DIM, **kw
-) -> MyfpoConfig:
+def cfg(*, obs_dim: int = OBS_DIM, act_dim: int = ACT_DIM, **kw) -> MyfpoConfig:
     """A config with the dims the suite uses. ``kw`` goes to the fields."""
-    return MyfpoConfig(obs_dim=obs_dim, action_dim=act_dim, **kw)
+    cfg = MyfpoConfig(**kw)
+    cfg.obs_dim = obs_dim  # informational; the policy takes dims explicitly
+    cfg.action_dim = act_dim
+    return cfg
 
 
 def make_test_policy(**kw) -> MyfpoPolicy:
     """A policy with the feature specs the suite uses. ``kw`` goes to the config."""
-    return MyfpoPolicy(cfg(**kw))
+    kw_dims = {k: kw.pop(k) for k in ("obs_dim", "act_dim") if k in kw}
+    obs_dim = kw_dims.get("obs_dim", OBS_DIM)
+    act_dim = kw_dims.get("act_dim", ACT_DIM)
+    low = np.full(act_dim, -1.0, dtype=np.float32)
+    high = np.full(act_dim, 1.0, dtype=np.float32)
+    return MyfpoPolicy(cfg(**kw), obs_dim, act_dim, low, high)
 
 def make_batch(
     policy: MyfpoPolicy,

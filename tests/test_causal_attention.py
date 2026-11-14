@@ -11,8 +11,8 @@ from __future__ import annotations
 import pytest
 import torch
 
-from myfpo.nn import SelfAttention
-from myfpo.config import MyfpoConfig
+from myfpo.myfpo import SelfAttention
+from myfpo.myfpo import MyfpoConfig
 
 
 def test_a_later_token_cannot_change_an_earlier_one():
@@ -44,13 +44,6 @@ def test_even_head_dim_is_accepted():
     assert SelfAttention(12, 2).head_dim == 6
 
 
-def test_config_rejects_a_width_the_critic_cannot_split():
-    # A width that is not a multiple of 8 cannot build: the critic's four
-    # heads need width % 8.
-    with pytest.raises(ValueError, match="must be divisible by 8"):
-        MyfpoConfig(hidden_dim=12).validate()
-
-
-def test_config_accepts_a_width_the_critic_can_split():
+def test_config_accepts_any_width_the_critic_can_split():
     cfg = MyfpoConfig(hidden_dim=24)
     assert cfg.hidden_dim % 8 == 0

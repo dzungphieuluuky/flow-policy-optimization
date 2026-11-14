@@ -6,25 +6,27 @@
 
 ## What this repo does
 Trains expressive, multimodal flow-based robot policies using online reinforcement learning without explicit action likelihoods. Key features:
-- Per-token ratio clipping by default; trust-region mode selectable (`ppo` default, `spo`, `aspo`) (`flow.py`)
-- Chunked rollout (`collect.py`) with boundary diagnostics (`rollout_seam_jerk`)
-- Stored actions are the flow's raw output; the CFM target fits them in flow space (`action / actor_scale`), with no separate action normalizer. The squash into the env bounds happens on the way to the env (see `actions.py` and `algo.py`)
-- Flat-MLP actor over the flattened action chunk: window encoder + per-token timestep embedding concatenated into a 4-layer SiLU MLP (`nn.py`)
-- TD-MPC2-style critic: 2 members by default (`--myfpo.num_critics 5` for the full ensemble), LayerNorm + Mish, REDQ min-of-2 targets (`nn.py`). The action chunk enters through a learned affine, so the chunk's offset survives
-- Independent actor and critic gradient clipping (`train.py`)
-- Metric faithfulness (`tests/test_metric_faithfulness.py`)
-- Full diagnostic suite (`tests/test_guard_messages.py`: 57 guarded conditions)
+- Per-token ratio clipping; trust-region mode selectable (`ppo` default, `spo`, `aspo`) (`myfpo.py`)
+- Chunked rollout with a 4-step open-loop horizon and time-limit-correct bootstrap on truncation (`myfpo.py`)
+- Stored actions are the flow's raw output clamped to the unit box; the CFM target fits it in flow space (`action / actor_scale`). The env receives the affine unscale into its own bounds (`myfpo.py`)
+- Flat-MLP actor over the flattened action chunk: window encoder + per-token timestep embedding into a SiLU MLP (`myfpo.py`)
+- TD-MPC2-style critic trunk: LayerNorm + Mish, the action chunk enters through a learned affine so the chunk's offset survives (`myfpo.py`)
+- Independent actor and critic gradient clipping
+- `myfpo.py` is the single-file implementation; `ppo.py` is a plain PPO baseline (`--method ppo`) for comparisons
 
 ## Quick start
 ```bash
 uv sync                                              # installs myfpo editable + deps
 .venv/bin/python scripts/train.py --env Hopper-v5 --seed 0 --total_steps 2000
+.venv/bin/python scripts/train.py --method ppo --env Hopper-v5 --seed 0 --total_steps 2000  # plain PPO baseline
 ```
 
 ## Gates
 ```bash
 .venv/bin/python -m pytest -q   # behaviour
 uv run ruff check .            # dead code, unused names
+PYTHONPATH=src .venv/bin/python scripts/pins/pin_train.py   # atol=0
+PYTHONPATH=src .venv/bin/python scripts/pins/pin_eval.py    # atol=0
 ```
 
 ## Key papers
@@ -33,4 +35,4 @@ uv run ruff check .            # dead code, unused names
 - Diffusion Policy: `arXiv:2303.04137`
 - GoRL / GORL: `arXiv:2512.02581v1` (ICML 2026)
 
-See `nn.py` and `config.py` for how each network is built and why.
+See `src/myfpo/myfpo.py` for how the whole implementation fits together.

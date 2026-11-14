@@ -1,51 +1,28 @@
-"""Critic trunk: LayerNorm + Mish, and a two-member ensemble by default.
+"""Critic trunk: LayerNorm + Mish, single head.
 
-Follows TD-MPC2 (arXiv:2310.16828): every hidden layer is Linear -> LayerNorm
--> Mish. The old trunk was bare Linear -> ReLU with no normalization at all.
-TD-MPC2 ships 5 ensemble members; this repo runs 2, and
-``--myfpo.num_critics 5`` restores the paper's width.
-
-The action and state inputs are the two places the trunk departs from the paper.
-The action is a learned affine, not a LayerNorm, because a LayerNorm over the
-chunk erases the chunk's offset. The state norm divides by the RMS and keeps
-the mean, for the same reason. See ``myfpo.nn.ActionAffine`` and
-``StateAffine``.
+Every hidden layer is Linear -> LayerNorm -> Mish. The action and state inputs
+are the two places the trunk departs from a vanilla MLP: the action is a
+learned affine, not a LayerNorm, because a LayerNorm over the chunk erases the
+chunk's offset; the state norm divides by the RMS and keeps the mean, for the
+same reason. See ``ActionAffine`` and ``StateAffine``.
 """
 
 from __future__ import annotations
 
-import dataclasses
-import math
 
 import pytest
 import torch
 from torch import nn
 
-from myfpo.config import MyfpoConfig
-from myfpo.nn import Critic, CriticMember, ActionAffine, StateAffine
-from myfpo.flow import compute_value_metrics
+from myfpo.myfpo import Critic, ActionAffine, StateAffine
 from conftest import unzero_critic_head
 
 OBS, HIDDEN, STEPS, ACT, H = 11, 32, 8, 3, 6
 
 
-def _cfg(**kw) -> MyfpoConfig:
-    return dataclasses.replace(
-        MyfpoConfig(
-            action_horizon=H,
-            num_action_steps=H,
-            hidden_dim=HIDDEN,
-            num_obs_steps=STEPS,
-            obs_dim=OBS,
-            action_dim=ACT,
-        ),
-        **kw,
-    )
-
-
-def _member(num_layers: int = 2) -> CriticMember:
+def _member(num_layers: int = 2) -> Critic:
     torch.manual_seed(0)
-    member = CriticMember(OBS, ACT, HIDDEN, STEPS, H, num_layers=num_layers)
+    member = Critic(OBS, HIDDEN, ACT, STEPS, H, num_layers=num_layers, state_hidden=HIDDEN)
     unzero_critic_head(member)
     return member
 
@@ -83,27 +60,6 @@ def test_the_first_linear_takes_the_pool_and_not_the_chunk():
     """The pool is the last state token and the mean action token."""
     first = _member(2).mlp[0]
     assert first.in_features == 2 * HIDDEN + 1
-
-
-def test_the_default_ensemble_is_two():
-    """The repo default is 2, not TD-MPC2's 5. The paper's width is a flag."""
-    assert MyfpoConfig().num_critics == 2
-    assert Critic(OBS, HIDDEN, ACT, STEPS, H, 2).num_critics == 2
-
-
-def test_the_members_stay_independent():
-    torch.manual_seed(0)
-    critic = Critic(OBS, HIDDEN, ACT, STEPS, H, num_critics=5)
-    assert len(critic.networks) == 5
-    w0 = critic.networks[0].mlp[0].weight
-    for other in critic.networks[1:]:
-        assert not torch.equal(w0, other.mlp[0].weight)
-
-
-def test_a_saved_config_round_trips_with_the_new_ensemble():
-    cfg = dataclasses.replace(MyfpoConfig(), num_critics=5)
-    assert cfg.num_critics == 5
-    cfg.validate()
 
 
 def test_the_state_and_the_action_are_treated_separately():
@@ -240,15 +196,6 @@ def test_the_input_parts_add_exactly_their_own_widths():
     assert with_parts == mlp + encoder + blocks + 2 * (STEPS * OBS) + 2 * (H * ACT)
 
 
-def test_the_shared_encoder_branch_skips_the_state_trunk():
-    torch.manual_seed(0)
-    m = CriticMember(OBS, ACT, HIDDEN, 1, H, condition_dim=HIDDEN)
-    assert m.norm_state is None
-    assert m.state_encoder is None
-    assert isinstance(m.norm_action, ActionAffine)
-    assert m.input_dim == 2 * HIDDEN + 1
-
-
 def test_the_state_norm_receives_the_flattened_window_not_the_chunk():
     m = _member()
     seen = {}
@@ -256,131 +203,3 @@ def test_the_state_norm_receives_the_flattened_window_not_the_chunk():
     m.norm_state.forward = lambda x: (seen.setdefault("shape", tuple(x.shape)), original(x))[1]
     m(torch.randn(3, STEPS, OBS), torch.randn(3, H, ACT), torch.full((3,), 0.5))
     assert seen["shape"] == (3, STEPS * OBS)
-
-
-def test_the_member_gap_p95_flags_a_collapsed_ensemble():
-    """The gap is the only signal that the ensemble has not collapsed onto one function."""
-    n = 64
-    collapsed = torch.zeros(5, n)
-    healthy = torch.arange(5, dtype=torch.float32).unsqueeze(1).expand(5, n).clone()
-    assert _gap_p95(collapsed) == pytest.approx(0.0)
-    assert _gap_p95(healthy) == pytest.approx(4.0)
-    assert _gap_p95(healthy) > _gap_p95(collapsed)
-
-
-def _gap_p95(pred: torch.Tensor) -> float:
-    out = compute_value_metrics(
-        raw_value_pred=pred,
-        raw_returns_flat=torch.zeros(pred.shape[1]),
-        policy_per_chunk=torch.zeros(pred.shape[1]),
-        value_loss_per_chunk=torch.zeros(pred.shape[1]),
-    )
-    return float(out["value_pred_member_gap_p95"])
-
-
-def test_the_member_correlation_flags_a_collapsed_ensemble():
-    """A correlation near one means the members agree on every state."""
-    n = 64
-    base = torch.randn(n)
-    collapsed = base.unsqueeze(0).expand(5, n).clone()
-    independent = torch.randn(5, n)
-    assert _member_corr(collapsed) == pytest.approx(1.0)
-    assert _member_corr(independent) < 0.5
-    assert _member_corr(collapsed) > _member_corr(independent)
-
-
-def test_the_correlation_and_the_gap_read_a_collapse_together():
-    """The correlation is invariant to a shift and a scale. The gap is not.
-
-    So a member that is the same function with an offset reads correlation one
-    and a nonzero gap. A collapse is correlation one and a gap of zero.
-    """
-    n = 64
-    base = torch.randn(n)
-    offset = torch.stack([base, base + 0.5])
-    identical = base.unsqueeze(0).expand(2, n).clone()
-    assert _member_corr(offset) == pytest.approx(1.0)
-    assert _member_gap(offset) > 0.0
-    assert _member_corr(identical) == pytest.approx(1.0)
-    assert _member_gap(identical) == pytest.approx(0.0)
-
-
-def test_one_member_has_no_pair_so_the_correlation_is_nan():
-    """NaN is how the repo says "unmeasured"."""
-    out = compute_value_metrics(
-        raw_value_pred=torch.zeros(1, 8),
-        raw_returns_flat=torch.zeros(8),
-        policy_per_chunk=torch.zeros(8),
-        value_loss_per_chunk=torch.zeros(8),
-    )
-    assert math.isnan(float(out["value_pred_member_corr"]))
-
-
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="device mixing bites on cuda")
-def test_the_nan_branch_sits_on_the_input_device():
-    """The nan branch must not build its tensor on the default device.
-
-    One cpu tensor among cuda ones makes the stack in compute_policy_info
-    raise "Expected all tensors to be on the same device". This is a regression
-    test for that abort, so it only runs where the failure can.
-    """
-    values = torch.zeros(1, 8, device="cuda")
-    out = compute_value_metrics(
-        raw_value_pred=values,
-        raw_returns_flat=torch.zeros(8, device="cuda"),
-        policy_per_chunk=torch.zeros(8, device="cuda"),
-        value_loss_per_chunk=torch.zeros(8, device="cuda"),
-    )
-    assert out["value_pred_member_corr"].is_cuda
-
-
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="device mixing bites on cuda")
-def test_the_member_correlation_mask_sits_on_the_input_device():
-    """The off-diagonal mask must be built on the input device.
-
-    A cpu bool mask indexing a cuda correlation matrix raises, so the metric
-    aborts on the first training update. This is a regression test for that
-    abort, so it only runs where the failure can.
-    """
-    n = 16
-    values = torch.randn(2, n, device="cuda")
-    out = compute_value_metrics(
-        raw_value_pred=values,
-        raw_returns_flat=torch.zeros(n, device="cuda"),
-        policy_per_chunk=torch.zeros(n, device="cuda"),
-        value_loss_per_chunk=torch.zeros(n, device="cuda"),
-    )
-    assert math.isfinite(float(out["value_pred_member_corr"]))
-
-
-def test_a_constant_member_has_no_correlation_to_measure():
-    """A member that gives the same value on every state has no spread."""
-    pred = torch.randn(2, 8)
-    pred[1] = 3.0
-    out = compute_value_metrics(
-        raw_value_pred=pred,
-        raw_returns_flat=torch.zeros(8),
-        policy_per_chunk=torch.zeros(8),
-        value_loss_per_chunk=torch.zeros(8),
-    )
-    assert math.isnan(float(out["value_pred_member_corr"]))
-
-
-def _member_corr(pred: torch.Tensor) -> float:
-    out = compute_value_metrics(
-        raw_value_pred=pred,
-        raw_returns_flat=torch.zeros(pred.shape[1]),
-        policy_per_chunk=torch.zeros(pred.shape[1]),
-        value_loss_per_chunk=torch.zeros(pred.shape[1]),
-    )
-    return float(out["value_pred_member_corr"])
-
-
-def _member_gap(pred: torch.Tensor) -> float:
-    out = compute_value_metrics(
-        raw_value_pred=pred,
-        raw_returns_flat=torch.zeros(pred.shape[1]),
-        policy_per_chunk=torch.zeros(pred.shape[1]),
-        value_loss_per_chunk=torch.zeros(pred.shape[1]),
-    )
-    return float(out["value_pred_member_gap"])

@@ -1,11 +1,9 @@
-"""Pin the training step: every metric, every gradient, at ``atol=0``.
+"""Pin the training step: the loss, every metric, every gradient, at ``atol=0``.
 
 What this covers
-    One forward pass of ``MyfpoPolicy`` on a fixed batch, the full ``info``
-    dict it returns, and the gradient of every named parameter. It runs three
-    configurations: the flat-MLP actor and the same actor at a clamp low
-    enough to saturate. The clamp arm exists because the default bound hides
-    every clamp diagnostic at 0.0.
+    One forward and one backward pass of the lean policy on a fixed batch, and
+    every gradient of every named parameter. One arm only: the lean pole has no
+    clamp diagnostics to force a second configuration.
 
 What this does not cover
     Rollout collection, or the eval loop.
@@ -20,7 +18,6 @@ See ``README.md`` for which baseline is tracked and how to regenerate it.
 from __future__ import annotations
 
 import argparse
-import dataclasses
 import sys
 from pathlib import Path
 
@@ -49,39 +46,25 @@ def gradients(policy) -> dict:
 
 
 def run_one(cfg) -> dict:
-    """One forward pass and one backward pass, flattened to plain numbers."""
+    """One forward and one backward, flattened to plain numbers."""
+    from myfpo.myfpo import compute_loss
+
     policy = build(cfg)
     batch = fixed_batch(policy)
-    loss, info = policy.loss_with_info(batch)
+    loss, metrics = compute_loss(policy, batch, torch.device("cpu"))
     loss.backward()
 
     out = {"loss": float(loss.detach())}
-    out.update(flatten(info, "info."))
+    out.update(flatten(metrics, "metrics."))
     out.update(flatten(gradients(policy), "grad."))
     return out
 
 
-# The configurations the pin covers. Each label is a key prefix.
-#
-# The clamp arm is not optional. At the default ``cfm_clamp=20.0`` both clamp
-# diagnostics read 0.0, because no loss in this fixture reaches 20.0. A pin
-# that only ran the default could not detect any change to the saturation
-# figures. On 2026-10-17 that blindness hid a real defect: the diagnostic read
-# the per-sample loss while the ratio clamped the per-token one, and the two
-# agreed only because both were zero. The 0.5 arm puts the share strictly
-# inside (0, 1), so the two axes are distinguishable.
-CONFIGS = {
-    "mlp": pin_config(),
-    "mlp.clamp0.5": dataclasses.replace(pin_config(), cfm_clamp=0.5),
-}
+CONFIGS = {"default": pin_config()}
 
 
 def collect() -> dict:
-    """Every configuration, under one key space.
-
-    Prefixing by label keeps the arms apart. A key that exists for one arm and
-    not another is a difference the pin must report.
-    """
+    """Every configuration, under one key space."""
     out = {}
     for label, cfg in CONFIGS.items():
         for key, value in run_one(cfg).items():

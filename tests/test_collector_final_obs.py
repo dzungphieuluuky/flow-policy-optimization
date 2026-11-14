@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 import torch
 
-from myfpo.collect import RolloutBuffer, collect_chunks_vec, take_final_observations
+from myfpo.myfpo import RolloutBuffer, collect_chunks_vec, take_final_observations
 
 OBS, ACT, H = 3, 2, 4
 FINAL, RESET = 7.0, -7.0
@@ -22,8 +22,7 @@ FINAL, RESET = 7.0, -7.0
 class ResetFrameEnv:
     """A SAME_STEP-style env: ``step`` returns the reset frame, info the final one."""
 
-    # No declared mode: the collector must not assume NEXT_STEP semantics.
-    autoreset_mode = None
+    autoreset_mode = type("M", (), {"name": "SAME_STEP"})()
 
     def __init__(self, n: int = 2):
         self.num_envs = n
@@ -93,13 +92,13 @@ def test_the_gymnasium_key_and_the_maniskill_key_both_work():
         {"final_obs": np.asarray([final[0].numpy(), None], dtype=object)},
         done,
         reference,
-        torch.device("cpu"),
+        strict=False,
     )
     assert torch.equal(gym[0], final[0])
     assert torch.equal(gym[1], reference[1])
 
     mani = take_final_observations(
-        {"final_observation": final}, done, reference, torch.device("cpu")
+        {"final_observation": final}, done, reference, strict=False
     )
     assert torch.equal(mani[0], final[0])
     assert torch.equal(mani[1], reference[1])
@@ -108,7 +107,7 @@ def test_the_gymnasium_key_and_the_maniskill_key_both_work():
 def test_no_info_key_leaves_the_observation_alone():
     """Under NEXT_STEP autoreset the step's own frame is already final."""
     reference = torch.full((2, OBS), RESET)
-    out = take_final_observations({}, np.array([True, False]), reference, torch.device("cpu"))
+    out = take_final_observations({}, np.array([True, False]), reference, strict=False)
     assert torch.equal(out, reference)
 
 
@@ -119,7 +118,7 @@ def test_a_final_frame_with_one_row_per_done_row_is_read():
     done = np.array([True, False, True])
 
     out = take_final_observations(
-        {"final_observation": final}, done, reference, torch.device("cpu")
+        {"final_observation": final}, done, reference, strict=False
     )
     assert torch.equal(out[0], final[0])
     assert torch.equal(out[1], reference[1])
@@ -135,7 +134,7 @@ def test_a_final_frame_with_an_unusable_shape_raises():
             {"final_observation": final},
             np.array([True, False, True]),
             reference,
-            torch.device("cpu"),
+            strict=False,
         )
 
 
@@ -144,19 +143,18 @@ def test_take_final_observations_strict_mode_requires_the_final_frame():
     final = torch.full((2, OBS), FINAL)
     done = np.array([True, False])
     for info in ({"final_obs": final}, {"final_observation": final}):
-        out = take_final_observations(info, done, reference, torch.device("cpu"), strict=True)
+        out = take_final_observations(info, done, reference, strict=True)
         assert torch.equal(out[0], final[0])
         assert torch.equal(out[1], torch.full((OBS,), RESET))
     with pytest.raises(ValueError, match="done rows"):
-        take_final_observations({}, done, reference, torch.device("cpu"), strict=True)
+        take_final_observations({}, done, reference, strict=True)
     with pytest.raises(ValueError, match="done row 0"):
         take_final_observations(
             {"final_observation": np.array([None, final[1].numpy()], dtype=object)},
             done,
             reference,
-            torch.device("cpu"),
             strict=True,
         )
     # Lenient mode keeps the old tolerant behavior for NEXT_STEP/undeclared envs.
-    out = take_final_observations({}, done, reference, torch.device("cpu"))
+    out = take_final_observations({}, done, reference, strict=False)
     assert torch.equal(out, reference)

@@ -4,29 +4,24 @@
 One run per invocation. Draccus builds the run config. The config takes
 singular values only.
 
-One call runs one run. So call the script once per env and seed combination that
-you want.
-
     python scripts/train.py --env Hopper-v5 --seed 0 --total_steps 2000
     python scripts/train.py --method myfpo --env Hopper-v5 --myfpo.policy_lr 3e-4
+    python scripts/train.py --method ppo --env Hopper-v5 --seed 0  # plain PPO baseline
     python scripts/train.py --method myfpo --env Hopper-v5 --seed 0 \
-        --resume outputs/myfpo_Hopper-v5_seed0/checkpoint_1000 \
+        --resume outputs/myfpo_Hopper-v5_seed0/checkpoints/checkpoint_1000 \
         --total_steps 4000
 
-Flags use underscores. Draccus expects that spelling.
+``--resume`` is myfpo-only. It restores the model, the optimizer and the
+global step from a ``checkpoints/<name>/checkpoint.pt`` directory; the config
+is NOT restored (the lean pole has no per-run config drift to reconcile), so
+CLI overrides apply to the fresh run as written.
 
-The config is the ``MyfpoConfig`` dataclass. Every field is a CLI flag under
-``--myfpo.``, so the command line is the only override.
-
-
-The exit codes are these. 0 means success. 1 means a usage error. 2 means a
-runtime or divergence abort. 4 means a required artifact is missing. A parse
-error from draccus exits with 2.
+--method is 'myfpo' (lean reimplementation) or 'ppo' (plain baseline).
+Exit codes: 0 success, 1 usage error, 2 runtime/divergence abort or draccus parse error, 4 missing artifact.
 """
 
 from __future__ import annotations
 
-import dataclasses
 import json
 import math
 import os
@@ -38,16 +33,19 @@ from typing import Literal
 
 import draccus
 
-from myfpo.env import KNOWN_ENVS, get_observation_action_dim
-from myfpo.config import MyfpoConfig
+from myfpo.myfpo import (
+    KNOWN_ENVS,
+    MyfpoConfig,
+    get_observation_action_dim,
+    is_maniskill_id,
+    make_maniskill_env,
+    run_myfpo_training,
+)
+from myfpo.ppo import run_ppo_training
 
 
 def configure_torch_cuda() -> bool:
-    """Apply torch CUDA tuning when torch is importable and CUDA is present.
-
-    Returns True when torch is usable. Never raises, so a torch-less
-    environment still reaches the import error further down with context.
-    """
+    """Apply torch CUDA tuning when torch is importable and CUDA is present."""
     try:
         import torch
     except ImportError:
@@ -57,8 +55,6 @@ def configure_torch_cuda() -> bool:
     torch.backends.cudnn.conv.fp32_precision = "tf32"
     torch.backends.cudnn.rnn.fp32_precision = "tf32"
     torch.backends.cudnn.benchmark = True
-    # Memory allocation hint. It is harmless if the user environment already set
-    # it.
     os.environ.setdefault(
         "PYTORCH_CUDA_ALLOC_CONF",
         "max_split_size_mb:128,expandable_segments:True",
@@ -67,35 +63,16 @@ def configure_torch_cuda() -> bool:
 
 
 def apply_runtime_settings() -> dict:
-    """Apply settings (no-op on unsupported hardware).
+    """Apply settings (no-op on unsupported hardware)."""
+    try:
+        import torch
+    except ImportError:
+        return {"tf32_enabled": False}
 
-    Returns applied settings for metadata.
-    """
-    import torch
-
-    from myfpo.nn import (
-        detect_gpu,
-        resolve_compute_dtype,
-        resolve_storage_dtype,
-    )
-
-    gpu = detect_gpu()
-    tf32 = bool(gpu and gpu["supports"]["tf32"])
-    # TF32 is an instruction set of sm_80 and above. A request for TF32 on
-    # Turing is accepted and ignored. So the "highest" branch exists to make that
-    # no-op visible in the metadata. It does not change the behavior.
-    torch.set_float32_matmul_precision("high" if tf32 else "highest")
-    # After 8 shape variants, dynamo silently falls back to eager. Then you keep
-    # paying the compile cost and get none of the benefit. The chunk count of the
-    # rollout varies every run, so the default of 8 is reached quickly.
-
+    torch.set_float32_matmul_precision("high" if torch.cuda.is_available() else "highest")
     return {
-        "gpu": gpu,
-        "tf32_enabled": tf32,
+        "tf32_enabled": torch.cuda.is_available(),
         "tf32_matmul_precision": torch.get_float32_matmul_precision(),
-        "dynamo_cache_size_limit": torch._dynamo.config.cache_size_limit,
-        "storage_dtype": str(resolve_storage_dtype()),
-        "compute_dtype": str(resolve_compute_dtype()),
     }
 
 
@@ -103,7 +80,7 @@ def apply_runtime_settings() -> dict:
 class TrainConfig:
     """Run one training job (single values only)."""
 
-    method: Literal["myfpo"] = "myfpo"
+    method: Literal["myfpo", "ppo"] = "myfpo"
     env: str | None = None
     seed: int = 3407
     total_steps: int | None = None
@@ -113,64 +90,26 @@ class TrainConfig:
     action_dim: int | None = None
     out_dir: str = "outputs/"
 
-    # Resume a myfpo checkpoint dir (checkpoint_<step>/ or checkpoint_final/).
-    # The run continues the policy, the optimizer and the counters into a FRESH
-    # run dir (<base>_resume[/2...]). total_steps stays an absolute env-step
-    # budget.
+    # Resume a lean-myfpo checkpoint dir (checkpoints/<name>/). Restores the
+    # model, the optimizer and the global step into a FRESH run dir
+    # (<base>_resume[/2...]); the config is NOT restored.
     resume: str | None = None
-    # Record the eval rollout of every eval window to <out_dir>/videos. Needs a
-    # ManiSkill GPU env (MS-*); the CPU path has no batched renderer.
     video: bool = False
     myfpo: MyfpoConfig = field(default_factory=MyfpoConfig)
 
 
 def default_intervals(total: int, args_val: int | None, cap: int) -> int:
-    """Resolve an interval: the CLI value, else a capped default.
-
-    The cap keeps smoke runs sane.
-    """
+    """Resolve an interval: the CLI value, else a capped default."""
     if args_val:
         return args_val
     return min(cap, total)
-
-
-
-def resumed_cfg_overrides(cfg) -> list[str]:
-    """Scalar fields differing from dataclass defaults.
-
-    Used to warn with --resume: the checkpoint config wins there, so CLI
-    overrides of these fields are silently ignored. Only plain scalars are
-    compared (dict/tensor features have no meaningful CLI equality).
-    """
-    try:
-        fresh = type(cfg)()
-    except TypeError:
-        return []
-    touched = []
-    for f in dataclasses.fields(cfg):
-        try:
-            cur, default = getattr(cfg, f.name), getattr(fresh, f.name)
-        except AttributeError:
-            continue
-        if (
-            (isinstance(cur, (bool, int, float, str)) or cur is None)
-            and (isinstance(default, (bool, int, float, str)) or default is None)
-            and cur != default
-        ):
-            touched.append(f.name)
-    return sorted(touched)
 
 
 def resolve_run_dir(
     out_base: str | Path, method: str, env: str, seed: int, resume: str | None
 ) -> Path:
     """Return the run directory for one invocation. A resumed run gets a fresh
-    directory with a suffix.
-
-    ``<method>_<env>_seed<seed>`` normally, else the first free
-    ``<base>_resume``, ``<base>_resume2``, ... so a resume never overwrites
-    the original run (or an earlier resume).
-    """
+    directory with a suffix, so a resume never overwrites the source run."""
     base = Path(out_base) / f"{method}_{env}_seed{seed}"
     if not resume:
         return base
@@ -195,6 +134,7 @@ def run_single(
     resume_from_checkpoint: str | None = None,
     runtime: dict | None = None,
     video_dir: Path | None = None,
+    method: str = "myfpo",
 ) -> dict:
     """Dispatch one run to the matching backend's training entry."""
     import gymnasium as gym
@@ -207,14 +147,10 @@ def run_single(
                 f"{env_id} needs gymnasium-robotics (pip install gymnasium-robotics)"
             ) from exc
 
-    from myfpo.maniskill_gpu import is_maniskill_id
-
     if is_maniskill_id(env_id):
         # ManiSkill's GPU env batches its own sims on one device, so it is built
         # here rather than through gym.make/make_vec_env. The spaces it exposes
         # are the single-env ones, which is what the checks below size from.
-        from myfpo.maniskill_gpu import make_maniskill_env
-
         env = make_maniskill_env(env_id, num_envs=cfg.num_envs)
     elif env_id.startswith("Meta-World/"):
         # Meta-World tasks are not individually registered; they are built via
@@ -244,9 +180,26 @@ def run_single(
                 f"{(live_obs, live_act)}"
             )
 
-        from myfpo.train import run_training
+        if method == "ppo":
+            return run_ppo_training(
+                env=env,
+                env_id=env_id,
+                out_dir=out_dir,
+                cfg=cfg,
+                seed=seed,
+                total_steps=total_steps,
+                eval_steps=eval_steps,
+                save_steps=save_steps,
+                obs_dim=obs_dim,
+                action_dim=action_dim,
+                runtime=runtime,
+                video_dir=video_dir,
+            )
 
-        return run_training(
+        if video_dir is not None:
+            print("myfpo: --video is not supported by the lean pole; skipping video", file=sys.stderr)
+
+        return run_myfpo_training(
             env=env,
             env_id=env_id,
             out_dir=out_dir,
@@ -259,7 +212,6 @@ def run_single(
             action_dim=action_dim,
             resume_from_checkpoint=resume_from_checkpoint,
             runtime=runtime,
-            video_dir=video_dir,
         )
     finally:
         env.close()
@@ -285,7 +237,6 @@ def main(argv: list[str] | None = None) -> int:
 
     eval_s = default_intervals(total, args.eval_steps, 1000)
     ckpt_i = default_intervals(total, args.save_steps, 1000000)
-    cfg = args.myfpo
 
     if args.resume and args.method != "myfpo":
         print(
@@ -297,16 +248,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ERROR: --resume dir not found: {args.resume}", file=sys.stderr)
         return 1
     if args.resume:
-        overridden = resumed_cfg_overrides(cfg)
-        if overridden:
-            print(
-                "WARNING: --resume restores the checkpoint config; "
-                f"CLI overrides ignored for: {', '.join(overridden)}",
-                file=sys.stderr,
-            )
+        print(
+            f"myfpo: resume from {args.resume}; the checkpoint restores model, "
+            "optimizer and step only — the config is not restored",
+            file=sys.stderr,
+        )
 
-    # The run dir gets a suffix when resuming, so the source run is never
-    # overwritten.
     run_dir = resolve_run_dir(
         args.out_dir, args.method, args.env, args.seed, args.resume
     )
@@ -317,7 +264,7 @@ def main(argv: list[str] | None = None) -> int:
             args.env,
             args.seed,
             run_dir,
-            cfg,
+            args.myfpo,
             total,
             eval_s,
             ckpt_i,
@@ -326,6 +273,7 @@ def main(argv: list[str] | None = None) -> int:
             args.resume,
             runtime,
             video_dir=run_dir / "videos" if args.video else None,
+            method=args.method,
         )
     except Exception as exc:  # noqa: BLE001 - a run can fail any way; the traceback is printed
         traceback.print_exc(file=sys.stderr)

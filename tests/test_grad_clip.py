@@ -7,32 +7,26 @@ small critic gradient, which the joint clip does at the cost of both.
 
 from __future__ import annotations
 
-import dataclasses
-
 import pytest
 import torch
 
-from myfpo.config import MyfpoConfig
-from myfpo.algo import MyfpoPolicy
-from myfpo.train import split_grad_params
+from myfpo.myfpo import MyfpoConfig, MyfpoPolicy
+from myfpo.myfpo import _param_groups_for_clip
 
 OBS, ACT, HORIZON, STEPS = 6, 3, 8, 4
 
 
 def _policy(**kw) -> MyfpoPolicy:
-    cfg = dataclasses.replace(
-        MyfpoConfig(
-            action_horizon=HORIZON,
-            hidden_dim=32,
-            num_obs_steps=STEPS,
-            num_critics=5,
-            obs_dim=OBS,
-            action_dim=ACT,
-        ),
+    cfg = MyfpoConfig(
+        action_horizon=HORIZON,
+        hidden_dim=32,
+        num_obs_steps=STEPS,
         **kw,
     )
     torch.manual_seed(0)
-    return MyfpoPolicy(cfg)
+    low = torch.full((ACT,), -1.0)
+    high = torch.full((ACT,), 1.0)
+    return MyfpoPolicy(cfg, OBS, ACT, low.numpy(), high.numpy())
 
 
 def _set_grad(params, norm: float) -> None:
@@ -51,7 +45,7 @@ def _grad_norm(params) -> float:
 
 def test_the_split_partitions_every_trainable_parameter():
     policy = _policy()
-    groups = split_grad_params(policy)
+    groups = _param_groups_for_clip(policy)
     assert set(groups) == {"actor", "critic"}
     flat = [id(p) for params in groups.values() for p in params]
     assert len(flat) == len(set(flat)), "a parameter is in both groups"
@@ -59,15 +53,8 @@ def test_the_split_partitions_every_trainable_parameter():
     assert set(flat) == trainable
 
 
-def test_the_ensemble_width_does_not_change_the_split():
-    one = split_grad_params(_policy(num_critics=1))
-    five = split_grad_params(_policy(num_critics=5))
-    assert len(one["critic"]) != len(five["critic"])
-    assert len(one["actor"]) == len(five["actor"])
-
-
 def test_a_large_actor_gradient_leaves_a_small_critic_gradient_alone():
-    groups = split_grad_params(_policy())
+    groups = _param_groups_for_clip(_policy())
     _set_grad(groups["actor"], 10.0)
     _set_grad(groups["critic"], 1e-3)
     for params in groups.values():
@@ -78,7 +65,7 @@ def test_a_large_actor_gradient_leaves_a_small_critic_gradient_alone():
 
 def test_the_joint_clip_would_have_attenuated_both():
     """The old behavior, kept as the contrast that makes the test above mean something."""
-    groups = split_grad_params(_policy())
+    groups = _param_groups_for_clip(_policy())
     _set_grad(groups["actor"], 10.0)
     _set_grad(groups["critic"], 1e-3)
     flat = [p for params in groups.values() for p in params]
@@ -88,12 +75,12 @@ def test_the_joint_clip_would_have_attenuated_both():
 
 @pytest.mark.parametrize("scale", [1.0, 37.0, 1e-4])
 def test_the_logged_total_equals_the_norms_over_the_whole_parameter_set(scale):
-    groups = split_grad_params(_policy())
+    groups = _param_groups_for_clip(_policy())
     _set_grad(groups["actor"], scale)
     _set_grad(groups["critic"], scale * 3)
     flat = [p for params in groups.values() for p in params]
     joint = _grad_norm(flat)
     logged = sum(_grad_norm(params) ** 2 for params in groups.values()) ** 0.5
-    # rel=1e-3, not tighter: the two routes sum ~1.5M fp32 elements in a
-    # different order. A wrong grouping would disagree by O(1), not 1e-3.
+    # rel=1e-3, not tighter: two routes sum ~1.5M fp32 elements in a different
+    # order. A wrong grouping would disagree by O(1), not 1e-3.
     assert logged == pytest.approx(joint, rel=1e-3)

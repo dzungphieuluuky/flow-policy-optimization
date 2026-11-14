@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Evaluate a loaded myfpo policy and print the per-episode metrics.
+"""Evaluate a loaded lean-myfpo policy and print the per-episode metrics.
 
 The policy is stepped through the environment and the return, the length and
 the jerk of every episode are printed. No video is written: the frames cost
@@ -11,7 +11,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-
+import numpy as np
 import torch
 
 # Match train.py. Set the CUDA precision and benchmark options before any
@@ -28,15 +28,20 @@ if torch.cuda.is_available():
         "max_split_size_mb:128,expandable_segments:True"
     )
 
-import numpy as np
-
-from myfpo.checkpointing import load_policy_checkpoint
-from myfpo.eval import Evaluator
+from myfpo.myfpo import (
+    Evaluator,
+    MyfpoConfig,
+    MyfpoPolicy,
+    get_observation_action_dim,
+    is_maniskill_id,
+    load_checkpoint,
+    register_gym_envs,
+)
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Evaluate a saved myfpo policy and print the per-episode metrics."
+        description="Evaluate a saved lean-myfpo policy and print the per-episode metrics."
     )
     parser.add_argument(
         "--env",
@@ -71,33 +76,30 @@ def main(argv: list[str] | None = None) -> int:
         default="cpu",
         help="Torch device for policy inference.",
     )
-
     args = parser.parse_args(argv)
-
-    print(f"Loading checkpoint from: {args.checkpoint}")
-    policy, _, counters = load_policy_checkpoint(args.checkpoint, device=args.device)
-    policy.eval()
-    print(f"Checkpoint loaded (global_step={counters.get('global_step', '?')})")
 
     import gymnasium as gym
 
-    from myfpo.maniskill_gpu import is_maniskill_id
-
     if is_maniskill_id(args.env):
-        from myfpo.maniskill_gpu import register_gym_envs
-
         register_gym_envs()  # the single-env CPU path, for this CLI only
 
-    # The evaluator steps the env itself. No render_mode is needed.
     env = gym.make(args.env)
     try:
-        # The policy's output is the raw action; the squash into the env's
-        # bounds happens on the way to the env, so the policy needs this
-        # env's bounds. The checkpoint does not carry them.
-        policy.set_action_bounds(
+        obs_dim, action_dim = get_observation_action_dim(args.env)
+        cfg = MyfpoConfig()
+        policy = MyfpoPolicy(
+            cfg,
+            obs_dim,
+            action_dim,
             np.asarray(env.action_space.low, dtype=np.float32),
             np.asarray(env.action_space.high, dtype=np.float32),
-        )
+        ).to(args.device)
+
+        print(f"Loading checkpoint from: {args.checkpoint}")
+        step = load_checkpoint(args.checkpoint, policy)
+        policy.eval()
+        print(f"Checkpoint loaded (global_step={step})")
+
         evaluator = Evaluator(
             env=env,
             eval_seed=args.seed,
@@ -107,11 +109,8 @@ def main(argv: list[str] | None = None) -> int:
 
         def policy_callable(obs: np.ndarray) -> np.ndarray:
             with torch.inference_mode():
-                # Bare [obs]. select_action buffers the frame into a window
-                # itself. A rank-2 input is read as a [T, obs] window, then
-                # rejected unless T == n_obs_steps.
-                batch = {"observation.state": torch.as_tensor(obs, dtype=torch.float32)}
-                return policy.select_action(batch, start_from_zero=True).cpu().numpy()
+                action = policy.select_action(obs)
+            return action.detach().cpu().numpy()
 
         print(f"Running {args.episodes} episode(s)")
         for r in evaluator.evaluate(policy_callable):

@@ -13,7 +13,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from myfpo.nn import TIME_SCALE, SinusoidalEncoding
+from myfpo.myfpo import TIME_SCALE, SinusoidalEncoding
 
 
 def test_the_frequencies_are_log_spaced_and_decaying():

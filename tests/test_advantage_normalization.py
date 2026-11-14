@@ -7,27 +7,21 @@ only standardization in the update.
 
 from __future__ import annotations
 
+import numpy as np
 import torch
 
-from myfpo.config import MyfpoConfig
-from myfpo.train import (
-    make_optimizer,
-    make_policy,
-    policy_update_step,
-    split_grad_params,
-)
+from myfpo.myfpo import MyfpoConfig, MyfpoPolicy, make_optimizer, update
+import myfpo.myfpo as m
 
 N = 2
 
 
 def _cfg(**kw) -> MyfpoConfig:
     base = dict(
-        obs_dim=5,
-        action_dim=3,
+        hidden_dim=16,
         action_horizon=2,
         num_action_steps=2,
         num_obs_steps=2,
-        hidden_dim=16,
         num_mc_samples=2,
         num_learning_epochs=1,
         chunks_per_update=2,
@@ -55,31 +49,25 @@ def _batch(cfg) -> dict:
     }
 
 
-def _advantages_the_actor_reads(cfg):
-    """The advantages the update hands to the loss, per minibatch."""
-    policy = make_policy(5, 3, cfg, device="cpu")
+def test_the_rollout_normalization_reaches_the_actor_by_default(monkeypatch):
+    cfg = _cfg()
+    low = np.full(3, -1.0, dtype=np.float32)
+    high = np.full(3, 1.0, dtype=np.float32)
+    policy = MyfpoPolicy(cfg, 5, 3, low, high)
     optimizer = make_optimizer(policy)
     seen: list[torch.Tensor] = []
-    original = policy.compute_loss_and_probes
 
-    def spy(minibatch, *args, **kwargs):
-        seen.append(minibatch["normalized_advantages"].clone())
-        return original(minibatch, *args, **kwargs)
+    original = m.compute_loss
 
-    policy.compute_loss_and_probes = spy
-    policy_update_step(
-        policy, optimizer, _batch(cfg), [object()], cfg, split_grad_params(policy)
-    )
-    return seen
+    def spy(policy_, batch_, device):
+        seen.append(batch_["normalized_advantages"].clone())
+        return original(policy_, batch_, device)
 
-
-def test_the_rollout_normalization_reaches_the_actor_by_default():
-    cfg = _cfg()
-    seen = _advantages_the_actor_reads(cfg)
+    monkeypatch.setattr(m, "compute_loss", spy)
+    update(policy, optimizer, _batch(cfg), cfg)
     assert seen, "the update read no minibatch"
     for advantages in seen:
         # The minibatch rows are shuffled, so the order does not matter.
         assert torch.equal(
             torch.sort(advantages).values, torch.tensor([-0.5, 0.5])
         )
-

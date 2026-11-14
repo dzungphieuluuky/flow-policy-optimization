@@ -8,12 +8,12 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 
-from myfpo.env import (  # noqa: E402
+from myfpo.myfpo import (  # noqa: E402
     ENV_REGISTRY_PATH,
     KNOWN_ENVS,
     get_observation_action_dim,
 )
-from myfpo.config import MyfpoConfig  # noqa: E402
+from myfpo.myfpo import MyfpoConfig  # noqa: E402
 
 # Tier "smoke": pure gymnasium, no mujoco, so these run anywhere.
 SMOKE_ENVS = ("Pendulum-v1", "Reacher-v5")
@@ -25,13 +25,10 @@ def _gym_env(env_id):
 
 
 def test_a_bare_config_constructs_without_dims():
-    """The regression: this used to raise, breaking every CLI parse."""
+    """Dims are not config fields; the policy takes them as constructor arguments."""
     cfg = MyfpoConfig()
-    assert cfg.obs_dim is None
-    assert cfg.action_dim is None
-    # The dim requirement is still enforced, just later -- see below.
-    with pytest.raises(ValueError, match=r"obs_dim"):
-        cfg.validate_dims()
+    assert not hasattr(cfg, "obs_dim")
+    assert not hasattr(cfg, "action_dim")
 
 
 def test_the_env_name_is_not_a_config_field():
@@ -65,15 +62,15 @@ def test_registry_dims_match_the_live_env_space(env_id):
 @pytest.mark.parametrize("env_id", SMOKE_ENVS)
 def test_make_policy_attaches_dims_from_the_registry(env_id):
     """The runner's only inputs: an env name and its resolved dims."""
-    from myfpo.train import make_policy
+    from myfpo.myfpo import MyfpoPolicy
 
     obs_dim, action_dim = get_observation_action_dim(env_id)
     cfg = MyfpoConfig()
-    policy = make_policy(obs_dim=obs_dim, action_dim=action_dim, cfg=cfg, device="cpu")
-    assert policy.config.obs_dim == obs_dim
-    assert policy.config.action_dim == action_dim
-    # dataclasses.replace inside make_policy: the caller's config is untouched.
-    assert cfg.obs_dim is None
+    low = [-1.0] * action_dim
+    high = [1.0] * action_dim
+    policy = MyfpoPolicy(cfg, obs_dim, action_dim, low, high)
+    assert policy.obs_dim == obs_dim
+    assert policy.action_dim == action_dim
 
 
 def test_no_discrete_action_envs_are_registered():

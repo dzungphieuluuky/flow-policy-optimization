@@ -8,30 +8,26 @@ made the CFM target ``a - eps`` unreachable for ``|a - eps| > 1``.
 
 from __future__ import annotations
 
-import dataclasses
-
+import numpy as np
 import torch
 
-from myfpo.config import MyfpoConfig
-from myfpo.train import make_policy
+from myfpo.myfpo import MyfpoConfig, MyfpoPolicy
 
 OBS, ACT, HORIZON = 3, 2, 4
 
 
 def _policy(**kw):
-    cfg = dataclasses.replace(
-        MyfpoConfig(),
-        obs_dim=OBS,
-        action_dim=ACT,
+    cfg = MyfpoConfig(
         hidden_dim=32,
         num_obs_steps=4,
         action_horizon=HORIZON,
         num_action_steps=HORIZON,
         **kw,
     )
-    return make_policy(
-        OBS, ACT, cfg, device="cpu", action_low=[-1.0] * ACT, action_high=[1.0] * ACT
-    )
+    torch.manual_seed(0)
+    low = np.full(ACT, -1.0, dtype=np.float32)
+    high = np.full(ACT, 1.0, dtype=np.float32)
+    return MyfpoPolicy(cfg, OBS, ACT, low, high)
 
 
 def _velocity(policy):

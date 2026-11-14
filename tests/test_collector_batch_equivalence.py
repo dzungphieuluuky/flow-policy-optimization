@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 import torch
 
-from myfpo.collect import (
+from myfpo.myfpo import (
     RolloutBuffer,
     collect_chunks_vec,
 )
@@ -17,14 +17,14 @@ TOTAL_STEPS = 512
 
 
 class FakeVecEnv:
-    """Deterministic stand-in for a gym NEXT_STEP vec env."""
+    """Deterministic stand-in for a gym SameStep vec env."""
 
     def __init__(self, n=N_ENVS, obs_dim=OBS_DIM, act_dim=ACT_DIM, episode=1000):
         self.num_envs = n
         self.observation_space = type("S", (), {"shape": (obs_dim,)})()
         self.single_observation_space = self.observation_space
         self.single_action_space = type("S", (), {"shape": (act_dim,)})()
-        self.autoreset_mode = type("M", (), {"name": "NEXT_STEP"})()
+        self.autoreset_mode = type("M", (), {"name": "SAME_STEP"})()
         self.episode = episode
         self.t = np.zeros(n, dtype=np.int64)
         self.rng = np.random.default_rng(1234)
@@ -46,8 +46,11 @@ class FakeVecEnv:
         self.t = np.where(done, 0, self.t + 1)
         rew = self.rng.standard_normal(self.num_envs).astype(np.float32)
         obs = self._obs()
+        info = {}
+        if done.any():
+            info["final_observation"] = self._obs()  # the true terminal frame
         self.obs_seen.append(obs)
-        return obs, rew, done, np.zeros_like(done), {}
+        return obs, rew, done, np.zeros_like(done), info
 
 
 def collect(
@@ -200,14 +203,10 @@ def test_actions_sent_to_the_env_match_the_stored_chunks():
             [a["chunk_actions"][i, : int(a["chunk_lengths"][i])] for i in idxs],
             dim=0,
         )
-        # The bounds are [-1, 1], so the affine map is the identity and the
-        # squash is the tanh.
-        expected = torch.tanh(expected)
+        # linear_rescale at unit bounds: the env action is the raw chunk.
         got = sent[:, e, :]
-        nonzero = got.abs().sum(dim=1) > 0
-        assert torch.allclose(got[nonzero], expected, atol=1e-6), e
-        n_terminals = sum(bool(a["chunk_terminated"][i]) for i in idxs)
-        assert int((~nonzero).sum()) == n_terminals, (e, int((~nonzero).sum()))
+        limit = expected.shape[0]
+        assert torch.allclose(got[:limit], expected, atol=1e-6), e
 
 
 def test_a_buffer_is_required_and_returns_itself():

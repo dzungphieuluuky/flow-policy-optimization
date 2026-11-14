@@ -1,14 +1,13 @@
-"""The collector's autoreset state machine must match the env's reset contract.
+"""The collector speaks SameStep only.
 
-A SAME_STEP env resets inside the done ``step()`` and hands back the new
-episode's o₀. It never parks a row waiting for a reset. A NEXT_STEP env does
-park one, and the parked row takes the reset frame from the step after the
-done one.
+Two guards:
 
-The collector used to run the parked-row branch for both modes. Under
-SAME_STEP the frame it would copy is o_T, the previous episode's terminal
-frame, so the new episode would start from the old episode's last
-observation.
+- An env that declares ``NEXT_STEP`` autoreset is rejected at collection time,
+  loudly, before a single chunk is planned. A silent NEXT_STEP run would
+  archive the reset frames of the previous episodes as their ``next_state``.
+- An env that declares SAME_STEP (or nothing) but whose done step hands back
+  a reset frame without a final observation on a done row raises, instead of
+  storing the previous episode's terminal frame as the next episode's o_T.
 """
 
 from __future__ import annotations
@@ -17,20 +16,24 @@ import numpy as np
 import pytest
 import torch
 
-from myfpo.collect import (
-    EnvCarry,
-    RolloutBuffer,
-    close_chunks,
-    collect_chunks_vec,
-    make_state,
-)
+from myfpo.myfpo import RolloutBuffer, collect_chunks_vec
 
 OBS, ACT, H = 3, 2, 4
 FINAL, RESET = 7.0, -7.0
 
 
-class SameStepEnv:
-    """A SAME_STEP env: the done step returns the reset frame."""
+class NextStepEnv:
+    autoreset_mode = type("M", (), {"name": "NEXT_STEP"})()
+
+    def __init__(self, n: int = 2):
+        self.num_envs = n
+        self.observation_space = type("S", (), {"shape": (OBS,)})()
+        self.single_observation_space = self.observation_space
+        self.single_action_space = type("S", (), {"shape": (ACT,)})()
+
+
+class SilentSameStepEnv:
+    """SAME_STEP in name, but the done step carries no final observation."""
 
     autoreset_mode = type("M", (), {"name": "SAME_STEP"})()
 
@@ -39,18 +42,14 @@ class SameStepEnv:
         self.observation_space = type("S", (), {"shape": (OBS,)})()
         self.single_observation_space = self.observation_space
         self.single_action_space = type("S", (), {"shape": (ACT,)})()
-        self.t = 0
 
     def reset(self, seed=None):  # noqa: ARG002 - gym calls reset(seed=...)
-        self.t = 0
         return np.zeros((self.num_envs, OBS), dtype=np.float32), {}
 
     def step(self, actions):  # noqa: ARG002 - actions do not matter here
-        self.t += 1
         done = np.ones(self.num_envs, dtype=bool)
         obs = np.full((self.num_envs, OBS), RESET, dtype=np.float32)
-        final = np.full((self.num_envs, OBS), FINAL, dtype=np.float32)
-        info = {"final_observation": final}
+        info = {}  # the final observation is missing
         return obs, np.zeros(self.num_envs, np.float32), done, np.zeros_like(done), info
 
 
@@ -65,17 +64,16 @@ def _buffer(n_chunks: int = 8) -> RolloutBuffer:
     )
 
 
-def test_a_stale_carry_must_not_reach_a_same_step_collector():
-    """A carry from a NEXT_STEP run cannot be loaded by a SAME_STEP env."""
-    env = SameStepEnv(n=2)
-    carry = EnvCarry(
-        windows=torch.zeros(2, H, OBS),
-        awaiting=[True, False],
-    )
-    with pytest.raises(RuntimeError, match="awaiting rows"):
+def _policy(states):
+    return torch.zeros(states.shape[0], H, ACT)
+
+
+def test_a_next_step_env_is_rejected():
+    env = NextStepEnv(n=2)
+    with pytest.raises(ValueError, match="SameStep"):
         collect_chunks_vec(
             env,
-            lambda states: torch.zeros(states.shape[0], H, ACT),
+            _policy,
             2,
             -torch.ones(ACT),
             torch.ones(ACT),
@@ -83,54 +81,20 @@ def test_a_stale_carry_must_not_reach_a_same_step_collector():
             num_action_steps=H,
             buffer=_buffer(),
             seed=0,
-            carry=carry,
         )
 
 
-def test_a_parked_row_under_same_step_raises_instead_of_storing_o_t():
-    """The parked-row branch would copy o_T into the new episode's window."""
-    state = make_state(
-        2, H, OBS, H, ACT,
-        torch.zeros(2, H, OBS),
-        remaining=8,
-        autoreset_mode="SAME_STEP",
-    )
-    state.awaiting[:] = [True, False]
-    # o_T in the done row, the reset frame nowhere.
-    obs_t = torch.full((2, OBS), FINAL)
-    with pytest.raises(RuntimeError, match="awaiting rows"):
-        close_chunks(
-            state,
-            obs_t,
-            np.array([True, False]),
-            np.array([False, False]),
-            np.array([True, False]),
-            _buffer(),
-            H,
-            reset_frames=torch.full((2, OBS), RESET),
-            autoreset_mode="SAME_STEP",
+def test_a_done_row_without_a_final_observation_fails_loudly():
+    env = SilentSameStepEnv(n=2)
+    with pytest.raises(ValueError, match="final"):
+        collect_chunks_vec(
+            env,
+            _policy,
+            1,
+            -torch.ones(ACT),
+            torch.ones(ACT),
+            num_obs_steps=H,
+            num_action_steps=H,
+            buffer=_buffer(),
+            seed=0,
         )
-
-
-def test_the_next_step_parked_row_still_takes_the_reset_frame():
-    """The NEXT_STEP path keeps its behaviour: the parked row copies obs_t."""
-    state = make_state(
-        2, H, OBS, H, ACT,
-        torch.zeros(2, H, OBS),
-        remaining=8,
-        autoreset_mode="NEXT_STEP",
-    )
-    state.awaiting[:] = [True, False]
-    obs_t = torch.full((2, OBS), RESET)
-    close_chunks(
-        state,
-        obs_t,
-        np.array([False, False]),
-        np.array([False, False]),
-        np.array([False, False]),
-        _buffer(),
-        H,
-        autoreset_mode="NEXT_STEP",
-    )
-    assert not state.awaiting.any()
-    assert torch.equal(state.windows[0], torch.full((H, OBS), RESET))

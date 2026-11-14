@@ -1,8 +1,10 @@
 """Pin the eval statistics and the jerk measures, at ``atol=0``.
 
 What this covers
-    ``compute_eval_summary_metrics`` over a fixed set of windows, the three
-    jerk functions and the bootstrap interval.
+    ``compute_eval_summary_metrics`` over a fixed set of windows, the action
+    jerk, the bootstrap interval and ``summarize_results``. Two groupings
+    the legacy pin carried are gone with the functions they measured
+    (``compute_seam_jerk`` and ``compute_mean_chunk_jerk`` left the lean pole).
 
 What this does not cover
     Running an environment. Every input here is a number this file supplies.
@@ -64,13 +66,12 @@ def _windows():
 
 
 def collect() -> dict:
-    from myfpo.eval import (
+    from myfpo.myfpo import (
         bootstrap_interval,
         compute_action_jerk,
-        compute_mean_chunk_jerk,
-        compute_seam_jerk,
+        compute_eval_summary_metrics,
+        summarize_results,
     )
-    from myfpo.flow import compute_eval_summary_metrics
 
     out: dict = {}
     for index, (mean, episodes, all_returns) in enumerate(_windows()):
@@ -90,16 +91,14 @@ def collect() -> dict:
                 RETURNS, resamples=2000, low_q=lo_q, high_q=hi_q, seed=seed,
             ), tag + "."))
 
-    # Jerk. The action array is [N, H, D] and the pad mask is [N, H]. The
-    # one-chunk-per-row layout means the seam function has real seams to find.
+    for tag_seed in (0,):
+        out.update(flatten(summarize_results(_episodes(RETURNS), seed=tag_seed), "summary_results."))
+
+    # Jerk. One action array [H, D] from one chunk window.
     n, horizon, action_dim = 4, 8, 3
     gen = torch.Generator().manual_seed(11)
     chunk = torch.randn(n, horizon, action_dim, generator=gen)
-    pad = torch.zeros(n, horizon, dtype=torch.bool)
-    pad[0, 6:] = True       # one short chunk, so the "skip" branch runs
     out.update(flatten(compute_action_jerk(chunk[0]), "jerk.action."))
-    out.update(flatten(compute_mean_chunk_jerk(chunk, pad), "jerk.mean_chunk."))
-    out.update(flatten(compute_seam_jerk(chunk, pad), "jerk.seam."))
     out.update(flatten(compute_action_jerk(chunk[0, :2]), "jerk.short_action."))
     return out
 

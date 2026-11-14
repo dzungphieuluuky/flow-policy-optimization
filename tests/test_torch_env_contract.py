@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 import torch
 
-from myfpo.collect import RolloutBuffer, collect_chunks_vec
+from myfpo.myfpo import RolloutBuffer, collect_chunks_vec
 
 OBS_STEPS, OBS_DIM, HORIZON, ACT_DIM = 2, 2, 2, 2
 NUM_ENVS = 2
@@ -109,7 +109,7 @@ def test_collector_stores_the_true_terminal_frame():
 
 
 def test_a_numpy_env_still_takes_the_numpy_path():
-    """The MuJoCo path is not rewritten by the torch path: same buffer, same steps."""
+    """The numpy (mujoco) path runs through the same SameStep vector env."""
     gym = pytest.importorskip("gymnasium")
 
     def make_one():
@@ -118,7 +118,7 @@ def test_a_numpy_env_still_takes_the_numpy_path():
         env.action_space.seed(0)
         return env
 
-    envs = gym.vector.SyncVectorEnv([make_one for _ in range(NUM_ENVS)])
+    envs = gym.vector.SyncVectorEnv([make_one for _ in range(NUM_ENVS)], autoreset_mode="SameStep")
     buffer = RolloutBuffer(
         max_chunks=64,
         max_steps=64,
@@ -207,16 +207,35 @@ def test_same_step_env_without_final_observation_raises():
         )
 
 
-def test_validate_autoreset_mode_returns_the_declared_name():
+def test_an_env_without_a_same_step_declaration_is_rejected():
     from types import SimpleNamespace
 
-    from myfpo.collect import validate_autoreset_mode
+    def policy(states):
+        return torch.zeros(states.shape[0], HORIZON, ACT_DIM)
 
-    for name in ("NEXT_STEP", "SAME_STEP"):
-        env = SimpleNamespace(autoreset_mode=SimpleNamespace(name=name))
-        assert validate_autoreset_mode(env) == name
-    with pytest.raises(ValueError, match="SAME_STEP"):
-        validate_autoreset_mode(
-            SimpleNamespace(autoreset_mode=SimpleNamespace(name="DISABLED"))
+    env = SimpleNamespace(
+        num_envs=2,
+        observation_space=SimpleNamespace(shape=(OBS_DIM,)),
+        single_observation_space=SimpleNamespace(shape=(OBS_DIM,)),
+        single_action_space=SimpleNamespace(shape=(ACT_DIM,)),
+        autoreset_mode=SimpleNamespace(name="DISABLED"),
+    )
+    with pytest.raises(ValueError, match="SameStep"):
+        collect_chunks_vec(
+            env,
+            policy,
+            1,
+            -torch.ones(ACT_DIM),
+            torch.ones(ACT_DIM),
+            num_obs_steps=OBS_STEPS,
+            num_action_steps=HORIZON,
+            buffer=RolloutBuffer(
+                max_chunks=4,
+                max_steps=4,
+                obs_steps=OBS_STEPS,
+                obs_dim=OBS_DIM,
+                action_horizon=HORIZON,
+                action_dim=ACT_DIM,
+            ),
+            seed=0,
         )
-    assert validate_autoreset_mode(SimpleNamespace()) is None

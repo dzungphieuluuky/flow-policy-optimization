@@ -6,7 +6,7 @@ Entry: `scripts/train.py`. Draccus builds `TrainConfig`; `MyfpoConfig` is the ne
 
 Do not add runner scalars (`total_steps`, `eval_steps`, `save_steps`, `obs_dim`, `action_dim`) to `MyfpoConfig`. They stay on `TrainConfig`, and the runner bypasses the config for them, by design.
 
-`--resume` makes the checkpoint config win. Scalar CLI overrides are then ignored, and `scripts/train.py` warns.
+`--resume` restores model, optimizer and step only. The config is not restored, so scalar CLI overrides apply to the resumed run. It is myfpo-only.
 
 `scripts/pins/` holds the behaviour gates. Read `scripts/pins/README.md` before you change anything under `scripts/pins/`.
 
