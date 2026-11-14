@@ -181,6 +181,16 @@ def _check_attention_dims(hidden_dim: int, n_heads: int) -> None:
     if hidden_dim % n_heads != 0:
         raise ValueError(f"hidden_dim={hidden_dim} must split over {n_heads} heads")
 
+def _finish_linear(linear: nn.Linear) -> nn.Linear:
+    """He-style orthogonal init for a SiLU-valued trunkLinear, with zero bias.
+
+    Kaiming defaults pair LeakyReLU-like gains and keep non-zero biases; SiLU
+    trunks want the activation-gained orthogonal map."""
+    nn.init.orthogonal_(linear.weight, gain=math.sqrt(2.0))
+    if linear.bias is not None:
+        nn.init.zeros_(linear.bias)
+    return linear
+
 
 class CondMLP(nn.Module):
     """SiLU MLP for conditioning regression."""
@@ -188,8 +198,8 @@ class CondMLP(nn.Module):
     def __init__(self, in_dim: int, hidden_dim: int, out_dim: int):
         super().__init__()
         _check_positive_dims(in_dim, hidden_dim, out_dim, "CondMLP")
-        self.fc1 = nn.Linear(in_dim, hidden_dim)
-        self.fc2 = nn.Linear(hidden_dim, out_dim)
+        self.fc1 = _finish_linear(nn.Linear(in_dim, hidden_dim))
+        self.fc2 = _finish_linear(nn.Linear(hidden_dim, out_dim))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Project to the hidden width, apply SiLU, and project to out_dim."""
@@ -261,8 +271,8 @@ class SelfAttention(nn.Module):
             1.0 / (10000 ** (torch.arange(hidden_dim // (2 * n_heads)).float() / (hidden_dim // (2 * n_heads)))),
             persistent=False,
         )
-        self.qkv = nn.Linear(hidden_dim, 3 * hidden_dim)
-        self.out = nn.Linear(hidden_dim, hidden_dim)
+        self.qkv = _finish_linear(nn.Linear(hidden_dim, 3 * hidden_dim))
+        self.out = _finish_linear(nn.Linear(hidden_dim, hidden_dim))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Self-attention over the ``L`` action tokens. The shape is preserved."""
@@ -304,9 +314,9 @@ class CrossAttention(nn.Module):
         _check_attention_dims(hidden_dim, n_heads)
         self.n_heads = n_heads
         self.head_dim = hidden_dim // n_heads
-        self.q_proj = nn.Linear(hidden_dim, hidden_dim)
-        self.kv_proj = nn.Linear(hidden_dim, 2 * hidden_dim)
-        self.out = nn.Linear(hidden_dim, hidden_dim)
+        self.q_proj = _finish_linear(nn.Linear(hidden_dim, hidden_dim))
+        self.kv_proj = _finish_linear(nn.Linear(hidden_dim, 2 * hidden_dim))
+        self.out = _finish_linear(nn.Linear(hidden_dim, hidden_dim))
 
     def forward(
         self, query: torch.Tensor, context: torch.Tensor
@@ -532,14 +542,21 @@ def make_mlp_layers(
     in_dim: int, hidden_dim: int, num_layers: int, dropout: float
 ) -> nn.Module:
     """``Linear -> LayerNorm -> Mish`` per layer, with optional dropout on the
-    first. One final linear maps to the scalar."""
+    first. One final linear maps to the scalar.
+
+    Hidden trunks use He-style orthogonal init with zero bias; the final Linear
+    is zero-initialized so Q starts at 0 for every input pair — the actor's
+    advantage baseline is unbiased at step 0 by construction."""
     layers: list[nn.Module] = []
     for i in range(num_layers):
-        layers.append(nn.Linear(in_dim if i == 0 else hidden_dim, hidden_dim))
+        layers.append(_finish_linear(nn.Linear(in_dim if i == 0 else hidden_dim, hidden_dim)))
         if i == 0 and dropout > 0.0:
             layers.append(nn.Dropout(dropout))
         layers += [nn.LayerNorm(hidden_dim), nn.Mish()]
-    layers.append(nn.Linear(hidden_dim, 1))
+    final = nn.Linear(hidden_dim, 1)
+    nn.init.constant_(final.weight, 0.0)
+    nn.init.constant_(final.bias, 0.0)
+    layers.append(final)
     return nn.Sequential(*layers)
 
 class CriticMember(nn.Module):
@@ -604,7 +621,7 @@ class CriticMember(nn.Module):
         # +5 and all 0 would look the same.
         self.norm_action = ActionAffine(action_horizon * action_dim)
         # One token per action step, projected to the stream width.
-        self.act_in = nn.Linear(action_dim, state_dim)
+        self.act_in = _finish_linear(nn.Linear(action_dim, state_dim))
         # The chunk is pooled by its mean, so a causal attention pass restores
         # step order. RoPE carries the position.
         self.act_attn = SelfAttention(state_dim, attn_heads)

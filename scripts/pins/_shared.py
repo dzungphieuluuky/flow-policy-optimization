@@ -131,6 +131,8 @@ def _walk_equal(a, b, path: str, bad: list):
 
     Two floating point numbers are equal only when they are bit-identical.
     ``==`` on floats already means that, so the check stays a plain compare.
+    Two NaN floats both mean "unmeasured" (see flow.py: member_corr when the
+    ensemble is constant), so they compare equal; NaN vs a number fails.
     """
     if isinstance(a, list) and isinstance(b, list):
         if len(a) != len(b):
@@ -140,7 +142,8 @@ def _walk_equal(a, b, path: str, bad: list):
             _walk_equal(x, y, f"{path}[{i}]", bad)
         return
     if isinstance(a, float) and isinstance(b, float):
-        if a != b:  # atol=0 is the point of this module
+        both_nan = (a != a) and (b != b)
+        if a != b and not both_nan:  # atol=0 is the point of this module
             bad.append(f"{path}: {a!r} != {b!r}")
         return
     if a != b:

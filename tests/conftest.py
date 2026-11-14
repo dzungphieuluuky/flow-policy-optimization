@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import torch
+
 # MuJoCo writes its warnings to MUJOCO_LOG.TXT in the process working directory.
 # Any test that builds a model leaves one there.
 #
@@ -28,3 +30,29 @@ def _discard_mujoco_log() -> None:
 def pytest_sessionfinish(session, exitstatus):  # noqa: ARG001 - pytest names the hook
     """Clear the MuJoCo log the session created."""
     _discard_mujoco_log()
+
+
+def unzero_critic_head(critic_or_member):
+    """Kick every final trunk Linear off the zero-init by a tiny, deterministic
+    amount.
+
+    The critic's final head is zero-initialized on purpose (unbiased advantage
+    at step 0), which makes raw Q constant across the board. The architecture
+    tests (frame order, exec_length_frac gradient, member independence) ask
+    about sensitivity, not the deployment init; they build a critic and probe
+    it. Give those probes a non-degenerate head instead of weakening them.
+    Accepts a Critic (all members) or a single CriticMember.
+    """
+    members = (
+        critic_or_member.networks
+        if hasattr(critic_or_member, "networks")
+        else [critic_or_member]
+    )
+    with torch.no_grad():
+        for i, member in enumerate(members):
+            final = member.mlp[-1]
+            if final.weight.abs().sum() > 0:
+                continue
+            gen = torch.Generator().manual_seed(1234 + i)
+            final.weight.add_(0.05 * torch.randn(final.weight.shape, generator=gen))
+            final.bias.add_(0.01)

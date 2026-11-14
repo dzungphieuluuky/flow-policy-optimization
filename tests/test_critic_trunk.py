@@ -24,6 +24,7 @@ from torch import nn
 from myfpo.config import MyfpoConfig
 from myfpo.nn import Critic, CriticMember, ActionAffine, StateAffine
 from myfpo.flow import compute_value_metrics
+from conftest import unzero_critic_head
 from myfpo.algo import MyfpoPolicy
 
 OBS, HIDDEN, STEPS, ACT, H = 11, 32, 8, 3, 6
@@ -45,9 +46,11 @@ def _cfg(**kw) -> MyfpoConfig:
 
 def _member(num_layers: int = 2, dropout: float = 0.0) -> CriticMember:
     torch.manual_seed(0)
-    return CriticMember(
+    member = CriticMember(
         OBS, ACT, HIDDEN, STEPS, H, num_layers=num_layers, dropout=dropout
     )
+    unzero_critic_head(member)
+    return member
 
 
 @pytest.mark.parametrize("num_layers", [1, 2, 3, 4])
@@ -145,6 +148,7 @@ def test_dropout_is_active_in_train_mode_and_off_in_eval():
 def test_the_members_get_independent_masks_in_one_pass():
     torch.manual_seed(0)
     critic = Critic(OBS, HIDDEN, ACT, STEPS, H, num_critics=5, dropout=0.5).train()
+    unzero_critic_head(critic)
     out = critic(
         torch.randn(4, STEPS, OBS),
         torch.randn(4, H, ACT),

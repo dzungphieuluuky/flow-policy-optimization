@@ -4,6 +4,7 @@ import pytest
 import torch
 
 from myfpo.nn import Critic
+from conftest import unzero_critic_head
 
 OBS, HIDDEN, STEPS, ACT, H = 11, 32, 8, 3, 6
 
@@ -16,7 +17,7 @@ def _critic(
     num_layers: int = 2,
 ) -> Critic:
     torch.manual_seed(seed)
-    return Critic(
+    critic = Critic(
         OBS,
         HIDDEN,
         ACT,
@@ -26,6 +27,8 @@ def _critic(
         condition_on_exec_length=condition_on_exec_length,
         num_layers=num_layers,
     )
+    unzero_critic_head(critic)
+    return critic
 
 
 def _window(seed: int = 1, batch: int = 4) -> torch.Tensor:

@@ -332,21 +332,41 @@ class MyfpoPolicy(nn.Module):
         self.ema_initialized = bool(initialised)
         return True
 
+    @staticmethod
+    def _is_norm_scale(name: str) -> bool:
+        """True for normalization scale/gamma that must not see weight decay.
+
+        Matches `norm`-flavoured module attributes: RMSNorm gammas
+        (norm_out, attn_norm, cross_norm_*, act_attn_norm, and the encoder's
+        attn_norm.weight / out_norm.weight)."""
+        return name.endswith(".weight") and ("norm" in name.lower())
+
     def get_actor_optim_params(self) -> dict:
         """Actor optimizer param groups."""
         decay, no_decay = [], []
         for name, p in self.actor.named_parameters():
             bare = name.removeprefix("_orig_mod.")
-            if "adaLN" in bare or bare.startswith("out."):
+            if "adaLN" in bare or bare.startswith("out.") or self._is_norm_scale(bare):
                 no_decay.append(p)
             else:
                 decay.append(p)
         policy_lr = self.config.policy_lr
+        encoder_decay = [
+            p
+            for name, p in self.encoder.named_parameters()
+            if not self._is_norm_scale(name.removeprefix("_orig_mod."))
+        ]
+        encoder_no_decay = [
+            p
+            for name, p in self.encoder.named_parameters()
+            if self._is_norm_scale(name.removeprefix("_orig_mod."))
+        ]
         return {
             "params": [
                 {"params": decay, "lr": policy_lr},
                 {"params": no_decay, "weight_decay": 0.0, "lr": policy_lr},
-                {"params": list(self.encoder.parameters()), "lr": policy_lr},
+                {"params": encoder_decay, "lr": policy_lr},
+                {"params": encoder_no_decay, "weight_decay": 0.0, "lr": policy_lr},
             ]
         }
 

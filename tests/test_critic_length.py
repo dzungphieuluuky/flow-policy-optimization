@@ -5,6 +5,7 @@ import torch
 
 from myfpo.config import MyfpoConfig
 from myfpo.nn import Critic
+from conftest import unzero_critic_head
 
 
 def _cfg(**kw) -> MyfpoConfig:
@@ -37,6 +38,7 @@ def _policy_with_critic(cfg: MyfpoConfig):
         num_layers=cfg.critic_num_layers,
         state_hidden=cfg.hidden_dim,
     )
+    unzero_critic_head(policy.critic)
     return policy
 
 
