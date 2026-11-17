@@ -143,7 +143,6 @@ class MyfpoConfig:
     min_sampled_timestep: float = 0.1
     max_sampled_timestep: float = 0.9
     num_steps_noise_start: int = 10
-    num_baseline_samples: int = 4
     # objective
     gamma: float = 0.99
     gae_lambda: float = 0.95
@@ -458,6 +457,9 @@ class Critic(nn.Module):
         self.act_to_obs = CrossAttention(state_dim, 4)
         self.cross_norm_obs = RMSNorm(state_dim, eps=1e-6)
         self.cross_norm_act = RMSNorm(state_dim, eps=1e-6)
+        self.v_out = nn.Linear(state_dim, 1)
+        nn.init.zeros_(self.v_out.weight)
+        nn.init.zeros_(self.v_out.bias)
 
         layers: list[nn.Module] = []
         for i in range(num_layers):
@@ -488,6 +490,15 @@ class Critic(nn.Module):
                 raise ValueError("exec_length_frac of shape [B] is required when condition_on_exec_length=True")
             parts.append(exec_length_frac.to(dtype=parts[0].dtype).unsqueeze(-1))
         return self.mlp(torch.cat(parts, dim=-1)).squeeze(-1)
+
+    def forward_v(self, states: torch.Tensor) -> torch.Tensor:
+        """State value V(s); same encoder, no action tokens. [B]"""
+        if states.shape != (states.shape[0], self.num_obs_steps, self.obs_dim):
+            raise ValueError(f"states must be [B, {self.num_obs_steps}, {self.obs_dim}], got {tuple(states.shape)}")
+        obs_tokens = self.state_encoder.out_norm(
+            self.state_encoder.encode_tokens(self.norm_state(states.flatten(1)).view(states.shape))
+        )
+        return self.v_out(obs_tokens[:, -1]).squeeze(-1)
 
 
 # ---------------------------------------------------------------------------
@@ -1085,19 +1096,6 @@ def make_rollout_state(obs_dim: int, action_dim: int, cfg: MyfpoConfig, chunks_h
 
 
 @torch.no_grad()
-def _estimate_state_values(
-    policy: MyfpoPolicy, raw_states: torch.Tensor, norm_states: torch.Tensor,
-    exec_frac: torch.Tensor, mask: torch.Tensor, critic: nn.Module,
-) -> torch.Tensor:
-    cond = policy.encode_states(raw_states)
-    qs = [
-        critic(norm_states, to_critic_action(policy.sample_chunk(cond), mask=mask), exec_frac).float()
-        for _ in range(policy.config.num_baseline_samples)
-    ]
-    return torch.stack(qs).mean(0)
-
-
-@torch.no_grad()
 def run_rollout(policy: MyfpoPolicy, env, chunks_per_env: int, *, action_low, action_high, state: RolloutState, max_steps_per_env: int | None = None) -> dict:
     """Collect one rollout and compute V-anchored GAE + behavior CFM losses."""
     if chunks_per_env <= 0:
@@ -1126,18 +1124,8 @@ def run_rollout(policy: MyfpoPolicy, env, chunks_per_env: int, *, action_low, ac
     all_norm = policy.obs_normalizer(torch.cat([states, next_states], dim=0))
     norm_states, norm_next = all_norm[:n_chunks], all_norm[n_chunks:]
 
-    critic_was_train = policy.critic.training
-    policy.critic.eval()
-    policy.critic_target.eval()
-    try:
-        exec_frac = lengths.float() / float(cfg.action_horizon)
-        boot_frac = torch.full((n_chunks,), cfg.num_action_steps / float(cfg.action_horizon), device=device)
-        len_mask = (torch.arange(cfg.action_horizon, device=device).unsqueeze(0) < lengths.unsqueeze(1)).unsqueeze(-1).float()
-        boot_mask = (torch.arange(cfg.action_horizon, device=device).unsqueeze(0) < cfg.num_action_steps).unsqueeze(-1).float()
-        v_cur = _estimate_state_values(policy, states, norm_states, exec_frac, len_mask, policy.critic)
-        v_nxt = _estimate_state_values(policy, next_states, norm_next, boot_frac, boot_mask, policy.critic_target)
-    finally:
-        policy.critic.train(critic_was_train)
+    v_cur = policy.critic.forward_v(norm_states)
+    v_nxt = policy.critic_target.forward_v(norm_next)
 
     adv, returns = compute_chunk_advantages(
         active["step_rewards"], v_cur, v_nxt,
@@ -1202,7 +1190,7 @@ class UpdateResult:
     grad_norm_critic: float
 
 
-def compute_loss(policy: MyfpoPolicy, batch: dict[str, torch.Tensor], device) -> tuple[torch.Tensor, dict[str, float]]:
+def compute_loss(policy: MyfpoPolicy, batch: dict[str, torch.Tensor], device) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     cfg = policy.config
     states = policy.obs_normalizer(torch.as_tensor(batch["observation.state"], dtype=torch.float32, device=device))
     raw_actions = torch.as_tensor(batch["action"], dtype=torch.float32, device=device)
@@ -1231,23 +1219,26 @@ def compute_loss(policy: MyfpoPolicy, batch: dict[str, torch.Tensor], device) ->
     exec_frac = keep.sum(dim=-1) / float(cfg.action_horizon)
     value_pred = policy.critic(states, critic_actions, exec_frac).float()
     value_loss = F.smooth_l1_loss(value_pred, returns.reshape(-1), reduction="mean", beta=cfg.value_loss_beta)
-    loss = policy_loss + cfg.value_loss_coef * value_loss
+    v_pred = policy.critic.forward_v(states).float()
+    v_loss = F.smooth_l1_loss(v_pred, returns.reshape(-1), reduction="mean", beta=cfg.value_loss_beta)
+    loss = policy_loss + cfg.value_loss_coef * (value_loss + v_loss)
 
     with torch.no_grad():
-        r_var = max(returns.var(unbiased=False).item(), 1e-8)
+        r_var = returns.var(unbiased=False).clamp_min(1e-8)
         ratio_fp = ratio.detach()
         metrics = {
-            "policy_loss": float(policy_loss.item()),
-            "value_loss": float(value_loss.item()),
-            "total_loss": float(loss.item()),
-            "cfm_loss_new": float(cfm_loss_new.mean().item()),
-            "ratio_mean": float(ratio_fp.mean().item()),
-            "ratio_std": float(ratio_fp.std(correction=0).item()),
-            "ratio_max": float(ratio_fp.max().item()),
-            "clipfrac": float(((ratio_fp - 1.0).abs() > cfg.clip_param).float().mean().item()),
-            "cfm_above_clamp_frac": float((cfm_loss_new_tok > cfg.cfm_clamp).float().mean().item()),
-            "cfm_both_clamped_frac": float(((cfm_old_tok > cfg.cfm_clamp) & (cfm_loss_new_tok > cfg.cfm_clamp)).float().mean().item()),
-            "explained_var": float(1.0 - (returns - value_pred).var(unbiased=False).item() / r_var),
+            "policy_loss": policy_loss.detach(),
+            "value_loss": value_loss.detach(),
+            "v_loss": v_loss.detach(),
+            "total_loss": loss.detach(),
+            "cfm_loss_new": cfm_loss_new.mean().detach(),
+            "ratio_mean": ratio_fp.mean(),
+            "ratio_std": ratio_fp.std(correction=0),
+            "ratio_max": ratio_fp.max(),
+            "clipfrac": (ratio_fp - 1.0).abs().gt(cfg.clip_param).to(ratio_fp.dtype).mean(),
+            "cfm_above_clamp_frac": (cfm_loss_new_tok > cfg.cfm_clamp).to(ratio_fp.dtype).mean(),
+            "cfm_both_clamped_frac": ((cfm_old_tok > cfg.cfm_clamp) & (cfm_loss_new_tok > cfg.cfm_clamp)).to(ratio_fp.dtype).mean(),
+            "explained_var": 1.0 - (returns - value_pred).var(unbiased=False) / r_var,
         }
     return loss, metrics
 
@@ -1282,14 +1273,13 @@ def update(policy: MyfpoPolicy, optimizer, batch: dict[str, Any], cfg: MyfpoConf
         "behavior_cfm_loss_token": torch.as_tensor(batch["behavior_cfm_loss_token"], dtype=torch.float32, device=device),
     }
 
-    inds = np.arange(n)
-    totals: dict[str, float] = {}
+    totals: dict[str, torch.Tensor] = {}
     counts = 0
     grad_norm_actor = grad_norm_critic = 0.0
     for _ in range(cfg.num_learning_epochs):
-        np.random.shuffle(inds)
+        inds = torch.randperm(n, device=device)
         for start in range(0, n, cfg.chunks_per_minibatch):
-            mb = torch.as_tensor(inds[start : start + cfg.chunks_per_minibatch], dtype=torch.long, device=device)
+            mb = inds[start : start + cfg.chunks_per_minibatch]
             loss, metrics = compute_loss(policy, {k: v[mb] for k, v in dev_batch.items()}, device)
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
@@ -1300,7 +1290,7 @@ def update(policy: MyfpoPolicy, optimizer, batch: dict[str, Any], cfg: MyfpoConf
                 for pt, p in zip(policy.critic_target.parameters(), policy.critic.parameters()):
                     pt.copy_(cfg.target_tau * p + (1.0 - cfg.target_tau) * pt)
             for k, v in metrics.items():
-                totals[k] = totals.get(k, 0.0) + v
+                totals[k] = totals[k] + v if k in totals else v
             counts += 1
 
     # Critic-target lag on the rollout states, one extra forward per update.
@@ -1311,7 +1301,7 @@ def update(policy: MyfpoPolicy, optimizer, batch: dict[str, Any], cfg: MyfpoConf
         lag_actions = to_critic_action(dev_batch["action"], mask=lag_keep.unsqueeze(-1))
         lag = float((policy.critic(lag_states, lag_actions, lag_frac) - policy.critic_target(lag_states, lag_actions, lag_frac)).abs().float().mean().item())
     return UpdateResult(
-        metrics={**{k: v / max(counts, 1) for k, v in totals.items()}, "critic_target_lag": lag},
+        metrics={**{k: float((v / counts).item()) for k, v in totals.items()}, "critic_target_lag": lag},
         grad_norm_actor=grad_norm_actor,
         grad_norm_critic=grad_norm_critic,
     )

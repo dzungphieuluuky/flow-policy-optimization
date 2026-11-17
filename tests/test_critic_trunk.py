@@ -193,7 +193,7 @@ def test_the_input_parts_add_exactly_their_own_widths():
         + sum(p.numel() for p in m.act_attn_norm.parameters())
         + sum(p.numel() for p in m.act_in.parameters())
     )
-    assert with_parts == mlp + encoder + blocks + 2 * (STEPS * OBS) + 2 * (H * ACT)
+    assert with_parts == mlp + encoder + blocks + 2 * (STEPS * OBS) + 2 * (H * ACT) + (HIDDEN + 1)
 
 
 def test_the_state_norm_receives_the_flattened_window_not_the_chunk():
