@@ -62,7 +62,7 @@ def test_a_done_step_stores_the_final_frame_not_the_reset_frame():
     collect_chunks_vec(
         env,
         policy,
-        2,
+        1,
         -torch.ones(ACT),
         torch.ones(ACT),
         num_obs_steps=H,

@@ -160,7 +160,7 @@ class MyfpoConfig:
     # Symmetric cap: exp(2) = 7.4, not exp(10) = 22026.
     cfm_diff_clamp_min: float = -2.0
     cfm_diff_clamp_max: float = 2.0
-    cfm_loss_reduction: str = "sqrt"
+    cfm_loss_reduction: str = "mean"
     cfm_loss_use_huber: bool = True
     cfm_loss_huber_delta: float = 0.5
     velocity_clip_value: float | None = None
@@ -177,6 +177,8 @@ class MyfpoConfig:
     chunks_per_update: int = 2048
     chunks_per_minibatch: int = 512
     num_learning_epochs: int = 16
+    # target critic
+    target_tau: float = 0.005
     # eval / reporting
     eval_max_episodes: int = 50
     report_to: str = "all"
@@ -187,6 +189,22 @@ class MyfpoConfig:
         self.adam_betas = tuple(self.adam_betas)
         if not self.cfm_diff_clamp_min < 0.0 < self.cfm_diff_clamp_max:
             raise ValueError("cfm_diff_clamp_min < 0 < cfm_diff_clamp_max is required")
+        if self.trust_region_mode not in ("ppo", "spo", "aspo"):
+            raise ValueError(f"trust_region_mode must be one of 'ppo', 'spo', 'aspo', got {self.trust_region_mode!r}")
+        if self.cfm_loss_reduction not in ("sum", "mean", "sqrt"):
+            raise ValueError(f"cfm_loss_reduction must be one of 'sum', 'mean', 'sqrt', got {self.cfm_loss_reduction!r}")
+        if not 1 <= self.num_action_steps <= self.action_horizon:
+            raise ValueError(f"num_action_steps must be in [1, {self.action_horizon}], got {self.num_action_steps}")
+        if self.num_obs_steps < 1:
+            raise ValueError(f"num_obs_steps must be >= 1, got {self.num_obs_steps}")
+        if self.chunks_per_minibatch > self.chunks_per_update:
+            raise ValueError(f"chunks_per_minibatch ({self.chunks_per_minibatch}) must be <= chunks_per_update ({self.chunks_per_update})")
+        if not 0.0 <= self.target_tau <= 1.0:
+            raise ValueError(f"target_tau must be in [0, 1], got {self.target_tau}")
+        for name in ("gamma", "gae_lambda"):
+            value = getattr(self, name)
+            if not 0.0 <= value <= 1.0:
+                raise ValueError(f"{name} must be in [0, 1], got {value}")
 
     @property
     def num_minibatches(self) -> int:
@@ -371,9 +389,9 @@ class FlowMLP(nn.Module):
         return self.timestep_embedder.encode_times(grid.reshape(-1)).reshape(b, k, -1)
 
     def forward(self, x_t: torch.Tensor, t: torch.Tensor | float, condition: torch.Tensor) -> torch.Tensor:
-        b, k, _ = x_t.shape
-        if x_t.dim() != 3 or x_t.shape[2] != self.action_dim or k > self.action_horizon:
+        if x_t.dim() != 3 or x_t.shape[2] != self.action_dim or x_t.shape[1] > self.action_horizon:
             raise ValueError(f"invalid x_t shape {tuple(x_t.shape)}")
+        b, k, _ = x_t.shape
         if condition.shape != (b, self.hidden_dim):
             raise ValueError(f"expected condition [{b}, {self.hidden_dim}], got {tuple(condition.shape)}")
         t_tensor = torch.as_tensor(t, dtype=torch.float32, device=x_t.device)
@@ -525,7 +543,7 @@ def compute_cfm_loss(
     if cfg.cfm_loss_reduction == "sum":
         sample = flat.sum(dim=-1)
     elif cfg.cfm_loss_reduction == "sqrt":
-        sample = flat.sum(dim=-1) / (n_valid if n_valid is not None else math.sqrt(flat.shape[-1]))
+        sample = flat.sum(dim=-1) / (n_valid.sqrt() if n_valid is not None else math.sqrt(flat.shape[-1]))
     else:
         sample = flat.mean(dim=-1) if n_valid is None else flat.sum(dim=-1) / n_valid
     return sample if reduce_mode == "sample" else (sample, sq.mean(dim=-1))
@@ -900,9 +918,10 @@ def take_final_observations(info, done_np, reference: torch.Tensor, strict: bool
 
 
 def collect_chunks_vec(
-    envs, policy, total_steps: int, action_low, action_high, *,
+    envs, policy, chunks_per_env: int, action_low, action_high, *,
     num_obs_steps: int, num_action_steps: int, buffer: RolloutBuffer,
     carry: EnvCarry | None = None, action_noise_std: float = 0.0, seed: int | None = None,
+    max_steps_per_env: int | None = None,
 ) -> RolloutBuffer:
     """Collect executed chunks from a lockstep SameStep vector env."""
     low, high = resolve_action_bounds(action_low, action_high)
@@ -916,8 +935,10 @@ def collect_chunks_vec(
 
     n = int(envs.num_envs)
     act_dim = int(np.asarray(envs.single_action_space.shape).prod())
-    base, rem = divmod(total_steps, n)
-    targets = np.array([base + (i < rem) for i in range(n)], dtype=np.int64)
+    targets = np.full(n, int(chunks_per_env), dtype=np.int64)
+    cap = np.iinfo(np.int64).max if max_steps_per_env is None else max(1, int(max_steps_per_env))
+    step_caps = np.full(n, cap, dtype=np.int64)
+    closed = np.zeros(n, dtype=np.int64)
 
     if seed is None:
         seed = int(torch.randint(0, 2**31, (1,)).item())
@@ -945,7 +966,7 @@ def collect_chunks_vec(
     torch_env = is_torch_env(envs)
 
     while remaining > 0:
-        need = np.flatnonzero((~active) & (executed_total < targets))
+        need = np.flatnonzero((~active) & (closed < targets) & (executed_total < step_caps))
         if need.size:
             wf = torch.as_tensor(need, dtype=torch.long)
             states = windows[wf]
@@ -954,13 +975,24 @@ def collect_chunks_vec(
             exec_plan[wf] = to_env_action(raw, low, high)
             start_window[wf] = states
             chunk_pos[wf] = 0
-            step_limits[need] = np.minimum(num_action_steps, targets[need] - executed_total[need])
+            step_limits[need] = np.minimum(num_action_steps, step_caps[need] - executed_total[need])
             active[need] = True
+        # Every env stops when its step cap is exhausted before the chunk target.
+        if not active.any() and need.size == 0:
+            break
 
+        idle = np.flatnonzero(~active)
         live = torch.from_numpy(np.flatnonzero(active))
-        next_actions.zero_()
+        next_actions = torch.zeros(n, act_dim)
         if live.numel():
             next_actions[live] = exec_plan[live, chunk_pos[live].clamp(max=horizon - 1)]
+        if idle.size:
+            # Idle rows still step in lockstep. Run them on-policy and keep
+            # their windows fresh: their transitions are not stored, but a
+            # stale window would poison the carry into the next rollout.
+            idle_t = torch.as_tensor(idle, dtype=torch.long)
+            idle_raw = policy(windows[idle_t]).detach().cpu().float()
+            next_actions[idle_t] = to_env_action(idle_raw, low, high)[:, 0]
 
         if torch_env:
             obs_r, rew_r, term_r, trunc_r, info = envs.step_torch(next_actions)
@@ -983,13 +1015,11 @@ def collect_chunks_vec(
             windows[live, p] = obs_t[live]
             chunk_pos[live] = p + 1
 
-        idle = np.flatnonzero(~active)
         if idle.size:
             d_idle = done_np[idle]
             if (~d_idle).any():
                 m_rows = torch.as_tensor(idle[~d_idle])
-                w = windows[m_rows]
-                windows[m_rows] = torch.cat([w[:, 1:], obs_t[m_rows, None]], dim=1)
+                windows[m_rows] = torch.cat([windows[m_rows][:, 1:], obs_t[m_rows, None]], dim=1)
             if d_idle.any():
                 d_rows = torch.as_tensor(idle[d_idle])
                 windows[d_rows] = reset_frames[d_rows].unsqueeze(1).expand(-1, num_obs_steps, -1)
@@ -1013,7 +1043,8 @@ def collect_chunks_vec(
             )
             windows[rows] = next_win
             executed_total[closing] += lens_np
-            remaining -= n_new
+            closed[closing] += 1
+            remaining -= closing.size
             active[closing] = False
             c_done = closing[done_np[closing]]
             if c_done.size:
@@ -1030,10 +1061,28 @@ class RolloutState:
     carry: EnvCarry | None = None
 
 
-def make_rollout_state(obs_dim: int, action_dim: int, cfg: MyfpoConfig, total_steps_hint: int = 1) -> RolloutState:
+def _rollout_budget(cfg: MyfpoConfig, n_envs: int, remaining_steps: int) -> int:
+    """Chunk budget for one rollout.
+
+    A full rollout is ``chunks_per_update // n_envs`` chunks per env. A final
+    partial rollout covers the remaining steps in one chunk wave instead of
+    running a full rollout past the step budget; chunk granularity cannot
+    match ``total_steps`` exactly, so the last rollout overshoots by under a
+    chunk wave.
+    """
+    full_chunks_per_env = max(1, int(cfg.chunks_per_update) // n_envs)
+    num_action_steps = int(cfg.num_action_steps)
+    wave = n_envs * num_action_steps
+    if remaining_steps >= full_chunks_per_env * wave:
+        return full_chunks_per_env
+    return max(1, math.ceil(remaining_steps / wave))
+
+
+def make_rollout_state(obs_dim: int, action_dim: int, cfg: MyfpoConfig, chunks_hint: int | None = None) -> RolloutState:
+    chunks = max(1, int(cfg.chunks_per_update) if chunks_hint is None else int(chunks_hint))
     return RolloutState(
         buffer=RolloutBuffer(
-            max_chunks=max(1, total_steps_hint), max_steps=max(1, total_steps_hint),
+            max_chunks=chunks, max_steps=chunks * int(cfg.num_action_steps),
             obs_steps=cfg.num_obs_steps, obs_dim=obs_dim,
             action_horizon=cfg.action_horizon, action_dim=action_dim,
         )
@@ -1054,23 +1103,25 @@ def _estimate_state_values(
 
 
 @torch.no_grad()
-def run_rollout(policy: MyfpoPolicy, env, total_steps: int, *, action_low, action_high, state: RolloutState) -> dict:
+def run_rollout(policy: MyfpoPolicy, env, chunks_per_env: int, *, action_low, action_high, state: RolloutState, max_steps_per_env: int | None = None) -> dict:
     """Collect one rollout and compute V-anchored GAE + behavior CFM losses."""
-    if total_steps <= 0:
-        raise ValueError(f"total_steps={total_steps} must be positive")
+    if chunks_per_env <= 0:
+        raise ValueError(f"chunks_per_env={chunks_per_env} must be positive")
     cfg = policy.config
     device = next(policy.parameters()).device
     buffer = state.buffer
     buffer.reset()
 
     collect_chunks_vec(
-        env, policy.predict_action_chunk, total_steps, action_low, action_high,
+        env, policy.predict_action_chunk, chunks_per_env, action_low, action_high,
         num_obs_steps=cfg.num_obs_steps, num_action_steps=cfg.num_action_steps,
         buffer=buffer, carry=state.carry, action_noise_std=cfg.storage_action_noise_std,
+        max_steps_per_env=max_steps_per_env,
     )
     state.carry = buffer.carry
     active = buffer.active_prefix()
     n_chunks = buffer.n_chunks
+    policy.obs_normalizer.update(active["normalizer_observations"])
 
     states = active["chunk_state"].to(device)
     next_states = active["chunk_next_state"].to(device)
@@ -1117,7 +1168,6 @@ def run_rollout(policy: MyfpoPolicy, env, total_steps: int, *, action_low, actio
         "chunk_truncated": active["chunk_truncated"],
         "normalized_advantages": adv,
         "raw_returns": returns,
-        "normalizer_observations": active["normalizer_observations"],
         "boot_observations": norm_next,
         "mc_t": t,
         "mc_eps": eps,
@@ -1251,11 +1301,22 @@ def update(policy: MyfpoPolicy, optimizer, batch: dict[str, Any], cfg: MyfpoConf
             grad_norm_actor = float(torch.nn.utils.clip_grad_norm_(actor_params, cfg.max_grad_norm))
             grad_norm_critic = float(torch.nn.utils.clip_grad_norm_(critic_params, cfg.max_grad_norm))
             optimizer.step()
+            with torch.no_grad():
+                for pt, p in zip(policy.critic_target.parameters(), policy.critic.parameters()):
+                    pt.copy_(cfg.target_tau * p + (1.0 - cfg.target_tau) * pt)
             for k, v in metrics.items():
                 totals[k] = totals.get(k, 0.0) + v
             counts += 1
+
+    # Critic-target lag on the rollout states, one extra forward per update.
+    with torch.no_grad():
+        lag_states = policy.obs_normalizer(dev_batch["observation.state"])
+        lag_keep = (~dev_batch["action_is_pad"]).to(dev_batch["action"].dtype)
+        lag_frac = lag_keep.sum(dim=-1) / float(cfg.action_horizon)
+        lag_actions = to_critic_action(dev_batch["action"], mask=lag_keep.unsqueeze(-1))
+        lag = float((policy.critic(lag_states, lag_actions, lag_frac) - policy.critic_target(lag_states, lag_actions, lag_frac)).abs().float().mean().item())
     return UpdateResult(
-        metrics={k: v / max(counts, 1) for k, v in totals.items()},
+        metrics={**{k: v / max(counts, 1) for k, v in totals.items()}, "critic_target_lag": lag},
         grad_norm_actor=grad_norm_actor,
         grad_norm_critic=grad_norm_critic,
     )
@@ -1411,7 +1472,8 @@ class Evaluator(_BaseEvaluator):
     def evaluate(self, policy: Callable[[np.ndarray], np.ndarray], *, out_dir: str | Path | None = None, append_csv: bool = False) -> list[dict[str, Any]]:
         rng = np.random.default_rng(self.eval_seed)
         results, total_steps = [], 0
-        with _pinned_eval_mode(policy):
+        with torch.random.fork_rng(), _pinned_eval_mode(policy):
+            torch.manual_seed(self.eval_seed)
             for ep in range(self.max_episodes):
                 if self.max_steps is not None and total_steps >= self.max_steps:
                     break
@@ -1427,8 +1489,9 @@ class Evaluator(_BaseEvaluator):
         return Evaluator(self.env, eval_seed=self.eval_seed, max_episodes=max_episodes, max_steps=self.max_steps)
 
     def random_policy(self, env: Any, seed: int | None = None) -> Callable:
-        if seed is not None:
-            env.action_space.seed(int(seed))
+        if seed is None:
+            seed = self.eval_seed
+        env.action_space.seed(int(seed))
         return lambda _obs: env.action_space.sample()
 
 
@@ -1761,8 +1824,9 @@ def run_myfpo_training(
     params = sum(p.numel() for p in policy.parameters() if p.requires_grad)
     print(f"myfpo policy: actor=FlowMLP hidden={cfg.hidden_dim} params={params:,}", flush=True)
 
-    rollout_steps = max(1, int(cfg.chunks_per_update) * int(cfg.action_horizon))
-    rollout_state = make_rollout_state(obs_dim, action_dim, cfg, total_steps_hint=max(1, min(total_steps, rollout_steps)))
+    n_envs = int(getattr(train_env, "num_envs", 1))
+    full_chunks_per_env = max(1, int(cfg.chunks_per_update) // n_envs)
+    rollout_state = make_rollout_state(obs_dim, action_dim, cfg, chunks_hint=full_chunks_per_env * n_envs)
     best_return: float | None = None
     steps_to_best = 0
     all_eval_returns: list[float] = []
@@ -1771,14 +1835,15 @@ def run_myfpo_training(
 
     while global_step < total_steps:
         t0 = time.perf_counter()
-        batch = run_rollout(policy, train_env, min(rollout_steps, total_steps - global_step), action_low=low, action_high=high, state=rollout_state)
+        remaining_steps = max(0, total_steps - global_step)
+        chunks_per_env = _rollout_budget(cfg, n_envs, remaining_steps)
+        batch = run_rollout(
+            policy, train_env, chunks_per_env, action_low=low, action_high=high,
+            state=rollout_state,
+        )
         collect_s = time.perf_counter() - t0
         result = update(policy, optimizer, batch, cfg)
         global_step += int(batch["step_rewards"].numel())
-        policy.obs_normalizer.update(batch["normalizer_observations"])
-        with torch.no_grad():
-            for pt, p in zip(policy.critic_target.parameters(), policy.critic.parameters()):
-                pt.copy_(0.005 * p + 0.995 * pt)
 
         if wb is not None:
             acts = batch["action"]
@@ -1842,8 +1907,8 @@ def run_myfpo_training(
         "method": "myfpo",
         "env_name": env_name,
         "seed": seed,
-        "reward_mean_last10": float(np.mean(all_eval_returns)) if all_eval_returns else 0.0,
-        "reward_median_last10": float(np.median(all_eval_returns)) if all_eval_returns else 0.0,
+        "reward_mean_last10": float(np.mean(all_eval_returns[-10:])) if all_eval_returns else 0.0,
+        "reward_median_last10": float(np.median(all_eval_returns[-10:])) if all_eval_returns else 0.0,
         "fps": fps,
         "artifacts": artifacts,
         "best_artifact": next((a for a in artifacts if "best" in a), None),

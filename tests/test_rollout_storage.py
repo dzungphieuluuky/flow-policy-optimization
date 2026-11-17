@@ -39,13 +39,13 @@ def _buffer() -> RolloutBuffer:
     )
 
 
-def _collect(total_steps: int = 240, n: int = NUM_ENVS):
+def _collect(chunks_per_env: int = 20, n: int = NUM_ENVS):
     envs = _pendulum_vec(n)
     buffer = _buffer()
     collect_chunks_vec(
         envs,
         lambda s: torch.zeros(s.shape[0], HORIZON, ACT_DIM),
-        total_steps=total_steps,
+        chunks_per_env=chunks_per_env,
         num_action_steps=HORIZON,
         action_low=-2.0,
         action_high=2.0,
@@ -89,7 +89,7 @@ def test_chunk_state_is_the_window_the_policy_saw():
     collect_chunks_vec(
         envs,
         recording_policy,
-        total_steps=120,
+        chunks_per_env=10,
         num_action_steps=HORIZON,
         action_low=-2.0,
         action_high=2.0,
@@ -185,7 +185,7 @@ def test_single_step_chunk():
 
 def test_reset_keeps_storage_and_clears_cursors():
     """The buffer is reused across rollouts. Storage must survive."""
-    buf = _collect(total_steps=80)
+    buf = _collect(chunks_per_env=7)
     before = buf.chunk_state.clone()
     buf.reset()
     assert buf.n_chunks == 0 and buf.n_steps == 0
@@ -229,7 +229,7 @@ def test_chunks_span_rollouts_when_carry_is_passed():
         collect_chunks_vec(
             envs,
             lambda s: torch.zeros(s.shape[0], HORIZON, ACT_DIM),
-            total_steps=2 * HORIZON,
+            chunks_per_env=2,
             buffer=buf1,
             **kwargs,
         )
@@ -238,7 +238,7 @@ def test_chunks_span_rollouts_when_carry_is_passed():
         collect_chunks_vec(
             envs,
             lambda s: torch.zeros(s.shape[0], HORIZON, ACT_DIM),
-            total_steps=HORIZON,
+            chunks_per_env=1,
             buffer=buf2,
             carry=carry,
             **kwargs,
@@ -250,12 +250,15 @@ def test_chunks_span_rollouts_when_carry_is_passed():
     )
 
 
-def _collect_limited(n: int, total: int, limit: int) -> RolloutBuffer:
+def _collect_limited(
+    n: int, chunks: int, limit: int, max_steps_per_env: int | None = None,
+) -> RolloutBuffer:
     """Collect from n envs whose episodes end every ``limit`` steps."""
     envs = _pendulum_vec(n=n, limit=limit)
+    steps = max_steps_per_env * n if max_steps_per_env is not None else chunks * HORIZON
     buffer = RolloutBuffer(
-        max_chunks=total,
-        max_steps=total,
+        max_chunks=chunks * n,
+        max_steps=steps,
         obs_steps=OBS_STEPS,
         obs_dim=OBS_DIM,
         action_horizon=HORIZON,
@@ -265,13 +268,14 @@ def _collect_limited(n: int, total: int, limit: int) -> RolloutBuffer:
         collect_chunks_vec(
             envs,
             lambda s: torch.zeros(s.shape[0], HORIZON, ACT_DIM),
-            total_steps=total,
+            chunks,
             num_action_steps=HORIZON,
             action_low=-2.0,
             action_high=2.0,
             num_obs_steps=OBS_STEPS,
             buffer=buffer,
             seed=0,
+            max_steps_per_env=max_steps_per_env,
         )
     finally:
         envs.close()
@@ -281,21 +285,21 @@ def _collect_limited(n: int, total: int, limit: int) -> RolloutBuffer:
 def test_the_chunk_rows_cover_an_episode_that_ends_every_step():
     """One chunk per step is the worst case.
 
-    ``collect_chunks`` sizes ``max_chunks`` from ``total_steps`` for this
-    reason. A cap of ``total_steps // action_horizon`` would overflow here.
+    ``RolloutBuffer`` sizes ``max_chunks`` from the planned chunk count for
+    this reason. A cap of ``chunks // action_horizon`` would overflow here.
     """
-    buffer = _collect_limited(n=4, total=64, limit=1)
+    buffer = _collect_limited(n=4, chunks=16, limit=1)
     assert buffer.n_chunks == 64
     assert buffer.n_steps == 64
 
 
-def test_an_off_boundary_episode_writes_more_chunks_than_the_planned_count():
-    """A 3-step episode in a 4-step chunk adds a row per episode.
+def test_an_episode_longer_than_the_chunk_truncates_at_the_step_cap():
+    """Episodes that end mid-chunk are cut by the cap, not the horizon.
 
-    32 planned chunks over 128 steps become 44. The rows are sized from
-    ``total_steps``, not from ``total_steps // action_horizon``.
+    32 steps per env in 4-step chunks with a 3-step episode end at
+    [3 * 10 + 2] steps. The row count does not depend on the horizon.
     """
-    buffer = _collect_limited(n=4, total=128, limit=3)
+    buffer = _collect_limited(n=4, chunks=64, limit=3, max_steps_per_env=32)
     assert buffer.n_chunks == 44
     assert buffer.n_steps == 128
 

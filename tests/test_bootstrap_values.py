@@ -41,7 +41,7 @@ def _rollout(config):
     train_env = make_train_env(env, "Pendulum-v1", 1)
     policy = _policy(config)
     policy.train()
-    state = make_rollout_state(3, 1, config, total_steps_hint=8)
+    state = make_rollout_state(3, 1, config, chunks_hint=8)
     try:
         batch = run_rollout(
             policy,

@@ -13,7 +13,7 @@ from myfpo.myfpo import (
 
 N_ENVS, OBS_DIM, ACT_DIM = 8, 11, 3
 N_OBS, HORIZON = 16, 16
-TOTAL_STEPS = 512
+CHUNKS_PER_ENV = 8
 
 
 class FakeVecEnv:
@@ -25,6 +25,8 @@ class FakeVecEnv:
         self.single_observation_space = self.observation_space
         self.single_action_space = type("S", (), {"shape": (act_dim,)})()
         self.autoreset_mode = type("M", (), {"name": "SAME_STEP"})()
+        if isinstance(episode, (tuple, list)):
+            episode = np.asarray(episode, dtype=np.int64)
         self.episode = episode
         self.t = np.zeros(n, dtype=np.int64)
         self.rng = np.random.default_rng(1234)
@@ -56,7 +58,7 @@ class FakeVecEnv:
 def collect(
     episode: int,
     n_envs: int = N_ENVS,
-    total_steps: int = TOTAL_STEPS,
+    chunks_per_env: int = CHUNKS_PER_ENV,
     num_obs_steps: int = N_OBS,
 ):
     """Run the real collector on a deterministic env. Return the buffer + env."""
@@ -71,11 +73,12 @@ def collect(
         return torch.addmm(flat.new_zeros(n, ACT_DIM), flat, w).unsqueeze(1) * ramp
 
     buf = RolloutBuffer(
-        max_chunks=total_steps, max_steps=total_steps, obs_steps=num_obs_steps,
+        max_chunks=chunks_per_env * n_envs, max_steps=chunks_per_env * n_envs * HORIZON,
+        obs_steps=num_obs_steps,
         obs_dim=OBS_DIM, action_horizon=HORIZON, action_dim=ACT_DIM,
     )
     collect_chunks_vec(
-        env, policy, total_steps,
+        env, policy, chunks_per_env,
         -torch.ones(ACT_DIM), torch.ones(ACT_DIM),
         num_obs_steps=num_obs_steps, num_action_steps=HORIZON,
         buffer=buf, seed=0,
@@ -94,12 +97,13 @@ def _per_env_chunks(buf):
     return a, groups
 
 
-def test_collector_fills_the_budget_exactly():
-    """Every env must run its whole share of the step budget."""
+def test_collector_fills_the_chunk_budget_exactly():
+    """Every env must close its share of the chunk budget."""
     for episode in (1000, 50, 16, 1):
         buf, _ = collect(episode)
-        assert buf.n_steps == TOTAL_STEPS, (episode, buf.n_steps)
-        assert buf.n_chunks >= 1
+        assert buf.n_chunks == CHUNKS_PER_ENV * N_ENVS, (episode, buf.n_chunks)
+    buf, _ = collect(1000)
+    assert buf.n_steps == CHUNKS_PER_ENV * N_ENVS * HORIZON
 
 
 def test_obs_windows_slide_by_exactly_one_frame_per_step():
@@ -175,17 +179,25 @@ def test_autoreset_refills_the_window_with_the_reset_observation():
 
 
 def test_a_row_that_hit_its_target_still_tracks_the_env():
-    """A finished env keeps stepping for the other rows.
+    """An env that closes its budget early keeps stepping for the other rows.
 
-    Its chunk is closed, so nothing writes its window any more, and the next
-    rollout would start from a state up to ``num_action_steps - 1`` steps old.
-    The carry must hold the last ``num_obs_steps`` frames the env returned.
+    Its transitions are not stored, but it must keep receiving real policy
+    actions (not zeros), and the carry window must keep tracking its last
+    frames, or the next rollout starts from a stale window. Row 0 truncates
+    every 3 steps, so it empties its chunk budget long before row 1.
     """
-    total = TOTAL_STEPS + 1  # one env draws one more step than the rest
-    buf, env = collect(episode=1000, total_steps=total)
-    assert buf.n_steps == total
-    recent = torch.from_numpy(np.stack(env.obs_seen[-N_OBS:], axis=1))
-    assert torch.equal(buf.carry.windows, recent)
+    buf, env = collect((3, 1000), n_envs=2, chunks_per_env=8)
+    last_obs = torch.from_numpy(env.obs_seen[-1])
+    # The last frame each row saw must be the last frame in its window.
+    torch.testing.assert_close(buf.carry.windows[:, -1], last_obs)
+    # Row 1 never truncates: its full window matches the observed frames.
+    torch.testing.assert_close(
+        buf.carry.windows[1],
+        torch.from_numpy(np.stack(env.obs_seen[-N_OBS:], axis=1)[1]),
+    )
+    # No row ever parked at zero actions, even the exhausted row 0.
+    for call in env.actions_seen:
+        assert not bool((call == 0).all(axis=-1).any()), "a row was parked with zero actions"
 
 
 def test_actions_sent_to_the_env_match_the_stored_chunks():
@@ -222,18 +234,18 @@ def test_a_buffer_is_required_and_returns_itself():
     }
     with pytest.raises(TypeError):
         collect_chunks_vec(
-            env, policy, 32,
+            env, policy, 2,
             -torch.ones(ACT_DIM), torch.ones(ACT_DIM), **kwargs
         )
     buf = RolloutBuffer(
-        max_chunks=32, max_steps=32, obs_steps=N_OBS, obs_dim=OBS_DIM,
+        max_chunks=32, max_steps=N_ENVS * 2 * HORIZON, obs_steps=N_OBS, obs_dim=OBS_DIM,
         action_horizon=HORIZON, action_dim=ACT_DIM,
     )
     got = collect_chunks_vec(
-        env, policy, 32,
+        env, policy, 2,
         -torch.ones(ACT_DIM), torch.ones(ACT_DIM), buffer=buf, **kwargs
     )
-    assert got is buf and buf.n_steps == 32
+    assert got is buf and buf.n_steps == N_ENVS * 2 * HORIZON
 
 
 def test_a_chunk_as_deep_as_the_window_still_lands_chronologically():

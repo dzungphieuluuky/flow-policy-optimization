@@ -1,5 +1,8 @@
 """The CFM target: velocity is the only surviving regression mode."""
 
+import math
+
+import pytest
 import torch
 
 from myfpo.myfpo import MyfpoConfig, compute_cfm_loss
@@ -57,3 +60,29 @@ def test_the_target_shape_is_broadcastable():
     a = torch.randn(n, k, d)
     eps = torch.randn(n, m, k, d)
     assert cfm_target(a, eps).shape == (n, m, k, d)
+
+
+def test_a_masked_mean_divides_by_the_valid_element_count():
+    """The default reduction divides by valid elements, not by token count or sqrt."""
+    v_hat = torch.full((1, 1, 4, 1), 2.0)
+    v_star = torch.zeros(1, 1, 4, 1)
+    pad = torch.tensor([[False, False, True, True]])  # 2 of 4 token positions valid
+
+    cfg = _cfg()  # default cfm_loss_reduction is "mean"
+    loss, token = compute_cfm_loss(v_hat, v_star, cfg, "sample_and_token", pad)
+
+    # sq = 4 on the two valid positions, 0 elsewhere: sum = 8,
+    # n_valid = 2 valid tokens * 1 action_dim = 2, so the loss is 4.0.
+    assert float(loss[0, 0]) == pytest.approx(8.0 / 2.0)
+    assert token.tolist() == [[[4.0, 4.0, 0.0, 0.0]]]
+
+
+def test_the_true_sqrt_reduction_divides_by_the_square_root_of_valid_elements():
+    v_hat = torch.full((1, 1, 4, 1), 2.0)
+    v_star = torch.zeros(1, 1, 4, 1)
+    pad = torch.tensor([[False, False, True, True]])
+
+    cfg = _cfg(cfm_loss_reduction="sqrt")
+    loss, _ = compute_cfm_loss(v_hat, v_star, cfg, "sample_and_token", pad)
+
+    assert float(loss[0, 0]) == pytest.approx(8.0 / math.sqrt(2.0))

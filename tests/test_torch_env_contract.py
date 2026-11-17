@@ -82,7 +82,7 @@ def test_collector_stores_the_true_terminal_frame():
     collect_chunks_vec(
         env,
         lambda states: torch.ones(states.shape[0], HORIZON, ACT_DIM),
-        total_steps=12,
+        chunks_per_env=6,
         num_action_steps=HORIZON,
         action_low=-1.0,
         action_high=1.0,
@@ -130,7 +130,7 @@ def test_a_numpy_env_still_takes_the_numpy_path():
     collect_chunks_vec(
         envs,
         lambda states: torch.zeros(states.shape[0], HORIZON, 1),
-        total_steps=8,
+        chunks_per_env=4,
         num_action_steps=HORIZON,
         action_low=-2.0,
         action_high=2.0,
@@ -157,7 +157,7 @@ def test_same_step_env_never_gets_a_forced_reset_step():
     collect_chunks_vec(
         env,
         lambda states: torch.ones(states.shape[0], HORIZON, ACT_DIM),
-        total_steps=12,
+        chunks_per_env=6,
         num_action_steps=HORIZON,
         action_low=-1.0,
         action_high=1.0,
@@ -165,7 +165,7 @@ def test_same_step_env_never_gets_a_forced_reset_step():
         buffer=buffer,
         seed=0,
     )
-    assert buffer.n_steps == 12
+    assert buffer.n_steps == 18
     # Both rows step together and hit their target on the same call, so no
     # row is ever parked while it still owes steps. Every executed action is
     # the policy's nonzero ones; an all-zero row means a forced reset step
@@ -197,7 +197,7 @@ def test_same_step_env_without_final_observation_raises():
         collect_chunks_vec(
             env,
             lambda states: torch.ones(states.shape[0], HORIZON, ACT_DIM),
-            total_steps=4,
+            chunks_per_env=2,
             num_action_steps=HORIZON,
             action_low=-1.0,
             action_high=1.0,

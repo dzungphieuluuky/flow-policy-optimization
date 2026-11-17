@@ -68,7 +68,7 @@ def test_the_baseline_condition_is_the_window_the_critic_reads():
     policy = _policy(cfg)
     policy.train()
     train_env = make_train_env(env, "Pendulum-v1", 1)
-    state = make_rollout_state(3, 1, cfg, total_steps_hint=8)
+    state = make_rollout_state(3, 1, cfg, chunks_hint=8)
     try:
         batch = run_rollout(
             policy,
