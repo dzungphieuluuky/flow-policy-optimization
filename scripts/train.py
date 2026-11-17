@@ -45,15 +45,17 @@ from myfpo.ppo import run_ppo_training
 
 
 def configure_torch_cuda() -> bool:
-    """Apply torch CUDA tuning when torch is importable and CUDA is present."""
+    """Apply torch CUDA tuning when torch is importable and CUDA is present. All math is strict fp32."""
     try:
         import torch
     except ImportError:
         return False
     if not torch.cuda.is_available():
         return False
-    torch.backends.cudnn.conv.fp32_precision = "tf32"
-    torch.backends.cudnn.rnn.fp32_precision = "tf32"
+    torch.backends.cuda.matmul.fp32_precision = "ieee"
+    torch.backends.cudnn.fp32_precision = "ieee"
+    torch.backends.cudnn.conv.fp32_precision = "ieee"
+    torch.backends.cudnn.rnn.fp32_precision = "ieee"
     torch.backends.cudnn.benchmark = True
     os.environ.setdefault(
         "PYTORCH_CUDA_ALLOC_CONF",
@@ -69,9 +71,9 @@ def apply_runtime_settings() -> dict:
     except ImportError:
         return {"tf32_enabled": False}
 
-    torch.set_float32_matmul_precision("high" if torch.cuda.is_available() else "highest")
+    torch.set_float32_matmul_precision("highest")
     return {
-        "tf32_enabled": torch.cuda.is_available(),
+        "tf32_enabled": False,
         "tf32_matmul_precision": torch.get_float32_matmul_precision(),
     }
 

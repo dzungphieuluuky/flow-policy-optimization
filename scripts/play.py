@@ -19,8 +19,8 @@ import torch
 if torch.cuda.is_available():
     torch.backends.cuda.matmul.fp32_precision = "ieee"
     torch.backends.cudnn.fp32_precision = "ieee"
-    torch.backends.cudnn.conv.fp32_precision = "tf32"
-    torch.backends.cudnn.rnn.fp32_precision = "tf32"
+    torch.backends.cudnn.conv.fp32_precision = "ieee"
+    torch.backends.cudnn.rnn.fp32_precision = "ieee"
     torch.backends.cudnn.benchmark = True
     import os
 
