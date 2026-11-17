@@ -64,7 +64,7 @@ def collect(
     """Run the real collector on a deterministic env. Return the buffer + env."""
     env = FakeVecEnv(n=n_envs, episode=episode)
     # Fixed projection so the proposal depends on every frame of the window.
-    w = torch.randn(N_OBS * OBS_DIM, ACT_DIM, generator=torch.Generator().manual_seed(3))
+    w = torch.randn(num_obs_steps * OBS_DIM, ACT_DIM, generator=torch.Generator().manual_seed(3))
     ramp = torch.arange(1, HORIZON + 1, dtype=torch.float32).reshape(1, HORIZON, 1)
 
     def policy(states):
@@ -263,7 +263,20 @@ def test_a_chunk_as_deep_as_the_window_still_lands_chronologically():
         ), i
 
 
-def test_a_chunk_longer_than_the_obs_window_is_rejected():
-    """The ring buffer cannot hold a chunk deeper than itself."""
-    with pytest.raises(ValueError, match="exceeds num_obs_steps"):
-        collect(50, num_obs_steps=N_OBS // 4)
+def test_a_chunk_longer_than_the_obs_window_works():
+    """Chunks deeper than the window are fine: the window holds the last frames."""
+    n_obs_small = N_OBS // 4
+    assert n_obs_small >= 2
+    assert n_obs_small < HORIZON
+    buf, _ = collect(1000, num_obs_steps=n_obs_small)
+    a = buf.active_prefix()
+    full = [i for i in range(buf.n_chunks) if int(a["chunk_lengths"][i]) == HORIZON]
+    assert full, "no full-width chunks to check"
+    for i in full:
+        n = int(a["chunk_lengths"][i])
+        s = int(a["chunk_starts"][i])
+        assert torch.equal(
+            a["chunk_next_state"][i],
+            a["normalizer_observations"][s + n - n_obs_small : s + n],
+        ), i
+

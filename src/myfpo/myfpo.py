@@ -930,8 +930,6 @@ def collect_chunks_vec(
         mode_name = str(getattr(mode, "name", None) or mode or "").upper().replace("_", "")
         if mode_name != "SAMESTEP":
             raise ValueError(f"collector requires SameStep autoreset; got {mode!r}")
-    if num_action_steps > num_obs_steps:
-        raise ValueError(f"num_action_steps={num_action_steps} exceeds num_obs_steps={num_obs_steps}")
 
     n = int(envs.num_envs)
     act_dim = int(np.asarray(envs.single_action_space.shape).prod())
@@ -962,7 +960,6 @@ def collect_chunks_vec(
     reward_win = torch.zeros(n, horizon)
     obs_win = torch.zeros(n, horizon, obs_dim)
     next_actions = torch.zeros(n, act_dim)
-    roll_table = (torch.arange(num_obs_steps)[:, None] + torch.arange(num_obs_steps)[None, :]) % num_obs_steps
     torch_env = is_torch_env(envs)
 
     while remaining > 0:
@@ -1008,18 +1005,18 @@ def collect_chunks_vec(
         reset_frames = raw_obs if done_np.any() else None
         obs_t = take_final_observations(info, done_np, raw_obs, strict=True) if done_np.any() else raw_obs
 
+        # Every row slides by one frame, every step.
+        windows = torch.cat((windows[:, 1:], obs_t[:, None]), dim=1)
+
         if live.numel():
             p = chunk_pos[live]
             reward_win[live, p] = rew_t[live]
             obs_win[live, p] = obs_t[live]
-            windows[live, p] = obs_t[live]
             chunk_pos[live] = p + 1
 
         if idle.size:
+            # Done rows that are not mid-chunk get their window reset.
             d_idle = done_np[idle]
-            if (~d_idle).any():
-                m_rows = torch.as_tensor(idle[~d_idle])
-                windows[m_rows] = torch.cat([windows[m_rows][:, 1:], obs_t[m_rows, None]], dim=1)
             if d_idle.any():
                 d_rows = torch.as_tensor(idle[d_idle])
                 windows[d_rows] = reset_frames[d_rows].unsqueeze(1).expand(-1, num_obs_steps, -1)
@@ -1030,8 +1027,7 @@ def collect_chunks_vec(
             lens_np = chunk_pos.numpy()[closing]
             n_new = int(lens_np.sum())
             lengths = torch.as_tensor(lens_np, dtype=torch.long)
-            perm = roll_table[lengths % num_obs_steps]
-            next_win = torch.gather(windows[rows], 1, perm[:, :, None].expand(-1, -1, obs_dim))
+            next_win = windows[rows].clone()
             stored = raw_plan[rows]
             if action_noise_std > 0:
                 stored = bound_for_storage(stored + action_noise_std * torch.randn_like(stored))
@@ -1041,7 +1037,6 @@ def collect_chunks_vec(
                 terminated=torch.as_tensor(term_np)[rows], truncated=torch.as_tensor(trunc_np)[rows],
                 env_ids=closing, n_steps=n_new,
             )
-            windows[rows] = next_win
             executed_total[closing] += lens_np
             closed[closing] += 1
             remaining -= closing.size
