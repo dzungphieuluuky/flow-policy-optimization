@@ -17,7 +17,7 @@ from collections.abc import Callable
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 import torch
@@ -25,16 +25,8 @@ import torch.nn.functional as F
 import yaml
 from torch import nn
 
-__all__ = [
-    "ENV_REGISTRY_PATH",
-    "KNOWN_ENVS",
-    "MyfpoConfig",
-    "RunningMeanStd",
-    "get_observation_action_dim",
-    "resolve_action_bounds",
-]
-
 TIME_SCALE = 1000.0
+ROPE_BASE = 10000.0
 CSV_FIELDS = ["episode", "return", "length", "success", "jerk"]
 MANISKILL_TASKS = {"MS-PickCube-v1": "PickCube-v1"}
 MANISKILL_TASK_OPTIONS = {"MS-PickCube-v1": {"ignore_terminations": True}}
@@ -76,7 +68,7 @@ class RunningMeanStd(nn.Module):
         self.eps = eps
         self.clip = clip
 
-    @torch.inference_mode()
+    @torch.no_grad()
     def update(self, x: torch.Tensor) -> None:
         if x.shape[-1] != self.mean.numel():
             raise ValueError(f"update got last dim {x.shape[-1]}, expected {self.mean.numel()}")
@@ -154,12 +146,12 @@ class MyfpoConfig:
     clip_param: float = 0.2
     spo_clip_param: float = 0.2
     # ASPO bounds the negative-advantage branch. Sparse rewards may need "ppo".
-    trust_region_mode: str = "aspo"
+    trust_region_mode: Literal["ppo", "spo", "aspo"] = "aspo"
     cfm_clamp: float = 20.0
     # Symmetric cap: exp(2) = 7.4, not exp(10) = 22026.
     cfm_diff_clamp_min: float = -2.0
     cfm_diff_clamp_max: float = 2.0
-    cfm_loss_reduction: str = "mean"
+    cfm_loss_reduction: Literal["sum", "mean", "sqrt"] = "mean"
     cfm_loss_use_huber: bool = True
     cfm_loss_huber_delta: float = 0.5
     velocity_clip_value: float | None = None
@@ -205,12 +197,8 @@ class MyfpoConfig:
             if not 0.0 <= value <= 1.0:
                 raise ValueError(f"{name} must be in [0, 1], got {value}")
 
-    @property
-    def num_minibatches(self) -> int:
-        return max(1, self.chunks_per_update // self.chunks_per_minibatch)
-
     def asdict(self) -> dict:
-        return dict(self.__dict__)
+        return dataclasses.asdict(self)
 
 
 # ---------------------------------------------------------------------------
@@ -280,7 +268,7 @@ class SelfAttention(nn.Module):
         self.n_heads = n_heads
         self.head_dim = head_dim
         half = head_dim // 2
-        self.register_buffer("inv_freq", 1.0 / (10000.0 ** (torch.arange(half).float() / half)), persistent=False)
+        self.register_buffer("inv_freq", 1.0 / (ROPE_BASE ** (torch.arange(half).float() / half)), persistent=False)
         self.qkv = _ortho_linear(hidden_dim, 3 * hidden_dim)
         self.out = _ortho_linear(hidden_dim, hidden_dim)
 
@@ -586,6 +574,8 @@ def sample_action(predict_velocity, shape, condition, num_steps: int, eps: torch
         raise ValueError("invalid sample_action arguments")
     grid = torch.linspace(0.0, 1.0, num_steps + 1, device=device, dtype=torch.float32)
     x = eps.to(device)
+    # The step size comes from the unclamped grid; the velocity is evaluated
+    # at the clamped t. Off-grid sampling times still get consistent increments.
     with torch.inference_mode():
         for i in range(num_steps):
             t_cur = grid[i].clamp(t_min, t_max).reshape(1)
@@ -614,7 +604,7 @@ class MyfpoPolicy(nn.Module):
         self.action_dim = action_dim
         self.actor = FlowMLP(action_dim, config.action_horizon, config.hidden_dim, config.time_embed_dim)
         self.encoder = StateEncoder(obs_dim, config.hidden_dim, config.num_obs_steps)
-        critic_width = config.critic_hidden_dim if config.critic_hidden_dim is not None else config.hidden_dim
+        critic_width = config.critic_hidden_dim
         self.critic = Critic(
             obs_dim, critic_width, action_dim, config.num_obs_steps, config.action_horizon,
             condition_on_exec_length=config.critic_condition_on_exec_length,
@@ -719,11 +709,6 @@ def to_env_action(x: torch.Tensor, low: torch.Tensor, high: torch.Tensor) -> tor
 
 def bound_for_storage(x: torch.Tensor) -> torch.Tensor:
     return x.clamp(-1.0, 1.0)
-
-
-def env_squash_terms(low: torch.Tensor, high: torch.Tensor):
-    scale = 0.5 * (high - low)
-    return scale, low + scale
 
 
 def to_critic_action(x: torch.Tensor, mask: torch.Tensor | None = None) -> torch.Tensor:
@@ -1165,14 +1150,24 @@ def run_rollout(policy: MyfpoPolicy, env, chunks_per_env: int, *, action_low, ac
 # ---------------------------------------------------------------------------
 
 
+_OPTIMIZER_GROUP_ROLES = ("actor", "actor", "critic")
+
+
+def _tag_optimizer_roles(optimizer) -> None:
+    for role, group in zip(_OPTIMIZER_GROUP_ROLES, optimizer.param_groups, strict=True):
+        group["role"] = role
+
+
 def make_optimizer(policy: MyfpoPolicy) -> torch.optim.Optimizer:
     cfg = policy.config
     decay, no_decay = [], []
-    for name, p in policy.actor.named_parameters():
-        (no_decay if ("out." in name or (name.endswith(".weight") and "norm" in name.lower())) else decay).append(p)
-    for name, p in policy.encoder.named_parameters():
-        (no_decay if (name.endswith(".weight") and "norm" in name.lower()) else decay).append(p)
-    return torch.optim.Adam(
+    for module in (policy.actor, policy.encoder):
+        for name, p in module.named_parameters():
+            if p.ndim >= 2 and not (module is policy.actor and name == "out.weight"):
+                decay.append(p)
+            else:
+                no_decay.append(p)
+    optimizer = torch.optim.Adam(
         [
             {"params": decay, "lr": cfg.policy_lr, "weight_decay": cfg.optimizer_weight_decay},
             {"params": no_decay, "lr": cfg.policy_lr, "weight_decay": 0.0},
@@ -1181,6 +1176,8 @@ def make_optimizer(policy: MyfpoPolicy) -> torch.optim.Optimizer:
         betas=tuple(cfg.adam_betas),
         eps=1e-8,
     )
+    _tag_optimizer_roles(optimizer)
+    return optimizer
 
 
 @dataclasses.dataclass
@@ -1258,8 +1255,11 @@ def update(policy: MyfpoPolicy, optimizer, batch: dict[str, Any], cfg: MyfpoConf
     if n == 0:
         return UpdateResult(metrics={}, grad_norm_actor=0.0, grad_norm_critic=0.0)
 
-    groups = _param_groups_for_clip(policy)
-    actor_params, critic_params = groups["actor"], groups["critic"]
+    groups = optimizer.param_groups
+    if any("role" not in g for g in groups):
+        raise ValueError("optimizer param groups are missing roles; build the optimizer with make_optimizer")
+    actor_params = [p for g in groups if g["role"] == "actor" for p in g["params"]]
+    critic_params = [p for g in groups if g["role"] == "critic" for p in g["params"]]
 
     # Stage training tensors on device once per rollout instead of once per minibatch.
     dev_batch = {
@@ -1692,6 +1692,7 @@ def load_checkpoint(checkpoint_dir: str, policy: MyfpoPolicy, optimizer=None) ->
     policy.load_state_dict(payload["model"])
     if optimizer is not None and payload.get("optimizer") is not None:
         optimizer.load_state_dict(payload["optimizer"])
+        _tag_optimizer_roles(optimizer)  # load_state_dict drops unknown group keys
     return int(payload.get("global_step", 0))
 
 
