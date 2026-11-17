@@ -1,9 +1,10 @@
 """Checkpoint payload and evaluator random-baseline plumbing."""
 
+import numpy as np
 import pytest
 import torch
 
-from myfpo.myfpo import load_checkpoint, make_optimizer, sample_random_baseline, save_checkpoint
+from myfpo.myfpo import load_checkpoint, make_optimizer, save_checkpoint
 from fixtures import make_test_policy
 
 
@@ -65,7 +66,7 @@ def test_a_policy_only_checkpoint_loads_without_an_optimizer(tmp_path):
 # ---- Random baseline ----
 
 class StubEvaluator:
-    """Records what ``sample_random_baseline`` asks it to do."""
+    """Records what the random-baseline call in the training loop asks for."""
 
     def __init__(self, env, returns, random):
         self.env = env
@@ -87,12 +88,20 @@ class StubEvaluator:
         return [{"return": value} for value in self.returns]
 
 
+def _random_baseline(evaluator, max_episodes=30) -> float:
+    """The current call site: the evaluator builds and scores its own random policy."""
+    rand_results = evaluator.clone(max_episodes=max_episodes).evaluate(
+        evaluator.random_policy(evaluator.env), out_dir=None
+    )
+    return float(np.mean([r["return"] for r in rand_results])) if rand_results else 0.0
+
+
 def test_the_baseline_uses_the_evaluator_random_policy():
     env = object()
     random = object()
     evaluator = StubEvaluator(env, [1.0, 3.0], random)
 
-    assert sample_random_baseline(evaluator, max_episodes=5) == 2.0
+    assert _random_baseline(evaluator, max_episodes=5) == 2.0
     assert evaluator.log["policy"] is random
     assert evaluator.log["random_env"] is env
     assert evaluator.log["max_episodes"] == 5
@@ -101,4 +110,4 @@ def test_the_baseline_uses_the_evaluator_random_policy():
 
 def test_an_empty_baseline_scores_zero():
     evaluator = StubEvaluator(object(), [], object())
-    assert sample_random_baseline(evaluator) == 0.0
+    assert _random_baseline(evaluator) == 0.0

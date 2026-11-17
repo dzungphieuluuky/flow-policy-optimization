@@ -509,10 +509,9 @@ def run_ppo_training(
                 best_artifact = _save_checkpoint(out_dir, global_step, policy, optimizer, name="checkpoint_best")
                 if best_artifact not in artifacts:
                     artifacts.append(best_artifact)
-            if backends:
+            if wandb_run is not None:
                 summary = summarize_results(results, seed=eval_seed)
-                log_metrics(
-                    backends,
+                wandb_run.log(
                     {
                         "eval/ema_active": 0.0,
                         "eval/return_ci_low": summary["return_ci_low"],
@@ -527,8 +526,7 @@ def run_ppo_training(
                     },
                     step=global_step,
                 )
-                log_metrics(
-                    backends,
+                wandb_run.log(
                     compute_eval_summary_metrics(
                         mean_return,
                         results,
@@ -554,9 +552,9 @@ def run_ppo_training(
     if csv_path.exists():
         artifacts.append(str(csv_path))
 
-    if backends:
-        log_metrics(backends, {"timing/fps": fps, "timing/elapsed_s": elapsed}, step=global_step)
-        finish_backends(backends)
+    if wandb_run is not None:
+        wandb_run.log({"timing/fps": fps, "timing/elapsed_s": elapsed}, step=global_step)
+        wandb_run.finish(exit_code=0)
 
     if train_env is not None:
         train_env.close()

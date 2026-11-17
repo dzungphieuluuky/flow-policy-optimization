@@ -232,8 +232,10 @@ class CondMLP(nn.Module):
 class SinusoidalEncoding(nn.Module):
     def __init__(self, dim: int, max_period: float = 10000.0):
         super().__init__()
-        if dim < 2 or max_period <= 0:
-            raise ValueError(f"invalid SinusoidalEncoding(dim={dim}, max_period={max_period})")
+        if dim < 2:
+            raise ValueError(f"dim must be >= 2, got {dim}")
+        if max_period <= 0:
+            raise ValueError(f"max_period must be > 0, got {max_period}")
         self.dim = dim
         self.half = dim // 2
         self.register_buffer(
@@ -306,8 +308,10 @@ class CrossAttention(nn.Module):
 class StateEncoder(nn.Module):
     def __init__(self, obs_dim: int, hidden_dim: int, max_obs_steps: int, n_heads: int = 2):
         super().__init__()
-        if hidden_dim < 2 or max_obs_steps < 1:
-            raise ValueError(f"invalid StateEncoder(hidden_dim={hidden_dim}, max_obs_steps={max_obs_steps})")
+        if hidden_dim < 2:
+            raise ValueError("hidden_dim must be at least 2")
+        if max_obs_steps < 1:
+            raise ValueError(f"max_obs_steps must be >= 1, got {max_obs_steps}")
         self.obs_dim = obs_dim
         self.max_obs_steps = max_obs_steps
         self.n_heads = n_heads
@@ -317,8 +321,10 @@ class StateEncoder(nn.Module):
         self.out_norm = RMSNorm(hidden_dim, eps=1e-6)
 
     def encode_tokens(self, states: torch.Tensor) -> torch.Tensor:
-        if states.shape != (states.shape[0], self.max_obs_steps, self.obs_dim):
-            raise ValueError(f"expected [B, {self.max_obs_steps}, {self.obs_dim}], got {tuple(states.shape)}")
+        if states.dim() != 3 or states.shape[2] != self.obs_dim:
+            raise ValueError(f"states must have shape [B, {self.max_obs_steps}, {self.obs_dim}], got {tuple(states.shape)}")
+        if states.shape[1] != self.max_obs_steps:
+            raise ValueError(f"states has {states.shape[1]} frames, built for max_obs_steps={self.max_obs_steps}")
         h = self.frame(states)
         return h + self.attn(self.attn_norm(h))
 
@@ -721,6 +727,8 @@ def compute_chunk_advantages(
     lengths = chunk_lengths.to(device=device, dtype=torch.long).reshape(-1)
     terminated = chunk_terminated.to(device=device, dtype=torch.bool).reshape(-1)
     n = starts.numel()
+    if any(t.numel() != n for t in (lengths, terminated, v_cur, v_nxt)):
+        raise ValueError(f"chunk tensors must have {n} entries")
     if n == 0:
         empty = torch.empty(0, device=device, dtype=torch.float32)
         return empty, empty
@@ -745,15 +753,20 @@ def compute_chunk_advantages(
     linked = prev >= 0
     successor = torch.full((n,), -1, dtype=torch.long, device=prev.device)
     successor[prev[linked]] = torch.arange(n, device=prev.device)[linked]
-    succ_cpu = successor.cpu().tolist()
-    trace_cpu = (gamma_h * (~done) * gae_lambda).detach().cpu()
-    adv_cpu = delta.detach().cpu().clone()
-    for i in range(n - 1, -1, -1):
-        j = succ_cpu[i]
-        if j >= 0:
-            adv_cpu[i] = adv_cpu[i] + trace_cpu[i] * adv_cpu[j]
-    adv = adv_cpu.to(device=device, dtype=delta.dtype)
+    adv = gae_trace(delta, gamma_h * (~done) * gae_lambda, successor.cpu())
     return adv, adv + v_cur
+
+
+def gae_trace(delta: torch.Tensor, trace: torch.Tensor, successor: torch.Tensor) -> torch.Tensor:
+    """Traced chunk advantages; the sequential recursion runs on the host."""
+    d = delta.detach().cpu()
+    t = trace.detach().cpu()
+    adv = d.clone()
+    for i in range(d.numel() - 1, -1, -1):
+        j = int(successor[i])
+        if j >= 0:
+            adv[i] = d[i] + t[i] * adv[j]
+    return adv.to(device=delta.device, dtype=delta.dtype)
 
 
 @dataclasses.dataclass
@@ -816,7 +829,7 @@ class RolloutBuffer:
         if k == 0:
             return
         if self.n_chunks + k > self.max_chunks or n_steps < 1 or self.n_steps + n_steps > self.max_steps:
-            raise RuntimeError("RolloutBuffer capacity exceeded")
+            raise RuntimeError(f"chunk capacity exceeded: {k} chunks and {n_steps} steps do not fit")
         lo, hi = self.n_chunks, self.n_chunks + k
         slo, shi = self.n_steps, self.n_steps + n_steps
         mask = (torch.arange(self.action_horizon)[None, :] < lengths[:, None]).reshape(-1)
@@ -855,7 +868,7 @@ def take_final_observations(info, done_np, reference: torch.Tensor, strict: bool
         final = info.get("final_observation")
     if final is None:
         if strict:
-            raise ValueError(f"SAME_STEP env reset but supplied no final observation for rows {rows.tolist()}")
+            raise ValueError(f"SAME_STEP env reset but supplied no final observation for done rows {rows.tolist()}")
         return reference
 
     out = reference.clone()
@@ -1194,6 +1207,14 @@ def compute_loss(policy: MyfpoPolicy, batch: dict[str, torch.Tensor], device) ->
     return loss, metrics
 
 
+def _param_groups_for_clip(policy: MyfpoPolicy) -> dict[str, list[nn.Parameter]]:
+    """Split trainable params into actor (actor + encoder) and critic."""
+    actor_ids = {id(p) for p in (*policy.actor.parameters(), *policy.encoder.parameters())}
+    actor_params = [p for p in policy.parameters() if p.requires_grad and id(p) in actor_ids]
+    critic_params = [p for p in policy.parameters() if p.requires_grad and id(p) not in actor_ids]
+    return {"actor": actor_params, "critic": critic_params}
+
+
 def update(policy: MyfpoPolicy, optimizer, batch: dict[str, Any], cfg: MyfpoConfig) -> UpdateResult:
     policy.train()
     device = next(policy.actor.parameters()).device
@@ -1201,9 +1222,8 @@ def update(policy: MyfpoPolicy, optimizer, batch: dict[str, Any], cfg: MyfpoConf
     if n == 0:
         return UpdateResult(metrics={}, grad_norm_actor=0.0, grad_norm_critic=0.0)
 
-    actor_ids = {id(p) for p in (*policy.actor.parameters(), *policy.encoder.parameters())}
-    actor_params = [p for p in policy.parameters() if p.requires_grad and id(p) in actor_ids]
-    critic_params = [p for p in policy.parameters() if p.requires_grad and id(p) not in actor_ids]
+    groups = _param_groups_for_clip(policy)
+    actor_params, critic_params = groups["actor"], groups["critic"]
 
     # Stage training tensors on device once per rollout instead of once per minibatch.
     dev_batch = {
@@ -1302,7 +1322,9 @@ def compute_eval_summary_metrics(
     lengths = [r["length"] for r in eval_results]
     successes = [r["success"] for r in eval_results if r.get("success") is not None]
     jerks = [r["jerk"] for r in eval_results if r.get("jerk") is not None]
-    stat = lambda v, fn: float(fn(v)) if v else float("nan")
+
+    def stat(v, fn):
+        return float(fn(v)) if v else float("nan")
 
     data: dict[str, Any] = {
         "eval/return_mean": float(mean_return),
@@ -1500,6 +1522,7 @@ class VectorEvaluator(_BaseEvaluator):
         )
 
     def random_policy(self, env: Any, seed: int | None = None) -> Callable:
+        del seed  # shared signature with Evaluator.random_policy, which seeds the action space
         return lambda _w: env.random_chunk(int(self.action_horizon))
 
 
@@ -1622,6 +1645,12 @@ def load_checkpoint(checkpoint_dir: str, policy: MyfpoPolicy, optimizer=None) ->
     if optimizer is not None and payload.get("optimizer") is not None:
         optimizer.load_state_dict(payload["optimizer"])
     return int(payload.get("global_step", 0))
+
+
+def _shared_env(train_env, env) -> bool:
+    """True when the collector env shares a sub-env with the evaluator env."""
+    sub_envs = getattr(train_env, "envs", None)
+    return any(e is env for e in sub_envs) if sub_envs is not None else train_env is env
 
 
 def make_train_env(env, env_name: str, num_envs: int, record: dict | None = None):
@@ -1785,8 +1814,7 @@ def run_myfpo_training(
                     "eval/return_n": summary["return_n"],
                 }, step=global_step)
             next_eval = max(global_step + eval_steps, next_eval + eval_steps)
-            sub_envs = getattr(train_env, "envs", None)
-            if (any(e is env for e in sub_envs) if sub_envs is not None else train_env is env):
+            if _shared_env(train_env, env):
                 rollout_state.carry = None
 
         if global_step >= next_save:

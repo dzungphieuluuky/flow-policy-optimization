@@ -10,7 +10,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from myfpo.myfpo import MyfpoConfig, MyfpoPolicy, make_rollout_state, make_train_env, run_rollout, estimate_state_values
+from myfpo.myfpo import MyfpoConfig, MyfpoPolicy, _estimate_state_values, make_rollout_state, make_train_env, run_rollout
 
 import gymnasium as gym
 import torch
@@ -110,9 +110,9 @@ def test_estimate_state_values_averages_fresh_policy_samples(config):
             return actions.mean(dim=(1, 2))
 
     states = torch.zeros(n, cfg.num_obs_steps, 3)
-    v = estimate_state_values(
+    v = _estimate_state_values(
         policy, states, states,
-        exec_length_frac=torch.ones(n), mask=torch.ones(n, horizon, 1),
+        exec_frac=torch.ones(n), mask=torch.ones(n, horizon, 1),
         critic=StateIndependentCritic(),
     )
     expected = torch.stack([p.mean(dim=(1, 2)) for p in proposals]).mean(dim=0)
@@ -140,11 +140,11 @@ def test_the_baseline_encodes_the_window_once(config):
         return original(states)
 
     policy.encode_states = counting
-    estimate_state_values(
+    _estimate_state_values(
         policy,
         torch.zeros(2, cfg.num_obs_steps, 3),
         torch.zeros(2, cfg.num_obs_steps, 3),
-        exec_length_frac=torch.ones(2),
+        exec_frac=torch.ones(2),
         mask=torch.ones(2, cfg.action_horizon, 1),
         critic=policy.critic,
     )

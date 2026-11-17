@@ -2,10 +2,14 @@
 
 import torch
 
-from myfpo.myfpo import MyfpoConfig
-from myfpo.myfpo import cfm_target, compute_cfm_loss
+from myfpo.myfpo import MyfpoConfig, compute_cfm_loss
 
 MODES = ("velocity",)
+
+
+def cfm_target(a: torch.Tensor, eps: torch.Tensor) -> torch.Tensor:
+    """Velocity is the only regression mode; the policy inlines this expression."""
+    return a.unsqueeze(1) - eps
 
 
 def _cfg(**kw):
