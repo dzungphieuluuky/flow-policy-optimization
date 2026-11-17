@@ -14,6 +14,24 @@ Trains expressive, multimodal flow-based robot policies using online reinforceme
 - Independent actor and critic gradient clipping
 - `myfpo.py` is the single-file implementation; `ppo.py` is a plain PPO baseline (`--method ppo`) for comparisons
 
+## Results (Hopper-v5, seed 0, strict fp32, CPU)
+
+| method | steps | last-10 eval mean | best eval | fps |
+|---|---|---|---|---|
+| myfpo | 100k | 160.8 | 200.6 | 439 |
+| myfpo | 500k | 156.9 | 208.9 | 387 |
+| PPO (`--method ppo`) | 100k | 327.0 | 353.4 | 1688 |
+| PPO (`--method ppo`) | 500k | 597.8 | 799.9 | 985 |
+
+Honest status: this reimplementation trains end-to-end, but from scratch on
+Hopper-v5 the FPO-family flow-PG trails Gaussian PPO. Our curve plateaus at
+~150–210 (two partial collapses), matching the post-release literature's
+diagnosis ("double drift", DiPOD, [arXiv 2606.13795](https://arxiv.org/abs/2606.13795);
+FPO++ collapse on IsaacLab, FlowRL, [arXiv 2603.27450](https://arxiv.org/abs/2603.27450)).
+The repo's value is the implementation and the honest benchmark, not a
+state-of-the-art policy. See `FINDINGS.md` for the analysis and
+`docs/benchmark-2026-11-17/` for the raw eval CSVs and run metadata.
+
 ## Quick start
 ```bash
 uv sync                                              # installs myfpo editable + deps

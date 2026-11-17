@@ -1,0 +1,5 @@
+{
+  "tf32_enabled": false,
+  "tf32_matmul_precision": "highest",
+  "vector_env": "forkserver"
+}

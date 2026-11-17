@@ -1,5 +1,11 @@
 # REVIEW FIX PLAN — `src/myfpo/myfpo.py`
 
+> **Status 2026-11-18 (archival): phases 0–4 are complete and committed.**
+> This file is the historical record of the fix plan written against HEAD
+> `12a38cb` (red test suite). See `FINDINGS.md` for what landed and how the
+> benchmark turned out. Phase 5 (affine ablations, target-critic option B)
+> was not run.
+
 Scope: the code-review feedback on `src/myfpo/myfpo.py` (single file, 1823 lines,
 HEAD `12a38cb`). This file checks every claim against the code, then gives the fix
 plan. Claims that do not hold, and items this plan drops, are in section 8 with the

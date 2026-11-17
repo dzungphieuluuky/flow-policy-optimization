@@ -1,0 +1,4 @@
+{
+  "tf32_enabled": false,
+  "tf32_matmul_precision": "highest"
+}

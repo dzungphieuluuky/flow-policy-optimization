@@ -1,5 +1,9 @@
 # SIMPLIFICATION PLAN — myfpo → rsl‑rl scale
 
+> **Status 2026-11-18 (archival):** superseded by the work recorded in
+> `FINDINGS.md`. Kept as the historical simplification record; amendments
+> are frozen as of 2026‑11‑15.
+
 Goal: make the repo as simple and fast as `rsl_rl` while changing **zero algorithmic
 semantics**. rsl‑rl ships PPO + SAC + distillation in ~6.4k lines; skrl's torch‑only
 slice is ~900 lines for PPO+trainer+models; Isaac Lab implements no RL math at all.
