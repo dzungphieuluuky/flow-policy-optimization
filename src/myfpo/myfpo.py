@@ -1167,6 +1167,7 @@ def make_optimizer(policy: MyfpoPolicy) -> torch.optim.Optimizer:
                 decay.append(p)
             else:
                 no_decay.append(p)
+    fused = next(policy.parameters()).device.type == "cuda"
     optimizer = torch.optim.Adam(
         [
             {"params": decay, "lr": cfg.policy_lr, "weight_decay": cfg.optimizer_weight_decay},
@@ -1175,6 +1176,7 @@ def make_optimizer(policy: MyfpoPolicy) -> torch.optim.Optimizer:
         ],
         betas=tuple(cfg.adam_betas),
         eps=1e-8,
+        fused=fused,
     )
     _tag_optimizer_roles(optimizer)
     return optimizer
