@@ -13,7 +13,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from myfpo.myfpo import TIME_SCALE, SinusoidalEncoding
+from flow_policy_optimization.flow_policy_optimization import TIME_SCALE, SinusoidalEncoding
 
 
 def test_the_frequencies_are_log_spaced_and_decaying():
@@ -47,7 +47,7 @@ def test_max_period_must_be_positive():
 def test_the_scale_covers_the_trained_band():
     """The code must resolve times inside [0.1, 0.9], not just separate 0 from 1.
 
-    The draw bounds of ``MyfpoConfig`` are 0.1 and 0.9. A span under one cycle
+    The draw bounds of ``FlowPolicyOptimizationConfig`` are 0.1 and 0.9. A span under one cycle
     at the top channel leaves the whole band on one arc.
     """
     enc = SinusoidalEncoding(32)

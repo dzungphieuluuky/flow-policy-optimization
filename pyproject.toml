@@ -1,5 +1,5 @@
 [project]
-name = "myfpo"
+name = "flow-policy-optimization"
 version = "0.1.0"
 description = "Flow-matching policy optimization (FPO++) with open-loop action chunking, on PyTorch"
 requires-python = ">=3.12"

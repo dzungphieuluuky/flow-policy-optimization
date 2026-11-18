@@ -1,4 +1,4 @@
-# REVIEW FIX PLAN — `src/myfpo/myfpo.py`
+# REVIEW FIX PLAN — `src/flow_policy_optimization/flow_policy_optimization.py`
 
 > **Status 2026-11-18 (archival): phases 0–4 are complete and committed.**
 > This file is the historical record of the fix plan written against HEAD
@@ -6,7 +6,7 @@
 > benchmark turned out. Phase 5 (affine ablations, target-critic option B)
 > was not run.
 
-Scope: the code-review feedback on `src/myfpo/myfpo.py` (single file, 1823 lines,
+Scope: the code-review feedback on `src/flow_policy_optimization/flow_policy_optimization.py` (single file, 1823 lines,
 HEAD `12a38cb`). This file checks every claim against the code, then gives the fix
 plan. Claims that do not hold, and items this plan drops, are in section 8 with the
 reason.
@@ -31,9 +31,9 @@ pytest -q
 `ruff check src scripts tests` is also red: 12 errors at HEAD.
 
 ```
-src/myfpo/myfpo.py:1305:5  E731  Do not assign a `lambda` expression, use a `def`
-src/myfpo/myfpo.py:1502:39 ARG002 Unused method argument: `seed`
-src/myfpo/ppo.py:512,514,515,530,531,557,558,559  F821 Undefined name
+src/flow_policy_optimization/flow_policy_optimization.py:1305:5  E731  Do not assign a `lambda` expression, use a `def`
+src/flow_policy_optimization/flow_policy_optimization.py:1502:39 ARG002 Unused method argument: `seed`
+src/flow_policy_optimization/ppo.py:512,514,515,530,531,557,558,559  F821 Undefined name
 ```
 
 ### The PPO baseline crashes at the first eval
@@ -41,12 +41,12 @@ src/myfpo/ppo.py:512,514,515,530,531,557,558,559  F821 Undefined name
 This is outside the review's scope, but it blocks the comparison method, so it
 is a Phase 0 item.
 
-`src/myfpo/ppo.py` still calls the backend abstraction that the single-file
+`src/flow_policy_optimization/ppo.py` still calls the backend abstraction that the single-file
 rewrite deleted everywhere else:
 
 ```
 NameError: name 'backends' is not defined
-  File "src/myfpo/ppo.py", line 512, in run_ppo_training
+  File "src/flow_policy_optimization/ppo.py", line 512, in run_ppo_training
     if backends:
 ```
 
@@ -57,7 +57,7 @@ and `wandb_run.log(...)` at line 477. The `if backends:` blocks at lines 512 and
 
 Every `--method ppo` run dies at the first eval with exit code 2. The PPO
 baseline has produced no numbers since the single-file rewrite. Any comparison
-between myfpo and PPO made since then is missing its baseline.
+between flow_policy_optimization and PPO made since then is missing its baseline.
 
 Collection errors (the names no longer exist):
 
@@ -121,7 +121,7 @@ Severity: **S1** changes the learning result. **S2** changes cost or reproducibi
 | 4 | magic constants | **confirmed (S3)** | `TIME_SCALE`, RoPE base | P4 |
 | 5 | split the file into 7 modules | **not recommended** | commit `03b68f6` collapsed the repo to one file on purpose | section 8 |
 | new | the PPO baseline crashes at the first eval | **confirmed (S1, outside the review)** | `NameError: name 'backends' is not defined`, `ppo.py:512` | P0 |
-| new | ruff is red at HEAD | **confirmed (S2)** | 12 errors: 2 in `myfpo.py`, 10 in `ppo.py` | P0 |
+| new | ruff is red at HEAD | **confirmed (S2)** | 12 errors: 2 in `flow_policy_optimization.py`, 10 in `ppo.py` | P0 |
 
 ---
 
@@ -147,11 +147,11 @@ No behaviour change. The suite goes from red to green.
 - The other four modules need import and call updates only.
 - Restore the 7 specific error messages in the source. The old wording names the
   field and the limit, so the guard says what to fix. Do not weaken the tests.
-- Fix `src/myfpo/ppo.py`: replace the two `if backends:` blocks with
+- Fix `src/flow_policy_optimization/ppo.py`: replace the two `if backends:` blocks with
   `if wandb_run is not None:` and `wandb_run.log(...)`, and finish the run with
   `wandb_run.finish(exit_code=0)`. The pattern is already in the file at line
   477.
-- Fix the 2 ruff errors in `myfpo.py`: replace the `stat = lambda` at line 1305
+- Fix the 2 ruff errors in `flow_policy_optimization.py`: replace the `stat = lambda` at line 1305
   with a `def`, and mark the unused `seed` argument of
   `VectorEvaluator.random_policy` with a reason. The signature must stay,
   because the training loop calls it the same way for both evaluators.
@@ -169,7 +169,7 @@ written reason, per rule 1 and rule 4 of `SIMPLIFICATION_PLAN.md`.
 ### 1a. The target critic
 
 The Polyak update runs once per rollout, with `tau=0.005` hard-coded at
-`myfpo.py:1752`. A rollout is `chunks_per_update * action_horizon = 8192` env
+`flow_policy_optimization.py:1752`. A rollout is `chunks_per_update * action_horizon = 8192` env
 steps, so a 200k-step run gets 24 target updates. The target holds
 `1 - 0.995^24 = 11%` of the online critic.
 
@@ -179,7 +179,7 @@ bootstrap term is nearly gone.
 
 Fix:
 
-- Add `target_tau: float = 0.005` to `MyfpoConfig`.
+- Add `target_tau: float = 0.005` to `FlowPolicyOptimizationConfig`.
 - Move the Polyak step from the training loop into `update()`, right after each
   `optimizer.step()`. One rollout is 64 gradient steps, so the target moves
   `1 - 0.995^64 = 27%` per update. The lag then closes over a few rollouts.
@@ -284,7 +284,7 @@ Use `all_eval_returns[-10:]` for the mean and the median.
 - `Evaluator.random_policy`: seed `env.action_space` when no seed is given. The
   random baseline is currently not reproducible, because `gym.make` seeds the
   action space from the OS entropy.
-- `MyfpoConfig.__post_init__`: validate `trust_region_mode` in
+- `FlowPolicyOptimizationConfig.__post_init__`: validate `trust_region_mode` in
   `{"ppo", "spo", "aspo"}` and `cfm_loss_reduction` in `{"sum", "mean"}`.
   Validate `1 <= num_action_steps <= action_horizon`,
   `num_obs_steps >= 1`, `chunks_per_minibatch <= chunks_per_update`,
@@ -444,7 +444,7 @@ Fix, without a math change:
 - Use `Literal` for `trust_region_mode` and `cfm_loss_reduction`.
 - Validate in `__post_init__` (see 1g).
 - `asdict` becomes `dataclasses.asdict(self)`.
-- Delete the dead `critic_hidden_dim is not None` branch in `MyfpoPolicy`. The
+- Delete the dead `critic_hidden_dim is not None` branch in `FlowPolicyOptimizationPolicy`. The
   field is an `int`, so it is never `None`.
 - Delete `env_squash_terms` and the `num_minibatches` property. Both are dead.
 
@@ -473,7 +473,7 @@ Checked each name against `src/`, `scripts/` and `tests/`:
 - Name the magic numbers: `TIME_SCALE = 1000.0` for the CFM time embedding, and
   the RoPE base `10000.0`.
 - `__all__` lists 6 names out of about 60. Either widen it to the real public
-  surface, or drop it and let `myfpo/__init__.py` be the surface. Low priority.
+  surface, or drop it and let `flow_policy_optimization/__init__.py` be the surface. Low priority.
 
 ---
 
@@ -490,7 +490,7 @@ Checked each name against `src/`, `scripts/` and `tests/`:
 ## 8. Items this plan does not do
 
 - **Split the file into 7 modules.** Commit `03b68f6` ("refactor: single-file
-  myfpo, add ppo baseline") collapsed the repo to one file on 2026-11-15, on
+  flow_policy_optimization, add ppo baseline") collapsed the repo to one file on 2026-11-15, on
   purpose. The review's module map reverses that decision. If the file grows
   past about 2000 lines after Phase 4, revisit it.
 - **Vectorise the chunk GAE.** About 1 ms per rollout (see 3c).
@@ -509,7 +509,7 @@ pytest -q
   7 collection errors, 11 failed, 104 passed
 
 ruff check src scripts tests
-  12 errors (2 in myfpo.py, 10 in ppo.py)
+  12 errors (2 in flow_policy_optimization.py, 10 in ppo.py)
 ```
 
 Smoke baseline (Hopper-v5, seed 0, 2000 steps), recorded at HEAD `12a38cb`:
@@ -546,7 +546,7 @@ Gate commands:
 .venv/bin/python -m pytest -q
 .venv/bin/python -m ruff check src scripts tests
 .venv/bin/python scripts/train.py --env Hopper-v5 --seed 0 --total_steps 2000 \
-    --out_dir /tmp/opencode/smoke_after --myfpo.report_to none
+    --out_dir /tmp/opencode/smoke_after --flow_policy_optimization.report_to none
 ```
 
 Phase order: P0 gates, P1 correctness, P2 collector, P3 performance, P4
@@ -561,7 +561,7 @@ Command:
 
 ```
 .venv/bin/python scripts/train.py --env Hopper-v5 --seed 0 --total_steps 2000 \
-    --out_dir /tmp/opencode/smoke_before --myfpo.report_to none
+    --out_dir /tmp/opencode/smoke_before --flow_policy_optimization.report_to none
 ```
 
 Result at HEAD `12a38cb`:

@@ -10,11 +10,11 @@ import numpy as np
 import pytest
 import torch
 
-from myfpo.myfpo import MyfpoConfig, MyfpoPolicy, bound_for_storage, resolve_action_bounds, to_env_action
+from flow_policy_optimization.flow_policy_optimization import FlowPolicyOptimizationConfig, FlowPolicyOptimizationPolicy, bound_for_storage, resolve_action_bounds, to_env_action
 
 
 def _policy(**kw):
-    cfg = MyfpoConfig(
+    cfg = FlowPolicyOptimizationConfig(
         hidden_dim=32,
         num_obs_steps=4,
         action_horizon=4,
@@ -24,7 +24,7 @@ def _policy(**kw):
     torch.manual_seed(0)
     low = np.full(2, -2.0, dtype=np.float32)
     high = np.full(2, 2.0, dtype=np.float32)
-    return MyfpoPolicy(cfg, 3, 2, low, high)
+    return FlowPolicyOptimizationPolicy(cfg, 3, 2, low, high)
 
 
 def test_to_env_action_unscales_the_unit_box():

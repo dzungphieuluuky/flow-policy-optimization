@@ -11,13 +11,13 @@ from __future__ import annotations
 import numpy as np
 import torch
 
-from myfpo.myfpo import MyfpoConfig, MyfpoPolicy
+from flow_policy_optimization.flow_policy_optimization import FlowPolicyOptimizationConfig, FlowPolicyOptimizationPolicy
 
 OBS, ACT, HORIZON = 3, 2, 4
 
 
 def _policy(**kw):
-    cfg = MyfpoConfig(
+    cfg = FlowPolicyOptimizationConfig(
         hidden_dim=32,
         num_obs_steps=4,
         action_horizon=HORIZON,
@@ -27,7 +27,7 @@ def _policy(**kw):
     torch.manual_seed(0)
     low = np.full(ACT, -1.0, dtype=np.float32)
     high = np.full(ACT, 1.0, dtype=np.float32)
-    return MyfpoPolicy(cfg, OBS, ACT, low, high)
+    return FlowPolicyOptimizationPolicy(cfg, OBS, ACT, low, high)
 
 
 def _velocity(policy):

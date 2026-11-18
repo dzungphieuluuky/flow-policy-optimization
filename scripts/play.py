@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Evaluate a loaded lean-myfpo policy and print the per-episode metrics.
+"""Evaluate a loaded lean-flow_policy_optimization policy and print the per-episode metrics.
 
 The policy is stepped through the environment and the return, the length and
 the jerk of every episode are printed. No video is written: the frames cost
@@ -28,10 +28,10 @@ if torch.cuda.is_available():
         "max_split_size_mb:128,expandable_segments:True"
     )
 
-from myfpo.myfpo import (
+from flow_policy_optimization.flow_policy_optimization import (
     Evaluator,
-    MyfpoConfig,
-    MyfpoPolicy,
+    FlowPolicyOptimizationConfig,
+    FlowPolicyOptimizationPolicy,
     get_observation_action_dim,
     is_maniskill_id,
     load_checkpoint,
@@ -41,7 +41,7 @@ from myfpo.myfpo import (
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Evaluate a saved lean-myfpo policy and print the per-episode metrics."
+        description="Evaluate a saved lean-flow_policy_optimization policy and print the per-episode metrics."
     )
     parser.add_argument(
         "--env",
@@ -86,8 +86,8 @@ def main(argv: list[str] | None = None) -> int:
     env = gym.make(args.env)
     try:
         obs_dim, action_dim = get_observation_action_dim(args.env)
-        cfg = MyfpoConfig()
-        policy = MyfpoPolicy(
+        cfg = FlowPolicyOptimizationConfig()
+        policy = FlowPolicyOptimizationPolicy(
             cfg,
             obs_dim,
             action_dim,

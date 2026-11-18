@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 import torch
 
-from myfpo.myfpo import load_checkpoint, make_optimizer, save_checkpoint
+from flow_policy_optimization.flow_policy_optimization import load_checkpoint, make_optimizer, save_checkpoint
 from fixtures import make_test_policy
 
 
@@ -27,7 +27,7 @@ def test_a_round_trip_restores_weights_the_optimizer_and_the_step(tmp_path):
         "behavior_cfm_loss": torch.rand(2, cfg.num_mc_samples),
         "behavior_cfm_loss_token": torch.rand(2, cfg.num_mc_samples, cfg.action_horizon),
     }
-    from myfpo.myfpo import compute_loss
+    from flow_policy_optimization.flow_policy_optimization import compute_loss
 
     loss, _ = compute_loss(policy, batch, torch.device("cpu"))
     optimizer.zero_grad(set_to_none=True)

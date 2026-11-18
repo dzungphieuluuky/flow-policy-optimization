@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
-"""Single-run training CLI for myfpo (PyTorch).
+"""Single-run training CLI for flow_policy_optimization (PyTorch).
 
 One run per invocation. Draccus builds the run config. The config takes
 singular values only.
 
     python scripts/train.py --env Hopper-v5 --seed 0 --total_steps 2000
-    python scripts/train.py --method myfpo --env Hopper-v5 --myfpo.policy_lr 3e-4
+    python scripts/train.py --method flow_policy_optimization --env Hopper-v5 --flow_policy_optimization.policy_lr 3e-4
     python scripts/train.py --method ppo --env Hopper-v5 --seed 0  # plain PPO baseline
-    python scripts/train.py --method myfpo --env Hopper-v5 --seed 0 \
-        --resume outputs/myfpo_Hopper-v5_seed0/checkpoints/checkpoint_1000 \
+    python scripts/train.py --method flow_policy_optimization --env Hopper-v5 --seed 0 \
+        --resume outputs/flow_policy_optimization_Hopper-v5_seed0/checkpoints/checkpoint_1000 \
         --total_steps 4000
 
-``--resume`` is myfpo-only. It restores the model, the optimizer and the
+``--resume`` is flow_policy_optimization-only. It restores the model, the optimizer and the
 global step from a ``checkpoints/<name>/checkpoint.pt`` directory; the config
 is NOT restored (the lean pole has no per-run config drift to reconcile), so
 CLI overrides apply to the fresh run as written.
 
---method is 'myfpo' (lean reimplementation) or 'ppo' (plain baseline).
+--method is 'flow_policy_optimization' (lean reimplementation) or 'ppo' (plain baseline).
 Exit codes: 0 success, 1 usage error, 2 runtime/divergence abort or draccus parse error, 4 missing artifact.
 """
 
@@ -33,15 +33,15 @@ from typing import Literal
 
 import draccus
 
-from myfpo.myfpo import (
+from flow_policy_optimization.flow_policy_optimization import (
     KNOWN_ENVS,
-    MyfpoConfig,
+    FlowPolicyOptimizationConfig,
     get_observation_action_dim,
     is_maniskill_id,
     make_maniskill_env,
-    run_myfpo_training,
+    run_flow_policy_optimization_training,
 )
-from myfpo.ppo import run_ppo_training
+from flow_policy_optimization.ppo import run_ppo_training
 
 
 def configure_torch_cuda() -> bool:
@@ -82,7 +82,7 @@ def apply_runtime_settings() -> dict:
 class TrainConfig:
     """Run one training job (single values only)."""
 
-    method: Literal["myfpo", "ppo"] = "myfpo"
+    method: Literal["flow_policy_optimization", "ppo"] = "flow_policy_optimization"
     env: str | None = None
     seed: int = 3407
     total_steps: int | None = None
@@ -92,12 +92,12 @@ class TrainConfig:
     action_dim: int | None = None
     out_dir: str = "outputs/"
 
-    # Resume a lean-myfpo checkpoint dir (checkpoints/<name>/). Restores the
+    # Resume a lean-flow_policy_optimization checkpoint dir (checkpoints/<name>/). Restores the
     # model, the optimizer and the global step into a FRESH run dir
     # (<base>_resume[/2...]); the config is NOT restored.
     resume: str | None = None
     video: bool = False
-    myfpo: MyfpoConfig = field(default_factory=MyfpoConfig)
+    flow_policy_optimization: FlowPolicyOptimizationConfig = field(default_factory=FlowPolicyOptimizationConfig)
 
 
 def default_intervals(total: int, args_val: int | None, cap: int) -> int:
@@ -136,7 +136,7 @@ def run_single(
     resume_from_checkpoint: str | None = None,
     runtime: dict | None = None,
     video_dir: Path | None = None,
-    method: str = "myfpo",
+    method: str = "flow_policy_optimization",
 ) -> dict:
     """Dispatch one run to the matching backend's training entry."""
     import gymnasium as gym
@@ -199,9 +199,9 @@ def run_single(
             )
 
         if video_dir is not None:
-            print("myfpo: --video is not supported by the lean pole; skipping video", file=sys.stderr)
+            print("flow_policy_optimization: --video is not supported by the lean pole; skipping video", file=sys.stderr)
 
-        return run_myfpo_training(
+        return run_flow_policy_optimization_training(
             env=env,
             env_id=env_id,
             out_dir=out_dir,
@@ -240,9 +240,9 @@ def main(argv: list[str] | None = None) -> int:
     eval_s = default_intervals(total, args.eval_steps, 1000)
     ckpt_i = default_intervals(total, args.save_steps, 1000000)
 
-    if args.resume and args.method != "myfpo":
+    if args.resume and args.method != "flow_policy_optimization":
         print(
-            f"ERROR: --resume is myfpo-only, got --method {args.method!r}",
+            f"ERROR: --resume is flow_policy_optimization-only, got --method {args.method!r}",
             file=sys.stderr,
         )
         return 1
@@ -251,7 +251,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     if args.resume:
         print(
-            f"myfpo: resume from {args.resume}; the checkpoint restores model, "
+            f"flow_policy_optimization: resume from {args.resume}; the checkpoint restores model, "
             "optimizer and step only — the config is not restored",
             file=sys.stderr,
         )
@@ -266,7 +266,7 @@ def main(argv: list[str] | None = None) -> int:
             args.env,
             args.seed,
             run_dir,
-            args.myfpo,
+            args.flow_policy_optimization,
             total,
             eval_s,
             ckpt_i,

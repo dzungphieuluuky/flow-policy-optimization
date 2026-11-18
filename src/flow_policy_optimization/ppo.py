@@ -1,36 +1,36 @@
 """Minimal PPO backend for ``--method ppo``.
 
 A deliberately plain CPU-Gym PPO, kept in one file, for comparing against
-myfpo on the same envs, seeds and eval protocol. Reference: CleanRL's
+flow_policy_optimization on the same envs, seeds and eval protocol. Reference: CleanRL's
 ``ppo_continuous_action.py`` (MIT, https://github.com/vwxyzjn/cleanrl).
 
-Design choices, and how this differs from myfpo on purpose:
+Design choices, and how this differs from flow_policy_optimization on purpose:
 
 - State-independent ``log_std`` Gaussian, tanh-squashed to the env bounds
   (SAC-style change-of-variables correction for the stored log-probs).
 - 2-layer tanh MLPs (``cfg.hidden_dim`` wide) for actor mean and critic — the
-  standard MuJoCo PPO shape. myfpo's actor is a much larger flow policy; the
+  standard MuJoCo PPO shape. flow_policy_optimization's actor is a much larger flow policy; the
   capacity gap is the comparison you asked for, not an accident to fix here.
 - Time-limit truncations bootstrap the critic with the true final observation
   (``SameStep`` vector envs, ``info["final_obs"]``). CleanRL treats truncation
   as termination; we don't.
 - One optimizer, two param groups (``policy_lr`` / ``critic_lr``), one total
-  gradient-norm clip (``cfg.max_grad_norm``), mirroring CleanRL. myfpo clips
+  gradient-norm clip (``cfg.max_grad_norm``), mirroring CleanRL. flow_policy_optimization clips
   actor and critic independently — not replicated, it is not part of PPO.
 - Rollout-level advantage normalization over the whole batch (matches the
-  "standard PPO contract" comment in ``MyfpoConfig``), not per minibatch.
+  "standard PPO contract" comment in ``FlowPolicyOptimizationConfig``), not per minibatch.
 - No value-loss clipping, no entropy bonus, no target KL, no EMA, no reward
-  normalization, no divergence aborts, no ``torch.compile``. myfpo's CFM
+  normalization, no divergence aborts, no ``torch.compile``. flow_policy_optimization's CFM
   guards have no PPO analogue and are not simulated.
 - Action processing: the network output is squashed on the way to the env;
   the stored actions are the pre-squash ``u``. No separate action normalizer,
   same contract as the flow policy.
 
-Environment vectorization mirrors ``myfpo.myfpo.make_train_env`` (forkserver +
+Environment vectorization mirrors ``flow_policy_optimization.flow_policy_optimization.make_train_env`` (forkserver +
 ``SyncVectorEnv`` fallback, Meta-World synchronous) with ``SameStep``
 autoreset instead of the default ``NextStep``.
 
-Only these ``MyfpoConfig`` fields are read: ``num_envs``, ``hidden_dim``,
+Only these ``FlowPolicyOptimizationConfig`` fields are read: ``num_envs``, ``hidden_dim``,
 ``policy_lr``, ``critic_lr``, ``adam_betas``, ``optimizer_weight_decay``,
 ``gamma``, ``gae_lambda``, ``clip_param``, ``num_learning_epochs``,
 ``chunks_per_update``, ``chunks_per_minibatch``, ``normalize_advantage``,
@@ -38,7 +38,7 @@ Only these ``MyfpoConfig`` fields are read: ``num_envs``, ``hidden_dim``,
 Everything else in the config is ignored, including ``lr_schedule``.
 
 Samples per update: ``chunks_per_update`` total env steps, split across
-``num_envs`` vector workers — same meaning as in myfpo (2048 -> 32 steps per
+``num_envs`` vector workers — same meaning as in flow_policy_optimization (2048 -> 32 steps per
 env at ``num_envs=64``).
 """
 
@@ -53,7 +53,7 @@ import numpy as np
 import torch
 from torch import nn
 
-from myfpo.myfpo import (
+from flow_policy_optimization.flow_policy_optimization import (
     Evaluator,
     RunningMeanStd,
     _init_wandb,
@@ -239,7 +239,7 @@ def _save_checkpoint(out_dir: Path, step: int, policy, optimizer, name: str | No
 
 
 # ---------------------------------------------------------------------------
-# deterministic eval adapter (matches myfpo's Evaluator contract)
+# deterministic eval adapter (matches flow_policy_optimization's Evaluator contract)
 # ---------------------------------------------------------------------------
 
 class _DeterministicPolicy:
@@ -277,7 +277,7 @@ def run_ppo_training(
 ):
     """Train plain PPO. Env builds before any CUDA-side work."""
     if resume_from_checkpoint is not None:
-        raise RuntimeError("--resume is myfpo-only; PPO cannot resume a flow checkpoint")
+        raise RuntimeError("--resume is flow_policy_optimization-only; PPO cannot resume a flow checkpoint")
     if callable(getattr(env, "step_torch", None)):
         raise RuntimeError(
             "--method ppo supports CPU gymnasium envs (MuJoCo etc.) only; "
@@ -574,7 +574,7 @@ def run_ppo_training(
 
 
 def _default_config():
-    from myfpo.myfpo import MyfpoConfig
+    from flow_policy_optimization.flow_policy_optimization import FlowPolicyOptimizationConfig
 
-    return MyfpoConfig()
+    return FlowPolicyOptimizationConfig()
 

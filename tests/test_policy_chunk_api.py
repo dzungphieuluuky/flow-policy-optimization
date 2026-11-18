@@ -19,11 +19,11 @@ import gymnasium as gym
 import numpy as np
 import torch
 
-from myfpo.myfpo import MyfpoConfig, MyfpoPolicy, make_rollout_state, make_train_env, run_rollout
+from flow_policy_optimization.flow_policy_optimization import FlowPolicyOptimizationConfig, FlowPolicyOptimizationPolicy, make_rollout_state, make_train_env, run_rollout
 
 
-def _config() -> MyfpoConfig:
-    return MyfpoConfig(
+def _config() -> FlowPolicyOptimizationConfig:
+    return FlowPolicyOptimizationConfig(
         hidden_dim=32,
         num_obs_steps=4,
         action_horizon=4,
@@ -34,11 +34,11 @@ def _config() -> MyfpoConfig:
     )
 
 
-def _policy(cfg) -> MyfpoPolicy:
+def _policy(cfg) -> FlowPolicyOptimizationPolicy:
     low = np.full(1, -2.0, dtype=np.float32)
     high = np.full(1, 2.0, dtype=np.float32)
     torch.manual_seed(0)
-    return MyfpoPolicy(cfg, 3, 1, low, high)
+    return FlowPolicyOptimizationPolicy(cfg, 3, 1, low, high)
 
 
 def test_the_composed_and_the_split_call_agree():

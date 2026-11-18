@@ -10,12 +10,12 @@ from __future__ import annotations
 import numpy as np
 import torch
 
-from myfpo.myfpo import MyfpoConfig, MyfpoPolicy, make_optimizer, update
+from flow_policy_optimization.flow_policy_optimization import FlowPolicyOptimizationConfig, FlowPolicyOptimizationPolicy, make_optimizer, update
 
 N = 2
 
 
-def _cfg(**kw) -> MyfpoConfig:
+def _cfg(**kw) -> FlowPolicyOptimizationConfig:
     base = dict(
         hidden_dim=32,
         num_obs_steps=2,
@@ -27,14 +27,14 @@ def _cfg(**kw) -> MyfpoConfig:
         chunks_per_minibatch=2,
     )
     base.update(kw)
-    return MyfpoConfig(**base)
+    return FlowPolicyOptimizationConfig(**base)
 
 
-def _policy(cfg) -> MyfpoPolicy:
+def _policy(cfg) -> FlowPolicyOptimizationPolicy:
     torch.manual_seed(0)
     low = np.full(3, -1.0, dtype=np.float32)
     high = np.full(3, 1.0, dtype=np.float32)
-    return MyfpoPolicy(cfg, 5, 3, low, high)
+    return FlowPolicyOptimizationPolicy(cfg, 5, 3, low, high)
 
 
 def _batch(cfg) -> dict:
@@ -74,7 +74,7 @@ def test_the_target_tracks_the_online_critic_to_within_five_percent():
     for _ in range(200):
         update(policy, optimizer, batch, cfg)
 
-    import myfpo.myfpo as m
+    import flow_policy_optimization.flow_policy_optimization as m
 
     with torch.no_grad():
         states = policy.obs_normalizer(batch["observation.state"])

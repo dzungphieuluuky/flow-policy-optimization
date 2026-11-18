@@ -11,31 +11,31 @@ import torch
 
 import numpy as np
 
-from myfpo.myfpo import MyfpoConfig, MyfpoPolicy
+from flow_policy_optimization.flow_policy_optimization import FlowPolicyOptimizationConfig, FlowPolicyOptimizationPolicy
 
 OBS_DIM = 5
 ACT_DIM = 2
 
 
-def cfg(*, obs_dim: int = OBS_DIM, act_dim: int = ACT_DIM, **kw) -> MyfpoConfig:
+def cfg(*, obs_dim: int = OBS_DIM, act_dim: int = ACT_DIM, **kw) -> FlowPolicyOptimizationConfig:
     """A config with the dims the suite uses. ``kw`` goes to the fields."""
-    cfg = MyfpoConfig(**kw)
+    cfg = FlowPolicyOptimizationConfig(**kw)
     cfg.obs_dim = obs_dim  # informational; the policy takes dims explicitly
     cfg.action_dim = act_dim
     return cfg
 
 
-def make_test_policy(**kw) -> MyfpoPolicy:
+def make_test_policy(**kw) -> FlowPolicyOptimizationPolicy:
     """A policy with the feature specs the suite uses. ``kw`` goes to the config."""
     kw_dims = {k: kw.pop(k) for k in ("obs_dim", "act_dim") if k in kw}
     obs_dim = kw_dims.get("obs_dim", OBS_DIM)
     act_dim = kw_dims.get("act_dim", ACT_DIM)
     low = np.full(act_dim, -1.0, dtype=np.float32)
     high = np.full(act_dim, 1.0, dtype=np.float32)
-    return MyfpoPolicy(cfg(**kw), obs_dim, act_dim, low, high)
+    return FlowPolicyOptimizationPolicy(cfg(**kw), obs_dim, act_dim, low, high)
 
 def make_batch(
-    policy: MyfpoPolicy,
+    policy: FlowPolicyOptimizationPolicy,
     *,
     obs_dim: int,
     action_dim: int,

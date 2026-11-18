@@ -1,4 +1,4 @@
-# SIMPLIFICATION PLAN — myfpo → rsl‑rl scale
+# SIMPLIFICATION PLAN — flow_policy_optimization → rsl‑rl scale
 
 > **Status 2026-11-18 (archival):** superseded by the work recorded in
 > `FINDINGS.md`. Kept as the historical simplification record; amendments
@@ -7,7 +7,7 @@
 Goal: make the repo as simple and fast as `rsl_rl` while changing **zero algorithmic
 semantics**. rsl‑rl ships PPO + SAC + distillation in ~6.4k lines; skrl's torch‑only
 slice is ~900 lines for PPO+trainer+models; Isaac Lab implements no RL math at all.
-myfpo `src/myfpo/` is ~7.6k lines for one algorithm. The delta is dead weight, not
+flow_policy_optimization `src/flow_policy_optimization/` is ~7.6k lines for one algorithm. The delta is dead weight, not
 essence — this plan deletes it without touching the math.
 
 Evidence and rationale: see the code-review thread (2026‑11) and the reference repos
@@ -35,7 +35,7 @@ Evidence and rationale: see the code-review thread (2026‑11) and the reference
 
 ## Phase 0 — Baseline and safety net
 
-- Record per‑file line counts (`wc -l src/myfpo/*.py scripts/*.py`), test module count
+- Record per‑file line counts (`wc -l src/flow_policy_optimization/*.py scripts/*.py`), test module count
   (`ls tests | wc -l` = 64), and a 2k‑step Hopper‑v5 smoke run `fps` for reference.
 - Confirm all four gates green on `main` before any edit.
 - Tag `simplify-start`.
@@ -49,7 +49,7 @@ Nine call sites re‑implement the `linear_rescale`/`tanh_squash` branch:
 `training.py:258`, `:325`, `evaluator.py:450`. Each carries a comment re-deriving the
 contract — the bug class that keeps reappearing.
 
-- New module `myfpo/actions.py` — the only home of the `action_processing_mode`
+- New module `flow_policy_optimization/actions.py` — the only home of the `action_processing_mode`
   branch, exporting: `env_squash_terms`, `squash_to_env_bounds`, `bound_to_unit`,
   `unscale_to_env` (primitives, moved from `processor.py`), and three mappers:
   `bound_for_storage(x, mode)` (collection bound), `to_env_action(x, low, high, *, mode)`
@@ -71,7 +71,7 @@ Acceptance: `grep -rn "linear_rescale" src scripts` matches only `actions.py`, `
 As built. No new `cfg.diagnostics` flag — `log_drift_diagnostics` (default False) is
 the diagnostics master flag and already gates the expensive path (drift measure +
 bootstrap proposal, `training.py`); a second flag would duplicate it.
-`myfpo/diagnostics.py` now holds the diagnostic helpers previously in-`training.py`:
+`flow_policy_optimization/diagnostics.py` now holds the diagnostic helpers previously in-`training.py`:
 `executed_chunk`, `compute_rollout_diagnostics` (always on; logged scalars pinned by
 `test_metric_faithfulness`/`test_rollout_diagnostics`), and `measure_value_drift`
 (imported lazily inside the drift branch).
@@ -123,7 +123,7 @@ AST measurement showed ~18 lines of duplicated boilerplate (budget init,
 As-built changes: `_BaseEvaluator` extracted (budget init `_check_eval_counts` +
 `summarize` delegate, shared by both evaluators). No env-loop rewrite; behavior
 identical — a seeded 2000-step Hopper run produced a **byte-identical**
-`eval_history.csv` before and after (compare `/tmp/myfpo_smoke/p4_{pre,post}`).
+`eval_history.csv` before and after (compare `/tmp/flow_policy_optimization_smoke/p4_{pre,post}`).
 
 Acceptance re-scoped: no `≤200 lines` claim — `evaluator.py` is 518 lines, still
 ~230 lines of pinned jerk/CSV/stats helpers used externally (pins, multiseed,
@@ -158,11 +158,11 @@ seeded smoke; `fps` within noise (43.2 vs 51.94 baseline, single CPU sample;
 run-to-run range across phases 43–52).
 
 Status: done — 577 passed / 2 pre-existing mani_skill failures; pins 817/218,
-0 mismatches; `/tmp/myfpo_smoke/p4_pre` and `.../p5` CSVs identical.
+0 mismatches; `/tmp/flow_policy_optimization_smoke/p4_pre` and `.../p5` CSVs identical.
 
 ## Phase 6 — Module re-lay (P8)
 
-As built. Pure filing: no math, no behavior changes. Final map (`src/myfpo/`):
+As built. Pure filing: no math, no behavior changes. Final map (`src/flow_policy_optimization/`):
 
 ```
 config.py       (from configuration.py; registry ejected)
@@ -218,14 +218,14 @@ Status: done — pytest 539 passed / 2 pre-existing mani_skill failures; pins 81
 - Update `AGENTS.md` (structure section: actions.py/diagnostics.py, pins/gone names,
   test-module count, diagnostics lazy import note) and `README.md` (stale processor.py
   references).
-- `myfpo_online.md` untouched (user research notes).
+- `flow_policy_optimization_online.md` untouched (user research notes).
 
 ## Appendix A — Baseline (Phase 0) and outcome (Phase 8, 2026-11-13, branch `simplify`)
 
 | metric | before | after (final) |
 |---|---|---|
-| `wc -l src/myfpo/*.py scripts/*.py` | 8561 | 8480 |
-| `src/myfpo/*.py` only | ~7.6k | 7513 |
+| `wc -l src/flow_policy_optimization/*.py scripts/*.py` | 8561 | 8480 |
+| `src/flow_policy_optimization/*.py` only | ~7.6k | 7513 |
 | test .py files (`ls tests/*.py`) | 63 | 50 (48 test modules + conftest + fixtures) |
 | tests collected / pass / skip | 606 / 601 / 3 | 541 / 539 / 3 |
 | pre-existing failures (mani_skill absent) | 2 (`test_eval_video.py`) | 2 (unchanged) |
@@ -249,7 +249,7 @@ Note: working tree carried user WIP (`configuration.py`, `fpo_core.py`, AGENTS/R
 
 ## Amendment 1 — Trust region and ratio cap (2026‑11‑15)
 
-Scope: the collapse analysis. Four defects in `src/myfpo/myfpo.py`, all in the policy
+Scope: the collapse analysis. Four defects in `src/flow_policy_optimization/flow_policy_optimization.py`, all in the policy
 ratio or its trust region. The critic ensemble stayed out on purpose: one critic is a
 deliberate simplification.
 
@@ -298,7 +298,7 @@ unused `seed` argument (`random_policy`).
 
 ### Side effect
 
-`src/myfpo/ppo.py` reads the shared `cfg.clip_param`, so the PPO baseline clip moves
+`src/flow_policy_optimization/ppo.py` reads the shared `cfg.clip_param`, so the PPO baseline clip moves
 from `0.05` to `0.2`. That is the canonical PPO value, but baseline numbers will shift.
 
 ### Rollback

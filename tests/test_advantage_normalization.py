@@ -10,13 +10,13 @@ from __future__ import annotations
 import numpy as np
 import torch
 
-from myfpo.myfpo import MyfpoConfig, MyfpoPolicy, make_optimizer, update
-import myfpo.myfpo as m
+from flow_policy_optimization.flow_policy_optimization import FlowPolicyOptimizationConfig, FlowPolicyOptimizationPolicy, make_optimizer, update
+import flow_policy_optimization.flow_policy_optimization as m
 
 N = 2
 
 
-def _cfg(**kw) -> MyfpoConfig:
+def _cfg(**kw) -> FlowPolicyOptimizationConfig:
     base = dict(
         hidden_dim=16,
         action_horizon=2,
@@ -28,7 +28,7 @@ def _cfg(**kw) -> MyfpoConfig:
         chunks_per_minibatch=2,
     )
     base.update(kw)
-    return MyfpoConfig(**base)
+    return FlowPolicyOptimizationConfig(**base)
 
 
 def _batch(cfg) -> dict:
@@ -53,7 +53,7 @@ def test_the_rollout_normalization_reaches_the_actor_by_default(monkeypatch):
     cfg = _cfg()
     low = np.full(3, -1.0, dtype=np.float32)
     high = np.full(3, 1.0, dtype=np.float32)
-    policy = MyfpoPolicy(cfg, 5, 3, low, high)
+    policy = FlowPolicyOptimizationPolicy(cfg, 5, 3, low, high)
     optimizer = make_optimizer(policy)
     seen: list[torch.Tensor] = []
 

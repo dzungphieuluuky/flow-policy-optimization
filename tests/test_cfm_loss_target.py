@@ -5,7 +5,7 @@ import math
 import pytest
 import torch
 
-from myfpo.myfpo import MyfpoConfig, compute_cfm_loss
+from flow_policy_optimization.flow_policy_optimization import FlowPolicyOptimizationConfig, compute_cfm_loss
 
 MODES = ("velocity",)
 
@@ -16,7 +16,7 @@ def cfm_target(a: torch.Tensor, eps: torch.Tensor) -> torch.Tensor:
 
 
 def _cfg(**kw):
-    return MyfpoConfig(cfm_loss_use_huber=False, **kw)
+    return FlowPolicyOptimizationConfig(cfm_loss_use_huber=False, **kw)
 
 
 def _path(n=3, m=4, k=5, d=2, seed=0):

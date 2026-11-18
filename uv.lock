@@ -744,7 +744,7 @@ wheels = [
 ]
 
 [[package]]
-name = "myfpo"
+name = "flow_policy_optimization"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

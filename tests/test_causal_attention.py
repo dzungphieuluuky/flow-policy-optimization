@@ -11,8 +11,8 @@ from __future__ import annotations
 import pytest
 import torch
 
-from myfpo.myfpo import SelfAttention
-from myfpo.myfpo import MyfpoConfig
+from flow_policy_optimization.flow_policy_optimization import SelfAttention
+from flow_policy_optimization.flow_policy_optimization import FlowPolicyOptimizationConfig
 
 
 def test_a_later_token_cannot_change_an_earlier_one():
@@ -45,5 +45,5 @@ def test_even_head_dim_is_accepted():
 
 
 def test_config_accepts_any_width_the_critic_can_split():
-    cfg = MyfpoConfig(hidden_dim=24)
+    cfg = FlowPolicyOptimizationConfig(hidden_dim=24)
     assert cfg.hidden_dim % 8 == 0

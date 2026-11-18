@@ -14,7 +14,7 @@ jupyter:
     name: python3
 ---
 
-# myfpo online
+# flow_policy_optimization online
 
 Clone the repo, install it, run the Hopper feasibility gate.
 
@@ -51,17 +51,17 @@ print(f"Env: {ENV_NAME}")
 ```python
 %cd $OUTPUT
 
-!rm -rf myfpo
+!rm -rf flow_policy_optimization
 
 token = load_secret("GITHUB_TOKEN")
-slug = os.getenv("GITHUB_REPO", "dzungphieuluuky/myfpo")
+slug = os.getenv("GITHUB_REPO", "dzungphieuluuky/flow_policy_optimization")
 url = f"https://github.com/{slug}.git"
 if token:
     url = url.replace("github.com", f"{token}@github.com")
 print("Clone:", url.replace(token or "", "<TOKEN>"))
 
-!git clone $url myfpo
-%cd myfpo
+!git clone $url flow_policy_optimization
+%cd flow_policy_optimization
 !pwd
 ```
 
@@ -70,7 +70,7 @@ print("Clone:", url.replace(token or "", "<TOKEN>"))
 ```
 
 ```python
-# Scripts import the myfpo package; a fresh clone needs an install.
+# Scripts import the flow_policy_optimization package; a fresh clone needs an install.
 import subprocess
 import sys
 
@@ -78,14 +78,14 @@ rc = subprocess.call(["uv", "pip", "install", "-e", ".", "--no-deps"])
 if rc:
     rc = subprocess.call([sys.executable, "-m", "pip", "install", "-e", ".", "--no-deps"])
 if rc:
-    raise SystemExit("editable install of myfpo failed; see the log above")
-print("myfpo installed editable")
+    raise SystemExit("editable install of flow_policy_optimization failed; see the log above")
+print("flow_policy_optimization installed editable")
 ```
 
 ```python
 # Guard: every later cell needs this import to resolve.
 import sys
-subprocess.run([sys.executable, "-c", "import myfpo, myfpo.training"], check=True)
+subprocess.run([sys.executable, "-c", "import flow_policy_optimization, flow_policy_optimization.training"], check=True)
 ```
 
 ```python
@@ -112,7 +112,7 @@ FEAS_WANT = len(FEAS_SEEDS.split(","))
 
 FEAS_ARMS = {
     "fpo_pp": [],
-    "fpo_chunk_avg": ["--myfpo.do_average_cfm_loss_in_chunk", "true"],
+    "fpo_chunk_avg": ["--flow_policy_optimization.do_average_cfm_loss_in_chunk", "true"],
 }
 ```
 
@@ -142,7 +142,7 @@ def sweep(tag, extra):
         return
     cmd = ["python", "scripts/multiseed.py", "run", "--env", FEAS_ENV,
            "--seeds", FEAS_SEEDS, "--total_steps", str(FEAS_STEPS),
-           "--out", f"outputs/{tag}", "--method", "myfpo", *extra]
+           "--out", f"outputs/{tag}", "--method", "flow_policy_optimization", *extra]
     print(f"\n=== {tag} ===\n{' '.join(cmd)}\n", flush=True)
     print(f"=== {tag} exit={subprocess.call(cmd)} ===", flush=True)
 
@@ -216,10 +216,10 @@ wall-clock over the whole run (compile warmup included), so they are only
 comparable within this notebook at fixed `PERF_STEPS`.
 
 Sweep grid:
-- num euler steps: 1, 4, 16 (set via `--myfpo.num_steps_zero_start` and
-  `--myfpo.num_steps_noise_start`)
-- mc samples: 8, 16, 64 (set via `--myfpo.num_mc_samples`)
-- learning rates: 1e-4, 3e-4 (default), 1e-3 (set via `--myfpo.policy_lr`)
+- num euler steps: 1, 4, 16 (set via `--flow_policy_optimization.num_steps_zero_start` and
+  `--flow_policy_optimization.num_steps_noise_start`)
+- mc samples: 8, 16, 64 (set via `--flow_policy_optimization.num_mc_samples`)
+- learning rates: 1e-4, 3e-4 (default), 1e-3 (set via `--flow_policy_optimization.policy_lr`)
 
 That is 3 × 3 × 3 = 27 arms, each one seed (3407) at `PERF_STEPS`.
 
@@ -243,10 +243,10 @@ for euler in EULER_STEPS:
         for lr in LEARNING_RATES:
             tag = perf_arm_tag(euler, mc, lr)
             PERF_ARMS[tag] = [
-                "--myfpo.num_steps_zero_start", str(euler),
-                "--myfpo.num_steps_noise_start", str(euler),
-                "--myfpo.num_mc_samples", str(mc),
-                "--myfpo.policy_lr", str(lr),
+                "--flow_policy_optimization.num_steps_zero_start", str(euler),
+                "--flow_policy_optimization.num_steps_noise_start", str(euler),
+                "--flow_policy_optimization.num_mc_samples", str(mc),
+                "--flow_policy_optimization.policy_lr", str(lr),
             ]
 ```
 
@@ -258,7 +258,7 @@ def perf_sweep(tag, extra):
         return
     cmd = ["python", "scripts/multiseed.py", "run", "--env", PERF_ENV,
            "--seeds", PERF_SEEDS, "--total_steps", str(PERF_STEPS),
-           "--out", f"outputs/{tag}", "--method", "myfpo", *extra]
+           "--out", f"outputs/{tag}", "--method", "flow_policy_optimization", *extra]
     print(f"\n=== {tag} ===\n{' '.join(cmd)}\n", flush=True)
     print(f"=== {tag} exit={subprocess.call(cmd)} ===", flush=True)
 

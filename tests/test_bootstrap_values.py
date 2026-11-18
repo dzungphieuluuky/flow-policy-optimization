@@ -10,7 +10,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from myfpo.myfpo import MyfpoConfig, MyfpoPolicy, make_rollout_state, make_train_env, run_rollout
+from flow_policy_optimization.flow_policy_optimization import FlowPolicyOptimizationConfig, FlowPolicyOptimizationPolicy, make_rollout_state, make_train_env, run_rollout
 
 import gymnasium as gym
 import torch
@@ -18,7 +18,7 @@ import torch
 
 @pytest.fixture
 def config():
-    return MyfpoConfig(
+    return FlowPolicyOptimizationConfig(
         hidden_dim=32,
         num_obs_steps=4,
         action_horizon=4,
@@ -33,7 +33,7 @@ def _policy(cfg):
     low = np.full(1, -2.0, dtype=np.float32)
     high = np.full(1, 2.0, dtype=np.float32)
     torch.manual_seed(0)
-    return MyfpoPolicy(cfg, 3, 1, low, high)
+    return FlowPolicyOptimizationPolicy(cfg, 3, 1, low, high)
 
 
 def _rollout(config):
@@ -119,7 +119,7 @@ def test_the_bootstrap_does_not_sample_actor_proposals(config):
 
 def test_the_bootstrap_reads_the_v_head_directly(config):
     """forward_v is an encode + one linear; no actor samples and no critic Q."""
-    cfg = MyfpoConfig(
+    cfg = FlowPolicyOptimizationConfig(
         hidden_dim=32,
         num_obs_steps=config.num_obs_steps,
         action_horizon=config.action_horizon,

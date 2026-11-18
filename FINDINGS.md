@@ -1,4 +1,4 @@
-# myfpo — findings from the FPO++ reimplementation (2026-11-17/18)
+# flow_policy_optimization — findings from the FPO++ reimplementation (2026-11-17/18)
 
 Snapshot of what was built, measured, and learned. HEAD at time of writing:
 `a09d016` (branch `main`, unpushed by 2 commits). All numbers are single-seed
@@ -9,10 +9,10 @@ Snapshot of what was built, measured, and learned. HEAD at time of writing:
 - Reimplemented a minimal, single-file FPO++ (Flow Policy Gradients for Robot
   Control, [arXiv 2602.02481](https://arxiv.org/abs/2602.02481)) in PyTorch,
   benchmarked it against a repaired PPO baseline on Hopper-v5.
-- **PPO wins decisively on this benchmark**: at 100k steps PPO is ~2× myfpo in
+- **PPO wins decisively on this benchmark**: at 100k steps PPO is ~2× flow_policy_optimization in
   return (last-10 eval mean 327 vs 161); at 500k steps the gap is ~3.2×
   (598 vs 157). PPO was also ~2.3–4.3× faster per step (1690/985 vs 439/387 fps).
-- myfpo **plateaus at ~150–210 return** after ~100k steps and shows two
+- flow_policy_optimization **plateaus at ~150–210 return** after ~100k steps and shows two
   instability dips (~254k, ~443–467k steps) that partially recover — the exact
   failure mode the post-release literature diagnoses ("double drift", DiPOD;
   FPO++ collapse, FlowRL).
@@ -20,7 +20,7 @@ Snapshot of what was built, measured, and learned. HEAD at time of writing:
 
 ## Engineering work (all committed)
 
-Phase order and commits (single-file `src/myfpo/myfpo.py`, CleanRL-style):
+Phase order and commits (single-file `src/flow_policy_optimization/flow_policy_optimization.py`, CleanRL-style):
 
 - `5c6426d` phase 0 — restored the red gates: 7 stale test modules rewritten,
   error messages restored, PPO baseline repaired (`NameError: backends`; eval
@@ -46,28 +46,28 @@ Phase order and commits (single-file `src/myfpo/myfpo.py`, CleanRL-style):
   `set_float32_matmul_precision("highest")`; `tf32_enabled: false` is recorded
   in `run_metadata.json`).
 - `a09d016` ppo `reward_mean_last10` averaged all evals instead of the last 10
-  (same bug class as myfpo 1f); fixed to `[-10:]`.
+  (same bug class as flow_policy_optimization 1f); fixed to `[-10:]`.
 
 Gates at archival: `pytest -q` 184 passed, `ruff check src scripts tests` clean,
 smoke runs exit 0.
 
-## Benchmark results (Hopper-v5, seed 0, 50-episode evals, ~8192 steps/eval for myfpo, ~2048 for PPO)
+## Benchmark results (Hopper-v5, seed 0, 50-episode evals, ~8192 steps/eval for flow_policy_optimization, ~2048 for PPO)
 
 | run | steps | mean last-10 eval | median last-10 | best eval | fps | wall |
 |---|---|---|---|---|---|---|
-| myfpo | 100,141 | 160.8 | 174.4 | 200.6 | 439 | 242s |
-| myfpo | 500,038 | 156.9 | 156.5 | 208.9 @ ~369k | 387 | 1308s |
+| flow_policy_optimization | 100,141 | 160.8 | 174.4 | 200.6 | 439 | 242s |
+| flow_policy_optimization | 500,038 | 156.9 | 156.5 | 208.9 @ ~369k | 387 | 1308s |
 | PPO | 100,032 | 327.0 (fixed metric; logged 216 pre-fix) | 334.1 | 353.4 | 1688 | 75s |
 | PPO | 500,032 | 597.8 | 608.3 | 799.9 @ ~227k | 985 | 525s |
 
-myfpo curve: fast climb to ~100k → hard plateau ~150–210 for 400k steps;
+flow_policy_optimization curve: fast climb to ~100k → hard plateau ~150–210 for 400k steps;
 slope +0.08/1k steps (noise). Two collapses (eval at ~254k: 207→122; slumps at
 ~443–467k: 115–146), each partially recovering. Within-eval outcomes are
 bimodal (instant-fail ~1–5 return ≈ 3–5% of episodes; survivors cluster at
 180–310). PPO: steady climb to ~230k (peak 800), three deep dips
 (~123k, ~232k, ~460k), recovered, settled in a ~600 regime.
 
-Determinism check: the 100k and 500k myfpo runs are the same seed-0 trajectory;
+Determinism check: the 100k and 500k flow_policy_optimization runs are the same seed-0 trajectory;
 their curves are bitwise identical at matched steps (prefix property of the
 deterministic CPU pipeline).
 
@@ -101,7 +101,7 @@ flow-PG family trails PPO, and its known collapse mode reproduces.
 - This is a single-file reimplementation that *deviates* from published FPO++
   (token-level ratios, per-step Polyak, V-head value baseline, Hopper-v5 with
   defaults, 8-ish denoise steps); treat as a datapoint on this variant.
-- PPO eval grid is 4× denser than myfpo's (every ~2048 vs ~8192 steps); best-
+- PPO eval grid is 4× denser than flow_policy_optimization's (every ~2048 vs ~8192 steps); best-
   checkpoint selection favors PPO slightly (does not affect last-10 means).
 - Untested on CUDA (no GPU on the dev box): the fused-Adam path and the fp32
   flags are config-only, verified on CPU only.

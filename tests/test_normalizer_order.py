@@ -13,12 +13,12 @@ import gymnasium as gym
 import pytest
 import torch
 
-from myfpo.myfpo import MyfpoConfig, MyfpoPolicy, make_rollout_state, make_train_env, run_rollout
+from flow_policy_optimization.flow_policy_optimization import FlowPolicyOptimizationConfig, FlowPolicyOptimizationPolicy, make_rollout_state, make_train_env, run_rollout
 
 
 @pytest.fixture
 def config():
-    return MyfpoConfig(
+    return FlowPolicyOptimizationConfig(
         hidden_dim=32,
         num_obs_steps=4,
         action_horizon=4,
@@ -32,7 +32,7 @@ def config():
 def test_the_first_rollout_initializes_the_normalizer(config):
     env = gym.make("Pendulum-v1")
     train_env = make_train_env(env, "Pendulum-v1", 1)
-    policy = MyfpoPolicy(
+    policy = FlowPolicyOptimizationPolicy(
         config, 3, 1,
         np.full(1, -2.0, dtype=np.float32), np.full(1, 2.0, dtype=np.float32),
     )

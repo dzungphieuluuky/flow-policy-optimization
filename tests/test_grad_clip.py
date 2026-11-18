@@ -10,14 +10,14 @@ from __future__ import annotations
 import pytest
 import torch
 
-from myfpo.myfpo import MyfpoConfig, MyfpoPolicy
-from myfpo.myfpo import _param_groups_for_clip
+from flow_policy_optimization.flow_policy_optimization import FlowPolicyOptimizationConfig, FlowPolicyOptimizationPolicy
+from flow_policy_optimization.flow_policy_optimization import _param_groups_for_clip
 
 OBS, ACT, HORIZON, STEPS = 6, 3, 8, 4
 
 
-def _policy(**kw) -> MyfpoPolicy:
-    cfg = MyfpoConfig(
+def _policy(**kw) -> FlowPolicyOptimizationPolicy:
+    cfg = FlowPolicyOptimizationConfig(
         action_horizon=HORIZON,
         hidden_dim=32,
         num_obs_steps=STEPS,
@@ -26,7 +26,7 @@ def _policy(**kw) -> MyfpoPolicy:
     torch.manual_seed(0)
     low = torch.full((ACT,), -1.0)
     high = torch.full((ACT,), 1.0)
-    return MyfpoPolicy(cfg, OBS, ACT, low.numpy(), high.numpy())
+    return FlowPolicyOptimizationPolicy(cfg, OBS, ACT, low.numpy(), high.numpy())
 
 
 def _set_grad(params, norm: float) -> None:

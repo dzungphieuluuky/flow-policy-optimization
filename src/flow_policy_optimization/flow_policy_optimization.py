@@ -1,4 +1,4 @@
-"""myfpo: minimal research implementation (CleanRL / RSL-RL style)."""
+"""flow_policy_optimization: minimal research implementation (CleanRL / RSL-RL style)."""
 
 from __future__ import annotations
 
@@ -116,8 +116,8 @@ def resolve_action_bounds(
 
 
 @dataclasses.dataclass
-class MyfpoConfig:
-    """Hyperparameters for lean myfpo."""
+class FlowPolicyOptimizationConfig:
+    """Hyperparameters for lean flow_policy_optimization."""
 
     # window / chunk shape
     num_obs_steps: int = 4
@@ -514,7 +514,7 @@ def expand_mc_samples(actions: torch.Tensor, eps: torch.Tensor, t: torch.Tensor)
 def compute_cfm_loss(
     v_hat: torch.Tensor,
     v_star: torch.Tensor,
-    cfg: MyfpoConfig,
+    cfg: FlowPolicyOptimizationConfig,
     reduce_mode: str,
     action_is_pad: torch.Tensor | None = None,
 ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
@@ -548,7 +548,7 @@ def compute_cfm_loss(
     return sample if reduce_mode == "sample" else (sample, sq.mean(dim=-1))
 
 
-def compute_policy_ratio(cfm_loss_old: torch.Tensor, cfm_loss_new: torch.Tensor, cfg: MyfpoConfig) -> torch.Tensor:
+def compute_policy_ratio(cfm_loss_old: torch.Tensor, cfm_loss_new: torch.Tensor, cfg: FlowPolicyOptimizationConfig) -> torch.Tensor:
     delta = cfm_loss_old.clamp(max=cfg.cfm_clamp) - cfm_loss_new.clamp(max=cfg.cfm_clamp)
     # Symmetric cap. The straight-through term keeps a bounded gradient past the
     # cap instead of a dead zone. An uncapped delta gives exp(10) weights.
@@ -556,7 +556,7 @@ def compute_policy_ratio(cfm_loss_old: torch.Tensor, cfm_loss_new: torch.Tensor,
     return torch.exp(safe_delta.detach() + delta - delta.detach())
 
 
-def compute_trust_region_surrogate(ratio: torch.Tensor, advantage: torch.Tensor, cfg: MyfpoConfig) -> torch.Tensor:
+def compute_trust_region_surrogate(ratio: torch.Tensor, advantage: torch.Tensor, cfg: FlowPolicyOptimizationConfig) -> torch.Tensor:
     ratio_adv = ratio * advantage
     ppo = torch.min(ratio_adv, ratio.clamp(1.0 - cfg.clip_param, 1.0 + cfg.clip_param) * advantage)
     if cfg.trust_region_mode == "ppo":
@@ -589,15 +589,15 @@ def sample_action(predict_velocity, shape, condition, num_steps: int, eps: torch
 
 
 def token_cfm_loss(
-    v: torch.Tensor, actions: torch.Tensor, eps: torch.Tensor, mask: torch.Tensor, cfg: MyfpoConfig, *, n: int, num_mc: int, flow_shape
+    v: torch.Tensor, actions: torch.Tensor, eps: torch.Tensor, mask: torch.Tensor, cfg: FlowPolicyOptimizationConfig, *, n: int, num_mc: int, flow_shape
 ) -> tuple[torch.Tensor, torch.Tensor]:
     return compute_cfm_loss(v.reshape(n, num_mc, *flow_shape).float(), (actions.unsqueeze(1) - eps).float(), cfg, "sample_and_token", mask)
 
 
-class MyfpoPolicy(nn.Module):
+class FlowPolicyOptimizationPolicy(nn.Module):
     """Flow actor + state encoder + single cross-attention critic."""
 
-    def __init__(self, config: MyfpoConfig, obs_dim: int, action_dim: int, action_low, action_high):
+    def __init__(self, config: FlowPolicyOptimizationConfig, obs_dim: int, action_dim: int, action_low, action_high):
         super().__init__()
         self.config = config
         self.obs_dim = obs_dim
@@ -1052,7 +1052,7 @@ class RolloutState:
     carry: EnvCarry | None = None
 
 
-def _rollout_budget(cfg: MyfpoConfig, n_envs: int, remaining_steps: int) -> int:
+def _rollout_budget(cfg: FlowPolicyOptimizationConfig, n_envs: int, remaining_steps: int) -> int:
     """Chunk budget for one rollout.
 
     A full rollout is ``chunks_per_update // n_envs`` chunks per env. A final
@@ -1069,7 +1069,7 @@ def _rollout_budget(cfg: MyfpoConfig, n_envs: int, remaining_steps: int) -> int:
     return max(1, math.ceil(remaining_steps / wave))
 
 
-def make_rollout_state(obs_dim: int, action_dim: int, cfg: MyfpoConfig, chunks_hint: int | None = None) -> RolloutState:
+def make_rollout_state(obs_dim: int, action_dim: int, cfg: FlowPolicyOptimizationConfig, chunks_hint: int | None = None) -> RolloutState:
     chunks = max(1, int(cfg.chunks_per_update) if chunks_hint is None else int(chunks_hint))
     return RolloutState(
         buffer=RolloutBuffer(
@@ -1081,7 +1081,7 @@ def make_rollout_state(obs_dim: int, action_dim: int, cfg: MyfpoConfig, chunks_h
 
 
 @torch.no_grad()
-def run_rollout(policy: MyfpoPolicy, env, chunks_per_env: int, *, action_low, action_high, state: RolloutState, max_steps_per_env: int | None = None) -> dict:
+def run_rollout(policy: FlowPolicyOptimizationPolicy, env, chunks_per_env: int, *, action_low, action_high, state: RolloutState, max_steps_per_env: int | None = None) -> dict:
     """Collect one rollout and compute V-anchored GAE + behavior CFM losses."""
     if chunks_per_env <= 0:
         raise ValueError(f"chunks_per_env={chunks_per_env} must be positive")
@@ -1158,7 +1158,7 @@ def _tag_optimizer_roles(optimizer) -> None:
         group["role"] = role
 
 
-def make_optimizer(policy: MyfpoPolicy) -> torch.optim.Optimizer:
+def make_optimizer(policy: FlowPolicyOptimizationPolicy) -> torch.optim.Optimizer:
     cfg = policy.config
     decay, no_decay = [], []
     for module in (policy.actor, policy.encoder):
@@ -1189,7 +1189,7 @@ class UpdateResult:
     grad_norm_critic: float
 
 
-def compute_loss(policy: MyfpoPolicy, batch: dict[str, torch.Tensor], device) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+def compute_loss(policy: FlowPolicyOptimizationPolicy, batch: dict[str, torch.Tensor], device) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     cfg = policy.config
     states = policy.obs_normalizer(torch.as_tensor(batch["observation.state"], dtype=torch.float32, device=device))
     raw_actions = torch.as_tensor(batch["action"], dtype=torch.float32, device=device)
@@ -1242,7 +1242,7 @@ def compute_loss(policy: MyfpoPolicy, batch: dict[str, torch.Tensor], device) ->
     return loss, metrics
 
 
-def _param_groups_for_clip(policy: MyfpoPolicy) -> dict[str, list[nn.Parameter]]:
+def _param_groups_for_clip(policy: FlowPolicyOptimizationPolicy) -> dict[str, list[nn.Parameter]]:
     """Split trainable params into actor (actor + encoder) and critic."""
     actor_ids = {id(p) for p in (*policy.actor.parameters(), *policy.encoder.parameters())}
     actor_params = [p for p in policy.parameters() if p.requires_grad and id(p) in actor_ids]
@@ -1250,7 +1250,7 @@ def _param_groups_for_clip(policy: MyfpoPolicy) -> dict[str, list[nn.Parameter]]
     return {"actor": actor_params, "critic": critic_params}
 
 
-def update(policy: MyfpoPolicy, optimizer, batch: dict[str, Any], cfg: MyfpoConfig) -> UpdateResult:
+def update(policy: FlowPolicyOptimizationPolicy, optimizer, batch: dict[str, Any], cfg: FlowPolicyOptimizationConfig) -> UpdateResult:
     policy.train()
     device = next(policy.actor.parameters()).device
     n = int(batch["raw_returns"].shape[0])
@@ -1657,11 +1657,11 @@ def register_gym_envs() -> None:
 
 
 def resolve_device() -> torch.device:
-    want = os.environ.get("MYFPO_DEVICE", "auto").lower()
+    want = os.environ.get("FLOW_POLICY_OPTIMIZATION_DEVICE", "auto").lower()
     if want == "cpu":
         return torch.device("cpu")
     if want not in {"auto", "cuda"}:
-        raise ValueError(f"MYFPO_DEVICE={want!r} unknown; expected 'auto', 'cpu', or 'cuda'")
+        raise ValueError(f"FLOW_POLICY_OPTIMIZATION_DEVICE={want!r} unknown; expected 'auto', 'cpu', or 'cuda'")
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
@@ -1673,7 +1673,7 @@ def set_seed(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
-def save_checkpoint(out_dir, name: str, policy: MyfpoPolicy, optimizer, global_step: int) -> str:
+def save_checkpoint(out_dir, name: str, policy: FlowPolicyOptimizationPolicy, optimizer, global_step: int) -> str:
     ckpt = Path(out_dir) / "checkpoints" / name / "checkpoint.pt"
     ckpt.parent.mkdir(parents=True, exist_ok=True)
     torch.save({
@@ -1685,7 +1685,7 @@ def save_checkpoint(out_dir, name: str, policy: MyfpoPolicy, optimizer, global_s
     return str(ckpt)
 
 
-def load_checkpoint(checkpoint_dir: str, policy: MyfpoPolicy, optimizer=None) -> int:
+def load_checkpoint(checkpoint_dir: str, policy: FlowPolicyOptimizationPolicy, optimizer=None) -> int:
     p = Path(checkpoint_dir)
     ckpt = p / "checkpoint.pt" if p.is_dir() else p
     if not ckpt.is_file():
@@ -1733,7 +1733,7 @@ def make_train_env(env, env_name: str, num_envs: int, record: dict | None = None
 
 
 class _EvalAdapter:
-    def __init__(self, policy: MyfpoPolicy):
+    def __init__(self, policy: FlowPolicyOptimizationPolicy):
         self.policy = policy
 
     def reset(self) -> None:
@@ -1746,7 +1746,7 @@ class _EvalAdapter:
         return self.policy.predict_action_chunk(window)
 
 
-def _init_wandb(cfg: MyfpoConfig, *, method: str, env_name: str, seed: int, total_steps: int):
+def _init_wandb(cfg: FlowPolicyOptimizationConfig, *, method: str, env_name: str, seed: int, total_steps: int):
     if cfg.report_to == "none":
         return None
     import wandb
@@ -1765,14 +1765,14 @@ def _init_wandb(cfg: MyfpoConfig, *, method: str, env_name: str, seed: int, tota
     return wandb
 
 
-def run_myfpo_training(
-    env, out_dir, cfg: MyfpoConfig | None = None, *, seed: int = 3407, total_steps: int = 2000,
+def run_flow_policy_optimization_training(
+    env, out_dir, cfg: FlowPolicyOptimizationConfig | None = None, *, seed: int = 3407, total_steps: int = 2000,
     eval_steps: int = 1000, save_steps: int = 10**9, obs_dim: int | None = None,
     action_dim: int | None = None, resume_from_checkpoint: str | None = None,
     env_id: str | None = None, runtime: dict | None = None,
 ) -> dict:
-    """Run one myfpo training loop."""
-    cfg = cfg or MyfpoConfig()
+    """Run one flow_policy_optimization training loop."""
+    cfg = cfg or FlowPolicyOptimizationConfig()
     obs_dim = obs_dim or int(np.prod(env.observation_space.shape))
     action_dim = action_dim or int(np.prod(env.action_space.shape))
     out_dir = Path(out_dir)
@@ -1788,11 +1788,11 @@ def run_myfpo_training(
 
     low = np.atleast_1d(np.asarray(env.action_space.low, dtype=np.float32))
     high = np.atleast_1d(np.asarray(env.action_space.high, dtype=np.float32))
-    policy = MyfpoPolicy(cfg, obs_dim, action_dim, low, high).to(device)
+    policy = FlowPolicyOptimizationPolicy(cfg, obs_dim, action_dim, low, high).to(device)
     optimizer = make_optimizer(policy)
     if resume_from_checkpoint is not None:
         step = load_checkpoint(resume_from_checkpoint, policy, optimizer)
-        print(f"myfpo: resumed from {resume_from_checkpoint} at step {step}", flush=True)
+        print(f"flow_policy_optimization: resumed from {resume_from_checkpoint} at step {step}", flush=True)
 
     eval_seed = 10000 + seed
     if hasattr(train_env, "make_eval_env"):
@@ -1807,10 +1807,10 @@ def run_myfpo_training(
 
     rand_results = evaluator.clone(max_episodes=30).evaluate(evaluator.random_policy(evaluator.env), out_dir=None)
     r_rand = float(np.mean([r["return"] for r in rand_results])) if rand_results else 0.0
-    wb = _init_wandb(cfg, method="myfpo", env_name=env_name, seed=seed, total_steps=total_steps)
+    wb = _init_wandb(cfg, method="flow_policy_optimization", env_name=env_name, seed=seed, total_steps=total_steps)
     artifacts: list[str] = []
     params = sum(p.numel() for p in policy.parameters() if p.requires_grad)
-    print(f"myfpo policy: actor=FlowMLP hidden={cfg.hidden_dim} params={params:,}", flush=True)
+    print(f"flow_policy_optimization policy: actor=FlowMLP hidden={cfg.hidden_dim} params={params:,}", flush=True)
 
     n_envs = int(getattr(train_env, "num_envs", 1))
     full_chunks_per_env = max(1, int(cfg.chunks_per_update) // n_envs)
@@ -1892,7 +1892,7 @@ def run_myfpo_training(
         eval_env.close()
 
     return {
-        "method": "myfpo",
+        "method": "flow_policy_optimization",
         "env_name": env_name,
         "seed": seed,
         "reward_mean_last10": float(np.mean(all_eval_returns[-10:])) if all_eval_returns else 0.0,

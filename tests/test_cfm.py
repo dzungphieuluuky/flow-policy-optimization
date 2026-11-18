@@ -52,7 +52,7 @@ def test_behavior_and_training_read_one_token_loss():
     batch["behavior_cfm_loss"] = loss_b
     batch["behavior_cfm_loss_token"] = token_b
 
-    from myfpo.myfpo import compute_loss
+    from flow_policy_optimization.flow_policy_optimization import compute_loss
 
     _, metrics = compute_loss(policy, batch, device)
     assert metrics["cfm_loss_new"] == float(loss_b.mean())

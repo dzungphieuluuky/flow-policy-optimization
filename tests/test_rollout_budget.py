@@ -2,11 +2,11 @@
 
 import pytest
 
-from myfpo.myfpo import MyfpoConfig, _rollout_budget
+from flow_policy_optimization.flow_policy_optimization import FlowPolicyOptimizationConfig, _rollout_budget
 
 
-def _cfg(num_action_steps: int, chunks_per_update: int = 2048) -> MyfpoConfig:
-    return MyfpoConfig(
+def _cfg(num_action_steps: int, chunks_per_update: int = 2048) -> FlowPolicyOptimizationConfig:
+    return FlowPolicyOptimizationConfig(
         num_obs_steps=4,
         action_horizon=4,
         num_action_steps=num_action_steps,

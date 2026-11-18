@@ -8,12 +8,12 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 
-from myfpo.myfpo import (  # noqa: E402
+from flow_policy_optimization.flow_policy_optimization import (  # noqa: E402
     ENV_REGISTRY_PATH,
     KNOWN_ENVS,
     get_observation_action_dim,
 )
-from myfpo.myfpo import MyfpoConfig  # noqa: E402
+from flow_policy_optimization.flow_policy_optimization import FlowPolicyOptimizationConfig  # noqa: E402
 
 # Tier "smoke": pure gymnasium, no mujoco, so these run anywhere.
 SMOKE_ENVS = ("Pendulum-v1", "Reacher-v5")
@@ -26,14 +26,14 @@ def _gym_env(env_id):
 
 def test_a_bare_config_constructs_without_dims():
     """Dims are not config fields; the policy takes them as constructor arguments."""
-    cfg = MyfpoConfig()
+    cfg = FlowPolicyOptimizationConfig()
     assert not hasattr(cfg, "obs_dim")
     assert not hasattr(cfg, "action_dim")
 
 
 def test_the_env_name_is_not_a_config_field():
     """Auto-detection keyed on this never had a value to key on."""
-    assert not hasattr(MyfpoConfig(), "env_name")
+    assert not hasattr(FlowPolicyOptimizationConfig(), "env_name")
 
 
 @pytest.mark.parametrize("env_id", SMOKE_ENVS)
@@ -62,13 +62,13 @@ def test_registry_dims_match_the_live_env_space(env_id):
 @pytest.mark.parametrize("env_id", SMOKE_ENVS)
 def test_make_policy_attaches_dims_from_the_registry(env_id):
     """The runner's only inputs: an env name and its resolved dims."""
-    from myfpo.myfpo import MyfpoPolicy
+    from flow_policy_optimization.flow_policy_optimization import FlowPolicyOptimizationPolicy
 
     obs_dim, action_dim = get_observation_action_dim(env_id)
-    cfg = MyfpoConfig()
+    cfg = FlowPolicyOptimizationConfig()
     low = [-1.0] * action_dim
     high = [1.0] * action_dim
-    policy = MyfpoPolicy(cfg, obs_dim, action_dim, low, high)
+    policy = FlowPolicyOptimizationPolicy(cfg, obs_dim, action_dim, low, high)
     assert policy.obs_dim == obs_dim
     assert policy.action_dim == action_dim
 
@@ -90,7 +90,7 @@ def test_no_discrete_action_envs_are_registered():
             env.close()
         assert not isinstance(
             space, gym.spaces.Discrete
-        ), f"{env_id} has a Discrete action space; myfpo needs continuous actions"
+        ), f"{env_id} has a Discrete action space; flow_policy_optimization needs continuous actions"
         assert int(math.prod(space.shape)) == entry["action_dim"], (
             f"{env_id} action_dim={entry['action_dim']} != live "
             f"{int(math.prod(space.shape))}"

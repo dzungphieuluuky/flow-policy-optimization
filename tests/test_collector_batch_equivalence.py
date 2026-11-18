@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 import torch
 
-from myfpo.myfpo import (
+from flow_policy_optimization.flow_policy_optimization import (
     RolloutBuffer,
     collect_chunks_vec,
 )

@@ -4,7 +4,7 @@ import inspect
 import pytest
 import torch
 
-from myfpo.myfpo import compute_chunk_advantages, gae_trace
+from flow_policy_optimization.flow_policy_optimization import compute_chunk_advantages, gae_trace
 
 GAMMA, H = 0.99, 4
 
@@ -445,7 +445,7 @@ def test_discount_and_lambda_have_no_defaults():
     """The config owns the 0.99/0.95 defaults; the function must not restate them.
 
     It used to carry its own defaults, which could silently disagree with
-    ``MyfpoConfig``. A call without them is a TypeError now.
+    ``FlowPolicyOptimizationConfig``. A call without them is a TypeError now.
     """
     params = inspect.signature(compute_chunk_advantages).parameters
     assert params["gamma"].default is inspect.Parameter.empty

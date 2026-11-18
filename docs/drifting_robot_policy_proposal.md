@@ -1,6 +1,6 @@
 # Drifting-Optimized Robot Policies: A Three-Track Research Proposal
 
-**Authors:** myfpo team (working proposal)
+**Authors:** flow_policy_optimization team (working proposal)
 **Date:** 2026-11-13
 **Scope:** three coupled research tracks exploiting *Generative Modeling via Drifting* (Deng, Li, Li, Du, He — arXiv:2602.04770v2) for robot policy learning.
 
@@ -14,8 +14,8 @@ The paradigm is spreading fast across domains — super-resolution (DriftSR), sp
 
 Why this matters now, specifically:
 
-1. **Inference is the deployment bottleneck.** Flow/diffusion action heads (π₀, myfpo's flow policy with `num_steps_noise_start=10`) cost 8–20 forward passes per control cycle. At 30–50 Hz manipulation this is the binding throughput constraint, and it dominates every myfpo eval.
-2. **RL for flow policies is structurally fragile.** FPO/FPO++ (arXiv:2507.21053, arXiv:2602.02481) needs CFM-ratio ELBO surrogates with finite-MC bias; their late-training instability (and myfpo's own 3407 run oscillation/collapse after ~320k steps) demonstrates the failure mode empirically.
+1. **Inference is the deployment bottleneck.** Flow/diffusion action heads (π₀, flow_policy_optimization's flow policy with `num_steps_noise_start=10`) cost 8–20 forward passes per control cycle. At 30–50 Hz manipulation this is the binding throughput constraint, and it dominates every flow_policy_optimization eval.
+2. **RL for flow policies is structurally fragile.** FPO/FPO++ (arXiv:2507.21053, arXiv:2602.02481) needs CFM-ratio ELBO surrogates with finite-MC bias; their late-training instability (and flow_policy_optimization's own 3407 run oscillation/collapse after ~320k steps) demonstrates the failure mode empirically.
 3. **Drifting needs no densities, no samplers, no chains.** Its attraction/repulsion field is defined pointwise on samples — exactly the interface RL's replay buffer provides.
 
 The frozen-conclusion of this proposal: drifting is a **kernelized, density-free discrepancy minimizer with a stop-gradient**, usable as (a) a one-step *generator* (Track A), (b) an *improvement operator* over replay data (Track B), and (c) an analyzable dynamical system with a stability/guidance theory (Track C).
@@ -30,9 +30,9 @@ The frozen-conclusion of this proposal: drifting is a **kernelized, density-free
 | GoRL: decoupled latent policy + flow decoder, ICML 2026, HopperStand >870/180M steps | arXiv:2512.02581v2 |
 | QF3: velocity-space per-dimension clip, 10× wall-clock vs FPO++, 29-DoF G1 from scratch | arXiv:2610.08789 |
 | QF3 is homogeneous-α; per-dimension/heterogeneous α unexplored | this session's read, arXiv:2610.08789 |
-| myfpo repo: flow (OT-CFM-like) policy, ~10 Euler steps default, on-policy FPO++, paired eval seeds | repo audit this session |
-| myfpo MuJoCo registry: Hopper/HalfCheetah/Walker2d/Swimmer/Pusher/Ant/Humanoid (+ Adroit, ManiSkill) | configs/envs.yaml |
-| myfpo eval is deterministic per `eval_seed = 10000 + seed` (paired) | src/myfpo/training.py:1078 |
+| flow_policy_optimization repo: flow (OT-CFM-like) policy, ~10 Euler steps default, on-policy FPO++, paired eval seeds | repo audit this session |
+| flow_policy_optimization MuJoCo registry: Hopper/HalfCheetah/Walker2d/Swimmer/Pusher/Ant/Humanoid (+ Adroit, ManiSkill) | configs/envs.yaml |
+| flow_policy_optimization eval is deterministic per `eval_seed = 10000 + seed` (paired) | src/flow_policy_optimization/training.py:1078 |
 | FAFM already does flow-matching **in DCT-coefficient space** + Sobolev regularization (imitation) | arXiv:2606.20135 |
 | FAFM/FGO/FreqPolicy/MPD/CSP: frequency-domain action representation is crowded in imitation | survey + arXiv reads this session |
 | BEHAVIOR/LeHome 2026 1st-place solutions use correlated ε ~ N(0, βΣ+(1−β)I) | arXiv:2512.06951, arXiv:2606.27163 |
@@ -50,24 +50,24 @@ The frozen-conclusion of this proposal: drifting is a **kernelized, density-free
 
 ### 1.1 Problem
 
-Flow/diffusion action heads cost `K` velocity-field evaluations per control cycle (myfpo default `K=10`; deployments often use `K=4`, which degraded action quality in our Humanoid-v5 3407 run: returns flatlined near the random-policy band). Real-time manipulation at 30–50 Hz and dynamic locomotion at 100+ Hz cannot afford this; RL on-policy loops multiply the cost by every rollout.
+Flow/diffusion action heads cost `K` velocity-field evaluations per control cycle (flow_policy_optimization default `K=10`; deployments often use `K=4`, which degraded action quality in our Humanoid-v5 3407 run: returns flatlined near the random-policy band). Real-time manipulation at 30–50 Hz and dynamic locomotion at 100+ Hz cannot afford this; RL on-policy loops multiply the cost by every rollout.
 
 ### 1.2 Method
 
-1. **Teacher**: any myfpo/flow/pi₀-style flow policy checkpoint (existing checkpoints reused).
+1. **Teacher**: any flow_policy_optimization/flow/pi₀-style flow policy checkpoint (existing checkpoints reused).
 2. **Student**: single-block transformer DiT or lightweight MLP-DiT with AdaLN, action-chunk output `[B, H, dA]`, **no integration**. Trained with the Drifting loss (Eq. 6 of the drifting paper):
    `L = E_ε[ ‖f_θ(ε) − stopgrad(f_θ(ε) + V(f_θ(ε)))‖² ]`
    with positives = teacher-action chunks from teacher rollouts in s, negatives = student samples in the same batch.
 3. **Drift field instantiation** (two options, ablated):
    - *Raw action space*: RBF kernel `k(x, y) = exp(−‖x−y‖²/ℓ²)` over whitened action chunks (running covariance from replay, shrunk `β` toward identity per the BEHAVIOR/LeHome recipe).
-   - *Feature space*: critic encoder `ϕ(s, a)` from myfpo's frozen CriticMember as the feature extractor (the drifting paper shows feature drift >> raw space for high-dimensional targets; action chunks are 44–68-dim, where raw RBF is already well-conditioned with whitening).
+   - *Feature space*: critic encoder `ϕ(s, a)` from flow_policy_optimization's frozen CriticMember as the feature extractor (the drifting paper shows feature drift >> raw space for high-dimensional targets; action chunks are 44–68-dim, where raw RBF is already well-conditioned with whitening).
 4. **CFG analog at training time** (optional, reward-conditioned): positives = teacher actions with above-median advantage; negatives = student samples. Drifting field learns a reward-skewed transport directly — 1-NFE reward guidance at inference (see also Track C §3.2).
 
-### 1.3 Experiments (all in myfpo unless noted)
+### 1.3 Experiments (all in flow_policy_optimization unless noted)
 
 - **Environments**: Hopper-v5, HalfCheetah-v5, Walker2d-v5 (core); Ant-v5, Humanoid-v5 (hard). Stretch: AdroitHandDoor-v1 (dexterous).
 - **Baselines**: (i) teacher (10-step), (ii) consistency-style distillation (drift vs CFM-consistency comparison), (iii) shortcut-model distillation, (iv) DCT-space FM (FAFM-style) student.
-- **Primary metrics**: normalized return, action jerk / LDLJ, wall-clock per policy call (ms), success rate; myfpo's paired-seed eval (`eval_seed = 10000 + seed`) for every comparison.
+- **Primary metrics**: normalized return, action jerk / LDLJ, wall-clock per policy call (ms), success rate; flow_policy_optimization's paired-seed eval (`eval_seed = 10000 + seed`) for every comparison.
 - **Key ablations**: raw vs feature space; kernel bandwidth ℓ; β shrinkage; chunk length H ∈ {4, 8}; teacher N (4 vs 10).
 
 ### 1.4 Hypotheses
@@ -104,13 +104,13 @@ Every current RL-improvement operator for generative policies pays one of three 
 
 1. **Likelihood tax** (FPO/FPO++, DPPO/ReinFlow): CFM/ELBO ratios with finite-MC bias, late-collapse instability — empirically observed in both the FPO++ paper and our 3407 run.
 2. **Sampler tax** (Diffusion-QL, Reparameterized OFM-RL): backprop through ODE steps; memory/variance blow-up; QF3 avoids it with a velocity clip but stays TD3-flavored and needs the critic at every step.
-3. **Behavioral-ceiling tax** (AWR/AWAC/IDQL-style extraction): improvement bounded by behavior support; extraction is itself a distillation problem (current myfpo update inherits this: ratio clip acts on CFM losses, effectively a distillation of the behavior policy).
+3. **Behavioral-ceiling tax** (AWR/AWAC/IDQL-style extraction): improvement bounded by behavior support; extraction is itself a distillation problem (current flow_policy_optimization update inherits this: ratio clip acts on CFM losses, effectively a distillation of the behavior policy).
 
 Drifting offers a fourth route: **iterated distribution matching**, which is what RL over replay is anyway — but with a kernelized attraction/repulsion rather than a parametric ratio.
 
 ### 2.2 Method
 
-**Update rule.** Given batch from replay, advantages `A(s,a)` (normalized as myfpo already does), define the tempered positive distribution
+**Update rule.** Given batch from replay, advantages `A(s,a)` (normalized as flow_policy_optimization already does), define the tempered positive distribution
 `p*(a | s) ∝ p_replay(a | s) · exp(A(s,a)/β)`.
 Then train `f_θ` on the drifting loss with positives sampled from `p*` (importance-weighted replay samples, or top-quantile elite set) and negatives = fresh student samples:
 
@@ -124,9 +124,9 @@ L = E_{(s, a+, A), ε} [ ‖f_θ(s, ε) − stopgrad(f_θ(s, ε) + V(p*, q; f_θ
 - Equilibrium `q = p*` is well-defined and *is the improved policy* — the drift drives the student onto the advantage-filtered distribution, and iterating gives iterated AWR-style improvement, now inside a one-step generator.
 - **Safety floor**: mix replay actions into the positive set with fixed floor weight `w_min` (avoids collapse to elite minority when β is large); β ∈ [0.05, 1].
 - **Baseline drift anchor** (optional): one distillation block toward the raw replay distribution per K steps — bounds drift staleness as buffer evolves.
-- **KL trust region** (optional): blend toward the previous student (EMA-target drifting), mirroring myfpo's EMA; prevents large-step jumps when advantages are noisy.
+- **KL trust region** (optional): blend toward the previous student (EMA-target drifting), mirroring flow_policy_optimization's EMA; prevents large-step jumps when advantages are noisy.
 
-**Implementation slots in myfpo.** The batch already carries `raw_advantages`, `normalized_advantages`, `raw_returns`, `chunk_truncated`, `action_is_pad`. The update replaces `policy_loss` (FPO ratio surrogate) with `drift_loss` — a ~150-line sibling of `policy_loss` in `modeling.py`. EMA, advantage normalizers, GAE pipeline unchanged. myfpo's paired eval protocol gives trustworthy absolute comparisons against the current FPO++ run at matched seeds.
+**Implementation slots in flow_policy_optimization.** The batch already carries `raw_advantages`, `normalized_advantages`, `raw_returns`, `chunk_truncated`, `action_is_pad`. The update replaces `policy_loss` (FPO ratio surrogate) with `drift_loss` — a ~150-line sibling of `policy_loss` in `modeling.py`. EMA, advantage normalizers, GAE pipeline unchanged. flow_policy_optimization's paired eval protocol gives trustworthy absolute comparisons against the current FPO++ run at matched seeds.
 
 ### 2.3 Theory targets
 
@@ -140,8 +140,8 @@ L = E_{(s, a+, A), ε} [ ‖f_θ(s, ε) − stopgrad(f_θ(s, ε) + V(p*, q; f_θ
 
 ### 2.4 Experiments
 
-- **Phase 1 (offline, no new infra):** static buffers from myfpo runs (or MuJoCo DMC-style datasets): Hopper, Walker2d, HalfCheetah, Ant; compare vs AWR, advantage-weighted FM extraction, IQL-style extraction, myfpo FPO ratio (replayed updates). Metrics: normalized return vs #updates, drift-norm trajectory vs final performance.
-- **Phase 2 (online-to-online):** myfpo with the drift update replacing the PPO surrogate on Hopper-v5, then Walker2d-v5, HalfCheetah-v5; baselines: FPO++ (current), FPO++ + advantage-floor (ablation), Flow-DPPO-style KL mask (if implementable in scope).
+- **Phase 1 (offline, no new infra):** static buffers from flow_policy_optimization runs (or MuJoCo DMC-style datasets): Hopper, Walker2d, HalfCheetah, Ant; compare vs AWR, advantage-weighted FM extraction, IQL-style extraction, flow_policy_optimization FPO ratio (replayed updates). Metrics: normalized return vs #updates, drift-norm trajectory vs final performance.
+- **Phase 2 (online-to-online):** flow_policy_optimization with the drift update replacing the PPO surrogate on Hopper-v5, then Walker2d-v5, HalfCheetah-v5; baselines: FPO++ (current), FPO++ + advantage-floor (ablation), Flow-DPPO-style KL mask (if implementable in scope).
 - **Phase 3 (hard regime):** Humanoid-v5 (sparse-ish healthy reward); Ant-v5 (8-dim, easier). Success criterion: match FPO++ return at 10× lower per-update inference cost; exceed in wall-clock-to-target.
 - **Phase 4 (manipulation, stretch):** LIBERO via ManiSkill or MetaWorld registration (repo already registers Meta-World per commit history); requires Track A's student.
 
@@ -159,12 +159,12 @@ L = E_{(s, a+, A), ε} [ ‖f_θ(s, ε) − stopgrad(f_θ(s, ε) + V(p*, q; f_θ
 | Drift equilibrium misidentified as gradient descent (drift is not a gradient of a divergence) | measure drift norm, angle; control lr; T3 stability analysis; fall back to small lr + EMA |
 | β selection: large β ⇒ mode collapse onto elite; small β ⇒ no improvement | β sweep; advantage clip; floor w_min |
 | Kernel degeneracy in 17-dim Humanoid chunks | whitening; Mahalanobis kernel; feature space from frozen critic |
-| Importance weight variance | normalized advantages (myfpo already does); top-quantile clipping; ESS monitoring |
-| Phase 2 integration risk in myfpo training loop | minimal-change path: add `update_impl: {fpo, drift}` switch; keep FPO path intact |
+| Importance weight variance | normalized advantages (flow_policy_optimization already does); top-quantile clipping; ESS monitoring |
+| Phase 2 integration risk in flow_policy_optimization training loop | minimal-change path: add `update_impl: {fpo, drift}` switch; keep FPO path intact |
 
 ### 2.7 Timeline (≈ 12–14 weeks)
 
-W1–2: drift kernel + whitening + diagnostics in myfpo; W3–4: offline A/B vs AWR; W5–8: online Walker2d/Hopper + ablations; W9–10: Humanoid-v5; W11–12: theory experiments (T1, T3 diagnostics); W13–14: paper writing.
+W1–2: drift kernel + whitening + diagnostics in flow_policy_optimization; W3–4: offline A/B vs AWR; W5–8: online Walker2d/Hopper + ablations; W9–10: Humanoid-v5; W11–12: theory experiments (T1, T3 diagnostics); W13–14: paper writing.
 
 ---
 
@@ -190,7 +190,7 @@ W1–2: drift kernel + whitening + diagnostics in myfpo; W3–4: offline A/B vs 
 
 **Method.**
 - Teacher/student: reuse Track A student; add reward head or reuse advantage
-  from myfpo's critic (no new network if desired; advantage normalization reused).
+  from flow_policy_optimization's critic (no new network if desired; advantage normalization reused).
 - Training: positives from replay with `A > 0` cutoff or advantage-weighted sampling; reward-conditioned embedding (FiLM/adaLN) of a discretized reward bucket; CFG-style training-time guidance sampling between unconditional and conditional modes (per the drifting paper's CFG section — negative samples from off-class positives at matched reward).
 - Inference: given state, sample ε; one forward pass; outputs high-reward chunk. Reward scale is a free inference-time dial.
 
@@ -204,7 +204,7 @@ W1–2: drift kernel + whitening + diagnostics in myfpo; W3–4: offline A/B vs 
 ### 3.3 Part C3 — Safety constraints as hard repulsion
 
 - Add a repulsion term from a **constraint value function** `V_c(s, a)` (learned from constraint-violating replay): `V_safe = V − λ · ∇_a V_c`-style repulsion direction, or simply an augmented negative set of constraint-violating actions. At inference this is free.
-- Analyze: hard-vs-soft constraint trade-off; measure constraint violation rate vs λ; compare vs action-clamping (myfpo's existing `bound_to_unit`) and vs QF3-style clip.
+- Analyze: hard-vs-soft constraint trade-off; measure constraint violation rate vs λ; compare vs action-clamping (flow_policy_optimization's existing `bound_to_unit`) and vs QF3-style clip.
 - Deliverable: a checked, controllable safety dial for deployment — directly relevant to humanoid demos and real-hardware pitch.
 
 ### 3.4 Timeline (≈ 10 weeks)
@@ -222,7 +222,7 @@ W1–3: equilibrium identifiability experiments (tabular gridworld, 2D, small Mu
 - Track B → NeurIPS / ICLR / ICML (algorithm + theory heuristic + benchmarks).
 - Track C → ICML / NeurIPS (theory track) or ICRA workshop (reward guidance); safety results fold naturally into Track B's paper.
 
-**Why now / why this team.** The myfpo codebase (flow policy, paired-seed eval, MuJoCo registry, Adroit/MetaWorld registration path, ManiSkill GPU env support) is the correct laboratory; μfpo's FPO++ instability experience is direct motivation, and the paired-seed protocol eliminates the seed-variance confound that plagues this literature.
+**Why now / why this team.** The flow_policy_optimization codebase (flow policy, paired-seed eval, MuJoCo registry, Adroit/MetaWorld registration path, ManiSkill GPU env support) is the correct laboratory; μfpo's FPO++ instability experience is direct motivation, and the paired-seed protocol eliminates the seed-variance confound that plagues this literature.
 
 **Go/no-go gates.**
 - Gate 1 (end of Track A W4): student retains ≥ 90% teacher returns on Walker2d-v5 → proceed to Humanoid-v5/Manipulation; else narrow to locomotion-only scope.
@@ -243,21 +243,21 @@ W1–3: equilibrium identifiability experiments (tabular gridworld, 2D, small Mu
 ## Part 6 — Open risks across all tracks
 
 1. **Drift heuristic brittleness** — Mitigation: monitor `‖V‖`, kernel temp ablate, feature-space fallback, C1 analysis.
-2. **Evaluation confounds** — Mitigation: myfpo's paired eval seeds, ≥ 5 seeds per claim, report both normalized return and raw return, pre-registered kernel/τ for final comparisons.
+2. **Evaluation confounds** — Mitigation: flow_policy_optimization's paired eval seeds, ≥ 5 seeds per claim, report both normalized return and raw return, pre-registered kernel/τ for final comparisons.
 3. **Over-claiming speed** — Mitigation: measure actual per-call latency, not Euler-step counts; report LDLJ as a real robot metric.
 4. **Community race** (He group is fast) — Mitigation: ship Track A within ~6 weeks of Gate 1; Track B preprint by week 14.
 5. **Reviewers expecting densities** — Mitigation: T4 variational framing + explicit “no-likelihood” honesty section; the AWR baseline makes the claim legible.
 
-## Appendix A — myfpo integration map (file-level)
+## Appendix A — flow_policy_optimization integration map (file-level)
 
-- `src/myfpo/fpo_core.py`: `compute_trust_region_surrogate` untouched for Track B; new `drift_update` sibling.
-- `src/myfpo/modeling.py`: new `student` actor type (one-step); `sample_chunk` gains a `one_step=True` path; EMA already generic (actor+encoder) — reused.
-- `src/myfpo/rollout.py`: no changes required; rollouts call student if configured; paired eval protocol reused verbatim.
-- `src/myfpo/training.py`: `policy_loss` replaced/extended with drift arm; `eval_sampling` gains `"drift_1step"`; scheduler/RMS/etc. untouched.
+- `src/flow_policy_optimization/fpo_core.py`: `compute_trust_region_surrogate` untouched for Track B; new `drift_update` sibling.
+- `src/flow_policy_optimization/modeling.py`: new `student` actor type (one-step); `sample_chunk` gains a `one_step=True` path; EMA already generic (actor+encoder) — reused.
+- `src/flow_policy_optimization/rollout.py`: no changes required; rollouts call student if configured; paired eval protocol reused verbatim.
+- `src/flow_policy_optimization/training.py`: `policy_loss` replaced/extended with drift arm; `eval_sampling` gains `"drift_1step"`; scheduler/RMS/etc. untouched.
 - `scripts/pins/`: new pin for drift equilibrium check (synthetic 2D mode-separation test).
 
 ## Appendix B — Minimal reproducibility checklist
 
 - 5+ seeds per headline number; paired eval; confidence intervals; artifact tag with code + configs + raw logs.
 - Pre-registered drift-kernel (`τ`, bandwidth, whitening β) per Track A/B experiment.
-- Release myfpo fork with drift update behind `--myfpo.update_impl drift`.
+- Release flow_policy_optimization fork with drift update behind `--flow_policy_optimization.update_impl drift`.
