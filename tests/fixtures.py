@@ -17,12 +17,8 @@ OBS_DIM = 5
 ACT_DIM = 2
 
 
-def cfg(*, obs_dim: int = OBS_DIM, act_dim: int = ACT_DIM, **kw) -> FlowPolicyOptimizationConfig:
-    """A config with the dims the suite uses. ``kw`` goes to the fields."""
-    cfg = FlowPolicyOptimizationConfig(**kw)
-    cfg.obs_dim = obs_dim  # informational; the policy takes dims explicitly
-    cfg.action_dim = act_dim
-    return cfg
+def cfg(**kw) -> FlowPolicyOptimizationConfig:
+    return FlowPolicyOptimizationConfig(**kw)
 
 
 def make_test_policy(**kw) -> FlowPolicyOptimizationPolicy:
