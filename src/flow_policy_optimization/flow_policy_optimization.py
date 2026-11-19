@@ -890,7 +890,6 @@ def collect_chunks_vec(
     act_dim = int(np.asarray(envs.single_action_space.shape).prod())
     targets = np.full(n, int(chunks_per_env), dtype=np.int64)
     cap = np.iinfo(np.int64).max if max_steps_per_env is None else max(1, int(max_steps_per_env))
-    step_caps = np.full(n, cap, dtype=np.int64)
     closed = np.zeros(n, dtype=np.int64)
 
     if seed is None:
@@ -918,7 +917,7 @@ def collect_chunks_vec(
     torch_env = is_torch_env(envs)
 
     while remaining > 0:
-        need = np.flatnonzero((~active) & (closed < targets) & (executed_total < step_caps))
+        need = np.flatnonzero((~active) & (closed < targets) & (executed_total < cap))
         if need.size:
             wf = torch.as_tensor(need, dtype=torch.long)
             states = windows[wf]
@@ -927,7 +926,7 @@ def collect_chunks_vec(
             exec_plan[wf] = to_env_action(raw, low, high)
             start_window[wf] = states
             chunk_pos[wf] = 0
-            step_limits[need] = np.minimum(num_action_steps, step_caps[need] - executed_total[need])
+            step_limits[need] = np.minimum(num_action_steps, cap - executed_total[need])
             active[need] = True
         # Every env stops when its step cap is exhausted before the chunk target.
         if not active.any() and need.size == 0:
