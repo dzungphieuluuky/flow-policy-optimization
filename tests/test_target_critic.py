@@ -92,7 +92,7 @@ def test_the_update_reports_the_critic_target_lag():
     cfg = _cfg()
     policy = _policy(cfg)
     optimizer = make_optimizer(policy)
-    result = update(policy, optimizer, _batch(cfg), cfg)
-    assert "critic_target_lag" in result.metrics
-    assert np.isfinite(result.metrics["critic_target_lag"])
-    assert result.metrics["critic_target_lag"] >= 0.0
+    metrics, _, _ = update(policy, optimizer, _batch(cfg), cfg)
+    assert "critic_target_lag" in metrics
+    assert np.isfinite(metrics["critic_target_lag"])
+    assert metrics["critic_target_lag"] >= 0.0

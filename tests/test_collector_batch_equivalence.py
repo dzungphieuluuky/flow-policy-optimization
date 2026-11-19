@@ -189,10 +189,10 @@ def test_a_row_that_hit_its_target_still_tracks_the_env():
     buf, env = collect((3, 1000), n_envs=2, chunks_per_env=8)
     last_obs = torch.from_numpy(env.obs_seen[-1])
     # The last frame each row saw must be the last frame in its window.
-    torch.testing.assert_close(buf.carry.windows[:, -1], last_obs)
+    torch.testing.assert_close(buf.carry[:, -1], last_obs)
     # Row 1 never truncates: its full window matches the observed frames.
     torch.testing.assert_close(
-        buf.carry.windows[1],
+        buf.carry[1],
         torch.from_numpy(np.stack(env.obs_seen[-N_OBS:], axis=1)[1]),
     )
     # No row ever parked at zero actions, even the exhausted row 0.

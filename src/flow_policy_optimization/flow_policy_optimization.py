@@ -126,7 +126,6 @@ class FlowPolicyOptimizationConfig:
     time_embed_dim: int = 8
     critic_hidden_dim: int = 512
     critic_num_layers: int = 2
-    critic_condition_on_exec_length: bool = True
     # envs
     num_envs: int = 64
     # MC sampling
@@ -156,7 +155,6 @@ class FlowPolicyOptimizationConfig:
     velocity_clip_value: float | None = None
     # exploration / storage
     action_perturb_std: float = 0.02
-    storage_action_noise_std: float = 0.0
     actor_scale: float = 1.0
     # optimizer / batching
     policy_lr: float = 1e-4
@@ -421,7 +419,6 @@ class Critic(nn.Module):
         num_obs_steps: int,
         action_horizon: int,
         *,
-        condition_on_exec_length: bool = True,
         num_layers: int = 2,
         state_hidden: int | None = None,
     ):
@@ -430,9 +427,8 @@ class Critic(nn.Module):
         self.action_dim = action_dim
         self.num_obs_steps = num_obs_steps
         self.action_horizon = action_horizon
-        self.condition_on_exec_length = condition_on_exec_length
         state_dim = state_hidden if state_hidden is not None else hidden_dim
-        self.input_dim = 2 * state_dim + (1 if condition_on_exec_length else 0)
+        self.input_dim = 2 * state_dim + 1
 
         self.norm_state = StateAffine(num_obs_steps * obs_dim)
         self.state_encoder = StateEncoder(obs_dim, state_dim, num_obs_steps)
@@ -472,10 +468,9 @@ class Critic(nn.Module):
         act = act_tokens + self.act_to_obs(self.cross_norm_act(act_tokens), obs_tokens)
 
         parts = [obs[:, -1], act.mean(dim=1)]
-        if self.condition_on_exec_length:
-            if exec_length_frac is None or exec_length_frac.shape != (states.shape[0],):
-                raise ValueError("exec_length_frac of shape [B] is required when condition_on_exec_length=True")
-            parts.append(exec_length_frac.to(dtype=parts[0].dtype).unsqueeze(-1))
+        if exec_length_frac is None or exec_length_frac.shape != (states.shape[0],):
+            raise ValueError("exec_length_frac of shape [B] is required")
+        parts.append(exec_length_frac.to(dtype=parts[0].dtype).unsqueeze(-1))
         return self.mlp(torch.cat(parts, dim=-1)).squeeze(-1)
 
     def forward_v(self, states: torch.Tensor) -> torch.Tensor:
@@ -606,7 +601,6 @@ class FlowPolicyOptimizationPolicy(nn.Module):
         critic_width = config.critic_hidden_dim
         self.critic = Critic(
             obs_dim, critic_width, action_dim, config.num_obs_steps, config.action_horizon,
-            condition_on_exec_length=config.critic_condition_on_exec_length,
             num_layers=config.critic_num_layers, state_hidden=config.hidden_dim,
         )
         self.critic_target = copy.deepcopy(self.critic).requires_grad_(False).eval()
@@ -782,11 +776,6 @@ def gae_trace(delta: torch.Tensor, trace: torch.Tensor, successor: torch.Tensor)
     return adv.to(device=delta.device, dtype=delta.dtype)
 
 
-@dataclasses.dataclass
-class EnvCarry:
-    windows: torch.Tensor
-
-
 class RolloutBuffer:
     """Fixed-capacity fp32 CPU storage for chunk and executed-step rows."""
 
@@ -811,7 +800,7 @@ class RolloutBuffer:
         self._last_chunk: dict[int, int] = {}
         self.n_chunks = 0
         self.n_steps = 0
-        self.carry: EnvCarry | None = None
+        self.carry: torch.Tensor | None = None
 
     def reset(self) -> None:
         self.n_chunks = self.n_steps = 0
@@ -915,7 +904,7 @@ def take_final_observations(info, done_np, reference: torch.Tensor, strict: bool
 def collect_chunks_vec(
     envs, policy, chunks_per_env: int, action_low, action_high, *,
     num_obs_steps: int, num_action_steps: int, buffer: RolloutBuffer,
-    carry: EnvCarry | None = None, action_noise_std: float = 0.0, seed: int | None = None,
+    carry: torch.Tensor | None = None, action_noise_std: float = 0.0, seed: int | None = None,
     max_steps_per_env: int | None = None,
 ) -> RolloutBuffer:
     """Collect executed chunks from a lockstep SameStep vector env."""
@@ -940,7 +929,7 @@ def collect_chunks_vec(
         obs0_t = obs0.detach().cpu().float() if torch.is_tensor(obs0) else torch.from_numpy(np.asarray(obs0, dtype=np.float32))
         windows = obs0_t.clone() if obs0_t.dim() == 3 else obs0_t[:, None, :].expand(n, num_obs_steps, -1).clone()
     else:
-        windows = carry.windows.float().clone()
+        windows = carry.float().clone()
 
     obs_dim = windows.shape[-1]
     horizon = buffer.action_horizon
@@ -1041,14 +1030,13 @@ def collect_chunks_vec(
                 cd_rows = torch.as_tensor(c_done)
                 windows[cd_rows] = reset_frames[cd_rows].unsqueeze(1).expand(-1, num_obs_steps, -1)
 
-    buffer.carry = EnvCarry(windows=windows)
+    buffer.carry = windows
     return buffer
 
 
 @dataclasses.dataclass
 class RolloutState:
     buffer: RolloutBuffer
-    carry: EnvCarry | None = None
 
 
 def _rollout_budget(cfg: FlowPolicyOptimizationConfig, n_envs: int, remaining_steps: int) -> int:
@@ -1092,10 +1080,9 @@ def run_rollout(policy: FlowPolicyOptimizationPolicy, env, chunks_per_env: int, 
     collect_chunks_vec(
         env, policy.predict_action_chunk, chunks_per_env, action_low, action_high,
         num_obs_steps=cfg.num_obs_steps, num_action_steps=cfg.num_action_steps,
-        buffer=buffer, carry=state.carry, action_noise_std=cfg.storage_action_noise_std,
+        buffer=buffer, carry=buffer.carry,
         max_steps_per_env=max_steps_per_env,
     )
-    state.carry = buffer.carry
     active = buffer.active_prefix()
     n_chunks = buffer.n_chunks
     policy.obs_normalizer.update(active["normalizer_observations"])
@@ -1149,14 +1136,6 @@ def run_rollout(policy: FlowPolicyOptimizationPolicy, env, chunks_per_env: int, 
 # ---------------------------------------------------------------------------
 
 
-_OPTIMIZER_GROUP_ROLES = ("actor", "actor", "critic")
-
-
-def _tag_optimizer_roles(optimizer) -> None:
-    for role, group in zip(_OPTIMIZER_GROUP_ROLES, optimizer.param_groups, strict=True):
-        group["role"] = role
-
-
 def make_optimizer(policy: FlowPolicyOptimizationPolicy) -> torch.optim.Optimizer:
     cfg = policy.config
     decay, no_decay = [], []
@@ -1167,7 +1146,7 @@ def make_optimizer(policy: FlowPolicyOptimizationPolicy) -> torch.optim.Optimize
             else:
                 no_decay.append(p)
     fused = next(policy.parameters()).device.type == "cuda"
-    optimizer = torch.optim.Adam(
+    return torch.optim.Adam(
         [
             {"params": decay, "lr": cfg.policy_lr, "weight_decay": cfg.optimizer_weight_decay},
             {"params": no_decay, "lr": cfg.policy_lr, "weight_decay": 0.0},
@@ -1177,15 +1156,6 @@ def make_optimizer(policy: FlowPolicyOptimizationPolicy) -> torch.optim.Optimize
         eps=1e-8,
         fused=fused,
     )
-    _tag_optimizer_roles(optimizer)
-    return optimizer
-
-
-@dataclasses.dataclass
-class UpdateResult:
-    metrics: dict[str, float]
-    grad_norm_actor: float
-    grad_norm_critic: float
 
 
 def compute_loss(policy: FlowPolicyOptimizationPolicy, batch: dict[str, torch.Tensor], device) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
@@ -1249,18 +1219,15 @@ def _param_groups_for_clip(policy: FlowPolicyOptimizationPolicy) -> dict[str, li
     return {"actor": actor_params, "critic": critic_params}
 
 
-def update(policy: FlowPolicyOptimizationPolicy, optimizer, batch: dict[str, Any], cfg: FlowPolicyOptimizationConfig) -> UpdateResult:
+def update(policy: FlowPolicyOptimizationPolicy, optimizer, batch: dict[str, Any], cfg: FlowPolicyOptimizationConfig) -> tuple[dict[str, float], float, float]:
     policy.train()
     device = next(policy.actor.parameters()).device
     n = int(batch["raw_returns"].shape[0])
     if n == 0:
-        return UpdateResult(metrics={}, grad_norm_actor=0.0, grad_norm_critic=0.0)
+        return {}, 0.0, 0.0
 
-    groups = optimizer.param_groups
-    if any("role" not in g for g in groups):
-        raise ValueError("optimizer param groups are missing roles; build the optimizer with make_optimizer")
-    actor_params = [p for g in groups if g["role"] == "actor" for p in g["params"]]
-    critic_params = [p for g in groups if g["role"] == "critic" for p in g["params"]]
+    clip_groups = _param_groups_for_clip(policy)
+    actor_params, critic_params = clip_groups["actor"], clip_groups["critic"]
 
     # Stage training tensors on device once per rollout instead of once per minibatch.
     dev_batch = {
@@ -1301,11 +1268,7 @@ def update(policy: FlowPolicyOptimizationPolicy, optimizer, batch: dict[str, Any
         lag_frac = lag_keep.sum(dim=-1) / float(cfg.action_horizon)
         lag_actions = to_critic_action(dev_batch["action"], mask=lag_keep.unsqueeze(-1))
         lag = float((policy.critic(lag_states, lag_actions, lag_frac) - policy.critic_target(lag_states, lag_actions, lag_frac)).abs().float().mean().item())
-    return UpdateResult(
-        metrics={**{k: float((v / counts).item()) for k, v in totals.items()}, "critic_target_lag": lag},
-        grad_norm_actor=grad_norm_actor,
-        grad_norm_critic=grad_norm_critic,
-    )
+    return ({**{k: float((v / counts).item()) for k, v in totals.items()}, "critic_target_lag": lag}, grad_norm_actor, grad_norm_critic)
 
 
 # ---------------------------------------------------------------------------
@@ -1614,7 +1577,6 @@ def load_checkpoint(checkpoint_dir: str, policy: FlowPolicyOptimizationPolicy, o
     policy.load_state_dict(payload["model"])
     if optimizer is not None and payload.get("optimizer") is not None:
         optimizer.load_state_dict(payload["optimizer"])
-        _tag_optimizer_roles(optimizer)  # load_state_dict drops unknown group keys
     return int(payload.get("global_step", 0))
 
 
@@ -1741,16 +1703,16 @@ def run_flow_policy_optimization_training(
             state=rollout_state,
         )
         collect_s = time.perf_counter() - t0
-        result = update(policy, optimizer, batch, cfg)
+        metrics, grad_norm_actor, grad_norm_critic = update(policy, optimizer, batch, cfg)
         global_step += int(batch["step_rewards"].numel())
 
         if wb is not None:
             acts = batch["action"]
             wb.log({
-                **{f"train/{k}": v for k, v in result.metrics.items()},
-                "train/grad_norm_actor_before_clip": result.grad_norm_actor,
-                "train/grad_norm_critic_before_clip": result.grad_norm_critic,
-                "train/grad_norm_before_clip": math.hypot(result.grad_norm_actor, result.grad_norm_critic),
+                **{f"train/{k}": v for k, v in metrics.items()},
+                "train/grad_norm_actor_before_clip": grad_norm_actor,
+                "train/grad_norm_critic_before_clip": grad_norm_critic,
+                "train/grad_norm_before_clip": math.hypot(grad_norm_actor, grad_norm_critic),
                 "train/collect_s": collect_s,
                 "train/policy_lr": optimizer.param_groups[0]["lr"],
                 "train/critic_lr": optimizer.param_groups[-1]["lr"],
@@ -1781,7 +1743,7 @@ def run_flow_policy_optimization_training(
                 }, step=global_step)
             next_eval = max(global_step + eval_steps, next_eval + eval_steps)
             if _shared_env(train_env, env):
-                rollout_state.carry = None
+                rollout_state.buffer.carry = None
 
         if global_step >= next_save:
             ckpt = save_checkpoint(out_dir, f"step_{global_step}", policy, optimizer, global_step)

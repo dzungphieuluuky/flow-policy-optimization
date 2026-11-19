@@ -245,7 +245,7 @@ def test_chunks_span_rollouts_when_carry_is_passed():
         )
     finally:
         envs.close()
-    assert torch.equal(buf2.chunk_state[0], carry.windows[0]), (
+    assert torch.equal(buf2.chunk_state[0], carry[0]), (
         "the second rollout did not start from the carried window"
     )
 
