@@ -85,7 +85,7 @@ print("flow_policy_optimization installed editable")
 ```python
 # Guard: every later cell needs this import to resolve.
 import sys
-subprocess.run([sys.executable, "-c", "import flow_policy_optimization, flow_policy_optimization.training"], check=True)
+subprocess.run([sys.executable, "-c", "import flow_policy_optimization"], check=True)
 ```
 
 ```python

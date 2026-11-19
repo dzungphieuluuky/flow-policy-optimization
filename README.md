@@ -17,8 +17,7 @@ Trains expressive, multimodal flow-based robot policies using online reinforceme
 ## Repository layout
 - `src/flow_policy_optimization/flow_policy_optimization.py` — the FPO++ implementation (single file)
 - `src/flow_policy_optimization/ppo.py` — plain PPO baseline
-- `scripts/train.py` — single-run training CLI; `scripts/play.py` — policy playback
-- `configs/envs.yaml` — environment registry
+- `scripts/train.py` — single-run training CLI; `scripts/play.py` — policy playback (dims come from the live env spaces)
 - `tests/` — pytest suite
 - `docs/benchmark-2026-11-17/` — raw eval CSVs and run metadata for the results below
 - `flow_policy_optimization_online.md` / `.ipynb` — notebook walkthrough (jupytext pair; edit the `.md`, then `jupytext --sync`)
@@ -56,8 +55,6 @@ PYTHONPATH=src .venv/bin/python scripts/train.py \
   --env InvertedPendulum-v5 --seed 3407 --total_steps 2000 \
   --out_dir /tmp/flow_policy_optimization_smoke --flow_policy_optimization.report_to none   # runtime smoke
 ```
-The `atol=0` behaviour pins were deleted on 2026-11-15. See
-`SIMPLIFICATION_PLAN.md`, Amendment 1.
 
 ## Key papers
 - FPO: `arXiv:2507.21053` (ICLR 2026)

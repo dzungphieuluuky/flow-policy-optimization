@@ -21,7 +21,6 @@ from typing import Any, Literal
 import numpy as np
 import torch
 import torch.nn.functional as F
-import yaml
 from torch import nn
 
 TIME_SCALE = 1000.0
@@ -35,22 +34,6 @@ DEFAULT_CONTROL_MODE = "pd_joint_delta_pos"
 # ---------------------------------------------------------------------------
 # Env registry, normalization, bounds, and config
 # ---------------------------------------------------------------------------
-
-ENV_REGISTRY_PATH = Path(__file__).resolve().parents[2] / "configs" / "envs.yaml"
-with ENV_REGISTRY_PATH.open() as _f:
-    _ENV_REGISTRY = yaml.safe_load(_f) or {}
-KNOWN_ENVS = tuple(_ENV_REGISTRY.keys())
-
-
-def get_observation_action_dim(env_id: str) -> tuple[int, int]:
-    """Obs and action dims for ``env_id``, from ``configs/envs.yaml``."""
-    if not _ENV_REGISTRY:
-        raise KeyError(f"registry empty at {ENV_REGISTRY_PATH}")
-    entry = _ENV_REGISTRY.get(env_id)
-    if entry is None:
-        raise KeyError(f"unknown env {env_id!r}; add it to {ENV_REGISTRY_PATH}")
-    return int(entry["obs_dim"]), int(entry["action_dim"])
-
 
 class RunningMeanStd(nn.Module):
     """Per-dimension running mean and variance over raw obs frames."""

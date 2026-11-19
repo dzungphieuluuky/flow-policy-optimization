@@ -34,9 +34,7 @@ from typing import Literal
 import draccus
 
 from flow_policy_optimization.flow_policy_optimization import (
-    KNOWN_ENVS,
     FlowPolicyOptimizationConfig,
-    get_observation_action_dim,
     is_maniskill_id,
     make_maniskill_env,
     run_flow_policy_optimization_training,
@@ -164,18 +162,10 @@ def run_single(
     else:
         env = gym.make(env_id)
     try:
-        # The registry fills the dims that the config leaves unset. The live
-        # space is the ground truth on a mismatch.
-        reg_obs, reg_act = get_observation_action_dim(env_id)
         live_obs = int(math.prod(env.observation_space.shape))
         live_act = int(math.prod(env.action_space.shape))
-        if (reg_obs, reg_act) != (live_obs, live_act):
-            raise ValueError(
-                f"registry dims {(reg_obs, reg_act)} != live {env_id} dims "
-                f"{(live_obs, live_act)}; update configs/envs.yaml"
-            )
-        obs_dim = reg_obs if obs_dim is None else obs_dim
-        action_dim = reg_act if action_dim is None else action_dim
+        obs_dim = live_obs if obs_dim is None else obs_dim
+        action_dim = live_act if action_dim is None else action_dim
         if (obs_dim, action_dim) != (live_obs, live_act):
             raise ValueError(
                 f"requested dims {(obs_dim, action_dim)} != live {env_id} dims "
@@ -227,12 +217,6 @@ def main(argv: list[str] | None = None) -> int:
     args = draccus.parse(config_class=TrainConfig, args=argv)
     if not args.env:
         print("ERROR: --env is required", file=sys.stderr)
-        return 1
-    if args.env not in KNOWN_ENVS:
-        print(
-            f"ERROR: unknown env {args.env!r}; choices: {', '.join(KNOWN_ENVS)}",
-            file=sys.stderr,
-        )
         return 1
 
     total = args.total_steps or 2000

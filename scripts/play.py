@@ -9,6 +9,7 @@ more than the numbers are worth for a policy you are iterating on.
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 
 import numpy as np
@@ -32,7 +33,6 @@ from flow_policy_optimization.flow_policy_optimization import (
     Evaluator,
     FlowPolicyOptimizationConfig,
     FlowPolicyOptimizationPolicy,
-    get_observation_action_dim,
     is_maniskill_id,
     load_checkpoint,
     register_gym_envs,
@@ -46,7 +46,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--env",
         default="Hopper-v5",
-        help="Gym env name (must be in KNOWN_ENVS).",
+        help="Gym env name.",
     )
     parser.add_argument(
         "--checkpoint",
@@ -85,7 +85,8 @@ def main(argv: list[str] | None = None) -> int:
 
     env = gym.make(args.env)
     try:
-        obs_dim, action_dim = get_observation_action_dim(args.env)
+        obs_dim = int(math.prod(env.observation_space.shape))
+        action_dim = int(math.prod(env.action_space.shape))
         cfg = FlowPolicyOptimizationConfig()
         policy = FlowPolicyOptimizationPolicy(
             cfg,
