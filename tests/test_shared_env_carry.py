@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import gymnasium as gym
 
-from flow_policy_optimization.flow_policy_optimization import _shared_env, make_train_env
+from flow_policy_optimization.train import _shared_env, make_train_env
 
 
 def test_a_single_wrapper_env_shares_the_sub_env_with_the_evaluator():

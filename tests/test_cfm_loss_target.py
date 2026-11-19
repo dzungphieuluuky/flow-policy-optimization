@@ -5,7 +5,8 @@ import math
 import pytest
 import torch
 
-from flow_policy_optimization.flow_policy_optimization import FlowPolicyOptimizationConfig, compute_cfm_loss
+from flow_policy_optimization.config import FlowPolicyOptimizationConfig
+from flow_policy_optimization.objective import compute_cfm_loss
 
 MODES = ("velocity",)
 

@@ -16,7 +16,7 @@ import numpy as np
 import pytest
 import torch
 
-from flow_policy_optimization.flow_policy_optimization import RolloutBuffer, collect_chunks_vec
+from flow_policy_optimization.rollout import RolloutBuffer, collect_chunks_vec
 
 OBS, ACT, H = 3, 2, 4
 FINAL, RESET = 7.0, -7.0

@@ -29,14 +29,9 @@ if torch.cuda.is_available():
         "max_split_size_mb:128,expandable_segments:True"
     )
 
-from flow_policy_optimization.flow_policy_optimization import (
-    Evaluator,
-    FlowPolicyOptimizationConfig,
-    FlowPolicyOptimizationPolicy,
-    is_maniskill_id,
-    load_checkpoint,
-    register_gym_envs,
-)
+from flow_policy_optimization.config import FlowPolicyOptimizationConfig
+from flow_policy_optimization.policy import FlowPolicyOptimizationPolicy
+from flow_policy_optimization.train import Evaluator, is_maniskill_id, load_checkpoint, register_gym_envs
 
 
 def main(argv: list[str] | None = None) -> int:

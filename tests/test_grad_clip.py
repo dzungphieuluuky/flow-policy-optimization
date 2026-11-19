@@ -10,8 +10,9 @@ from __future__ import annotations
 import pytest
 import torch
 
-from flow_policy_optimization.flow_policy_optimization import FlowPolicyOptimizationConfig, FlowPolicyOptimizationPolicy
-from flow_policy_optimization.flow_policy_optimization import _param_groups_for_clip
+from flow_policy_optimization.config import FlowPolicyOptimizationConfig
+from flow_policy_optimization.policy import FlowPolicyOptimizationPolicy
+from flow_policy_optimization.update import _param_groups_for_clip
 
 OBS, ACT, HORIZON, STEPS = 6, 3, 8, 4
 

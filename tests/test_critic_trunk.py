@@ -14,7 +14,7 @@ import pytest
 import torch
 from torch import nn
 
-from flow_policy_optimization.flow_policy_optimization import Critic, ActionAffine, StateAffine
+from flow_policy_optimization.networks import Critic, ActionAffine, StateAffine
 from conftest import unzero_critic_head
 
 OBS, HIDDEN, STEPS, ACT, H = 11, 32, 8, 3, 6

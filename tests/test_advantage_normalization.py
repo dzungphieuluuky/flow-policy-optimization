@@ -10,8 +10,9 @@ from __future__ import annotations
 import numpy as np
 import torch
 
-from flow_policy_optimization.flow_policy_optimization import FlowPolicyOptimizationConfig, FlowPolicyOptimizationPolicy, make_optimizer, update
-import flow_policy_optimization.flow_policy_optimization as m
+from flow_policy_optimization.config import FlowPolicyOptimizationConfig
+from flow_policy_optimization.policy import FlowPolicyOptimizationPolicy
+from flow_policy_optimization.update import compute_loss, make_optimizer, update
 
 N = 2
 
@@ -57,13 +58,13 @@ def test_the_rollout_normalization_reaches_the_actor_by_default(monkeypatch):
     optimizer = make_optimizer(policy)
     seen: list[torch.Tensor] = []
 
-    original = m.compute_loss
+    original = compute_loss
 
     def spy(policy_, batch_, device):
         seen.append(batch_["normalized_advantages"].clone())
         return original(policy_, batch_, device)
 
-    monkeypatch.setattr(m, "compute_loss", spy)
+    monkeypatch.setattr("flow_policy_optimization.update.compute_loss", spy)
     update(policy, optimizer, _batch(cfg), cfg)
     assert seen, "the update read no minibatch"
     for advantages in seen:

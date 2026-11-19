@@ -1,14 +1,15 @@
-"""flow_policy_optimization: lean, single-file FPO-style training (CleanRL / RSL-RL style).
+"""flow_policy_optimization: minimal CleanRL / RSL-RL-style FPO training.
 
-The public surface is small on purpose. ``FlowPolicyOptimizationConfig``, ``FlowPolicyOptimizationPolicy``,
-``run_flow_policy_optimization_training`` and the PPO baseline entry in ``flow_policy_optimization.ppo``.
+Files: ``config`` (config, normalization, bounds), ``networks`` (modules),
+``objective`` (CFM / ratio / chunk-GAE math), ``policy``, ``rollout``
+(buffer, SameStep collector, rollout driver), ``update`` (optimizer,
+minibatch update), ``train`` (evaluators, checkpoints, the training loop).
+The plain PPO baseline lives in ``flow_policy_optimization.ppo``.
 """
 
-from flow_policy_optimization.flow_policy_optimization import (
-    FlowPolicyOptimizationConfig,
-    FlowPolicyOptimizationPolicy,
-    run_flow_policy_optimization_training,
-)
+from flow_policy_optimization.config import FlowPolicyOptimizationConfig
+from flow_policy_optimization.policy import FlowPolicyOptimizationPolicy
+from flow_policy_optimization.train import run_flow_policy_optimization_training
 from flow_policy_optimization.ppo import run_ppo_training
 
 __all__ = [

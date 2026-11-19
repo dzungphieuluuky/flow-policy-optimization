@@ -11,7 +11,8 @@ from __future__ import annotations
 import numpy as np
 import torch
 
-from flow_policy_optimization.flow_policy_optimization import FlowPolicyOptimizationConfig, FlowPolicyOptimizationPolicy
+from flow_policy_optimization.config import FlowPolicyOptimizationConfig
+from flow_policy_optimization.policy import FlowPolicyOptimizationPolicy
 
 OBS, ACT, HORIZON = 3, 2, 4
 

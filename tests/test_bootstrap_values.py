@@ -10,7 +10,10 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from flow_policy_optimization.flow_policy_optimization import FlowPolicyOptimizationConfig, FlowPolicyOptimizationPolicy, make_rollout_state, make_train_env, run_rollout
+from flow_policy_optimization.config import FlowPolicyOptimizationConfig
+from flow_policy_optimization.policy import FlowPolicyOptimizationPolicy
+from flow_policy_optimization.rollout import make_rollout_state, run_rollout
+from flow_policy_optimization.train import make_train_env
 
 import gymnasium as gym
 import torch

@@ -6,16 +6,22 @@
 
 ## What this repo does
 Trains expressive, multimodal flow-based robot policies using online reinforcement learning without explicit action likelihoods. Key features:
-- Per-token ratio clipping; trust-region mode selectable (`aspo` default, `ppo`, `spo`) (`src/flow_policy_optimization/flow_policy_optimization.py`)
+- Per-token ratio clipping; trust-region mode selectable (`aspo` default, `ppo`, `spo`) (`src/flow_policy_optimization/objective.py`)
 - Chunked rollout with a 4-step open-loop horizon and time-limit-correct bootstrap on truncation
 - Stored actions are the flow's raw output clamped to the unit box; the CFM target fits it in flow space (`action / actor_scale`). The env receives the affine unscale into its own bounds
 - Flat-MLP actor over the flattened action chunk: window encoder + per-token timestep embedding into a SiLU MLP
 - TD-MPC2-style critic trunk: LayerNorm + Mish, the action chunk enters through a learned affine so the chunk's offset survives
 - Independent actor and critic gradient clipping
-- `src/flow_policy_optimization/flow_policy_optimization.py` is the single-file implementation; `src/flow_policy_optimization/ppo.py` is a plain PPO baseline (`--method ppo`) for comparisons
+- The FPO++ implementation is split by concern; `src/flow_policy_optimization/ppo.py` is a plain PPO baseline (`--method ppo`) for comparisons
 
 ## Repository layout
-- `src/flow_policy_optimization/flow_policy_optimization.py` — the FPO++ implementation (single file)
+- `src/flow_policy_optimization/config.py` — config, running-mean normalization, action bounds
+- `src/flow_policy_optimization/networks.py` — encoder, flow actor and critic modules
+- `src/flow_policy_optimization/objective.py` — CFM, ratio and chunk-GAE math
+- `src/flow_policy_optimization/policy.py` — actor + encoder + critic assembly
+- `src/flow_policy_optimization/rollout.py` — buffer, SameStep collector, rollout driver
+- `src/flow_policy_optimization/update.py` — optimizer and minibatch update
+- `src/flow_policy_optimization/train.py` — evaluators, ManiSkill wrapper, checkpoint IO, training loop
 - `src/flow_policy_optimization/ppo.py` — plain PPO baseline
 - `scripts/train.py` — single-run training CLI; `scripts/play.py` — policy playback (dims come from the live env spaces)
 - `tests/` — pytest suite
@@ -62,4 +68,4 @@ PYTHONPATH=src .venv/bin/python scripts/train.py \
 - Diffusion Policy: `arXiv:2303.04137`
 - GoRL / GORL: `arXiv:2512.02581v1` (ICML 2026)
 
-See `src/flow_policy_optimization/flow_policy_optimization.py` for how the whole implementation fits together.
+See `src/flow_policy_optimization/train.py` for the training loop; the modules read top to bottom in dependency order.

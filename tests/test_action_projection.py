@@ -10,7 +10,9 @@ import numpy as np
 import pytest
 import torch
 
-from flow_policy_optimization.flow_policy_optimization import FlowPolicyOptimizationConfig, FlowPolicyOptimizationPolicy, bound_for_storage, resolve_action_bounds, to_env_action
+from flow_policy_optimization.config import FlowPolicyOptimizationConfig, resolve_action_bounds
+from flow_policy_optimization.objective import bound_for_storage, to_env_action
+from flow_policy_optimization.policy import FlowPolicyOptimizationPolicy
 
 
 def _policy(**kw):

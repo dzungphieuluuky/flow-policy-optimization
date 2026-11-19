@@ -10,7 +10,10 @@ from __future__ import annotations
 import numpy as np
 import torch
 
-from flow_policy_optimization.flow_policy_optimization import FlowPolicyOptimizationConfig, FlowPolicyOptimizationPolicy, make_optimizer, update
+from flow_policy_optimization.config import FlowPolicyOptimizationConfig
+from flow_policy_optimization.objective import to_critic_action
+from flow_policy_optimization.policy import FlowPolicyOptimizationPolicy
+from flow_policy_optimization.update import make_optimizer, update
 
 N = 2
 
@@ -74,13 +77,11 @@ def test_the_target_tracks_the_online_critic_to_within_five_percent():
     for _ in range(200):
         update(policy, optimizer, batch, cfg)
 
-    import flow_policy_optimization.flow_policy_optimization as m
-
     with torch.no_grad():
         states = policy.obs_normalizer(batch["observation.state"])
         keep = (~batch["action_is_pad"]).to(torch.float32)
         exec_frac = keep.sum(dim=-1) / float(cfg.action_horizon)
-        critic_actions = m.to_critic_action(batch["action"], mask=keep.unsqueeze(-1))
+        critic_actions = to_critic_action(batch["action"], mask=keep.unsqueeze(-1))
         q_online = policy.critic(states, critic_actions, exec_frac)
         q_target = policy.critic_target(states, critic_actions, exec_frac)
     diff = (q_online - q_target).abs().mean()

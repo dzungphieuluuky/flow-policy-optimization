@@ -33,12 +33,8 @@ from typing import Literal
 
 import draccus
 
-from flow_policy_optimization.flow_policy_optimization import (
-    FlowPolicyOptimizationConfig,
-    is_maniskill_id,
-    make_maniskill_env,
-    run_flow_policy_optimization_training,
-)
+from flow_policy_optimization.config import FlowPolicyOptimizationConfig
+from flow_policy_optimization.train import is_maniskill_id, make_maniskill_env, run_flow_policy_optimization_training
 from flow_policy_optimization.ppo import run_ppo_training
 
 

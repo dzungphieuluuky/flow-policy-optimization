@@ -2,7 +2,8 @@
 
 import pytest
 
-from flow_policy_optimization.flow_policy_optimization import FlowPolicyOptimizationConfig, _rollout_budget
+from flow_policy_optimization.config import FlowPolicyOptimizationConfig
+from flow_policy_optimization.rollout import _rollout_budget
 
 
 def _cfg(num_action_steps: int, chunks_per_update: int = 2048) -> FlowPolicyOptimizationConfig:

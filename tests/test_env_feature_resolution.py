@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from flow_policy_optimization.flow_policy_optimization import FlowPolicyOptimizationConfig
+from flow_policy_optimization.config import FlowPolicyOptimizationConfig
 
 ROOT = Path(__file__).resolve().parents[1]
 

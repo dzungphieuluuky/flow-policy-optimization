@@ -11,7 +11,8 @@ import torch
 
 import numpy as np
 
-from flow_policy_optimization.flow_policy_optimization import FlowPolicyOptimizationConfig, FlowPolicyOptimizationPolicy
+from flow_policy_optimization.config import FlowPolicyOptimizationConfig
+from flow_policy_optimization.policy import FlowPolicyOptimizationPolicy
 
 OBS_DIM = 5
 ACT_DIM = 2

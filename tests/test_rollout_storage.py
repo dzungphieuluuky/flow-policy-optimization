@@ -5,7 +5,7 @@ import inspect
 import pytest
 import torch
 
-from flow_policy_optimization.flow_policy_optimization import RolloutBuffer, collect_chunks_vec
+from flow_policy_optimization.rollout import RolloutBuffer, collect_chunks_vec
 
 OBS_STEPS, OBS_DIM, HORIZON, ACT_DIM = 4, 3, 4, 1
 NUM_ENVS = 3

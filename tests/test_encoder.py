@@ -12,7 +12,7 @@ import pytest
 import torch
 from torch import nn
 
-from flow_policy_optimization.flow_policy_optimization import StateEncoder
+from flow_policy_optimization.networks import StateEncoder
 
 OBS, HIDDEN, STEPS = 39, 128, 16
 

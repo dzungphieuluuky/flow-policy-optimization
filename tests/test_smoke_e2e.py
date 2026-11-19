@@ -9,10 +9,8 @@ import csv
 import gymnasium as gym
 import pytest
 
-from flow_policy_optimization.flow_policy_optimization import (
-    FlowPolicyOptimizationConfig,
-    run_flow_policy_optimization_training,
-)
+from flow_policy_optimization.config import FlowPolicyOptimizationConfig
+from flow_policy_optimization.train import run_flow_policy_optimization_training
 
 
 @pytest.mark.parametrize("seed", [0])

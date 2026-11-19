@@ -19,7 +19,10 @@ import gymnasium as gym
 import numpy as np
 import torch
 
-from flow_policy_optimization.flow_policy_optimization import FlowPolicyOptimizationConfig, FlowPolicyOptimizationPolicy, make_rollout_state, make_train_env, run_rollout
+from flow_policy_optimization.config import FlowPolicyOptimizationConfig
+from flow_policy_optimization.policy import FlowPolicyOptimizationPolicy
+from flow_policy_optimization.rollout import make_rollout_state, run_rollout
+from flow_policy_optimization.train import make_train_env
 
 
 def _config() -> FlowPolicyOptimizationConfig:

@@ -13,7 +13,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from flow_policy_optimization.flow_policy_optimization import TIME_SCALE, SinusoidalEncoding
+from flow_policy_optimization.networks import TIME_SCALE, SinusoidalEncoding
 
 
 def test_the_frequencies_are_log_spaced_and_decaying():

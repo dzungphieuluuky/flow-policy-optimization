@@ -4,7 +4,7 @@ import inspect
 import pytest
 import torch
 
-from flow_policy_optimization.flow_policy_optimization import compute_chunk_advantages, gae_trace
+from flow_policy_optimization.objective import compute_chunk_advantages, gae_trace
 
 GAMMA, H = 0.99, 4
 

@@ -11,8 +11,8 @@ from __future__ import annotations
 import pytest
 import torch
 
-from flow_policy_optimization.flow_policy_optimization import SelfAttention
-from flow_policy_optimization.flow_policy_optimization import FlowPolicyOptimizationConfig
+from flow_policy_optimization.networks import SelfAttention
+from flow_policy_optimization.config import FlowPolicyOptimizationConfig
 
 
 def test_a_later_token_cannot_change_an_earlier_one():

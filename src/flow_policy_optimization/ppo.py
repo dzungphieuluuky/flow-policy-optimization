@@ -26,7 +26,7 @@ Design choices, and how this differs from flow_policy_optimization on purpose:
   the stored actions are the pre-squash ``u``. No separate action normalizer,
   same contract as the flow policy.
 
-Environment vectorization mirrors ``flow_policy_optimization.flow_policy_optimization.make_train_env`` (forkserver +
+Environment vectorization mirrors ``flow_policy_optimization.train.make_train_env`` (forkserver +
 ``SyncVectorEnv`` fallback, Meta-World synchronous) with ``SameStep``
 autoreset instead of the default ``NextStep``.
 
@@ -53,15 +53,8 @@ import numpy as np
 import torch
 from torch import nn
 
-from flow_policy_optimization.flow_policy_optimization import (
-    Evaluator,
-    RunningMeanStd,
-    _init_wandb,
-    resolve_action_bounds,
-    resolve_device,
-    set_seed,
-    summarize_results,
-)
+from flow_policy_optimization.config import RunningMeanStd, resolve_action_bounds
+from flow_policy_optimization.train import Evaluator, _init_wandb, resolve_device, set_seed, summarize_results
 
 __all__ = ["run_ppo_training"]
 
@@ -550,7 +543,7 @@ def run_ppo_training(
 
 
 def _default_config():
-    from flow_policy_optimization.flow_policy_optimization import FlowPolicyOptimizationConfig
+    from flow_policy_optimization.config import FlowPolicyOptimizationConfig
 
     return FlowPolicyOptimizationConfig()
 
