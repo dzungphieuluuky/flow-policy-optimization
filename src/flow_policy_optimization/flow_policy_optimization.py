@@ -15,7 +15,6 @@ import warnings
 from collections import deque
 from collections.abc import Callable
 from contextlib import contextmanager
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
@@ -1314,20 +1313,6 @@ def update(policy: FlowPolicyOptimizationPolicy, optimizer, batch: dict[str, Any
 # ---------------------------------------------------------------------------
 
 
-def bootstrap_interval(returns: list[float], resamples: int = 10_000, low_q: float = 0.025, high_q: float = 0.975, seed: int = 0) -> tuple[float, float, float]:
-    vals = np.asarray([float(r) for r in returns], dtype=np.float64)
-    vals = vals[np.isfinite(vals)]
-    if vals.size == 0:
-        return float("nan"), float("nan"), float("nan")
-    mean = float(vals.mean())
-    if vals.size < 2:
-        return mean, float("nan"), float("nan")
-    if not 0.0 <= low_q < high_q <= 1.0 or resamples < 1:
-        raise ValueError("invalid bootstrap_interval parameters")
-    means = vals[np.random.default_rng(seed).integers(0, vals.size, size=(resamples, vals.size))].mean(axis=1)
-    return mean, float(np.percentile(means, 100.0 * low_q)), float(np.percentile(means, 100.0 * high_q))
-
-
 def compute_action_jerk(actions: np.ndarray) -> float | None:
     a = np.asarray(actions, dtype=np.float32)
     if a.ndim != 2 or a.shape[0] < 3:
@@ -1348,58 +1333,13 @@ def write_eval_csv(results: list[dict[str, Any]], out_dir: str | Path, *, append
     return csv_path
 
 
-def summarize_results(results: list[dict[str, Any]], seed: int = 0) -> dict[str, float]:
-    returns = [float(r["return"]) for r in results if r.get("return") is not None]
-    mean, low, high = bootstrap_interval(returns, seed=seed)
-    vals = np.asarray(returns, dtype=np.float64)
-    vals = vals[np.isfinite(vals)]
-    return {
-        "return_mean": mean,
-        "return_median": float(np.median(vals)) if vals.size else float("nan"),
-        "return_ci_low": low,
-        "return_ci_high": high,
-        "return_n": float(vals.size),
-    }
-
-
-def compute_eval_summary_metrics(
-    mean_return: float, eval_results: list[dict], all_eval_returns: list[float], *,
-    r_rand: float | None = None, best_return: float | None = None, steps_to_best: int | None = None,
-) -> dict:
-    returns = [r["return"] for r in eval_results]
-    lengths = [r["length"] for r in eval_results]
-    successes = [r["success"] for r in eval_results if r.get("success") is not None]
-    jerks = [r["jerk"] for r in eval_results if r.get("jerk") is not None]
-
-    def stat(v, fn):
-        return float(fn(v)) if v else float("nan")
-
-    data: dict[str, Any] = {
-        "eval/return_mean": float(mean_return),
-        "eval/return_min": stat(returns, np.min),
-        "eval/return_max": stat(returns, np.max),
-        "eval/return_std": stat(returns, np.std),
-        "eval/mean_length": stat(lengths, np.mean),
-        "eval/max_length": stat(lengths, np.max),
-        "eval/std_length": stat(lengths, np.std),
-        "eval/episode_count": len(returns),
-    }
-    if best_return is not None:
-        data["eval/return_best"] = float(best_return)
-    if steps_to_best is not None:
-        data["eval/steps_to_best"] = int(steps_to_best)
-    if r_rand is not None:
-        data["eval/random_policy_return"] = float(r_rand)
-    if len(all_eval_returns) >= 2 and all_eval_returns[-1] == mean_return:
-        prev = all_eval_returns[-2]
-        data["eval/return_improvement"] = float(mean_return - prev)
-        data["eval/return_improvement_frac"] = float((mean_return - prev) / max(abs(prev), 1e-8))
-    if successes:
-        data["eval/success_rate"] = float(np.mean(successes))
-    if jerks:
-        data["eval/mean_jerk"] = float(np.mean(jerks))
-        data["eval/max_jerk"] = float(np.max(jerks))
-    return data
+def summarize_results(results: list[dict[str, Any]]) -> dict[str, float]:
+    """Mean and median return of the finished episodes."""
+    returns = np.asarray([float(r["return"]) for r in results if r.get("return") is not None], dtype=np.float64)
+    returns = returns[np.isfinite(returns)]
+    if returns.size == 0:
+        return {"return_mean": float("nan"), "return_median": float("nan"), "return_n": 0.0}
+    return {"return_mean": float(returns.mean()), "return_median": float(np.median(returns)), "return_n": float(returns.size)}
 
 
 @contextmanager
@@ -1421,9 +1361,6 @@ class _BaseEvaluator:
         if max_episodes < 0 or (max_steps is not None and max_steps < 0):
             raise ValueError(f"invalid eval budget max_episodes={max_episodes}, max_steps={max_steps}")
         self.eval_seed, self.max_episodes, self.max_steps = eval_seed, max_episodes, max_steps
-
-    def summarize(self, results: list[dict[str, Any]], seed: int = 0) -> dict[str, float]:
-        return summarize_results(results, seed=seed)
 
 
 class Evaluator(_BaseEvaluator):
@@ -1497,7 +1434,7 @@ class VectorEvaluator(_BaseEvaluator):
         dev = torch.device(env.device) if hasattr(env, "device") else torch.device("cpu")
         self.action_low, self.action_high = low.to(dev), high.to(dev)
 
-    def evaluate(self, policy: Any, *, out_dir: str | Path | None = None, append_csv: bool = False, video_path: str | Path | None = None, video_fps: int = 30) -> list[dict[str, Any]]:
+    def evaluate(self, policy: Any, *, out_dir: str | Path | None = None, append_csv: bool = False) -> list[dict[str, Any]]:
         rng = np.random.default_rng(self.eval_seed)
         n, device = int(self.env.num_envs), torch.device(self.env.device)
         fork_devices = [device.index or 0] if device.type == "cuda" else []
@@ -1514,8 +1451,6 @@ class VectorEvaluator(_BaseEvaluator):
                 ep_return = torch.zeros(n, device=device)
                 success = torch.zeros(n, dtype=torch.bool, device=device)
                 saw_success, frames, steps = False, [], 0
-                recording = video_path is not None and not results
-                images = [self._grab_frame()] if recording else []
                 chunk: torch.Tensor | None = None
 
                 while True:
@@ -1525,8 +1460,6 @@ class VectorEvaluator(_BaseEvaluator):
                     action = chunk[:, steps % self.num_action_steps]
                     obs, rew, term, trunc, info = self.env.step_torch(action)
                     frames.append(action)
-                    if recording:
-                        images.append(self._grab_frame())
                     ep_return += rew
                     if isinstance(info, dict) and "success" in info:
                         success |= info["success"]
@@ -1535,12 +1468,6 @@ class VectorEvaluator(_BaseEvaluator):
                     window = torch.cat((window[:, 1:], obs[:, None, :]), dim=1)
                     if bool(trunc.all()) or bool(term.all()) or (self.max_steps is not None and steps >= self.max_steps):
                         break
-
-                if recording and images:
-                    from mani_skill.utils.visualization.misc import images_to_video
-                    p = Path(video_path)
-                    p.parent.mkdir(parents=True, exist_ok=True)
-                    images_to_video(images, str(p.parent), p.stem, fps=video_fps, verbose=False)
 
                 actions_np = torch.stack(frames, dim=1).cpu().numpy()
                 returns_np, succ_np = ep_return.cpu().numpy(), success.cpu().numpy()
@@ -1557,13 +1484,6 @@ class VectorEvaluator(_BaseEvaluator):
         if out_dir is not None:
             write_eval_csv(results, out_dir, append=append_csv)
         return results
-
-    def _grab_frame(self) -> np.ndarray:
-        frames = np.asarray(self.env.render())
-        if frames.ndim == 3:
-            return frames
-        from mani_skill.utils.visualization.misc import tile_images
-        return tile_images(frames, nrows=max(1, int(np.sqrt(len(frames)))))
 
     def clone(self, max_episodes: int) -> VectorEvaluator:
         return VectorEvaluator(
@@ -1746,21 +1666,14 @@ class _EvalAdapter:
         return self.policy.predict_action_chunk(window)
 
 
-def _init_wandb(cfg: FlowPolicyOptimizationConfig, *, method: str, env_name: str, seed: int, total_steps: int):
+def _init_wandb(cfg: FlowPolicyOptimizationConfig, *, method: str, env_name: str, seed: int):
     if cfg.report_to == "none":
         return None
     import wandb
-    cfg_dict = cfg.asdict()
-    tags = [
-        f"h{cfg.action_horizon}", f"hd{cfg.hidden_dim}", f"ep{cfg.num_learning_epochs}",
-        f"lr{cfg.policy_lr:g}", f"eps{cfg.clip_param:g}",
-    ]
-    name = "_".join([f"{method}_{env_name}_s{seed}", *tags, datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")])
     wandb.init(
-        project=method, group=f"{method}_{env_name}", name=name, tags=["mujoco"],
-        config={**cfg_dict, "method": method, "seed": seed, "env": env_name},
-        job_type="smoke" if total_steps <= 10000 else "train",
-        mode=os.environ.get("WANDB_MODE", "online"), reinit="finish_previous",
+        project=method,
+        name=f"{method}_{env_name}_s{seed}",
+        config={**cfg.asdict(), "method": method, "seed": seed, "env": env_name},
     )
     return wandb
 
@@ -1805,9 +1718,7 @@ def run_flow_policy_optimization_training(
         eval_env = env
         evaluator = Evaluator(env, eval_seed=eval_seed, max_episodes=cfg.eval_max_episodes)
 
-    rand_results = evaluator.clone(max_episodes=30).evaluate(evaluator.random_policy(evaluator.env), out_dir=None)
-    r_rand = float(np.mean([r["return"] for r in rand_results])) if rand_results else 0.0
-    wb = _init_wandb(cfg, method="flow_policy_optimization", env_name=env_name, seed=seed, total_steps=total_steps)
+    wb = _init_wandb(cfg, method="flow_policy_optimization", env_name=env_name, seed=seed)
     artifacts: list[str] = []
     params = sum(p.numel() for p in policy.parameters() if p.requires_grad)
     print(f"flow_policy_optimization policy: actor=FlowMLP hidden={cfg.hidden_dim} params={params:,}", flush=True)
@@ -1849,7 +1760,7 @@ def run_flow_policy_optimization_training(
 
         if global_step >= next_eval or global_step >= total_steps:
             eval_results = evaluator.evaluate(_EvalAdapter(policy), out_dir=out_dir, append_csv=True)
-            summary = summarize_results(eval_results, seed=eval_seed)
+            summary = summarize_results(eval_results)
             mean_ret = float(summary["return_mean"])
             all_eval_returns.append(mean_ret)
             if best_return is None or mean_ret > best_return:
@@ -1858,13 +1769,15 @@ def run_flow_policy_optimization_training(
                 if best_ckpt not in artifacts:
                     artifacts.append(best_ckpt)
             if wb is not None:
+                successes = [float(r["success"]) for r in eval_results if r.get("success") is not None]
                 wb.log({
-                    **compute_eval_summary_metrics(mean_ret, eval_results, all_eval_returns, r_rand=r_rand, best_return=best_return, steps_to_best=steps_to_best),
-                    "eval/return_ci_low": summary["return_ci_low"],
-                    "eval/return_ci_high": summary["return_ci_high"],
-                    "eval/return_ci_width": summary["return_ci_high"] - summary["return_ci_low"],
+                    "eval/return_mean": mean_ret,
                     "eval/return_median": summary["return_median"],
-                    "eval/return_n": summary["return_n"],
+                    "eval/mean_length": float(np.mean([r["length"] for r in eval_results])),
+                    "eval/episode_count": len(eval_results),
+                    "eval/return_best": float(best_return),
+                    "eval/steps_to_best": int(steps_to_best),
+                    **({"eval/success_rate": float(np.mean(successes))} if successes else {}),
                 }, step=global_step)
             next_eval = max(global_step + eval_steps, next_eval + eval_steps)
             if _shared_env(train_env, env):

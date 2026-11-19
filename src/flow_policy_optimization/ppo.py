@@ -57,7 +57,6 @@ from flow_policy_optimization.flow_policy_optimization import (
     Evaluator,
     RunningMeanStd,
     _init_wandb,
-    compute_eval_summary_metrics,
     resolve_action_bounds,
     resolve_device,
     set_seed,
@@ -65,14 +64,6 @@ from flow_policy_optimization.flow_policy_optimization import (
 )
 
 __all__ = ["run_ppo_training"]
-
-def _random_baseline(evaluator, max_episodes: int = 30) -> float:
-    """Mean return of a uniform-random policy, the divergence reference."""
-    baseline = evaluator.clone(max_episodes=max_episodes)
-    results = baseline.evaluate(baseline.random_policy(baseline.env), out_dir=None)
-    if not results:
-        return 0.0
-    return float(np.mean([r["return"] for r in results]))
 
 LOG_2 = math.log(2.0)
 
@@ -329,8 +320,7 @@ def run_ppo_training(
     num_params = sum(p.numel() for p in policy.parameters() if p.requires_grad)
     print(f"ppo policy: 2-layer tanh MLP hidden={cfg.hidden_dim} params={num_params:,}", flush=True)
 
-    r_rand = _random_baseline(evaluator)
-    wandb_run = _init_wandb(cfg, method="ppo", env_name=env_name, seed=seed, total_steps=total_steps)
+    wandb_run = _init_wandb(cfg, method="ppo", env_name=env_name, seed=seed)
     artifacts: list[str] = []
 
     steps_per_env = max(1, int(cfg.chunks_per_update) // int(cfg.num_envs))
@@ -339,7 +329,6 @@ def run_ppo_training(
     best_return: float | None = None
     best_artifact: str | None = None
     steps_to_best = 0
-    all_eval_returns: list[float] = []
     recent_eval_returns: list[float] = []
     next_eval = int(eval_steps)
     next_save = int(save_steps)
@@ -500,9 +489,8 @@ def run_ppo_training(
                 _DeterministicPolicy(policy, device), out_dir=out_dir, append_csv=True
             )
             mean_return = float(
-                summarize_results(results, seed=eval_seed)["return_mean"]
+                summarize_results(results)["return_mean"]
             ) if results else 0.0
-            all_eval_returns.append(mean_return)
             recent_eval_returns.append(mean_return)
             if best_return is None or mean_return > best_return:
                 best_return, steps_to_best = mean_return, global_step
@@ -510,31 +498,19 @@ def run_ppo_training(
                 if best_artifact not in artifacts:
                     artifacts.append(best_artifact)
             if wandb_run is not None:
-                summary = summarize_results(results, seed=eval_seed)
+                summary = summarize_results(results)
+                lengths = [r["length"] for r in results]
+                successes = [float(r["success"]) for r in results if r.get("success") is not None]
                 wandb_run.log(
                     {
-                        "eval/ema_active": 0.0,
-                        "eval/return_ci_low": summary["return_ci_low"],
-                        "eval/return_ci_high": summary["return_ci_high"],
-                        "eval/return_ci_width": summary["return_ci_high"] - summary["return_ci_low"],
-                        "eval/return_median": summary["return_median"],
-                        "eval/return_n": summary["return_n"],
                         "eval/return_mean": mean_return,
+                        "eval/return_median": summary["return_median"],
+                        "eval/mean_length": float(np.mean(lengths)),
+                        "eval/episode_count": len(results),
                         "eval/return_best": float(best_return),
                         "eval/steps_to_best": float(steps_to_best),
-                        "eval/random_policy_return": float(r_rand),
+                        **({"eval/success_rate": float(np.mean(successes))} if successes else {}),
                     },
-                    step=global_step,
-                )
-                wandb_run.log(
-                    compute_eval_summary_metrics(
-                        mean_return,
-                        results,
-                        all_eval_returns,
-                        r_rand=r_rand,
-                        best_return=best_return,
-                        steps_to_best=steps_to_best,
-                    ),
                     step=global_step,
                 )
             next_eval = max(global_step + eval_steps, next_eval + eval_steps)
