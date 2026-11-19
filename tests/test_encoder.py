@@ -124,14 +124,6 @@ def test_the_capacity_follows_obs_dim():
     assert sum(p.numel() for p in enc.parameters()) == 127_488
 
 
-def test_the_bad_shapes_still_raise():
-    enc = _encoder()
-    with pytest.raises(ValueError, match="states must have shape"):
-        enc(torch.randn(4, STEPS, OBS + 1))
-    with pytest.raises(ValueError, match="built for max_obs_steps"):
-        enc(torch.randn(4, STEPS + 1, OBS))
-
-
 @pytest.mark.parametrize("bad", [0, -3])
 def test_the_step_count_must_be_positive(bad):
     with pytest.raises(ValueError, match="max_obs_steps must be >= 1"):

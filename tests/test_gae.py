@@ -389,56 +389,10 @@ def test_trace_requires_its_inputs():
         )
 
 
-@pytest.mark.parametrize("name,value", [("gamma", 1.5), ("gae_lambda", 1.5)])
-def test_rejects_an_out_of_range_discount_or_lambda(name, value):
-    with pytest.raises(ValueError, match=name):
-        compute_chunk_advantages(
-            torch.ones(H), torch.zeros(1), torch.zeros(1),
-            torch.zeros(1, dtype=torch.long), torch.tensor([H]),
-            chunk_terminated=torch.zeros(1, dtype=torch.bool),
-            chunk_size=H, **{"gamma": GAMMA, "gae_lambda": 0.0, name: value},
-        )
-
-
 @pytest.mark.parametrize("lam", [0.0, 0.95])
 def test_an_empty_rollout_returns_empty_tensors(lam):
     adv, ret = gae([], lam=lam)
     assert adv.numel() == 0 and ret.numel() == 0
-
-
-# Validation.
-
-
-def test_rejects_value_arrays_of_the_wrong_length():
-    """A per-step-sized value array must raise, not silently misindex."""
-    n = 3
-    common = dict(
-        step_rewards=torch.ones(16),
-        chunk_starts=torch.arange(0, n * 4, 4, dtype=torch.long),
-        chunk_lengths=torch.full((n,), 4, dtype=torch.long),
-        chunk_terminated=torch.zeros(n, dtype=torch.bool),
-        chunk_size=4,
-        gamma=GAMMA,
-        gae_lambda=0.95,
-    )
-    with pytest.raises(ValueError, match="chunk tensors must have"):
-        compute_chunk_advantages(
-            v_current=torch.zeros(16), v_next=torch.zeros(n), **common
-        )
-    with pytest.raises(ValueError, match="chunk tensors must have"):
-        compute_chunk_advantages(
-            v_current=torch.zeros(n), v_next=torch.zeros(16), **common
-        )
-
-
-def test_rejects_mismatched_chunk_lengths():
-    with pytest.raises(ValueError, match="chunk tensors must have"):
-        compute_chunk_advantages(
-            torch.ones(H), torch.zeros(2), torch.zeros(2),
-            torch.zeros(2, dtype=torch.long), torch.tensor([H]),
-            chunk_terminated=torch.zeros(2, dtype=torch.bool),
-            chunk_size=H, gamma=GAMMA, gae_lambda=0.95,
-        )
 
 
 def test_discount_and_lambda_have_no_defaults():

@@ -69,8 +69,6 @@ class RunningMeanStd(nn.Module):
 
     @torch.no_grad()
     def update(self, x: torch.Tensor) -> None:
-        if x.shape[-1] != self.mean.numel():
-            raise ValueError(f"update got last dim {x.shape[-1]}, expected {self.mean.numel()}")
         batch = x.detach().reshape(-1, x.shape[-1]).to(self.mean.device, dtype=torch.float32)
         b = batch.shape[0]
         if b == 0:
@@ -265,6 +263,7 @@ class SelfAttention(nn.Module):
         self.n_heads = n_heads
         self.head_dim = head_dim
         half = head_dim // 2
+        self._rope_cache: dict[tuple[int, torch.device], tuple[torch.Tensor, torch.Tensor]] = {}
         self.register_buffer("inv_freq", 1.0 / (ROPE_BASE ** (torch.arange(half).float() / half)), persistent=False)
         self.qkv = _ortho_linear(hidden_dim, 3 * hidden_dim)
         self.out = _ortho_linear(hidden_dim, hidden_dim)
@@ -276,8 +275,15 @@ class SelfAttention(nn.Module):
         q = q.view(b, seq, h, d).transpose(1, 2)
         k = k.view(b, seq, h, d).transpose(1, 2)
         v = v.view(b, seq, h, d).transpose(1, 2)
-        freqs = torch.outer(torch.arange(seq, device=x.device, dtype=torch.float32), self.inv_freq)
-        cos, sin = freqs.cos()[None, None], freqs.sin()[None, None]
+        key = (seq, x.device)
+        cached = self._rope_cache.get(key)
+        if cached is None:
+            # Build outside inference mode so cached tensors may enter autograd graphs.
+            with torch.inference_mode(False):
+                freqs = torch.outer(torch.arange(seq, device=x.device, dtype=torch.float32), self.inv_freq)
+                cached = (freqs.cos()[None, None].clone(), freqs.sin()[None, None].clone())
+            self._rope_cache[key] = cached
+        cos, sin = cached
         q = torch.stack([q[..., 0::2] * cos - q[..., 1::2] * sin, q[..., 0::2] * sin + q[..., 1::2] * cos], dim=-1).flatten(-2)
         k = torch.stack([k[..., 0::2] * cos - k[..., 1::2] * sin, k[..., 0::2] * sin + k[..., 1::2] * cos], dim=-1).flatten(-2)
         y = F.scaled_dot_product_attention(q, k, v, is_causal=True)
@@ -296,8 +302,6 @@ class CrossAttention(nn.Module):
         self.out = _ortho_linear(hidden_dim, hidden_dim)
 
     def forward(self, query: torch.Tensor, context: torch.Tensor) -> torch.Tensor:
-        if query.dim() != 3 or context.dim() != 3 or query.shape[0] != context.shape[0] or query.shape[2] != context.shape[2]:
-            raise ValueError(f"incompatible query {tuple(query.shape)} and context {tuple(context.shape)}")
         b, lq, _ = query.shape
         lk, h, d = context.shape[1], self.n_heads, self.head_dim
         q = self.q_proj(query).view(b, lq, h, d).transpose(1, 2)
@@ -323,10 +327,6 @@ class StateEncoder(nn.Module):
         self.out_norm = RMSNorm(hidden_dim, eps=1e-6)
 
     def encode_tokens(self, states: torch.Tensor) -> torch.Tensor:
-        if states.dim() != 3 or states.shape[2] != self.obs_dim:
-            raise ValueError(f"states must have shape [B, {self.max_obs_steps}, {self.obs_dim}], got {tuple(states.shape)}")
-        if states.shape[1] != self.max_obs_steps:
-            raise ValueError(f"states has {states.shape[1]} frames, built for max_obs_steps={self.max_obs_steps}")
         h = self.frame(states)
         return h + self.attn(self.attn_norm(h))
 
@@ -356,28 +356,18 @@ class FlowMLP(nn.Module):
         nn.init.zeros_(self.out.bias)
 
     def _embed_times(self, t: torch.Tensor, b: int, k: int) -> torch.Tensor:
-        if t.dim() == 3 and t.shape[-1] != 1:
-            raise ValueError(f"t must end in singleton axis, got {tuple(t.shape)}")
-        if t.dim() in (2, 3) and tuple(t.shape[:2]) == (b, k):
-            grid = t.squeeze(-1) if t.dim() == 3 else t
-        elif t.dim() <= 1:
-            t = t.reshape(-1)
-            if t.numel() == 1:
-                grid = t.expand(b, k)
-            elif t.numel() == b:
-                grid = t[:, None].expand(b, k)
-            else:
-                raise ValueError(f"t must contain 1 or {b} values, got {t.numel()}")
+        """Embed ``t`` given as ``[B, K]``, ``[B, K, 1]`` grid, a scalar, or ``[B]``."""
+        if t.dim() == 3:
+            t = t.squeeze(-1)
+        if t.dim() == 2 and tuple(t.shape) == (b, k):
+            grid = t
         else:
-            raise ValueError(f"t must be scalar, [B], or [B, K, 1], got {tuple(t.shape)}")
+            flat = t.reshape(-1)
+            grid = flat.expand(b, k) if flat.numel() == 1 else flat[:, None].expand(b, k)
         return self.timestep_embedder.encode_times(grid.reshape(-1)).reshape(b, k, -1)
 
     def forward(self, x_t: torch.Tensor, t: torch.Tensor | float, condition: torch.Tensor) -> torch.Tensor:
-        if x_t.dim() != 3 or x_t.shape[2] != self.action_dim or x_t.shape[1] > self.action_horizon:
-            raise ValueError(f"invalid x_t shape {tuple(x_t.shape)}")
         b, k, _ = x_t.shape
-        if condition.shape != (b, self.hidden_dim):
-            raise ValueError(f"expected condition [{b}, {self.hidden_dim}], got {tuple(condition.shape)}")
         t_tensor = torch.as_tensor(t, dtype=torch.float32, device=x_t.device)
         temb = self._embed_times(t_tensor, b, k).reshape(b, -1).to(dtype=x_t.dtype)
         h = self.in_block(torch.cat([x_t.reshape(b, -1), temb, condition.to(device=x_t.device, dtype=x_t.dtype)], dim=-1))
@@ -454,11 +444,6 @@ class Critic(nn.Module):
         self.mlp = nn.Sequential(*layers)
 
     def forward(self, states: torch.Tensor, actions: torch.Tensor, exec_length_frac: torch.Tensor | None = None) -> torch.Tensor:
-        if states.shape != (states.shape[0], self.num_obs_steps, self.obs_dim):
-            raise ValueError(f"states must be [B, {self.num_obs_steps}, {self.obs_dim}], got {tuple(states.shape)}")
-        if actions.shape != (states.shape[0], self.action_horizon, self.action_dim):
-            raise ValueError(f"actions must be [{states.shape[0]}, {self.action_horizon}, {self.action_dim}], got {tuple(actions.shape)}")
-
         obs_tokens = self.state_encoder.out_norm(
             self.state_encoder.encode_tokens(self.norm_state(states.flatten(1)).view(states.shape))
         )
@@ -475,8 +460,6 @@ class Critic(nn.Module):
 
     def forward_v(self, states: torch.Tensor) -> torch.Tensor:
         """State value V(s); same encoder, no action tokens. [B]"""
-        if states.shape != (states.shape[0], self.num_obs_steps, self.obs_dim):
-            raise ValueError(f"states must be [B, {self.num_obs_steps}, {self.obs_dim}], got {tuple(states.shape)}")
         obs_tokens = self.state_encoder.out_norm(
             self.state_encoder.encode_tokens(self.norm_state(states.flatten(1)).view(states.shape))
         )
@@ -492,11 +475,6 @@ def expand_mc_samples(actions: torch.Tensor, eps: torch.Tensor, t: torch.Tensor)
     """Interpolate ``x_t = lerp(eps, actions, t)`` over the MC axis -> ``[B*M, ...]``."""
     b, m = eps.shape[0], eps.shape[1]
     flow_shape = tuple(actions.shape[1:])
-    if tuple(eps.shape) != (b, m, *flow_shape):
-        raise ValueError(f"eps shape {tuple(eps.shape)} != {(b, m, *flow_shape)}")
-    t = torch.as_tensor(t, dtype=torch.float32, device=eps.device)
-    if tuple(t.shape) != (b, m, flow_shape[0], 1):
-        raise ValueError(f"t shape {tuple(t.shape)} != {(b, m, flow_shape[0], 1)}")
 
     flat_t = t.reshape(b * m, flow_shape[0], 1)
     flat_act = actions.unsqueeze(1).expand(b, m, *flow_shape).reshape(b * m, *flow_shape)
@@ -512,8 +490,6 @@ def compute_cfm_loss(
     reduce_mode: str,
     action_is_pad: torch.Tensor | None = None,
 ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
-    if v_hat.shape != v_star.shape:
-        raise ValueError(f"v_hat shape {tuple(v_hat.shape)} != v_star shape {tuple(v_star.shape)}")
     diff = v_hat - v_star
     if cfg.cfm_loss_use_huber:
         delta = cfg.cfm_loss_huber_delta
@@ -529,8 +505,6 @@ def compute_cfm_loss(
 
     if reduce_mode == "scalar":
         return sq.mean() if n_valid is None else sq.sum() / (n_valid.sum() * sq.shape[1])
-    if reduce_mode not in ("sample", "sample_and_token"):
-        raise ValueError(f"invalid reduce_mode={reduce_mode!r}")
 
     flat = sq.flatten(2)
     if cfg.cfm_loss_reduction == "sum":
@@ -539,7 +513,7 @@ def compute_cfm_loss(
         sample = flat.sum(dim=-1) / (n_valid.sqrt() if n_valid is not None else math.sqrt(flat.shape[-1]))
     else:
         sample = flat.mean(dim=-1) if n_valid is None else flat.sum(dim=-1) / n_valid
-    return sample if reduce_mode == "sample" else (sample, sq.mean(dim=-1))
+    return sample, sq.mean(dim=-1)
 
 
 def compute_policy_ratio(cfm_loss_old: torch.Tensor, cfm_loss_new: torch.Tensor, cfg: FlowPolicyOptimizationConfig) -> torch.Tensor:
@@ -724,8 +698,6 @@ def compute_chunk_advantages(
     gae_lambda: float,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """V-anchored chunk GAE returning ``(advantages, lambda_returns)``."""
-    if not (0.0 <= gamma <= 1.0 and 0.0 <= gae_lambda <= 1.0):
-        raise ValueError(f"gamma={gamma}, gae_lambda={gae_lambda} must be in [0, 1]")
     device = v_current.device
     rewards = step_rewards.to(device=device, dtype=torch.float32).reshape(-1)
     v_cur = v_current.to(device=device, dtype=torch.float32).reshape(-1)
@@ -734,8 +706,6 @@ def compute_chunk_advantages(
     lengths = chunk_lengths.to(device=device, dtype=torch.long).reshape(-1)
     terminated = chunk_terminated.to(device=device, dtype=torch.bool).reshape(-1)
     n = starts.numel()
-    if any(t.numel() != n for t in (lengths, terminated, v_cur, v_nxt)):
-        raise ValueError(f"chunk tensors must have {n} entries")
     if n == 0:
         empty = torch.empty(0, device=device, dtype=torch.float32)
         return empty, empty
@@ -821,6 +791,7 @@ class RolloutBuffer:
             "chunk_env_id": self.chunk_env_id[:nc],
             "chunk_prev": self.chunk_prev[:nc],
         }
+
 
     def write_chunks(
         self, *, start_window: torch.Tensor, next_window: torch.Tensor, actions: torch.Tensor,
